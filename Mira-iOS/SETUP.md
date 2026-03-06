@@ -6,7 +6,7 @@
 2. iOS → App
 3. Product Name: `Mira`
 4. Team: 你的开发者账号（Personal Team 也行）
-5. Organization Identifier: `com.yourname`
+5. Organization Identifier: `com.[yourname]`
 6. Interface: **SwiftUI**
 7. Language: **Swift**
 8. Storage: None

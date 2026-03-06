@@ -505,7 +505,7 @@ Learned: 2026-03-05
 - Check `isReadableFile(atPath:)` before reading; if false, trigger download and retry
 
 ### File links in iCloud-synced messages
-- NEVER use Mac absolute paths (`file:///Users/username/...`) — they don't exist on iOS
+- NEVER use Mac absolute paths (`file:///Users/[username]/...`) — they don't exist on iOS
 - Use paths relative to the shared bridge folder: `file://tasks/slug/output.md`
 - The iOS app resolves relative paths against its `bridgeBaseURL`
 

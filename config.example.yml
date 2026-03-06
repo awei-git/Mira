@@ -22,7 +22,7 @@ models:
 
 # Substack (optional — needed for publish agent)
 # substack:
-#   subdomain: "your-blog"
+#   subdomain: "[your-blog]"
 #   cookie: "s%3A..."   # substack.sid cookie value
 
 # Schedule
