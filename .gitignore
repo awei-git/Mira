@@ -1,0 +1,48 @@
+# Secrets, credentials, and local config
+secrets.yml
+config.yml
+sources.json
+
+# Personal data — artifacts, messages, state
+artifacts/
+Mira-bridge/
+
+# Feed data and logs
+feeds/
+logs/
+
+# Runtime state
+.agent_state.json
+agents/super/notes_inbox/
+agents/super/notes_outbox/
+agents/.bg_pids/
+
+# Writer ideas (personal notes)
+agents/writer/ideas/
+
+# Soul (personal memory, journal)
+agents/shared/soul/journal/
+agents/shared/soul/memory.md
+
+# Sync state files
+*.sync.json
+.notes_sync.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+*.swp
+
+# Xcode build artifacts and user data
+**/build/
+**/*.xcuserdata/
+**/xcuserdata/
+**/DerivedData/
+*.xcuserstate
+
+# Backup files
+*_backup.*

@@ -1,0 +1,16 @@
+{
+  "arxiv": {
+    "categories": ["cs.AI", "cs.CL", "cs.LG"],
+    "max_results": 10
+  },
+  "reddit": {
+    "subreddits": ["LocalLLaMA", "MachineLearning", "artificial"],
+    "limit": 10
+  },
+  "huggingface": {
+    "enabled": true
+  },
+  "rss": [
+    {"name": "Hacker News", "url": "https://hnrss.org/frontpage?count=15"}
+  ]
+}
