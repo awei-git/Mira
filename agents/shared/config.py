@@ -2,20 +2,73 @@
 
 Reads from config.yml at the project root. Falls back to defaults.
 """
-import yaml
+import json
+import re
 from pathlib import Path
 from datetime import time
 
 # ---------------------------------------------------------------------------
-# Load config.yml
+# Load config.yml  (stdlib-only parser — no PyYAML dependency)
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # agents/shared/ -> agents/ -> Mira/
 _CONFIG_FILE = _PROJECT_ROOT / "config.yml"
 
+def _parse_simple_yaml(text: str) -> dict:
+    """Parse the subset of YAML used in config.yml (scalar values, one-level
+    nesting, inline lists).  Avoids a PyYAML dependency so launchd works."""
+    result: dict = {}
+    current_section = None
+    for raw_line in text.splitlines():
+        # strip comments (but not inside quoted strings)
+        line = raw_line.split("#")[0].rstrip() if "#" in raw_line and not re.search(r'["\'].*#.*["\']', raw_line) else raw_line.rstrip()
+        if not line or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        stripped = line.strip()
+        if ":" not in stripped:
+            continue
+        key, _, val = stripped.partition(":")
+        key = key.strip()
+        val = val.strip()
+        # Remove surrounding quotes
+        if val and val[0] in ('"', "'") and val[-1] == val[0]:
+            val = val[1:-1]
+        if indent == 0:
+            if val == "" or val == "":
+                # section header
+                current_section = key
+                result[key] = {}
+            elif val.startswith("["):
+                # inline list like ["a", "b"]
+                try:
+                    result[key] = json.loads(val)
+                except Exception:
+                    result[key] = val
+                current_section = None
+            else:
+                # Try to coerce to int
+                try:
+                    result[key] = int(val)
+                except ValueError:
+                    result[key] = val
+                current_section = None
+        elif current_section and indent > 0:
+            if val.startswith("["):
+                try:
+                    result[current_section][key] = json.loads(val)
+                except Exception:
+                    result[current_section][key] = val
+            else:
+                try:
+                    result[current_section][key] = int(val)
+                except ValueError:
+                    result[current_section][key] = val
+    return result
+
 def _load_config() -> dict:
     if _CONFIG_FILE.exists():
         try:
-            return yaml.safe_load(_CONFIG_FILE.read_text(encoding="utf-8")) or {}
+            return _parse_simple_yaml(_CONFIG_FILE.read_text(encoding="utf-8"))
         except Exception:
             return {}
     return {}
@@ -29,8 +82,6 @@ _root_str = _cfg.get("root_path", str(_PROJECT_ROOT))
 MIRA_ROOT = Path(_root_str).expanduser()
 _AGENTS_DIR = MIRA_ROOT / "agents"
 
-# Legacy alias — old code may still reference this
-PLAYGROUND_ROOT = MIRA_ROOT
 
 # Soul — shared identity, memory, interests
 SOUL_DIR = _AGENTS_DIR / "shared" / "soul"
@@ -60,6 +111,12 @@ IDENTITY_FILE = SOUL_DIR / "identity.md"
 MEMORY_FILE = SOUL_DIR / "memory.md"
 INTERESTS_FILE = SOUL_DIR / "interests.md"
 SKILLS_FILE = SOUL_DIR / "skills.md"
+
+# Worldview — evolving values and beliefs
+WORLDVIEW_FILE = SOUL_DIR / "worldview.md"
+
+# Reading notes — personal reflections from deep dives
+READING_NOTES_DIR = SOUL_DIR / "reading_notes"
 
 # Dynamically learned skills
 SKILLS_DIR = SOUL_DIR / "learned"
@@ -227,6 +284,8 @@ EXPLORE_WINDOW_MINUTES = _sched.get("explore_window_minutes", 30)
 REFLECT_DAY = _sched.get("reflect_day", 6)
 REFLECT_TIME = _parse_times([_sched.get("reflect_time", "10:00")])[0]
 JOURNAL_TIME = _parse_times([_sched.get("journal_time", "23:00")])[0]
+ANALYST_TIME = _parse_times([_sched.get("analyst_time", "08:30")])[0]
+ANALYST_BUSINESS_DAYS_ONLY = _sched.get("analyst_business_days_only", True)
 
 # Limits
 MAX_FEED_ITEMS = _limits.get("max_feed_items", 50)

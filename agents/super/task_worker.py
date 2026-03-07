@@ -24,7 +24,7 @@ import shutil
 
 from config import MIRA_DIR
 from soul_manager import load_soul, format_soul, append_memory, save_skill
-from sub_agent import claude_act, claude_think
+from sub_agent import claude_act, claude_think, ClaudeTimeoutError
 from prompts import respond_prompt
 from writing_workflow import run_full_pipeline
 
@@ -177,6 +177,19 @@ def main():
     msg_sender = msg_data.get("sender", "unknown")
     thread_id = args.thread_id or msg_data.get("thread_id", "")
 
+    # --- Check for pending plan (resume after user confirmation) ---
+    pending_plan_file = workspace / "pending_plan.json"
+    if pending_plan_file.exists():
+        try:
+            plan = json.loads(pending_plan_file.read_text(encoding="utf-8"))
+            pending_plan_file.unlink()  # consumed
+            log.info("Resuming pending plan (%d steps): %s", len(plan), plan)
+            _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id)
+            log.info("Worker exiting")
+            return
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("Failed to load pending plan, re-planning: %s", e)
+
     # --- Plan and execute via LLM ---
     plan = _plan_task(msg_content)
     log.info("Plan: %s", plan)
@@ -205,15 +218,18 @@ Available agents:
 - briefing: Fetch feeds and generate a news briefing / summary
 - writing: Write or create text content (article, story, essay, post, translation)
 - publish: Publish EXISTING content to a platform (Substack, Instagram, Threads)
+- analyst: Market analysis, competitive intelligence, trend detection, industry research, market sizing
 - general: Answer questions, search, analyze, code, file operations, etc.
 - clarify: Ask the user a question to get more information before proceeding
+- confirm: Present an execution plan to the user and wait for approval before proceeding. Use this for complex tasks that would take a long time (building systems, multi-file code projects, research with many steps).
 
 Rules:
 - If the request needs content CREATED then PUBLISHED, use writing first then publish.
 - If publishing existing content, just use publish.
 - Talking ABOUT writing (e.g. "写作技巧") is general, not writing.
 - If the request is ambiguous or missing critical info, use clarify.
-- Most requests need only 1 step. Use multiple steps only when truly needed.
+- If the task is COMPLEX (building a system, creating an app, multi-step engineering, would take >5 min), ALWAYS insert a confirm step FIRST that summarizes your execution plan, estimated time, and asks the user to confirm. This lets the user adjust scope before you start.
+- Most simple requests need only 1 step. Use multiple steps only when truly needed.
 
 Output ONLY a JSON array. Each element: {{"agent": "...", "instruction": "..."}}
 The instruction should be a clear directive for that agent, in the user's language.
@@ -224,6 +240,8 @@ Examples:
 - "写一个Hello World发到substack" → [{{"agent": "writing", "instruction": "写一篇简短的Hello World文章"}}, {{"agent": "publish", "instruction": "将上一步写好的文章发布到Substack"}}]
 - "把自由意志那篇发到substack" → [{{"agent": "publish", "instruction": "将'自由意志'文章发布到Substack"}}]
 - "发个东西到substack" → [{{"agent": "clarify", "instruction": "你想发什么内容到Substack？是已有的文章还是需要我先写一篇？"}}]
+- "分析一下AI agent市场" → [{{"agent": "analyst", "instruction": "分析AI agent市场的竞争格局、主要玩家和趋势"}}]
+- "帮我搭一个股票推荐系统" → [{{"agent": "confirm", "instruction": "这个任务需要：\\n1. 查看secrets里可用的API\\n2. 设计数据获取+分析架构\\n3. 实现完整agent代码\\n预计耗时15-20分钟。要继续吗？"}}, {{"agent": "general", "instruction": "搭建股票推荐系统..."}}]
 
 User request: {content[:500]}
 
@@ -237,7 +255,7 @@ JSON:"""
             if match:
                 steps = json.loads(match.group())
                 # Validate
-                valid_agents = {"briefing", "writing", "publish", "general", "clarify"}
+                valid_agents = {"briefing", "writing", "publish", "analyst", "general", "clarify", "confirm"}
                 validated = []
                 for s in steps:
                     if isinstance(s, dict) and s.get("agent") in valid_agents:
@@ -272,6 +290,20 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
                           tags=["clarify"])
             return
 
+        elif agent == "confirm":
+            # Save remaining plan so we can resume after user confirms
+            remaining = plan[i+1:]
+            if remaining:
+                (workspace / "pending_plan.json").write_text(
+                    json.dumps(remaining, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            (workspace / "output.md").write_text(instruction, encoding="utf-8")
+            _write_result(workspace, task_id, "needs-input", instruction,
+                          tags=["confirm"])
+            log.info("Task %s waiting for user confirmation", task_id)
+            return
+
         elif agent == "briefing":
             _handle_briefing(workspace, task_id, instruction, sender, thread_id)
 
@@ -280,6 +312,9 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
 
         elif agent == "publish":
             _handle_publish(workspace, task_id, instruction, sender, thread_id)
+
+        elif agent == "analyst":
+            _handle_analyst(workspace, task_id, instruction, sender, thread_id)
 
         else:
             _handle_general(workspace, task_id, instruction, sender, thread_id)
@@ -523,6 +558,61 @@ def _handle_publish(workspace: Path, task_id: str, content: str,
 
 
 # ---------------------------------------------------------------------------
+# Analyst handler — market analysis, competitive intelligence
+# ---------------------------------------------------------------------------
+
+def _handle_analyst(workspace: Path, task_id: str, content: str,
+                    sender: str, thread_id: str):
+    """Handle market analysis requests via the analyst agent."""
+    try:
+        analyst_dir = str(_AGENTS_DIR / "analyst")
+        if analyst_dir not in sys.path:
+            sys.path.insert(0, analyst_dir)
+
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "analyst_handler", str(_AGENTS_DIR / "analyst" / "handler.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        analyst_handle = mod.handle
+
+        thread_history = load_thread_history(thread_id)
+        thread_memory = load_thread_memory(thread_id)
+
+        log.info("Running analyst for task %s", task_id)
+        summary = analyst_handle(
+            workspace, task_id, content, sender, thread_id,
+            thread_history=thread_history, thread_memory=thread_memory,
+        )
+    except ClaudeTimeoutError:
+        _write_result(workspace, task_id, "error",
+                      "分析超时，请缩小分析范围重试。")
+        log.error("Analyst task %s timed out", task_id)
+        return
+    except Exception as e:
+        log.error("Analyst handler crashed: %s", e)
+        _write_result(workspace, task_id, "error", f"分析失败: {e}")
+        return
+
+    if summary:
+        tags = smart_classify(content, summary)
+        tags.append("analysis")
+        _write_result(workspace, task_id, "done", summary, tags=tags)
+        log.info("Analyst task %s completed", task_id)
+
+        if thread_id:
+            _update_thread_memory(thread_id, content, summary)
+
+        try:
+            try_extract_skill(summary, content)
+        except Exception as e:
+            log.warning("Skill extraction failed: %s", e)
+    else:
+        _write_result(workspace, task_id, "error", "分析返回空结果")
+        log.error("Analyst task %s failed: empty response", task_id)
+
+
+# ---------------------------------------------------------------------------
 # General handler — claude_act
 # ---------------------------------------------------------------------------
 
@@ -534,10 +624,16 @@ def _handle_general(workspace: Path, task_id: str, content: str,
     thread_history = load_thread_history(thread_id)
     thread_memory = load_thread_memory(thread_id)
 
-    summary = general_handle(
-        workspace, task_id, content, sender, thread_id,
-        thread_history=thread_history, thread_memory=thread_memory,
-    )
+    try:
+        summary = general_handle(
+            workspace, task_id, content, sender, thread_id,
+            thread_history=thread_history, thread_memory=thread_memory,
+        )
+    except ClaudeTimeoutError:
+        _write_result(workspace, task_id, "error",
+                      "任务超时（10分钟），请拆分成更小的步骤重试。")
+        log.error("Task %s timed out", task_id)
+        return
 
     if summary:
         tags = smart_classify(content, summary)
@@ -552,7 +648,7 @@ def _handle_general(workspace: Path, task_id: str, content: str,
         except Exception as e:
             log.warning("Skill extraction failed: %s", e)
     else:
-        _write_result(workspace, task_id, "error", "Claude returned empty response")
+        _write_result(workspace, task_id, "error", "Claude 返回了空结果")
         log.error("Task %s failed: empty response", task_id)
 
 

@@ -1,0 +1,56 @@
+[
+  {
+    "name": "Experience Self-Distillation",
+    "description": "Convert raw task trajectories into reusable strategic principles, then retrieve and apply them to new tasks.",
+    "file": "experience-self-distillation.md",
+    "created": "2026-03-06T21:35:14.460543",
+    "tags": [
+      "agents",
+      "self-improvement",
+      "architecture",
+      "learning"
+    ]
+  },
+  {
+    "name": "Memory Decay and Reinforcement",
+    "description": "Apply Ebbinghaus forgetting curve to agent memory — reinforce what matters, let trivia fade.",
+    "file": "memory-decay-and-reinforcement.md",
+    "created": "2026-03-06T21:35:14.461491",
+    "tags": [
+      "agents",
+      "architecture",
+      "memory",
+      "self-improvement"
+    ]
+  },
+  {
+    "name": "Reflective Self-Critique Loop",
+    "description": "Structured self-evaluation after task completion — predict outcomes, compare reality, extract delta.",
+    "file": "reflective-self-critique-loop.md",
+    "created": "2026-03-06T21:35:14.462025",
+    "tags": [
+      "agents",
+      "self-improvement",
+      "debugging",
+      "learning"
+    ]
+  },
+  {
+    "name": "Prompt Self-Mutation",
+    "description": "Systematically evolve own prompts and workflows through variation, evaluation, and selection.",
+    "file": "prompt-self-mutation.md",
+    "created": "2026-03-06T21:35:14.462552",
+    "tags": [
+      "agents",
+      "self-improvement",
+      "architecture",
+      "tool-use"
+    ]
+  },
+  {
+    "name": "Skill-Injected Specialist Agent",
+    "description": "Blueprint for creating a new domain-specific agent that auto-loads skill files as prompt context.",
+    "file": "skill-injected-specialist-agent.md",
+    "created": "2026-03-06T23:04:30.262945"
+  }
+]

@@ -113,6 +113,90 @@ class Mira:
                   self.tasks_dir, self.threads_dir, self.archive_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
+    # ------------------------------------------------------------------
+    # Task state (visible to iOS app)
+    # ------------------------------------------------------------------
+
+    def create_task(self, task_id: str, title: str, first_message: str,
+                    sender: str = "user", tags: list[str] | None = None,
+                    origin: str = "user") -> dict:
+        """Create a task file in tasks/ for iOS to display."""
+        now = _utc_iso()
+        task = {
+            "id": task_id,
+            "title": title,
+            "status": "queued",
+            "tags": tags or [],
+            "origin": origin,
+            "created_at": now,
+            "updated_at": now,
+            "messages": [
+                {"sender": sender, "content": first_message, "timestamp": now},
+            ],
+            "result_path": None,
+        }
+        self._write_task(task)
+        return task
+
+    def update_task_status(self, task_id: str, status: str,
+                           agent_message: str = "",
+                           result_path: str = ""):
+        """Update a task's status and optionally append an agent message."""
+        task = self._read_task(task_id)
+        if not task:
+            return
+        task["status"] = status
+        task["updated_at"] = _utc_iso()
+        if agent_message:
+            task["messages"].append({
+                "sender": "agent",
+                "content": agent_message,
+                "timestamp": _utc_iso(),
+            })
+        if result_path:
+            task["result_path"] = result_path
+        self._write_task(task)
+
+    def append_task_message(self, task_id: str, sender: str, content: str):
+        """Append a message to an existing task (for follow-ups)."""
+        task = self._read_task(task_id)
+        if not task:
+            return
+        task["messages"].append({
+            "sender": sender,
+            "content": content,
+            "timestamp": _utc_iso(),
+        })
+        task["updated_at"] = _utc_iso()
+        # If user sends a follow-up to a done task, reopen it
+        if sender != "agent" and task["status"] in ("done", "failed"):
+            task["status"] = "queued"
+        self._write_task(task)
+
+    def set_task_tags(self, task_id: str, tags: list[str]):
+        """Update task tags (called after smart classification)."""
+        task = self._read_task(task_id)
+        if not task:
+            return
+        task["tags"] = tags
+        self._write_task(task)
+
+    def _read_task(self, task_id: str) -> dict | None:
+        path = self.tasks_dir / f"{task_id}.json"
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def _write_task(self, task: dict):
+        path = self.tasks_dir / f"{task['id']}.json"
+        path.write_text(
+            json.dumps(task, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
     def heartbeat(self, agent_status: dict | None = None):
         """Update heartbeat so phone can check agent is alive.
 

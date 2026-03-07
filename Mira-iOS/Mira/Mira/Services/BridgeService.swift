@@ -18,6 +18,20 @@ final class BridgeService {
     var error: String?
     var debugLog: String = ""
 
+    // Task-based state (new dashboard UI)
+    var tasks: [MiraTask] = []
+    var needsInputCount: Int { tasks.filter(\.needsInput).count }
+    var activeTasks: [MiraTask] { tasks.filter(\.isActive).sorted { $0.updatedDate > $1.updatedDate } }
+    var doneTasks: [MiraTask] { tasks.filter { $0.status == "done" }.sorted { $0.updatedDate > $1.updatedDate } }
+    var todayBriefings: [MiraTask] {
+        let cal = Calendar.current
+        return tasks.filter { $0.isBriefing && cal.isDateInToday($0.createdDate) }
+    }
+    var todayJournals: [MiraTask] {
+        let cal = Calendar.current
+        return tasks.filter { $0.isJournal && cal.isDateInToday($0.createdDate) }
+    }
+
     /// Expose the base URL for file link resolution
     var bridgeBaseURL: URL? { bridgeURL }
 
@@ -39,6 +53,7 @@ final class BridgeService {
     private var heartbeatURL: URL? { bridgeURL?.appendingPathComponent("heartbeat.json") }
     private var threadsURL: URL? { bridgeURL?.appendingPathComponent("threads") }
     private var threadsIndexURL: URL? { threadsURL?.appendingPathComponent("index.json") }
+    private var tasksURL: URL? { bridgeURL?.appendingPathComponent("tasks") }
 
     // MARK: - Settings
 
@@ -130,7 +145,7 @@ final class BridgeService {
     private func ensureDirectories() {
         guard let base = bridgeURL else { return }
         let fm = FileManager.default
-        for sub in ["inbox", "outbox", "ack", "threads"] {
+        for sub in ["inbox", "outbox", "ack", "threads", "tasks"] {
             let dir = base.appendingPathComponent(sub)
             try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
@@ -160,6 +175,75 @@ final class BridgeService {
         } catch {
             self.error = "发送失败: \(error.localizedDescription)"
             log("send error: \(error)")
+        }
+    }
+
+    // MARK: - Task management
+
+    /// Create a new task and write to both inbox (for Mac) and tasks/ (for display)
+    func createTask(title: String, content: String) {
+        guard let inbox = inboxURL, let tasksDir = tasksURL else {
+            log("createTask: URLs nil")
+            return
+        }
+
+        let task = MiraTask.new(title: title, content: content, sender: senderID)
+        tasks.append(task)
+
+        // Write task JSON to tasks/ for display
+        writeTaskFile(task)
+
+        // Also write to inbox so Mac picks it up (backward compat with existing dispatch)
+        let msg = TBMessage.new(content: content, sender: senderID, threadId: task.id)
+        let ts = dateStamp()
+        let filename = "\(senderID)_\(ts)_\(msg.id).json"
+        let fileURL = inbox.appendingPathComponent(filename)
+        do {
+            let data = try encoder.encode(msg)
+            try data.write(to: fileURL, options: .atomic)
+            log("createTask: \(task.id) '\(title)'")
+        } catch {
+            self.error = "发送失败: \(error.localizedDescription)"
+            log("createTask error: \(error)")
+        }
+    }
+
+    /// Send a follow-up message to an existing task
+    func sendTaskMessage(_ taskId: String, content: String) {
+        guard let inbox = inboxURL else { return }
+        guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+
+        let now = ISO8601DateFormatter().string(from: Date())
+        let newMsg = TaskMessage(sender: senderID, content: content, timestamp: now)
+        tasks[idx].messages.append(newMsg)
+        tasks[idx].updatedAt = now
+        if tasks[idx].status == "done" || tasks[idx].status == "failed" {
+            tasks[idx].status = "queued"
+        }
+        writeTaskFile(tasks[idx])
+
+        // Also send via inbox
+        let msg = TBMessage.new(content: content, sender: senderID, threadId: taskId)
+        let ts = dateStamp()
+        let filename = "\(senderID)_\(ts)_\(msg.id).json"
+        let fileURL = inbox.appendingPathComponent(filename)
+        do {
+            let data = try encoder.encode(msg)
+            try data.write(to: fileURL, options: .atomic)
+            log("sendTaskMessage: \(taskId)")
+        } catch {
+            log("sendTaskMessage error: \(error)")
+        }
+    }
+
+    private func writeTaskFile(_ task: MiraTask) {
+        guard let tasksDir = tasksURL else { return }
+        let fileURL = tasksDir.appendingPathComponent("\(task.id).json")
+        do {
+            let data = try encoder.encode(task)
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            log("writeTaskFile error: \(error)")
         }
     }
 
@@ -216,6 +300,7 @@ final class BridgeService {
         loadAcks()
         loadHeartbeat()
         loadThreads()
+        loadTasks()
     }
 
     // MARK: - Load sent messages from inbox (persist across restarts)
@@ -352,6 +437,70 @@ final class BridgeService {
         } catch {
             // No threads file yet — that's fine
         }
+    }
+
+    // MARK: - Load tasks
+
+    private func loadTasks() {
+        guard let tasksDir = tasksURL else { return }
+        let fm = FileManager.default
+
+        // Load status.json as source of truth for task status
+        // Maps both task_id and thread_id to the real status
+        var statusMap: [String: String] = [:]
+        let statusFile = tasksDir.appendingPathComponent("status.json")
+        if fm.isReadableFile(atPath: statusFile.path),
+           let statusData = try? Data(contentsOf: statusFile),
+           let records = try? JSONSerialization.jsonObject(with: statusData) as? [[String: Any]] {
+            for rec in records {
+                guard let st = rec["status"] as? String else { continue }
+                let mapped: String
+                switch st {
+                case "error", "timeout": mapped = "failed"
+                default: mapped = st
+                }
+                if let tid = rec["task_id"] as? String { statusMap[tid] = mapped }
+                // Also map by thread_id (iOS task_id may differ from Python task_id)
+                if let threadId = rec["thread_id"] as? String, !threadId.isEmpty {
+                    statusMap[threadId] = mapped
+                }
+            }
+        }
+
+        var loaded: [MiraTask] = []
+        do {
+            let files = try fm.contentsOfDirectory(
+                at: tasksDir, includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+            for fileURL in files where fileURL.pathExtension == "json" {
+                // Skip non-task files and auto-generated content (shown as cards, not tasks)
+                let name = fileURL.deletingPathExtension().lastPathComponent
+                if name == "status" || name == "history" { continue }
+                if name.hasPrefix("briefing_") || name.hasPrefix("journal_") { continue }
+
+                // Trigger iCloud download if needed
+                if !fm.isReadableFile(atPath: fileURL.path) {
+                    try? fm.startDownloadingUbiquitousItem(at: fileURL)
+                    continue
+                }
+                do {
+                    let data = try Data(contentsOf: fileURL)
+                    var task = try decoder.decode(MiraTask.self, from: data)
+                    // Fix status from status.json if task file is stale
+                    if let trueStatus = statusMap[task.id], trueStatus != task.status {
+                        task.status = trueStatus
+                    }
+                    loaded.append(task)
+                } catch {
+                    log("loadTasks: decode failed for \(fileURL.lastPathComponent): \(error)")
+                }
+            }
+        } catch {
+            log("loadTasks error: \(error)")
+        }
+
+        tasks = loaded.sorted { $0.updatedDate > $1.updatedDate }
     }
 
     // MARK: - Helpers

@@ -97,16 +97,26 @@ def _get_api_key(provider: str) -> str:
 # Claude CLI calls
 # ---------------------------------------------------------------------------
 
+class ClaudeTimeoutError(Exception):
+    """Raised when a Claude CLI call exceeds its timeout."""
+    pass
+
+
 def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK) -> str:
-    """Call Claude CLI for thinking — no tools, just reasoning."""
+    """Call Claude CLI for thinking — no tools, just reasoning.
+
+    Raises ClaudeTimeoutError on timeout so callers can distinguish
+    timeout from a genuine empty response.
+    """
     try:
         result = subprocess.run(
-            [CLAUDE_BIN, "-p", prompt],
+            [CLAUDE_BIN, "-p", prompt, "--setting-sources", "user"],
             capture_output=True, text=True, timeout=timeout,
+            cwd="/tmp",
         )
     except subprocess.TimeoutExpired:
         log.error("claude_think timed out (%ds)", timeout)
-        return ""
+        raise ClaudeTimeoutError(f"claude_think timed out after {timeout}s")
     except FileNotFoundError:
         log.error("Claude CLI not found at %s", CLAUDE_BIN)
         return ""
@@ -119,7 +129,11 @@ def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK) -> str:
 
 
 def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT) -> str:
-    """Call Claude CLI with tool access — can read/write files, run commands."""
+    """Call Claude CLI with tool access — can read/write files, run commands.
+
+    Raises ClaudeTimeoutError on timeout so callers can distinguish
+    timeout from a genuine empty response.
+    """
     cmd = [
         CLAUDE_BIN, "-p", prompt,
         "--allowedTools",
@@ -134,7 +148,7 @@ def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT)
         )
     except subprocess.TimeoutExpired:
         log.error("claude_act timed out (%ds)", timeout)
-        return ""
+        raise ClaudeTimeoutError(f"claude_act timed out after {timeout}s")
     except FileNotFoundError:
         log.error("Claude CLI not found at %s", CLAUDE_BIN)
         return ""
