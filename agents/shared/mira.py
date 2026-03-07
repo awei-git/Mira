@@ -141,18 +141,25 @@ class Mira:
     def update_task_status(self, task_id: str, status: str,
                            agent_message: str = "",
                            result_path: str = ""):
-        """Update a task's status and optionally append an agent message."""
+        """Update a task's status and optionally append an agent message.
+
+        Also writes agent replies to a sidecar file ({task_id}.reply.json)
+        to survive iCloud sync races — iOS may overwrite the main task JSON.
+        """
         task = self._read_task(task_id)
         if not task:
             return
         task["status"] = status
         task["updated_at"] = _utc_iso()
         if agent_message:
-            task["messages"].append({
+            msg = {
                 "sender": "agent",
                 "content": agent_message,
                 "timestamp": _utc_iso(),
-            })
+            }
+            task["messages"].append(msg)
+            # Write sidecar file so iOS can recover replies lost to sync races
+            self._append_reply(task_id, msg)
         if result_path:
             task["result_path"] = result_path
         self._write_task(task)
@@ -189,6 +196,21 @@ class Mira:
             return json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
+
+    def _append_reply(self, task_id: str, msg: dict):
+        """Append an agent reply to a sidecar file immune to iCloud sync races."""
+        path = self.tasks_dir / f"{task_id}.reply.json"
+        replies = []
+        if path.exists():
+            try:
+                replies = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        replies.append(msg)
+        path.write_text(
+            json.dumps(replies, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
     def _write_task(self, task: dict):
         path = self.tasks_dir / f"{task['id']}.json"

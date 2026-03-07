@@ -36,6 +36,124 @@ def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _load_exec_history(workspace: Path) -> str:
+    """Load execution history from previous dispatch rounds."""
+    log_file = workspace / "exec_log.jsonl"
+    if not log_file.exists():
+        return ""
+    try:
+        lines = log_file.read_text(encoding="utf-8").strip().splitlines()
+        if not lines:
+            return ""
+        entries = []
+        for line in lines[-10:]:  # last 10 entries
+            entry = json.loads(line)
+            entries.append(
+                f"- Round {entry.get('round', '?')}: agent={entry.get('agent', '?')}, "
+                f"status={entry.get('status', '?')}, "
+                f"output_preview={entry.get('output_preview', '')[:200]}"
+            )
+        return "## Previous execution rounds in this task\n" + "\n".join(entries)
+    except (json.JSONDecodeError, OSError):
+        return ""
+
+
+def _append_exec_log(workspace: Path, round_num: int, agent: str,
+                     status: str, output_preview: str):
+    """Append an entry to the execution log."""
+    log_file = workspace / "exec_log.jsonl"
+    entry = {
+        "round": round_num,
+        "agent": agent,
+        "status": status,
+        "output_preview": output_preview[:300],
+        "timestamp": _utc_iso(),
+    }
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _verify_output(output: str, workspace: Path) -> str:
+    """Verify agent output claims. Returns error string if hallucination detected, empty if OK."""
+    import re
+    issues = []
+
+    # Check for claimed file paths that don't exist
+    # Match patterns like: wrote to /path/to/file, saved to /path, created /path
+    file_claims = re.findall(
+        r'(?:wrote|saved|created|写入|保存|生成|写了)\s+(?:to\s+)?[`"\']*(/[^\s`"\',:]+(?:\.\w+))',
+        output, re.IGNORECASE
+    )
+    for path in file_claims:
+        if not Path(path).exists():
+            issues.append(f"Claimed file does not exist: {path}")
+
+    # Check for workspace-relative file claims
+    rel_claims = re.findall(
+        r'(?:wrote|saved|created|写入|保存)\s+(?:to\s+)?[`"\']*(?:output|result|summary|article)[\w.]*\.\w+',
+        output, re.IGNORECASE
+    )
+    for claim in rel_claims:
+        # Extract filename
+        fname_match = re.search(r'([\w.-]+\.\w+)', claim)
+        if fname_match:
+            fname = fname_match.group(1)
+            full_path = workspace / fname
+            if not full_path.exists() and fname != "output.md":  # output.md is the output itself
+                issues.append(f"Claimed workspace file does not exist: {fname}")
+
+    # Check for "写了一篇" / "wrote an article" claims without actual content
+    wrote_article = bool(re.search(
+        r'写了[一篇个]|wrote\s+(?:a|an|the)\s+(?:article|post|essay|piece)',
+        output, re.IGNORECASE
+    ))
+    if wrote_article:
+        # If claiming to have written an article, output should be substantial
+        # (not just a summary saying "I wrote X")
+        content_lines = [l for l in output.split('\n')
+                        if l.strip() and not l.startswith('#') and not l.startswith('---')]
+        if len(content_lines) < 5 and len(output) < 500:
+            issues.append("Claims to have written an article but output is too short to contain it")
+
+    return "; ".join(issues) if issues else ""
+
+
+def _get_round_num(workspace: Path) -> int:
+    """Get the next round number for this workspace."""
+    log_file = workspace / "exec_log.jsonl"
+    if not log_file.exists():
+        return 1
+    try:
+        lines = log_file.read_text(encoding="utf-8").strip().splitlines()
+        if not lines:
+            return 1
+        last = json.loads(lines[-1])
+        return last.get("round", 0) + 1
+    except (json.JSONDecodeError, OSError):
+        return 1
+
+
+def load_task_conversation(task_id: str) -> str:
+    """Load conversation history from the task JSON file."""
+    task_file = MIRA_DIR / "tasks" / f"{task_id}.json"
+    if not task_file.exists():
+        return ""
+    try:
+        task = json.loads(task_file.read_text(encoding="utf-8"))
+        messages = task.get("messages", [])
+        if len(messages) <= 1:
+            return ""  # No history beyond the current message
+        lines = ["## Conversation history in this task\n"]
+        for msg in messages:
+            sender = msg.get("sender", "?")
+            content = msg.get("content", "")
+            ts = msg.get("timestamp", "")[:16]
+            lines.append(f"**[{ts}] {sender}**: {content}\n")
+        return "\n".join(lines)
+    except (json.JSONDecodeError, OSError):
+        return ""
+
+
 def load_thread_history(thread_id: str, limit: int = 20) -> str:
     """Load recent messages from a thread for context injection."""
     if not thread_id:
@@ -177,6 +295,10 @@ def main():
     msg_sender = msg_data.get("sender", "unknown")
     thread_id = args.thread_id or msg_data.get("thread_id", "")
 
+    # Load conversation history and execution history for context
+    conversation = load_task_conversation(args.task_id)
+    exec_history = _load_exec_history(workspace)
+
     # --- Check for pending plan (resume after user confirmation) ---
     pending_plan_file = workspace / "pending_plan.json"
     if pending_plan_file.exists():
@@ -191,7 +313,7 @@ def main():
             log.warning("Failed to load pending plan, re-planning: %s", e)
 
     # --- Plan and execute via LLM ---
-    plan = _plan_task(msg_content)
+    plan = _plan_task(msg_content, conversation=conversation, exec_history=exec_history)
     log.info("Plan: %s", plan)
 
     _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id)
@@ -203,7 +325,7 @@ def main():
 # LLM-based task planning
 # ---------------------------------------------------------------------------
 
-def _plan_task(content: str) -> list[dict]:
+def _plan_task(content: str, conversation: str = "", exec_history: str = "") -> list[dict]:
     """Use LLM to decompose a request into an ordered list of steps.
 
     Each step is {"agent": "<name>", "instruction": "<what to do>"}.
@@ -212,6 +334,23 @@ def _plan_task(content: str) -> list[dict]:
 
     Returns a list of 1+ steps. The output of step N is available to step N+1.
     """
+    conversation_context = ""
+    context_parts = []
+    if exec_history:
+        context_parts.append(exec_history)
+    if conversation:
+        context_parts.append(f"""
+IMPORTANT: This is a FOLLOW-UP message in an ongoing conversation. Read the history carefully.
+If the user's intent is clear from context, DO NOT use clarify — just execute the task.
+Only use clarify if the request is genuinely ambiguous even with the conversation history.
+If a previous round already produced content, reference it in your plan (e.g. use publish to publish existing output).
+
+{conversation}""")
+    if context_parts:
+        conversation_context = "\n\n".join(context_parts) + f"\n\n---\nLatest message from user: {content[:500]}"
+    else:
+        conversation_context = f"User request: {content[:500]}"
+
     prompt = f"""You are a task planner. Decompose this user request into ordered execution steps.
 
 Available agents:
@@ -227,9 +366,10 @@ Rules:
 - If the request needs content CREATED then PUBLISHED, use writing first then publish.
 - If publishing existing content, just use publish.
 - Talking ABOUT writing (e.g. "写作技巧") is general, not writing.
-- If the request is ambiguous or missing critical info, use clarify.
+- AVOID using clarify if the user's intent is reasonably clear from context. Prefer to just do it.
 - If the task is COMPLEX (building a system, creating an app, multi-step engineering, would take >5 min), ALWAYS insert a confirm step FIRST that summarizes your execution plan, estimated time, and asks the user to confirm. This lets the user adjust scope before you start.
 - Most simple requests need only 1 step. Use multiple steps only when truly needed.
+- If the user asked you to write something AND publish it, use writing + publish steps.
 
 Output ONLY a JSON array. Each element: {{"agent": "...", "instruction": "..."}}
 The instruction should be a clear directive for that agent, in the user's language.
@@ -238,12 +378,11 @@ Examples:
 - "今天有什么新闻" → [{{"agent": "briefing", "instruction": "生成今日新闻简报"}}]
 - "写一篇关于AI的文章" → [{{"agent": "writing", "instruction": "写一篇关于AI的文章"}}]
 - "写一个Hello World发到substack" → [{{"agent": "writing", "instruction": "写一篇简短的Hello World文章"}}, {{"agent": "publish", "instruction": "将上一步写好的文章发布到Substack"}}]
+- "今天有没有什么发substack的内容啊？写点什么吧？" → [{{"agent": "writing", "instruction": "基于今天的briefing内容，选一个有意思的话题写一篇适合发Substack的文章"}}, {{"agent": "publish", "instruction": "将上一步写好的文章发布到Substack"}}]
 - "把自由意志那篇发到substack" → [{{"agent": "publish", "instruction": "将'自由意志'文章发布到Substack"}}]
-- "发个东西到substack" → [{{"agent": "clarify", "instruction": "你想发什么内容到Substack？是已有的文章还是需要我先写一篇？"}}]
 - "分析一下AI agent市场" → [{{"agent": "analyst", "instruction": "分析AI agent市场的竞争格局、主要玩家和趋势"}}]
-- "帮我搭一个股票推荐系统" → [{{"agent": "confirm", "instruction": "这个任务需要：\\n1. 查看secrets里可用的API\\n2. 设计数据获取+分析架构\\n3. 实现完整agent代码\\n预计耗时15-20分钟。要继续吗？"}}, {{"agent": "general", "instruction": "搭建股票推荐系统..."}}]
 
-User request: {content[:500]}
+{conversation_context}
 
 JSON:"""
 
@@ -273,6 +412,7 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
     """Execute a multi-step plan. Each step's output feeds into the next."""
     prev_output = None
     is_multi = len(plan) > 1
+    round_num = _get_round_num(workspace)
 
     for i, step in enumerate(plan):
         agent = step["agent"]
@@ -286,8 +426,9 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
 
         if agent == "clarify":
             (workspace / "output.md").write_text(instruction, encoding="utf-8")
-            _write_result(workspace, task_id, "done", instruction,
+            _write_result(workspace, task_id, "needs-input", instruction,
                           tags=["clarify"])
+            _append_exec_log(workspace, round_num, "clarify", "needs-input", instruction)
             return
 
         elif agent == "confirm":
@@ -301,6 +442,7 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
             (workspace / "output.md").write_text(instruction, encoding="utf-8")
             _write_result(workspace, task_id, "needs-input", instruction,
                           tags=["confirm"])
+            _append_exec_log(workspace, round_num, "confirm", "needs-input", instruction)
             log.info("Task %s waiting for user confirmation", task_id)
             return
 
@@ -325,6 +467,8 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
             try:
                 r = json.loads(result_file.read_text(encoding="utf-8"))
                 if r.get("status") == "error":
+                    _append_exec_log(workspace, round_num, agent, "error",
+                                     r.get("summary", ""))
                     log.error("Step %d/%d failed, aborting plan: %s", i+1, len(plan), r.get("summary", ""))
                     return
             except (json.JSONDecodeError, OSError):
@@ -334,6 +478,19 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
         output_file = workspace / "output.md"
         if output_file.exists():
             prev_output = output_file.read_text(encoding="utf-8")
+            # Verify output — detect hallucinated file/action claims
+            verification = _verify_output(prev_output, workspace)
+            if verification:
+                log.warning("HALLUCINATION DETECTED: %s", verification)
+                prev_output += f"\n\n⚠️ VERIFICATION FAILED: {verification}"
+                _append_exec_log(workspace, round_num, agent, "unverified",
+                                 f"HALLUCINATION: {verification}")
+            else:
+                _append_exec_log(workspace, round_num, agent, "done",
+                                 prev_output[:300])
+            # Save numbered copy so future rounds don't lose it
+            numbered = workspace / f"output_r{round_num}.md"
+            shutil.copy2(output_file, numbered)
 
         # For multi-step plans, delete intermediate result.json so next step writes fresh
         if is_multi and not is_last and result_file.exists():

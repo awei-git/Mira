@@ -4,6 +4,7 @@ struct TaskDetailView: View {
     var bridge: BridgeService
     let taskId: String
     @State private var replyText = ""
+    @FocusState private var inputFocused: Bool
 
     private var task: MiraTask? {
         bridge.tasks.first { $0.id == taskId }
@@ -80,15 +81,18 @@ struct TaskDetailView: View {
                 // Reply input
                 HStack(spacing: 8) {
                     TextField("回复...", text: $replyText, axis: .vertical)
+                        .focused($inputFocused)
                         .textFieldStyle(.plain)
                         .lineLimit(1...5)
                         .padding(10)
                         .background(.quaternary, in: RoundedRectangle(cornerRadius: 20))
 
                     Button {
-                        guard !replyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                        bridge.sendTaskMessage(taskId, content: replyText)
+                        let text = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !text.isEmpty else { return }
                         replyText = ""
+                        inputFocused = false
+                        bridge.sendTaskMessage(taskId, content: text)
                     } label: {
                         Image(systemName: "arrow.up.circle.fill")
                             .font(.title2)

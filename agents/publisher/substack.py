@@ -76,6 +76,106 @@ Markdown:
     return "\n".join(html_lines)
 
 
+def _html_to_prosemirror(html: str) -> dict:
+    """Convert simple HTML to Substack ProseMirror JSON document format."""
+    import re as _re
+    content = []
+    # Split by top-level tags
+    tag_pattern = _re.compile(r'<(h[1-6]|p|blockquote|ul|ol|hr)(?:\s[^>]*)?>(.+?)</\1>|<hr\s*/?>',
+                              _re.DOTALL)
+
+    for match in tag_pattern.finditer(html):
+        if match.group(0).startswith('<hr'):
+            content.append({"type": "horizontal_rule"})
+            continue
+        tag = match.group(1)
+        inner = match.group(2).strip()
+
+        if tag in ('h1', 'h2'):
+            text_nodes = _parse_inline(inner)
+            content.append({
+                "type": "heading",
+                "attrs": {"level": 2},
+                "content": text_nodes,
+            })
+        elif tag == 'h3':
+            text_nodes = _parse_inline(inner)
+            content.append({
+                "type": "heading",
+                "attrs": {"level": 3},
+                "content": text_nodes,
+            })
+        elif tag == 'blockquote':
+            content.append({
+                "type": "blockquote",
+                "content": [{"type": "paragraph", "content": _parse_inline(inner)}],
+            })
+        elif tag == 'p':
+            if inner == '---':
+                content.append({"type": "horizontal_rule"})
+            else:
+                text_nodes = _parse_inline(inner)
+                content.append({
+                    "type": "paragraph",
+                    "content": text_nodes,
+                })
+        # Lists: simplified — treat each <li> as a paragraph for now
+        elif tag in ('ul', 'ol'):
+            list_type = "bullet_list" if tag == 'ul' else "ordered_list"
+            items = _re.findall(r'<li>(.*?)</li>', inner, _re.DOTALL)
+            list_items = []
+            for item in items:
+                list_items.append({
+                    "type": "list_item",
+                    "content": [{"type": "paragraph", "content": _parse_inline(item.strip())}],
+                })
+            if list_items:
+                content.append({"type": list_type, "content": list_items})
+
+    if not content:
+        # Fallback: treat entire html as a single paragraph
+        content = [{"type": "paragraph", "content": [{"type": "text", "text": html[:5000]}]}]
+
+    return {"type": "doc", "content": content}
+
+
+def _parse_inline(html_text: str) -> list:
+    """Parse inline HTML (bold, italic, links) into ProseMirror text nodes."""
+    import re as _re
+    nodes = []
+    # Simple pattern: process <strong>, <em>, <a>, and plain text
+    parts = _re.split(r'(<strong>.*?</strong>|<em>.*?</em>|<a\s+href="[^"]*">.*?</a>)',
+                       html_text, flags=_re.DOTALL)
+    for part in parts:
+        if not part:
+            continue
+        m_strong = _re.match(r'<strong>(.*?)</strong>', part, _re.DOTALL)
+        m_em = _re.match(r'<em>(.*?)</em>', part, _re.DOTALL)
+        m_a = _re.match(r'<a\s+href="([^"]*)">(.*?)</a>', part, _re.DOTALL)
+        if m_strong:
+            # Strip any nested tags for simplicity
+            text = _re.sub(r'<[^>]+>', '', m_strong.group(1))
+            nodes.append({"type": "text", "marks": [{"type": "bold"}], "text": text})
+        elif m_em:
+            text = _re.sub(r'<[^>]+>', '', m_em.group(1))
+            nodes.append({"type": "text", "marks": [{"type": "italic"}], "text": text})
+        elif m_a:
+            href, text = m_a.group(1), _re.sub(r'<[^>]+>', '', m_a.group(2))
+            nodes.append({
+                "type": "text",
+                "marks": [{"type": "link", "attrs": {"href": href}}],
+                "text": text,
+            })
+        else:
+            # Strip remaining tags, keep text
+            text = _re.sub(r'<[^>]+>', '', part)
+            if text:
+                nodes.append({"type": "text", "text": text})
+    if not nodes:
+        nodes = [{"type": "text", "text": " "}]
+    return nodes
+
+
 def publish_to_substack(title: str, subtitle: str,
                         article_text: str, workspace: Path) -> str:
     """Publish an article to Substack. Returns status message."""
@@ -113,16 +213,17 @@ def publish_to_substack(title: str, subtitle: str,
         f"<h1>{title}</h1>\n{body_html}", encoding="utf-8"
     )
 
-    # Step 1: Create draft
+    # Step 1: Create draft with actual content
     base_url = f"https://{subdomain}.substack.com"
     draft_url = f"{base_url}/api/v1/drafts"
+
+    # Build ProseMirror doc from HTML paragraphs
+    doc_content = _html_to_prosemirror(body_html)
 
     draft_payload = {
         "draft_title": title,
         "draft_subtitle": subtitle or "",
-        "draft_body": json.dumps({"type": "doc", "content": [
-            {"type": "paragraph", "content": [{"type": "text", "text": "placeholder"}]}
-        ]}),
+        "draft_body": json.dumps(doc_content),
         "draft_bylines": [],
         "type": "newsletter",
     }
@@ -134,7 +235,7 @@ def publish_to_substack(title: str, subtitle: str,
     }
 
     try:
-        # Create the draft
+        # Create the draft with full content
         req = urllib.request.Request(
             draft_url,
             data=json.dumps(draft_payload).encode("utf-8"),
@@ -150,24 +251,7 @@ def publish_to_substack(title: str, subtitle: str,
 
         log.info("Created Substack draft: id=%s", draft_id)
 
-        # Step 2: Update draft with actual HTML content
-        update_url = f"{base_url}/api/v1/drafts/{draft_id}"
-        update_payload = {
-            "draft_title": title,
-            "draft_subtitle": subtitle or "",
-            "draft_body_html": body_html,
-        }
-
-        req = urllib.request.Request(
-            update_url,
-            data=json.dumps(update_payload).encode("utf-8"),
-            headers=headers,
-            method="PUT",
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            resp.read()
-
-        # Step 3: Publish the draft
+        # Step 2: Publish the draft
         publish_url = f"{base_url}/api/v1/drafts/{draft_id}/publish"
         publish_payload = {
             "send": True,  # Send to email subscribers
