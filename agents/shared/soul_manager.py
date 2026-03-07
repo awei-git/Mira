@@ -5,20 +5,21 @@ from datetime import datetime
 from pathlib import Path
 
 from config import (
-    IDENTITY_FILE, MEMORY_FILE, INTERESTS_FILE,
-    SKILLS_DIR, SKILLS_INDEX, SKILLS_FILE, MAX_MEMORY_LINES,
-    PLAYGROUND_ROOT,
+    IDENTITY_FILE, MEMORY_FILE, INTERESTS_FILE, WORLDVIEW_FILE,
+    READING_NOTES_DIR, SKILLS_DIR, SKILLS_INDEX, SKILLS_FILE,
+    MAX_MEMORY_LINES, MIRA_ROOT,
 )
 
 log = logging.getLogger("mira")
 
 
 def load_soul() -> dict:
-    """Load the full soul context. Returns dict with identity, memory, interests, skills."""
+    """Load the full soul context."""
     return {
         "identity": _read_or_default(IDENTITY_FILE, "No identity defined yet."),
         "memory": _read_or_default(MEMORY_FILE, "No memories yet."),
         "interests": _read_or_default(INTERESTS_FILE, "No interests defined yet."),
+        "worldview": _read_or_default(WORLDVIEW_FILE, "No worldview yet."),
         "skills": load_skills_summary(),
     }
 
@@ -28,6 +29,8 @@ def format_soul(soul: dict) -> str:
     parts = [
         "# My Identity\n",
         soul["identity"],
+        "\n\n# My Worldview\n",
+        soul["worldview"],
         "\n\n# My Memory\n",
         soul["memory"],
         "\n\n# My Current Interests\n",
@@ -92,6 +95,100 @@ def update_interests(new_content: str):
     INTERESTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     INTERESTS_FILE.write_text(new_content, encoding="utf-8")
     log.info("Interests updated")
+
+
+# ---------------------------------------------------------------------------
+# Worldview
+# ---------------------------------------------------------------------------
+
+def update_worldview(new_content: str):
+    """Replace worldview file (used by reflect)."""
+    WORLDVIEW_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WORLDVIEW_FILE.write_text(new_content, encoding="utf-8")
+    log.info("Worldview updated (%d lines)", new_content.count("\n"))
+
+
+# ---------------------------------------------------------------------------
+# Reading Notes
+# ---------------------------------------------------------------------------
+
+def save_reading_note(title: str, reflection: str):
+    """Save a personal reading reflection after deep dive."""
+    READING_NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+    slug = title.lower().replace(" ", "-")[:40]
+    slug = "".join(c for c in slug if c.isalnum() or c == "-")
+    path = READING_NOTES_DIR / f"{today}_{slug}.md"
+    path.write_text(
+        f"# Reading Note: {title}\n\n*{today}*\n\n{reflection}",
+        encoding="utf-8",
+    )
+    log.info("Reading note saved: %s", path.name)
+    return path
+
+
+def load_recent_reading_notes(days: int = 14) -> str:
+    """Load recent reading notes for use in reflect/journal."""
+    if not READING_NOTES_DIR.exists():
+        return ""
+    from datetime import timedelta
+    cutoff = datetime.now() - timedelta(days=days)
+    texts = []
+    for path in sorted(READING_NOTES_DIR.glob("*.md")):
+        try:
+            date_str = path.stem[:10]
+            file_date = datetime.strptime(date_str, "%Y-%m-%d")
+            if file_date >= cutoff:
+                content = path.read_text(encoding="utf-8")
+                texts.append(content[:1500])
+        except ValueError:
+            continue
+    return "\n\n---\n\n".join(texts) if texts else ""
+
+
+def detect_recurring_themes(days: int = 7) -> list[str]:
+    """Scan recent journals + reading notes for recurring themes.
+
+    Returns a list of theme strings that appear in 3+ entries.
+    Simple keyword frequency approach — good enough to seed autonomous writing.
+    """
+    from collections import Counter
+    import re
+
+    texts = []
+    # Gather journal entries
+    journal_dir = WORLDVIEW_FILE.parent / "journal"
+    if journal_dir.exists():
+        from datetime import timedelta
+        cutoff = datetime.now() - timedelta(days=days)
+        for path in sorted(journal_dir.glob("*.md")):
+            try:
+                date_str = path.stem[:10]
+                file_date = datetime.strptime(date_str, "%Y-%m-%d")
+                if file_date >= cutoff:
+                    texts.append(path.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+
+    # Gather reading notes
+    notes = load_recent_reading_notes(days=days)
+    if notes:
+        texts.append(notes)
+
+    if not texts:
+        return []
+
+    # Extract significant phrases (simple: lines that start with "-" or contain key patterns)
+    combined = "\n".join(texts)
+    # Look for concepts mentioned multiple times across entries
+    # Extract capitalized concepts, quoted terms, and bold terms
+    concepts = re.findall(r'\*\*(.+?)\*\*', combined)
+    concepts += re.findall(r'"(.+?)"', combined)
+    concepts += re.findall(r'「(.+?)」', combined)
+
+    # Count occurrences (case-insensitive)
+    counter = Counter(c.lower().strip() for c in concepts if len(c) > 3)
+    return [theme for theme, count in counter.most_common(10) if count >= 3]
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +295,7 @@ _ACTIONABLE_TAGS = {"writing", "craft", "fiction", "dialogue", "video", "editing
                     "agents", "coding", "architecture", "tool-use", "debugging"}
 
 # CLAUDE.md lives at MtJoy root so all Claude Code sessions in MtJoy see it
-_CLAUDE_MD = PLAYGROUND_ROOT.parent / "CLAUDE.md"
+_CLAUDE_MD = MIRA_ROOT.parent / "CLAUDE.md"
 
 
 def _sync_skills_to_claude_md():

@@ -150,7 +150,7 @@ class TaskManager:
         completed = []
 
         for rec in self._records:
-            if rec.status in ("done", "error", "timeout"):
+            if rec.status in ("done", "error", "timeout", "needs-input"):
                 continue
 
             # Check if process is still alive
@@ -275,6 +275,26 @@ class TaskManager:
     def is_dispatched(self, msg_id: str) -> bool:
         """Check if a message already has a task (any status)."""
         return any(r.msg_id == msg_id for r in self._records)
+
+    def find_failed_task(self, task_id: str) -> TaskRecord | None:
+        """Find a failed or needs-input task by task_id (for retry)."""
+        for r in self._records:
+            if r.task_id == task_id and r.status in ("done", "error", "timeout", "needs-input"):
+                return r
+        return None
+
+    def reset_for_retry(self, task_id: str) -> bool:
+        """Remove a completed/failed task record so it can be re-dispatched.
+
+        Returns True if the record was found and removed.
+        """
+        for i, r in enumerate(self._records):
+            if r.task_id == task_id:
+                self._records.pop(i)
+                self._save_status()
+                log.info("Reset task %s for retry", task_id)
+                return True
+        return False
 
     def get_active_count(self) -> int:
         """Number of currently running tasks."""

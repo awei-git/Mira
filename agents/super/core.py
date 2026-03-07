@@ -23,18 +23,20 @@ sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 sys.path.insert(0, str(_AGENTS_DIR / "explorer"))
 
 from config import (
-    PLAYGROUND_ROOT, WORKSPACE_DIR, BRIEFINGS_DIR, LOGS_DIR, STATE_FILE,
+    MIRA_ROOT, WORKSPACE_DIR, BRIEFINGS_DIR, LOGS_DIR, STATE_FILE,
     NOTES_INBOX_FOLDER, NOTES_BRIEFING_FOLDER, NOTES_OUTPUT_FOLDER,
     EXPLORE_TIMES, EXPLORE_WINDOW_MINUTES, REFLECT_DAY, REFLECT_TIME,
     MAX_BRIEFING_ITEMS, MAX_DEEP_DIVES, MIRA_DIR, CLEANUP_DAYS,
     JOURNAL_DIR, JOURNAL_TIME, SKILLS_INDEX, WRITINGS_OUTPUT_DIR, WRITINGS_DIR,
+    ANALYST_TIME, ANALYST_BUSINESS_DAYS_ONLY,
 )
 from notes_bridge import check_inbox, create_note
 from mira import Mira
 from task_manager import TaskManager, TASKS_DIR
 from soul_manager import (
     load_soul, format_soul, append_memory, update_memory, update_interests,
-    save_skill,
+    update_worldview, save_skill, save_reading_note, load_recent_reading_notes,
+    detect_recurring_themes,
 )
 from fetcher import fetch_all
 from sub_agent import claude_think, claude_act
@@ -43,7 +45,8 @@ from writing_workflow import (
 )
 from prompts import (
     respond_prompt, explore_prompt, deep_dive_prompt, reflect_prompt,
-    journal_prompt,
+    journal_prompt, internalize_prompt, autonomous_writing_prompt,
+    worldview_evolution_prompt,
 )
 
 log = logging.getLogger("mira")
@@ -102,14 +105,26 @@ def do_talk():
         content = task_mgr.get_reply_content(rec)
         # Append compact status footer so user always knows agent state
         footer = _status_footer(task_mgr)
-        if rec.status == "done":
+        if rec.status == "needs-input":
+            # Task wants user confirmation before proceeding
+            bridge.reply(rec.msg_id, rec.sender, content + footer, thread_id=rec.thread_id)
+            bridge.update_task_status(rec.task_id, "needs-input", agent_message=content)
+            if rec.tags:
+                bridge.set_task_tags(rec.task_id, rec.tags)
+            log.info("Mira [%s] needs user input: %s", rec.task_id, content[:80])
+        elif rec.status == "done":
             bridge.reply(rec.msg_id, rec.sender, content + footer, thread_id=rec.thread_id)
             bridge.ack(rec.msg_id, "done")
+            # Update task state for iOS
+            bridge.update_task_status(rec.task_id, "done", agent_message=content)
+            if rec.tags:
+                bridge.set_task_tags(rec.task_id, rec.tags)
             log.info("Mira [%s] task done, reply sent", rec.task_id)
         elif rec.status in ("error", "timeout"):
             error_msg = f"处理失败: {rec.summary}" if rec.summary else "处理失败，请稍后重试。"
             bridge.reply(rec.msg_id, rec.sender, error_msg + footer, thread_id=rec.thread_id)
             bridge.ack(rec.msg_id, "error")
+            bridge.update_task_status(rec.task_id, "failed", agent_message=error_msg)
             log.warning("Mira [%s] task %s: %s", rec.task_id, rec.status, rec.summary)
 
     # --- Phase B: Dispatch new messages to background workers ---
@@ -132,17 +147,64 @@ def do_talk():
             _handle_meta_command(bridge, msg, msg_path, task_mgr=task_mgr)
             continue
 
+        # --- Retry / follow-up on existing task ---
+        # When iOS sends a follow-up, thread_id = original task_id
+        if msg.thread_id:
+            old_rec = task_mgr.find_failed_task(msg.thread_id)
+            if old_rec:
+                log.info("Mira [%s] is a retry/follow-up for task %s", msg.id, msg.thread_id)
+                # Reuse the original workspace
+                msg_workspace = Path(old_rec.workspace) if old_rec.workspace else TASKS_DIR / _talk_slug(msg.content, msg.thread_id)
+                # Remove old record so dispatch() won't see it as busy
+                task_mgr.reset_for_retry(msg.thread_id)
+                bridge.ack(msg.id, "received")
+                bridge.update_task_status(msg.thread_id, "working")
+                # Use original task_id for dispatch (overwrite msg.id)
+                msg.id = msg.thread_id
+                task_id = task_mgr.dispatch(msg, msg_workspace)
+                if task_id:
+                    bridge.ack(msg.id, "processing")
+                    bridge.mark_processed(msg_path)
+                elif task_mgr.is_busy():
+                    log.info("Mira [%s] retry queued (agent busy)", msg.id)
+                    break
+                else:
+                    bridge.reply(msg.id, msg.sender, "重试分发失败，请稍后再试。",
+                                thread_id=msg.thread_id)
+                    bridge.mark_processed(msg_path)
+                continue
+
+        # If iOS already created a task (thread_id starts with "task_"), reuse it
+        effective_task_id = msg.thread_id if msg.thread_id.startswith("task_") else msg.id
+
         # Each message gets its own workspace under Mira/tasks/
-        slug = _talk_slug(msg.content, msg.id)
+        slug = _talk_slug(msg.content, effective_task_id)
         msg_workspace = TASKS_DIR / slug
 
         bridge.ack(msg.id, "received")
+
+        if effective_task_id == msg.id:
+            # No iOS task file — create one
+            task_title = msg.content[:50].strip()
+            bridge.create_task(
+                task_id=msg.id,
+                title=task_title,
+                first_message=msg.content,
+                sender=msg.sender,
+            )
+        else:
+            # iOS already created the task file; just update status
+            bridge.update_task_status(effective_task_id, "queued")
+
+        # Use the effective task_id for dispatch
+        msg.id = effective_task_id
 
         # Dispatch to background worker (returns immediately)
         # Only one Claude Code instance at a time — if busy, leave message for next cycle
         task_id = task_mgr.dispatch(msg, msg_workspace)
         if task_id:
             bridge.ack(msg.id, "processing")
+            bridge.update_task_status(effective_task_id, "working")
             bridge.mark_processed(msg_path)
         elif task_mgr.is_busy():
             # Busy — don't mark processed, will retry next launchd cycle
@@ -456,14 +518,8 @@ def do_explore():
     # 5. Push briefing to Apple Notes + Mira
     create_note(NOTES_BRIEFING_FOLDER, f"Briefing {today}", briefing)
 
-    # Post to Mira so user can read on phone
-    try:
-        bridge = Mira()
-        # Truncate for Mira (keep it readable on phone)
-        tb_briefing = briefing if len(briefing) < 3000 else briefing[:3000] + "\n\n... (truncated)"
-        bridge.post(f"📋 Briefing {today}\n\n{tb_briefing}")
-    except Exception as e:
-        log.warning("Failed to post briefing to Mira: %s", e)
+    # Briefing is displayed as a card in Today (from .md file)
+    # No need to create a task — that just pollutes the task list
 
     # 6. Check for deep-dive candidate
     dive = _extract_deep_dive(briefing)
@@ -519,6 +575,104 @@ def _do_deep_dive(soul_ctx: str, dive: dict):
         save_skill(name, desc, content)
         append_memory(f"Learned new skill from deep dive: {name}")
 
+    # --- Internalization: write a personal reading reflection ---
+    try:
+        soul = load_soul()
+        soul_ctx_full = format_soul(soul)
+        intern_prompt = internalize_prompt(soul_ctx_full, dive["title"], result[:3000])
+        reflection = claude_think(intern_prompt, timeout=60)
+        if reflection:
+            save_reading_note(dive["title"], reflection)
+            append_memory(f"Reading reflection on '{dive['title']}': {reflection[:100]}")
+            log.info("Internalization note saved for: %s", dive["title"])
+    except Exception as e:
+        log.warning("Internalization failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# ANALYST mode — daily market analysis briefing (business days)
+# ---------------------------------------------------------------------------
+
+def do_analyst():
+    """Run the analyst agent to produce a daily analysis briefing.
+
+    Fetches recent feeds, runs the analyst with soul context + skills,
+    saves output to artifacts/briefings/ so TodayView picks it up.
+    """
+    log.info("Starting daily analyst briefing")
+    state = load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    soul = load_soul()
+    soul_ctx = format_soul(soul)
+
+    # Load analyst skills
+    analyst_skills_dir = _AGENTS_DIR / "analyst" / "skills"
+    skills_ctx = ""
+    if analyst_skills_dir.exists():
+        parts = []
+        for path in sorted(analyst_skills_dir.glob("*.md")):
+            content = path.read_text(encoding="utf-8").strip()
+            if content:
+                parts.append(content)
+        skills_ctx = "\n\n---\n\n".join(parts)
+
+    # Gather recent briefings for context
+    recent = _gather_recent_briefings(days=3)
+
+    # Build analyst prompt
+    prompt = f"""你是一个专业的市场分析师。以下是你的身份背景:
+{soul_ctx[:800]}
+
+## 你的分析能力
+{skills_ctx[:2000]}
+
+## 最近的 briefing 内容 (供参考趋势)
+{recent[:2000]}
+
+## 今日任务
+
+请生成今天的市场分析日报，包含:
+
+1. **市场动态** — 今天值得关注的市场变化、新闻、数据
+2. **趋势信号** — 正在形成或加速的趋势（技术、商业、政策）
+3. **投资/商业机会** — 基于你的分析，有哪些值得关注的机会
+4. **风险提示** — 需要警惕的风险信号
+5. **推荐关注** — 今天最值得深入了解的 1-2 个话题，附简要理由
+
+要求:
+- 用中文输出
+- Markdown 格式
+- 分析要有深度，不是简单的新闻复述
+- 给出你自己的判断和推荐
+- 标题用 "# {today} 市场分析日报"
+"""
+
+    result = claude_think(prompt, timeout=300)
+
+    if not result:
+        log.error("Analyst briefing failed: empty response")
+        return
+
+    # Save to artifacts/briefings for TodayView
+    mira_briefings = MIRA_DIR / "artifacts" / "briefings"
+    mira_briefings.mkdir(parents=True, exist_ok=True)
+    briefing_path = mira_briefings / f"{today}_analyst.md"
+    briefing_path.write_text(result, encoding="utf-8")
+    log.info("Analyst briefing saved: %s", briefing_path.name)
+
+    # Also save to main briefings dir
+    BRIEFINGS_DIR.mkdir(parents=True, exist_ok=True)
+    (BRIEFINGS_DIR / f"{today}_analyst.md").write_text(result, encoding="utf-8")
+
+    append_memory(f"Generated daily analyst briefing for {today}")
+
+    # Mark as done for today
+    state[f"analyst_{today}"] = True
+    save_state(state)
+
+    log.info("Analyst briefing complete")
+
 
 # ---------------------------------------------------------------------------
 # REFLECT mode — consolidate memory, update interests, self-initiate
@@ -556,6 +710,19 @@ def do_reflect():
     if memory_section:
         update_memory(f"# Memory\n\n{memory_section}")
         log.info("Memory consolidated from reflection")
+
+    # --- Evolve worldview ---
+    try:
+        recent_reading = load_recent_reading_notes(days=14)
+        from config import WORLDVIEW_FILE
+        current_wv = WORLDVIEW_FILE.read_text(encoding="utf-8") if WORLDVIEW_FILE.exists() else ""
+        wv_prompt = worldview_evolution_prompt(soul_ctx, current_wv, recent_reading, recent_work)
+        new_worldview = claude_think(wv_prompt, timeout=120)
+        if new_worldview and len(new_worldview) > 100:
+            update_worldview(new_worldview)
+            log.info("Worldview evolved from reflection")
+    except Exception as e:
+        log.warning("Worldview evolution failed: %s", e)
 
     if project_section and "nothing right now" not in project_section.lower():
         # The agent wants to start something on its own
@@ -638,23 +805,104 @@ def do_journal():
         return
 
     # Save journal
-    journal_path.write_text(
-        f"# Journal {today}\n\n{journal_text}",
-        encoding="utf-8",
-    )
+    journal_content = f"# Journal {today}\n\n{journal_text}"
+    journal_path.write_text(journal_content, encoding="utf-8")
     log.info("Journal saved: %s", journal_path.name)
 
-    # Post to Mira
-    bridge = Mira()
-    bridge.post(f"📔 Daily Journal — {today}\n\n{journal_text}")
+    # Copy to briefings dir so iOS can read it (same synced folder)
+    mira_briefings = MIRA_DIR / "artifacts" / "briefings"
+    mira_briefings.mkdir(parents=True, exist_ok=True)
+    (mira_briefings / f"{today}_journal.md").write_text(journal_content, encoding="utf-8")
+
+    # Journal is displayed as a briefing card in Today (from .md file)
+    # No need to create a task — that just pollutes the task list
 
     # Update memory
     append_memory(f"Wrote daily journal for {today}")
+
+    # --- Autonomous writing check: does Mira have something to say? ---
+    try:
+        _check_autonomous_writing(soul_ctx, bridge, journal_text)
+    except Exception as e:
+        log.warning("Autonomous writing check failed: %s", e)
 
     # Mark done in state
     state = load_state()
     state[f"journal_{today}"] = datetime.now().isoformat()
     save_state(state)
+
+
+def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
+    """Check if Mira has accumulated enough insight to write something on her own.
+
+    Runs after daily journal. If Mira decides she has something to say,
+    creates an auto-task and dispatches the writing pipeline.
+    """
+    # Detect recurring themes across recent journals + reading notes
+    themes = detect_recurring_themes(days=7)
+    recent_reading = load_recent_reading_notes(days=7)
+
+    # Ask Mira if she wants to write
+    prompt = autonomous_writing_prompt(
+        soul_ctx,
+        recurring_themes="\n".join(f"- {t}" for t in themes) if themes else "",
+        recent_reading=recent_reading[:2000],
+        recent_journal=recent_journal[:1500],
+    )
+    result = claude_think(prompt, timeout=60)
+    if not result:
+        return
+
+    # Parse JSON response
+    try:
+        match = re.search(r'\{.*\}', result, re.DOTALL)
+        if not match:
+            return
+        decision = json.loads(match.group())
+    except (json.JSONDecodeError, AttributeError):
+        return
+
+    if not decision.get("should_write"):
+        log.info("Autonomous writing check: Mira chose not to write (%s)",
+                 decision.get("reason", "")[:80])
+        return
+
+    # Mira wants to write!
+    title = decision.get("title", "Untitled")
+    thesis = decision.get("thesis", "")
+    outline = decision.get("outline", "")
+    writing_type = decision.get("type", "essay")
+    language = decision.get("language", "mixed")
+
+    log.info("Autonomous writing triggered: '%s' [%s]", title, writing_type)
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    task_id = f"autowrite_{today}"
+
+    # Create task visible to iOS
+    content = f"{title}\n\n{thesis}\n\n{outline}"
+    bridge.create_task(
+        task_id=task_id,
+        title=f"Mira writes: {title}",
+        first_message=f"我想写一篇关于 {title} 的文章。\n\n核心论点: {thesis}\n\n{outline}",
+        sender="agent",
+        tags=["writing", "autonomous", "auto", writing_type],
+        origin="auto",
+    )
+    bridge.update_task_status(task_id, "working",
+                              agent_message="开始写作...")
+
+    # Dispatch writing as background task
+    _dispatch_background(f"autowrite-{today}", [
+        sys.executable,
+        str(Path(__file__).resolve().parent.parent / "writer" / "writing_agent.py"),
+        "auto",
+        "--title", title,
+        "--type", writing_type,
+        "--idea", content,
+    ])
+
+    append_memory(f"Self-initiated writing: '{title}' ({writing_type})")
 
 
 def _gather_today_tasks() -> str:
@@ -753,6 +1001,26 @@ def should_journal() -> bool:
     return not state.get(journal_key)
 
 
+def should_analyst() -> bool:
+    """Check if it's time for the daily analyst briefing (business days only)."""
+    now = datetime.now()
+
+    # Skip weekends if configured
+    if ANALYST_BUSINESS_DAYS_ONLY and now.weekday() >= 5:  # 5=Sat, 6=Sun
+        return False
+
+    scheduled = datetime.combine(now.date(), ANALYST_TIME)
+    delta = (now - scheduled).total_seconds() / 60
+
+    # Only trigger in a 60-minute window AFTER analyst time
+    if delta < 0 or delta > 60:
+        return False
+
+    state = load_state()
+    analyst_key = f"analyst_{now.strftime('%Y-%m-%d')}"
+    return not state.get(analyst_key)
+
+
 def should_reflect() -> bool:
     """Check if it's time for weekly reflection."""
     now = datetime.now()
@@ -830,6 +1098,11 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "journal",
         ])
 
+    if should_analyst():
+        _dispatch_background("analyst", [
+            sys.executable, str(Path(__file__).resolve()), "analyst",
+        ])
+
     log.info("=== Mira Agent sleep ===")
 
 
@@ -837,7 +1110,7 @@ def cmd_run():
 # Background dispatch for long-running tasks
 # ---------------------------------------------------------------------------
 
-_BG_PID_DIR = PLAYGROUND_ROOT / "agents" / ".bg_pids"
+_BG_PID_DIR = MIRA_ROOT / "agents" / ".bg_pids"
 
 
 def _dispatch_background(name: str, cmd: list[str]):
@@ -864,7 +1137,7 @@ def _dispatch_background(name: str, cmd: list[str]):
             stdout=subprocess.DEVNULL,
             stderr=open(LOGS_DIR / f"bg-{name}.log", "a"),
             start_new_session=True,
-            cwd=str(PLAYGROUND_ROOT / "agents" / "super"),
+            cwd=str(MIRA_ROOT / "agents" / "super"),
         )
         pid_file.write_text(str(proc.pid))
         log.info("Background '%s' dispatched (PID %d)", name, proc.pid)
@@ -983,6 +1256,8 @@ def main():
         do_reflect()
     elif command == "journal":
         do_journal()
+    elif command == "analyst":
+        do_analyst()
     elif command == "write-check":
         # Manually check and advance writing projects
         responses = check_writing_responses()
