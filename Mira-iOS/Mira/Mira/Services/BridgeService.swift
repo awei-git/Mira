@@ -491,6 +491,26 @@ final class BridgeService {
                     if let trueStatus = statusMap[task.id], trueStatus != task.status {
                         task.status = trueStatus
                     }
+                    // Merge agent replies from sidecar file (survives iCloud sync races)
+                    let replyFile = tasksDir.appendingPathComponent("\(name).reply.json")
+                    if fm.isReadableFile(atPath: replyFile.path),
+                       let replyData = try? Data(contentsOf: replyFile),
+                       let replies = try? JSONSerialization.jsonObject(with: replyData) as? [[String: Any]] {
+                        let existingTimestamps = Set(task.messages.map(\.timestamp))
+                        for reply in replies {
+                            let ts = reply["timestamp"] as? String ?? ""
+                            if !ts.isEmpty && !existingTimestamps.contains(ts) {
+                                let msg = TaskMessage(
+                                    sender: reply["sender"] as? String ?? "agent",
+                                    content: reply["content"] as? String ?? "",
+                                    timestamp: ts
+                                )
+                                task.messages.append(msg)
+                            }
+                        }
+                        // Re-sort messages by timestamp
+                        task.messages.sort { $0.timestamp < $1.timestamp }
+                    }
                     loaded.append(task)
                 } catch {
                     log("loadTasks: decode failed for \(fileURL.lastPathComponent): \(error)")

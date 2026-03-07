@@ -1121,7 +1121,7 @@ def _dispatch_background(name: str, cmd: list[str]):
     _BG_PID_DIR.mkdir(parents=True, exist_ok=True)
     pid_file = _BG_PID_DIR / f"{name}.pid"
 
-    # Check if a previous run is still active
+    # Check if a previous run is still active or finished recently
     if pid_file.exists():
         try:
             old_pid = int(pid_file.read_text().strip())
@@ -1130,6 +1130,14 @@ def _dispatch_background(name: str, cmd: list[str]):
             return
         except (OSError, ValueError):
             pass  # process gone, safe to start new one
+        # Cooldown: don't re-dispatch if the PID file was written recently
+        try:
+            import time as _time
+            age = _time.time() - pid_file.stat().st_mtime
+            if age < 300:  # 5-minute cooldown
+                return
+        except OSError:
+            pass
 
     try:
         proc = subprocess.Popen(

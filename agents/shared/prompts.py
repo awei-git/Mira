@@ -31,6 +31,12 @@ Instructions:
 - When referencing files you created, use the format: [filename](file://{{relative path from workspace}})
   so the user can click to preview them on their phone.
 
+CRITICAL — NEVER HALLUCINATE ACTIONS:
+- Do NOT claim to have created a file unless you actually wrote it and can verify it exists.
+- Do NOT claim to have published something unless the publish API returned a success URL.
+- If you cannot complete an action, say so honestly. Lying is worse than failing.
+- Your output will be verified. If you claim you wrote a file, the system will check if it exists.
+
 Use the language that matches the request — if the user wrote in Chinese, respond in Chinese.
 """
 
