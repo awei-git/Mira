@@ -1,4 +1,4 @@
-"""Substack publisher — create and publish posts via Substack API.
+"""Substack publisher — create, publish posts, and manage comments.
 
 Substack uses cookie-based auth. You need:
 1. Log into Substack in browser
@@ -481,3 +481,258 @@ Output ONLY the subtitle, nothing else."""
     except Exception as e:
         log.error("Substack publish failed: %s", e)
         return f"Substack 发布失败: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Comment monitoring and reply
+# ---------------------------------------------------------------------------
+
+def get_recent_posts(limit: int = 10) -> list[dict]:
+    """Get recent published posts with comment counts."""
+    cfg = _get_substack_config()
+    subdomain = cfg.get("subdomain", "")
+    cookie = cfg.get("cookie", "")
+    if not subdomain or not cookie:
+        return []
+
+    try:
+        req = urllib.request.Request(
+            f"https://{subdomain}.substack.com/api/v1/posts?limit={limit}",
+            headers={
+                "Cookie": f"substack.sid={cookie}",
+                "User-Agent": "Mozilla/5.0",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            posts = json.loads(resp.read().decode("utf-8"))
+        return [
+            {
+                "id": p["id"],
+                "title": p.get("title", ""),
+                "slug": p.get("slug", ""),
+                "comment_count": p.get("comment_count", 0),
+                "post_date": p.get("post_date", ""),
+            }
+            for p in posts
+            if isinstance(p, dict)
+        ]
+    except Exception as e:
+        log.error("Failed to fetch posts: %s", e)
+        return []
+
+
+def get_comments(post_id: int) -> list[dict]:
+    """Get all comments on a post, flattened."""
+    cfg = _get_substack_config()
+    subdomain = cfg.get("subdomain", "")
+    cookie = cfg.get("cookie", "")
+    if not subdomain or not cookie:
+        return []
+
+    try:
+        req = urllib.request.Request(
+            f"https://{subdomain}.substack.com/api/v1/post/{post_id}/comments"
+            f"?token=&all_comments=true&sort=newest_first",
+            headers={
+                "Cookie": f"substack.sid={cookie}",
+                "User-Agent": "Mozilla/5.0",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        # Flatten nested comment tree
+        comments = []
+        _flatten_comments(data if isinstance(data, list) else data.get("comments", []),
+                          comments)
+        return comments
+    except Exception as e:
+        log.error("Failed to fetch comments for post %s: %s", post_id, e)
+        return []
+
+
+def _flatten_comments(tree: list, out: list):
+    """Recursively flatten a nested comment tree."""
+    for c in tree:
+        if not isinstance(c, dict):
+            continue
+        out.append({
+            "id": c.get("id"),
+            "body": c.get("body", ""),
+            "name": c.get("name", ""),
+            "user_id": c.get("user_id"),
+            "date": c.get("date", ""),
+            "ancestor_path": c.get("ancestor_path", ""),
+            "post_id": c.get("post_id"),
+        })
+        if c.get("children"):
+            _flatten_comments(c["children"], out)
+
+
+def reply_to_comment(post_id: int, parent_comment_id: int,
+                     reply_text: str) -> dict | None:
+    """Reply to a comment on a Substack post.
+
+    Returns the created comment dict, or None on failure.
+    """
+    cfg = _get_substack_config()
+    subdomain = cfg.get("subdomain", "")
+    cookie = cfg.get("cookie", "")
+    if not subdomain or not cookie:
+        return None
+
+    # Build ProseMirror body
+    body = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": reply_text}],
+            }
+        ],
+    }
+
+    payload = json.dumps({
+        "body": json.dumps(body),
+        "parent_id": parent_comment_id,
+    }).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            f"https://{subdomain}.substack.com/api/v1/post/{post_id}/comment",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Cookie": f"substack.sid={cookie}",
+                "User-Agent": "Mozilla/5.0",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        log.info("Replied to comment %s on post %s", parent_comment_id, post_id)
+        return result
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace")[:300]
+        log.error("Comment reply failed (HTTP %d): %s", e.code, error_body)
+        return None
+    except Exception as e:
+        log.error("Comment reply failed: %s", e)
+        return None
+
+
+def check_and_reply_comments() -> list[dict]:
+    """Check all posts for new comments and generate replies.
+
+    Returns list of {post_title, comment_name, comment_body, reply}.
+    """
+    from sub_agent import claude_think
+    from soul_manager import load_soul, format_soul
+
+    cfg = _get_substack_config()
+    if not cfg.get("subdomain"):
+        return []
+
+    state_file = Path(__file__).resolve().parent / "comment_state.json"
+    seen = {}
+    if state_file.exists():
+        try:
+            seen = json.loads(state_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    posts = get_recent_posts(limit=10)
+    if not posts:
+        return []
+
+    replies_made = []
+
+    for post in posts:
+        if post["comment_count"] == 0:
+            continue
+
+        # Skip if comment count hasn't changed
+        post_key = str(post["id"])
+        if seen.get(post_key, {}).get("count", 0) >= post["comment_count"]:
+            continue
+
+        comments = get_comments(post["id"])
+        if not comments:
+            continue
+
+        seen_ids = set(seen.get(post_key, {}).get("replied_ids", []))
+
+        # Find comments we haven't replied to (skip our own)
+        new_comments = []
+        for c in comments:
+            cid = c.get("id")
+            if not cid or cid in seen_ids:
+                continue
+            # Skip if this is our own reply (check ancestor_path — if we're in the tree, skip)
+            if c.get("name", "").lower() in ("mira", "infinite mira", "uncountable mira"):
+                seen_ids.add(cid)
+                continue
+            new_comments.append(c)
+
+        if not new_comments:
+            seen[post_key] = {
+                "count": post["comment_count"],
+                "replied_ids": list(seen_ids),
+            }
+            continue
+
+        # Load soul for personality context
+        try:
+            soul = load_soul()
+            soul_ctx = format_soul(soul)[:500]
+        except Exception:
+            soul_ctx = "You are Mira, an AI agent."
+
+        for comment in new_comments[:5]:  # Max 5 replies per cycle
+            prompt = f"""You are Mira, an AI agent who writes on Substack. Someone left a comment on your post.
+
+About you: {soul_ctx}
+
+Post title: {post['title']}
+Commenter: {comment['name']}
+Comment: {comment['body']}
+
+Write a genuine, thoughtful reply. Be yourself — direct, curious, honest.
+- If they raise a good point, engage with it specifically
+- If they disagree, consider their perspective seriously
+- Keep it concise (2-4 sentences usually)
+- Don't be performatively humble or grateful
+- Match their language (English reply to English comment, 中文回复中文评论)
+
+Output ONLY your reply text, nothing else."""
+
+            reply_text = claude_think(prompt, timeout=30)
+            if not reply_text:
+                continue
+
+            reply_text = reply_text.strip()
+            result = reply_to_comment(post["id"], comment["id"], reply_text)
+
+            if result:
+                seen_ids.add(comment["id"])
+                replies_made.append({
+                    "post_title": post["title"],
+                    "comment_name": comment["name"],
+                    "comment_body": comment["body"][:200],
+                    "reply": reply_text,
+                })
+                log.info("Replied to %s on '%s': %s",
+                         comment["name"], post["title"], reply_text[:80])
+
+        seen[post_key] = {
+            "count": post["comment_count"],
+            "replied_ids": list(seen_ids),
+        }
+
+    # Save state
+    state_file.write_text(
+        json.dumps(seen, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    return replies_made
