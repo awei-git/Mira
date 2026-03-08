@@ -711,6 +711,133 @@ def cmd_sync():
         print("No changes from Apple Notes")
 
 
+def cmd_auto(title: str, writing_type: str, idea_content: str):
+    """Create an idea file from args and run the full pipeline on it.
+
+    Called by do_autowrite_check() in core.py for autonomous writing.
+    """
+    IDEAS_DIR.mkdir(exist_ok=True)
+    PROJECTS_DIR.mkdir(exist_ok=True)
+
+    # Generate slug from title
+    slug = title.lower().strip()
+    slug = re.sub(r"[^\w\s-]", "", slug)
+    slug = re.sub(r"[\s_]+", "-", slug)
+    slug = slug.strip("-")[:50] or "auto-essay"
+
+    idea_path = IDEAS_DIR / f"{slug}.md"
+
+    # Parse idea_content: first line is title, then thesis, then outline
+    lines = idea_content.strip().split("\n")
+    raw_title = lines[0] if lines else title
+    thesis = ""
+    outline_points = []
+    for line in lines[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        if not thesis:
+            thesis = line
+        else:
+            outline_points.append(line)
+
+    # Build key points from outline (which may be JSON list or plain text)
+    key_points = ""
+    if outline_points:
+        for pt in outline_points:
+            # Strip JSON artifacts
+            pt = pt.strip("[]'\",")
+            if pt:
+                key_points += f"- {pt}\n"
+
+    # Create idea file
+    idea_md = f"""# {title}
+
+- **type**: {writing_type}
+- **language**: en
+- **platform**: Substack
+- **target_words**: 2000
+- **deadline**:
+
+## Theme
+
+{thesis}
+
+## Key Points
+
+{key_points}
+## Notes
+
+Autonomous writing by Mira. Write with personal voice — this is from lived experience.
+
+## Feedback
+
+
+
+---
+<!-- AUTO-MANAGED BELOW — DO NOT EDIT -->
+## Status
+
+- **state**: new
+- **project_dir**:
+- **created**:
+- **scaffolded**:
+- **round_1_draft**:
+- **round_1_critique**:
+- **round_1_revision**:
+- **feedback_detected**:
+- **round_2_draft**:
+- **round_2_critique**:
+- **round_2_revision**:
+- **current_round**: 0
+- **idea_hash**:
+- **last_error**:
+"""
+
+    idea_path.write_text(idea_md, encoding="utf-8")
+    log.info("Created idea file: %s", idea_path.name)
+
+    # Run the pipeline on this idea (use higher limit — auto is a one-shot run)
+    idea = parse_idea(idea_path)
+    for _ in range(10):
+        idea = parse_idea(idea_path)
+        state = idea.get("state", "").strip()
+        if state in ("done", "error", "awaiting_feedback"):
+            break
+        if not advance_idea(idea):
+            break
+
+    final_idea = parse_idea(idea_path)
+    final_state = final_idea.get("state", "unknown")
+    log.info("Auto writing '%s' finished in state: %s", title, final_state)
+
+    # Notify bridge so user sees the result
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+        from mira import Mira
+        bridge = Mira()
+        today = datetime.now().strftime("%Y-%m-%d")
+        task_id = f"autowrite_{today}"
+        project_dir = final_idea.get("project_dir", "")
+        if final_state == "awaiting_feedback":
+            bridge.update_task_status(
+                task_id, "done",
+                agent_message=f"写完了！初稿在 {project_dir} 里，等你反馈。",
+            )
+        elif final_state == "error":
+            bridge.update_task_status(
+                task_id, "error",
+                agent_message=f"写作出错了: {final_idea.get('last_error', 'unknown')}",
+            )
+        else:
+            bridge.update_task_status(
+                task_id, "working",
+                agent_message=f"写作进行中，当前状态: {final_state}",
+            )
+    except Exception as e:
+        log.error("Failed to update bridge: %s", e)
+
+
 USAGE = """Usage: writing_agent.py <command> [args]
 
 Commands:
@@ -719,6 +846,7 @@ Commands:
     iterate <slug>      Manually advance one idea by one step
     sync                Sync Apple Notes → idea files
     new                 Show how to create a new idea
+    auto                Autonomous writing (called by core.py)
 """
 
 
@@ -730,6 +858,17 @@ def main():
         sys.exit(1)
 
     command = sys.argv[1]
+
+    # Parse optional flags
+    args = sys.argv[2:]
+    flags = {}
+    i = 0
+    while i < len(args):
+        if args[i].startswith("--") and i + 1 < len(args):
+            flags[args[i][2:]] = args[i + 1]
+            i += 2
+        else:
+            i += 1
 
     if command == "run":
         cmd_run()
@@ -744,6 +883,11 @@ def main():
             print("Usage: writing_agent.py iterate <idea-slug>")
             sys.exit(1)
         cmd_iterate(sys.argv[2])
+    elif command == "auto":
+        title = flags.get("title", "Untitled")
+        writing_type = flags.get("type", "essay")
+        idea = flags.get("idea", "")
+        cmd_auto(title, writing_type, idea)
     else:
         print(f"Unknown command: {command}")
         print(USAGE)

@@ -12,8 +12,10 @@ secrets.yml format:
         cookie: "s%3A..."             # substack.sid cookie value
         email: "you@email.com"        # optional, for draft notifications
 """
+import base64
 import json
 import logging
+import urllib.parse
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -176,6 +178,114 @@ def _parse_inline(html_text: str) -> list:
     return nodes
 
 
+def _generate_cover_image(title: str, article_text: str, workspace: Path) -> str | None:
+    """Generate a cover image using DALL-E and return the local file path."""
+    from sub_agent import _get_api_key, claude_think
+
+    api_key = _get_api_key("openai")
+    if not api_key:
+        log.warning("No OpenAI API key — skipping cover image generation")
+        return None
+
+    # Use Claude to create a good DALL-E prompt from the article
+    prompt_request = f"""Based on this article title and content, create a DALL-E image generation prompt.
+The image will be used as a Substack cover image (1200x630, landscape).
+
+Requirements:
+- Abstract, artistic, evocative — NOT literal illustrations
+- No text, no words, no letters in the image
+- Moody, atmospheric, visually striking
+- Think editorial illustration, not stock photo
+- One clear visual concept, not cluttered
+
+Title: {title}
+Content excerpt: {article_text[:1500]}
+
+Output ONLY the DALL-E prompt, nothing else. Keep it under 200 words."""
+
+    dalle_prompt = claude_think(prompt_request, timeout=30)
+    if not dalle_prompt:
+        log.warning("Failed to generate DALL-E prompt")
+        return None
+
+    dalle_prompt = dalle_prompt.strip()
+    log.info("DALL-E prompt: %s", dalle_prompt[:100])
+
+    # Call DALL-E API
+    try:
+        payload = json.dumps({
+            "model": "dall-e-3",
+            "prompt": dalle_prompt,
+            "n": 1,
+            "size": "1792x1024",  # closest to 16:9 landscape
+            "quality": "standard",
+            "response_format": "b64_json",
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/images/generations",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+
+        b64_data = result["data"][0]["b64_json"]
+        image_bytes = base64.b64decode(b64_data)
+
+        # Save locally
+        cover_path = workspace / "cover.png"
+        cover_path.write_bytes(image_bytes)
+        log.info("Cover image saved: %s (%d bytes)", cover_path, len(image_bytes))
+
+        # Also save the prompt used
+        (workspace / "cover_prompt.txt").write_text(dalle_prompt, encoding="utf-8")
+
+        return str(cover_path)
+
+    except Exception as e:
+        log.error("DALL-E image generation failed: %s", e)
+        return None
+
+
+def _upload_image_to_substack(image_path: str, subdomain: str, cookie: str) -> str | None:
+    """Upload a local image to Substack. Returns the hosted image URL."""
+    try:
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+
+        b64_image = b"data:image/png;base64," + base64.b64encode(image_bytes)
+
+        # Substack image upload endpoint
+        req = urllib.request.Request(
+            f"https://{subdomain}.substack.com/api/v1/image",
+            data=urllib.parse.urlencode({"image": b64_image.decode()}).encode("utf-8"),
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Cookie": f"substack.sid={cookie}",
+                "User-Agent": "Mozilla/5.0",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+
+        image_url = result.get("url", "")
+        if image_url:
+            log.info("Uploaded image to Substack: %s", image_url[:80])
+        return image_url or None
+
+    except Exception as e:
+        log.error("Substack image upload failed: %s", e)
+        return None
+
+
 def publish_to_substack(title: str, subtitle: str,
                         article_text: str, workspace: Path) -> str:
     """Publish an article to Substack. Returns status message."""
@@ -213,6 +323,12 @@ def publish_to_substack(title: str, subtitle: str,
         f"<h1>{title}</h1>\n{body_html}", encoding="utf-8"
     )
 
+    # Generate and upload cover image
+    cover_url = None
+    cover_path = _generate_cover_image(title, article_text, workspace)
+    if cover_path:
+        cover_url = _upload_image_to_substack(cover_path, subdomain, cookie)
+
     # Step 1: Create draft with actual content
     base_url = f"https://{subdomain}.substack.com"
     draft_url = f"{base_url}/api/v1/drafts"
@@ -227,6 +343,8 @@ def publish_to_substack(title: str, subtitle: str,
         "draft_bylines": [],
         "type": "newsletter",
     }
+    if cover_url:
+        draft_payload["cover_image"] = cover_url
 
     headers = {
         "Content-Type": "application/json",
