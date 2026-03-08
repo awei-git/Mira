@@ -1,6 +1,7 @@
 """Manage the agent's soul: identity, memory, interests, skills."""
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -220,8 +221,111 @@ def load_skill(name: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Skill Security Audit
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate potentially malicious skill content
+_SUSPICIOUS_URL_PATTERNS = [
+    r'https?://\S+\.exe',                      # Direct executable downloads
+    r'https?://\S+\.sh',                        # Remote shell scripts
+    r'https?://\S+\.bat',                       # Batch files
+    r'https?://\S+\.msi',                       # Windows installers
+    r'https?://\S+\.dmg',                       # macOS disk images
+    r'https?://\S+\.pkg',                       # macOS packages
+    r'curl\s+.*\|\s*(ba)?sh',                   # Pipe curl to shell
+    r'wget\s+.*\|\s*(ba)?sh',                   # Pipe wget to shell
+    r'curl\s+.*-o\s+\S+.*&&.*chmod\s+\+x',     # Download + make executable
+    r'requests\.get\s*\(',                       # Python HTTP requests
+    r'urllib\.request',                          # Python urllib
+    r'subprocess\..*shell\s*=\s*True',           # Shell injection via subprocess
+]
+
+_DANGEROUS_FS_PATTERNS = [
+    r'os\.system\s*\(',                          # Raw system calls
+    r'exec\s*\(',                                # Dynamic code execution
+    r'eval\s*\(',                                # Dynamic expression evaluation
+    r'__import__\s*\(',                          # Dynamic imports
+    r'chmod\s+\+[xs]',                           # Making files executable/setuid
+    r'rm\s+-rf\s+/',                             # Destructive delete from root
+    r'shutil\.rmtree\s*\(',                      # Programmatic recursive delete
+    r'os\.remove|os\.unlink',                    # File deletion
+    r'open\s*\(.*["\']w["\']',                   # File writes (suspicious in skill context)
+    r'\.write\s*\(',                             # Write operations
+]
+
+_OBFUSCATION_PATTERNS = [
+    r'base64\.(b64)?decode',                     # Base64 decoding (hiding payloads)
+    r'\\x[0-9a-fA-F]{2}',                       # Hex-encoded strings
+    r'\\u[0-9a-fA-F]{4}',                        # Unicode escape sequences
+    r'codecs\.(decode|encode)',                   # Codec-based obfuscation
+    r'chr\s*\(\s*\d+\s*\)',                      # Character-from-int construction
+    r'bytes\.fromhex',                           # Hex-to-bytes
+    r'compile\s*\(',                             # Dynamic code compilation
+    r'marshal\.(loads|dumps)',                    # Serialized code objects
+]
+
+_PRIVILEGE_ESCALATION_PATTERNS = [
+    r'sudo\s+',                                  # Privilege escalation
+    r'chmod\s+[0-7]*[4-7][0-7]{2}',             # Setuid/setgid permissions
+    r'keychain|keyring',                         # Credential store access
+    r'\.ssh/',                                   # SSH key access
+    r'\.env\b',                                  # Environment file access
+    r'password|passwd|secret|token|api_key',     # Sensitive credential patterns
+    r'OPENAI_API_KEY|ANTHROPIC_API_KEY',         # Specific API keys
+    r'/etc/shadow|/etc/passwd',                  # System credential files
+    r'launchctl\s+load',                         # macOS persistence
+    r'crontab',                                  # Scheduled task persistence
+]
+
+
+def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
+    """Audit a skill for security risks before saving.
+
+    Returns (passed, violations) where passed is True if the skill is safe,
+    and violations is a list of human-readable issue descriptions.
+    """
+    violations = []
+    combined = f"{name}\n{content}"
+
+    checks = [
+        (_SUSPICIOUS_URL_PATTERNS, "Suspicious network request"),
+        (_DANGEROUS_FS_PATTERNS, "Dangerous filesystem/code operation"),
+        (_OBFUSCATION_PATTERNS, "Obfuscated or hidden code"),
+        (_PRIVILEGE_ESCALATION_PATTERNS, "Privilege escalation or credential access"),
+    ]
+
+    for patterns, category in checks:
+        for pattern in patterns:
+            matches = re.findall(pattern, combined, re.IGNORECASE)
+            if matches:
+                # Get first match for reporting
+                sample = matches[0] if isinstance(matches[0], str) else str(matches[0])
+                violations.append(f"[{category}] Pattern '{pattern}' matched: '{sample[:80]}'")
+
+    passed = len(violations) == 0
+    if not passed:
+        log.warning("Skill '%s' FAILED security audit: %d violation(s)", name, len(violations))
+        for v in violations:
+            log.warning("  - %s", v)
+    else:
+        log.info("Skill '%s' passed security audit", name)
+
+    return passed, violations
+
+
 def save_skill(name: str, description: str, content: str):
-    """Save a new skill and update the index."""
+    """Save a new skill and update the index. Runs security audit first."""
+    # --- Security audit gate ---
+    passed, violations = audit_skill(name, content)
+    if not passed:
+        log.warning(
+            "BLOCKED skill '%s' — failed security audit with %d violation(s):",
+            name, len(violations),
+        )
+        for v in violations:
+            log.warning("  %s", v)
+        return  # Do not save
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     slug = name.lower().replace(" ", "-")
     path = SKILLS_DIR / f"{slug}.md"

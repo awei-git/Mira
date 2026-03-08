@@ -487,9 +487,21 @@ final class BridgeService {
                 do {
                     let data = try Data(contentsOf: fileURL)
                     var task = try decoder.decode(MiraTask.self, from: data)
-                    // Fix status from status.json if task file is stale
+                    // Fix status from status.json (task_manager) if task file is stale
                     if let trueStatus = statusMap[task.id], trueStatus != task.status {
                         task.status = trueStatus
+                    }
+                    // Also check per-task .status.json sidecar (written by agent)
+                    let statusSidecar = tasksDir.appendingPathComponent("\(name).status.json")
+                    if fm.isReadableFile(atPath: statusSidecar.path),
+                       let sData = try? Data(contentsOf: statusSidecar),
+                       let sDict = try? JSONSerialization.jsonObject(with: sData) as? [String: Any],
+                       let sStatus = sDict["status"] as? String {
+                        // Agent's status sidecar is authoritative — it never gets
+                        // overwritten by iOS because only the agent writes to it.
+                        if sStatus != task.status {
+                            task.status = sStatus
+                        }
                     }
                     // Merge agent replies from sidecar file (survives iCloud sync races)
                     let replyFile = tasksDir.appendingPathComponent("\(name).reply.json")
