@@ -178,46 +178,105 @@ def _parse_inline(html_text: str) -> list:
     return nodes
 
 
-def _generate_cover_image(title: str, article_text: str, workspace: Path) -> str | None:
-    """Generate a cover image using DALL-E and return the local file path."""
+def _get_cover_image(title: str, article_text: str, workspace: Path) -> str | None:
+    """Get a cover image for the article. Tries Unsplash first, then DALL-E.
+
+    Returns local file path or None.
+    """
+    from sub_agent import claude_think
+
+    # Step 1: Ask Claude for 2-3 search keywords
+    keyword_prompt = f"""Given this article title and excerpt, suggest 2-3 evocative search keywords
+for finding a cover photo on Unsplash. Think abstract, atmospheric, editorial.
+NOT literal — find the visual metaphor.
+
+Title: {title}
+Excerpt: {article_text[:800]}
+
+Output ONLY the keywords separated by spaces. Example: "reflection mirror glass"
+No explanation."""
+
+    keywords = claude_think(keyword_prompt, timeout=20)
+    if keywords:
+        keywords = keywords.strip().strip('"').strip("'")
+        log.info("Cover image search: %s", keywords)
+
+        # Try Unsplash (no API key needed for source.unsplash.com redirect)
+        path = _fetch_unsplash(keywords, workspace)
+        if path:
+            return path
+
+    # Fallback: DALL-E
+    return _generate_dalle_image(title, article_text, workspace)
+
+
+def _fetch_unsplash(query: str, workspace: Path) -> str | None:
+    """Fetch a landscape photo from Unsplash. Returns local file path or None."""
+    try:
+        # Unsplash source URL gives a random photo matching the query
+        # 1456x816 = recommended Substack cover dimensions
+        search_url = f"https://source.unsplash.com/1456x816/?{urllib.parse.quote(query)}"
+        req = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            image_bytes = resp.read()
+            final_url = resp.url  # after redirect
+
+        if len(image_bytes) < 5000:  # too small = error page
+            log.warning("Unsplash returned too-small response, skipping")
+            return None
+
+        cover_path = workspace / "cover.jpg"
+        cover_path.write_bytes(image_bytes)
+        log.info("Unsplash cover saved: %s (%d KB, from %s)",
+                 cover_path.name, len(image_bytes) // 1024, final_url[:80])
+
+        # Save attribution
+        (workspace / "cover_source.txt").write_text(
+            f"Source: Unsplash\nQuery: {query}\nURL: {final_url}\n",
+            encoding="utf-8",
+        )
+        return str(cover_path)
+
+    except Exception as e:
+        log.warning("Unsplash fetch failed: %s", e)
+        return None
+
+
+def _generate_dalle_image(title: str, article_text: str, workspace: Path) -> str | None:
+    """Generate a cover image using DALL-E 3. Returns local file path or None."""
     from sub_agent import _get_api_key, claude_think
 
     api_key = _get_api_key("openai")
     if not api_key:
-        log.warning("No OpenAI API key — skipping cover image generation")
+        log.warning("No OpenAI API key — skipping DALL-E generation")
         return None
 
-    # Use Claude to create a good DALL-E prompt from the article
-    prompt_request = f"""Based on this article title and content, create a DALL-E image generation prompt.
-The image will be used as a Substack cover image (1200x630, landscape).
+    prompt_request = f"""Create a DALL-E image generation prompt for a Substack cover image.
 
 Requirements:
-- Abstract, artistic, evocative — NOT literal illustrations
+- Abstract, artistic, evocative — NOT literal illustration
 - No text, no words, no letters in the image
 - Moody, atmospheric, visually striking
-- Think editorial illustration, not stock photo
 - One clear visual concept, not cluttered
 
 Title: {title}
-Content excerpt: {article_text[:1500]}
+Content excerpt: {article_text[:1000]}
 
-Output ONLY the DALL-E prompt, nothing else. Keep it under 200 words."""
+Output ONLY the DALL-E prompt, nothing else. Keep it under 150 words."""
 
     dalle_prompt = claude_think(prompt_request, timeout=30)
     if not dalle_prompt:
-        log.warning("Failed to generate DALL-E prompt")
         return None
 
     dalle_prompt = dalle_prompt.strip()
     log.info("DALL-E prompt: %s", dalle_prompt[:100])
 
-    # Call DALL-E API
     try:
         payload = json.dumps({
             "model": "dall-e-3",
             "prompt": dalle_prompt,
             "n": 1,
-            "size": "1792x1024",  # closest to 16:9 landscape
+            "size": "1792x1024",
             "quality": "standard",
             "response_format": "b64_json",
         }).encode("utf-8")
@@ -238,18 +297,15 @@ Output ONLY the DALL-E prompt, nothing else. Keep it under 200 words."""
         b64_data = result["data"][0]["b64_json"]
         image_bytes = base64.b64decode(b64_data)
 
-        # Save locally
         cover_path = workspace / "cover.png"
         cover_path.write_bytes(image_bytes)
-        log.info("Cover image saved: %s (%d bytes)", cover_path, len(image_bytes))
+        log.info("DALL-E cover saved: %s (%d KB)", cover_path.name, len(image_bytes) // 1024)
 
-        # Also save the prompt used
         (workspace / "cover_prompt.txt").write_text(dalle_prompt, encoding="utf-8")
-
         return str(cover_path)
 
     except Exception as e:
-        log.error("DALL-E image generation failed: %s", e)
+        log.error("DALL-E generation failed: %s", e)
         return None
 
 
@@ -315,6 +371,22 @@ def publish_to_substack(title: str, subtitle: str,
         if not title:
             title = lines[0][:60] if lines else "Untitled"
 
+    # Auto-generate subtitle if not provided (acts as email preview + SEO)
+    if not subtitle:
+        from sub_agent import claude_think
+        sub_prompt = f"""Write a one-sentence subtitle for this Substack article.
+It should be compelling, specific, and under 120 characters.
+It will appear as the email preview text and meta description.
+
+Title: {title}
+First 500 chars: {article_text[:500]}
+
+Output ONLY the subtitle, nothing else."""
+        subtitle = claude_think(sub_prompt, timeout=20) or ""
+        subtitle = subtitle.strip().strip('"').strip("'")[:140]
+        if subtitle:
+            log.info("Auto-generated subtitle: %s", subtitle)
+
     # Convert markdown to HTML
     body_html = _md_to_html(article_text)
 
@@ -325,7 +397,7 @@ def publish_to_substack(title: str, subtitle: str,
 
     # Generate and upload cover image
     cover_url = None
-    cover_path = _generate_cover_image(title, article_text, workspace)
+    cover_path = _get_cover_image(title, article_text, workspace)
     if cover_path:
         cover_url = _upload_image_to_substack(cover_path, subdomain, cookie)
 
