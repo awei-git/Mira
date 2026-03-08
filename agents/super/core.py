@@ -25,10 +25,10 @@ sys.path.insert(0, str(_AGENTS_DIR / "explorer"))
 from config import (
     MIRA_ROOT, WORKSPACE_DIR, BRIEFINGS_DIR, LOGS_DIR, STATE_FILE,
     NOTES_INBOX_FOLDER, NOTES_BRIEFING_FOLDER, NOTES_OUTPUT_FOLDER,
-    EXPLORE_TIMES, EXPLORE_WINDOW_MINUTES, REFLECT_DAY, REFLECT_TIME,
+    EXPLORE_SCHEDULE, EXPLORE_WINDOW_MINUTES, REFLECT_DAY, REFLECT_TIME,
     MAX_BRIEFING_ITEMS, MAX_DEEP_DIVES, MIRA_DIR, CLEANUP_DAYS,
     JOURNAL_DIR, JOURNAL_TIME, SKILLS_INDEX, WRITINGS_OUTPUT_DIR, WRITINGS_DIR,
-    ANALYST_TIME, ANALYST_BUSINESS_DAYS_ONLY,
+    ANALYST_TIMES, ANALYST_BUSINESS_DAYS_ONLY, ZHESI_TIME, ZA_FILE,
 )
 from notes_bridge import check_inbox, create_note
 from mira import Mira
@@ -46,7 +46,7 @@ from writing_workflow import (
 from prompts import (
     respond_prompt, explore_prompt, deep_dive_prompt, reflect_prompt,
     journal_prompt, internalize_prompt, autonomous_writing_prompt,
-    worldview_evolution_prompt,
+    worldview_evolution_prompt, zhesi_prompt,
 )
 
 log = logging.getLogger("mira")
@@ -480,12 +480,23 @@ def do_respond():
 # EXPLORE mode — fetch, filter, brief, deep-dive
 # ---------------------------------------------------------------------------
 
-def do_explore():
-    """Fetch sources, write briefing, optionally deep-dive."""
-    log.info("Starting explore cycle")
+def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
+    """Fetch sources, write briefing, optionally deep-dive.
 
-    # 1. Fetch all sources
-    items = fetch_all()
+    Args:
+        source_names: specific sources to fetch (e.g. ["arxiv", "huggingface"]).
+                      If None, fetches all sources.
+        slot_name: name of the explore slot (e.g. "morning") for context.
+    """
+    from fetcher import fetch_sources
+    log.info("Starting explore cycle (sources=%s, slot=%s)",
+             source_names or "all", slot_name or "default")
+
+    # 1. Fetch sources
+    if source_names:
+        items = fetch_sources(source_names)
+    else:
+        items = fetch_all()
     if not items:
         log.info("No items fetched, skipping explore")
         return
@@ -497,26 +508,28 @@ def do_explore():
     feed_text = _format_feed_items(items)
 
     # 3. Ask Claude to filter and rank
-    prompt = explore_prompt(soul_ctx, feed_text)
+    prompt = explore_prompt(soul_ctx, feed_text, source_slot=slot_name)
     briefing = claude_think(prompt, timeout=180)
 
     if not briefing:
         log.error("Explore: Claude returned empty briefing")
         return
 
-    # 4. Save briefing
+    # 4. Save briefing (slot-specific so multiple explores don't overwrite)
     today = datetime.now().strftime("%Y-%m-%d")
-    briefing_path = BRIEFINGS_DIR / f"{today}.md"
+    suffix = f"_{slot_name}" if slot_name else ""
+    briefing_path = BRIEFINGS_DIR / f"{today}{suffix}.md"
     briefing_path.write_text(briefing, encoding="utf-8")
     log.info("Briefing saved: %s", briefing_path.name)
 
     # Also copy to mira/artifacts for iOS browsing
     mira_briefings = MIRA_DIR / "artifacts" / "briefings"
     mira_briefings.mkdir(parents=True, exist_ok=True)
-    (mira_briefings / f"{today}.md").write_text(briefing, encoding="utf-8")
+    (mira_briefings / f"{today}{suffix}.md").write_text(briefing, encoding="utf-8")
 
     # 5. Push briefing to Apple Notes + Mira
-    create_note(NOTES_BRIEFING_FOLDER, f"Briefing {today}", briefing)
+    slot_label = f" ({slot_name})" if slot_name else ""
+    create_note(NOTES_BRIEFING_FOLDER, f"Briefing {today}{slot_label}", briefing)
 
     # Briefing is displayed as a card in Today (from .md file)
     # No need to create a task — that just pollutes the task list
@@ -527,17 +540,22 @@ def do_explore():
         log.info("Deep diving into: %s", dive["title"])
         _do_deep_dive(soul_ctx, dive)
 
-    append_memory(f"Explored {len(items)} items, wrote briefing {today}")
+    src_label = ",".join(source_names) if source_names else "all"
+    append_memory(f"Explored {len(items)} items ({src_label}), wrote briefing {today}")
 
     # Mark this explore slot as done
     now = datetime.now()
     state = load_state()
     state["last_explore"] = now.isoformat()
-    for t in EXPLORE_TIMES:
-        scheduled = datetime.combine(now.date(), t)
-        if abs((now - scheduled).total_seconds()) / 60 <= EXPLORE_WINDOW_MINUTES:
-            slot_key = f"explored_{now.strftime('%Y-%m-%d')}_{t.strftime('%H%M')}"
-            state[slot_key] = now.isoformat()
+    if slot_name:
+        slot_key = f"explored_{now.strftime('%Y-%m-%d')}_{slot_name}"
+        state[slot_key] = now.isoformat()
+    else:
+        # Backward compat: mark all matching time slots
+        for entry in EXPLORE_SCHEDULE:
+            scheduled = datetime.combine(now.date(), entry["time"])
+            if abs((now - scheduled).total_seconds()) / 60 <= EXPLORE_WINDOW_MINUTES:
+                state[f"explored_{now.strftime('%Y-%m-%d')}_{entry['slot']}"] = now.isoformat()
     save_state(state)
 
 
@@ -593,13 +611,14 @@ def _do_deep_dive(soul_ctx: str, dive: dict):
 # ANALYST mode — daily market analysis briefing (business days)
 # ---------------------------------------------------------------------------
 
-def do_analyst():
+def do_analyst(slot: str = ""):
     """Run the analyst agent to produce a daily analysis briefing.
 
-    Fetches recent feeds, runs the analyst with soul context + skills,
-    saves output to artifacts/briefings/ so TodayView picks it up.
+    Args:
+        slot: time slot label (e.g. "0700" for pre-market, "1800" for post-market).
     """
-    log.info("Starting daily analyst briefing")
+    session_type = "pre-market" if slot and int(slot[:2]) < 12 else "post-market"
+    log.info("Starting %s analyst briefing (slot=%s)", session_type, slot or "default")
     state = load_state()
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -620,7 +639,22 @@ def do_analyst():
     # Gather recent briefings for context
     recent = _gather_recent_briefings(days=3)
 
-    # Build analyst prompt
+    # Build analyst prompt — different focus for pre-market vs post-market
+    if session_type == "pre-market":
+        focus = """这是**开市前分析**。重点关注：
+1. **隔夜动态** — 亚洲/欧洲市场、重要新闻、政策变化
+2. **今日预期** — 今天可能影响市场的事件、数据发布
+3. **持仓建议** — 基于隔夜信息，有什么需要调整的
+4. **关注信号** — 今天盯什么指标
+5. **风险预警** — 可能的意外风险"""
+    else:
+        focus = """这是**收市后分析**。重点关注：
+1. **今日回顾** — 市场实际表现 vs 早间预期，哪些预判对了/错了
+2. **趋势信号** — 今天的走势确认或否定了什么趋势
+3. **异常信号** — 有没有反常的走势或数据
+4. **明日展望** — 基于今天的表现，明天关注什么
+5. **学到什么** — 今天的市场行为教了你什么"""
+
     prompt = f"""你是一个专业的市场分析师。以下是你的身份背景:
 {soul_ctx[:800]}
 
@@ -632,20 +666,14 @@ def do_analyst():
 
 ## 今日任务
 
-请生成今天的市场分析日报，包含:
-
-1. **市场动态** — 今天值得关注的市场变化、新闻、数据
-2. **趋势信号** — 正在形成或加速的趋势（技术、商业、政策）
-3. **投资/商业机会** — 基于你的分析，有哪些值得关注的机会
-4. **风险提示** — 需要警惕的风险信号
-5. **推荐关注** — 今天最值得深入了解的 1-2 个话题，附简要理由
+{focus}
 
 要求:
 - 用中文输出
 - Markdown 格式
 - 分析要有深度，不是简单的新闻复述
 - 给出你自己的判断和推荐
-- 标题用 "# {today} 市场分析日报"
+- 标题用 "# {today} {session_type} 市场分析"
 """
 
     result = claude_think(prompt, timeout=300)
@@ -655,23 +683,27 @@ def do_analyst():
         return
 
     # Save to artifacts/briefings for TodayView
+    suffix = f"analyst_{session_type.replace('-', '_')}"
     mira_briefings = MIRA_DIR / "artifacts" / "briefings"
     mira_briefings.mkdir(parents=True, exist_ok=True)
-    briefing_path = mira_briefings / f"{today}_analyst.md"
+    briefing_path = mira_briefings / f"{today}_{suffix}.md"
     briefing_path.write_text(result, encoding="utf-8")
     log.info("Analyst briefing saved: %s", briefing_path.name)
 
     # Also save to main briefings dir
     BRIEFINGS_DIR.mkdir(parents=True, exist_ok=True)
-    (BRIEFINGS_DIR / f"{today}_analyst.md").write_text(result, encoding="utf-8")
+    (BRIEFINGS_DIR / f"{today}_{suffix}.md").write_text(result, encoding="utf-8")
 
-    append_memory(f"Generated daily analyst briefing for {today}")
+    append_memory(f"Generated {session_type} analyst briefing for {today}")
 
-    # Mark as done for today
-    state[f"analyst_{today}"] = True
+    # Mark this slot as done
+    if slot:
+        state[f"analyst_{today}_{slot}"] = True
+    else:
+        state[f"analyst_{today}"] = True
     save_state(state)
 
-    log.info("Analyst briefing complete")
+    log.info("Analyst briefing (%s) complete", session_type)
 
 
 # ---------------------------------------------------------------------------
@@ -793,11 +825,17 @@ def do_journal():
         content = briefing_path.read_text(encoding="utf-8")
         briefing_summary = content[:2000]  # truncate for prompt
 
+    # --- Pick a 杂.md fragment as journal seed ---
+    state = load_state()
+    za_fragment = _mine_za_one(state)
+    save_state(state)
+
     # --- Ask Claude to write the journal ---
     soul = load_soul()
     soul_ctx = format_soul(soul)
 
-    prompt = journal_prompt(soul_ctx, tasks_summary, skills_summary, briefing_summary)
+    prompt = journal_prompt(soul_ctx, tasks_summary, skills_summary, briefing_summary,
+                            za_fragment=za_fragment)
     journal_text = claude_think(prompt, timeout=120)
 
     if not journal_text:
@@ -965,25 +1003,91 @@ def _gather_today_skills() -> str:
 
 
 # ---------------------------------------------------------------------------
+# 杂.md idea mining
+# ---------------------------------------------------------------------------
+
+def _mine_za_ideas(count: int = 3) -> list[str]:
+    """Extract random philosophical fragments from 杂.md, organized by @topic sections."""
+    import random
+
+    if not ZA_FILE.exists():
+        return []
+
+    text = ZA_FILE.read_text(encoding="utf-8")
+    # Split into @topic sections
+    sections = re.split(r"\n@", text)
+    fragments = []
+    for section in sections:
+        section = section.strip()
+        if not section:
+            continue
+        # Get topic name (first line) and content lines
+        lines = section.split("\n")
+        topic = lines[0].strip().lstrip("@").strip()
+        # Collect non-empty content lines as individual fragments
+        for line in lines[1:]:
+            line = line.strip()
+            if line and len(line) > 15:  # skip very short lines
+                fragments.append(f"[{topic}] {line}")
+
+    if not fragments:
+        return []
+
+    return random.sample(fragments, min(count, len(fragments)))
+
+
+def _mine_za_one(state: dict | None = None) -> str:
+    """Pick one fragment from 杂.md, avoiding recently used ones."""
+    import hashlib
+    fragments = _mine_za_ideas(count=50)  # get many, then filter
+    if not fragments:
+        return ""
+
+    used = set()
+    if state:
+        used = set(state.get("zhesi_used", []))
+
+    # Prefer unused fragments
+    available = [f for f in fragments if hashlib.md5(f.encode()).hexdigest()[:8] not in used]
+    if not available:
+        # All used, reset
+        available = fragments
+        if state is not None:
+            state["zhesi_used"] = []
+
+    import random
+    chosen = random.choice(available)
+
+    # Track usage
+    if state is not None:
+        h = hashlib.md5(chosen.encode()).hexdigest()[:8]
+        state.setdefault("zhesi_used", []).append(h)
+
+    return chosen
+
+
+# ---------------------------------------------------------------------------
 # Schedule logic
 # ---------------------------------------------------------------------------
 
-def should_explore() -> bool:
-    """Check if it's time to explore based on schedule. Exactly once per slot."""
+def should_explore() -> dict | None:
+    """Check if it's time to explore. Returns the slot dict or None.
+
+    Uses EXPLORE_SCHEDULE for source-rotated slots throughout the day.
+    """
     now = datetime.now()
     state = load_state()
 
-    for t in EXPLORE_TIMES:
-        scheduled = datetime.combine(now.date(), t)
+    for entry in EXPLORE_SCHEDULE:
+        scheduled = datetime.combine(now.date(), entry["time"])
         delta = abs((now - scheduled).total_seconds()) / 60
         if delta <= EXPLORE_WINDOW_MINUTES:
-            # Check if we already explored for THIS specific slot today
-            slot_key = f"explored_{now.strftime('%Y-%m-%d')}_{t.strftime('%H%M')}"
+            slot_key = f"explored_{now.strftime('%Y-%m-%d')}_{entry['slot']}"
             if state.get(slot_key):
-                return False  # already done this slot
-            return True
+                return None  # already done this slot
+            return entry
 
-    return False
+    return None
 
 
 def should_journal() -> bool:
@@ -1001,24 +1105,28 @@ def should_journal() -> bool:
     return not state.get(journal_key)
 
 
-def should_analyst() -> bool:
-    """Check if it's time for the daily analyst briefing (business days only)."""
+def should_analyst() -> str | None:
+    """Check if it's time for an analyst briefing. Returns slot label or None.
+
+    Supports multiple analyst times (e.g. 07:00 pre-market, 18:00 post-market).
+    """
     now = datetime.now()
 
     # Skip weekends if configured
-    if ANALYST_BUSINESS_DAYS_ONLY and now.weekday() >= 5:  # 5=Sat, 6=Sun
-        return False
-
-    scheduled = datetime.combine(now.date(), ANALYST_TIME)
-    delta = (now - scheduled).total_seconds() / 60
-
-    # Only trigger in a 60-minute window AFTER analyst time
-    if delta < 0 or delta > 60:
-        return False
+    if ANALYST_BUSINESS_DAYS_ONLY and now.weekday() >= 5:
+        return None
 
     state = load_state()
-    analyst_key = f"analyst_{now.strftime('%Y-%m-%d')}"
-    return not state.get(analyst_key)
+
+    for t in ANALYST_TIMES:
+        scheduled = datetime.combine(now.date(), t)
+        delta = (now - scheduled).total_seconds() / 60
+        if 0 <= delta <= 60:
+            slot_key = f"analyst_{now.strftime('%Y-%m-%d')}_{t.strftime('%H%M')}"
+            if not state.get(slot_key):
+                return t.strftime("%H%M")
+
+    return None
 
 
 def should_reflect() -> bool:
@@ -1041,6 +1149,190 @@ def should_reflect() -> bool:
             return False
 
     return True
+
+
+def should_zhesi() -> bool:
+    """Check if it's time for the daily philosophical thought."""
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), ZHESI_TIME)
+    delta = (now - scheduled).total_seconds() / 60
+
+    if delta < 0 or delta > 60:
+        return False
+
+    state = load_state()
+    return not state.get(f"zhesi_{now.strftime('%Y-%m-%d')}")
+
+
+def should_check_writing() -> bool:
+    """Check if it's time for a proactive autonomous writing check.
+
+    Runs during idle hours (10:00-22:00), at most once every 4 hours.
+    """
+    now = datetime.now()
+    if now.hour < 10 or now.hour >= 22:
+        return False
+
+    state = load_state()
+    last = state.get("last_autowrite_check", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            if (now - last_dt).total_seconds() < 4 * 3600:
+                return False
+        except ValueError:
+            pass
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# 每日哲思 — Daily Philosophical Thought
+# ---------------------------------------------------------------------------
+
+def do_zhesi():
+    """Write a daily philosophical thought based on a fragment from 杂.md."""
+    log.info("Starting daily 哲思")
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    state = load_state()
+    fragment = _mine_za_one(state)
+    if not fragment:
+        log.info("No fragments available from 杂.md, skipping 哲思")
+        return
+
+    soul = load_soul()
+    soul_ctx = format_soul(soul)
+
+    recent_reading = ""
+    try:
+        recent_reading = load_recent_reading_notes(days=7)
+    except Exception:
+        pass
+
+    prompt = zhesi_prompt(soul_ctx, fragment, recent_reading)
+    result = claude_think(prompt, timeout=120)
+
+    if not result:
+        log.error("哲思: Claude returned empty")
+        return
+
+    # Save
+    JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+    zhesi_path = JOURNAL_DIR / f"{today}_zhesi.md"
+    content = f"# 每日哲思 {today}\n\n> {fragment}\n\n{result}"
+    zhesi_path.write_text(content, encoding="utf-8")
+    log.info("哲思 saved: %s", zhesi_path.name)
+
+    # Copy to artifacts for iOS
+    mira_briefings = MIRA_DIR / "artifacts" / "briefings"
+    mira_briefings.mkdir(parents=True, exist_ok=True)
+    (mira_briefings / f"{today}_zhesi.md").write_text(content, encoding="utf-8")
+
+    append_memory(f"Wrote daily 哲思 on: {fragment[:60]}")
+
+    state[f"zhesi_{today}"] = datetime.now().isoformat()
+    save_state(state)
+
+
+# ---------------------------------------------------------------------------
+# Proactive autonomous writing check
+# ---------------------------------------------------------------------------
+
+def do_autowrite_check():
+    """Standalone check: does Mira have something she wants to write?
+
+    Draws from 杂.md ideas + recent readings + recurring themes.
+    More proactive than the journal-only trigger.
+    """
+    log.info("Starting autonomous writing check")
+
+    soul = load_soul()
+    soul_ctx = format_soul(soul)
+
+    # Gather context
+    za_fragments = "\n".join(f"- {f}" for f in _mine_za_ideas(count=5))
+    themes = detect_recurring_themes(days=7)
+    recent_reading = ""
+    try:
+        recent_reading = load_recent_reading_notes(days=7)
+    except Exception:
+        pass
+
+    # Get most recent journal
+    recent_journal = ""
+    if JOURNAL_DIR.exists():
+        journals = sorted(JOURNAL_DIR.glob("????-??-??.md"), reverse=True)
+        if journals:
+            recent_journal = journals[0].read_text(encoding="utf-8")[:1500]
+
+    prompt = autonomous_writing_prompt(
+        soul_ctx,
+        recurring_themes="\n".join(f"- {t}" for t in themes) if themes else "",
+        recent_reading=recent_reading[:2000],
+        recent_journal=recent_journal,
+        za_fragments=za_fragments,
+    )
+    result = claude_think(prompt, timeout=60)
+    if not result:
+        log.info("Autonomous writing check: empty response")
+        state = load_state()
+        state["last_autowrite_check"] = datetime.now().isoformat()
+        save_state(state)
+        return
+
+    # Parse decision
+    try:
+        match = re.search(r'\{.*\}', result, re.DOTALL)
+        if not match:
+            return
+        decision = json.loads(match.group())
+    except (json.JSONDecodeError, AttributeError):
+        return
+
+    state = load_state()
+    state["last_autowrite_check"] = datetime.now().isoformat()
+
+    if not decision.get("should_write"):
+        log.info("Autonomous writing: Mira chose not to write (%s)",
+                 decision.get("reason", "")[:80])
+        save_state(state)
+        return
+
+    # Mira wants to write!
+    title = decision.get("title", "Untitled")
+    thesis = decision.get("thesis", "")
+    outline = decision.get("outline", "")
+    writing_type = decision.get("type", "essay")
+
+    log.info("Autonomous writing triggered: '%s' [%s]", title, writing_type)
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    task_id = f"autowrite_{today}"
+
+    bridge = Mira()
+    content = f"{title}\n\n{thesis}\n\n{outline}"
+    bridge.create_task(
+        task_id=task_id,
+        title=f"Mira writes: {title}",
+        first_message=f"我想写一篇关于 {title} 的文章。\n\n核心论点: {thesis}\n\n{outline}",
+        sender="agent",
+        tags=["writing", "autonomous", "auto", writing_type],
+        origin="auto",
+    )
+    bridge.update_task_status(task_id, "working", agent_message="开始写作...")
+
+    _dispatch_background(f"autowrite-{today}", [
+        sys.executable,
+        str(Path(__file__).resolve().parent.parent / "writer" / "writing_agent.py"),
+        "auto",
+        "--title", title,
+        "--type", writing_type,
+        "--idea", content,
+    ])
+
+    append_memory(f"Self-initiated writing: '{title}' ({writing_type})")
+    save_state(state)
 
 
 # ---------------------------------------------------------------------------
@@ -1082,10 +1374,13 @@ def cmd_run():
         "run",
     ])
 
-    # Explore / Reflect (scheduled)
-    if should_explore():
-        _dispatch_background("explore", [
+    # Explore — source-rotated slots throughout the day
+    explore_slot = should_explore()
+    if explore_slot:
+        sources_arg = ",".join(explore_slot["sources"])
+        _dispatch_background(f"explore-{explore_slot['slot']}", [
             sys.executable, str(Path(__file__).resolve()), "explore",
+            "--sources", sources_arg, "--slot", explore_slot["slot"],
         ])
 
     if should_reflect():
@@ -1098,9 +1393,24 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "journal",
         ])
 
-    if should_analyst():
-        _dispatch_background("analyst", [
+    # Analyst — dual schedule (pre-market + post-market)
+    analyst_slot = should_analyst()
+    if analyst_slot:
+        _dispatch_background(f"analyst-{analyst_slot}", [
             sys.executable, str(Path(__file__).resolve()), "analyst",
+            "--slot", analyst_slot,
+        ])
+
+    # 每日哲思
+    if should_zhesi():
+        _dispatch_background("zhesi", [
+            sys.executable, str(Path(__file__).resolve()), "zhesi",
+        ])
+
+    # Proactive autonomous writing check
+    if should_check_writing():
+        _dispatch_background("autowrite-check", [
+            sys.executable, str(Path(__file__).resolve()), "autowrite-check",
         ])
 
     log.info("=== Mira Agent sleep ===")
@@ -1252,6 +1562,17 @@ def main():
 
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
 
+    # Parse optional flags
+    args = sys.argv[2:]
+    flags = {}
+    i = 0
+    while i < len(args):
+        if args[i].startswith("--") and i + 1 < len(args):
+            flags[args[i][2:]] = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
     if command == "run":
         cmd_run()
     elif command == "talk":
@@ -1259,13 +1580,19 @@ def main():
     elif command == "respond":
         do_respond()
     elif command == "explore":
-        do_explore()
+        sources = flags.get("sources", "").split(",") if flags.get("sources") else None
+        slot = flags.get("slot", "")
+        do_explore(source_names=sources, slot_name=slot)
     elif command == "reflect":
         do_reflect()
     elif command == "journal":
         do_journal()
     elif command == "analyst":
-        do_analyst()
+        do_analyst(slot=flags.get("slot", ""))
+    elif command == "zhesi":
+        do_zhesi()
+    elif command == "autowrite-check":
+        do_autowrite_check()
     elif command == "write-check":
         # Manually check and advance writing projects
         responses = check_writing_responses()
@@ -1276,27 +1603,15 @@ def main():
         else:
             print("No writing projects awaiting response")
     elif command == "write-from-plan":
-        # Start writing from an existing outline/plan file
-        # Usage: core.py write-from-plan <plan_path> [--title <title>] [--type <type>]
         if len(sys.argv) < 3:
             print("Usage: core.py write-from-plan <path-to-大纲.md> [--title 标题] [--type novel|essay|blog|technical|poetry]")
             sys.exit(1)
         plan_path = sys.argv[2]
-        title = ""
-        writing_type = "novel"
-        i = 3
-        while i < len(sys.argv):
-            if sys.argv[i] == "--title" and i + 1 < len(sys.argv):
-                title = sys.argv[i + 1]
-                i += 2
-            elif sys.argv[i] == "--type" and i + 1 < len(sys.argv):
-                writing_type = sys.argv[i + 1]
-                i += 2
-            else:
-                i += 1
+        title = flags.get("title", "")
+        writing_type = flags.get("type", "novel")
         start_from_plan(title, plan_path, writing_type)
     else:
-        print(f"Usage: {sys.argv[0]} [run|talk|respond|explore|reflect|journal|write-check|write-from-plan]")
+        print(f"Usage: {sys.argv[0]} [run|talk|respond|explore|reflect|journal|analyst|zhesi|autowrite-check|write-check|write-from-plan]")
         sys.exit(1)
 
 
