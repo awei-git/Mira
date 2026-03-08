@@ -192,50 +192,61 @@ def fetch_rss(feeds: list[dict]) -> list[dict]:
 # Fetch all sources
 # ---------------------------------------------------------------------------
 
-def fetch_all() -> list[dict]:
-    """Fetch from all configured sources. Returns combined list of items."""
+def fetch_sources(source_names: list[str]) -> list[dict]:
+    """Fetch from specific named sources. Names: arxiv, reddit, huggingface, hacker_news, rss, or RSS feed names."""
     sources = load_sources()
     if not sources:
         return []
 
     all_items = []
+    names_lower = [n.strip().lower() for n in source_names]
 
     # Arxiv
-    arxiv_cfg = sources.get("arxiv", {})
-    if arxiv_cfg.get("categories"):
-        items = fetch_arxiv(
-            arxiv_cfg["categories"],
-            arxiv_cfg.get("max_results", 10),
-        )
-        all_items.extend(items)
-        log.info("Arxiv: %d items", len(items))
+    if "arxiv" in names_lower:
+        arxiv_cfg = sources.get("arxiv", {})
+        if arxiv_cfg.get("categories"):
+            items = fetch_arxiv(arxiv_cfg["categories"], arxiv_cfg.get("max_results", 10))
+            all_items.extend(items)
+            log.info("Arxiv: %d items", len(items))
 
     # Reddit
-    reddit_cfg = sources.get("reddit", {})
-    if reddit_cfg.get("subreddits"):
-        items = fetch_reddit(
-            reddit_cfg["subreddits"],
-            reddit_cfg.get("limit", 10),
-        )
-        all_items.extend(items)
-        log.info("Reddit: %d items", len(items))
+    if "reddit" in names_lower:
+        reddit_cfg = sources.get("reddit", {})
+        if reddit_cfg.get("subreddits"):
+            items = fetch_reddit(reddit_cfg["subreddits"], reddit_cfg.get("limit", 10))
+            all_items.extend(items)
+            log.info("Reddit: %d items", len(items))
 
     # HuggingFace
-    if sources.get("huggingface", {}).get("enabled", True):
-        items = fetch_hf_papers()
-        all_items.extend(items)
-        log.info("HuggingFace: %d items", len(items))
+    if "huggingface" in names_lower:
+        if sources.get("huggingface", {}).get("enabled", True):
+            items = fetch_hf_papers()
+            all_items.extend(items)
+            log.info("HuggingFace: %d items", len(items))
 
-    # RSS
+    # Specific RSS feeds by name, or all RSS
     rss_feeds = sources.get("rss", [])
-    if rss_feeds:
-        items = fetch_rss(rss_feeds)
-        all_items.extend(items)
-        log.info("RSS: %d items", len(items))
+    if "rss" in names_lower:
+        # All RSS feeds
+        if rss_feeds:
+            items = fetch_rss(rss_feeds)
+            all_items.extend(items)
+            log.info("RSS (all): %d items", len(items))
+    else:
+        # Match specific feeds by name (e.g. "hacker_news" matches "Hacker News")
+        matched = []
+        for feed in rss_feeds:
+            feed_key = feed.get("name", "").lower().replace(" ", "_")
+            if feed_key in names_lower or feed.get("name", "").lower() in names_lower:
+                matched.append(feed)
+        if matched:
+            items = fetch_rss(matched)
+            all_items.extend(items)
+            log.info("RSS (matched %d feeds): %d items", len(matched), len(items))
 
-    log.info("Total fetched: %d items", len(all_items))
+    log.info("Selective fetch (%s): %d items total", ",".join(source_names), len(all_items))
 
-    # Save raw for debugging
+    # Save raw
     raw_path = FEEDS_DIR / "raw" / f"{datetime.now().strftime('%Y-%m-%d_%H%M')}.json"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     raw_path.write_text(
@@ -243,3 +254,8 @@ def fetch_all() -> list[dict]:
     )
 
     return all_items[:MAX_FEED_ITEMS]
+
+
+def fetch_all() -> list[dict]:
+    """Fetch from all configured sources. Returns combined list of items."""
+    return fetch_sources(["arxiv", "reddit", "huggingface", "rss"])

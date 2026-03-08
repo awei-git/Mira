@@ -279,13 +279,37 @@ def _parse_times(time_strs: list[str]) -> list[time]:
         result.append(time(int(h), int(m)))
     return result
 
-EXPLORE_TIMES = _parse_times(_sched.get("explore_times", ["09:00", "18:00"]))
+# Explore: source rotation schedule
+_explore_slots = _sched.get("explore_slots", ["morning", "afternoon"])
+_explore_slot_times = _parse_times(_sched.get("explore_slot_times", ["09:00", "18:00"]))
+_explore_slot_sources_raw = _sched.get("explore_slot_sources", ["arxiv,huggingface", "reddit,rss"])
+EXPLORE_SCHEDULE = []
+for _i, _slot in enumerate(_explore_slots):
+    EXPLORE_SCHEDULE.append({
+        "slot": _slot,
+        "time": _explore_slot_times[_i] if _i < len(_explore_slot_times) else _explore_slot_times[-1],
+        "sources": _explore_slot_sources_raw[_i].split(",") if _i < len(_explore_slot_sources_raw) else [],
+    })
+# Backward compat
+EXPLORE_TIMES = _explore_slot_times
 EXPLORE_WINDOW_MINUTES = _sched.get("explore_window_minutes", 30)
+
 REFLECT_DAY = _sched.get("reflect_day", 6)
 REFLECT_TIME = _parse_times([_sched.get("reflect_time", "10:00")])[0]
 JOURNAL_TIME = _parse_times([_sched.get("journal_time", "23:00")])[0]
-ANALYST_TIME = _parse_times([_sched.get("analyst_time", "08:30")])[0]
+
+# Analyst: dual schedule (pre-market + post-market)
+_analyst_raw = _sched.get("analyst_times", _sched.get("analyst_time", ["08:30"]))
+if isinstance(_analyst_raw, str):
+    _analyst_raw = [_analyst_raw]
+ANALYST_TIMES = _parse_times(_analyst_raw)
 ANALYST_BUSINESS_DAYS_ONLY = _sched.get("analyst_business_days_only", True)
+
+# Daily philosophical thought
+ZHESI_TIME = _parse_times([_sched.get("zhesi_time", "09:30")])[0]
+
+# 杂.md — philosophical fragments for mining
+ZA_FILE = WRITINGS_DIR / "ideas" / "杂.md"
 
 # Limits
 MAX_FEED_ITEMS = _limits.get("max_feed_items", 50)
