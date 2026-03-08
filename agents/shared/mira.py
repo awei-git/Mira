@@ -143,8 +143,11 @@ class Mira:
                            result_path: str = ""):
         """Update a task's status and optionally append an agent message.
 
-        Also writes agent replies to a sidecar file ({task_id}.reply.json)
-        to survive iCloud sync races — iOS may overwrite the main task JSON.
+        Writes to THREE locations to survive iCloud sync races:
+        1. Main task JSON (may be overwritten by iOS)
+        2. Reply sidecar ({task_id}.reply.json) — agent messages
+        3. Status sidecar ({task_id}.status.json) — authoritative agent status
+           iOS should read this file to reconcile status after sync.
         """
         task = self._read_task(task_id)
         if not task:
@@ -163,6 +166,10 @@ class Mira:
         if result_path:
             task["result_path"] = result_path
         self._write_task(task)
+        # Write status sidecar — this is the authoritative agent-side status.
+        # iOS owns the task json (adds user messages). Mac owns this file.
+        # No iCloud conflict because each side writes to its own file.
+        self._write_status_sidecar(task_id, status, agent_message)
 
     def append_task_message(self, task_id: str, sender: str, content: str):
         """Append a message to an existing task (for follow-ups)."""
@@ -209,6 +216,26 @@ class Mira:
         replies.append(msg)
         path.write_text(
             json.dumps(replies, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def _write_status_sidecar(self, task_id: str, status: str,
+                               agent_message: str = ""):
+        """Write authoritative agent-side status to a separate file.
+
+        This file is ONLY written by the Mac agent. iOS should read it
+        on app launch / refresh to reconcile with the task JSON.
+        Format: {status, updated_at, last_message (preview)}.
+        """
+        path = self.tasks_dir / f"{task_id}.status.json"
+        data = {
+            "status": status,
+            "updated_at": _utc_iso(),
+        }
+        if agent_message:
+            data["last_message"] = agent_message[:300]
+        path.write_text(
+            json.dumps(data, ensure_ascii=False),
             encoding="utf-8",
         )
 
