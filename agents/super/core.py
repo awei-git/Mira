@@ -1267,7 +1267,9 @@ def do_check_comments():
 
     try:
         sys.path.insert(0, str(_AGENTS_DIR / "publisher"))
-        from substack import check_and_reply_comments
+        from substack import check_and_reply_comments, sync_posts_for_ios
+        # Sync posts list for iOS app display
+        sync_posts_for_ios()
         replies = check_and_reply_comments()
         if replies:
             log.info("Replied to %d comments", len(replies))
@@ -1464,6 +1466,13 @@ def cmd_run():
             advance_project(resp["workspace"], user_input=resp["content"])
     except Exception as e:
         log.error("Writing response check failed: %s", e)
+
+    # Sync app feeds → browsable artifacts (fast, file I/O only)
+    try:
+        from agents.shared.app_sync import sync_app_artifacts
+        sync_app_artifacts()
+    except Exception as e:
+        log.warning("App sync failed: %s", e)
 
     # --- All heavy work below runs in background processes ---
 
