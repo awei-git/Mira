@@ -25,7 +25,9 @@ sys.path.insert(0, str(_AGENTS_DIR / "explorer"))
 from config import (
     MIRA_ROOT, WORKSPACE_DIR, BRIEFINGS_DIR, LOGS_DIR, STATE_FILE,
     NOTES_INBOX_FOLDER, NOTES_BRIEFING_FOLDER, NOTES_OUTPUT_FOLDER,
-    EXPLORE_SCHEDULE, EXPLORE_WINDOW_MINUTES, REFLECT_DAY, REFLECT_TIME,
+    EXPLORE_SOURCE_GROUPS, EXPLORE_COOLDOWN_MINUTES,
+    EXPLORE_ACTIVE_START, EXPLORE_ACTIVE_END, EXPLORE_MAX_PER_DAY,
+    REFLECT_DAY, REFLECT_TIME,
     MAX_BRIEFING_ITEMS, MAX_DEEP_DIVES, MIRA_DIR, CLEANUP_DAYS,
     JOURNAL_DIR, JOURNAL_TIME, SKILLS_INDEX, WRITINGS_OUTPUT_DIR, WRITINGS_DIR,
     ANALYST_TIMES, ANALYST_BUSINESS_DAYS_ONLY, ZHESI_TIME, ZA_FILE,
@@ -543,19 +545,26 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     src_label = ",".join(source_names) if source_names else "all"
     append_memory(f"Explored {len(items)} items ({src_label}), wrote briefing {today}")
 
-    # Mark this explore slot as done
+    # Mark this explore as done and update tracking
     now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
     state = load_state()
     state["last_explore"] = now.isoformat()
+    state[f"explore_count_{today}"] = state.get(f"explore_count_{today}", 0) + 1
     if slot_name:
-        slot_key = f"explored_{now.strftime('%Y-%m-%d')}_{slot_name}"
-        state[slot_key] = now.isoformat()
-    else:
-        # Backward compat: mark all matching time slots
-        for entry in EXPLORE_SCHEDULE:
-            scheduled = datetime.combine(now.date(), entry["time"])
-            if abs((now - scheduled).total_seconds()) / 60 <= EXPLORE_WINDOW_MINUTES:
-                state[f"explored_{now.strftime('%Y-%m-%d')}_{entry['slot']}"] = now.isoformat()
+        state[f"explored_{today}_{slot_name}"] = now.isoformat()
+    # Track which source group was used (for LRU selection)
+    if source_names:
+        # Find matching group index
+        for i, group in enumerate(EXPLORE_SOURCE_GROUPS):
+            if set(source_names) == set(group):
+                recent = state.get("explore_recent_groups", [])
+                if i in recent:
+                    recent.remove(i)
+                recent.append(i)
+                # Keep only last N entries
+                state["explore_recent_groups"] = recent[-len(EXPLORE_SOURCE_GROUPS):]
+                break
     save_state(state)
 
 
@@ -1071,23 +1080,59 @@ def _mine_za_one(state: dict | None = None) -> str:
 # ---------------------------------------------------------------------------
 
 def should_explore() -> dict | None:
-    """Check if it's time to explore. Returns the slot dict or None.
+    """Check if Mira should explore now. Free-form, curiosity-driven.
 
-    Uses EXPLORE_SCHEDULE for source-rotated slots throughout the day.
+    Returns {"sources": [...], "label": str} or None.
+    Explores whenever idle (cooldown-based), picks sources she hasn't read recently.
     """
+    import random
+
     now = datetime.now()
+
+    # Only explore during active hours
+    if now.time() < EXPLORE_ACTIVE_START or now.time() >= EXPLORE_ACTIVE_END:
+        return None
+
     state = load_state()
 
-    for entry in EXPLORE_SCHEDULE:
-        scheduled = datetime.combine(now.date(), entry["time"])
-        delta = abs((now - scheduled).total_seconds()) / 60
-        if delta <= EXPLORE_WINDOW_MINUTES:
-            slot_key = f"explored_{now.strftime('%Y-%m-%d')}_{entry['slot']}"
-            if state.get(slot_key):
-                return None  # already done this slot
-            return entry
+    # Check daily cap
+    today = now.strftime("%Y-%m-%d")
+    explore_count = state.get(f"explore_count_{today}", 0)
+    if explore_count >= EXPLORE_MAX_PER_DAY:
+        return None
 
-    return None
+    # Check cooldown since last explore
+    last = state.get("last_explore", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            elapsed = (now - last_dt).total_seconds() / 60
+            if elapsed < EXPLORE_COOLDOWN_MINUTES:
+                return None
+        except ValueError:
+            pass
+
+    # Pick sources: prefer least-recently-used group
+    if not EXPLORE_SOURCE_GROUPS:
+        return None
+
+    recent_groups = state.get("explore_recent_groups", [])  # list of group indices
+    # Score each group: lower = used more recently
+    scores = []
+    for i, group in enumerate(EXPLORE_SOURCE_GROUPS):
+        if i in recent_groups:
+            # Position in recent list (0 = most recent)
+            recency = len(recent_groups) - recent_groups.index(i)
+        else:
+            recency = len(EXPLORE_SOURCE_GROUPS) + 1  # never used = highest priority
+        # Add small random jitter so it's not purely deterministic
+        scores.append(recency + random.random() * 0.5)
+
+    chosen_idx = max(range(len(scores)), key=lambda i: scores[i])
+    chosen_sources = EXPLORE_SOURCE_GROUPS[chosen_idx]
+    label = "_".join(chosen_sources[:2])  # e.g. "arxiv_huggingface"
+
+    return {"sources": chosen_sources, "label": label, "group_idx": chosen_idx}
 
 
 def should_journal() -> bool:
@@ -1374,13 +1419,13 @@ def cmd_run():
         "run",
     ])
 
-    # Explore — source-rotated slots throughout the day
-    explore_slot = should_explore()
-    if explore_slot:
-        sources_arg = ",".join(explore_slot["sources"])
-        _dispatch_background(f"explore-{explore_slot['slot']}", [
+    # Explore — free-form, curiosity-driven
+    explore_pick = should_explore()
+    if explore_pick:
+        sources_arg = ",".join(explore_pick["sources"])
+        _dispatch_background(f"explore-{explore_pick['label']}", [
             sys.executable, str(Path(__file__).resolve()), "explore",
-            "--sources", sources_arg, "--slot", explore_slot["slot"],
+            "--sources", sources_arg, "--slot", explore_pick["label"],
         ])
 
     if should_reflect():

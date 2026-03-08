@@ -279,20 +279,20 @@ def _parse_times(time_strs: list[str]) -> list[time]:
         result.append(time(int(h), int(m)))
     return result
 
-# Explore: source rotation schedule
-_explore_slots = _sched.get("explore_slots", ["morning", "afternoon"])
-_explore_slot_times = _parse_times(_sched.get("explore_slot_times", ["09:00", "18:00"]))
-_explore_slot_sources_raw = _sched.get("explore_slot_sources", ["arxiv,huggingface", "reddit,rss"])
-EXPLORE_SCHEDULE = []
-for _i, _slot in enumerate(_explore_slots):
-    EXPLORE_SCHEDULE.append({
-        "slot": _slot,
-        "time": _explore_slot_times[_i] if _i < len(_explore_slot_times) else _explore_slot_times[-1],
-        "sources": _explore_slot_sources_raw[_i].split(",") if _i < len(_explore_slot_sources_raw) else [],
-    })
-# Backward compat
-EXPLORE_TIMES = _explore_slot_times
-EXPLORE_WINDOW_MINUTES = _sched.get("explore_window_minutes", 30)
+# Explore: free-form, curiosity-driven
+# Source groups are a pool — each explore session picks one at random (LRU-weighted)
+_explore_source_groups_raw = _sched.get("explore_source_groups",
+    _sched.get("explore_slot_sources",  # backward compat with old config
+               ["arxiv,huggingface", "reddit,hacker_news,ai_news",
+                "quanta_magazine,aeon_essays,stanford_encyclopedia,marginal_revolution,astral_codex_ten",
+                "literaryhub,brain_pickings,3blue1brown,veritasium"]))
+EXPLORE_SOURCE_GROUPS = [g.split(",") for g in _explore_source_groups_raw]
+EXPLORE_COOLDOWN_MINUTES = _sched.get("explore_cooldown_minutes",
+    _sched.get("explore_window_minutes", 90))  # default 90min between explores
+EXPLORE_ACTIVE_START = _parse_times([_sched.get("explore_start", "08:00")])[0]
+EXPLORE_ACTIVE_END = _parse_times([_sched.get("explore_end", "23:00")])[0]
+# Max explores per day (safety valve)
+EXPLORE_MAX_PER_DAY = _sched.get("explore_max_per_day", 8)
 
 REFLECT_DAY = _sched.get("reflect_day", 6)
 REFLECT_TIME = _parse_times([_sched.get("reflect_time", "10:00")])[0]
