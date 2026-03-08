@@ -1232,6 +1232,61 @@ def should_check_writing() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Substack comment monitoring
+# ---------------------------------------------------------------------------
+
+def should_check_comments() -> bool:
+    """Check if it's time to look for new Substack comments.
+
+    Runs during waking hours, at most once every 2 hours.
+    """
+    now = datetime.now()
+    if now.hour < 8 or now.hour >= 23:
+        return False
+
+    state = load_state()
+    last = state.get("last_comment_check", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            if (now - last_dt).total_seconds() < 2 * 3600:
+                return False
+        except ValueError:
+            pass
+
+    return True
+
+
+def do_check_comments():
+    """Check Substack posts for new comments and reply as Mira."""
+    log.info("Starting Substack comment check")
+
+    state = load_state()
+    state["last_comment_check"] = datetime.now().isoformat()
+    save_state(state)
+
+    try:
+        sys.path.insert(0, str(_AGENTS_DIR / "publisher"))
+        from substack import check_and_reply_comments
+        replies = check_and_reply_comments()
+        if replies:
+            log.info("Replied to %d comments", len(replies))
+            for r in replies:
+                log.info("  %s on '%s': %s",
+                         r["comment_name"], r["post_title"], r["reply"][:80])
+            # Notify bridge
+            bridge = Mira()
+            summary = f"回复了 {len(replies)} 条 Substack 评论:\n"
+            for r in replies:
+                summary += f"- {r['comment_name']} on \"{r['post_title']}\": {r['reply'][:60]}\n"
+            append_memory(f"Replied to {len(replies)} Substack comments")
+        else:
+            log.info("No new comments to reply to")
+    except Exception as e:
+        log.error("Comment check failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # 每日哲思 — Daily Philosophical Thought
 # ---------------------------------------------------------------------------
 
@@ -1458,6 +1513,12 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "autowrite-check",
         ])
 
+    # Substack comment check — reply to readers
+    if should_check_comments():
+        _dispatch_background("substack-comments", [
+            sys.executable, str(Path(__file__).resolve()), "check-comments",
+        ])
+
     log.info("=== Mira Agent sleep ===")
 
 
@@ -1638,6 +1699,8 @@ def main():
         do_zhesi()
     elif command == "autowrite-check":
         do_autowrite_check()
+    elif command == "check-comments":
+        do_check_comments()
     elif command == "write-check":
         # Manually check and advance writing projects
         responses = check_writing_responses()
