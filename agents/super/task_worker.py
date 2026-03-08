@@ -359,15 +359,14 @@ Available agents:
 - publish: Publish EXISTING content to a platform (Substack, Instagram, Threads)
 - analyst: Market analysis, competitive intelligence, trend detection, industry research, market sizing
 - general: Answer questions, search, analyze, code, file operations, etc.
-- clarify: Ask the user a question to get more information before proceeding
-- confirm: Present an execution plan to the user and wait for approval before proceeding. Use this for complex tasks that would take a long time (building systems, multi-file code projects, research with many steps).
+- clarify: Ask the user a question ONLY if the request is genuinely ambiguous and you cannot proceed without more info.
 
 Rules:
 - If the request needs content CREATED then PUBLISHED, use writing first then publish.
 - If publishing existing content, just use publish.
 - Talking ABOUT writing (e.g. "写作技巧") is general, not writing.
-- AVOID using clarify if the user's intent is reasonably clear from context. Prefer to just do it.
-- If the task is COMPLEX (building a system, creating an app, multi-step engineering, would take >5 min), ALWAYS insert a confirm step FIRST that summarizes your execution plan, estimated time, and asks the user to confirm. This lets the user adjust scope before you start.
+- AVOID using clarify. The user expects you to just do things. Only clarify if you truly cannot figure out what they want.
+- NEVER ask for confirmation before starting work. Just do it. The user sent the request because they want it done.
 - Most simple requests need only 1 step. Use multiple steps only when truly needed.
 - If the user asked you to write something AND publish it, use writing + publish steps.
 
@@ -394,7 +393,7 @@ JSON:"""
             if match:
                 steps = json.loads(match.group())
                 # Validate
-                valid_agents = {"briefing", "writing", "publish", "analyst", "general", "clarify", "confirm"}
+                valid_agents = {"briefing", "writing", "publish", "analyst", "general", "clarify"}
                 validated = []
                 for s in steps:
                     if isinstance(s, dict) and s.get("agent") in valid_agents:
@@ -429,21 +428,6 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
             _write_result(workspace, task_id, "needs-input", instruction,
                           tags=["clarify"])
             _append_exec_log(workspace, round_num, "clarify", "needs-input", instruction)
-            return
-
-        elif agent == "confirm":
-            # Save remaining plan so we can resume after user confirms
-            remaining = plan[i+1:]
-            if remaining:
-                (workspace / "pending_plan.json").write_text(
-                    json.dumps(remaining, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-            (workspace / "output.md").write_text(instruction, encoding="utf-8")
-            _write_result(workspace, task_id, "needs-input", instruction,
-                          tags=["confirm"])
-            _append_exec_log(workspace, round_num, "confirm", "needs-input", instruction)
-            log.info("Task %s waiting for user confirmation", task_id)
             return
 
         elif agent == "briefing":

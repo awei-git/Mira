@@ -467,6 +467,24 @@ final class BridgeService {
             }
         }
 
+        // Build map of outbox replies by thread_id for merging into tasks
+        var outboxByThread: [String: [[String: Any]]] = [:]
+        if let outbox = outboxURL {
+            let outboxFiles = (try? fm.contentsOfDirectory(
+                at: outbox, includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            for f in outboxFiles where f.pathExtension == "json" {
+                guard fm.isReadableFile(atPath: f.path),
+                      let d = try? Data(contentsOf: f),
+                      let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                      let tid = obj["thread_id"] as? String, !tid.isEmpty,
+                      let sender = obj["sender"] as? String, sender == "agent"
+                else { continue }
+                outboxByThread[tid, default: []].append(obj)
+            }
+        }
+
         var loaded: [MiraTask] = []
         do {
             let files = try fm.contentsOfDirectory(
@@ -521,6 +539,25 @@ final class BridgeService {
                             }
                         }
                         // Re-sort messages by timestamp
+                        task.messages.sort { $0.timestamp < $1.timestamp }
+                    }
+                    // Also merge agent replies from outbox (last resort if sidecar was lost)
+                    if let outboxReplies = outboxByThread[task.id] {
+                        let existingTimestamps = Set(task.messages.map(\.timestamp))
+                        for reply in outboxReplies {
+                            let ts = reply["timestamp"] as? String ?? ""
+                            if !ts.isEmpty && !existingTimestamps.contains(ts) {
+                                let content = reply["content"] as? String ?? ""
+                                // Strip status footer from outbox replies
+                                let cleanContent = content.components(separatedBy: "\n---\nAgent:").first ?? content
+                                let msg = TaskMessage(
+                                    sender: "agent",
+                                    content: cleanContent.trimmingCharacters(in: .whitespacesAndNewlines),
+                                    timestamp: ts
+                                )
+                                task.messages.append(msg)
+                            }
+                        }
                         task.messages.sort { $0.timestamp < $1.timestamp }
                     }
                     loaded.append(task)
