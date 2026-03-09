@@ -28,7 +28,7 @@ from config import (
     EXPLORE_SOURCE_GROUPS, EXPLORE_COOLDOWN_MINUTES,
     EXPLORE_ACTIVE_START, EXPLORE_ACTIVE_END, EXPLORE_MAX_PER_DAY,
     REFLECT_DAY, REFLECT_TIME,
-    MAX_BRIEFING_ITEMS, MAX_DEEP_DIVES, MIRA_DIR, CLEANUP_DAYS,
+    MAX_BRIEFING_ITEMS, MAX_DEEP_DIVES, MIRA_DIR, ARTIFACTS_DIR, CLEANUP_DAYS,
     JOURNAL_DIR, JOURNAL_TIME, SKILLS_INDEX, WRITINGS_OUTPUT_DIR, WRITINGS_DIR,
     ANALYST_TIMES, ANALYST_BUSINESS_DAYS_ONLY, ZHESI_TIME, ZA_FILE,
 )
@@ -525,7 +525,7 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     log.info("Briefing saved: %s", briefing_path.name)
 
     # Also copy to mira/artifacts for iOS browsing
-    mira_briefings = MIRA_DIR / "artifacts" / "briefings"
+    mira_briefings = ARTIFACTS_DIR / "briefings"
     mira_briefings.mkdir(parents=True, exist_ok=True)
     (mira_briefings / f"{today}{suffix}.md").write_text(briefing, encoding="utf-8")
 
@@ -586,7 +586,7 @@ def _do_deep_dive(soul_ctx: str, dive: dict):
     log.info("Deep dive saved: %s", path.name)
 
     # Copy to mira/artifacts for iOS browsing
-    mira_briefings = MIRA_DIR / "artifacts" / "briefings"
+    mira_briefings = ARTIFACTS_DIR / "briefings"
     mira_briefings.mkdir(parents=True, exist_ok=True)
     (mira_briefings / f"{today}_deep_dive.md").write_text(result, encoding="utf-8")
 
@@ -693,7 +693,7 @@ def do_analyst(slot: str = ""):
 
     # Save to artifacts/briefings for TodayView
     suffix = f"analyst_{session_type.replace('-', '_')}"
-    mira_briefings = MIRA_DIR / "artifacts" / "briefings"
+    mira_briefings = ARTIFACTS_DIR / "briefings"
     mira_briefings.mkdir(parents=True, exist_ok=True)
     briefing_path = mira_briefings / f"{today}_{suffix}.md"
     briefing_path.write_text(result, encoding="utf-8")
@@ -857,7 +857,7 @@ def do_journal():
     log.info("Journal saved: %s", journal_path.name)
 
     # Copy to briefings dir so iOS can read it (same synced folder)
-    mira_briefings = MIRA_DIR / "artifacts" / "briefings"
+    mira_briefings = ARTIFACTS_DIR / "briefings"
     mira_briefings.mkdir(parents=True, exist_ok=True)
     (mira_briefings / f"{today}_journal.md").write_text(journal_content, encoding="utf-8")
 
@@ -1327,7 +1327,7 @@ def do_zhesi():
     log.info("哲思 saved: %s", zhesi_path.name)
 
     # Copy to artifacts for iOS
-    mira_briefings = MIRA_DIR / "artifacts" / "briefings"
+    mira_briefings = ARTIFACTS_DIR / "briefings"
     mira_briefings.mkdir(parents=True, exist_ok=True)
     (mira_briefings / f"{today}_zhesi.md").write_text(content, encoding="utf-8")
 
@@ -1467,12 +1467,15 @@ def cmd_run():
     except Exception as e:
         log.error("Writing response check failed: %s", e)
 
-    # Sync app feeds → browsable artifacts (fast, file I/O only)
+    # Sync Mira's own status + read all app feeds
     try:
-        from agents.shared.app_sync import sync_app_artifacts
-        sync_app_artifacts()
+        from agents.shared.app_feeds import read_app_feeds, sync_mira_status
+        sync_mira_status()
+        feeds = read_app_feeds()
+        if feeds:
+            log.info("App feeds: %s", ", ".join(f["app"] for f in feeds))
     except Exception as e:
-        log.warning("App sync failed: %s", e)
+        log.warning("App feed sync/read failed: %s", e)
 
     # --- All heavy work below runs in background processes ---
 
