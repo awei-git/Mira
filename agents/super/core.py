@@ -510,8 +510,12 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     # 2. Format items for Claude
     feed_text = _format_feed_items(items)
 
+    # 2b. Gather recent briefing topics for dedup
+    recent_topics = _extract_recent_briefing_topics(days=3)
+
     # 3. Ask Claude to filter and rank
-    prompt = explore_prompt(soul_ctx, feed_text, source_slot=slot_name)
+    prompt = explore_prompt(soul_ctx, feed_text, source_slot=slot_name,
+                            recent_topics=recent_topics)
     briefing = claude_think(prompt, timeout=180)
 
     if not briefing:
@@ -1836,6 +1840,47 @@ def _extract_section(text: str, header: str) -> str:
     pattern = rf"###\s*{re.escape(header)}\s*\n(.+?)(?=\n###|\Z)"
     match = re.search(pattern, text, re.DOTALL)
     return match.group(1).strip() if match else ""
+
+
+def _extract_recent_briefing_topics(days: int = 3) -> str:
+    """Extract topic titles/URLs from recent briefings for dedup.
+
+    Returns a concise list of what's been covered so the explore prompt
+    can skip repeats.
+    """
+    cutoff = datetime.now() - timedelta(days=days)
+    topics = []
+    for path in sorted(BRIEFINGS_DIR.glob("*.md"), reverse=True):
+        try:
+            date_str = path.stem[:10]
+            file_date = datetime.strptime(date_str, "%Y-%m-%d")
+            if file_date < cutoff:
+                continue
+        except ValueError:
+            continue
+        # Skip journals, zhesi, deep_dives — only briefings
+        stem = path.stem[11:]  # after YYYY-MM-DD_
+        if any(x in stem for x in ("journal", "zhesi", "deep_dive", "analyst")):
+            continue
+        content = path.read_text(encoding="utf-8")
+        # Extract markdown links as topic indicators
+        links = re.findall(r'\[([^\]]+)\]\(([^)]+)\)', content)
+        for title, url in links[:15]:
+            topics.append(f"- {title} ({url})")
+        # Also grab any lines that look like topic headers
+        for line in content.split("\n"):
+            line = line.strip()
+            if line.startswith("##") or (line.startswith("**") and line.endswith("**")):
+                topics.append(f"- {line}")
+    # Dedup and limit
+    seen = set()
+    unique = []
+    for t in topics:
+        key = t.lower()[:80]
+        if key not in seen:
+            seen.add(key)
+            unique.append(t)
+    return "\n".join(unique[:30]) if unique else ""
 
 
 def _gather_recent_briefings(days: int = 7) -> str:

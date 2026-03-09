@@ -5,6 +5,10 @@ struct TodayView: View {
     @State private var todayCards: [BriefingFileCard] = []
     @State private var previousCards: [BriefingFileCard] = []
     @State private var substackPosts: [SubstackPost] = []
+    @State private var showActiveTasks = false
+    @State private var showCompletedTasks = false
+    @State private var showPosts = false
+    @State private var showPreviousDays = false
 
     var body: some View {
         NavigationStack {
@@ -42,44 +46,57 @@ struct TodayView: View {
                         }
                     }
 
-                    // Active tasks
+                    // Active tasks (collapsible)
                     let active = bridge.activeTasks.filter { !$0.needsInput }
                     if !active.isEmpty {
-                        SectionHeader(title: "进行中", icon: "arrow.triangle.2.circlepath")
-                        ForEach(active) { task in
-                            NavigationLink(value: task.id) {
-                                TaskRowCompact(task: task)
+                        DisclosureGroup(isExpanded: $showActiveTasks) {
+                            ForEach(active) { task in
+                                NavigationLink(value: task.id) {
+                                    TaskRowCompact(task: task)
+                                }
                             }
+                        } label: {
+                            Label("进行中 (\(active.count))", systemImage: "arrow.triangle.2.circlepath")
+                                .font(.headline)
                         }
                         .padding(.horizontal)
                     }
 
-                    // Recently completed tasks (today only)
+                    // Recently completed tasks (today only, collapsible)
                     let cal = Calendar.current
                     let recentDone = bridge.doneTasks.filter { cal.isDateInToday($0.updatedDate) }
                     if !recentDone.isEmpty {
-                        SectionHeader(title: "已完成", icon: "checkmark.circle")
-                        ForEach(recentDone) { task in
-                            NavigationLink(value: task.id) {
-                                TaskRowCompact(task: task)
+                        DisclosureGroup(isExpanded: $showCompletedTasks) {
+                            ForEach(recentDone) { task in
+                                NavigationLink(value: task.id) {
+                                    TaskRowCompact(task: task)
+                                }
                             }
+                        } label: {
+                            Label("已完成 (\(recentDone.count))", systemImage: "checkmark.circle")
+                                .font(.headline)
                         }
                         .padding(.horizontal)
                     }
 
-                    // Substack posts
+                    // Substack posts (collapsible, show only recent 5)
                     if !substackPosts.isEmpty {
-                        SectionHeader(title: "Mira's Posts", icon: "doc.richtext")
-                        VStack(spacing: 0) {
-                            ForEach(substackPosts) { post in
-                                PostRow(post: post)
-                                    .padding(.horizontal)
-                                if post.id != substackPosts.last?.id {
-                                    Divider().padding(.leading)
+                        let recentPosts = Array(substackPosts.prefix(5))
+                        DisclosureGroup(isExpanded: $showPosts) {
+                            VStack(spacing: 0) {
+                                ForEach(recentPosts) { post in
+                                    PostRow(post: post)
+                                        .padding(.horizontal)
+                                    if post.id != recentPosts.last?.id {
+                                        Divider().padding(.leading)
+                                    }
                                 }
                             }
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        } label: {
+                            Label("Mira's Posts (\(recentPosts.count))", systemImage: "doc.richtext")
+                                .font(.headline)
                         }
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                         .padding(.horizontal)
                     }
 
@@ -93,18 +110,23 @@ struct TodayView: View {
                         .padding(.top, 40)
                     }
 
-                    // Previous days
+                    // Previous days (collapsible, limit to last 7)
                     if !previousCards.isEmpty {
-                        SectionHeader(title: "往期", icon: "clock.arrow.circlepath")
-                        ForEach(previousCards) { card in
-                            NavigationLink {
-                                ReportDetailView(card: card, bridge: bridge)
-                            } label: {
-                                ReportCardView(card: card)
+                        let recentPrevious = Array(previousCards.prefix(7))
+                        DisclosureGroup(isExpanded: $showPreviousDays) {
+                            ForEach(recentPrevious) { card in
+                                NavigationLink {
+                                    ReportDetailView(card: card, bridge: bridge)
+                                } label: {
+                                    ReportCardView(card: card)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
-                            .padding(.horizontal)
+                        } label: {
+                            Label("往期 (\(recentPrevious.count))", systemImage: "clock.arrow.circlepath")
+                                .font(.headline)
                         }
+                        .padding(.horizontal)
                     }
                 }
                 .padding(.vertical)
@@ -146,7 +168,6 @@ struct TodayView: View {
         for file in allFiles {
             let name = file.deletingPathExtension().lastPathComponent
             let content = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
-            if content.isEmpty { continue }
 
             let isJournal = name.contains("journal") || name.contains("zhesi")
             let modDate = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
@@ -192,8 +213,8 @@ struct TodayView: View {
         }
 
         todayCards = today.sorted { $0.date > $1.date }
-        // Show last 14 previous entries, newest first
-        previousCards = previous.sorted { $0.date > $1.date }.prefix(14).map { $0 }
+        // Show last 30 previous entries, newest first
+        previousCards = previous.sorted { $0.date > $1.date }.prefix(30).map { $0 }
 
         // Load Substack posts
         loadSubstackPosts()
@@ -291,20 +312,23 @@ struct TodayView: View {
             let status = values?.ubiquitousItemDownloadingStatus
             if status == .notDownloaded {
                 try? fm.startDownloadingUbiquitousItem(at: url)
-                return nil
+                // Still return the URL so the card shows (content will be empty/loading)
+                return url
             }
             // Try reading — if it fails, trigger download
             if (try? Data(contentsOf: url, options: .mappedIfSafe)) != nil {
                 return url
             }
             try? fm.startDownloadingUbiquitousItem(at: url)
-            return nil
+            return url  // return anyway so card is visible
         }
     }
 
     private func iconForFile(_ name: String) -> String {
         if name.contains("deep_dive") { return "magnifyingglass" }
         if name.contains("journal") || name.contains("zhesi") || name.count == 10 { return "book" }
+        if name.contains("analyst") || name.contains("market") { return "chart.line.uptrend.xyaxis" }
+        if name.contains("skill") { return "lightbulb" }
         return "newspaper"
     }
 
@@ -313,6 +337,10 @@ struct TodayView: View {
         "zhesi": "Reflection",
         "deep_dive": "Deep Dive",
         "market": "Market",
+        "analyst_pre_market": "Pre-Market Analysis",
+        "analyst_post_market": "Post-Market Analysis",
+        "analyst_morning": "Morning Analysis",
+        "analyst_afternoon": "Afternoon Analysis",
         "arxiv_huggingface": "Arxiv & HuggingFace",
         "reddit_hacker_news": "Reddit & Hacker News",
         "literaryhub_brain_pickings": "Literary Hub & Brain Pickings",
@@ -482,7 +510,16 @@ struct ReportDetailView: View {
                         Divider()
                             .padding(.bottom, 16)
 
-                        if let rendered {
+                        if card.content.isEmpty {
+                            VStack(spacing: 12) {
+                                ProgressView()
+                                Text("正在从 iCloud 下载...")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 40)
+                        } else if let rendered {
                             Text(rendered)
                                 .font(.body)
                                 .lineSpacing(6)
