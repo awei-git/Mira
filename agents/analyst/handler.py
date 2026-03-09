@@ -13,14 +13,14 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import MIRA_DIR
+from config import ARTIFACTS_DIR
 from soul_manager import append_memory
 from sub_agent import claude_think
 
 log = logging.getLogger("analyst_agent")
 
-_TETRA_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Apps/tetra"
-_BRIEFINGS_DIR = MIRA_DIR / "artifacts" / "briefings"
+_TETRA_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Tetra"
+_BRIEFINGS_DIR = ARTIFACTS_DIR / "briefings"
 _REPORTS_DIR = _TETRA_DIR / "reports"
 _FEEDBACK_FILE = _TETRA_DIR / "feedback" / "gaps.jsonl"
 
