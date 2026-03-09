@@ -919,14 +919,14 @@ def _write_comment_reply_sidecar(thread_id: str, reply: str):
         encoding="utf-8",
     )
 
-    # Also try to update the task JSON directly
+    # Update task status only (don't append message — core.py does that
+    # when collecting results, which would cause duplicate replies)
     task_file = tasks_dir / f"{thread_id}.json"
     if task_file.exists():
         try:
             task = json.loads(task_file.read_text(encoding="utf-8"))
             task["status"] = "done"
             task["updated_at"] = now
-            task["messages"].append(reply_msg)
             task_file.write_text(
                 json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8"
             )

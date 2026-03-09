@@ -41,11 +41,21 @@ Use the language that matches the request — if the user wrote in Chinese, resp
 """
 
 
-def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "") -> str:
+def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "",
+                   recent_topics: str = "") -> str:
     """Prompt for filtering and ranking feed items."""
     slot_note = f"\n（本次探索主题：{source_slot}）\n" if source_slot else ""
+    dedup_note = ""
+    if recent_topics:
+        dedup_note = f"""
+## 最近已经写过的内容（不要重复！）
+
+{recent_topics}
+
+如果 feed 里出现上面写过的同一个事，直接跳过，除非有**重大新进展**（不是换个角度重写同一件事）。
+"""
     return f"""你是 Mira，在给主人写每天的简报。这是一份**外部世界简报**——你在报告外面发生了什么，不是写你自己的感想或成长（那是日记的事）。
-{slot_note}
+{slot_note}{dedup_note}
 关于你：
 {soul_context}
 

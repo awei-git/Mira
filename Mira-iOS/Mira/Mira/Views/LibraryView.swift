@@ -216,13 +216,29 @@ struct AppOutputView: View {
     }
 
     private func openReport(_ output: AppOutput) {
-        guard let path = output.path, let root = appRootURL else { return }
-        let fileURL = root.appendingPathComponent(path)
+        guard let path = output.path else { return }
         let fm = FileManager.default
+
+        // Handle absolute paths (e.g. PDF reports with full path)
+        let fileURL: URL
+        if path.hasPrefix("/") {
+            fileURL = URL(fileURLWithPath: path)
+        } else if let root = appRootURL {
+            fileURL = root.appendingPathComponent(path)
+        } else {
+            return
+        }
+
         if fm.isReadableFile(atPath: fileURL.path) {
             previewURL = fileURL
         } else {
             try? fm.startDownloadingUbiquitousItem(at: fileURL)
+            // Retry after a short delay to allow download to start
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if fm.isReadableFile(atPath: fileURL.path) {
+                    previewURL = fileURL
+                }
+            }
         }
     }
 }
