@@ -3,7 +3,7 @@ import Foundation
 /// A task in the Mira system — the core unit of interaction.
 /// Each task has a status, messages (conversation), and optional tags.
 struct MiraTask: Codable, Identifiable {
-    let id: String
+    var id: String
     var title: String
     var status: String          // queued, working, needs-input, done, failed
     var tags: [String]

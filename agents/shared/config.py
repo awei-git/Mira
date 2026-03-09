@@ -129,6 +129,9 @@ NOTES_SYNC_STATE = INBOX_DIR / ".sync.json"
 # Mira-bridge — file-based iPhone <-> Mac messaging over iCloud Drive
 MIRA_BRIDGE_DIR = MIRA_ROOT / "Mira-bridge"
 
+# Artifacts — iOS reads from here (Mira/artifacts/, NOT Mira-bridge/artifacts/)
+ARTIFACTS_DIR = MIRA_ROOT / "artifacts"
+
 # Legacy aliases
 MIRA_DIR = MIRA_BRIDGE_DIR
 TALKBRIDGE_DIR = MIRA_BRIDGE_DIR
@@ -285,8 +288,28 @@ _explore_source_groups_raw = _sched.get("explore_source_groups",
     _sched.get("explore_slot_sources",  # backward compat with old config
                ["arxiv,huggingface", "reddit,hacker_news,ai_news",
                 "quanta_magazine,aeon_essays,stanford_encyclopedia,marginal_revolution,astral_codex_ten",
-                "literaryhub,brain_pickings,3blue1brown,veritasium"]))
+                "literaryhub,brain_pickings,3blue1brown,veritasium",
+                "noah_smith,stratechery,lennys_newsletter,the_economist,matt_levine"]))
 EXPLORE_SOURCE_GROUPS = [g.split(",") for g in _explore_source_groups_raw]
+# Skill study: dedicated source groups for learning craft skills (video, photo)
+SKILL_STUDY_SOURCE_GROUPS = [
+    {
+        "domain": "video",
+        "sources": ["r/videoediting", "r/editors", "r/colorgrading", "r/cinematography",
+                     "film_riot", "corridor_crew", "casey_neistat", "gerald_undone",
+                     "every_frame_a_painting"],
+        "skill_dir": "video",
+    },
+    {
+        "domain": "photo",
+        "sources": ["r/postprocessing", "r/photocritique", "r/photography",
+                     "peter_mckinnon", "daniel_schiffer", "phlearn"],
+        "skill_dir": "photo",
+    },
+]
+SKILL_STUDY_COOLDOWN_HOURS = _sched.get("skill_study_cooldown_hours", 20)  # ~once per day
+SKILL_STUDY_TIME = _parse_times([_sched.get("skill_study_time", "14:00")])[0]
+
 EXPLORE_COOLDOWN_MINUTES = _sched.get("explore_cooldown_minutes",
     _sched.get("explore_window_minutes", 90))  # default 90min between explores
 EXPLORE_ACTIVE_START = _parse_times([_sched.get("explore_start", "08:00")])[0]

@@ -151,6 +151,13 @@ class Mira:
         """
         task = self._read_task(task_id)
         if not task:
+            log.warning("update_task_status: task %s not found, writing sidecars directly", task_id)
+            # Even if the main task file is unreadable, still write sidecars
+            # so iOS can pick up the reply and status
+            if agent_message:
+                msg = {"sender": "agent", "content": agent_message, "timestamp": _utc_iso()}
+                self._append_reply(task_id, msg)
+            self._write_status_sidecar(task_id, status, agent_message)
             return
         task["status"] = status
         task["updated_at"] = _utc_iso()

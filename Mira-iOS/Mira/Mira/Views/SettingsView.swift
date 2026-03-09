@@ -42,10 +42,20 @@ struct SettingsView: View {
 
                 // Folder
                 Section("文件夹") {
-                    if let url = bridge.bridgeBaseURL {
-                        Text(url.lastPathComponent)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    if let root = bridge.mtjoyURL {
+                        HStack {
+                            Text("工作区")
+                            Spacer()
+                            Text(root.lastPathComponent)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if let url = bridge.bridgeBaseURL {
+                        HStack {
+                            Text("Bridge")
+                            Spacer()
+                            Text(url.lastPathComponent)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Button("重新选择文件夹") {
                         showFolderPicker = true

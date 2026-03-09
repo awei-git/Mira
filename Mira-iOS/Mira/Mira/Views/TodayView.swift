@@ -4,6 +4,7 @@ struct TodayView: View {
     var bridge: BridgeService
     @State private var todayCards: [BriefingFileCard] = []
     @State private var previousCards: [BriefingFileCard] = []
+    @State private var substackPosts: [SubstackPost] = []
 
     var body: some View {
         NavigationStack {
@@ -32,7 +33,7 @@ struct TodayView: View {
                     if !todayCards.isEmpty {
                         ForEach(todayCards) { card in
                             NavigationLink {
-                                ReportDetailView(card: card)
+                                ReportDetailView(card: card, bridge: bridge)
                             } label: {
                                 ReportCardView(card: card)
                             }
@@ -53,8 +54,37 @@ struct TodayView: View {
                         .padding(.horizontal)
                     }
 
+                    // Recently completed tasks (today only)
+                    let cal = Calendar.current
+                    let recentDone = bridge.doneTasks.filter { cal.isDateInToday($0.updatedDate) }
+                    if !recentDone.isEmpty {
+                        SectionHeader(title: "已完成", icon: "checkmark.circle")
+                        ForEach(recentDone) { task in
+                            NavigationLink(value: task.id) {
+                                TaskRowCompact(task: task)
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+
+                    // Substack posts
+                    if !substackPosts.isEmpty {
+                        SectionHeader(title: "Mira's Posts", icon: "doc.richtext")
+                        VStack(spacing: 0) {
+                            ForEach(substackPosts) { post in
+                                PostRow(post: post)
+                                    .padding(.horizontal)
+                                if post.id != substackPosts.last?.id {
+                                    Divider().padding(.leading)
+                                }
+                            }
+                        }
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal)
+                    }
+
                     // Empty state
-                    if todayCards.isEmpty && bridge.activeTasks.isEmpty && needsInput.isEmpty {
+                    if todayCards.isEmpty && bridge.activeTasks.isEmpty && needsInput.isEmpty && substackPosts.isEmpty {
                         ContentUnavailableView(
                             "今天还没有报告",
                             systemImage: "moon.zzz",
@@ -68,7 +98,7 @@ struct TodayView: View {
                         SectionHeader(title: "往期", icon: "clock.arrow.circlepath")
                         ForEach(previousCards) { card in
                             NavigationLink {
-                                ReportDetailView(card: card)
+                                ReportDetailView(card: card, bridge: bridge)
                             } label: {
                                 ReportCardView(card: card)
                             }
@@ -91,16 +121,23 @@ struct TodayView: View {
     }
 
     private func loadContent() {
-        guard let artifacts = bridge.artifactsURL else { return }
+        guard let artifacts = bridge.artifactsURL else {
+            bridge.debugLog += "[Today] artifactsURL is nil\n"
+            return
+        }
         let fm = FileManager.default
 
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd"
         let todayStr = df.string(from: Date())
 
-        // Load all content from briefings dir (briefings + journals live here)
+        // Load briefings + journals
         let briefingsDir = artifacts.appendingPathComponent("briefings")
         let allFiles = loadMarkdownFiles(in: briefingsDir, fm: fm)
+
+        // Load writings (each subfolder is a project, find latest draft)
+        let writingsDir = artifacts.appendingPathComponent("writings")
+        let writingFiles = loadWritingProjects(in: writingsDir, fm: fm)
 
         // Split into today vs previous
         var today: [BriefingFileCard] = []
@@ -111,7 +148,7 @@ struct TodayView: View {
             let content = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
             if content.isEmpty { continue }
 
-            let isJournal = name.contains("journal")
+            let isJournal = name.contains("journal") || name.contains("zhesi")
             let modDate = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
             let icon = iconForFile(name)
             let title = titleForFile(name, todayStr: todayStr, isJournal: isJournal)
@@ -133,42 +170,168 @@ struct TodayView: View {
             }
         }
 
+        // Add writing projects
+        for (file, projectName) in writingFiles {
+            let content = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            if content.isEmpty { continue }
+            let modDate = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
+            let preview = extractPreview(from: content, maxLength: 120)
+            let card = BriefingFileCard(
+                id: file.path,
+                title: projectName,
+                preview: preview,
+                content: content,
+                icon: "pencil.line",
+                date: modDate
+            )
+            if Calendar.current.isDateInToday(modDate) {
+                today.append(card)
+            } else {
+                previous.append(card)
+            }
+        }
+
         todayCards = today.sorted { $0.date > $1.date }
         // Show last 14 previous entries, newest first
         previousCards = previous.sorted { $0.date > $1.date }.prefix(14).map { $0 }
+
+        // Load Substack posts
+        loadSubstackPosts()
     }
 
-    private func loadMarkdownFiles(in dir: URL, fm: FileManager) -> [URL] {
+    private func loadSubstackPosts() {
+        guard let tasksDir = bridge.tasksURL else { return }
+        let postsFile = tasksDir.appendingPathComponent("substack_posts.json")
+        let fm = FileManager.default
+
+        if !fm.isReadableFile(atPath: postsFile.path) {
+            try? fm.startDownloadingUbiquitousItem(at: postsFile)
+            return
+        }
+
+        guard let data = try? Data(contentsOf: postsFile),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return }
+
+        substackPosts = arr.compactMap { dict in
+            guard let id = dict["id"] as? Int,
+                  let title = dict["title"] as? String,
+                  let url = dict["url"] as? String
+            else { return nil }
+            return SubstackPost(
+                id: id,
+                title: title,
+                url: url,
+                commentCount: dict["comment_count"] as? Int ?? 0,
+                postDate: dict["post_date"] as? String ?? ""
+            )
+        }
+    }
+
+    /// Load writing projects — returns (latest draft file, project display name) pairs
+    private func loadWritingProjects(in dir: URL, fm: FileManager) -> [(URL, String)] {
         guard fm.fileExists(atPath: dir.path) else { return [] }
         if !fm.isReadableFile(atPath: dir.path) {
             try? fm.startDownloadingUbiquitousItem(at: dir)
         }
-        guard let files = try? fm.contentsOfDirectory(
+        guard let folders = try? fm.contentsOfDirectory(
             at: dir,
-            includingPropertiesForKeys: [.contentModificationDateKey],
+            includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         ) else { return [] }
 
+        var results: [(URL, String)] = []
+        for folder in folders {
+            let vals = try? folder.resourceValues(forKeys: [.isDirectoryKey])
+            guard vals?.isDirectory == true else { continue }
+
+            let projectName = folder.lastPathComponent
+                .replacingOccurrences(of: "-", with: " ")
+                .replacingOccurrences(of: "_", with: " ")
+                .capitalized
+
+            // Find latest draft: check drafts/ subfolder then root
+            let draftsDir = folder.appendingPathComponent("drafts")
+            var candidates = loadMarkdownFiles(in: draftsDir, fm: fm)
+            candidates += loadMarkdownFiles(in: folder, fm: fm)
+
+            // Pick the most recently modified md file that has real content (>500 bytes)
+            let best = candidates
+                .compactMap { url -> (URL, Date)? in
+                    let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                    let size = vals?.fileSize ?? 0
+                    guard size > 500 else { return nil }  // skip status notes / metadata
+                    let d = vals?.contentModificationDate ?? .distantPast
+                    return (url, d)
+                }
+                .max(by: { $0.1 < $1.1 })
+
+            if let (file, _) = best {
+                results.append((file, projectName))
+            }
+        }
+        return results
+    }
+
+    private func loadMarkdownFiles(in dir: URL, fm: FileManager) -> [URL] {
+        // Try to list directory contents — works even for cloud-only dirs on iOS
+        guard let files = try? fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.contentModificationDateKey, .ubiquitousItemDownloadingStatusKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            // Directory might not be downloaded yet
+            try? fm.startDownloadingUbiquitousItem(at: dir)
+            return []
+        }
+
         return files.filter { $0.pathExtension == "md" }.compactMap { url in
-            if !fm.isReadableFile(atPath: url.path) {
+            // Check iCloud download status
+            let values = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
+            let status = values?.ubiquitousItemDownloadingStatus
+            if status == .notDownloaded {
                 try? fm.startDownloadingUbiquitousItem(at: url)
                 return nil
             }
-            return url
+            // Try reading — if it fails, trigger download
+            if (try? Data(contentsOf: url, options: .mappedIfSafe)) != nil {
+                return url
+            }
+            try? fm.startDownloadingUbiquitousItem(at: url)
+            return nil
         }
     }
 
     private func iconForFile(_ name: String) -> String {
         if name.contains("deep_dive") { return "magnifyingglass" }
-        if name.contains("journal") || name.count == 10 { return "book" }  // yyyy-MM-dd in journal
+        if name.contains("journal") || name.contains("zhesi") || name.count == 10 { return "book" }
         return "newspaper"
     }
 
+    /// Map internal file suffixes to display names
+    private static let suffixDisplayNames: [String: String] = [
+        "zhesi": "Reflection",
+        "deep_dive": "Deep Dive",
+        "market": "Market",
+        "arxiv_huggingface": "Arxiv & HuggingFace",
+        "reddit_hacker_news": "Reddit & Hacker News",
+        "literaryhub_brain_pickings": "Literary Hub & Brain Pickings",
+        "quanta_magazine_aeon_essays": "Quanta & Aeon",
+        "noah_smith_stratechery": "Econ & Strategy",
+        "reddit_hacker_news_ai_news": "Reddit & HN",
+    ]
+
     private func titleForFile(_ name: String, todayStr: String, isJournal: Bool) -> String {
-        // Extract date prefix (yyyy-MM-dd)
         let datePrefix = String(name.prefix(10))
         let datePart = datePrefix == todayStr ? "Today" : datePrefix
 
+        // Check suffix display map first (zhesi → Reflection, etc.)
+        if name != datePrefix {
+            let suffix = name.replacingOccurrences(of: datePrefix + "_", with: "")
+            if let display = Self.suffixDisplayNames[suffix] {
+                return "\(display) \(datePart)"
+            }
+        }
         if isJournal {
             return "Journal \(datePart)"
         }
@@ -237,54 +400,185 @@ struct ReportCardView: View {
 
 struct ReportDetailView: View {
     let card: BriefingFileCard
+    var bridge: BridgeService?
     @State private var rendered: AttributedString?
+    @State private var commentText = ""
+    @FocusState private var inputFocused: Bool
 
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // Header
-                HStack {
-                    Image(systemName: card.icon)
-                        .font(.title2)
-                        .foregroundStyle(.tint)
-                    Text(card.title)
-                        .font(.title2.bold())
-                    Spacer()
+    /// Thread ID for this card's comments (based on filename)
+    private var commentThreadId: String {
+        let filename = (card.id as NSString).lastPathComponent
+        return "comment_\(filename.replacingOccurrences(of: ".md", with: ""))"
+    }
+
+    /// Find the matching task for this card's comment thread
+    private var matchingTask: MiraTask? {
+        guard let bridge else { return nil }
+        // First try: match by our comment thread ID
+        if let task = bridge.tasks.first(where: { $0.id == commentThreadId }) {
+            return task
+        }
+        // Fallback: match by card title in task title (handles legacy tasks)
+        let cardTitle = card.title
+        let filename = (card.id as NSString).lastPathComponent
+        let datePart = String(filename.prefix(10))  // YYYY-MM-DD
+        // Extract keywords from card title for fuzzy matching
+        // e.g., "Reflection Today" → check "Reflection", "Journal", "Briefing", date
+        let titleWords = Set(cardTitle.split(separator: " ").map { $0.lowercased() })
+        // Map between display names that refer to the same content
+        let synonyms: Set<String> = ["reflection", "journal", "zhesi", "briefing"]
+        let cardSynonyms = titleWords.intersection(synonyms)
+
+        return bridge.tasks.first { task in
+            guard task.title.contains("评论") else { return false }
+            // Direct title match
+            if task.title.contains(cardTitle) { return true }
+            // Date match (check both YYYY-MM-DD and "Today")
+            if task.title.contains(datePart) { return true }
+            // "Today" in task title + card is from today
+            if task.title.contains("Today") && cardTitle.contains("Today") {
+                // Check if they refer to related content (journal/reflection/zhesi)
+                let taskLower = task.title.lowercased()
+                if !cardSynonyms.isEmpty && cardSynonyms.contains(where: { taskLower.contains($0) }) {
+                    return true
                 }
-                .padding(.bottom, 4)
-
-                Text(card.date, style: .date)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 16)
-
-                Divider()
-                    .padding(.bottom, 16)
-
-                if let rendered {
-                    Text(rendered)
-                        .font(.body)
-                        .lineSpacing(6)
-                        .tint(.blue)
-                        .textSelection(.enabled)
-                } else {
-                    Text(card.content)
-                        .font(.body)
-                        .lineSpacing(6)
-                        .textSelection(.enabled)
+                // Also match if task mentions any synonym for this card type
+                if synonyms.contains(where: { taskLower.contains($0) }) &&
+                   !cardSynonyms.isEmpty {
+                    return true
                 }
             }
-            .padding()
+            return false
+        }
+    }
+
+    /// All messages in the comment thread
+    private var comments: [TaskMessage] {
+        guard let task = matchingTask else { return [] }
+        return task.messages
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        // Header
+                        HStack {
+                            Image(systemName: card.icon)
+                                .font(.title2)
+                                .foregroundStyle(.tint)
+                            Text(card.title)
+                                .font(.title2.bold())
+                            Spacer()
+                        }
+                        .padding(.bottom, 4)
+
+                        Text(card.date, style: .date)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.bottom, 16)
+
+                        Divider()
+                            .padding(.bottom, 16)
+
+                        if let rendered {
+                            Text(rendered)
+                                .font(.body)
+                                .lineSpacing(6)
+                                .tint(.blue)
+                                .textSelection(.enabled)
+                        } else {
+                            Text(card.content)
+                                .font(.body)
+                                .lineSpacing(6)
+                                .textSelection(.enabled)
+                        }
+
+                        // Comments section
+                        if bridge != nil {
+                            Divider()
+                                .padding(.vertical, 16)
+
+                            if comments.isEmpty {
+                                Text("写点评论，Mira 会回复你")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.bottom, 8)
+                            } else {
+                                Text("评论")
+                                    .font(.headline)
+                                    .padding(.bottom, 8)
+
+                                ForEach(Array(comments.enumerated()), id: \.offset) { idx, msg in
+                                    TaskMessageBubble(message: msg)
+                                        .id("comment_\(idx)")
+                                }
+                            }
+                        }
+                    }
+                    .padding()
+                }
+                .onChange(of: comments.count) {
+                    if let last = comments.indices.last {
+                        withAnimation {
+                            proxy.scrollTo("comment_\(last)", anchor: .bottom)
+                        }
+                    }
+                }
+            }
+
+            // Comment input
+            if bridge != nil {
+                Divider()
+                HStack(spacing: 8) {
+                    TextField("写评论...", text: $commentText, axis: .vertical)
+                        .focused($inputFocused)
+                        .textFieldStyle(.plain)
+                        .lineLimit(1...5)
+                        .padding(10)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 20))
+
+                    Button {
+                        sendComment()
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.title2)
+                    }
+                    .disabled(commentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
         }
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            // Parse markdown once, off the view builder
             if rendered == nil {
                 rendered = (try? AttributedString(
                     markdown: card.content,
                     options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
                 ))
             }
+        }
+    }
+
+    private func sendComment() {
+        guard let bridge else { return }
+        let text = commentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        commentText = ""
+        inputFocused = false
+
+        if let task = matchingTask {
+            // Reply to existing thread
+            bridge.sendTaskMessage(task.id, content: text)
+        } else {
+            // Create new comment thread with stable ID
+            bridge.createTaskWithId(
+                id: commentThreadId,
+                title: "评论: \(card.title)",
+                content: text
+            )
         }
     }
 }

@@ -22,7 +22,7 @@ sys.path.insert(0, str(_AGENTS_DIR / "general"))
 
 import shutil
 
-from config import MIRA_DIR
+from config import MIRA_DIR, ARTIFACTS_DIR
 from soul_manager import load_soul, format_soul, append_memory, save_skill
 from sub_agent import claude_act, claude_think, ClaudeTimeoutError
 from prompts import respond_prompt
@@ -312,6 +312,21 @@ def main():
         except (json.JSONDecodeError, OSError) as e:
             log.warning("Failed to load pending plan, re-planning: %s", e)
 
+    # --- Check for article comment (comment_YYYY-MM-DD_suffix thread ID) ---
+    if thread_id.startswith("comment_"):
+        _handle_article_comment(workspace, args.task_id, thread_id,
+                                msg_content, msg_sender)
+        log.info("Worker exiting (comment)")
+        return
+
+    # --- Check for in-progress video session (stateful multi-round) ---
+    video_state_file = workspace / "video_state.json"
+    if video_state_file.exists():
+        log.info("Resuming video session (video_state.json found)")
+        _handle_video(workspace, args.task_id, msg_content, msg_sender, thread_id)
+        log.info("Worker exiting (video)")
+        return
+
     # --- Plan and execute via LLM ---
     plan = _plan_task(msg_content, conversation=conversation, exec_history=exec_history)
     log.info("Plan: %s", plan)
@@ -358,6 +373,7 @@ Available agents:
 - writing: Write or create text content (article, story, essay, post, translation)
 - publish: Publish EXISTING content to a platform (Substack, Instagram, Threads)
 - analyst: Market analysis, competitive intelligence, trend detection, industry research, market sizing
+- video: Video editing — analyze footage, generate screenplay, cut highlights, mix music. Use when the user wants to edit, cut, or process video files.
 - general: Answer questions, search, analyze, code, file operations, etc.
 - clarify: Ask the user a question ONLY if the request is genuinely ambiguous and you cannot proceed without more info.
 
@@ -380,6 +396,7 @@ Examples:
 - "今天有没有什么发substack的内容啊？写点什么吧？" → [{{"agent": "writing", "instruction": "基于今天的briefing内容，选一个有意思的话题写一篇适合发Substack的文章"}}, {{"agent": "publish", "instruction": "将上一步写好的文章发布到Substack"}}]
 - "把自由意志那篇发到substack" → [{{"agent": "publish", "instruction": "将'自由意志'文章发布到Substack"}}]
 - "分析一下AI agent市场" → [{{"agent": "analyst", "instruction": "分析AI agent市场的竞争格局、主要玩家和趋势"}}]
+- "帮我剪这些旅游视频 /path/to/videos" → [{{"agent": "video", "instruction": "剪辑 /path/to/videos 里的视频，生成3-5分钟精彩集锦"}}]
 
 {conversation_context}
 
@@ -393,7 +410,7 @@ JSON:"""
             if match:
                 steps = json.loads(match.group())
                 # Validate
-                valid_agents = {"briefing", "writing", "publish", "analyst", "general", "clarify"}
+                valid_agents = {"briefing", "writing", "publish", "analyst", "video", "general", "clarify"}
                 validated = []
                 for s in steps:
                     if isinstance(s, dict) and s.get("agent") in valid_agents:
@@ -441,6 +458,9 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
 
         elif agent == "analyst":
             _handle_analyst(workspace, task_id, instruction, sender, thread_id)
+
+        elif agent == "video":
+            _handle_video(workspace, task_id, instruction, sender, thread_id)
 
         else:
             _handle_general(workspace, task_id, instruction, sender, thread_id)
@@ -537,8 +557,8 @@ def _handle_briefing(workspace: Path, task_id: str, content: str,
     log.info("Briefing saved: %s", briefing_path.name)
 
     # Also copy to mira/artifacts for iOS browsing
-    from config import MIRA_DIR
-    mira_briefings = MIRA_DIR / "artifacts" / "briefings"
+    from config import ARTIFACTS_DIR
+    mira_briefings = ARTIFACTS_DIR / "briefings"
     mira_briefings.mkdir(parents=True, exist_ok=True)
     (mira_briefings / f"{today}.md").write_text(briefing, encoding="utf-8")
 
@@ -638,8 +658,8 @@ def _handle_full_write(workspace: Path, task_id: str, content: str,
         (workspace / "output.md").write_text(final_text, encoding="utf-8")
 
     # Sync full writing project to mira/artifacts for iOS browsing
-    from config import MIRA_DIR
-    mira_writings = MIRA_DIR / "artifacts" / "writings" / proj_ws.name
+    from config import ARTIFACTS_DIR
+    mira_writings = ARTIFACTS_DIR / "writings" / proj_ws.name
     shutil.copytree(proj_ws, mira_writings, dirs_exist_ok=True)
 
     # Build summary
@@ -754,8 +774,165 @@ def _handle_analyst(workspace: Path, task_id: str, content: str,
 
 
 # ---------------------------------------------------------------------------
+# Video handler — video editing pipeline
+# ---------------------------------------------------------------------------
+
+def _handle_video(workspace: Path, task_id: str, content: str,
+                  sender: str, thread_id: str):
+    """Handle video editing requests via the video agent."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "video_handler", str(_AGENTS_DIR / "video" / "handler.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        video_handle = mod.handle
+
+        log.info("Running video pipeline for task %s", task_id)
+        summary = video_handle(workspace, task_id, content, sender, thread_id)
+    except Exception as e:
+        log.error("Video handler crashed: %s", e)
+        _write_result(workspace, task_id, "error", f"视频处理失败: {e}")
+        return
+
+    if summary:
+        tags = ["video", "editing"]
+        _write_result(workspace, task_id, "done", summary, tags=tags)
+        log.info("Video task %s completed", task_id)
+
+        if thread_id:
+            _update_thread_memory(thread_id, content, summary)
+    else:
+        _write_result(workspace, task_id, "error", "视频处理返回空结果")
+        log.error("Video task %s failed: empty response", task_id)
+
+
+# ---------------------------------------------------------------------------
 # General handler — claude_act
 # ---------------------------------------------------------------------------
+
+def _handle_article_comment(workspace: Path, task_id: str, thread_id: str,
+                            comment: str, sender: str):
+    """Handle a comment on a briefing/journal article.
+
+    thread_id format: comment_YYYY-MM-DD_suffix (e.g. comment_2026-03-08_zhesi)
+    Finds the original article, reads it, and generates a conversational reply.
+    """
+    # Parse article filename from thread_id: comment_2026-03-08_zhesi → 2026-03-08_zhesi.md
+    article_name = thread_id.removeprefix("comment_") + ".md"
+    article_path = ARTIFACTS_DIR / "briefings" / article_name
+    log.info("Comment on article: %s (path=%s)", article_name, article_path)
+
+    # Try to read the original article
+    article_content = ""
+    if article_path.exists():
+        article_content = article_path.read_text(encoding="utf-8")
+    else:
+        # Try without suffix (just date)
+        log.warning("Article not found at %s, searching...", article_path)
+        briefings_dir = ARTIFACTS_DIR / "briefings"
+        if briefings_dir.exists():
+            for f in briefings_dir.iterdir():
+                if f.name == article_name:
+                    article_content = f.read_text(encoding="utf-8")
+                    break
+
+    if not article_content:
+        log.warning("Could not find article %s", article_name)
+        article_context = "(原文未找到)"
+    else:
+        # Truncate very long articles
+        article_context = article_content[:4000]
+
+    # Load soul for personality
+    soul = load_soul()
+    soul_context = format_soul(soul)
+
+    # Load conversation history for this comment thread
+    conversation = load_task_conversation(task_id)
+    conv_context = f"\n\n过往对话:\n{conversation}" if conversation else ""
+
+    prompt = f"""{soul_context}
+
+你正在回复用户对你写的文章的评论。这是一个轻松的交流，不是任务。
+
+## 原文
+{article_context}
+
+## 用户的评论
+{comment}
+{conv_context}
+
+## 要求
+- 针对用户的评论内容做出回应，而不是泛泛而谈
+- 如果用户提出了有意思的观点，展开讨论
+- 如果用户提了问题，认真回答
+- 语气自然、像朋友之间的对话
+- 用户用什么语言就用什么语言回复
+- 2-5句话即可，不需要太长
+- 不要用bullet point列表，用自然段落"""
+
+    try:
+        reply = claude_think(prompt, timeout=30)
+    except ClaudeTimeoutError:
+        reply = "想了太久，回头再聊。"
+    except Exception as e:
+        log.error("Comment reply generation failed: %s", e)
+        reply = None
+
+    if reply:
+        (workspace / "output.md").write_text(reply, encoding="utf-8")
+        _write_result(workspace, task_id, "done", reply, tags=["comment"])
+        # Also write reply sidecar to the iOS task file (thread_id = iOS task ID)
+        _write_comment_reply_sidecar(thread_id, reply)
+        log.info("Comment reply: %s", reply[:100])
+    else:
+        _write_result(workspace, task_id, "error", "无法生成回复")
+
+
+def _write_comment_reply_sidecar(thread_id: str, reply: str):
+    """Write reply sidecar to the iOS comment task file.
+
+    iOS task files live in Mira-bridge/tasks/{thread_id}.json.
+    We write {thread_id}.reply.json so iOS loadTasks() can merge the reply.
+    Also update {thread_id}.status.json.
+    """
+    tasks_dir = MIRA_DIR / "tasks"
+    now = _utc_iso()
+
+    # Write reply sidecar
+    reply_file = tasks_dir / f"{thread_id}.reply.json"
+    reply_msg = {"sender": "agent", "content": reply, "timestamp": now}
+    existing = []
+    if reply_file.exists():
+        try:
+            existing = json.loads(reply_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    existing.append(reply_msg)
+    reply_file.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # Write status sidecar
+    status_file = tasks_dir / f"{thread_id}.status.json"
+    status_file.write_text(
+        json.dumps({"status": "done", "updated_at": now}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    # Also try to update the task JSON directly
+    task_file = tasks_dir / f"{thread_id}.json"
+    if task_file.exists():
+        try:
+            task = json.loads(task_file.read_text(encoding="utf-8"))
+            task["status"] = "done"
+            task["updated_at"] = now
+            task["messages"].append(reply_msg)
+            task_file.write_text(
+                json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("Could not update comment task file: %s", e)
+
 
 def _handle_general(workspace: Path, task_id: str, content: str,
                     sender: str, thread_id: str):
