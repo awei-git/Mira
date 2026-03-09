@@ -798,11 +798,12 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
     log.info("Created idea file: %s", idea_path.name)
 
     # Run the pipeline on this idea (use higher limit — auto is a one-shot run)
+    # For autonomous writing, don't stop at awaiting_feedback — push through to done
     idea = parse_idea(idea_path)
-    for _ in range(10):
+    for _ in range(15):
         idea = parse_idea(idea_path)
         state = idea.get("state", "").strip()
-        if state in ("done", "error", "awaiting_feedback"):
+        if state in ("done", "error"):
             break
         if not advance_idea(idea):
             break
@@ -811,6 +812,39 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
     final_state = final_idea.get("state", "unknown")
     log.info("Auto writing '%s' finished in state: %s", title, final_state)
 
+    # Auto-publish if writing completed successfully
+    project_dir = final_idea.get("project_dir", "")
+    if final_state in ("done", "awaiting_feedback") and project_dir:
+        log.info("Auto-publishing '%s' to Substack", title)
+        try:
+            publisher_dir = str(Path(__file__).resolve().parent.parent / "publisher")
+            if publisher_dir not in sys.path:
+                sys.path.insert(0, publisher_dir)
+            from substack import publish_to_substack
+            proj_path = Path(project_dir)
+            # Find the best draft to publish
+            final_file = proj_path / "final" / "final.md"
+            if not final_file.exists():
+                # Fall back to latest draft
+                drafts_dir = proj_path / "drafts"
+                if drafts_dir.exists():
+                    draft_files = sorted(drafts_dir.glob("draft_r*.md"), reverse=True)
+                    if draft_files:
+                        final_file = draft_files[0]
+            if final_file.exists():
+                article_text = final_file.read_text(encoding="utf-8")
+                pub_result = publish_to_substack(
+                    title=title,
+                    subtitle="",
+                    article_text=article_text,
+                    workspace=proj_path,
+                )
+                log.info("Published '%s': %s", title, pub_result)
+            else:
+                log.warning("No publishable draft found for '%s'", title)
+        except Exception as e:
+            log.error("Auto-publish failed for '%s': %s", title, e)
+
     # Notify bridge so user sees the result
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
@@ -818,11 +852,10 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
         bridge = Mira()
         today = datetime.now().strftime("%Y-%m-%d")
         task_id = f"autowrite_{today}"
-        project_dir = final_idea.get("project_dir", "")
-        if final_state == "awaiting_feedback":
+        if final_state in ("done", "awaiting_feedback"):
             bridge.update_task_status(
                 task_id, "done",
-                agent_message=f"写完了！初稿在 {project_dir} 里，等你反馈。",
+                agent_message=f"写完并发布了！项目在 {project_dir}",
             )
         elif final_state == "error":
             bridge.update_task_status(

@@ -31,6 +31,7 @@ from config import (
     MAX_BRIEFING_ITEMS, MAX_DEEP_DIVES, MIRA_DIR, ARTIFACTS_DIR, CLEANUP_DAYS,
     JOURNAL_DIR, JOURNAL_TIME, SKILLS_INDEX, WRITINGS_OUTPUT_DIR, WRITINGS_DIR,
     ANALYST_TIMES, ANALYST_BUSINESS_DAYS_ONLY, ZHESI_TIME, ZA_FILE,
+    SKILL_STUDY_SOURCE_GROUPS, SKILL_STUDY_COOLDOWN_HOURS, SKILL_STUDY_TIME,
 )
 from notes_bridge import check_inbox, create_note
 from mira import Mira
@@ -617,6 +618,131 @@ def _do_deep_dive(soul_ctx: str, dive: dict):
 
 
 # ---------------------------------------------------------------------------
+# SKILL STUDY — daily craft skill learning (video editing, photography)
+# ---------------------------------------------------------------------------
+
+def do_skill_study(group_idx: int = 0):
+    """Study video/photo craft skills from dedicated sources.
+
+    Fetches from skill-study source groups, asks Claude to extract
+    actionable techniques, and saves them as agent skills.
+    """
+    from fetcher import fetch_sources
+    from prompts import skill_study_prompt
+
+    if group_idx >= len(SKILL_STUDY_SOURCE_GROUPS):
+        log.error("Invalid skill_study group index: %d", group_idx)
+        return
+
+    group = SKILL_STUDY_SOURCE_GROUPS[group_idx]
+    domain = group["domain"]
+    source_names = group["sources"]
+    skill_dir_name = group["skill_dir"]
+
+    log.info("Starting skill study: %s (sources=%s)", domain, source_names)
+
+    # 1. Fetch from domain-specific sources
+    items = fetch_sources(source_names)
+    if not items:
+        log.info("Skill study (%s): no items fetched, skipping", domain)
+        return
+
+    soul = load_soul()
+    soul_ctx = format_soul(soul)
+
+    # 2. Format items and ask Claude to extract skills
+    feed_text = _format_feed_items(items)
+    prompt = skill_study_prompt(soul_ctx, feed_text, domain)
+    result = claude_act(prompt)
+
+    if not result:
+        log.error("Skill study (%s): Claude returned empty", domain)
+        return
+
+    # 3. Save study notes to briefings (visible in iOS)
+    today = datetime.now().strftime("%Y-%m-%d")
+    notes_path = BRIEFINGS_DIR / f"{today}_skill_{domain}.md"
+    notes_path.write_text(result, encoding="utf-8")
+    _copy_to_briefings(f"{today}_skill_{domain}.md", result)
+    log.info("Skill study notes saved: %s", notes_path.name)
+
+    # 4. Extract and save skills
+    skill_dir = _AGENTS_DIR / skill_dir_name / "skills"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+
+    # Parse skill blocks from output
+    skill_blocks = re.findall(
+        r"```\s*\nName:\s*(.+)\nDescription:\s*(.+)\nTags:\s*\[(.+?)\]\nContent:\n(.+?)```",
+        result, re.DOTALL,
+    )
+
+    for name, desc, tags, content in skill_blocks:
+        name = name.strip()
+        desc = desc.strip()
+        content = content.strip()
+        slug = name.lower().replace(" ", "-")
+
+        # Save to domain-specific skill directory
+        skill_path = skill_dir / f"{slug}.md"
+        skill_content = f"# {name}\n\n## One-liner\n{desc}\n\n{content}"
+        skill_path.write_text(skill_content, encoding="utf-8")
+        log.info("Saved %s skill: %s", domain, name)
+
+        # Also save to learned skills index (for soul awareness)
+        save_skill(name, desc, skill_content)
+
+    if skill_blocks:
+        append_memory(f"Learned {len(skill_blocks)} {domain} skill(s) from study session")
+    else:
+        log.info("Skill study (%s): no new skills extracted this session", domain)
+
+    # Mark as done
+    state = load_state()
+    state[f"skill_study_{today}_{domain}"] = datetime.now().isoformat()
+    state["last_skill_study"] = datetime.now().isoformat()
+    save_state(state)
+
+
+def should_skill_study() -> dict | None:
+    """Check if it's time for daily skill study. Returns group info or None.
+
+    Alternates between video and photo study sessions.
+    """
+    now = datetime.now()
+
+    # Only study during active hours
+    if now.time() < EXPLORE_ACTIVE_START or now.time() >= EXPLORE_ACTIVE_END:
+        return None
+
+    # Check if it's past the scheduled time
+    scheduled = datetime.combine(now.date(), SKILL_STUDY_TIME)
+    if now < scheduled:
+        return None
+
+    state = load_state()
+    today = now.strftime("%Y-%m-%d")
+
+    # Check cooldown
+    last = state.get("last_skill_study", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            elapsed_hours = (now - last_dt).total_seconds() / 3600
+            if elapsed_hours < SKILL_STUDY_COOLDOWN_HOURS:
+                return None
+        except ValueError:
+            pass
+
+    # Find a domain that hasn't been studied today
+    for i, group in enumerate(SKILL_STUDY_SOURCE_GROUPS):
+        domain = group["domain"]
+        if not state.get(f"skill_study_{today}_{domain}"):
+            return {"group_idx": i, "domain": domain}
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # ANALYST mode — daily market analysis briefing (business days)
 # ---------------------------------------------------------------------------
 
@@ -856,10 +982,8 @@ def do_journal():
     journal_path.write_text(journal_content, encoding="utf-8")
     log.info("Journal saved: %s", journal_path.name)
 
-    # Copy to briefings dir so iOS can read it (same synced folder)
-    mira_briefings = ARTIFACTS_DIR / "briefings"
-    mira_briefings.mkdir(parents=True, exist_ok=True)
-    (mira_briefings / f"{today}_journal.md").write_text(journal_content, encoding="utf-8")
+    # Copy to briefings dir so iOS can read it (with verification)
+    _copy_to_briefings(f"{today}_journal.md", journal_content)
 
     # Journal is displayed as a briefing card in Today (from .md file)
     # No need to create a task — that just pollutes the task list
@@ -1326,10 +1450,8 @@ def do_zhesi():
     zhesi_path.write_text(content, encoding="utf-8")
     log.info("哲思 saved: %s", zhesi_path.name)
 
-    # Copy to artifacts for iOS
-    mira_briefings = ARTIFACTS_DIR / "briefings"
-    mira_briefings.mkdir(parents=True, exist_ok=True)
-    (mira_briefings / f"{today}_zhesi.md").write_text(content, encoding="utf-8")
+    # Copy to artifacts for iOS (with verification)
+    _copy_to_briefings(f"{today}_zhesi.md", content)
 
     append_memory(f"Wrote daily 哲思 on: {fragment[:60]}")
 
@@ -1450,6 +1572,12 @@ def cmd_run():
     """
     log.info("=== Mira Agent wake ===")
 
+    # Safety net: ensure today's journal/zhesi are visible to iOS
+    try:
+        _sync_journals_to_briefings()
+    except Exception as e:
+        log.error("Journal sync check failed: %s", e)
+
     # Mira first (lightweight, fast)
     try:
         do_talk()
@@ -1525,6 +1653,14 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "autowrite-check",
         ])
 
+    # Skill study — daily video/photo craft learning
+    skill_pick = should_skill_study()
+    if skill_pick:
+        _dispatch_background(f"skill-study-{skill_pick['domain']}", [
+            sys.executable, str(Path(__file__).resolve()), "skill-study",
+            "--group", str(skill_pick["group_idx"]),
+        ])
+
     # Substack comment check — reply to readers
     if should_check_comments():
         _dispatch_background("substack-comments", [
@@ -1584,6 +1720,66 @@ def _dispatch_background(name: str, cmd: list[str]):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _copy_to_briefings(filename: str, content: str):
+    """Copy content to artifacts/briefings/ with verification and retry.
+
+    iCloud Drive can evict local files, so we verify the write succeeded
+    and log clearly if it doesn't.
+    """
+    import time
+    briefings_dir = ARTIFACTS_DIR / "briefings"
+    briefings_dir.mkdir(parents=True, exist_ok=True)
+    target = briefings_dir / filename
+
+    for attempt in range(3):
+        try:
+            target.write_text(content, encoding="utf-8")
+            # Verify: read back and check
+            time.sleep(0.2)  # brief pause for filesystem sync
+            if target.exists() and target.stat().st_size > 0:
+                log.info("Copied to briefings: %s (%d bytes)", filename, target.stat().st_size)
+                return
+            log.warning("Briefing copy verification failed (attempt %d): %s exists=%s",
+                        attempt + 1, filename, target.exists())
+        except OSError as e:
+            log.error("Briefing copy failed (attempt %d): %s — %s", attempt + 1, filename, e)
+        time.sleep(1)
+
+    log.error("FAILED to copy %s to briefings after 3 attempts — iOS will not see this content", filename)
+
+
+def _sync_journals_to_briefings():
+    """Ensure today's journal and zhesi are in artifacts/briefings/.
+
+    Called during each agent cycle as a safety net — if the initial copy
+    failed or iCloud evicted the file, this will restore it.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    briefings_dir = ARTIFACTS_DIR / "briefings"
+    briefings_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check journal
+    journal_src = JOURNAL_DIR / f"{today}.md"
+    journal_dst = briefings_dir / f"{today}_journal.md"
+    if journal_src.exists() and not journal_dst.exists():
+        try:
+            journal_dst.write_text(journal_src.read_text(encoding="utf-8"), encoding="utf-8")
+            log.info("Restored journal to briefings: %s", journal_dst.name)
+        except OSError as e:
+            log.error("Failed to restore journal to briefings: %s", e)
+
+    # Check zhesi
+    zhesi_src = JOURNAL_DIR / f"{today}_zhesi.md"
+    zhesi_dst = briefings_dir / f"{today}_zhesi.md"
+    if zhesi_src.exists() and not zhesi_dst.exists():
+        try:
+            zhesi_dst.write_text(zhesi_src.read_text(encoding="utf-8"), encoding="utf-8")
+            log.info("Restored zhesi to briefings: %s", zhesi_dst.name)
+        except OSError as e:
+            log.error("Failed to restore zhesi to briefings: %s", e)
+
 
 def _slugify(title: str) -> str:
     """Simple slug from title."""
@@ -1713,6 +1909,9 @@ def main():
         do_autowrite_check()
     elif command == "check-comments":
         do_check_comments()
+    elif command == "skill-study":
+        group_idx = int(flags.get("group", "0"))
+        do_skill_study(group_idx=group_idx)
     elif command == "write-check":
         # Manually check and advance writing projects
         responses = check_writing_responses()
@@ -1731,7 +1930,7 @@ def main():
         writing_type = flags.get("type", "novel")
         start_from_plan(title, plan_path, writing_type)
     else:
-        print(f"Usage: {sys.argv[0]} [run|talk|respond|explore|reflect|journal|analyst|zhesi|autowrite-check|write-check|write-from-plan]")
+        print(f"Usage: {sys.argv[0]} [run|talk|respond|explore|reflect|journal|analyst|zhesi|skill-study|autowrite-check|write-check|write-from-plan]")
         sys.exit(1)
 
 

@@ -17,7 +17,7 @@ struct SetupView: View {
             Text("Mira")
                 .font(.largeTitle.bold())
 
-            Text("选择 iCloud Drive 中的 Mira 文件夹来开始。")
+            Text("选择 iCloud Drive 中的 MtJoy 文件夹来开始。")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -42,7 +42,7 @@ struct SetupView: View {
 
             Spacer()
 
-            Text("在 Mac 上先创建 ~/iCloud Drive/Mira 文件夹\n如果是家人的手机，让 Mac 用户共享此文件夹给你")
+            Text("选择 MtJoy 根文件夹（包含 Mira/、Apps/ 等）\n也兼容直接选择 Mira-bridge 文件夹")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)

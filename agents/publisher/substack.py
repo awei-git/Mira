@@ -621,6 +621,34 @@ def reply_to_comment(post_id: int, parent_comment_id: int,
         return None
 
 
+def sync_posts_for_ios() -> int:
+    """Write a posts.json file that iOS can read to show published posts.
+
+    Returns number of posts written.
+    """
+    posts = get_recent_posts(limit=20)
+    if not posts:
+        return 0
+
+    cfg = _get_substack_config()
+    subdomain = cfg.get("subdomain", "")
+
+    # Enrich with URLs
+    for p in posts:
+        p["url"] = f"https://{subdomain}.substack.com/p/{p['slug']}"
+
+    # Write to bridge/tasks directory where iOS can find it
+    # MIRA_DIR is already Mira-bridge/ — don't double it
+    from config import MIRA_DIR
+    posts_file = MIRA_DIR / "tasks" / "substack_posts.json"
+    posts_file.write_text(
+        json.dumps(posts, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    log.info("Synced %d posts for iOS", len(posts))
+    return len(posts)
+
+
 def check_and_reply_comments() -> list[dict]:
     """Check all posts for new comments and generate replies.
 

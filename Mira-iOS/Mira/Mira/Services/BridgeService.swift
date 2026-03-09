@@ -35,10 +35,20 @@ final class BridgeService {
     /// Expose the base URL for file link resolution
     var bridgeBaseURL: URL? { bridgeURL }
 
-    /// Artifacts directory (inside mira/ — agent syncs copies here)
+    /// Artifacts directory
     var artifactsURL: URL? {
-        bridgeURL?.appendingPathComponent("artifacts")
+        if let root = _rootURL {
+            // New setup: MtJoy root selected
+            return root.appendingPathComponent("Mira/artifacts")
+        }
+        // Legacy: bridge folder selected, artifacts synced inside bridge
+        return bridgeURL?.appendingPathComponent("artifacts")
     }
+
+    /// MtJoy workspace root (only available when user selected MtJoy/)
+    var mtjoyURL: URL? { _rootURL }
+
+    private var _rootURL: URL?
 
     // MARK: - Private
 
@@ -53,7 +63,7 @@ final class BridgeService {
     private var heartbeatURL: URL? { bridgeURL?.appendingPathComponent("heartbeat.json") }
     private var threadsURL: URL? { bridgeURL?.appendingPathComponent("threads") }
     private var threadsIndexURL: URL? { threadsURL?.appendingPathComponent("index.json") }
-    private var tasksURL: URL? { bridgeURL?.appendingPathComponent("tasks") }
+    var tasksURL: URL? { bridgeURL?.appendingPathComponent("tasks") }
 
     // MARK: - Settings
 
@@ -93,6 +103,20 @@ final class BridgeService {
             log("setFolder: startAccessingSecurityScopedResource failed")
             return
         }
+
+        // Detect by folder name: "Mira-bridge" = legacy, anything else = workspace root
+        let folderName = url.lastPathComponent
+        let isRoot = folderName != "Mira-bridge"
+
+        let actualBridge = isRoot ? url.appendingPathComponent("Mira/Mira-bridge") : url
+        let actualRoot: URL? = isRoot ? url : nil
+
+        // Ensure bridge dir exists (trigger iCloud download if needed)
+        let fm = FileManager.default
+        if isRoot {
+            try? fm.startDownloadingUbiquitousItem(at: actualBridge)
+        }
+
         do {
             let bookmark = try url.bookmarkData(
                 options: .minimalBookmark,
@@ -100,9 +124,11 @@ final class BridgeService {
                 relativeTo: nil
             )
             UserDefaults.standard.set(bookmark, forKey: "bridge_bookmark")
-            bridgeURL = url
+            UserDefaults.standard.set(isRoot, forKey: "bookmark_is_root")
+            bridgeURL = actualBridge
+            _rootURL = actualRoot
             error = nil
-            log("setFolder: OK → \(url.path)")
+            log("setFolder: OK → \(url.path) (isRoot=\(isRoot), bridge=\(actualBridge.path))")
             ensureDirectories()
             startPolling()
         } catch {
@@ -132,8 +158,15 @@ final class BridgeService {
                 UserDefaults.standard.set(newData, forKey: "bridge_bookmark")
                 log("restoreBookmark: refreshed stale bookmark")
             }
-            bridgeURL = url
-            log("restoreBookmark: OK → \(url.path)")
+
+            let isRoot = UserDefaults.standard.bool(forKey: "bookmark_is_root")
+            if isRoot {
+                _rootURL = url
+                bridgeURL = url.appendingPathComponent("Mira/Mira-bridge")
+            } else {
+                bridgeURL = url
+            }
+            log("restoreBookmark: OK → \(url.path) (isRoot=\(isRoot))")
             ensureDirectories()
             startPolling()
         } catch {
@@ -182,12 +215,18 @@ final class BridgeService {
 
     /// Create a new task and write to both inbox (for Mac) and tasks/ (for display)
     func createTask(title: String, content: String) {
-        guard let inbox = inboxURL, let tasksDir = tasksURL else {
+        createTaskWithId(id: nil, title: title, content: content)
+    }
+
+    /// Create a task with a specific ID (for stable comment threads)
+    func createTaskWithId(id: String?, title: String, content: String) {
+        guard let inbox = inboxURL, let _ = tasksURL else {
             log("createTask: URLs nil")
             return
         }
 
-        let task = MiraTask.new(title: title, content: content, sender: senderID)
+        var task = MiraTask.new(title: title, content: content, sender: senderID)
+        if let id { task.id = id }
         tasks.append(task)
 
         // Write task JSON to tasks/ for display

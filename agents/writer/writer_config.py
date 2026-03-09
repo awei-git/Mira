@@ -20,7 +20,7 @@ LOGS_DIR = WRITINGS_ROOT / "logs"
 
 # Claude CLI
 CLAUDE_BIN = _CLAUDE_BIN
-CLAUDE_TIMEOUT = 600  # seconds per invocation (10 min for long drafts)
+CLAUDE_TIMEOUT = 1200  # seconds per invocation (20 min — revision needs more than drafting)
 CLAUDE_MAX_RETRIES = 2
 
 # How many steps to advance per idea per daily run
