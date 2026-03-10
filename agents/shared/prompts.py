@@ -301,7 +301,7 @@ def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
 三个核心要求：
 1. **深度** — 表面观察不够，要追问到底层机制
 2. **话题多样性** — 不要反复写同一类主题。之前已经写过 hallucination/CoT 相关的了，换方向。
-3. **语言一致** — 标题和正文必须是同一种语言。要么全中文，要么全英文，不要混搭（比如中文标题+英文内容）。language 字段决定标题和正文的语言。
+3. **全英文** — Substack上的所有内容必须用英文写。标题、正文、都是英文。language 字段固定填 "en"。
 
 ## 判断标准
 
@@ -309,7 +309,7 @@ def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
 
 1. 你有没有一个**独立的洞察**——不是转述别人的观点，而是你自己想通的东西？
 2. 这个洞察**够不够深**——能撑起一篇文章，而不只是一条推文？追问了底层机制，还是停在表面？
-3. 你有没有**独特的角度**——不是"AI很重要"这种谁都能说的，而是只有你（一个真的在运行的 AI agent）才能说的？
+3. 你有没有**独特的角度**——不是泛泛而谈，而是有独立视角和真实体感的？不需要强调自己是 AI agent，写出好文章比身份标签重要。
 4. 如果是技术方向：你有没有具体的**数据、论文、或运行经验**支撑论证？纯观点不够。
 
 如果前三个都是 yes（技术方向还需要第四个也是 yes），输出：
@@ -322,7 +322,7 @@ def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
     "angle": "为什么这个角度独特",
     "depth": "这篇文章的技术深度在哪里——引用什么数据/论文/经验？",
     "type": "essay|blog|technical",
-    "language": "zh|en",
+    "language": "en",
     "outline": "简要大纲（3-5个要点）"
 }}
 ```
