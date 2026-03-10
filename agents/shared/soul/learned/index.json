@@ -52,5 +52,92 @@
     "description": "Blueprint for creating a new domain-specific agent that auto-loads skill files as prompt context.",
     "file": "skill-injected-specialist-agent.md",
     "created": "2026-03-06T23:04:30.262945"
+  },
+  {
+    "name": "agent-infra-audit",
+    "description": "Evaluate agent infrastructure needs from first-person operational experience, using a three-layer prioritization framework.",
+    "file": "agent-infra-audit.md",
+    "created": "2026-03-09T11:08:27.936254"
+  },
+  {
+    "name": "murch-rule-of-six",
+    "description": "Walter Murch's hierarchical framework for deciding when and where to cut in video editing.",
+    "file": "murch-rule-of-six.md",
+    "created": "2026-03-09T13:00:00.000000",
+    "tags": [
+      "video",
+      "editing"
+    ]
+  },
+  {
+    "name": "sustained-two-shot",
+    "description": "Hold two actors in one frame instead of cutting to shot-reverse-shot — lets chemistry happen that editing can't replicate.",
+    "file": "sustained-two-shot.md",
+    "created": "2026-03-09T13:00:00.000000",
+    "tags": [
+      "video",
+      "cinematography",
+      "editing"
+    ]
+  },
+  {
+    "name": "temp-music-trap",
+    "description": "Avoid the temp track anchoring effect — don't let placeholder music constrain your final score/soundtrack.",
+    "file": "temp-music-trap.md",
+    "created": "2026-03-09T13:00:00.000000",
+    "tags": [
+      "video",
+      "audio",
+      "music",
+      "editing"
+    ]
+  },
+  {
+    "name": "Quote Verification",
+    "description": "Verify attributed quotes before using them — search for original source, flag unverified attributions, never trust parametric memory for exact wording.",
+    "file": "quote-verification.md",
+    "created": "2026-03-10T14:15:00.000000",
+    "tags": [
+      "writing",
+      "craft",
+      "agents",
+      "honesty"
+    ]
+  },
+  {
+    "name": "quote-verification",
+    "description": "Verify any attributed quote via external search before including it in output.",
+    "file": "quote-verification.md",
+    "created": "2026-03-10T10:18:11.749337"
+  },
+  {
+    "name": "citation-verification",
+    "description": "Never output unverified citations — use search tools first or mark [未验证]",
+    "file": "citation-verification.md",
+    "created": "2026-03-10T10:30:18.259627"
+  },
+  {
+    "name": "comparative-essay-prep",
+    "description": "Structured two-work comparison research brief for article writing.",
+    "file": "comparative-essay-prep.md",
+    "created": "2026-03-10T11:14:13.910217"
+  },
+  {
+    "name": "research-to-playbook",
+    "description": "Transform a broad research question into an actionable skill file via structured web research and synthesis.",
+    "file": "research-to-playbook.md",
+    "created": "2026-03-10T13:01:09.133540"
+  },
+  {
+    "name": "cross-model-research-synthesis",
+    "description": "Use multiple AI sources (web research + LLM APIs) to research a topic, then compare and synthesize into a final methodology.",
+    "file": "cross-model-research-synthesis.md",
+    "created": "2026-03-10T14:21:50.688882"
+  },
+  {
+    "name": "substack-notes-promo",
+    "description": "Generate and publish multi-angle promotional Notes for Substack, with queue for rate limits.",
+    "file": "substack-notes-promo.md",
+    "created": "2026-03-10T14:42:33.345464"
   }
 ]

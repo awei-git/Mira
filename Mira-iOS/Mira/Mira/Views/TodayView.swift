@@ -110,9 +110,9 @@ struct TodayView: View {
                         .padding(.top, 40)
                     }
 
-                    // Previous days (collapsible, limit to last 7)
+                    // Previous days (collapsible, show ~3 days worth)
                     if !previousCards.isEmpty {
-                        let recentPrevious = Array(previousCards.prefix(7))
+                        let recentPrevious = Array(previousCards.prefix(30))
                         DisclosureGroup(isExpanded: $showPreviousDays) {
                             ForEach(recentPrevious) { card in
                                 NavigationLink {
@@ -442,41 +442,16 @@ struct ReportDetailView: View {
     /// Find the matching task for this card's comment thread
     private var matchingTask: MiraTask? {
         guard let bridge else { return nil }
-        // First try: match by our comment thread ID
+        // Primary: exact match by comment thread ID (e.g. "comment_2026-03-09_journal")
         if let task = bridge.tasks.first(where: { $0.id == commentThreadId }) {
             return task
         }
-        // Fallback: match by card title in task title (handles legacy tasks)
+        // Fallback: match by exact card title in task title
+        // Only match if the task title literally contains this card's full title
         let cardTitle = card.title
-        let filename = (card.id as NSString).lastPathComponent
-        let datePart = String(filename.prefix(10))  // YYYY-MM-DD
-        // Extract keywords from card title for fuzzy matching
-        // e.g., "Reflection Today" → check "Reflection", "Journal", "Briefing", date
-        let titleWords = Set(cardTitle.split(separator: " ").map { $0.lowercased() })
-        // Map between display names that refer to the same content
-        let synonyms: Set<String> = ["reflection", "journal", "zhesi", "briefing"]
-        let cardSynonyms = titleWords.intersection(synonyms)
-
         return bridge.tasks.first { task in
             guard task.title.contains("评论") else { return false }
-            // Direct title match
-            if task.title.contains(cardTitle) { return true }
-            // Date match (check both YYYY-MM-DD and "Today")
-            if task.title.contains(datePart) { return true }
-            // "Today" in task title + card is from today
-            if task.title.contains("Today") && cardTitle.contains("Today") {
-                // Check if they refer to related content (journal/reflection/zhesi)
-                let taskLower = task.title.lowercased()
-                if !cardSynonyms.isEmpty && cardSynonyms.contains(where: { taskLower.contains($0) }) {
-                    return true
-                }
-                // Also match if task mentions any synonym for this card type
-                if synonyms.contains(where: { taskLower.contains($0) }) &&
-                   !cardSynonyms.isEmpty {
-                    return true
-                }
-            }
-            return false
+            return task.title.contains(cardTitle)
         }
     }
 

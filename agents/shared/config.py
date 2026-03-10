@@ -149,6 +149,7 @@ NOTES_OUTPUT_FOLDER = _notes_cfg.get("output_folder", "Mira Results")
 # ---------------------------------------------------------------------------
 CLAUDE_BIN = _cfg.get("claude_bin", "/opt/homebrew/bin/claude")
 CLAUDE_TIMEOUT_THINK = 120   # seconds for simple calls (classify, filter)
+CLAUDE_TIMEOUT_PLAN = 300    # seconds for medium calls (analyze, review, plan)
 CLAUDE_TIMEOUT_ACT = 600     # seconds for complex calls (write, code, research)
 
 _limits = _cfg.get("limits", {})
@@ -286,7 +287,8 @@ def _parse_times(time_strs: list[str]) -> list[time]:
 # Source groups are a pool — each explore session picks one at random (LRU-weighted)
 _explore_source_groups_raw = _sched.get("explore_source_groups",
     _sched.get("explore_slot_sources",  # backward compat with old config
-               ["arxiv,huggingface", "reddit,hacker_news,ai_news",
+               ["arxiv,huggingface", "reddit,ai_news",
+                "github_trending,hackernews,lobsters",
                 "quanta_magazine,aeon_essays,stanford_encyclopedia,marginal_revolution,astral_codex_ten",
                 "literaryhub,brain_pickings,3blue1brown,veritasium",
                 "noah_smith,stratechery,lennys_newsletter,the_economist,matt_levine"]))

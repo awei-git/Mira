@@ -684,16 +684,16 @@ def _handle_full_write(workspace: Path, task_id: str, content: str,
 
 def _handle_publish(workspace: Path, task_id: str, content: str,
                     sender: str, thread_id: str):
-    """Route publish requests to the publisher agent."""
+    """Route publish requests to the social media agent."""
     try:
-        # Add publisher dir to path so handler.py can import substack.py
-        publisher_dir = str(_AGENTS_DIR / "publisher")
-        if publisher_dir not in sys.path:
-            sys.path.insert(0, publisher_dir)
+        # Add socialmedia dir to path so handler.py can import substack.py
+        sm_dir = str(_AGENTS_DIR / "socialmedia")
+        if sm_dir not in sys.path:
+            sys.path.insert(0, sm_dir)
 
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            "publisher_handler", str(_AGENTS_DIR / "publisher" / "handler.py"))
+            "sm_handler", str(_AGENTS_DIR / "socialmedia" / "handler.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         publish_handle = mod.handle

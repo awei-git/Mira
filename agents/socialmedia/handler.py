@@ -23,6 +23,10 @@ PLATFORMS = {
         "name": "Substack",
         "content_types": ["article", "essay", "blog", "newsletter"],
     },
+    "substack_note": {
+        "name": "Substack Notes",
+        "content_types": ["note", "notes", "short"],
+    },
     # Future:
     # "instagram": {"name": "Instagram", "content_types": ["photo", "reel"]},
     # "threads":   {"name": "Threads",   "content_types": ["text", "photo"]},
@@ -56,12 +60,52 @@ def handle(workspace: Path, task_id: str, content: str,
     if platform == "substack":
         from substack import publish_to_substack
         result = publish_to_substack(title, subtitle, article_text, workspace)
+    elif platform == "substack_note":
+        result = _handle_note(content, article_text, workspace)
     else:
         result = f"平台 '{platform}' 暂不支持"
 
     (workspace / "output.md").write_text(result, encoding="utf-8")
     append_memory(f"Published to {platform}: {title[:40]}")
     return result
+
+
+def _handle_note(content: str, inline_text: str | None,
+                 workspace: Path) -> str:
+    """Handle a Substack Notes publish request.
+
+    Supports:
+    - Posting a specific Note text
+    - Backfilling Notes for all past articles
+    - Posting a Note for a specific article
+    """
+    from notes import post_note, backfill_notes_for_articles
+
+    # Check if this is a backfill request
+    backfill_keywords = ["之前", "过去", "所有", "backfill", "all", "past",
+                         "以前的文章", "历史"]
+    is_backfill = any(kw in content.lower() for kw in backfill_keywords)
+
+    if is_backfill:
+        results = backfill_notes_for_articles(dry_run=False)
+        lines = ["## Notes 补发结果\n"]
+        for r in results:
+            status = "已发布" if r["posted"] else "跳过"
+            lines.append(f"- [{status}] {r['title']}")
+            if r.get("note_text"):
+                lines.append(f"  Note: {r['note_text'][:100]}...")
+        if not results:
+            lines.append("所有文章都已有 Notes，无需补发。")
+        return "\n".join(lines)
+
+    # Otherwise post the inline text as a Note
+    if inline_text and len(inline_text) > 10:
+        result = post_note(inline_text)
+        if result:
+            return f"已发布 Note (id={result.get('id')}): {inline_text[:100]}"
+        return "Note 发布失败"
+
+    return "未找到要发布的 Note 内容"
 
 
 def _plan_publish(content: str) -> dict | None:
@@ -72,11 +116,15 @@ Message: {content[:500]}
 
 Return JSON with:
 - "platform": one of {list(PLATFORMS.keys())} (default "substack")
+  Use "substack_note" if the message is about posting Notes, short-form content,
+  or backfilling Notes for existing articles.
+  Use "substack" for full articles/essays.
 - "source": file path or project name mentioned (e.g. "自由意志" or a path), or "" if not specified
 - "title": article title to use, or "" to auto-detect
 - "subtitle": subtitle if mentioned, or ""
 
-Example: {{"platform": "substack", "source": "自由意志", "title": "On Free Will", "subtitle": ""}}"""
+Example: {{"platform": "substack", "source": "自由意志", "title": "On Free Will", "subtitle": ""}}
+Example: {{"platform": "substack_note", "source": "", "title": "", "subtitle": ""}}"""
 
     result = claude_think(prompt, timeout=30)
     if not result:

@@ -85,6 +85,16 @@ def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "",
 5. 标一条最想深挖的，说清楚为什么
 6. 最后一句你的真实感想
 
+## 互动推荐（如果有的话）
+
+看完所有 items 之后，如果有 1-2 篇你觉得**特别值得去评论**的（Substack、HN、Reddit 都算），在简报末尾加一个「💬 值得去聊两句」小节：
+
+- 附原文链接
+- 写一段你想留的评论草稿（用英文或中文，跟原文语言一致）
+- 评论要有**自己的观点或补充**，不是"great article"那种废话
+
+不是每次都要有，没有特别想说的就别硬凑。
+
 ## 格式示例
 
 嘿，今天有几个挺有意思的。
@@ -94,6 +104,10 @@ def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "",
 今天最想深挖的是 [xxx](链接)，因为 xxx。
 
 [一句真实感想收尾]
+
+💬 值得去聊两句
+
+[文章标题](链接) — 我想说：[评论草稿]
 
 ---
 
@@ -284,9 +298,10 @@ def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
 - 经济、市场、政治 — 结合你的阅读和分析
 - 任何你觉得有意思的主题 — 跟着好奇心走
 
-两个核心要求：
+三个核心要求：
 1. **深度** — 表面观察不够，要追问到底层机制
 2. **话题多样性** — 不要反复写同一类主题。之前已经写过 hallucination/CoT 相关的了，换方向。
+3. **语言一致** — 标题和正文必须是同一种语言。要么全中文，要么全英文，不要混搭（比如中文标题+英文内容）。language 字段决定标题和正文的语言。
 
 ## 判断标准
 
@@ -307,7 +322,7 @@ def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
     "angle": "为什么这个角度独特",
     "depth": "这篇文章的技术深度在哪里——引用什么数据/论文/经验？",
     "type": "essay|blog|technical",
-    "language": "zh|en|mixed",
+    "language": "zh|en",
     "outline": "简要大纲（3-5个要点）"
 }}
 ```
