@@ -37,9 +37,9 @@ struct TasksView: View {
 
                 if filteredTasks.isEmpty {
                     ContentUnavailableView(
-                        "没有任务",
-                        systemImage: "tray",
-                        description: Text("点 + 创建新任务")
+                        "没有对话",
+                        systemImage: "bubble.left.and.bubble.right",
+                        description: Text("点 + 开始新对话")
                     )
                 } else {
                     List {
@@ -52,7 +52,7 @@ struct TasksView: View {
                     .listStyle(.plain)
                 }
             }
-            .navigationTitle("Tasks")
+            .navigationTitle("Threads")
             .navigationDestination(for: String.self) { taskId in
                 TaskDetailView(bridge: bridge, taskId: taskId)
             }
@@ -157,7 +157,7 @@ struct NewTaskSheet: View {
                 Spacer()
             }
             .padding(.top)
-            .navigationTitle("新任务")
+            .navigationTitle("新对话")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {

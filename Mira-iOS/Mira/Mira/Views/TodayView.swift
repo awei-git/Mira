@@ -19,7 +19,7 @@ struct TodayView: View {
                     let needsInput = bridge.tasks.filter(\.needsInput)
                     if !needsInput.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            Label("\(needsInput.count) 个任务等你回复", systemImage: "exclamationmark.bubble")
+                            Label("\(needsInput.count) 个对话等你回复", systemImage: "exclamationmark.bubble")
                                 .font(.subheadline.bold())
                                 .foregroundStyle(.orange)
                             ForEach(needsInput) { task in
