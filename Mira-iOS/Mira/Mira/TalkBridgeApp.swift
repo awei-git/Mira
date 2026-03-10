@@ -48,7 +48,7 @@ struct MainTabView: View {
 
                 TasksView(bridge: bridge)
                     .tabItem {
-                        Label("Tasks", systemImage: "checklist")
+                        Label("Threads", systemImage: "bubble.left.and.text.bubble.right")
                     }
                     .badge(bridge.needsInputCount)
 
