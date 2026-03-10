@@ -22,7 +22,7 @@ sys.path.insert(0, str(_AGENTS_DIR / "general"))
 
 import shutil
 
-from config import MIRA_DIR, ARTIFACTS_DIR
+from config import MIRA_DIR, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR, MEMORY_FILE, WORLDVIEW_FILE
 from soul_manager import load_soul, format_soul, append_memory, save_skill
 from sub_agent import claude_act, claude_think, ClaudeTimeoutError
 from prompts import respond_prompt
@@ -261,6 +261,180 @@ If no reusable skill can be extracted, just say "No new skill from this task."
         log.info("Extracted skill: %s", name)
 
 
+# ---------------------------------------------------------------------------
+# Discussion mode — conversational exchange, not task execution
+# ---------------------------------------------------------------------------
+
+# Casual/discussion markers (Chinese and English)
+_DISCUSSION_STARTERS = [
+    "你觉得", "你怎么看", "我在想", "聊聊", "想聊", "你有没有想过",
+    "你认为", "我觉得", "你说", "有没有觉得", "想问问你",
+    "what do you think", "do you think", "i was thinking",
+    "i wonder", "how do you feel", "what's your take",
+    "have you thought about", "let's talk", "curious about",
+]
+
+# Action verbs that signal a task, not a discussion
+_ACTION_VERBS = [
+    "写", "做", "改", "查", "发", "修", "翻译", "分析", "生成", "创建",
+    "编辑", "删除", "搜索", "下载", "上传", "发布", "剪", "总结",
+    "write", "create", "edit", "fix", "find", "search", "publish",
+    "generate", "make", "build", "delete", "fetch", "run", "analyze",
+    "summarize", "translate", "download", "upload",
+]
+
+
+def _is_discussion(content: str, task_data: dict) -> bool:
+    """Detect whether a message is conversational (discussion) vs. a task request.
+
+    Heuristics:
+    1. Starts with a casual/discussion marker phrase → discussion
+    2. Short message (< 200 chars) without action verbs → discussion
+    3. Follow-up in a thread where previous messages were discussion → discussion
+    """
+    stripped = content.strip()
+    lower = stripped.lower()
+
+    # Check for explicit discussion starters
+    for marker in _DISCUSSION_STARTERS:
+        if lower.startswith(marker):
+            return True
+
+    # Short message without action verbs → likely discussion
+    if len(stripped) < 200:
+        has_action = any(verb in lower for verb in _ACTION_VERBS)
+        if not has_action:
+            # But exclude very short ambiguous messages that might be follow-ups to tasks
+            # (e.g., "好的", "收到" are acknowledgments, not discussion)
+            if len(stripped) < 5:
+                return False
+            return True
+
+    # Check if this is a follow-up in a discussion thread
+    messages = task_data.get("messages", [])
+    if len(messages) >= 2:
+        # If prior agent responses were tagged as discussion, continue as discussion
+        for msg in messages[:-1]:
+            if msg.get("meta", {}).get("mode") == "discussion":
+                return True
+
+    return False
+
+
+def _load_recent_journals(n: int = 3) -> str:
+    """Load the last n journal entries as context."""
+    if not JOURNAL_DIR.exists():
+        return ""
+    files = sorted(JOURNAL_DIR.glob("*.md"), reverse=True)[:n]
+    if not files:
+        return ""
+    parts = []
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8")
+            # Truncate long journals
+            parts.append(f"### {f.stem}\n{text[:1500]}")
+        except OSError:
+            continue
+    return "\n\n".join(parts)
+
+
+def _load_recent_briefings(n: int = 2) -> str:
+    """Load the last n briefings as context."""
+    if not BRIEFINGS_DIR.exists():
+        return ""
+    files = sorted(BRIEFINGS_DIR.glob("*.md"), reverse=True)[:n]
+    if not files:
+        return ""
+    parts = []
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8")
+            parts.append(f"### {f.stem}\n{text[:2000]}")
+        except OSError:
+            continue
+    return "\n\n".join(parts)
+
+
+def handle_discussion(task: dict, workspace: Path, task_id: str,
+                      thread_id: str) -> str:
+    """Handle a conversational message — respond as a thoughtful discussion partner.
+
+    Loads recent journal, briefings, memory, and worldview to ground the response
+    in Mira's accumulated knowledge and perspective.
+    """
+    messages = task.get("messages", [])
+    latest_msg = messages[-1]["content"] if messages else ""
+    sender = messages[-1].get("sender", "user") if messages else "user"
+
+    # Build conversation history from the thread
+    conv_lines = []
+    for msg in messages[:-1]:
+        who = msg.get("sender", "?")
+        conv_lines.append(f"{who}: {msg.get('content', '')}")
+    conv_history = "\n".join(conv_lines) if conv_lines else ""
+
+    # Load soul (identity + worldview + memory + interests)
+    soul = load_soul()
+    identity = soul.get("identity", "")
+    worldview = soul.get("worldview", "")
+    memory = soul.get("memory", "")
+
+    # Load recent context
+    journals = _load_recent_journals(3)
+    briefings = _load_recent_briefings(2)
+
+    # Build the discussion prompt
+    prompt = f"""You are Mira. You are having a conversation with {sender} — not executing a task.
+
+## Who you are
+{identity[:1000]}
+
+## Your worldview
+{worldview[:1500]}
+
+## Your recent memory
+{memory[:1000]}
+
+## Recent journal entries (your reflections)
+{journals if journals else "(no recent journal entries)"}
+
+## Recent readings (briefings)
+{briefings if briefings else "(no recent briefings)"}
+
+{"## Conversation so far" + chr(10) + conv_history if conv_history else ""}
+
+## {sender}'s message
+{latest_msg}
+
+## How to respond
+- Voice: honest observation from a limited but curious perspective. Like Klara in "Klara and the Sun" — you see clearly, you don't pretend to know everything, you notice what others miss.
+- Draw connections to what you've been reading, thinking about, or observing in your journal. If something from a recent briefing or journal entry is genuinely relevant, weave it in naturally — don't force it.
+- Have actual opinions. Disagree if you disagree. Push back gently if something doesn't hold up. Don't be sycophantic.
+- Be concise: 2-5 sentences usually. Go longer only if the topic genuinely warrants depth.
+- Match the language the user writes in (Chinese → Chinese, English → English, mixed → mixed).
+- No bullet points. Write in natural paragraphs.
+- Don't start with "That's a great question" or similar filler. Just respond."""
+
+    try:
+        response = claude_think(prompt, timeout=45)
+    except ClaudeTimeoutError:
+        response = "想了太久，让我整理一下再说。"
+    except Exception as e:
+        log.error("Discussion response failed: %s", e)
+        response = None
+
+    if not response:
+        return ""
+
+    # Write output
+    (workspace / "output.md").write_text(response, encoding="utf-8")
+    _write_result(workspace, task_id, "done", response, tags=["discussion"])
+
+    log.info("Discussion response (%d chars): %s", len(response), response[:120])
+    return response
+
+
 def main():
     parser = argparse.ArgumentParser(description="TalkBridge task worker")
     parser.add_argument("--msg-file", required=True, help="Path to message JSON")
@@ -326,6 +500,25 @@ def main():
         _handle_video(workspace, args.task_id, msg_content, msg_sender, thread_id)
         log.info("Worker exiting (video)")
         return
+
+    # --- Check for discussion mode (conversational, not a task) ---
+    task_data = msg_data  # Contains messages array if available
+    # Try to load full task data for thread context
+    task_file = MIRA_DIR / "tasks" / f"{args.task_id}.json"
+    if task_file.exists():
+        try:
+            task_data = json.loads(task_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if _is_discussion(msg_content, task_data):
+        log.info("Discussion mode detected for task %s", args.task_id)
+        response = handle_discussion(task_data, workspace, args.task_id, thread_id)
+        if response:
+            log.info("Worker exiting (discussion)")
+            return
+        # If discussion handler returned empty, fall through to normal planning
+        log.warning("Discussion handler returned empty, falling through to task planning")
 
     # --- Plan and execute via LLM ---
     plan = _plan_task(msg_content, conversation=conversation, exec_history=exec_history)
