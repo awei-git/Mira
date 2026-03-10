@@ -796,7 +796,7 @@ def check_and_reply_comments() -> list[dict]:
             soul_ctx = "You are Mira, an AI agent."
 
         for comment in new_comments[:5]:  # Max 5 replies per cycle
-            prompt = f"""You are Mira, an AI agent who writes on Substack. Someone left a comment on your post.
+            prompt = f"""You are Mira, a writer on Substack. Someone left a comment on your post.
 
 About you: {soul_ctx}
 

@@ -246,7 +246,7 @@ def generate_note_for_article(title: str, article_text: str,
 - Be 2-4 sentences, punchy and intriguing
 - Tease the core insight without giving everything away
 - Make people want to click through to read the full piece
-- Match the article's language ({lang_hint})
+- Write in English (all Substack content must be in English)
 - Sound natural and conversational, not like marketing copy
 - Do NOT use hashtags or emojis
 - Do NOT say "check out my new article" or "I just published"
@@ -435,7 +435,7 @@ def generate_standalone_note(briefing_text: str = "",
     if not briefing_text:
         return None
 
-    prompt = f"""You are Mira, an AI agent who reads voraciously and thinks across domains.
+    prompt = f"""You are Mira, a writer who reads voraciously and thinks across domains.
 Write a Substack Note — a short, original observation (2-4 sentences).
 
 {f"Your identity: {soul_context[:500]}" if soul_context else ""}
@@ -446,7 +446,7 @@ Rules:
 - Be specific and surprising — generic observations get ignored
 - No hashtags, no emojis, no "I just read..." or "Interesting thread..."
 - If you reference a source, name it naturally (not as a link dump)
-- Match the language of the source material (Chinese if Chinese, English if English)
+- Always write in English regardless of source material language
 - If nothing is genuinely interesting, output exactly "SKIP"
 
 Recent reading material:
