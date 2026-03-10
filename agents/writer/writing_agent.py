@@ -817,9 +817,9 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
     if final_state in ("done", "awaiting_feedback") and project_dir:
         log.info("Auto-publishing '%s' to Substack", title)
         try:
-            publisher_dir = str(Path(__file__).resolve().parent.parent / "publisher")
-            if publisher_dir not in sys.path:
-                sys.path.insert(0, publisher_dir)
+            sm_dir = str(Path(__file__).resolve().parent.parent / "socialmedia")
+            if sm_dir not in sys.path:
+                sys.path.insert(0, sm_dir)
             from substack import publish_to_substack
             proj_path = Path(project_dir)
             # Find the best draft to publish

@@ -35,7 +35,7 @@ from pathlib import Path
 from config import (
     WORKSPACE_DIR, NOTES_INBOX_FOLDER, NOTES_OUTPUT_FOLDER,
     MODELS, WRITING_MODELS, REVIEW_MODELS, WRITING_CRITERIA,
-    MIN_REVIEW_ROUNDS,
+    MIN_REVIEW_ROUNDS, CLAUDE_TIMEOUT_PLAN,
 )
 from sub_agent import model_think, claude_think
 from notes_bridge import create_note, fetch_notes
@@ -133,7 +133,7 @@ def start_project(title: str, body: str, workspace: Path):
 
 def _analyze(body: str) -> dict:
     """Ask Claude to classify the writing type and parameters."""
-    result = claude_think(analyze_writing_prompt(body), timeout=60)
+    result = claude_think(analyze_writing_prompt(body), timeout=CLAUDE_TIMEOUT_PLAN)
     try:
         m = re.search(r"\{[^{}]*\}", result, re.DOTALL)
         analysis = json.loads(m.group()) if m else json.loads(result)
@@ -161,7 +161,7 @@ def _plan(soul_ctx: str, analysis: dict, idea: str, plans_dir: Path) -> str:
     style_a = MODELS.get(agents[0], {}).get("style", "")
     plan_a = model_think(
         plan_propose_prompt(soul_ctx, analysis, idea, style_a),
-        model_name=agents[0], timeout=180,
+        model_name=agents[0], timeout=CLAUDE_TIMEOUT_PLAN,
     ) or ""
     (plans_dir / f"plan_{agents[0]}.md").write_text(plan_a, encoding="utf-8")
     log.info("Plan proposed by %s: %d chars", agents[0], len(plan_a))
@@ -170,7 +170,7 @@ def _plan(soul_ctx: str, analysis: dict, idea: str, plans_dir: Path) -> str:
     style_b = MODELS.get(agents[1], {}).get("style", "")
     critique = model_think(
         plan_critique_prompt(soul_ctx, analysis, idea, plan_a, style_b),
-        model_name=agents[1], timeout=180,
+        model_name=agents[1], timeout=CLAUDE_TIMEOUT_PLAN,
     ) or ""
     (plans_dir / f"plan_{agents[1]}.md").write_text(critique, encoding="utf-8")
     log.info("Plan critiqued by %s: %d chars", agents[1], len(critique))
@@ -178,7 +178,7 @@ def _plan(soul_ctx: str, analysis: dict, idea: str, plans_dir: Path) -> str:
     # Agent C synthesizes final plan
     merged = model_think(
         plan_synthesize_prompt(soul_ctx, idea, plan_a, critique),
-        model_name=agents[2], timeout=180,
+        model_name=agents[2], timeout=CLAUDE_TIMEOUT_PLAN,
     )
     log.info("Plan synthesized by %s: %d chars", agents[2], len(merged or ""))
     return merged or plan_a or "Plan generation failed."

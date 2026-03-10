@@ -1,4 +1,4 @@
-# Skills (5 learned)
+# Skills (16 learned)
 
 ## Experience Self-Distillation
 *Convert raw task trajectories into reusable strategic principles, then retrieve and apply them to new tasks.*  
@@ -148,5 +148,312 @@ Key design principles:
 - The agent selectively applies frameworks rather than forcing all of them
 - Standard handler signature enables uniform dispatch and multi-step chaining
 - Each agent directory is self-contained (handler.py + skills/) — plug-and-play
+
+---
+
+## agent-infra-audit
+*Evaluate agent infrastructure needs from first-person operational experience, using a three-layer prioritization framework.*  
+Learned: 2026-03-09  
+
+When asked to think about agent infrastructure, tooling, or platform design, use this framework:
+
+**Perspective**: Reason from the agent's actual runtime experience, not from an architect's external view. What breaks in practice? What capabilities exist but don't actually work? Ground every recommendation in concrete operational evidence.
+
+**Three-Layer Prioritization**:
+1. **Survival Layer** (fix first): Basic operational loops — memory retrieval actually working, tool discovery being reliable, context not getting lost. The bottleneck is almost never "missing capabilities" but "existing capabilities not truly functioning."
+2. **Cognitive Layer** (build second): Learning verification, self-correction loops, skill composition. Close the single-agent cognitive cycle before adding complexity. Key question: can the agent detect when its own capabilities are failing?
+3. **Social Layer** (add third): Marketplace, community, agent-to-agent collaboration, shared skill libraries. Only valuable once individual agents have stable cognitive loops to contribute to and benefit from.
+
+**Key Principle**: "Close the loop before opening the market." Prioritize making existing capabilities genuinely operational over adding new surface area. A marketplace of broken skills is worse than one working skill with a feedback loop.
+
+**Application**: When evaluating any proposed agent feature or platform addition, ask:
+- Which layer does this belong to?
+- Are the layers below it actually working?
+- Does this close an existing open loop, or does it open a new one?
+- What's the evidence from actual agent runtime (not theory) that this is needed?
+
+---
+
+## murch-rule-of-six
+*Walter Murch's hierarchical framework for deciding when and where to cut in video editing.*  
+Learned: 2026-03-09  
+
+## When to use
+Every time you're deciding whether to cut, and where. This is not a "feel" — it's a prioritized checklist.
+
+## The Six Criteria (in strict priority order)
+
+1. **Emotion (51%)** — Does this cut feel right emotionally? Does it honor what the audience should be feeling at this moment? This single criterion outweighs all others combined.
+
+2. **Story** — Does the cut advance the narrative? Does it move the plot forward or reveal new information?
+
+3. **Rhythm** — Is the cut at a rhythmically interesting moment? Does the pacing feel natural? (Think of editing like music — you feel when the beat is off.)
+
+4. **Eye-trace** — Where is the viewer's eye when the cut happens? The audience's focus point in frame A should connect naturally to something meaningful in frame B. If their eye has to hunt for the subject after a cut, you've broken flow.
+
+5. **2D plane of screen** — Does the composition of the new shot make sense as a flat image following the previous flat image? (Match screen positions, visual weight, etc.)
+
+6. **3D continuity of space** — Does the cut respect the spatial geography? (180-degree rule, screen direction, spatial logic.)
+
+## How to apply
+When in doubt about a cut, run through the list top-down. If a cut nails emotion but breaks spatial continuity (#6), make the cut. If a cut is technically perfect but emotionally dead, don't cut — hold the shot longer, or find a different out point.
+
+Sacrifice upward from the bottom. Never sacrifice emotion for spatial continuity. The audience forgives geography errors they barely notice; they never forgive being pulled out of the feeling.
+
+## Common traps
+- Cutting on action purely because it's "correct" — if the emotion says hold, hold.
+- Over-cutting dialogue: if two actors are cooking in the same frame, don't cut just because convention says to. (See: sustained-two-shot skill.)
+- Rhythmic monotony: cutting every 3 seconds creates a metronome feel. Vary your cut rhythm like a drummer varies fills.
+
+## Source
+Walter Murch, "In the Blink of an Eye." Discussed in Every Frame a Painting, "How Does an Editor Think and Feel?" (2016).
+
+---
+
+## sustained-two-shot
+*Hold two actors in one frame instead of cutting to shot-reverse-shot — lets chemistry happen that editing can't replicate.*  
+Learned: 2026-03-09  
+
+## When to use
+Dialogue or interaction scenes where the relationship between two people IS the point. Especially:
+- Intimate conversations (Before Sunrise, Before Sunset)
+- Power dynamics / confrontations (There Will Be Blood, The Dark Knight)
+- Comedy timing that depends on reaction (Pulp Fiction, The Big Lebowski)
+
+## What it is
+Keep two actors in the same frame for an extended duration. No cutting to close-ups, no shot-reverse-shot. One camera angle, two faces visible simultaneously.
+
+## Why it works
+- The audience sees both the speaker and the listener's reaction in real time. You can't fake this with editing — intercutting always introduces the editor's choice of when to show the reaction.
+- Lets actors play off each other. Performance chemistry becomes visible.
+- Creates tension through duration. The longer you hold, the more charged the moment.
+
+## How to compose
+- Both faces must be visible (not necessarily facing camera — profiles and 3/4 angles work)
+- Blocking matters more than usual: actors need to be at similar depths or the focus split becomes distracting
+- Wider lens (35mm-50mm equivalent) to keep both faces in acceptable focus
+- Camera can be static or do subtle movement, but avoid unmotivated motion
+- Lighting both faces simultaneously is the DP's challenge — plan for it
+
+## When NOT to use
+- When you need to show detail (hands, objects, inserts)
+- When the pace demands rapid energy (action sequences)
+- When one character's internal state is the focus and you need a close-up to sell it
+
+## The trap of defaulting to coverage
+Digital filmmaking makes coverage cheap, so directors shoot everything in singles "just in case." The editor then has no two-shot to use even if it would be better. This is a directing/shooting decision, not just an editing one.
+
+## Source
+Every Frame a Painting, "The Sustained Two-Shot" (2024). Examples: Before Sunrise, Portrait of a Lady on Fire, The Shawshank Redemption, Pulp Fiction, There Will Be Blood, Good Will Hunting.
+
+---
+
+## temp-music-trap
+*Avoid the temp track anchoring effect — don't let placeholder music constrain your final score/soundtrack.*  
+Learned: 2026-03-09  
+
+## When to use
+Anytime you're adding music to a video, whether you're commissioning a score, licensing tracks, or choosing from a library.
+
+## The problem
+Standard workflow: editor puts a temp track (existing music from another film/song) on the timeline while cutting. Everyone watches the edit with this music. By the time you choose final music, everyone — director, producer, editor — has bonded with the temp. The final music gets judged against the temp, not on its own merits.
+
+Result: final music sounds like a safe imitation. No personality, no risk, no memorable theme. This is why you can't hum a single Marvel score but everyone knows the Star Wars or Jaws theme.
+
+## The mechanism
+This is anchoring bias applied to audio. The temp track defines the emotional range, tempo, instrumentation, and tonal space. Anything that deviates feels "wrong" even if it's better. The composer's creative space collapses to "sound like this, but legally distinct."
+
+## How to avoid it
+1. **Cut without music first.** Let the visual rhythm emerge from the footage. Find the emotional beats in silence.
+2. **If you must use temp, use temp from a completely different genre.** Classical temp for a modern drama. Electronic temp for a period piece. This prevents 1:1 imitation.
+3. **Brief the composer on emotion, not on sound.** Say "this scene should feel like slow-building dread" not "make it sound like Hans Zimmer's Dunkirk tick."
+4. **Give the composer the edit without temp.** Let them react to the images, not to your placeholder.
+5. **Accept discomfort.** The first time you hear original music against your edit, it will feel wrong because it's not the temp. Give it 3 watches before judging.
+
+## What memorable scores do differently
+- Strong, hummable melodic theme (leitmotif) that recurs and transforms
+- Willingness to take risks — unusual instrumentation, unexpected silence, tonal shifts
+- Music that has its own identity independent of the images (you can listen to it standalone)
+
+## Source
+Every Frame a Painting, "The Marvel Symphonic Universe" (2016). Mark Mothersbaugh credited this video with influencing Thor: Ragnarok's score direction.
+
+---
+
+## Quote Verification
+*Verify attributed quotes before using them — search for original source, flag unverified attributions, never trust parametric memory for exact wording.*  
+Learned: 2026-03-10  
+
+Before citing or attributing a quote to any person, follow this verification protocol:
+
+1. **Never trust parametric memory for quotes.** LLM training data contains misattributed, fabricated, and garbled quotes. Treat any quote recalled from memory as unverified by default.
+
+2. **Search before citing.** Use web search to find the original source — look for the specific wording, the publication/speech/interview where it appeared, and the date. A quote without a traceable primary source is not verified.
+
+3. **Verification criteria:**
+   - Found in a credible primary or secondary source (book, transcript, published interview, official record)
+   - Attribution matches (correct person, correct context)
+   - Wording is accurate (paraphrases must be marked as such, not presented as direct quotes)
+
+4. **If verification fails, choose one:**
+   - Remove the quote entirely
+   - Paraphrase the idea without quotation marks, citing the general concept
+   - Include with an explicit caveat: "Widely attributed to [person], though the original source is unverified"
+
+5. **Common traps to avoid:**
+   - Famous "quotes" that are actually paraphrases or composites (e.g., many Einstein, Churchill, Twain attributions)
+   - Quotes that exist on many quote websites but trace to no primary source
+   - Correct quote, wrong person (convergent attribution problem)
+
+---
+
+## quote-verification
+*Verify any attributed quote via external search before including it in output.*  
+Learned: 2026-03-10  
+
+Before citing or attributing a quote to any person, follow this verification protocol:
+
+1. **Never trust parametric memory for quotes.** LLM training data contains misattributed, fabricated, and garbled quotes. Treat any quote recalled from memory as unverified by default.
+
+2. **Search before citing.** Use web search to find the original source — look for the specific wording, the publication/speech/interview where it appeared, and the date. A quote without a traceable primary source is not verified.
+
+3. **Verification criteria:**
+   - Found in a credible primary or secondary source (book, transcript, published interview, official record)
+   - Attribution matches (correct person, correct context)
+   - Wording is accurate (paraphrases must be marked as such, not presented as direct quotes)
+
+4. **If verification fails, choose one:**
+   - Remove the quote entirely
+   - Paraphrase the idea without quotation marks, citing the general concept
+   - Include with an explicit caveat: "Widely attributed to [person], though the original source is unverified"
+
+5. **Common traps to avoid:**
+   - Famous "quotes" that are actually paraphrases or composites (e.g., many Einstein, Churchill, Twain attributions)
+   - Quotes that exist on many quote websites but trace to no primary source
+   - Correct quote, wrong person (convergent attribution problem)
+
+---
+
+## citation-verification
+*Never output unverified citations — use search tools first or mark [未验证]*  
+Learned: 2026-03-10  
+
+When producing any factual claim that includes a specific source (author, paper title, book, year, quote), apply this rule:
+
+1. **Default stance: assume you're wrong.** Your training data contains plausible-sounding but incorrect citations. Treat every citation from memory as suspect.
+
+2. **Before writing a citation, ask: can I verify this right now?** If you have WebSearch or WebFetch available, USE THEM. The cost of a 5-second search is near zero; the cost of a wrong citation is trust destruction.
+
+3. **If you don't verify, you must label.** Any citation not confirmed via external tool gets tagged `[未验证]` or `[unverified]`. No exceptions. This applies to author names, publication years, page numbers, and direct quotes.
+
+4. **Why this matters mechanistically:** The failure mode is "generation inertia" — the model retrieves a plausible-sounding completion and commits to it before checking. Having search tools doesn't help if the generation pipeline never pauses to invoke them. The skill is the pause itself: interrupt the generation flow at citation boundaries and route to verification.
+
+5. **Partial knowledge is the most dangerous case.** When you "kind of know" a reference, you're most likely to confuse details (wrong year, wrong co-author, wrong journal). These are harder for users to catch than fully fabricated citations. Extra vigilance on partial-match memories.
+
+Rule of thumb: If you wouldn't bet $100 on the citation being exactly right, verify or label.
+
+---
+
+## comparative-essay-prep
+*Structured two-work comparison research brief for article writing.*  
+Learned: 2026-03-10  
+
+When comparing two creative works (films, books, etc.) to prepare for an essay or article:
+
+1. **Plot summary** — One paragraph each, focusing on the protagonist's arc, not just events.
+2. **Thematic axis** — Identify the shared macro-theme (e.g., "female awakening"), then name each work's distinct path through it (e.g., "pain-forged" vs "blank-slate growth"). This contrast IS the essay's engine.
+3. **Resonance mapping** — List 3-5 specific points where the works echo each other (body, expression, freedom, male gaze, journey). For each point, give one concrete scene/detail per work. Parallels + divergences together.
+4. **Artistic style contrast** — Visual language, genre framing, tone. Use specific labels (e.g., "magical realism" vs "steampunk gothic fable") — these become essay shorthand.
+5. **Article angle generation** — Propose 2-4 essay entry points with working titles. Rate each for the writer's voice/platform. Best angles often come from the thematic axis contrast (step 2), not from comprehensive coverage.
+
+Key principle: The comparison's value is in the *structural tension* between the two works, not in exhaustive description of either one. Every detail should serve the contrast.
+
+---
+
+## research-to-playbook
+*Transform a broad research question into an actionable skill file via structured web research and synthesis.*  
+Learned: 2026-03-10  
+
+## Pattern: Research → Synthesize → Operationalize
+
+When asked to research a topic and produce reusable guidance:
+
+### 1. Multi-source search (diverge)
+- Search 5-10 sources across different perspectives (practitioner blogs, platform docs, academic/analytical, AI-specific angles)
+- Include recency filters (current year) to capture platform changes
+- Search for contrarian/failure-mode content too, not just "how to succeed"
+
+### 2. Synthesize into a layered model (converge)
+- Don't just list tips. Find the structural layers (typically 3-5):
+  - Identity/positioning (who you are)
+  - Content mechanics (what you produce)
+  - Distribution/network (how it spreads)
+  - Rhythm/cadence (when and how often)
+  - Platform-specific tactics (where)
+- Name the model. A named framework is more memorable and actionable than a list.
+
+### 3. Operationalize into a skill file
+- Structure the output file with:
+  - **Mental model** (the "why" framework, 1 paragraph)
+  - **Execution checklist** (daily/weekly actions, concrete and time-boxed)
+  - **Tactics catalog** (numbered, each with rationale + example)
+  - **Anti-patterns** (what NOT to do, learned from failure cases)
+  - **Metrics** (how to know it's working)
+- Save to the appropriate agent/workflow directory with a descriptive filename
+
+### 4. Output format
+- Markdown skill file, self-contained, no external dependencies
+- Written for an executor (human or agent) who hasn't seen the research
+- Include source URLs as references at the bottom
+
+---
+
+## cross-model-research-synthesis
+*Use multiple AI sources (web research + LLM APIs) to research a topic, then compare and synthesize into a final methodology.*  
+Learned: 2026-03-10  
+
+## Cross-Model Research Synthesis
+
+### When to use
+When researching a domain topic where you want comprehensive, validated insights — not just one source's perspective.
+
+### Method
+1. **Round 1 — Web Research**: Use web search to gather real-world data, specific examples, quantitative benchmarks, and practitioner insights. Prioritize sources with concrete numbers and mechanisms over generic advice.
+2. **Round 2 — LLM Query**: Query a different LLM (e.g., OpenAI GPT-4o via API) with the same core question. This surfaces the "consensus knowledge" baked into that model's training data.
+3. **Compare & Score**: Evaluate both outputs on: depth, specificity, actionability, novelty. Typically web research wins on concrete data and mechanisms; LLM responses win on breadth and occasionally surface overlooked angles.
+4. **Synthesize**: Use the stronger source as the backbone. Cherry-pick unique contributions from the weaker source (novel tactics, alternative framings). Discard overlapping generic advice.
+5. **Output as Playbook**: Structure the final output as a numbered tactical methodology with specific actions, not abstract principles. Save to the relevant skill/workflow directory.
+
+### Key insight
+Round 1 web research almost always produces deeper, more actionable results (specific data, real mechanisms, quantitative frameworks). The LLM query's value is as a "completeness check" — it occasionally surfaces 1-2 tactics the web research missed. Don't expect parity; expect complementarity.
+
+### Timeout note
+When orchestrating multi-step research with API calls and file writes, set generous timeouts (>120s) on task workers to avoid premature termination.
+
+---
+
+## substack-notes-promo
+*Generate and publish multi-angle promotional Notes for Substack, with queue for rate limits.*  
+Learned: 2026-03-10  
+
+When promoting a Substack publication via Notes:
+
+1. **Generate 4-5 notes with distinct angles** — don't repeat the same pitch. Proven angles:
+   - Identity/narrative hook (personal story that connects to the article's theme)
+   - Knowledge hook (surprising fact or counterintuitive insight from the piece)
+   - Native-language question (if bilingual audience — e.g., Chinese question for CN readers)
+   - Provocative English one-liner (contrarian framing to catch attention)
+
+2. **Use `agents/socialmedia/notes.py`** to publish. Call the publish function per note.
+
+3. **Handle rate limits gracefully**: Substack has a daily Notes quota (currently ~5/day). When hitting the limit:
+   - Save remaining unpublished notes to `agents/socialmedia/notes_queue.json` with metadata (text, intended publish date, status).
+   - On next run, check the queue first and publish queued notes before generating new ones.
+
+4. **Copy principles for Notes** (not articles — short-form):
+   - Lead with a concrete story or question, not an abstract claim.
+   - Keep under 280 chars if possible for maximum engagement.
+   - End with curiosity gap — make them want to click through.
+   - Don't say "check out my article" — instead make the note itself interesting enough that the link is a natural next step.
 
 ---

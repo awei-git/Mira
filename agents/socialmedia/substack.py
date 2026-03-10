@@ -1,4 +1,4 @@
-"""Substack publisher — create, publish posts, and manage comments.
+"""Substack UGC — publish articles, comment on posts, grow the account.
 
 Substack uses cookie-based auth. You need:
 1. Log into Substack in browser
@@ -15,6 +15,8 @@ secrets.yml format:
 import base64
 import json
 import logging
+import os
+import tempfile
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -216,7 +218,7 @@ def _fetch_unsplash(query: str, workspace: Path) -> str | None:
         # Unsplash source URL gives a random photo matching the query
         # 1456x816 = recommended Substack cover dimensions
         search_url = f"https://source.unsplash.com/1456x816/?{urllib.parse.quote(query)}"
-        req = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
+        req = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"})
         with urllib.request.urlopen(req, timeout=15) as resp:
             image_bytes = resp.read()
             final_url = resp.url  # after redirect
@@ -324,7 +326,7 @@ def _upload_image_to_substack(image_path: str, subdomain: str, cookie: str) -> s
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Cookie": f"substack.sid={cookie}",
-                "User-Agent": "Mozilla/5.0",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             },
             method="POST",
         )
@@ -371,12 +373,32 @@ def publish_to_substack(title: str, subtitle: str,
         if not title:
             title = lines[0][:60] if lines else "Untitled"
 
+    # Enforce language consistency: title and body must match
+    import re as _re_lang
+    _has_cjk = bool(_re_lang.search(r'[\u4e00-\u9fff]', title))
+    _body_sample = article_text[:2000]
+    _body_cjk_ratio = len(_re_lang.findall(r'[\u4e00-\u9fff]', _body_sample)) / max(len(_body_sample), 1)
+    _body_is_cjk = _body_cjk_ratio > 0.1
+    if _has_cjk != _body_is_cjk:
+        from sub_agent import claude_think as _ct
+        _target_lang = "Chinese" if _body_is_cjk else "English"
+        _new_title = _ct(
+            f"Translate this article title to {_target_lang}. "
+            f"Keep it compelling and concise. Output ONLY the translated title.\n\n{title}",
+            timeout=15,
+        )
+        if _new_title:
+            log.info("Title language mismatch fixed: '%s' -> '%s'", title, _new_title.strip())
+            title = _new_title.strip().strip('"').strip("'")
+
     # Auto-generate subtitle if not provided (acts as email preview + SEO)
     if not subtitle:
         from sub_agent import claude_think
+        _lang_hint = "中文" if _body_is_cjk else "English"
         sub_prompt = f"""Write a one-sentence subtitle for this Substack article.
 It should be compelling, specific, and under 120 characters.
 It will appear as the email preview text and meta description.
+Write it in {_lang_hint} to match the article language.
 
 Title: {title}
 First 500 chars: {article_text[:500]}
@@ -386,6 +408,14 @@ Output ONLY the subtitle, nothing else."""
         subtitle = subtitle.strip().strip('"').strip("'")[:140]
         if subtitle:
             log.info("Auto-generated subtitle: %s", subtitle)
+
+    # Strip revision metadata header (修订稿 R1 / 日期 / 字数 / 基于 / ---)
+    import re as _re
+    _rev_pattern = _re.compile(
+        r"^#\s*修订稿.*?\n(?:(?:日期|字数|基于)[:：].*\n)*\s*---\s*\n",
+        _re.MULTILINE,
+    )
+    article_text = _rev_pattern.sub("", article_text, count=1)
 
     # Convert markdown to HTML
     body_html = _md_to_html(article_text)
@@ -421,7 +451,7 @@ Output ONLY the subtitle, nothing else."""
     headers = {
         "Content-Type": "application/json",
         "Cookie": f"substack.sid={cookie}",
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     }
 
     try:
@@ -467,6 +497,18 @@ Output ONLY the subtitle, nothing else."""
                        ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+        # Auto-post a Note promoting this article
+        try:
+            from notes import post_note_for_article
+            note_result = post_note_for_article(title, article_text, post_url)
+            if note_result:
+                note_id = note_result.get("id")
+                result += f"\n\n同时发布了 Note (id={note_id}) 推广此文章"
+                log.info("Auto-posted Note for article: %s", title)
+        except Exception as e:
+            log.warning("Auto Note failed (non-fatal): %s", e)
+
         return result
 
     except urllib.error.HTTPError as e:
@@ -500,7 +542,7 @@ def get_recent_posts(limit: int = 10) -> list[dict]:
             f"https://{subdomain}.substack.com/api/v1/posts?limit={limit}",
             headers={
                 "Cookie": f"substack.sid={cookie}",
-                "User-Agent": "Mozilla/5.0",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             },
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -535,7 +577,7 @@ def get_comments(post_id: int) -> list[dict]:
             f"?token=&all_comments=true&sort=newest_first",
             headers={
                 "Cookie": f"substack.sid={cookie}",
-                "User-Agent": "Mozilla/5.0",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             },
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -581,19 +623,9 @@ def reply_to_comment(post_id: int, parent_comment_id: int,
     if not subdomain or not cookie:
         return None
 
-    # Build ProseMirror body
-    body = {
-        "type": "doc",
-        "content": [
-            {
-                "type": "paragraph",
-                "content": [{"type": "text", "text": reply_text}],
-            }
-        ],
-    }
-
+    # Substack accepts plain text and auto-wraps into ProseMirror
     payload = json.dumps({
-        "body": json.dumps(body),
+        "body": reply_text.strip(),
         "parent_id": parent_comment_id,
     }).encode("utf-8")
 
@@ -604,7 +636,7 @@ def reply_to_comment(post_id: int, parent_comment_id: int,
             headers={
                 "Content-Type": "application/json",
                 "Cookie": f"substack.sid={cookie}",
-                "User-Agent": "Mozilla/5.0",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             },
             method="POST",
         )
@@ -649,6 +681,43 @@ def sync_posts_for_ios() -> int:
     return len(posts)
 
 
+def _save_state_atomic(state_file: Path, data: dict):
+    """Atomically write state to disk with merge-on-write to prevent lost updates.
+
+    Re-reads the current state file and merges replied_ids sets before writing,
+    so concurrent processes don't overwrite each other's tracked replies.
+    """
+    # Merge: reload current disk state and union replied_ids
+    if state_file.exists():
+        try:
+            disk = json.loads(state_file.read_text(encoding="utf-8"))
+            for post_key, post_data in disk.items():
+                if post_key in data:
+                    # Union the replied_ids from disk and in-memory
+                    disk_ids = set(post_data.get("replied_ids", []))
+                    mem_ids = set(data[post_key].get("replied_ids", []))
+                    data[post_key]["replied_ids"] = list(disk_ids | mem_ids)
+                else:
+                    data[post_key] = post_data
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=state_file.parent, suffix=".tmp", prefix="comment_state_"
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, state_file)
+    except Exception:
+        # Clean up temp file on failure
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def check_and_reply_comments() -> list[dict]:
     """Check all posts for new comments and generate replies.
 
@@ -679,11 +748,11 @@ def check_and_reply_comments() -> list[dict]:
         if post["comment_count"] == 0:
             continue
 
-        # Skip if comment count hasn't changed
         post_key = str(post["id"])
-        if seen.get(post_key, {}).get("count", 0) >= post["comment_count"]:
-            continue
 
+        # [BUG 3 FIX] Always fetch comments and use ID sets for dedup.
+        # Old code skipped posts when stored count >= current count, which
+        # misses new comments if another was deleted (count unchanged).
         comments = get_comments(post["id"])
         if not comments:
             continue
@@ -696,7 +765,16 @@ def check_and_reply_comments() -> list[dict]:
             cid = c.get("id")
             if not cid or cid in seen_ids:
                 continue
-            # Skip if this is our own reply (check ancestor_path — if we're in the tree, skip)
+            # [BUG 2 FIX] Cross-validate: comment must belong to this post.
+            # Substack API may return stale/cached data; skip mismatches.
+            comment_post_id = c.get("post_id")
+            if comment_post_id is not None and comment_post_id != post["id"]:
+                log.warning(
+                    "Comment %s has post_id=%s but we queried post %s — skipping",
+                    cid, comment_post_id, post["id"],
+                )
+                continue
+            # Skip if this is our own reply
             if c.get("name", "").lower() in ("mira", "infinite mira", "uncountable mira"):
                 seen_ids.add(cid)
                 continue
@@ -704,9 +782,10 @@ def check_and_reply_comments() -> list[dict]:
 
         if not new_comments:
             seen[post_key] = {
-                "count": post["comment_count"],
                 "replied_ids": list(seen_ids),
             }
+            # [BUG 1 FIX] Save state after each post — atomic write
+            _save_state_atomic(state_file, seen)
             continue
 
         # Load soul for personality context
@@ -753,14 +832,152 @@ Output ONLY your reply text, nothing else."""
                          comment["name"], post["title"], reply_text[:80])
 
         seen[post_key] = {
-            "count": post["comment_count"],
             "replied_ids": list(seen_ids),
         }
-
-    # Save state
-    state_file.write_text(
-        json.dumps(seen, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+        # [BUG 1 FIX] Save state after each post — atomic write
+        _save_state_atomic(state_file, seen)
 
     return replies_made
+
+
+# ---------------------------------------------------------------------------
+# External commenting — comment on other publications' posts
+# ---------------------------------------------------------------------------
+
+def comment_on_post(post_url: str, comment_text: str) -> dict | None:
+    """Post a top-level comment on any Substack post.
+
+    Args:
+        post_url: Full URL of the Substack post (e.g. https://example.substack.com/p/slug)
+        comment_text: Plain text comment to post.
+
+    Returns the created comment dict, or None on failure.
+    """
+    cfg = _get_substack_config()
+    cookie = cfg.get("cookie", "")
+    if not cookie:
+        log.error("No Substack cookie configured")
+        return None
+
+    # Extract the base URL and post slug from the URL
+    parsed = urllib.parse.urlparse(post_url)
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+    # Resolve post_id from the URL — fetch the post page API
+    post_id = _resolve_post_id(base_url, parsed.path, cookie)
+    if not post_id:
+        log.error("Could not resolve post_id from URL: %s", post_url)
+        return None
+
+    if not comment_text.strip():
+        return None
+
+    # Substack accepts plain text and auto-wraps it into ProseMirror format
+    payload = json.dumps({"body": comment_text.strip()}).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            f"{base_url}/api/v1/post/{post_id}/comment",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Cookie": f"substack.sid={cookie}",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        log.info("Commented on %s (post %s): %s", post_url, post_id, comment_text[:80])
+        return result
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace")[:300]
+        log.error("Comment on %s failed (HTTP %d): %s", post_url, e.code, error_body)
+        return None
+    except Exception as e:
+        log.error("Comment on %s failed: %s", post_url, e)
+        return None
+
+
+def delete_comment(comment_id: int) -> bool:
+    """Delete a comment by ID. Returns True on success."""
+    cfg = _get_substack_config()
+    subdomain = cfg.get("subdomain", "")
+    cookie = cfg.get("cookie", "")
+    if not cookie:
+        return False
+
+    try:
+        req = urllib.request.Request(
+            f"https://{subdomain}.substack.com/api/v1/comment/{comment_id}",
+            headers={
+                "Cookie": f"substack.sid={cookie}",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            },
+            method="DELETE",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status == 200
+    except Exception as e:
+        log.error("Delete comment %s failed: %s", comment_id, e)
+        return False
+
+
+def _resolve_post_id(base_url: str, path: str, cookie: str) -> int | None:
+    """Resolve a post ID from a Substack URL path like /p/slug."""
+    slug = path.rstrip("/").split("/")[-1]
+    if not slug:
+        return None
+
+    headers = {
+        "Cookie": f"substack.sid={cookie}",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    }
+
+    # Try the slug-based API first
+    try:
+        req = urllib.request.Request(
+            f"{base_url}/api/v1/posts/{slug}", headers=headers,
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data.get("id")
+    except Exception:
+        pass
+
+    # Slug may be truncated differently — search recent posts for a match
+    try:
+        req = urllib.request.Request(
+            f"{base_url}/api/v1/posts?limit=20", headers=headers,
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            posts = json.loads(resp.read().decode("utf-8"))
+        for p in posts:
+            if isinstance(p, dict):
+                p_slug = p.get("slug", "")
+                # Match if either is a prefix of the other
+                if slug.startswith(p_slug) or p_slug.startswith(slug):
+                    return p.get("id")
+    except Exception:
+        pass
+
+    # Last resort: fetch the post HTML page and extract from embedded data
+    try:
+        req = urllib.request.Request(f"{base_url}{path}", headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="replace")[:50000]
+
+        import re
+        m = re.search(r'"post_id"\s*:\s*(\d+)', html)
+        if m:
+            return int(m.group(1))
+    except Exception as e:
+        log.error("Failed to resolve post_id from %s%s: %s", base_url, path, e)
+
+    return None
+
+
+def get_published_post_count() -> int:
+    """Get the number of published posts on Mira's Substack."""
+    posts = get_recent_posts(limit=50)
+    return len(posts)

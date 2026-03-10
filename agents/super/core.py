@@ -547,6 +547,17 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
         log.info("Deep diving into: %s", dive["title"])
         _do_deep_dive(soul_ctx, dive)
 
+    # 7. Extract comment suggestions and run growth cycle
+    comment_suggestions = _extract_comment_suggestions(briefing)
+    if comment_suggestions:
+        log.info("Briefing has %d comment suggestions", len(comment_suggestions))
+        try:
+            sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
+            from growth import run_growth_cycle
+            run_growth_cycle(briefing_comments=comment_suggestions)
+        except Exception as e:
+            log.error("Growth cycle failed: %s", e)
+
     src_label = ",".join(source_names) if source_names else "all"
     append_memory(f"Explored {len(items)} items ({src_label}), wrote briefing {today}")
 
@@ -1394,7 +1405,7 @@ def do_check_comments():
     save_state(state)
 
     try:
-        sys.path.insert(0, str(_AGENTS_DIR / "publisher"))
+        sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
         from substack import check_and_reply_comments, sync_posts_for_ios
         # Sync posts list for iOS app display
         sync_posts_for_ios()
@@ -1414,6 +1425,66 @@ def do_check_comments():
             log.info("No new comments to reply to")
     except Exception as e:
         log.error("Comment check failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Substack Notes cycle
+# ---------------------------------------------------------------------------
+
+NOTES_COOLDOWN_HOURS = 4  # Run Notes cycle at most every 4 hours
+
+def should_post_notes() -> bool:
+    """Check if it's time to run the Notes cycle.
+
+    Runs during waking hours, at most every 4 hours.
+    """
+    now = datetime.now()
+    if now.hour < 9 or now.hour >= 22:
+        return False
+
+    state = load_state()
+    last = state.get("last_notes_cycle", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            if (now - last_dt).total_seconds() < NOTES_COOLDOWN_HOURS * 3600:
+                return False
+        except ValueError:
+            pass
+
+    return True
+
+
+def do_notes_cycle():
+    """Run the Substack Notes cycle: backfill + standalone Notes."""
+    log.info("Starting Substack Notes cycle")
+
+    state = load_state()
+    state["last_notes_cycle"] = datetime.now().isoformat()
+    save_state(state)
+
+    try:
+        sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
+        from notes import run_notes_cycle
+
+        # Load soul context for voice consistency
+        soul = load_soul()
+        soul_ctx = format_soul(soul)
+
+        summary = run_notes_cycle(soul_context=soul_ctx)
+
+        if summary.get("backfilled") or summary.get("standalone_posted"):
+            parts = []
+            if summary["backfilled"]:
+                parts.append(f"backfilled {summary['backfilled']} articles")
+            if summary["standalone_posted"]:
+                parts.append("posted standalone Note")
+            append_memory(f"Notes cycle: {', '.join(parts)}")
+            log.info("Notes cycle complete: %s", summary)
+        else:
+            log.info("Notes cycle: nothing to post")
+    except Exception as e:
+        log.error("Notes cycle failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -1671,6 +1742,12 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "check-comments",
         ])
 
+    # Substack Notes — backfill articles + post standalone Notes
+    if should_post_notes():
+        _dispatch_background("substack-notes", [
+            sys.executable, str(Path(__file__).resolve()), "notes-cycle",
+        ])
+
     log.info("=== Mira Agent sleep ===")
 
 
@@ -1835,6 +1912,39 @@ def _extract_deep_dive(briefing: str) -> dict | None:
     }
 
 
+def _extract_comment_suggestions(briefing: str) -> list[dict]:
+    """Extract comment suggestions from the '值得去聊两句' section of a briefing.
+
+    Returns list of dicts with {url, comment_draft, reason}.
+    """
+    # Match the section header (emoji or text variants)
+    match = re.search(
+        r"(?:💬\s*)?值得去聊两句\s*\n+(.+?)(?:\n##|\n---|\Z)",
+        briefing, re.DOTALL,
+    )
+    if not match:
+        return []
+
+    text = match.group(1).strip()
+    suggestions = []
+
+    # Split by list items (- or *)
+    items = re.split(r"\n[-*]\s+", "\n" + text)
+    for item in items:
+        item = item.strip()
+        if not item:
+            continue
+        url_match = re.search(r"(https?://\S+)", item)
+        if url_match:
+            suggestions.append({
+                "url": url_match.group(1).rstrip(")"),
+                "comment_draft": item,
+                "reason": "",
+            })
+
+    return suggestions[:3]  # Max 3 suggestions
+
+
 def _extract_section(text: str, header: str) -> str:
     """Extract content under a ### header."""
     pattern = rf"###\s*{re.escape(header)}\s*\n(.+?)(?=\n###|\Z)"
@@ -1954,6 +2064,8 @@ def main():
         do_autowrite_check()
     elif command == "check-comments":
         do_check_comments()
+    elif command == "notes-cycle":
+        do_notes_cycle()
     elif command == "skill-study":
         group_idx = int(flags.get("group", "0"))
         do_skill_study(group_idx=group_idx)
