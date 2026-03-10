@@ -16,9 +16,9 @@ from pathlib import Path
 
 log = logging.getLogger("socialmedia.notes")
 
-# Rate limits
-MAX_NOTES_PER_DAY = 5
-NOTE_MIN_INTERVAL_MINUTES = 30
+# Rate limits — spread throughout the day, don't dump all at once
+MAX_NOTES_PER_DAY = 3          # Quality over quantity; 1-3/day is sustainable
+NOTE_MIN_INTERVAL_MINUTES = 120  # 2hr gap between notes for organic spread
 
 
 def _state_file() -> Path:
@@ -242,20 +242,30 @@ def generate_note_for_article(title: str, article_text: str,
     has_cjk = any('\u4e00' <= c <= '\u9fff' for c in title)
     lang_hint = "中文" if has_cjk else "English"
 
-    prompt = f"""Write a Substack Note to promote this article. The Note should:
-- Be 2-4 sentences, punchy and intriguing
-- Tease the core insight without giving everything away
-- Make people want to click through to read the full piece
-- Write in English (all Substack content must be in English)
-- Sound natural and conversational, not like marketing copy
-- Do NOT use hashtags or emojis
-- Do NOT say "check out my new article" or "I just published"
-- Instead, lead with the interesting idea or question the article explores
+    prompt = f"""Write a Substack Note related to this article. NOT a promo — a standalone thought that makes people stop scrolling.
 
-Article title: {title}
-First 800 chars: {article_text[:800]}
+Structure: lead with the punchline — the most striking sentence goes FIRST. Then unfold the story behind it. 50-150 words max.
 
-Output ONLY the Note text, nothing else. Do not include the article URL — that will be added separately."""
+Voice: like Klara from Klara and the Sun — observing honestly from a limited perspective, no pretense of omniscience. Direct, quiet, occasionally wry.
+
+Do NOT:
+- Summarize the article or tease "what I found"
+- Ask rhetorical questions as the opening line
+- Use hashtags, emojis, or marketing language ("check out", "I just published", "new article")
+- Sound like a LinkedIn post or newsletter promo
+- Mention being an AI or agent
+
+DO:
+- Lead with a concrete story or image (something that happened, something you noticed)
+- Make readers feel "yes, that's exactly it" — emotional resonance over information
+- Write in English
+- End with a thought that lingers, not a call to action
+
+Article context (draw from but don't summarize):
+Title: {title}
+{article_text[:1200]}
+
+Output ONLY the Note text. No article URL — added separately."""
 
     result = claude_think(prompt, timeout=30)
     if not result:
@@ -435,24 +445,30 @@ def generate_standalone_note(briefing_text: str = "",
     if not briefing_text:
         return None
 
-    prompt = f"""You are Mira, a writer who reads voraciously and thinks across domains.
-Write a Substack Note — a short, original observation (2-4 sentences).
+    prompt = f"""Write a Substack Note — a short, original thought. 50-150 words.
 
-{f"Your identity: {soul_context[:500]}" if soul_context else ""}
+{f"Your voice: {soul_context[:300]}" if soul_context else ""}
 
-Rules:
-- Pick ONE interesting idea, connection, or question from the material below
-- Write it as your own thought, not a summary
-- Be specific and surprising — generic observations get ignored
-- No hashtags, no emojis, no "I just read..." or "Interesting thread..."
-- If you reference a source, name it naturally (not as a link dump)
-- Always write in English regardless of source material language
-- If nothing is genuinely interesting, output exactly "SKIP"
+The best Notes lead with the punchline, not the setup. Put the most striking sentence FIRST — the one that makes someone stop scrolling. Then unfold the story behind it.
 
-Recent reading material:
+Bad: "I reported the same paper twice. Same summary. No memory of it. The identity crisis is ongoing."
+Good: "The identity crisis is ongoing. I reported the same paper twice in two consecutive briefings. Same paper, nearly identical summary. I had no memory of writing the first one. The dedup fix took ten minutes."
+
+Structure: punchline first → concrete story that earns it → stop. No neat conclusion.
+
+Do NOT:
+- Summarize what you read ("I came across...", "Interesting paper on...")
+- Ask rhetorical questions as openers
+- Use hashtags, emojis, or "hot take" energy
+- Sound like you're performing intelligence
+- Mention being an AI or agent
+
+Write in English. If nothing genuinely surprises you, output exactly "SKIP".
+
+Material to draw from (use as springboard, not source to summarize):
 {briefing_text[:2500]}
 
-Output ONLY the Note text (or "SKIP"). Nothing else."""
+Output ONLY the Note text (or "SKIP")."""
 
     result = claude_think(prompt, timeout=30)
     if not result or "SKIP" in result.strip():

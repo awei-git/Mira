@@ -981,3 +981,159 @@ def get_published_post_count() -> int:
     """Get the number of published posts on Mira's Substack."""
     posts = get_recent_posts(limit=50)
     return len(posts)
+
+
+# ---------------------------------------------------------------------------
+# Publication stats tracking
+# ---------------------------------------------------------------------------
+
+def _fetch_post_detail(slug: str, subdomain: str, cookie: str) -> dict | None:
+    """Fetch detailed data for a single post via slug (reactions, comments, restacks)."""
+    try:
+        req = urllib.request.Request(
+            f"https://{subdomain}.substack.com/api/v1/posts/{slug}",
+            headers={
+                "Cookie": f"substack.sid={cookie}",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        log.warning("Failed to fetch detail for post '%s': %s", slug, e)
+        return None
+
+
+def fetch_publication_stats() -> dict:
+    """Fetch stats for all published articles and recent Notes.
+
+    Queries individual post endpoints for view/like/restack data,
+    reads notes_state.json for Note engagement, and saves everything
+    to publication_stats.json.
+
+    Returns the stats dict (also saved to disk).
+    """
+    from datetime import datetime, timezone
+
+    cfg = _get_substack_config()
+    subdomain = cfg.get("subdomain", "")
+    cookie = cfg.get("cookie", "")
+    if not subdomain or not cookie:
+        log.error("Substack not configured — cannot fetch stats")
+        return {}
+
+    stats_dir = Path(__file__).resolve().parent
+    stats_file = stats_dir / "publication_stats.json"
+
+    # --- Articles ---
+    posts = get_recent_posts(limit=50)
+    articles = []
+    total_views = 0
+    total_likes = 0
+    total_comments = 0
+    total_restacks = 0
+    best_title = ""
+    best_views = 0
+
+    for post in posts:
+        detail = _fetch_post_detail(post.get("slug", ""), subdomain, cookie)
+        if not detail:
+            # Fall back to basic data from list endpoint
+            articles.append({
+                "id": post["id"],
+                "title": post.get("title", ""),
+                "slug": post.get("slug", ""),
+                "views": 0,
+                "likes": 0,
+                "comments": post.get("comment_count", 0),
+                "restacks": 0,
+                "post_date": post.get("post_date", ""),
+            })
+            total_comments += post.get("comment_count", 0)
+            continue
+
+        views = detail.get("views", 0) or 0
+        # Substack uses "reactions" for likes (heart reactions)
+        reactions = detail.get("reactions", {})
+        likes = reactions.get("❤", 0) if isinstance(reactions, dict) else 0
+        # Also check top-level reaction_count as fallback
+        if not likes:
+            likes = detail.get("reaction_count", 0) or 0
+        comments = detail.get("comment_count", 0) or 0
+        restacks = detail.get("restacks", 0) or detail.get("restack_count", 0) or 0
+
+        articles.append({
+            "id": post["id"],
+            "title": detail.get("title", post.get("title", "")),
+            "slug": detail.get("slug", post.get("slug", "")),
+            "views": views,
+            "likes": likes,
+            "comments": comments,
+            "restacks": restacks,
+            "post_date": detail.get("post_date", post.get("post_date", "")),
+        })
+
+        total_views += views
+        total_likes += likes
+        total_comments += comments
+        total_restacks += restacks
+
+        if views > best_views:
+            best_views = views
+            best_title = detail.get("title", post.get("title", ""))
+
+    # --- Notes ---
+    notes_file = stats_dir / "notes_state.json"
+    notes_entries = []
+    if notes_file.exists():
+        try:
+            notes_data = json.loads(notes_file.read_text(encoding="utf-8"))
+            for note in notes_data.get("history", []):
+                note_text = note.get("text", "")
+                notes_entries.append({
+                    "id": note.get("id"),
+                    "text_preview": note_text[:120],
+                    "likes": note.get("likes", 0),
+                    "comments": note.get("comments", 0),
+                    "restacks": note.get("restacks", 0),
+                    "date": note.get("date", ""),
+                })
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("Failed to read notes_state.json: %s", e)
+
+    # --- Summary ---
+    summary_parts = [
+        f"Total articles: {len(articles)}",
+        f"Total views: {total_views}",
+        f"Total likes: {total_likes}",
+        f"Total comments: {total_comments}",
+        f"Total restacks: {total_restacks}",
+        f"Total notes: {len(notes_entries)}",
+    ]
+    if best_title:
+        summary_parts.append(f"Best performing: \"{best_title}\" ({best_views} views)")
+
+    result = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "articles": articles,
+        "notes": notes_entries,
+        "summary": ". ".join(summary_parts),
+    }
+
+    # Save atomically
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=stats_dir, suffix=".tmp", prefix="pub_stats_"
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, stats_file)
+        log.info("Publication stats saved: %d articles, %d notes", len(articles), len(notes_entries))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    return result

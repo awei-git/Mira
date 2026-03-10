@@ -980,9 +980,25 @@ def do_journal():
     za_fragment = _mine_za_one(state)
     save_state(state)
 
+    # 4. Publication stats (Substack reach data)
+    stats_summary = ""
+    try:
+        sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
+        from substack import fetch_publication_stats
+        stats = fetch_publication_stats()
+        if stats and stats.get("summary"):
+            stats_summary = stats["summary"]
+            log.info("Fetched publication stats for journal")
+    except Exception as e:
+        log.warning("Could not fetch publication stats: %s", e)
+
     # --- Ask Claude to write the journal ---
     soul = load_soul()
     soul_ctx = format_soul(soul)
+
+    # Inject stats into briefing summary so journal can reflect on reach
+    if stats_summary:
+        briefing_summary += f"\n\n## Substack Stats\n{stats_summary}"
 
     prompt = journal_prompt(soul_ctx, tasks_summary, skills_summary, briefing_summary,
                             za_fragment=za_fragment)
