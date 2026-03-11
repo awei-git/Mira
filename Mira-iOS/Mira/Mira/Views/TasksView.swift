@@ -14,12 +14,47 @@ struct TasksView: View {
     }
 
     var filteredTasks: [MiraTask] {
+        let tasks: [MiraTask]
         switch filter {
-        case .all: return bridge.tasks.filter { !$0.isAuto }
-        case .active: return bridge.activeTasks.filter { !$0.isAuto }
-        case .done: return bridge.doneTasks.filter { !$0.isAuto }
-        case .auto: return bridge.tasks.filter(\.isAuto)
+        case .all: tasks = bridge.tasks.filter { !$0.isAuto }
+        case .active: tasks = bridge.activeTasks.filter { !$0.isAuto }
+        case .done: tasks = bridge.doneTasks.filter { !$0.isAuto }
+        case .auto: tasks = bridge.tasks.filter(\.isAuto)
         }
+        return tasks.sorted { $0.updatedDate > $1.updatedDate }
+    }
+
+    /// Group tasks by day, limited to the most recent 10 days
+    var groupedByDay: [(key: String, tasks: [MiraTask])] {
+        let cal = Calendar.current
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "zh_CN")
+        fmt.dateFormat = "M月d日 EEEE"
+
+        var groups: [String: [MiraTask]] = [:]
+        var dayOrder: [String: Date] = [:]
+
+        for task in filteredTasks {
+            let day = cal.startOfDay(for: task.updatedDate)
+            let label: String
+            if cal.isDateInToday(day) {
+                label = "今天"
+            } else if cal.isDateInYesterday(day) {
+                label = "昨天"
+            } else {
+                label = fmt.string(from: day)
+            }
+            groups[label, default: []].append(task)
+            if dayOrder[label] == nil || day > dayOrder[label]! {
+                dayOrder[label] = day
+            }
+        }
+
+        return groups
+            .map { (key: $0.key, tasks: $0.value) }
+            .sorted { (dayOrder[$0.key] ?? .distantPast) > (dayOrder[$1.key] ?? .distantPast) }
+            .prefix(10)
+            .map { $0 }
     }
 
     var body: some View {
@@ -43,9 +78,24 @@ struct TasksView: View {
                     )
                 } else {
                     List {
-                        ForEach(filteredTasks) { task in
-                            NavigationLink(value: task.id) {
-                                TaskRow(task: task)
+                        ForEach(groupedByDay, id: \.key) { group in
+                            Section {
+                                ForEach(group.tasks) { task in
+                                    NavigationLink(value: task.id) {
+                                        TaskRow(task: task)
+                                    }
+                                    .swipeActions(edge: .trailing) {
+                                        Button(role: .destructive) {
+                                            bridge.deleteTask(task.id)
+                                        } label: {
+                                            Label("删除", systemImage: "trash")
+                                        }
+                                    }
+                                }
+                            } header: {
+                                Text(group.key)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }

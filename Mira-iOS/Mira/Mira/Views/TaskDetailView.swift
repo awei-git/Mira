@@ -128,6 +128,16 @@ struct TaskMessageBubble: View {
     private var isLong: Bool { message.content.count > 300 }
 
     var body: some View {
+        if let card = message.statusCard {
+            // Status card — compact inline indicator
+            StatusCardView(card: card, date: message.date)
+        } else {
+            // Regular message bubble
+            regularBubble
+        }
+    }
+
+    private var regularBubble: some View {
         HStack {
             if !isAgent { Spacer(minLength: 40) }
 
@@ -173,6 +183,43 @@ struct TaskMessageBubble: View {
 
             if isAgent { Spacer(minLength: 40) }
         }
+        .padding(.horizontal)
+    }
+
+    private func formatTime(_ date: Date) -> String {
+        let f = DateFormatter()
+        if Calendar.current.isDateInToday(date) {
+            f.dateFormat = "HH:mm"
+        } else {
+            f.dateFormat = "MM/dd HH:mm"
+        }
+        return f.string(from: date)
+    }
+}
+
+struct StatusCardView: View {
+    let card: StatusCard
+    let date: Date
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: card.icon)
+                .font(.caption)
+                .foregroundStyle(.blue)
+            Text(card.text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(formatTime(date))
+                .font(.caption2)
+                .foregroundStyle(.quaternary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(
+            Color.blue.opacity(0.06),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
         .padding(.horizontal)
     }
 

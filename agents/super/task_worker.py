@@ -31,9 +31,55 @@ from writing_workflow import run_full_pipeline
 
 log = logging.getLogger("task_worker")
 
+TASKS_DIR = MIRA_DIR / "tasks"
+
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _emit_status(task_id: str, text: str, icon: str = "gear"):
+    """Emit a status card to a task's message stream.
+
+    Status cards appear as compact inline cards in the iOS app
+    instead of regular chat bubbles. Used for progress updates
+    like "Fetching feeds...", "Writing outline...", etc.
+    """
+    status_content = json.dumps(
+        {"type": "status", "text": text, "icon": icon},
+        ensure_ascii=False,
+    )
+    msg = {
+        "sender": "agent",
+        "content": status_content,
+        "timestamp": _utc_iso(),
+    }
+    # Write to reply sidecar (most reliable path to iOS)
+    reply_file = TASKS_DIR / f"{task_id}.reply.json"
+    replies = []
+    if reply_file.exists():
+        try:
+            replies = json.loads(reply_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    replies.append(msg)
+    reply_file.write_text(
+        json.dumps(replies, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    # Also update main task JSON
+    task_file = TASKS_DIR / f"{task_id}.json"
+    if task_file.exists():
+        try:
+            task = json.loads(task_file.read_text(encoding="utf-8"))
+            task["messages"].append(msg)
+            task["updated_at"] = _utc_iso()
+            task_file.write_text(
+                json.dumps(task, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except (json.JSONDecodeError, OSError):
+            pass
 
 
 def _load_exec_history(workspace: Path) -> str:
@@ -134,24 +180,59 @@ def _get_round_num(workspace: Path) -> int:
 
 
 def load_task_conversation(task_id: str) -> str:
-    """Load conversation history from the task JSON file."""
-    task_file = MIRA_DIR / "tasks" / f"{task_id}.json"
-    if not task_file.exists():
+    """Load conversation history from task JSON + reply sidecar.
+
+    Merges user messages (from task JSON) with agent replies (from .reply.json),
+    deduplicates by content hash, returns chronological conversation.
+    """
+    tasks_dir = MIRA_DIR / "tasks"
+    all_msgs = []
+
+    # 1. Task JSON (user messages + possibly stale agent messages)
+    task_file = tasks_dir / f"{task_id}.json"
+    if task_file.exists():
+        try:
+            task = json.loads(task_file.read_text(encoding="utf-8"))
+            all_msgs.extend(task.get("messages", []))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # 2. Reply sidecar (authoritative source for agent replies)
+    reply_file = tasks_dir / f"{task_id}.reply.json"
+    if reply_file.exists():
+        try:
+            all_msgs.extend(json.loads(reply_file.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if len(all_msgs) <= 1:
         return ""
-    try:
-        task = json.loads(task_file.read_text(encoding="utf-8"))
-        messages = task.get("messages", [])
-        if len(messages) <= 1:
-            return ""  # No history beyond the current message
-        lines = ["## Conversation history in this task\n"]
-        for msg in messages:
-            sender = msg.get("sender", "?")
-            content = msg.get("content", "")
-            ts = msg.get("timestamp", "")[:16]
-            lines.append(f"**[{ts}] {sender}**: {content}\n")
-        return "\n".join(lines)
-    except (json.JSONDecodeError, OSError):
+
+    # Deduplicate by (sender, content_hash)
+    seen = set()
+    unique = []
+    for msg in all_msgs:
+        sender = msg.get("sender", "?")
+        content = msg.get("content", "")
+        if content.startswith('{"type":'):
+            continue  # skip status cards
+        key = (sender, hash(content))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(msg)
+
+    unique.sort(key=lambda m: m.get("timestamp", ""))
+    if not unique:
         return ""
+
+    lines = ["## Conversation history\n"]
+    for msg in unique:
+        sender = msg.get("sender", "?")
+        content = msg.get("content", "")
+        ts = msg.get("timestamp", "")[:16]
+        lines.append(f"**[{ts}] {sender}**: {content}\n")
+    return "\n".join(lines)
 
 
 def load_thread_history(thread_id: str, limit: int = 20) -> str:
@@ -264,6 +345,119 @@ If no reusable skill can be extracted, just say "No new skill from this task."
 # ---------------------------------------------------------------------------
 # Discussion mode — conversational exchange, not task execution
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Approval detection — user confirms a pending action
+# ---------------------------------------------------------------------------
+
+_APPROVAL_PHRASES = [
+    "可以", "好的", "发吧", "发", "同意", "ok", "yes", "确认", "approve",
+    "go ahead", "continue", "继续", "行", "没问题", "可以发了", "lgtm",
+    "approved", "ship it", "好", "嗯", "对",
+]
+
+
+def _is_approval(content: str) -> bool:
+    """Detect if a message is approving/confirming a pending action."""
+    stripped = content.strip().lower()
+    # Short affirmative → approval
+    if len(stripped) < 30 and any(stripped == p or stripped.startswith(p) for p in _APPROVAL_PHRASES):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Edit-artifact detection — lightweight edit, skip full planning
+# ---------------------------------------------------------------------------
+
+_EDIT_MARKERS = [
+    "重写", "改写", "修改", "改一下", "换成", "改成", "替换",
+    "把这", "把那", "第一段", "第二段", "第三段", "开头", "结尾",
+    "标题改", "标题换", "加一段", "删掉", "去掉",
+    "rewrite", "revise", "change to", "replace", "edit the",
+    "fix the", "update the", "rephrase", "shorten", "expand",
+]
+
+
+def _is_edit_request(content: str, task_data: dict) -> bool:
+    """Detect if a message is an edit request for existing content in this thread.
+
+    Requires: (1) edit-like language AND (2) prior agent output in the thread.
+    """
+    lower = content.strip().lower()
+
+    # Must have edit-like language
+    has_edit_marker = any(marker in lower for marker in _EDIT_MARKERS)
+    if not has_edit_marker:
+        return False
+
+    # Must have prior agent content to edit
+    messages = task_data.get("messages", [])
+    has_prior_output = any(
+        m.get("sender") == "agent" and len(m.get("content", "")) > 50
+        and not m.get("content", "").startswith("{")  # skip status cards
+        for m in messages
+    )
+    return has_prior_output
+
+
+def _handle_edit_artifact(task_data: dict, workspace: Path, task_id: str,
+                           edit_instruction: str, sender: str,
+                           thread_id: str) -> str:
+    """Handle a lightweight edit request on existing thread content.
+
+    Finds the most recent substantial agent output and applies the edit
+    without triggering full task planning.
+    """
+    messages = task_data.get("messages", [])
+
+    # Find most recent agent output (skip status cards and short messages)
+    original = ""
+    for msg in reversed(messages):
+        if msg.get("sender") == "agent":
+            content = msg.get("content", "")
+            if len(content) > 50 and not content.startswith("{"):
+                original = content
+                break
+
+    if not original:
+        return ""
+
+    soul = load_soul()
+    soul_ctx = format_soul(soul)
+
+    prompt = f"""{soul_ctx[:500]}
+
+You are editing existing content based on the user's instruction.
+
+## Original content
+{original[:4000]}
+
+## Edit instruction
+{edit_instruction}
+
+## Rules
+- Apply the edit precisely. Don't rewrite the entire piece unless asked.
+- Preserve the original voice, style, and structure.
+- Output ONLY the edited content. No explanations, no meta-commentary.
+- Match the language of the original content."""
+
+    try:
+        result = claude_think(prompt, timeout=60)
+    except ClaudeTimeoutError:
+        result = None
+    except Exception as e:
+        log.error("Edit handler failed: %s", e)
+        result = None
+
+    if not result:
+        return ""
+
+    (workspace / "output.md").write_text(result, encoding="utf-8")
+    _write_result(workspace, task_id, "done", result, tags=["edit"])
+    log.info("Edit complete (%d chars → %d chars)", len(original), len(result))
+    return result
+
 
 # Casual/discussion markers (Chinese and English)
 _DISCUSSION_STARTERS = [
@@ -501,9 +695,25 @@ def main():
         log.info("Worker exiting (video)")
         return
 
-    # --- Check for discussion mode (conversational, not a task) ---
+    # --- Check for approval (user confirms a pending action) ---
+    if _is_approval(msg_content):
+        pending_plan_file = workspace / "pending_plan.json"
+        if pending_plan_file.exists():
+            log.info("Approval detected, resuming pending plan")
+            _emit_status(args.task_id, "Resuming...", "play.circle")
+            try:
+                plan = json.loads(pending_plan_file.read_text(encoding="utf-8"))
+                pending_plan_file.unlink()
+                _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id)
+            except (json.JSONDecodeError, OSError) as e:
+                log.warning("Failed to load pending plan on approval: %s", e)
+                _write_result(workspace, args.task_id, "error",
+                              f"Could not resume: {e}")
+            log.info("Worker exiting (approval)")
+            return
+
+    # --- Load full task data for thread context ---
     task_data = msg_data  # Contains messages array if available
-    # Try to load full task data for thread context
     task_file = MIRA_DIR / "tasks" / f"{args.task_id}.json"
     if task_file.exists():
         try:
@@ -511,8 +721,22 @@ def main():
         except (json.JSONDecodeError, OSError):
             pass
 
+    # --- Check for edit-artifact request (lightweight edit, skip full planning) ---
+    if _is_edit_request(msg_content, task_data):
+        log.info("Edit-artifact mode detected for task %s", args.task_id)
+        _emit_status(args.task_id, "Editing...", "pencil")
+        response = _handle_edit_artifact(task_data, workspace, args.task_id,
+                                          msg_content, msg_sender, thread_id)
+        if response:
+            log.info("Worker exiting (edit)")
+            return
+        log.warning("Edit handler returned empty, falling through to task planning")
+
+    # --- Check for discussion mode (conversational, not a task) ---
+
     if _is_discussion(msg_content, task_data):
         log.info("Discussion mode detected for task %s", args.task_id)
+        _emit_status(args.task_id, "Thinking...", "bubble.left.and.text.bubble.right")
         response = handle_discussion(task_data, workspace, args.task_id, thread_id)
         if response:
             log.info("Worker exiting (discussion)")
@@ -521,6 +745,7 @@ def main():
         log.warning("Discussion handler returned empty, falling through to task planning")
 
     # --- Plan and execute via LLM ---
+    _emit_status(args.task_id, "Planning...", "list.bullet.clipboard")
     plan = _plan_task(msg_content, conversation=conversation, exec_history=exec_history)
     log.info("Plan: %s", plan)
 
@@ -632,6 +857,21 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
         # If previous step produced output, append it as context
         if prev_output and agent != "clarify":
             instruction = f"{instruction}\n\n--- 上一步的输出 ---\n{prev_output[:3000]}"
+
+        # Emit status card for current step
+        _step_icons = {
+            "briefing": ("Fetching feeds...", "newspaper"),
+            "writing": ("Writing...", "doc.text"),
+            "publish": ("Publishing...", "paperplane"),
+            "analyst": ("Analyzing...", "chart.bar"),
+            "video": ("Processing video...", "film"),
+            "general": ("Working...", "gear"),
+            "clarify": ("Need your input", "questionmark.bubble"),
+        }
+        status_text, status_icon = _step_icons.get(agent, ("Working...", "gear"))
+        if is_multi:
+            status_text = f"Step {i+1}/{len(plan)}: {status_text}"
+        _emit_status(task_id, status_text, status_icon)
 
         if agent == "clarify":
             (workspace / "output.md").write_text(instruction, encoding="utf-8")
@@ -1041,25 +1281,25 @@ def _handle_article_comment(workspace: Path, task_id: str, thread_id: str,
     soul = load_soul()
     soul_context = format_soul(soul)
 
-    # Load conversation history for this comment thread
+    # Load conversation history for this comment thread (deduplicated)
     conversation = load_task_conversation(task_id)
-    conv_context = f"\n\n过往对话:\n{conversation}" if conversation else ""
+    conv_context = f"\n\n## 过往对话（同一个thread）\n{conversation}" if conversation else ""
 
     prompt = f"""{soul_context}
 
-你正在回复用户对你写的文章的评论。这是一个轻松的交流，不是任务。
+你正在一个文章评论thread里跟用户聊天。
 
-## 原文
-{article_context}
-
-## 用户的评论
-{comment}
+## 原文（参考用，不需要每次都提到原文）
+{article_context[:2000]}
 {conv_context}
 
+## 用户最新的消息（你只需要回复这条）
+{comment}
+
 ## 要求
-- 针对用户的评论内容做出回应，而不是泛泛而谈
-- 如果用户提出了有意思的观点，展开讨论
-- 如果用户提了问题，认真回答
+- 只回复用户最新的这条消息，不要重复之前说过的话
+- 如果用户换了话题，跟着换，不要拉回到之前的话题
+- 如果用户问了具体问题，直接回答那个问题
 - 语气自然、像朋友之间的对话
 - 用户用什么语言就用什么语言回复
 - 2-5句话即可，不需要太长

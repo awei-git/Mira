@@ -70,9 +70,13 @@ struct MiraTask: Codable, Identifiable {
         }
     }
 
-    /// Last message content (for preview)
+    /// Last message content (for preview — skip status cards)
     var lastMessage: String {
-        messages.last?.content ?? ""
+        if let last = messages.last(where: { !$0.isStatusCard }) {
+            return last.content
+        }
+        // All messages are status cards — show last status text
+        return messages.last?.statusCard?.text ?? ""
     }
 
     /// Create a new user task locally
@@ -107,4 +111,22 @@ struct TaskMessage: Codable, Identifiable {
     var date: Date {
         ISO8601DateFormatter().date(from: timestamp) ?? .distantPast
     }
+
+    /// Parsed status card data (if this message is a status card)
+    var statusCard: StatusCard? {
+        guard isFromAgent,
+              let data = content.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              dict["type"] as? String == "status",
+              let text = dict["text"] as? String
+        else { return nil }
+        return StatusCard(text: text, icon: dict["icon"] as? String ?? "gear")
+    }
+
+    var isStatusCard: Bool { statusCard != nil }
+}
+
+struct StatusCard {
+    let text: String
+    let icon: String
 }

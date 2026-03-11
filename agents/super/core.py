@@ -49,7 +49,7 @@ from writing_workflow import (
 from prompts import (
     respond_prompt, explore_prompt, deep_dive_prompt, reflect_prompt,
     journal_prompt, internalize_prompt, autonomous_writing_prompt,
-    worldview_evolution_prompt, zhesi_prompt,
+    worldview_evolution_prompt, zhesi_prompt, spark_check_prompt,
 )
 
 log = logging.getLogger("mira")
@@ -106,26 +106,32 @@ def do_talk():
     completed = task_mgr.check_tasks()
     for rec in completed:
         content = task_mgr.get_reply_content(rec)
-        # Append compact status footer so user always knows agent state
         footer = _status_footer(task_mgr)
+        # Comment threads: reply is in .reply.json sidecar ONLY (written by task_worker).
+        # Do NOT write to outbox or task JSON — that creates duplicates.
+        is_comment = rec.task_id.startswith("comment_")
+
         if rec.status == "needs-input":
-            # Task wants user confirmation before proceeding
-            bridge.reply(rec.msg_id, rec.sender, content + footer, thread_id=rec.thread_id)
+            if not is_comment:
+                bridge.reply(rec.msg_id, rec.sender, content + footer, thread_id=rec.thread_id)
             bridge.update_task_status(rec.task_id, "needs-input", agent_message=content)
             if rec.tags:
                 bridge.set_task_tags(rec.task_id, rec.tags)
             log.info("Mira [%s] needs user input: %s", rec.task_id, content[:80])
         elif rec.status == "done":
-            bridge.reply(rec.msg_id, rec.sender, content + footer, thread_id=rec.thread_id)
+            if not is_comment:
+                bridge.reply(rec.msg_id, rec.sender, content + footer, thread_id=rec.thread_id)
             bridge.ack(rec.msg_id, "done")
-            # Update task state for iOS
-            bridge.update_task_status(rec.task_id, "done", agent_message=content)
+            bridge.update_task_status(rec.task_id, "done",
+                                       agent_message="" if is_comment else content)
             if rec.tags:
                 bridge.set_task_tags(rec.task_id, rec.tags)
-            log.info("Mira [%s] task done, reply sent", rec.task_id)
+            log.info("Mira [%s] task done%s", rec.task_id,
+                     " (comment — reply in sidecar)" if is_comment else ", reply sent")
         elif rec.status in ("error", "timeout"):
             error_msg = f"处理失败: {rec.summary}" if rec.summary else "处理失败，请稍后重试。"
-            bridge.reply(rec.msg_id, rec.sender, error_msg + footer, thread_id=rec.thread_id)
+            if not is_comment:
+                bridge.reply(rec.msg_id, rec.sender, error_msg + footer, thread_id=rec.thread_id)
             bridge.ack(rec.msg_id, "error")
             bridge.update_task_status(rec.task_id, "failed", agent_message=error_msg)
             log.warning("Mira [%s] task %s: %s", rec.task_id, rec.status, rec.summary)
@@ -502,6 +508,21 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
         items = fetch_all()
     if not items:
         log.info("No items fetched, skipping explore")
+        # Still update state so this group gets rotated and we don't
+        # keep picking the same empty group forever
+        now = datetime.now()
+        state = load_state()
+        state["last_explore"] = now.isoformat()
+        if source_names:
+            for i, group in enumerate(EXPLORE_SOURCE_GROUPS):
+                if set(source_names) == set(group):
+                    recent = state.get("explore_recent_groups", [])
+                    if i in recent:
+                        recent.remove(i)
+                    recent.append(i)
+                    state["explore_recent_groups"] = recent[-len(EXPLORE_SOURCE_GROUPS):]
+                    break
+        save_state(state)
         return
 
     soul = load_soul()
@@ -540,6 +561,12 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
 
     # Briefing is displayed as a card in Today (from .md file)
     # No need to create a task — that just pollutes the task list
+
+    # 5b. Extract key insights into structured reading notes
+    try:
+        _extract_briefing_insights(soul_ctx, briefing, today, slot_name)
+    except Exception as e:
+        log.warning("Insight extraction failed (non-fatal): %s", e)
 
     # 6. Check for deep-dive candidate
     dive = _extract_deep_dive(briefing)
@@ -630,6 +657,52 @@ def _do_deep_dive(soul_ctx: str, dive: dict):
             log.info("Internalization note saved for: %s", dive["title"])
     except Exception as e:
         log.warning("Internalization failed: %s", e)
+
+
+def _extract_briefing_insights(soul_ctx: str, briefing: str,
+                                today: str, slot_name: str = ""):
+    """Extract 2-3 key insights from a briefing into structured reading notes.
+
+    Unlike deep dives (which go deep on one item), this captures the
+    most interesting connections and patterns across the entire briefing.
+    The notes accumulate over time and feed into reflection, journal,
+    and autonomous writing topic selection.
+    """
+    prompt = f"""{soul_ctx[:500]}
+
+You just wrote a briefing. Extract the 2-3 most interesting insights — things that surprised you, changed your mind, or connected to something you've been thinking about.
+
+## Briefing
+{briefing[:4000]}
+
+## Output format
+For each insight, write a short note (3-5 sentences) capturing:
+1. What you learned or noticed
+2. Why it matters or what it connects to
+3. A question it raises
+
+Separate notes with ---
+
+Be specific. "AI is advancing" is not an insight. "Small fine-tuned models beating frontier models on narrow tasks suggests the value of general intelligence is lower than assumed" is.
+
+Write in the language of the briefing content."""
+
+    result = claude_think(prompt, timeout=60)
+    if not result or len(result) < 50:
+        log.info("No insights extracted from briefing (too short or empty)")
+        return
+
+    # Split into individual notes and save each one
+    notes = [n.strip() for n in result.split("---") if n.strip()]
+    slot_label = f" ({slot_name})" if slot_name else ""
+    for i, note_text in enumerate(notes[:3]):
+        # Derive a title from the first sentence
+        first_line = note_text.split("\n")[0].strip("# ").strip()
+        title = first_line[:60] if first_line else f"Briefing insight {today}{slot_label} #{i+1}"
+        save_reading_note(title, note_text)
+        log.info("Reading note saved: %s", title[:40])
+
+    log.info("Extracted %d insights from briefing %s%s", len(notes[:3]), today, slot_label)
 
 
 # ---------------------------------------------------------------------------
@@ -933,6 +1006,13 @@ def do_reflect():
                 output[:2000],
             )
 
+    # Rebuild memory index after consolidation
+    try:
+        from soul_manager import rebuild_memory_index
+        rebuild_memory_index()
+    except Exception as e:
+        log.warning("Memory index rebuild after reflect failed: %s", e)
+
     state = load_state()
     state["last_reflect"] = datetime.now().isoformat()
     save_state(state)
@@ -992,13 +1072,24 @@ def do_journal():
     except Exception as e:
         log.warning("Could not fetch publication stats: %s", e)
 
+    # 5. Recent reading notes (insights extracted from briefings)
+    reading_notes = ""
+    try:
+        reading_notes = load_recent_reading_notes(days=3)
+        if reading_notes:
+            log.info("Loaded recent reading notes for journal context")
+    except Exception:
+        pass
+
     # --- Ask Claude to write the journal ---
     soul = load_soul()
     soul_ctx = format_soul(soul)
 
-    # Inject stats into briefing summary so journal can reflect on reach
+    # Inject stats and reading notes into briefing summary
     if stats_summary:
         briefing_summary += f"\n\n## Substack Stats\n{stats_summary}"
+    if reading_notes:
+        briefing_summary += f"\n\n## Reading Notes (recent insights)\n{reading_notes[:2000]}"
 
     prompt = journal_prompt(soul_ctx, tasks_summary, skills_summary, briefing_summary,
                             za_fragment=za_fragment)
@@ -1027,6 +1118,13 @@ def do_journal():
         _check_autonomous_writing(soul_ctx, bridge, journal_text)
     except Exception as e:
         log.warning("Autonomous writing check failed: %s", e)
+
+    # Rebuild memory index after journal
+    try:
+        from soul_manager import rebuild_memory_index
+        rebuild_memory_index()
+    except Exception as e:
+        log.warning("Memory index rebuild after journal failed: %s", e)
 
     # Mark done in state
     state = load_state()
@@ -1105,6 +1203,127 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
     ])
 
     append_memory(f"Self-initiated writing: '{title}' ({writing_type})")
+
+
+# ---------------------------------------------------------------------------
+# Proactive thought sharing — Mira messages WA when she has something worth discussing
+# ---------------------------------------------------------------------------
+
+def should_spark_check() -> bool:
+    """Decide whether to run a spark check this cycle.
+
+    Not time-scheduled — runs based on accumulated input:
+    - At least 2 hours since last spark check
+    - At least 1 new briefing or reading note since last check
+    - Max 2 proactive messages per day (don't be annoying)
+    """
+    state = load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Max 2 per day
+    sparks_today = state.get(f"sparks_{today}", 0)
+    if sparks_today >= 2:
+        return False
+
+    # Minimum 2 hours between checks
+    last_check = state.get("last_spark_check", "")
+    if last_check:
+        try:
+            last_dt = datetime.fromisoformat(last_check)
+            if datetime.now() - last_dt < timedelta(hours=2):
+                return False
+        except ValueError:
+            pass
+
+    # Only check if there's been new input (explore, task, etc.)
+    # Use a simple heuristic: check if memory has grown since last spark check
+    last_memory_lines = state.get("spark_memory_lines", 0)
+    from soul_manager import get_memory_size
+    current_lines = get_memory_size()
+    if current_lines <= last_memory_lines:
+        return False
+
+    return True
+
+
+def do_spark_check():
+    """Check if Mira has a thought worth proactively sharing with WA."""
+    state = load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    soul = load_soul()
+    soul_ctx = format_soul(soul)
+
+    # Gather recent context
+    recent_reading = load_recent_reading_notes(days=3)
+    recent_journal = ""
+    if JOURNAL_DIR.exists():
+        journals = sorted(JOURNAL_DIR.glob("*.md"), reverse=True)[:2]
+        recent_journal = "\n---\n".join(
+            j.read_text(encoding="utf-8")[:800] for j in journals
+        )
+
+    # Recent conversations with WA
+    recent_conversations = ""
+    try:
+        history_file = MIRA_DIR / "tasks" / "history.jsonl"
+        if history_file.exists():
+            lines = history_file.read_text(encoding="utf-8").strip().split("\n")
+            recent = [json.loads(l) for l in lines[-5:] if l.strip()]
+            recent_conversations = "\n".join(
+                f"- {r.get('content_preview', '')[:100]}" for r in recent
+            )
+    except Exception:
+        pass
+
+    prompt = spark_check_prompt(soul_ctx, recent_reading,
+                                recent_journal, recent_conversations)
+    result = claude_think(prompt, timeout=30)
+
+    # Update state regardless of result
+    from soul_manager import get_memory_size
+    state["last_spark_check"] = datetime.now().isoformat()
+    state["spark_memory_lines"] = get_memory_size()
+    save_state(state)
+
+    if not result:
+        return
+
+    # Parse response
+    try:
+        match = re.search(r'\{.*\}', result, re.DOTALL)
+        if not match:
+            return
+        decision = json.loads(match.group())
+    except (json.JSONDecodeError, AttributeError):
+        return
+
+    if not decision.get("should_message"):
+        log.info("Spark check: nothing worth sharing (%s)",
+                 decision.get("reason", "")[:60])
+        return
+
+    thought = decision.get("thought", "").strip()
+    if not thought:
+        return
+
+    # Send proactive message to WA via bridge
+    bridge = Mira(MIRA_DIR)
+    bridge.post(thought, sender="agent")
+    bridge.create_task(
+        task_id=f"spark_{datetime.now().strftime('%H%M')}",
+        title=thought[:40],
+        first_message=thought,
+        sender="agent",
+        origin="auto",
+        tags=["spark"],
+    )
+
+    state[f"sparks_{today}"] = state.get(f"sparks_{today}", 0) + 1
+    save_state(state)
+
+    append_memory(f"Proactive thought shared with WA: {thought[:80]}")
+    log.info("Spark sent to WA: %s", thought[:80])
 
 
 def _gather_today_tasks() -> str:
@@ -1764,6 +1983,12 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "notes-cycle",
         ])
 
+    # Proactive thought sharing — message WA when Mira has something worth discussing
+    if should_spark_check():
+        _dispatch_background("spark-check", [
+            sys.executable, str(Path(__file__).resolve()), "spark-check",
+        ])
+
     log.info("=== Mira Agent sleep ===")
 
 
@@ -2082,6 +2307,8 @@ def main():
         do_check_comments()
     elif command == "notes-cycle":
         do_notes_cycle()
+    elif command == "spark-check":
+        do_spark_check()
     elif command == "skill-study":
         group_idx = int(flags.get("group", "0"))
         do_skill_study(group_idx=group_idx)
@@ -2103,7 +2330,7 @@ def main():
         writing_type = flags.get("type", "novel")
         start_from_plan(title, plan_path, writing_type)
     else:
-        print(f"Usage: {sys.argv[0]} [run|talk|respond|explore|reflect|journal|analyst|zhesi|skill-study|autowrite-check|write-check|write-from-plan]")
+        print(f"Usage: {sys.argv[0]} [run|talk|respond|explore|reflect|journal|analyst|zhesi|skill-study|autowrite-check|write-check|write-from-plan|spark-check]")
         sys.exit(1)
 
 

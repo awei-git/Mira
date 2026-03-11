@@ -158,7 +158,7 @@ def post_note(text: str) -> dict | None:
 def subscribe_to_publication(subdomain: str) -> bool:
     """Subscribe to a Substack publication (free tier).
 
-    This makes their posts appear in Mira's reader feed.
+    Uses POST /api/v1/free on the publication's subdomain.
     """
     from substack import _get_substack_config
     import urllib.request
@@ -169,46 +169,36 @@ def subscribe_to_publication(subdomain: str) -> bool:
     if not cookie:
         return False
 
-    # First get publication ID
-    try:
-        req = urllib.request.Request(
-            f"https://{subdomain}.substack.com/api/v1/archive?limit=1",
-            headers={
-                "Cookie": f"substack.sid={cookie}",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            posts = json.loads(resp.read().decode("utf-8"))
-        if not posts:
-            return False
-        pub_id = posts[0].get("publication_id")
-        if not pub_id:
-            return False
-    except Exception as e:
-        log.error("Failed to get publication ID for %s: %s", subdomain, e)
-        return False
-
-    # Subscribe (free)
     try:
         payload = json.dumps({
-            "publication_id": pub_id,
-            "type": "free",
+            "email": "",
+            "first_url": f"https://{subdomain}.substack.com/",
+            "current_url": f"https://{subdomain}.substack.com/",
         }).encode("utf-8")
 
         req = urllib.request.Request(
-            "https://substack.com/api/v1/subscriptions",
+            f"https://{subdomain}.substack.com/api/v1/free",
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                "Cookie": f"substack.sid={cookie}",
+                "Cookie": f"substack.sid={cookie}; connect.sid={cookie}",
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "Origin": f"https://{subdomain}.substack.com",
+                "Accept": "application/json",
             },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-        log.info("Subscribed to %s (pub_id=%s)", subdomain, pub_id)
+            ct = resp.headers.get("Content-Type", "")
+            raw = resp.read().decode("utf-8")
+
+        if "application/json" not in ct:
+            log.warning("Subscribe to %s: non-JSON response", subdomain)
+            return False
+
+        result = json.loads(raw)
+        sub_id = result.get("subscription_id")
+        log.info("Subscribed to %s (sub_id=%s)", subdomain, sub_id)
 
         # Record
         state = _load_state()
@@ -217,7 +207,6 @@ def subscribe_to_publication(subdomain: str) -> bool:
             subs.append(subdomain)
         state["subscriptions"] = subs
         _save_state(state)
-
         return True
     except Exception as e:
         log.error("Failed to subscribe to %s: %s", subdomain, e)
@@ -228,6 +217,130 @@ def get_current_subscriptions() -> list[str]:
     """Get list of publications Mira is subscribed to."""
     state = _load_state()
     return state.get("subscriptions", [])
+
+
+# ---------------------------------------------------------------------------
+# Auto-discover and follow interesting publications
+# ---------------------------------------------------------------------------
+
+# Topics that match Mira's interests — rotated through for discovery
+_DISCOVERY_QUERIES = [
+    "mechanistic interpretability",
+    "philosophy of mind consciousness",
+    "cognitive science",
+    "complexity emergence systems",
+    "mathematics beauty",
+    "interdisciplinary thinking",
+    "AI alignment safety",
+    "epistemology knowledge",
+    "agent architecture autonomous",
+    "literature philosophy intersection",
+    "economics complexity",
+    "information theory",
+]
+
+MAX_NEW_FOLLOWS_PER_CYCLE = 2
+DISCOVERY_COOLDOWN_DAYS = 3  # Don't discover too often
+
+
+def should_discover() -> bool:
+    """Check if it's time to discover new publications."""
+    state = _load_state()
+    last = state.get("last_discovery", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            if datetime.now() - last_dt < timedelta(days=DISCOVERY_COOLDOWN_DAYS):
+                return False
+        except ValueError:
+            pass
+    return True
+
+
+def discover_and_follow() -> list[str]:
+    """Search for interesting publications and follow them.
+
+    Picks a random query from Mira's interest areas, searches Substack,
+    filters for smaller/newer accounts, and subscribes.
+
+    Returns list of newly followed subdomains.
+    """
+    import random
+    import time
+    import urllib.request
+
+    from substack import _get_substack_config
+
+    cfg = _get_substack_config()
+    cookie = cfg.get("cookie", "")
+    if not cookie:
+        return []
+
+    state = _load_state()
+    existing = set(state.get("subscriptions", []))
+
+    # Pick 2 random queries
+    queries = random.sample(_DISCOVERY_QUERIES, min(2, len(_DISCOVERY_QUERIES)))
+    candidates = []
+
+    for query in queries:
+        try:
+            req = urllib.request.Request(
+                f"https://substack.com/api/v1/publication/search?query={query.replace(' ', '+')}&page=0",
+                headers={
+                    "Cookie": f"substack.sid={cookie}; connect.sid={cookie}",
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            results = data.get("results", []) if isinstance(data, dict) else data
+            for pub in results:
+                sub = pub.get("subdomain", "")
+                if sub and sub not in existing:
+                    candidates.append({
+                        "subdomain": sub,
+                        "name": pub.get("name", ""),
+                        "description": pub.get("hero_text", "") or pub.get("description", ""),
+                        "query": query,
+                    })
+        except Exception as e:
+            log.warning("Discovery search '%s' failed: %s", query, e)
+
+    if not candidates:
+        log.info("Discovery: no new candidates found")
+        state["last_discovery"] = datetime.now().isoformat()
+        _save_state(state)
+        return []
+
+    # Pick top candidates (prefer ones not already followed)
+    random.shuffle(candidates)
+    to_follow = candidates[:MAX_NEW_FOLLOWS_PER_CYCLE]
+
+    followed = []
+    for pub in to_follow:
+        if subscribe_to_publication(pub["subdomain"]):
+            followed.append(pub["subdomain"])
+            log.info("Discovery: followed %s (%s) via query '%s'",
+                     pub["name"], pub["subdomain"], pub["query"])
+            time.sleep(1.5)
+
+    state["last_discovery"] = datetime.now().isoformat()
+
+    # Track discovery history
+    history = state.get("discovery_history", [])
+    for pub in to_follow:
+        history.append({
+            "subdomain": pub["subdomain"],
+            "name": pub["name"],
+            "query": pub["query"],
+            "date": datetime.now().isoformat(),
+            "followed": pub["subdomain"] in followed,
+        })
+    state["discovery_history"] = history[-50:]
+    _save_state(state)
+
+    return followed
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +380,16 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None,
         log.info("Skipping comment cycle — need %d more posts",
                  MIN_POSTS_TO_ENABLE_COMMENTING - post_count)
         return
+
+    # Auto-discover and follow new publications
+    if should_discover():
+        try:
+            followed = discover_and_follow()
+            if followed:
+                log.info("Discovery: followed %d new publications: %s",
+                         len(followed), ", ".join(followed))
+        except Exception as e:
+            log.error("Discovery failed: %s", e)
 
     # Post comments from briefing suggestions
     if briefing_comments and can_comment_now():
