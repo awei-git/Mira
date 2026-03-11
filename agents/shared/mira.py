@@ -138,44 +138,82 @@ class Mira:
         self._write_task(task)
         return task
 
+    def emit_status(self, task_id: str, text: str, icon: str = "gear"):
+        """Emit a lightweight status card to a task's message stream.
+
+        Status cards show task progress inline (e.g. "Fetching feeds...",
+        "Writing outline...", "Waiting for approval"). iOS renders these
+        as compact cards instead of regular chat bubbles.
+
+        Args:
+            task_id: The task to emit status to.
+            text: Short status text (e.g. "正在写大纲").
+            icon: SF Symbol name (gear, doc.text, checkmark, clock, etc.)
+        """
+        import json as _json
+        status_content = _json.dumps(
+            {"type": "status", "text": text, "icon": icon},
+            ensure_ascii=False,
+        )
+        msg = {
+            "sender": "agent",
+            "content": status_content,
+            "timestamp": _utc_iso(),
+        }
+        task = self._read_task(task_id)
+        if task:
+            task["messages"].append(msg)
+            task["updated_at"] = _utc_iso()
+            self._write_task(task)
+        # Always write sidecar so iOS gets it even on sync race
+        self._append_reply(task_id, msg)
+
     def update_task_status(self, task_id: str, status: str,
                            agent_message: str = "",
                            result_path: str = ""):
         """Update a task's status and optionally append an agent message.
 
-        Writes to THREE locations to survive iCloud sync races:
+        Comment threads (task_id starts with "comment_") use a simplified
+        write path to avoid duplicate messages:
+        - Agent replies are in .reply.json ONLY (written by task_worker)
+        - This method only updates status, never appends messages
+
+        Regular tasks write to:
         1. Main task JSON (may be overwritten by iOS)
         2. Reply sidecar ({task_id}.reply.json) — agent messages
         3. Status sidecar ({task_id}.status.json) — authoritative agent status
-           iOS should read this file to reconcile status after sync.
         """
+        is_comment = task_id.startswith("comment_")
+
         task = self._read_task(task_id)
         if not task:
             log.warning("update_task_status: task %s not found, writing sidecars directly", task_id)
-            # Even if the main task file is unreadable, still write sidecars
-            # so iOS can pick up the reply and status
-            if agent_message:
+            if agent_message and not is_comment:
                 msg = {"sender": "agent", "content": agent_message, "timestamp": _utc_iso()}
                 self._append_reply(task_id, msg)
             self._write_status_sidecar(task_id, status, agent_message)
             return
+
         task["status"] = status
         task["updated_at"] = _utc_iso()
-        if agent_message:
+
+        if is_comment:
+            # Comment threads: NEVER write agent messages to task JSON.
+            # Agent replies live exclusively in .reply.json (written by task_worker).
+            # This prevents the duplicate message bug from multiple write paths.
+            pass
+        elif agent_message:
             msg = {
                 "sender": "agent",
                 "content": agent_message,
                 "timestamp": _utc_iso(),
             }
             task["messages"].append(msg)
-            # Write sidecar file so iOS can recover replies lost to sync races
             self._append_reply(task_id, msg)
+
         if result_path:
             task["result_path"] = result_path
         self._write_task(task)
-        # Write status sidecar — this is the authoritative agent-side status.
-        # iOS owns the task json (adds user messages). Mac owns this file.
-        # No iCloud conflict because each side writes to its own file.
         self._write_status_sidecar(task_id, status, agent_message)
 
     def append_task_message(self, task_id: str, sender: str, content: str):

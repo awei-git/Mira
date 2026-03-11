@@ -286,6 +286,16 @@ final class BridgeService {
         }
     }
 
+    func deleteTask(_ taskId: String) {
+        guard let tasksDir = tasksURL else { return }
+        let fileURL = tasksDir.appendingPathComponent("\(taskId).json")
+        let statusURL = tasksDir.appendingPathComponent("\(taskId).status.json")
+        try? FileManager.default.removeItem(at: fileURL)
+        try? FileManager.default.removeItem(at: statusURL)
+        tasks.removeAll { $0.id == taskId }
+        log("deleteTask: \(taskId)")
+    }
+
     // MARK: - Thread management
 
     func createThread(title: String) {
@@ -561,40 +571,48 @@ final class BridgeService {
                         }
                     }
                     // Merge agent replies from sidecar file (survives iCloud sync races)
+                    // Dedup by content hash (sender+content) to prevent duplicates from
+                    // multiple write paths or iCloud sync races.
                     let replyFile = tasksDir.appendingPathComponent("\(name).reply.json")
                     if fm.isReadableFile(atPath: replyFile.path),
                        let replyData = try? Data(contentsOf: replyFile),
                        let replies = try? JSONSerialization.jsonObject(with: replyData) as? [[String: Any]] {
-                        let existingTimestamps = Set(task.messages.map(\.timestamp))
+                        // Build content-based fingerprint set from existing messages
+                        let existingFingerprints = Set(task.messages.map { msg in
+                            "\(msg.sender)|\(msg.content.prefix(200))"
+                        })
                         for reply in replies {
+                            let sender = reply["sender"] as? String ?? "agent"
+                            let content = reply["content"] as? String ?? ""
                             let ts = reply["timestamp"] as? String ?? ""
-                            if !ts.isEmpty && !existingTimestamps.contains(ts) {
-                                let msg = TaskMessage(
-                                    sender: reply["sender"] as? String ?? "agent",
-                                    content: reply["content"] as? String ?? "",
+                            let fingerprint = "\(sender)|\(content.prefix(200))"
+                            if !content.isEmpty && !existingFingerprints.contains(fingerprint) {
+                                task.messages.append(TaskMessage(
+                                    sender: sender,
+                                    content: content,
                                     timestamp: ts
-                                )
-                                task.messages.append(msg)
+                                ))
                             }
                         }
-                        // Re-sort messages by timestamp
                         task.messages.sort { $0.timestamp < $1.timestamp }
                     }
                     // Also merge agent replies from outbox (last resort if sidecar was lost)
                     if let outboxReplies = outboxByThread[task.id] {
-                        let existingTimestamps = Set(task.messages.map(\.timestamp))
+                        let existingFingerprints = Set(task.messages.map { msg in
+                            "\(msg.sender)|\(msg.content.prefix(200))"
+                        })
                         for reply in outboxReplies {
+                            let content = reply["content"] as? String ?? ""
                             let ts = reply["timestamp"] as? String ?? ""
-                            if !ts.isEmpty && !existingTimestamps.contains(ts) {
-                                let content = reply["content"] as? String ?? ""
-                                // Strip status footer from outbox replies
-                                let cleanContent = content.components(separatedBy: "\n---\nAgent:").first ?? content
-                                let msg = TaskMessage(
+                            let cleanContent = content.components(separatedBy: "\n---\nAgent:").first ?? content
+                            let trimmed = cleanContent.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let fingerprint = "agent|\(trimmed.prefix(200))"
+                            if !trimmed.isEmpty && !existingFingerprints.contains(fingerprint) {
+                                task.messages.append(TaskMessage(
                                     sender: "agent",
-                                    content: cleanContent.trimmingCharacters(in: .whitespacesAndNewlines),
+                                    content: trimmed,
                                     timestamp: ts
-                                )
-                                task.messages.append(msg)
+                                ))
                             }
                         }
                         task.messages.sort { $0.timestamp < $1.timestamp }

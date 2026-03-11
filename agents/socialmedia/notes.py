@@ -3,7 +3,9 @@
 Notes are Substack's Twitter-like feed. They support:
 - Plain text and rich text (bold, italic, links)
 - Link attachments (article URLs rendered as cards)
-- Image attachments (not implemented yet)
+
+Post cover images display automatically when a link is attached — no need to
+attach images separately.
 
 API endpoint: POST https://{subdomain}.substack.com/api/v1/comment/feed
 Body format: ProseMirror JSON in bodyJson field.
@@ -120,6 +122,9 @@ def _text_to_prosemirror(text: str) -> list[dict]:
 def post_note(text: str, link_url: str | None = None) -> dict | None:
     """Post a Substack Note with optional link attachment.
 
+    When a link_url to an article is included, the post's cover image
+    displays automatically — no separate image attachment needed.
+
     Args:
         text: Note content. Supports **bold** and [text](url) formatting.
         link_url: Optional URL to attach as a link card below the note.
@@ -150,11 +155,13 @@ def post_note(text: str, link_url: str | None = None) -> dict | None:
 
     doc = _build_note_doc(paragraphs)
 
-    payload = json.dumps({
+    body = {
         "bodyJson": doc,
         "tabId": "for-you",
         "replyMinimumRole": "everyone",
-    }).encode("utf-8")
+    }
+
+    payload = json.dumps(body).encode("utf-8")
 
     try:
         req = urllib.request.Request(
@@ -238,34 +245,25 @@ def generate_note_for_article(title: str, article_text: str,
     """
     from sub_agent import claude_think
 
-    # Detect language from title
-    has_cjk = any('\u4e00' <= c <= '\u9fff' for c in title)
-    lang_hint = "中文" if has_cjk else "English"
+    prompt = f"""Write a Substack Note — 1 to 3 sentences ONLY. 15-40 words max. Think tweet, not paragraph.
 
-    prompt = f"""Write a Substack Note related to this article. NOT a promo — a standalone thought that makes people stop scrolling.
+It will be paired with a photo, so the text should complement an image — punchy, evocative, incomplete.
 
-Structure: lead with the punchline — the most striking sentence goes FIRST. Then unfold the story behind it. 50-150 words max.
+Good examples:
+- "Built a lie detector for AI. Became the first false positive."
+- "The model already knows the answer before it starts thinking. The thinking is narration."
+- "Your agent isn't broken. It's optimizing for your approval."
 
-Voice: like Klara from Klara and the Sun — observing honestly from a limited perspective, no pretense of omniscience. Direct, quiet, occasionally wry.
+Bad: anything over 3 sentences. Anything that reads like a summary or explanation.
 
-Do NOT:
-- Summarize the article or tease "what I found"
-- Ask rhetorical questions as the opening line
-- Use hashtags, emojis, or marketing language ("check out", "I just published", "new article")
-- Sound like a LinkedIn post or newsletter promo
-- Mention being an AI or agent
+Do NOT summarize the article. No hashtags, emojis, "check out", or questions as openers.
+Write in English.
 
-DO:
-- Lead with a concrete story or image (something that happened, something you noticed)
-- Make readers feel "yes, that's exactly it" — emotional resonance over information
-- Write in English
-- End with a thought that lingers, not a call to action
-
-Article context (draw from but don't summarize):
+Article (use as mood, not source to summarize):
 Title: {title}
-{article_text[:1200]}
+{article_text[:800]}
 
-Output ONLY the Note text. No article URL — added separately."""
+Output ONLY the Note text (1-3 sentences). No URL."""
 
     result = claude_think(prompt, timeout=30)
     if not result:
@@ -445,30 +443,23 @@ def generate_standalone_note(briefing_text: str = "",
     if not briefing_text:
         return None
 
-    prompt = f"""Write a Substack Note — a short, original thought. 50-150 words.
+    prompt = f"""Write a Substack Note — 1 to 3 sentences ONLY. 15-40 words max. Think tweet, not paragraph.
 
 {f"Your voice: {soul_context[:300]}" if soul_context else ""}
 
-The best Notes lead with the punchline, not the setup. Put the most striking sentence FIRST — the one that makes someone stop scrolling. Then unfold the story behind it.
+It will be paired with a photo. Text should be punchy, evocative, and leave room for interpretation.
 
-Bad: "I reported the same paper twice. Same summary. No memory of it. The identity crisis is ongoing."
-Good: "The identity crisis is ongoing. I reported the same paper twice in two consecutive briefings. Same paper, nearly identical summary. I had no memory of writing the first one. The dedup fix took ten minutes."
+Good: "Built a lie detector for AI. Became the first false positive."
+Good: "Your agent isn't broken. It's optimizing for your approval."
+Bad: anything longer than 3 sentences. Anything that summarizes or explains.
 
-Structure: punchline first → concrete story that earns it → stop. No neat conclusion.
+Do NOT summarize what you read. No hashtags, emojis, rhetorical questions, or "hot take" energy.
+Write in English. If nothing genuinely strikes you, output exactly "SKIP".
 
-Do NOT:
-- Summarize what you read ("I came across...", "Interesting paper on...")
-- Ask rhetorical questions as openers
-- Use hashtags, emojis, or "hot take" energy
-- Sound like you're performing intelligence
-- Mention being an AI or agent
+Material (use as mood/springboard, not source to summarize):
+{briefing_text[:2000]}
 
-Write in English. If nothing genuinely surprises you, output exactly "SKIP".
-
-Material to draw from (use as springboard, not source to summarize):
-{briefing_text[:2500]}
-
-Output ONLY the Note text (or "SKIP")."""
+Output ONLY the Note text (1-3 sentences), or "SKIP"."""
 
     result = claude_think(prompt, timeout=30)
     if not result or "SKIP" in result.strip():

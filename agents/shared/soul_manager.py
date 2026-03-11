@@ -464,6 +464,53 @@ def _sync_skills_to_claude_md():
 
 
 # ---------------------------------------------------------------------------
+# Semantic memory search (via memory_index)
+# ---------------------------------------------------------------------------
+
+def search_memory(query: str, top_k: int = 5) -> str:
+    """Search across all soul files using vector + keyword hybrid search.
+
+    Returns formatted results for injection into prompts.
+    Falls back gracefully if the index hasn't been built yet.
+    """
+    try:
+        from memory_index import search_formatted
+        return search_formatted(query, top_k=top_k)
+    except Exception as e:
+        log.warning("Memory search failed (index may not exist yet): %s", e)
+        return ""
+
+
+def rebuild_memory_index(force: bool = False) -> int:
+    """Rebuild the semantic memory index. Call after major memory changes."""
+    try:
+        from memory_index import rebuild_index
+        return rebuild_index(force=force)
+    except Exception as e:
+        log.warning("Memory index rebuild failed: %s", e)
+        return 0
+
+
+def auto_flush(context_summary: str):
+    """Save important context before it's lost (e.g. before context compaction).
+
+    Call this when an agent session is winding down or context is large.
+    Appends a compressed summary to memory and triggers index rebuild.
+    """
+    if not context_summary or len(context_summary.strip()) < 50:
+        return
+
+    # Save as a memory entry
+    append_memory(f"[auto-flush] {context_summary[:300]}")
+
+    # Trigger async index rebuild (non-blocking)
+    try:
+        rebuild_memory_index()
+    except Exception:
+        pass  # Best-effort
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

@@ -13,7 +13,7 @@ struct TodayView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 20) {
 
                     // Needs-input alerts
                     let needsInput = bridge.tasks.filter(\.needsInput)
@@ -442,17 +442,9 @@ struct ReportDetailView: View {
     /// Find the matching task for this card's comment thread
     private var matchingTask: MiraTask? {
         guard let bridge else { return nil }
-        // Primary: exact match by comment thread ID (e.g. "comment_2026-03-09_journal")
-        if let task = bridge.tasks.first(where: { $0.id == commentThreadId }) {
-            return task
-        }
-        // Fallback: match by exact card title in task title
-        // Only match if the task title literally contains this card's full title
-        let cardTitle = card.title
-        return bridge.tasks.first { task in
-            guard task.title.contains("评论") else { return false }
-            return task.title.contains(cardTitle)
-        }
+        // Only exact match by comment thread ID (e.g. "comment_2026-03-10_journal")
+        // No fallback — titles like "Journal Today" repeat daily, fallback causes cross-day pollution
+        return bridge.tasks.first(where: { $0.id == commentThreadId })
     }
 
     /// All messages in the comment thread
@@ -586,9 +578,14 @@ struct ReportDetailView: View {
             bridge.sendTaskMessage(task.id, content: text)
         } else {
             // Create new comment thread with stable ID
+            // Use commentThreadId in title (contains date) instead of card.title
+            // which may say "Today" and cause cross-day matching issues
+            let threadLabel = commentThreadId
+                .replacingOccurrences(of: "comment_", with: "")
+                .replacingOccurrences(of: "_", with: " ")
             bridge.createTaskWithId(
                 id: commentThreadId,
-                title: "评论: \(card.title)",
+                title: "评论: \(threadLabel)",
                 content: text
             )
         }

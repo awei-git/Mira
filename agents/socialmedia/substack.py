@@ -181,11 +181,17 @@ def _parse_inline(html_text: str) -> list:
 
 
 def _get_cover_image(title: str, article_text: str, workspace: Path) -> str | None:
-    """Get a cover image for the article. Tries Unsplash first, then DALL-E.
+    """Get a cover image for the article.
 
+    Priority: personal photos > Unsplash > DALL-E.
     Returns local file path or None.
     """
     from sub_agent import claude_think
+
+    # Step 0: Try personal photo library (user's own photos, no people)
+    personal = _pick_personal_cover()
+    if personal:
+        return personal
 
     # Step 1: Ask Claude for 2-3 search keywords
     keyword_prompt = f"""Given this article title and excerpt, suggest 2-3 evocative search keywords
@@ -210,6 +216,43 @@ No explanation."""
 
     # Fallback: DALL-E
     return _generate_dalle_image(title, article_text, workspace)
+
+
+def _pick_personal_cover() -> str | None:
+    """Pick a personal photo for article cover. Returns resized path or None."""
+    import random
+    import subprocess
+    import tempfile
+
+    _photos_dirs = [
+        Path(__file__).resolve().parent.parent.parent.parent / "photos",  # MtJoy/photos/
+        Path.home() / "Library" / "Mobile Documents"
+        / "com~apple~CloudDocs" / "photos" / "lred",
+    ]
+
+    photos = []
+    for d in _photos_dirs:
+        if not d.exists():
+            continue
+        extensions = {".jpg", ".jpeg", ".png", ".heic", ".tiff"}
+        photos = [p for p in d.iterdir()
+                  if p.suffix.lower() in extensions and p.stat().st_size > 50_000]
+        if photos:
+            break
+
+    if not photos:
+        return None
+
+    pick = random.choice(photos)
+
+    # Resize to Substack cover dimensions (1456px wide)
+    tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    tmp.close()
+    subprocess.run(["sips", "-Z", "1456", str(pick), "--out", tmp.name],
+                   capture_output=True)
+
+    log.info("Personal cover photo: %s", pick.name)
+    return tmp.name
 
 
 def _fetch_unsplash(query: str, workspace: Path) -> str | None:
