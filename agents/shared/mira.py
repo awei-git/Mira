@@ -240,6 +240,10 @@ class Mira:
         task["tags"] = tags
         self._write_task(task)
 
+    def task_exists(self, task_id: str) -> bool:
+        """Check if a task file exists (for dedup when handling follow-ups)."""
+        return (self.tasks_dir / f"{task_id}.json").exists()
+
     def _read_task(self, task_id: str) -> dict | None:
         path = self.tasks_dir / f"{task_id}.json"
         if not path.exists():

@@ -197,8 +197,12 @@ def do_talk():
                     bridge.mark_processed(msg_path)
                 continue
 
-        # If iOS already created a task (thread_id starts with "task_"), reuse it
-        effective_task_id = msg.thread_id if msg.thread_id.startswith("task_") else msg.id
+        # If iOS already created a task file for this thread, reuse it
+        # (thread_id can be "task_xxx" or a hex ID like "a189fed4")
+        if msg.thread_id and bridge.task_exists(msg.thread_id):
+            effective_task_id = msg.thread_id
+        else:
+            effective_task_id = msg.id
 
         # Each message gets its own workspace under Mira/tasks/
         slug = _talk_slug(msg.content, effective_task_id)
@@ -216,7 +220,8 @@ def do_talk():
                 sender=msg.sender,
             )
         else:
-            # iOS already created the task file; just update status
+            # Existing task — append the follow-up message and reopen
+            bridge.append_task_message(effective_task_id, msg.sender, msg.content)
             bridge.update_task_status(effective_task_id, "queued")
 
         # Use the effective task_id for dispatch

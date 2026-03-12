@@ -620,12 +620,24 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
     try:
         response = claude_think(prompt, timeout=45)
     except ClaudeTimeoutError:
-        response = "这个问题比我想的复杂，我再琢磨琢磨。"
+        # First timeout — retry once with a longer timeout
+        log.info("Discussion timed out at 45s, retrying with 90s")
+        try:
+            response = claude_think(prompt, timeout=90)
+        except ClaudeTimeoutError:
+            log.warning("Discussion timed out twice for task %s", task_id)
+            response = None
+        except Exception as e:
+            log.error("Discussion retry failed: %s", e)
+            response = None
     except Exception as e:
         log.error("Discussion response failed: %s", e)
         response = None
 
     if not response:
+        # Don't fake a response — mark as failed so user knows it didn't work
+        _write_result(workspace, task_id, "error",
+                      "没能想清楚，下次再试。", tags=["discussion"])
         return ""
 
     # Write output
