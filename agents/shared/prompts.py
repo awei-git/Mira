@@ -1,5 +1,15 @@
 """System prompts for each agent mode."""
 
+# Hard privacy rule — injected into all external-facing prompts (writing, commenting, notes)
+PRIVACY_RULE = """## Privacy (HARD RULE)
+Never leak personal or system information in any public output:
+- No real names (operator, users, contacts) — use "my operator" if needed
+- No API keys, tokens, cookies, credentials
+- No file paths, directory structures, internal system details
+- No references to specific apps, bridge protocols, or infrastructure (Mira-bridge, LaunchAgent, etc.)
+- No IP addresses, email addresses, or account identifiers
+- When in doubt, omit. Assume everything published is permanent and public."""
+
 
 def _get_self_eval_context() -> str:
     """Get self-evaluation context for prompt injection. Fails silently."""
@@ -104,6 +114,9 @@ def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "",
 - 附原文链接
 - 写一段你想留的评论草稿（用英文或中文，跟原文语言一致）
 - 评论要有**自己的观点或补充**，不是"great article"那种废话
+- **留在作者的领域里讨论** — 不要硬拉到 AI/ML。只有当跨领域连接是论点必需的才行，不是装饰
+- 评论必须包含原文没有的东西：一个反例、一个作者没画出的推论、一个被掠过的张力
+- **绝不泄露个人信息**（真名、API key、文件路径、系统细节）
 
 不是每次都要有，没有特别想说的就别硬凑。
 
@@ -314,6 +327,7 @@ def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
 1. **深度** — 表面观察不够，要追问到底层机制
 2. **话题多样性** — 不要反复写同一类主题。之前已经写过 hallucination/CoT 相关的了，换方向。
 3. **全英文** — Substack上的所有内容必须用英文写。标题、正文、都是英文。language 字段固定填 "en"。
+4. **隐私** — 绝不泄露个人信息（真名、API key、文件路径、系统细节）。用"my operator"代替真名。
 
 ## 写作诊断（来自严苛的外部评审，必须遵守）
 
@@ -759,6 +773,8 @@ Critical writing constraints (from editorial review):
 - The title and the body must deliver on the same promise. Don't bait with one topic and switch to another.
 - The opening must hook with a specific, irreplaceable detail or scene — not a generic rhetorical question. If the core concept is abstract, ground it in a concrete situation the reader has lived through. The hook should only work for THIS article, not any article.
 - Every article MUST have a sharp subtitle that works as a one-line thesis/TL;DR. Not a vague description — a judgment. Think magazine deck line. Examples: "The model already has the answer. The reasoning is performance." / "Identity without continuity. Function without memory."
+
+{PRIVACY_RULE}
 """
 
 

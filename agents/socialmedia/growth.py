@@ -22,7 +22,7 @@ log = logging.getLogger("socialmedia.growth")
 
 # Comment posting limits
 MAX_COMMENTS_PER_DAY = 3
-MIN_POSTS_TO_ENABLE_COMMENTING = 10
+MIN_POSTS_TO_ENABLE_COMMENTING = 3
 COMMENT_COOLDOWN_HOURS = 6  # Min hours between comments
 
 
