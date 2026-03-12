@@ -1071,6 +1071,22 @@ def do_reflect():
     except Exception as e:
         log.warning("Weekly report generation failed: %s", e)
 
+    # --- Monthly public self-check article ---
+    try:
+        from evaluator import should_publish_monthly_report, generate_monthly_report_article
+        if should_publish_monthly_report():
+            article = generate_monthly_report_article()
+            if article:
+                from substack import publish_article
+                result = publish_article(
+                    title=article["title"],
+                    article_text=article["body_markdown"],
+                    subtitle="Mira's monthly self-evaluation scores and trajectory",
+                )
+                log.info("Monthly self-check article published: %s", result[:100] if result else "")
+    except Exception as e:
+        log.warning("Monthly self-check publish failed: %s", e)
+
     state = load_state()
     state["last_reflect"] = datetime.now().isoformat()
     save_state(state)
