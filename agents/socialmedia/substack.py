@@ -1180,3 +1180,103 @@ def fetch_publication_stats() -> dict:
         raise
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Export published articles as Markdown
+# ---------------------------------------------------------------------------
+
+def _html_to_markdown(body_html: str) -> str:
+    """Convert Substack HTML to clean Markdown."""
+    import html as html_mod
+    import re as _re
+
+    text = body_html
+    for i in range(1, 7):
+        text = _re.sub(
+            rf'<h{i}[^>]*>(.*?)</h{i}>',
+            lambda m, lvl=i: '#' * lvl + ' ' + m.group(1).strip(),
+            text, flags=_re.DOTALL,
+        )
+    text = _re.sub(r'<(?:strong|b)>(.*?)</(?:strong|b)>', r'**\1**', text, flags=_re.DOTALL)
+    text = _re.sub(r'<(?:em|i)>(.*?)</(?:em|i)>', r'*\1*', text, flags=_re.DOTALL)
+    text = _re.sub(r'<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>', r'[\2](\1)', text, flags=_re.DOTALL)
+    text = _re.sub(r'<img[^>]*src="([^"]*)"[^>]*/?\s*>', r'![](\1)', text)
+    text = _re.sub(
+        r'<blockquote[^>]*>(.*?)</blockquote>',
+        lambda m: '\n> ' + m.group(1).strip().replace('\n', '\n> '),
+        text, flags=_re.DOTALL,
+    )
+    text = _re.sub(r'<li[^>]*>(.*?)</li>', r'- \1', text, flags=_re.DOTALL)
+    text = _re.sub(r'</?[ou]l[^>]*>', '', text)
+    text = _re.sub(r'<p[^>]*>(.*?)</p>', r'\1\n\n', text, flags=_re.DOTALL)
+    text = _re.sub(r'<br\s*/?>', '\n', text)
+    text = _re.sub(r'<hr[^>]*/?\s*>', '\n---\n', text)
+    text = _re.sub(r'<[^>]+>', '', text)
+    text = html_mod.unescape(text)
+    text = _re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+def export_articles_as_markdown(output_dir: str | Path | None = None) -> list[Path]:
+    """Export all published Substack articles as Markdown files.
+
+    Each file has YAML frontmatter (title, date, url, subtitle, wordcount, cover)
+    followed by the article body in Markdown.
+
+    Returns list of written file paths.
+    """
+    cfg = _get_substack_config()
+    subdomain = cfg.get("subdomain", "")
+    cookie = cfg.get("cookie", "")
+    if not subdomain or not cookie:
+        log.error("Substack not configured")
+        return []
+
+    if output_dir is None:
+        output_dir = Path(__file__).resolve().parent.parent.parent / "artifacts" / "writings" / "_published"
+    else:
+        output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    posts = get_recent_posts(limit=50)
+    written = []
+
+    for post in posts:
+        slug = post["slug"]
+        detail = _fetch_post_detail(slug, subdomain, cookie)
+        if not detail:
+            continue
+
+        title = detail.get("title", slug)
+        body_html = detail.get("body_html", "")
+        post_date = detail.get("post_date", "")[:10]
+        subtitle = detail.get("subtitle", "")
+        cover = detail.get("cover_image", "")
+        wordcount = detail.get("wordcount", 0)
+        url = detail.get("canonical_url",
+                          f"https://{subdomain}.substack.com/p/{slug}")
+
+        md = _html_to_markdown(body_html)
+
+        content = (
+            f'---\n'
+            f'title: "{title}"\n'
+            f'date: {post_date}\n'
+            f'url: {url}\n'
+            f'subtitle: "{subtitle}"\n'
+            f'wordcount: {wordcount}\n'
+            f'cover: {cover}\n'
+            f'---\n\n'
+            f'# {title}\n\n'
+            f'{md}\n'
+        )
+
+        filename = f"{post_date}_{slug}.md"
+        path = output_dir / filename
+        path.write_text(content, encoding="utf-8")
+        written.append(path)
+        log.info("Exported: %s (%d words)", filename, wordcount)
+
+    log.info("Exported %d articles to %s", len(written), output_dir)
+    return written

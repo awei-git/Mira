@@ -613,7 +613,7 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
     try:
         response = claude_think(prompt, timeout=45)
     except ClaudeTimeoutError:
-        response = "想了太久，让我整理一下再说。"
+        response = "这个问题比我想的复杂，我再琢磨琢磨。"
     except Exception as e:
         log.error("Discussion response failed: %s", e)
         response = None
@@ -1308,7 +1308,7 @@ def _handle_article_comment(workspace: Path, task_id: str, thread_id: str,
     try:
         reply = claude_think(prompt, timeout=30)
     except ClaudeTimeoutError:
-        reply = "想了太久，回头再聊。"
+        reply = "脑子转不过来了，等我想想再回你。"
     except Exception as e:
         log.error("Comment reply generation failed: %s", e)
         reply = None

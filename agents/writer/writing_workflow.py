@@ -344,6 +344,29 @@ def _finalize(ws: Path, p: dict) -> str:
     )
     append_memory(f"Writing project '{title}' finalized at v{v}")
     log.info("Project finalized: %s (v%d)", title, v)
+
+    # --- Self-evaluation: score this piece ---
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+        from evaluator import evaluate_writing, record_event
+        # Gather review scores from last round
+        review_scores = []
+        reviews_dir = ws / "versions" / f"v{v}" / "reviews"
+        if reviews_dir.exists():
+            for rf in sorted(reviews_dir.glob("round_*.json"), reverse=True)[:1]:
+                try:
+                    rd = json.loads(rf.read_text(encoding="utf-8"))
+                    review_scores = [float(s) for s in rd.get("scores", []) if s]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+        w_scores = evaluate_writing(review_scores, final_text[:4000],
+                                     {"title": title, "version": v})
+        if w_scores:
+            record_event("publish", w_scores, {"title": title})
+    except Exception as e:
+        import logging
+        logging.getLogger("writing").warning("Writing self-evaluation failed: %s", e)
+
     return "done"
 
 
