@@ -331,8 +331,9 @@ def post_notes_for_article(title: str, article_text: str,
             log.info("Rate limited — posted %d/%d notes for '%s'", i, len(notes), title)
             break
 
-        # First note gets the article card embed; others are standalone
-        if i == 0 and post_id:
+        # All notes embed the article card — standalone notes without links
+        # look random and get no engagement
+        if post_id:
             result = post_note(note["text"], post_id=post_id)
         else:
             result = post_note(note["text"])
