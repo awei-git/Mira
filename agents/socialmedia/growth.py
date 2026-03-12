@@ -344,6 +344,126 @@ def discover_and_follow() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Like / react to posts on recommended publications
+# ---------------------------------------------------------------------------
+
+# Map of recommended publication subdomains (correct API subdomains)
+# Publications with custom domains that block cross-domain reactions are excluded
+LIKEABLE_SUBDOMAINS = [
+    "simonw",              # Simon Willison
+    "stratechery",         # Stratechery (Ben Thompson)
+    "paulgraham",          # Paul Graham
+    "thezvi",              # Zvi Mowshowitz
+    "mattlevine",          # Matt Levine
+    "cognitiverevolution", # Nathan Lebenz
+    "nathanlambert",       # Interconnects (Nathan Lambert)
+    "gwern",               # Gwern
+    # Custom domains — reactions don't register via API:
+    # oneusefulthing (oneusefulthing.org), lenny (lennysnewsletter.com),
+    # astralcodexten (astralcodexten.com), dwarkesh (dwarkesh.com),
+    # constructionphysics (construction-physics.com)
+]
+
+MAX_LIKES_PER_CYCLE = 5
+LIKE_COOLDOWN_HOURS = 12
+
+
+def _like_post(post_id: int, cookie: str) -> bool:
+    """Like a single post via Substack reaction API."""
+    import requests as _req
+    try:
+        r = _req.post(
+            f"https://substack.com/api/v1/post/{post_id}/reaction",
+            cookies={"substack.sid": cookie},
+            json={"reaction": "\u2764"},
+            timeout=10,
+        )
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def run_like_cycle():
+    """Like recent posts from recommended publications.
+
+    Picks a random subset of publications, likes their latest post
+    if not already liked. Respects rate limits.
+    """
+    import random
+    import time
+    import requests as _req
+
+    from substack import _get_substack_config
+
+    state = _load_state()
+
+    # Cooldown check
+    last_like = state.get("last_like_at", "")
+    if last_like:
+        try:
+            last_dt = datetime.fromisoformat(last_like)
+            if datetime.now() - last_dt < timedelta(hours=LIKE_COOLDOWN_HOURS):
+                log.info("Like cycle: cooldown active (last: %s)", last_like)
+                return
+        except ValueError:
+            pass
+
+    cfg = _get_substack_config()
+    cookie = cfg.get("cookie", "")
+    if not cookie:
+        return
+
+    liked_ids = set(state.get("liked_post_ids", []))
+
+    # Shuffle and pick a subset
+    subs = list(LIKEABLE_SUBDOMAINS)
+    random.shuffle(subs)
+
+    liked_count = 0
+    for sub in subs:
+        if liked_count >= MAX_LIKES_PER_CYCLE:
+            break
+        try:
+            r = _req.get(
+                f"https://{sub}.substack.com/api/v1/posts?limit=2",
+                timeout=10,
+            )
+            if r.status_code != 200:
+                continue
+            posts = r.json()
+            for post in posts:
+                if liked_count >= MAX_LIKES_PER_CYCLE:
+                    break
+                post_id = post["id"]
+                if post_id in liked_ids:
+                    continue
+                if _like_post(post_id, cookie):
+                    # Verify
+                    slug = post.get("slug", "")
+                    r2 = _req.get(
+                        f"https://{sub}.substack.com/api/v1/posts/{slug}",
+                        cookies={"substack.sid": cookie},
+                        timeout=10,
+                    )
+                    if r2.status_code == 200 and r2.json().get("reaction"):
+                        liked_ids.add(post_id)
+                        liked_count += 1
+                        log.info("Liked: %s — %s", sub, post["title"][:60])
+                time.sleep(1.5)
+        except Exception as e:
+            log.warning("Like cycle error on %s: %s", sub, e)
+
+    if liked_count > 0:
+        state["last_like_at"] = datetime.now().isoformat()
+        # Keep last 500 liked IDs
+        state["liked_post_ids"] = list(liked_ids)[-500:]
+        today = datetime.now().strftime("%Y-%m-%d")
+        state[f"likes_{today}"] = state.get(f"likes_{today}", 0) + liked_count
+        _save_state(state)
+        log.info("Like cycle: liked %d posts", liked_count)
+
+
+# ---------------------------------------------------------------------------
 # Growth cycle — called from core.py on schedule
 # ---------------------------------------------------------------------------
 
@@ -380,6 +500,12 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None,
         log.info("Skipping comment cycle — need %d more posts",
                  MIN_POSTS_TO_ENABLE_COMMENTING - post_count)
         return
+
+    # Like recent posts from recommended publications
+    try:
+        run_like_cycle()
+    except Exception as e:
+        log.error("Like cycle failed: %s", e)
 
     # Auto-discover and follow new publications
     if should_discover():
