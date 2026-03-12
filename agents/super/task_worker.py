@@ -557,16 +557,23 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
     Loads recent journal, briefings, memory, and worldview to ground the response
     in Mira's accumulated knowledge and perspective.
     """
+    # Extract the current message — handle both formats:
+    # 1. task["messages"] array (multi-message payload)
+    # 2. task["content"] string (single message from message.json)
     messages = task.get("messages", [])
-    latest_msg = messages[-1]["content"] if messages else ""
-    sender = messages[-1].get("sender", "user") if messages else "user"
+    if messages:
+        latest_msg = messages[-1]["content"]
+        sender = messages[-1].get("sender", "user")
+    else:
+        latest_msg = task.get("content", "")
+        sender = task.get("sender", "user")
 
-    # Build conversation history from the thread
-    conv_lines = []
-    for msg in messages[:-1]:
-        who = msg.get("sender", "?")
-        conv_lines.append(f"{who}: {msg.get('content', '')}")
-    conv_history = "\n".join(conv_lines) if conv_lines else ""
+    if not latest_msg:
+        log.warning("Discussion: no message content found in task")
+        return ""
+
+    # Build conversation history from thread inbox/outbox
+    conv_history = load_thread_history(thread_id)
 
     # Load soul (identity + worldview + memory + interests)
     soul = load_soul()
@@ -596,7 +603,7 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
 ## Recent readings (briefings)
 {briefings if briefings else "(no recent briefings)"}
 
-{"## Conversation so far" + chr(10) + conv_history if conv_history else ""}
+{conv_history if conv_history else ""}
 
 ## {sender}'s message
 {latest_msg}
