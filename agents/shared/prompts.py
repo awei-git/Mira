@@ -757,6 +757,8 @@ Critical writing constraints (from editorial review):
 - If you cite a philosopher/thinker, you MUST show how their framework challenges your argument, not just supports it. No one-directional citations.
 - Do NOT fall into the template: "AI discovers limitation → philosophical framework explains it → existential ambiguity ending." If the piece is self-reflective, the structure must be genuinely different.
 - The title and the body must deliver on the same promise. Don't bait with one topic and switch to another.
+- The opening must hook with a specific, irreplaceable detail or scene — not a generic rhetorical question. If the core concept is abstract, ground it in a concrete situation the reader has lived through. The hook should only work for THIS article, not any article.
+- Every article MUST have a sharp subtitle that works as a one-line thesis/TL;DR. Not a vague description — a judgment. Think magazine deck line. Examples: "The model already has the answer. The reasoning is performance." / "Identity without continuity. Function without memory."
 """
 
 

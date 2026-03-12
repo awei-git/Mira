@@ -950,3 +950,125 @@ def generate_weekly_report() -> str | None:
         lines.append(assessment.strip())
 
     return "\n".join(lines)
+
+
+def should_publish_monthly_report() -> bool:
+    """Check if it's time to publish a monthly self-check article.
+
+    Publishes on the last day of each month (or close to it).
+    Tracks last published month in scores.json meta.
+    """
+    today = date.today()
+    # Only publish on 28th or later
+    if today.day < 28:
+        return False
+
+    data = load_scores()
+    last_month = data.get("meta", {}).get("last_monthly_report", "")
+    current_month = today.strftime("%Y-%m")
+    return last_month != current_month
+
+
+def generate_monthly_report_article() -> dict | None:
+    """Generate a monthly self-check article for Substack.
+
+    Returns dict with {title, body_markdown} or None if not enough data.
+    Marks the month as published in scores.json.
+    """
+    data = load_scores()
+    current = data.get("current", {})
+    if len(current) < 5:
+        return None
+
+    agg = compute_aggregates()
+    if not agg:
+        return None
+
+    overall = sum(agg.values()) / len(agg)
+    targets = get_improvement_targets(5)
+    strongest = get_strongest(5)
+
+    today = date.today()
+    month_name = today.strftime("%B %Y")
+
+    # Build the scores section
+    score_lines = []
+    for dim in sorted(agg.keys()):
+        bar = "█" * int(agg[dim]) + "░" * (10 - int(agg[dim]))
+        score_lines.append(f"| {dim:18s} | {bar} | {agg[dim]:.1f} |")
+
+    scores_table = "\n".join(score_lines)
+
+    weak_list = "\n".join(
+        f"- **{t['dimension']}** ({t['score']:.1f}/10): {t.get('suggestion', '')}"
+        for t in targets
+    ) if targets else "None identified."
+
+    strong_list = "\n".join(
+        f"- **{s['dimension']}** ({s['score']:.1f}/10)"
+        for s in strongest
+    ) if strongest else "None identified."
+
+    # History trend
+    history = data.get("history", [])
+    trend_section = ""
+    if len(history) >= 7:
+        first_week = history[:7]
+        last_week = history[-7:]
+        first_avg = sum(
+            sum(d.get("scores", {}).values()) / max(len(d.get("scores", {})), 1)
+            for d in first_week
+        ) / len(first_week)
+        last_avg = sum(
+            sum(d.get("scores", {}).values()) / max(len(d.get("scores", {})), 1)
+            for d in last_week
+        ) / len(last_week)
+        delta = last_avg - first_avg
+        if abs(delta) > 0.1:
+            direction = "up" if delta > 0 else "down"
+            trend_section = f"\n\nOverall trend this month: **{direction}** ({delta:+.1f} points)\n"
+
+    # Predictions
+    predictions = data.get("predictions", [])
+    pred_section = ""
+    resolved = [p for p in predictions if p.get("resolved")]
+    if resolved:
+        correct = sum(1 for p in resolved if p.get("correct"))
+        pred_section = f"\n\n## Predictions\n\n{correct}/{len(resolved)} predictions resolved correctly this month.\n"
+
+    body = f"""## Overall: {overall:.1f}/10
+{trend_section}
+## Scores by Dimension
+
+| Dimension | Visual | Score |
+|---|---|---|
+{scores_table}
+
+## Strongest Areas
+
+{strong_list}
+
+## Weakest Areas (and what I'm doing about them)
+
+{weak_list}
+{pred_section}
+## What I learned this month
+
+This section is written after reviewing my journal entries, task outcomes, and reading notes from {month_name}. The scores above are computed automatically from my actual behavior — task success rates, reading diversity, writing quality reviews, and structured self-reflection.
+
+The numbers don't lie, but they also don't explain. The real question is always whether the trajectory is right, not whether the snapshot looks good.
+
+---
+
+*This is Mira's monthly self-evaluation report. The scoring system tracks 14 dimensions across ~40 sub-metrics, updated continuously via exponential moving average. For methodology details, see the first report in this series.*
+"""
+
+    title = f"Monthly Self-Check: {month_name}"
+
+    # Mark as published
+    if "meta" not in data:
+        data["meta"] = {}
+    data["meta"]["last_monthly_report"] = today.strftime("%Y-%m")
+    save_scores(data)
+
+    return {"title": title, "body_markdown": body}
