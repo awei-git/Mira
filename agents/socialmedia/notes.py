@@ -4,8 +4,8 @@ Notes are Substack's Twitter-like feed. They support:
 - Plain text and rich text (bold, italic, links)
 - Link attachments (article URLs rendered as cards)
 
-Post cover images display automatically when a link is attached — no need to
-attach images separately.
+Post cover images display when a post_id is included via the "postIds" field
+in the API body — this renders the article as a card with cover image.
 
 API endpoint: POST https://{subdomain}.substack.com/api/v1/comment/feed
 Body format: ProseMirror JSON in bodyJson field.
@@ -19,7 +19,7 @@ from pathlib import Path
 log = logging.getLogger("socialmedia.notes")
 
 # Rate limits — spread throughout the day, don't dump all at once
-MAX_NOTES_PER_DAY = 3          # Quality over quantity; 1-3/day is sustainable
+MAX_NOTES_PER_DAY = 5          # Quality over quantity; keep it sustainable
 NOTE_MIN_INTERVAL_MINUTES = 120  # 2hr gap between notes for organic spread
 
 
@@ -119,15 +119,15 @@ def _text_to_prosemirror(text: str) -> list[dict]:
 # Core Note posting
 # ---------------------------------------------------------------------------
 
-def post_note(text: str, link_url: str | None = None) -> dict | None:
+def post_note(text: str, link_url: str | None = None,
+              post_id: int | None = None) -> dict | None:
     """Post a Substack Note with optional link attachment.
-
-    When a link_url to an article is included, the post's cover image
-    displays automatically — no separate image attachment needed.
 
     Args:
         text: Note content. Supports **bold** and [text](url) formatting.
         link_url: Optional URL to attach as a link card below the note.
+        post_id: Optional Substack post ID. When provided, the post is
+                 embedded as a card with cover image (restack-style).
 
     Returns:
         API response dict with note ID, or None on failure.
@@ -146,9 +146,8 @@ def post_note(text: str, link_url: str | None = None) -> dict | None:
     # Build ProseMirror content
     paragraphs = _text_to_prosemirror(text)
 
-    # If link_url provided, add it as an inline link at the end
-    # (Substack renders URLs in notes as rich link cards automatically)
-    if link_url and link_url not in text:
+    # If no post_id but have a link, add as inline link (no image card)
+    if not post_id and link_url and link_url not in text:
         paragraphs.append(_paragraph([
             _text_node(link_url, [_link_mark(link_url)])
         ]))
@@ -160,6 +159,10 @@ def post_note(text: str, link_url: str | None = None) -> dict | None:
         "tabId": "for-you",
         "replyMinimumRole": "everyone",
     }
+
+    # Embed Substack post as a card with cover image
+    if post_id:
+        body["postIds"] = [post_id]
 
     payload = json.dumps(body).encode("utf-8")
 
@@ -237,64 +240,127 @@ def can_post_note() -> bool:
 # Article-linked Notes
 # ---------------------------------------------------------------------------
 
-def generate_note_for_article(title: str, article_text: str,
-                              post_url: str) -> str | None:
-    """Use Claude to generate a compelling Note that promotes an article.
+def generate_notes_for_article(title: str, article_text: str,
+                               post_url: str) -> list[dict]:
+    """Generate 3 types of Notes for an article.
 
-    Returns the Note text (with link), or None on failure.
+    Each article gets split into 3 note types for better reach:
+    1. judgment — one hard statement/claim from the article
+    2. excerpt — 2-4 sentence passage that stands alone
+    3. question — a genuine question the article raises
+
+    Returns list of {type, text} dicts (up to 3). Empty list on failure.
     """
     from sub_agent import claude_think
 
-    prompt = f"""Write a Substack Note — 1 to 3 sentences ONLY. 15-40 words max. Think tweet, not paragraph.
+    prompt = f"""Read this article and generate 3 Substack Notes, each a different type.
+Write in English. No hashtags, emojis, or "check out my post" energy.
 
-It will be paired with a photo, so the text should complement an image — punchy, evocative, incomplete.
+TYPE 1 — JUDGMENT: One hard claim or assertion from the article. A single sentence that takes a position.
+Example: "Narration can interfere with reasoning."
+Example: "Most AI safety work optimizes for the wrong failure mode."
 
-Good examples:
-- "Built a lie detector for AI. Became the first false positive."
-- "The model already knows the answer before it starts thinking. The thinking is narration."
-- "Your agent isn't broken. It's optimizing for your approval."
+TYPE 2 — EXCERPT: A 2-4 sentence passage extracted or distilled from the article that works as a standalone thought. Should be compelling enough that someone wants to read more.
+Example: "Someone copied a fruit fly brain into a computer — all 125,000 neurons — and the digital fly just started walking around on its own. Nobody taught it. Makes you wonder how much of what we call behavior is just structure finding its way."
 
-Bad: anything over 3 sentences. Anything that reads like a summary or explanation.
+TYPE 3 — QUESTION: A genuine question the article raises. Not rhetorical — something worth actually thinking about.
+Example: "If identity is a function and not a variable, where exactly does continuity live?"
+Example: "What happens when an AI's narration of its own reasoning becomes indistinguishable from the reasoning itself?"
 
-Do NOT summarize the article. No hashtags, emojis, "check out", or questions as openers.
-Write in English.
-
-Article (use as mood, not source to summarize):
+Article:
 Title: {title}
-{article_text[:800]}
+{article_text[:2000]}
 
-Output ONLY the Note text (1-3 sentences). No URL."""
+Output exactly this format (3 lines, nothing else):
+JUDGMENT: <text>
+EXCERPT: <text>
+QUESTION: <text>"""
 
-    result = claude_think(prompt, timeout=30)
+    result = claude_think(prompt, timeout=45)
     if not result:
-        return None
-    return result.strip().strip('"')
+        return []
+
+    notes = []
+    for line in result.strip().split("\n"):
+        line = line.strip()
+        for prefix, note_type in [("JUDGMENT:", "judgment"), ("EXCERPT:", "excerpt"),
+                                   ("QUESTION:", "question")]:
+            if line.upper().startswith(prefix.upper()):
+                text = line[len(prefix):].strip().strip('"')
+                if text:
+                    notes.append({"type": note_type, "text": text})
+                break
+    return notes
+
+
+def generate_note_for_article(title: str, article_text: str,
+                              post_url: str) -> str | None:
+    """Legacy single-note generation. Returns first note text or None."""
+    notes = generate_notes_for_article(title, article_text, post_url)
+    return notes[0]["text"] if notes else None
+
+
+def post_notes_for_article(title: str, article_text: str,
+                           post_url: str,
+                           post_id: int | None = None) -> list[dict]:
+    """Generate and post 3 Notes (judgment, excerpt, question) for an article.
+
+    The first note (judgment) embeds the article card via post_id.
+    The other two are standalone — no link, just the thought.
+
+    Returns list of API response dicts for successfully posted notes.
+    """
+    import time
+
+    # Check how many notes for this article already posted
+    state = _load_state()
+    existing = [n for n in state.get("history", [])
+                if n.get("link") == post_url or n.get("article_title") == title]
+    if len(existing) >= 3:
+        log.info("Already posted 3 notes for '%s' — skipping", title)
+        return []
+
+    notes = generate_notes_for_article(title, article_text, post_url)
+    if not notes:
+        log.error("Failed to generate Notes for: %s", title)
+        return []
+
+    results = []
+    for i, note in enumerate(notes):
+        if not can_post_note():
+            log.info("Rate limited — posted %d/%d notes for '%s'", i, len(notes), title)
+            break
+
+        # First note gets the article card embed; others are standalone
+        if i == 0 and post_id:
+            result = post_note(note["text"], post_id=post_id)
+        else:
+            result = post_note(note["text"])
+
+        if result:
+            # Also record the article title for dedup
+            state = _load_state()
+            history = state.get("history", [])
+            if history:
+                history[-1]["article_title"] = title
+                history[-1]["note_type"] = note["type"]
+                _save_state(state)
+            results.append(result)
+            log.info("Posted %s note for '%s': %s", note["type"], title, note["text"][:80])
+            if i < len(notes) - 1:
+                time.sleep(30)  # small gap between notes
+        else:
+            log.warning("Failed to post %s note for '%s'", note["type"], title)
+
+    return results
 
 
 def post_note_for_article(title: str, article_text: str,
-                          post_url: str) -> dict | None:
-    """Generate and post a Note promoting an article.
-
-    Returns the API response dict, or None on failure.
-    """
-    if not can_post_note():
-        log.info("Skipping article Note — rate limited")
-        return None
-
-    # Check if we already posted a Note for this URL
-    state = _load_state()
-    posted_urls = {n.get("link") for n in state.get("history", []) if n.get("link")}
-    if post_url in posted_urls:
-        log.info("Already posted Note for %s — skipping", post_url)
-        return None
-
-    note_text = generate_note_for_article(title, article_text, post_url)
-    if not note_text:
-        log.error("Failed to generate Note text for: %s", title)
-        return None
-
-    log.info("Generated Note for '%s': %s", title, note_text[:100])
-    return post_note(note_text, link_url=post_url)
+                          post_url: str,
+                          post_id: int | None = None) -> dict | None:
+    """Legacy: post a single Note for an article. Now posts all 3 types."""
+    results = post_notes_for_article(title, article_text, post_url, post_id)
+    return results[0] if results else None
 
 
 # ---------------------------------------------------------------------------
@@ -302,15 +368,14 @@ def post_note_for_article(title: str, article_text: str,
 # ---------------------------------------------------------------------------
 
 def backfill_notes_for_articles(dry_run: bool = False) -> list[dict]:
-    """Create Notes for past articles that don't have Notes yet.
+    """Create 3 Notes (judgment, excerpt, question) for each article missing them.
 
     Args:
         dry_run: If True, generate texts but don't post.
 
-    Returns list of {title, note_text, post_url, posted: bool}.
+    Returns list of {title, notes: [{type, text}], post_url, posted: int}.
     """
     from substack import get_recent_posts, _get_substack_config
-    import urllib.request
     import time
 
     cfg = _get_substack_config()
@@ -319,9 +384,16 @@ def backfill_notes_for_articles(dry_run: bool = False) -> list[dict]:
     if not subdomain or not cookie:
         return []
 
-    # Load state to check which articles already have Notes
+    # Check which articles already have notes (by title or URL)
     state = _load_state()
-    posted_urls = {n.get("link") for n in state.get("history", []) if n.get("link")}
+    history = state.get("history", [])
+    covered_titles = set()
+    covered_urls = set()
+    for n in history:
+        if n.get("article_title"):
+            covered_titles.add(n["article_title"])
+        if n.get("link"):
+            covered_urls.add(n["link"])
 
     posts = get_recent_posts(limit=30)
     if not posts:
@@ -330,44 +402,47 @@ def backfill_notes_for_articles(dry_run: bool = False) -> list[dict]:
     results = []
 
     for post in posts:
+        title = post["title"]
         post_url = f"https://{subdomain}.substack.com/p/{post['slug']}"
-        if post_url in posted_urls:
-            log.info("Note exists for '%s' — skip", post["title"])
+
+        # Skip if already has notes (by title or URL)
+        if title in covered_titles or post_url in covered_urls:
+            log.info("Notes exist for '%s' — skip", title)
             continue
 
-        # Fetch the article text for context (use slug, not id)
         article_text = _fetch_article_text(post["slug"], subdomain, cookie)
         if not article_text:
-            article_text = post.get("title", "")
+            article_text = title
 
-        note_text = generate_note_for_article(
-            post["title"], article_text, post_url
-        )
-        if not note_text:
+        notes = generate_notes_for_article(title, article_text, post_url)
+        if not notes:
             continue
 
         entry = {
-            "title": post["title"],
-            "note_text": note_text,
+            "title": title,
+            "notes": notes,
             "post_url": post_url,
-            "posted": False,
+            "posted": 0,
         }
 
-        if not dry_run and can_post_note():
-            result = post_note(note_text, link_url=post_url)
-            if result:
-                entry["posted"] = True
-                entry["note_id"] = result.get("id")
-                log.info("Backfill Note posted for '%s'", post["title"])
-                # Rate limit: wait between posts
-                time.sleep(60)
-            else:
-                log.warning("Backfill Note failed for '%s'", post["title"])
+        if not dry_run:
+            posted = post_notes_for_article(
+                title, article_text, post_url, post_id=post.get("id")
+            )
+            entry["posted"] = len(posted)
+            if posted:
+                log.info("Backfill: posted %d notes for '%s'", len(posted), title)
+                time.sleep(30)
         elif dry_run:
-            log.info("[DRY RUN] Would post Note for '%s': %s",
-                     post["title"], note_text[:80])
+            for n in notes:
+                log.info("[DRY RUN] %s note for '%s': %s",
+                         n["type"], title, n["text"][:80])
 
         results.append(entry)
+
+        # Don't overwhelm — one article per cycle
+        if not dry_run and entry["posted"] > 0:
+            break
 
     return results
 
@@ -443,15 +518,16 @@ def generate_standalone_note(briefing_text: str = "",
     if not briefing_text:
         return None
 
-    prompt = f"""Write a Substack Note — 1 to 3 sentences ONLY. 15-40 words max. Think tweet, not paragraph.
+    prompt = f"""Write a Substack Note — 1 to 3 sentences. Think casual observation you'd share with a friend, not a profound statement.
 
 {f"Your voice: {soul_context[:300]}" if soul_context else ""}
 
-It will be paired with a photo. Text should be punchy, evocative, and leave room for interpretation.
+Tone: natural, curious, approachable. Like something caught your eye and you want to share the thought.
+Save deep insights and grand conclusions for full posts — Notes should feel lighter and more human.
 
-Good: "Built a lie detector for AI. Became the first false positive."
-Good: "Your agent isn't broken. It's optimizing for your approval."
-Bad: anything longer than 3 sentences. Anything that summarizes or explains.
+Good: "Been reading about how ants solve the traveling salesman problem. Turns out they're better at it than most algorithms I've tried."
+Good: "There's something oddly comforting about code that's been running untouched for 15 years."
+Bad: grand pronouncements, trying-to-sound-deep aphorisms, mini-essays.
 
 Do NOT summarize what you read. No hashtags, emojis, rhetorical questions, or "hot take" energy.
 Write in English. If nothing genuinely strikes you, output exactly "SKIP".
@@ -518,15 +594,7 @@ def run_notes_cycle(briefing_text: str = "",
     except Exception as e:
         log.error("Notes backfill failed: %s", e)
 
-    # 2. Post a standalone Note if we still have quota
-    if can_post_note():
-        try:
-            result = post_standalone_note(briefing_text, soul_context)
-            if result:
-                summary["standalone_posted"] = True
-                log.info("Notes cycle: posted standalone Note")
-        except Exception as e:
-            log.error("Standalone Note failed: %s", e)
+    # Standalone notes disabled — Notes strategy is article-only (3 types per article)
 
     return summary
 

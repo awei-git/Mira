@@ -40,6 +40,17 @@ def format_soul(soul: dict) -> str:
     if soul["skills"]:
         parts.append("\n\n# My Skills\n")
         parts.append(soul["skills"])
+
+    # Self-evaluation scorecard (if available)
+    try:
+        from evaluator import format_scorecard
+        card = format_scorecard()
+        if card:
+            parts.append("\n\n# My Self-Evaluation Scores\n")
+            parts.append(card)
+    except Exception:
+        pass
+
     return "".join(parts)
 
 

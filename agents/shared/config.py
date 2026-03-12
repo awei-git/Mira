@@ -122,6 +122,9 @@ READING_NOTES_DIR = SOUL_DIR / "reading_notes"
 SKILLS_DIR = SOUL_DIR / "learned"
 SKILLS_INDEX = SKILLS_DIR / "index.json"
 
+# Self-evaluation scores
+SCORES_FILE = SOUL_DIR / "scores.json"
+
 # State tracking
 STATE_FILE = MIRA_ROOT / ".agent_state.json"
 NOTES_SYNC_STATE = INBOX_DIR / ".sync.json"

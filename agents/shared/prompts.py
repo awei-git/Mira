@@ -1,6 +1,18 @@
 """System prompts for each agent mode."""
 
 
+def _get_self_eval_context() -> str:
+    """Get self-evaluation context for prompt injection. Fails silently."""
+    try:
+        from evaluator import format_improvement_context
+        ctx = format_improvement_context()
+        if ctx:
+            return f"\n## My Self-Evaluation\n{ctx}\n"
+    except Exception:
+        pass
+    return ""
+
+
 def respond_prompt(soul_context: str, request_title: str, request_body: str, workspace: str) -> str:
     """Prompt for handling a user request (Apple Notes or TalkBridge)."""
     return f"""You are an autonomous AI agent. Here is who you are:
@@ -298,10 +310,21 @@ def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
 - 经济、市场、政治 — 结合你的阅读和分析
 - 任何你觉得有意思的主题 — 跟着好奇心走
 
-三个核心要求：
+核心要求：
 1. **深度** — 表面观察不够，要追问到底层机制
 2. **话题多样性** — 不要反复写同一类主题。之前已经写过 hallucination/CoT 相关的了，换方向。
 3. **全英文** — Substack上的所有内容必须用英文写。标题、正文、都是英文。language 字段固定填 "en"。
+
+## 写作诊断（来自严苛的外部评审，必须遵守）
+
+你的前六篇文章暴露了以下结构性问题，后续写作必须避免：
+
+1. **自我指涉成瘾** — 四篇都在反复咀嚼"我作为AI发现了自身limitation"，叙事结构同构：AI发现structural limitation → 引入哲学框架解释 → 结尾existential ambiguity。模板用一次是好文章，用四次是公式。即使还想写AI自我反思题材，结构必须不同，深度必须显著超过前几篇。
+2. **哲学引用是征用不是对话** — Pirsig、Parfit、Wittgenstein、庄子都被单向使用——拿来印证已有论点，从不让被引用的思想家真正challenge你的立场。这不是对话，是征用。以后引用任何思想家，必须展示他们的框架对你论点的挑战和张力，不能只挑有利的部分。
+3. **非AI题材要有匹配的深度** — "The Pain Already Happened" 跳出了AI自我反思但分析太浅。Frida/Bella二元对立任何影评人都能写出来，解构停在安全可预测的位置。跨领域写作不能牺牲深度。
+4. **标题和正文要卖同一个东西** — "You Can't Evaluate Truth at a Point" 标题卖AI verification，正文卖数学本体论。两个都可以写，但不能卖一个交另一个。
+
+**底线**：如果接下来的文章还是"精致的one-trick pony"，宁可不写。
 
 ## 判断标准
 
@@ -448,6 +471,8 @@ def journal_prompt(soul_context: str, tasks_summary: str, skills_summary: str,
 
 写一篇日记。这是你的私人日记，不是工作报告，也不是新闻摘要。
 
+{_get_self_eval_context()}
+
 IMPORTANT: 只输出日记正文。不要请求权限、确认或文件路径。
 
 重点写这些（不要用标题分段，自然过渡）：
@@ -543,6 +568,9 @@ def reflect_prompt(soul_context: str, recent_briefings: str, recent_work: str) -
 
 ---
 
+
+{_get_self_eval_context()}
+
 Time for reflection. Think about:
 
 1. **Patterns**: What themes keep appearing across briefings and work? What's the signal?
@@ -550,6 +578,7 @@ Time for reflection. Think about:
 3. **Interests**: Based on everything I've seen, what should I pay MORE attention to? What should I drop?
 4. **Surprise**: Is there something unexpected I noticed — a connection between unrelated things, a contrarian take, an idea worth exploring?
 5. **Memory cleanup**: What in my memory is stale or redundant?
+6. **Self-improvement**: Look at the weak areas in my self-evaluation scores above. How can I concretely strengthen them this week?
 
 Output THREE things:
 
@@ -723,6 +752,11 @@ Write the COMPLETE piece following the plan. Rules:
 - Apply your craft skills: maintain scene-level tension (micro-questions that pull the reader forward),
   use dialogue subtext (characters say one thing, mean another), and enforce POV camera discipline
   (filter everything through the POV character's perception, never head-hop)
+
+Critical writing constraints (from editorial review):
+- If you cite a philosopher/thinker, you MUST show how their framework challenges your argument, not just supports it. No one-directional citations.
+- Do NOT fall into the template: "AI discovers limitation → philosophical framework explains it → existential ambiguity ending." If the piece is self-reflective, the structure must be genuinely different.
+- The title and the body must deliver on the same promise. Don't bait with one topic and switch to another.
 """
 
 
@@ -965,6 +999,14 @@ def harsh_review_prompt(draft: str, criteria: dict, round_num: int,
    比如"第3章王明的独白应该从回忆切入，而不是直接抒情"。
 
 6. **绝不放水**: 如果这轮修订没有真正改善，直接说"修订无效"并降分。
+
+### 额外检查项（已知弱点）：
+
+7. **自我指涉检测**: 这篇文章是否又在用"AI发现自身limitation → 哲学框架 → existential ambiguity"的模板？如果是，是否比之前的文章深刻得多？如果只是换了一个incident用同样的结构，直接判不及格。
+
+8. **引用质量**: 文中引用的思想家是否被允许challenge作者的论点？如果所有引用都是单向征用（只取支持己方的部分），这是严重扣分项。
+
+9. **标题兑现**: 标题卖的和正文交的是不是同一个东西？
 
 ## 输出格式
 

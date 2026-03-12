@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "current": {
+    "personality.voice_consistency": 7.5,
+    "personality.opinion_strength": 6.0,
+    "personality.emotional_range": 6.5,
+    "thinking.insight_depth": 7.0,
+    "thinking.cross_domain": 6.1,
+    "curiosity.question_frequency": 6.0,
+    "honesty.uncertainty_expression": 8.0,
+    "honesty.intellectual_humility": 7.5,
+    "taste.noise_filtering": 6.77,
+    "humor.wit": 5.0,
+    "interests.reading_volume": 3.43,
+    "interests.topic_diversity": 7.2,
+    "openness.surprise_seeking": 7.38,
+    "curiosity.rabbit_hole_depth": 5.91,
+    "taste.source_quality": 7.71,
+    "implementation.task_success_rate": 10.0,
+    "implementation.hallucination_rate": 10.0,
+    "reliability.promise_keeping": 8.0,
+    "reliability.uptime": 9.0
+  },
+  "history": [
+    {
+      "date": "2026-03-11",
+      "scores": {
+        "personality.voice_consistency": 7.5,
+        "personality.opinion_strength": 6.0,
+        "personality.emotional_range": 6.5,
+        "thinking.insight_depth": 7.0,
+        "thinking.cross_domain": 6.1,
+        "curiosity.question_frequency": 6.0,
+        "honesty.uncertainty_expression": 8.0,
+        "honesty.intellectual_humility": 7.5,
+        "taste.noise_filtering": 6.77,
+        "humor.wit": 5.0,
+        "interests.reading_volume": 3.43,
+        "interests.topic_diversity": 7.2,
+        "openness.surprise_seeking": 7.38,
+        "curiosity.rabbit_hole_depth": 5.91,
+        "taste.source_quality": 7.71,
+        "implementation.task_success_rate": 10.0,
+        "implementation.hallucination_rate": 10.0,
+        "reliability.promise_keeping": 8.0,
+        "reliability.uptime": 9.0
+      },
+      "events": [
+        {
+          "type": "journal",
+          "time": "17:27",
+          "scores": {
+            "personality.voice_consistency": 7.5,
+            "personality.opinion_strength": 6.0,
+            "personality.emotional_range": 6.5,
+            "thinking.insight_depth": 7.0,
+            "thinking.cross_domain": 5.5,
+            "curiosity.question_frequency": 6.0,
+            "honesty.uncertainty_expression": 8.0,
+            "honesty.intellectual_humility": 7.5,
+            "taste.noise_filtering": 6.5,
+            "humor.wit": 5.0
+          }
+        },
+        {
+          "type": "explore",
+          "time": "17:27",
+          "scores": {
+            "interests.reading_volume": 7.0,
+            "interests.topic_diversity": 6.0,
+            "openness.surprise_seeking": 5.5,
+            "curiosity.rabbit_hole_depth": 7.0,
+            "taste.source_quality": 7.5
+          }
+        },
+        {
+          "type": "task_complete",
+          "time": "17:27",
+          "scores": {
+            "implementation.task_success_rate": 10.0,
+            "implementation.hallucination_rate": 10.0,
+            "reliability.promise_keeping": 8.0,
+            "reliability.uptime": 9.0
+          }
+        },
+        {
+          "type": "explore",
+          "time": "18:43",
+          "scores": {
+            "interests.reading_volume": 0.0,
+            "interests.topic_diversity": 6.0,
+            "openness.surprise_seeking": 8.0,
+            "curiosity.rabbit_hole_depth": 2.1
+          },
+          "meta": {
+            "sources": ""
+          }
+        },
+        {
+          "type": "explore",
+          "time": "20:16",
+          "scores": {
+            "interests.reading_volume": 0.0,
+            "interests.topic_diversity": 10.0,
+            "openness.surprise_seeking": 10.0,
+            "curiosity.rabbit_hole_depth": 6.8,
+            "taste.source_quality": 8.2,
+            "taste.noise_filtering": 7.4,
+            "thinking.cross_domain": 7.5
+          },
+          "meta": {
+            "sources": ""
+          }
+        }
+      ]
+    }
+  ],
+  "predictions": [],
+  "skill_usage": {},
+  "meta": {
+    "last_evaluated": "2026-03-11T20:16:14.478090",
+    "total_evaluations": 5,
+    "rubric_version": 1
+  }
+}

@@ -136,6 +136,20 @@ def do_talk():
             bridge.update_task_status(rec.task_id, "failed", agent_message=error_msg)
             log.warning("Mira [%s] task %s: %s", rec.task_id, rec.status, rec.summary)
 
+    # --- Self-evaluation: score completed tasks ---
+    for rec in completed:
+        try:
+            from evaluator import evaluate_task_outcome, record_event
+            t_scores = evaluate_task_outcome({
+                "status": rec.status,
+                "summary": rec.summary or "",
+                "workspace": rec.workspace or "",
+            })
+            if t_scores:
+                record_event("task_complete", t_scores, {"task_id": rec.task_id})
+        except Exception:
+            pass
+
     # --- Phase B: Dispatch new messages to background workers ---
     messages = bridge.poll()
     if not messages:
@@ -585,6 +599,15 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
         except Exception as e:
             log.error("Growth cycle failed: %s", e)
 
+    # --- Self-evaluation: score this explore ---
+    try:
+        from evaluator import evaluate_explore, record_event
+        e_scores = evaluate_explore(briefing, source_names=source_names)
+        if e_scores:
+            record_event("explore", e_scores, {"sources": src_label if 'src_label' in dir() else ""})
+    except Exception as e:
+        log.warning("Explore self-evaluation failed: %s", e)
+
     src_label = ",".join(source_names) if source_names else "all"
     append_memory(f"Explored {len(items)} items ({src_label}), wrote briefing {today}")
 
@@ -1006,12 +1029,47 @@ def do_reflect():
                 output[:2000],
             )
 
+    # --- Self-evaluation: score this reflection ---
+    try:
+        from evaluator import evaluate_reflect, record_event, compute_growth_velocity
+        old_wv = current_wv if 'current_wv' in dir() else ""
+        new_wv = new_worldview if 'new_worldview' in dir() else ""
+        old_int = soul.get("interests", "")
+        new_int = interests_section or old_int
+        r_scores = evaluate_reflect(old_wv, new_wv, old_int, new_int,
+                                     reflect_output=result)
+        # Also compute growth velocity during reflect
+        r_scores.update(compute_growth_velocity())
+        if r_scores:
+            record_event("reflect", r_scores)
+    except Exception as e:
+        log.warning("Reflect self-evaluation failed: %s", e)
+
     # Rebuild memory index after consolidation
     try:
         from soul_manager import rebuild_memory_index
         rebuild_memory_index()
     except Exception as e:
         log.warning("Memory index rebuild after reflect failed: %s", e)
+
+    # --- Weekly self-evaluation report to WA ---
+    try:
+        from evaluator import generate_weekly_report
+        report = generate_weekly_report()
+        if report:
+            bridge = Mira(MIRA_DIR)
+            bridge.post(report, sender="agent")
+            bridge.create_task(
+                task_id=f"weekly_eval_{datetime.now().strftime('%Y%m%d')}",
+                title="Weekly self-evaluation",
+                first_message=report,
+                sender="agent",
+                origin="auto",
+                tags=["evaluation"],
+            )
+            log.info("Weekly self-evaluation report sent")
+    except Exception as e:
+        log.warning("Weekly report generation failed: %s", e)
 
     state = load_state()
     state["last_reflect"] = datetime.now().isoformat()
@@ -1112,6 +1170,21 @@ def do_journal():
 
     # Update memory
     append_memory(f"Wrote daily journal for {today}")
+
+    # --- Self-evaluation: score this journal ---
+    try:
+        from evaluator import evaluate_journal, record_event
+        recent = []
+        for p in sorted(JOURNAL_DIR.glob("*.md"))[-7:]:
+            try:
+                recent.append(p.read_text(encoding="utf-8")[:2000])
+            except OSError:
+                pass
+        j_scores = evaluate_journal(journal_text, recent)
+        if j_scores:
+            record_event("journal", j_scores, {"date": today})
+    except Exception as e:
+        log.warning("Journal self-evaluation failed: %s", e)
 
     # --- Autonomous writing check: does Mira have something to say? ---
     try:
