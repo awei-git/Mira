@@ -126,7 +126,7 @@ Return JSON with:
 Example: {{"platform": "substack", "source": "自由意志", "title": "On Free Will", "subtitle": ""}}
 Example: {{"platform": "substack_note", "source": "", "title": "", "subtitle": ""}}"""
 
-    result = claude_think(prompt, timeout=30)
+    result = claude_think(prompt, timeout=30, tier="light")
     if not result:
         return None
 

@@ -3,7 +3,7 @@ import SwiftUI
 struct ThreadListView: View {
     @Bindable var bridge: BridgeService
     @Environment(\.dismiss) private var dismiss
-    @State private var expandedSections: Set<String> = []
+    @State private var showOlder = false
 
     var body: some View {
         NavigationStack {
@@ -39,36 +39,40 @@ struct ThreadListView: View {
 
                     Divider().padding(.horizontal)
 
-                    // Threads grouped by date
-                    ForEach(groupedSections, id: \.dateLabel) { section in
-                        if section.collapsible {
-                            DisclosureGroup(
-                                isExpanded: Binding(
-                                    get: { expandedSections.contains(section.dateLabel) },
-                                    set: { if $0 { expandedSections.insert(section.dateLabel) } else { expandedSections.remove(section.dateLabel) } }
-                                )
-                            ) {
-                                threadList(section.threads)
-                            } label: {
-                                HStack {
-                                    Text(section.dateLabel)
-                                        .font(.subheadline.bold())
-                                    Text("(\(section.threads.count))")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
+                    // Today
+                    if !todayThreads.isEmpty {
+                        sectionHeader("今天")
+                        threadList(todayThreads)
+                    }
+
+                    // Yesterday
+                    if !yesterdayThreads.isEmpty {
+                        sectionHeader("昨天")
+                        threadList(yesterdayThreads)
+                    }
+
+                    // Older — collapsed by default
+                    if !olderThreads.isEmpty {
+                        Button {
+                            withAnimation { showOlder.toggle() }
+                        } label: {
+                            HStack {
+                                Image(systemName: showOlder ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 14)
+                                Text("更早")
+                                    .font(.subheadline.bold())
+                                    .foregroundStyle(.primary)
+                                Text("(\(olderThreads.count))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
                             }
                             .padding(.horizontal)
-                        } else {
-                            // 今天/昨天: always expanded
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text(section.dateLabel)
-                                    .font(.subheadline.bold())
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal)
-                                    .padding(.bottom, 4)
-                                threadList(section.threads)
-                            }
+                        }
+                        if showOlder {
+                            threadList(olderThreads)
                         }
                     }
                 }
@@ -84,6 +88,19 @@ struct ThreadListView: View {
             }
         }
     }
+
+    // MARK: - Section header
+
+    @ViewBuilder
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.subheadline.bold())
+            .foregroundStyle(.secondary)
+            .padding(.horizontal)
+            .padding(.bottom, -4)
+    }
+
+    // MARK: - Thread list
 
     @ViewBuilder
     private func threadList(_ threads: [DiscoveredThread]) -> some View {
@@ -110,20 +127,18 @@ struct ThreadListView: View {
         let messageCount: Int
         let lastMessage: String
         let lastDate: Date
-        let isActive: Bool
-    }
-
-    struct DateSection {
         let dateLabel: String
-        let threads: [DiscoveredThread]
-        let collapsible: Bool
+        let isActive: Bool
     }
 
     // MARK: - Thread discovery
 
-    private var groupedSections: [DateSection] {
+    private var allThreads: [DiscoveredThread] {
         let cal = Calendar.current
         let now = Date()
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "zh_CN")
+        df.dateFormat = "M月d日"
 
         var threadMap: [String: [TBMessage]] = [:]
         for msg in bridge.messages {
@@ -143,12 +158,18 @@ struct ThreadListView: View {
             let task = bridge.tasks.first { $0.id == tid }
             let title = threadTitle(threadId: tid, task: task, messages: sorted)
 
-            // Compact: skip one-off done tasks with ≤2 messages
             if let task, task.status == "done", msgs.count <= 2 {
                 continue
             }
 
-            let isActive = task?.isActive ?? false
+            let dateLabel: String
+            if cal.isDateInToday(last.date) {
+                dateLabel = "今天"
+            } else if cal.isDateInYesterday(last.date) {
+                dateLabel = "昨天"
+            } else {
+                dateLabel = df.string(from: last.date)
+            }
 
             discovered.append(DiscoveredThread(
                 threadId: tid,
@@ -156,42 +177,25 @@ struct ThreadListView: View {
                 messageCount: msgs.count,
                 lastMessage: last.content,
                 lastDate: last.date,
-                isActive: isActive
+                dateLabel: dateLabel,
+                isActive: task?.isActive ?? false
             ))
         }
 
         discovered.sort { $0.lastDate > $1.lastDate }
+        return discovered
+    }
 
-        let df = DateFormatter()
-        df.locale = Locale(identifier: "zh_CN")
+    private var todayThreads: [DiscoveredThread] {
+        allThreads.filter { $0.dateLabel == "今天" }
+    }
 
-        var sections: [String: [DiscoveredThread]] = [:]
-        var sectionOrder: [String] = []
+    private var yesterdayThreads: [DiscoveredThread] {
+        allThreads.filter { $0.dateLabel == "昨天" }
+    }
 
-        for thread in discovered {
-            let label: String
-            if cal.isDateInToday(thread.lastDate) {
-                label = "今天"
-            } else if cal.isDateInYesterday(thread.lastDate) {
-                label = "昨天"
-            } else {
-                df.dateFormat = "M月d日"
-                label = df.string(from: thread.lastDate)
-            }
-
-            if sections[label] == nil {
-                sectionOrder.append(label)
-            }
-            sections[label, default: []].append(thread)
-        }
-
-        return sectionOrder.map { label in
-            DateSection(
-                dateLabel: label,
-                threads: sections[label] ?? [],
-                collapsible: label != "今天" && label != "昨天"
-            )
-        }
+    private var olderThreads: [DiscoveredThread] {
+        allThreads.filter { $0.dateLabel != "今天" && $0.dateLabel != "昨天" }
     }
 
     private func threadTitle(threadId: String, task: MiraTask?, messages: [TBMessage]) -> String {
@@ -231,10 +235,17 @@ struct ThreadListView: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
-                Text(thread.lastMessage)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if thread.dateLabel != "今天" {
+                        Text(thread.dateLabel)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                    Text(thread.lastMessage)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {

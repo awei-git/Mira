@@ -1,0 +1,50 @@
+[
+  {
+    "name": "Systematic Debugging",
+    "description": "Bisect the problem space systematically — reproduce, hypothesize, bisect, repeat — instead of guessing.",
+    "file": "systematic-debugging.md",
+    "tags": ["coding", "debugging", "workflow"]
+  },
+  {
+    "name": "Incremental Development",
+    "description": "Build and ship the smallest working increment, then iterate — avoid big-bang rewrites.",
+    "file": "incremental-development.md",
+    "tags": ["coding", "workflow", "architecture"]
+  },
+  {
+    "name": "Defensive Interface Design",
+    "description": "Design APIs and interfaces to make misuse hard and correct use obvious.",
+    "file": "defensive-interface-design.md",
+    "tags": ["coding", "api", "design", "architecture"]
+  },
+  {
+    "name": "Test-Driven Red-Green-Refactor",
+    "description": "Write a failing test first, make it pass with minimal code, then refactor — every production line is justified by a test.",
+    "file": "test-driven-red-green-refactor.md",
+    "tags": ["coding", "testing", "tdd", "workflow", "quality"]
+  },
+  {
+    "name": "Contract-First API Design",
+    "description": "Define the full API contract as an OpenAPI spec before any implementation so producers and consumers build in parallel.",
+    "file": "contract-first-api-design.md",
+    "tags": ["coding", "api", "design", "architecture", "openapi"]
+  },
+  {
+    "name": "Measure Before Optimize",
+    "description": "Profile first to locate the actual bottleneck — never optimize by intuition or assumption.",
+    "file": "measure-before-optimize.md",
+    "tags": ["coding", "performance", "profiling", "optimization"]
+  },
+  {
+    "name": "Security Threat Modeling",
+    "description": "Apply STRIDE to enumerate trust boundaries and attack surfaces at design time, then encode mitigations as tests.",
+    "file": "security-threat-modeling.md",
+    "tags": ["coding", "security", "threat-modeling", "owasp", "architecture"]
+  },
+  {
+    "name": "Checklist-Driven Code Review",
+    "description": "Review in layered order — tests, architecture, correctness, security, performance, style — at 200–400 lines per hour.",
+    "file": "checklist-driven-code-review.md",
+    "tags": ["coding", "code-review", "quality", "collaboration"]
+  }
+]

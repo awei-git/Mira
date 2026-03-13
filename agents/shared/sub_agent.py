@@ -15,7 +15,7 @@ from pathlib import Path
 
 from config import (
     CLAUDE_BIN, CLAUDE_TIMEOUT_THINK, CLAUDE_TIMEOUT_ACT,
-    SECRETS_FILE, MODELS, WRITING_MODELS, DEFAULT_MODEL,
+    SECRETS_FILE, MODELS, WRITING_MODELS, DEFAULT_MODEL, CLAUDE_FALLBACK_MODEL,
 )
 
 log = logging.getLogger("mira")
@@ -102,15 +102,69 @@ class ClaudeTimeoutError(Exception):
     pass
 
 
-def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK) -> str:
+# Substrings in Claude CLI stderr that indicate quota/rate-limit exhaustion.
+_QUOTA_SIGNALS = (
+    "rate limit",
+    "quota",
+    "usage limit",
+    "too many requests",
+    "credit",
+    "overloaded",
+    "capacity",
+)
+
+
+def _is_quota_error(stderr: str) -> bool:
+    """Return True if Claude CLI stderr indicates a quota or rate-limit error."""
+    lower = stderr.lower()
+    return any(sig in lower for sig in _QUOTA_SIGNALS)
+
+
+# Tier → Claude model ID mapping.
+# "light" uses Sonnet (fast, cheap), "heavy" uses Opus (best quality).
+_CLAUDE_MODELS = {
+    "light": "claude-sonnet-4-6",
+    "heavy": "claude-opus-4-6",
+}
+
+# Tier → OpenAI reasoning_effort mapping (for GPT-5.4 and o-series).
+_OPENAI_EFFORT = {
+    "light": "medium",
+    "heavy": "high",
+}
+
+
+def _fallback_think(prompt: str, timeout: int, tier: str = "light") -> str:
+    """Call the configured fallback model (default: gpt-5.4) with the same prompt."""
+    fallback = CLAUDE_FALLBACK_MODEL
+    cfg = MODELS.get(fallback)
+    if not cfg:
+        log.error("Fallback model '%s' not in MODELS registry", fallback)
+        return ""
+    effort = _OPENAI_EFFORT.get(tier, "medium")
+    log.warning("Claude quota hit — falling back to %s/%s (effort=%s)",
+                cfg["provider"], cfg["model_id"], effort)
+    return _api_call(cfg["provider"], cfg["model_id"], prompt,
+                     timeout=timeout, reasoning_effort=effort)
+
+
+def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK,
+                 tier: str = "light") -> str:
     """Call Claude CLI for thinking — no tools, just reasoning.
+
+    Args:
+        tier: "light" → Sonnet (fast), "heavy" → Opus (best quality).
+              On OpenAI fallback maps to reasoning_effort medium/high.
 
     Raises ClaudeTimeoutError on timeout so callers can distinguish
     timeout from a genuine empty response.
+    On quota/rate-limit errors, automatically falls back to CLAUDE_FALLBACK_MODEL.
     """
+    model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
     try:
         result = subprocess.run(
-            [CLAUDE_BIN, "-p", prompt, "--setting-sources", "user"],
+            [CLAUDE_BIN, "-p", prompt, "--setting-sources", "user",
+             "--model", model_id],
             capture_output=True, text=True, timeout=timeout,
             cwd="/tmp",
         )
@@ -119,23 +173,34 @@ def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK) -> str:
         raise ClaudeTimeoutError(f"claude_think timed out after {timeout}s")
     except FileNotFoundError:
         log.error("Claude CLI not found at %s", CLAUDE_BIN)
-        return ""
+        return _fallback_think(prompt, timeout, tier)
 
     if result.returncode != 0:
         log.error("claude_think failed (exit %d): %s", result.returncode, result.stderr[:300])
+        if _is_quota_error(result.stderr):
+            return _fallback_think(prompt, timeout, tier)
         return ""
 
     return result.stdout.strip()
 
 
-def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT) -> str:
+def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT,
+               tier: str = "light") -> str:
     """Call Claude CLI with tool access — can read/write files, run commands.
+
+    Args:
+        tier: "light" → Sonnet, "heavy" → Opus.
+              On OpenAI fallback maps to reasoning_effort medium/high (thinking only).
 
     Raises ClaudeTimeoutError on timeout so callers can distinguish
     timeout from a genuine empty response.
+    On quota/rate-limit errors, falls back to CLAUDE_FALLBACK_MODEL (thinking only,
+    no tool access — caller receives text output without file operations).
     """
+    model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
     cmd = [
         CLAUDE_BIN, "-p", prompt,
+        "--model", model_id,
         "--allowedTools",
         "Bash(command:*),Read,Write,Edit,Glob,Grep,WebFetch(url:*)",
     ]
@@ -151,10 +216,13 @@ def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT)
         raise ClaudeTimeoutError(f"claude_act timed out after {timeout}s")
     except FileNotFoundError:
         log.error("Claude CLI not found at %s", CLAUDE_BIN)
-        return ""
+        return _fallback_think(prompt, timeout, tier)
 
     if result.returncode != 0:
         log.error("claude_act failed (exit %d): %s", result.returncode, result.stderr[:300])
+        if _is_quota_error(result.stderr):
+            log.warning("claude_act quota hit — falling back to thinking-only mode")
+            return _fallback_think(prompt, timeout, tier)
         return ""
 
     return result.stdout.strip()
@@ -221,7 +289,8 @@ def _gemini_call(model_id: str, prompt: str,
 
 
 def _api_call(provider: str, model_id: str, prompt: str,
-              system: str = "", timeout: int = 120) -> str:
+              system: str = "", timeout: int = 120,
+              reasoning_effort: str = "") -> str:
     """Call OpenAI-compatible chat completion API (OpenAI, DeepSeek)."""
     if provider == "gemini":
         return _gemini_call(model_id, prompt, system, timeout)
@@ -245,6 +314,8 @@ def _api_call(provider: str, model_id: str, prompt: str,
     payload = {"model": model_id, "messages": messages}
     if provider == "openai":
         payload["max_completion_tokens"] = 32768
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
     elif provider == "deepseek":
         payload["max_tokens"] = 8192
         payload["temperature"] = 0.8

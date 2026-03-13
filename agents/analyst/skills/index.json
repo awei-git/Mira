@@ -1,0 +1,56 @@
+[
+  {
+    "name": "Competitive Landscape Mapping",
+    "description": "Systematically map the competitive structure of a market using Porter's Five Forces and strategic group analysis.",
+    "file": "competitive-landscape-mapping.md",
+    "tags": ["analyst", "strategy", "competitive-intelligence", "research"]
+  },
+  {
+    "name": "Quantitative Reasoning",
+    "description": "Apply numeracy and statistical thinking to evaluate claims, size markets, and build back-of-envelope models.",
+    "file": "quantitative-reasoning.md",
+    "tags": ["analyst", "quantitative", "statistics", "modeling"]
+  },
+  {
+    "name": "Synthesis and Recommendation",
+    "description": "Distill research across multiple sources into a clear, defensible recommendation with explicit reasoning.",
+    "file": "synthesis-and-recommendation.md",
+    "tags": ["analyst", "synthesis", "recommendation", "communication"]
+  },
+  {
+    "name": "Trend Signal Detection",
+    "description": "Identify and distinguish genuine structural trends from noise and cyclical fluctuations in market and technology data.",
+    "file": "trend-signal-detection.md",
+    "tags": ["analyst", "trends", "research", "forecasting"]
+  },
+  {
+    "name": "Scenario Analysis Modeling",
+    "description": "Build structured base/bull/bear scenario models that quantify a range of outcomes rather than committing to a single point forecast.",
+    "file": "scenario-analysis-modeling.md",
+    "tags": ["analyst", "finance", "modeling", "forecasting", "risk"]
+  },
+  {
+    "name": "Intrinsic Valuation (DCF)",
+    "description": "Estimate fundamental value from future cash flows using DCF, cross-checked with relative multiples, triangulated to a range.",
+    "file": "intrinsic-valuation.md",
+    "tags": ["analyst", "finance", "valuation", "dcf", "equity"]
+  },
+  {
+    "name": "Macro Regime Mapping",
+    "description": "Situate any investment thesis within the current macroeconomic regime to understand which assets and sectors are structurally favored.",
+    "file": "macro-regime-mapping.md",
+    "tags": ["analyst", "macro", "investing", "regime", "asset-allocation"]
+  },
+  {
+    "name": "Earnings Quality Forensics",
+    "description": "Assess whether reported earnings reflect economic reality or accounting choices using accrual decomposition and Beneish M-Score screening.",
+    "file": "earnings-quality-forensics.md",
+    "tags": ["analyst", "accounting", "forensics", "earnings", "due-diligence"]
+  },
+  {
+    "name": "Risk Surface Stress Testing",
+    "description": "Systematically stress a thesis or portfolio against tail scenarios to identify hidden concentrations and underpriced risks.",
+    "file": "risk-surface-stress-testing.md",
+    "tags": ["analyst", "risk", "stress-testing", "portfolio", "tail-risk"]
+  }
+]

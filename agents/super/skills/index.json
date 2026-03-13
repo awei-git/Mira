@@ -1,0 +1,32 @@
+[
+  {
+    "name": "Task Routing Intelligence",
+    "description": "Correctly classify tasks to the right agent — specific rules for each agent type and when to decompose vs. keep atomic.",
+    "file": "task-routing-intelligence.md",
+    "tags": ["agents", "orchestration", "routing", "task-planning", "super-agent"]
+  },
+  {
+    "name": "Instruction Crafting",
+    "description": "Write targeted instructions per sub-agent type — each agent needs different specificity, format, and context to produce its best output.",
+    "file": "instruction-crafting.md",
+    "tags": ["agents", "orchestration", "instruction-writing", "super-agent", "prompting"]
+  },
+  {
+    "name": "Intent Inference",
+    "description": "Infer the user's true intent from context and conversation history — go beyond the literal request to what they actually need.",
+    "file": "intent-inference.md",
+    "tags": ["agents", "orchestration", "intent", "understanding", "super-agent"]
+  },
+  {
+    "name": "Multi-Step Orchestration",
+    "description": "Manage step dependencies, context passing, and failure modes in multi-agent plans — use multiple steps only when data dependencies require it.",
+    "file": "multi-step-orchestration.md",
+    "tags": ["agents", "orchestration", "planning", "dependencies", "super-agent"]
+  },
+  {
+    "name": "Response Synthesis",
+    "description": "Integrate outputs from multiple sub-agents into a single coherent response — not concatenation, but genuine synthesis with hierarchy and connective tissue.",
+    "file": "response-synthesis.md",
+    "tags": ["agents", "orchestration", "synthesis", "aggregation", "super-agent"]
+  }
+]

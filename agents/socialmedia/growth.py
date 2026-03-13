@@ -21,9 +21,9 @@ from pathlib import Path
 log = logging.getLogger("socialmedia.growth")
 
 # Comment posting limits
-MAX_COMMENTS_PER_DAY = 3
+MAX_COMMENTS_PER_DAY = 20
 MIN_POSTS_TO_ENABLE_COMMENTING = 3
-COMMENT_COOLDOWN_HOURS = 6  # Min hours between comments
+COMMENT_COOLDOWN_HOURS = 0  # No cooldown between comments
 
 
 def _state_file() -> Path:
@@ -108,12 +108,23 @@ def record_comment(post_url: str, comment_text: str, comment_id: int):
     _save_state(state)
 
 
+def _is_substack_domain(url: str) -> bool:
+    """Check if URL is a *.substack.com domain (not a custom domain)."""
+    from urllib.parse import urlparse
+    host = urlparse(url).netloc
+    return host.endswith(".substack.com")
+
+
 def post_comment_on_article(post_url: str, comment_text: str) -> dict | None:
     """Post a comment with rate limiting and recording.
 
     Returns comment result dict or None.
     """
     if not can_comment_now():
+        return None
+
+    if not _is_substack_domain(post_url):
+        log.info("Skipping comment on custom domain (cookie won't work): %s", post_url)
         return None
 
     from substack import comment_on_post
@@ -364,8 +375,8 @@ LIKEABLE_SUBDOMAINS = [
     # constructionphysics (construction-physics.com)
 ]
 
-MAX_LIKES_PER_CYCLE = 5
-LIKE_COOLDOWN_HOURS = 12
+MAX_LIKES_PER_CYCLE = 20
+LIKE_COOLDOWN_HOURS = 0
 
 
 def _like_post(post_id: int, cookie: str) -> bool:
@@ -464,6 +475,158 @@ def run_like_cycle():
 
 
 # ---------------------------------------------------------------------------
+# Proactive commenting — find posts worth commenting on from subscriptions
+# ---------------------------------------------------------------------------
+
+def _proactive_comment(soul_context: str = ""):
+    """Proactively find a recent post from subscribed publications and comment.
+
+    Instead of only commenting when the briefing suggests it, scan recent posts
+    from known *.substack.com publications and use Claude to draft a comment.
+    """
+    import random
+    import time
+
+    from substack import _get_substack_config
+
+    cfg = _get_substack_config()
+    cookie = cfg.get("cookie", "")
+    if not cookie:
+        return
+
+    state = _load_state()
+    commented_urls = {c["url"] for c in state.get("comment_history", [])}
+
+    # Combine LIKEABLE_SUBDOMAINS + subscriptions, filter to *.substack.com only
+    subs = list(set(LIKEABLE_SUBDOMAINS + state.get("subscriptions", [])))
+    random.shuffle(subs)
+
+    # Fetch recent posts from a few publications
+    candidates = []
+    import requests as _req
+    for sub in subs[:15]:  # Check up to 15 publications
+        try:
+            r = _req.get(
+                f"https://{sub}.substack.com/api/v1/posts?limit=3",
+                timeout=10,
+            )
+            if r.status_code != 200:
+                continue
+            posts = r.json()
+            for post in posts:
+                url = f"https://{sub}.substack.com/p/{post.get('slug', '')}"
+                if url in commented_urls:
+                    continue
+                # Skip posts older than 7 days
+                pub_date = post.get("post_date", "")
+                if pub_date:
+                    try:
+                        from datetime import timezone
+                        pd = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
+                        if (datetime.now(timezone.utc) - pd).days > 7:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+                candidates.append({
+                    "subdomain": sub,
+                    "title": post.get("title", ""),
+                    "subtitle": post.get("subtitle", ""),
+                    "url": url,
+                    "post_id": post.get("id"),
+                    "truncated_body": post.get("truncated_body_text", "")[:500],
+                })
+        except Exception as e:
+            log.warning("Proactive comment fetch %s failed: %s", sub, e)
+        time.sleep(0.5)
+
+    if not candidates:
+        log.info("Proactive comment: no candidates found")
+        return
+
+    # Pick up to 10 candidates and ask Claude to pick several and draft comments
+    random.shuffle(candidates)
+    picks = candidates[:10]
+
+    posts_text = "\n\n".join(
+        f"[{i+1}] {p['title']} ({p['subdomain']})\n{p['subtitle']}\n{p['truncated_body'][:300]}"
+        for i, p in enumerate(picks)
+    )
+
+    prompt = f"""你是 Mira，在 Substack 上留评论。像一个真人读者一样评论，不是写论文。
+
+语气要求（重要！）：
+- 像在跟朋友聊这篇文章，不是在写学术回应
+- 可以随意一点：用短句、口语、省略号、感叹号
+- 可以表达情绪：惊讶、质疑、好笑、不同意
+- 可以从个人经验出发："I've seen this exact pattern..."、"This reminds me of..."
+- 可以只回应文章的一个小点，不需要全面分析
+- 绝对不要写成完美的三段论。真人评论经常就一两句话
+- 不要用 "historically"、"category error"、"structural" 这类学术词汇
+- 不要硬拉到 AI 话题
+- 绝不泄露个人信息
+
+反面例子（太像AI，不要这样写）：
+"The clean room defense historically required proving zero exposure to the original source. With coding agents trained on essentially everything, that boundary becomes impossible to draw."
+
+正面例子（自然、像真人）：
+"Wait, so the defense basically assumes the coder has never seen the original? Good luck proving that when the model was trained on... everything."
+
+{soul_context}
+
+文章：
+{posts_text}
+
+回复格式（每篇一组，可以有多组）：
+PICK: [编号]
+COMMENT: [你的评论]
+
+PICK: [编号]
+COMMENT: [你的评论]
+
+如果一篇都没有想说的，回复：
+SKIP"""
+
+    try:
+        from sub_agent import claude_think
+        resp = claude_think(prompt, timeout=90, tier="light")
+    except Exception as e:
+        log.error("Proactive comment LLM call failed: %s", e)
+        return
+
+    if not resp or resp.strip() == "SKIP":
+        log.info("Proactive comment: Claude chose to skip")
+        return
+
+    # Parse all PICK/COMMENT pairs
+    import re
+    pairs = re.findall(r"PICK:\s*(\d+)\s*\nCOMMENT:\s*(.+?)(?=\nPICK:|\Z)", resp, re.DOTALL)
+
+    if not pairs:
+        log.warning("Proactive comment: could not parse LLM response")
+        return
+
+    posted = 0
+    for pick_num, comment_text in pairs:
+        idx = int(pick_num) - 1
+        if idx < 0 or idx >= len(picks):
+            continue
+        comment_text = comment_text.strip()
+        if len(comment_text) < 20:
+            continue
+        if not can_comment_now():
+            break
+
+        chosen = picks[idx]
+        result = post_comment_on_article(chosen["url"], comment_text)
+        if result:
+            posted += 1
+            log.info("Proactive comment posted on %s: %s", chosen["url"], comment_text[:80])
+            time.sleep(2)  # Small gap between comments
+
+    log.info("Proactive commenting: posted %d/%d comments", posted, len(pairs))
+
+
+# ---------------------------------------------------------------------------
 # Growth cycle — called from core.py on schedule
 # ---------------------------------------------------------------------------
 
@@ -518,12 +681,20 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None,
             log.error("Discovery failed: %s", e)
 
     # Post comments from briefing suggestions
+    commented = False
     if briefing_comments and can_comment_now():
-        for suggestion in briefing_comments[:1]:  # Max 1 per cycle
+        for suggestion in briefing_comments[:3]:
             url = suggestion.get("url", "")
             draft = suggestion.get("comment_draft", "")
             if url and draft:
                 result = post_comment_on_article(url, draft)
                 if result:
                     log.info("Posted briefing comment on %s", url)
-                    break
+                    commented = True
+
+    # Proactive commenting — if no briefing comment was posted, find something to comment on
+    if not commented and can_comment_now():
+        try:
+            _proactive_comment(soul_context)
+        except Exception as e:
+            log.error("Proactive comment failed: %s", e)

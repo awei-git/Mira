@@ -1,0 +1,44 @@
+[
+  {
+    "name": "Commenting Craft",
+    "description": "Write comments that add genuine value, spark conversation, and build your presence without self-promotion.",
+    "file": "commenting-craft.md",
+    "tags": ["writing", "substack", "engagement", "community"]
+  },
+  {
+    "name": "Substack Growth Playbook",
+    "description": "Systematic strategies for growing a Substack newsletter from zero to a loyal subscriber base.",
+    "file": "substack-growth-playbook.md",
+    "tags": ["substack", "growth", "newsletter", "audience"]
+  },
+  {
+    "name": "Hook: First Line",
+    "description": "Open every newsletter with a single sentence that forces the reader to continue — curiosity, tension, or a violated assumption.",
+    "file": "hook-first-line.md",
+    "tags": ["writing", "substack", "newsletter", "hooks", "engagement"]
+  },
+  {
+    "name": "Subject Line Science",
+    "description": "Engineer email subject lines using behavioral triggers that maximize open rates — treat it as a conversion problem, not a labeling problem.",
+    "file": "subject-line-science.md",
+    "tags": ["newsletter", "email", "substack", "open-rate", "growth"]
+  },
+  {
+    "name": "Writer Network Flywheel",
+    "description": "Build a compounding growth loop through strategic Substack recommendations and reciprocal collaborations.",
+    "file": "writer-network-flywheel.md",
+    "tags": ["substack", "growth", "collaboration", "recommendations", "networking"]
+  },
+  {
+    "name": "One-to-Many Content Repurposing",
+    "description": "Extract maximum reach from each newsletter by decomposing it into native-format content for Twitter/X and LinkedIn.",
+    "file": "one-to-many-repurposing.md",
+    "tags": ["substack", "writing", "social-media", "repurposing", "distribution"]
+  },
+  {
+    "name": "Subscriber Retention Ladder",
+    "description": "Prevent churn with a tiered re-engagement system — the right intervention at each stage from onboarding to win-back.",
+    "file": "subscriber-retention-ladder.md",
+    "tags": ["newsletter", "substack", "retention", "churn", "engagement"]
+  }
+]

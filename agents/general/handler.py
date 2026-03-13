@@ -35,7 +35,7 @@ def handle(workspace: Path, task_id: str, content: str,
     )
 
     log.info("Calling claude_act for task %s", task_id)
-    result = claude_act(prompt, cwd=workspace)
+    result = claude_act(prompt, cwd=workspace, tier="light")
 
     if result:
         (workspace / "output.md").write_text(result, encoding="utf-8")

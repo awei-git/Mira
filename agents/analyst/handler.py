@@ -91,7 +91,7 @@ Answer in the same language as the question.
 If the briefing doesn't cover this topic, start your answer with [GAP] and still try your best to answer.
 """
 
-    result = claude_think(prompt, timeout=60)
+    result = claude_think(prompt, timeout=60, tier="heavy")
 
     if result:
         # Detect gap — log feedback for Tetra to improve next run

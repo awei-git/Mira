@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct MiraApp: App {
     @State private var bridge = BridgeService()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -10,6 +11,11 @@ struct MiraApp: App {
                 MainTabView(bridge: bridge)
             } else {
                 SetupView(bridge: bridge)
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                bridge.refresh()
             }
         }
     }

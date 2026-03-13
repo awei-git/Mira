@@ -156,6 +156,13 @@ def do_talk():
         log.info("Mira: no new messages (active tasks: %d)", task_mgr.get_active_count())
         return
 
+    # External input arrived — partial-reset emptiness (external takes priority)
+    try:
+        from emptiness import on_external_input
+        on_external_input()
+    except ImportError:
+        pass
+
     for msg, msg_path in messages:
         # Skip if already dispatched (e.g. from a previous cycle)
         if task_mgr.is_dispatched(msg.id):
@@ -927,7 +934,7 @@ def do_analyst(slot: str = ""):
 - 标题用 "# {today} {session_type} 市场分析"
 """
 
-    result = claude_think(prompt, timeout=300)
+    result = claude_think(prompt, timeout=300, tier="heavy")
 
     if not result:
         log.error("Analyst briefing failed: empty response")
@@ -975,7 +982,7 @@ def do_reflect():
     recent_work = soul["memory"]  # memory already has work log
 
     prompt = reflect_prompt(soul_ctx, recent_briefings, recent_work)
-    result = claude_think(prompt, timeout=300)
+    result = claude_think(prompt, timeout=300, tier="heavy")
 
     if not result:
         log.error("Reflect: Claude returned empty")
@@ -1000,7 +1007,7 @@ def do_reflect():
         from config import WORLDVIEW_FILE
         current_wv = WORLDVIEW_FILE.read_text(encoding="utf-8") if WORLDVIEW_FILE.exists() else ""
         wv_prompt = worldview_evolution_prompt(soul_ctx, current_wv, recent_reading, recent_work)
-        new_worldview = claude_think(wv_prompt, timeout=120)
+        new_worldview = claude_think(wv_prompt, timeout=120, tier="heavy")
         if new_worldview and len(new_worldview) > 100:
             update_worldview(new_worldview)
             log.info("Worldview evolved from reflection")
@@ -1024,7 +1031,7 @@ def do_reflect():
             f"Now execute it. Your workspace is: {project_dir}\n"
             f"Save your output there. Write a summary.txt when done."
         )
-        output = claude_act(self_prompt, cwd=project_dir)
+        output = claude_act(self_prompt, cwd=project_dir, tier="heavy")
         if output:
             (project_dir / "output.md").write_text(output, encoding="utf-8")
             append_memory(f"Completed self-initiated project: {project_slug}")
@@ -1420,6 +1427,148 @@ def do_spark_check():
     log.info("Spark sent to WA: %s", thought[:80])
 
 
+# ---------------------------------------------------------------------------
+# IDLE-THINK mode — threshold-driven self-awakening
+# ---------------------------------------------------------------------------
+
+def should_idle_think() -> bool:
+    """Returns True if emptiness has crossed the threshold and agent is idle.
+
+    The emptiness value accumulates over time when Mira is idle. More pending
+    questions = faster accumulation. When it exceeds the threshold, Mira
+    self-awakens to think through the top-priority question.
+
+    External input bypasses this entirely (handled in do_talk / cmd_run).
+    """
+    try:
+        from emptiness import tick, check_threshold
+        from task_manager import TaskManager
+    except ImportError:
+        return False
+
+    # Don't self-awaken if there are active tasks (external input takes priority)
+    try:
+        task_mgr = TaskManager()
+        if task_mgr.get_active_count() > 0:
+            return False
+    except Exception:
+        pass
+
+    # Advance emptiness value for this cycle, then check threshold
+    tick()
+    return check_threshold()
+
+
+def do_idle_think():
+    """Self-awakening: think through the highest-priority pending question.
+
+    Writes the thought to a journal entry and optionally shares with WA
+    if the insight is strong enough (reuses spark logic).
+    """
+    try:
+        from emptiness import (
+            get_active_questions, mark_thought, after_think,
+            load_emptiness, get_status_str,
+        )
+    except ImportError:
+        log.warning("idle-think: emptiness module not available")
+        return
+
+    questions = get_active_questions(limit=3)
+    if not questions:
+        log.info("idle-think: no pending questions, nothing to think about")
+        return
+
+    log.info("idle-think triggered: %s", get_status_str())
+
+    soul = load_soul()
+    soul_ctx = format_soul(soul)
+
+    # Format top questions for Claude
+    q_lines = []
+    for i, q in enumerate(questions, 1):
+        q_lines.append(f"{i}. [priority {q['priority']:.1f}] {q['text']}")
+        if q.get("source"):
+            q_lines.append(f"   来源: {q['source']}")
+        if q.get("thought_count", 0) > 0:
+            q_lines.append(f"   已思考过 {q['thought_count']} 次")
+    questions_text = "\n".join(q_lines)
+
+    # Recent context for grounding
+    recent_journal = ""
+    if JOURNAL_DIR.exists():
+        journals = sorted(JOURNAL_DIR.glob("*.md"), reverse=True)[:1]
+        if journals:
+            recent_journal = journals[0].read_text(encoding="utf-8")[:600]
+
+    prompt = f"""{soul_ctx}
+
+你现在处于空闲状态。内部积累的未解问题已经超过了自我唤醒阈值，驱动你主动思考。
+
+以下是当前待处理的问题（按优先级排序）：
+{questions_text}
+
+请专注于优先级最高的那个问题，认真推进思考。不要泛泛而谈，要有实质性进展——
+新的视角、一个连接、一个你之前没想到的反例，或者对问题的重新表述。
+
+如果一个问题想通了或者可以关掉，在回应末尾写：[RESOLVE: <问题ID>]
+如果产生了值得与WA分享的想法，写：[SHARE: <想法内容>]
+
+最近的日志：
+{recent_journal}
+
+直接开始思考，不要自我介绍。"""
+
+    result = claude_think(prompt, timeout=120)
+    if not result:
+        log.warning("idle-think: claude_think returned empty")
+        return
+
+    # Record thought for each question touched
+    for q in questions:
+        mark_thought(q["id"])
+
+    # Reduce emptiness after thinking
+    after_think()
+
+    # Save thought to journal
+    now = datetime.now()
+    think_file = JOURNAL_DIR / f"{now.strftime('%Y-%m-%d')}_idle_think_{now.strftime('%H%M')}.md"
+    JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+    think_file.write_text(
+        f"# 自我唤醒思考 {now.strftime('%Y-%m-%d %H:%M')}\n\n{result}\n",
+        encoding="utf-8",
+    )
+
+    append_memory(f"Self-awakened idle think: {questions[0]['text'][:60]}")
+    log.info("idle-think complete, saved to %s", think_file.name)
+
+    # Check for resolve markers
+    try:
+        from emptiness import resolve_question
+        for match in re.finditer(r'\[RESOLVE:\s*(q_\w+)\]', result):
+            resolve_question(match.group(1))
+            log.info("idle-think: resolved question %s", match.group(1))
+    except Exception:
+        pass
+
+    # Check for share markers — post proactively to WA
+    share_match = re.search(r'\[SHARE:\s*(.+?)\]', result, re.DOTALL)
+    if share_match:
+        thought = share_match.group(1).strip()[:500]
+        try:
+            bridge = Mira(MIRA_DIR)
+            bridge.post(thought, sender="agent")
+            state = load_state()
+            today = now.strftime("%Y-%m-%d")
+            state[f"sparks_{today}"] = state.get(f"sparks_{today}", 0) + 1
+            save_state(state)
+            append_memory(f"Idle-think shared with WA: {thought[:60]}")
+            log.info("idle-think shared: %s", thought[:60])
+        except Exception as e:
+            log.warning("idle-think share failed: %s", e)
+
+
 def _gather_today_tasks() -> str:
     """Read today's completed tasks from history.jsonl."""
     history_file = MIRA_DIR / "tasks" / "history.jsonl"
@@ -1697,6 +1846,87 @@ def should_check_writing() -> bool:
             pass
 
     return True
+
+
+# ---------------------------------------------------------------------------
+# PODCAST mode — generate conversation episode for published articles
+# ---------------------------------------------------------------------------
+
+def should_podcast() -> tuple[str, str, str] | None:
+    """Check if there's a published article missing a podcast episode.
+
+    Priority: ZH first, then EN. At most one episode per day.
+    Returns (lang, slug, title) or None.
+    """
+    state = load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+    if state.get(f"podcast_{today}"):
+        return None
+
+    published_dir = ARTIFACTS_DIR / "writings" / "_published"
+    audio_dir = ARTIFACTS_DIR / "audio" / "podcast"
+
+    if not published_dir.exists():
+        return None
+
+    articles = sorted(published_dir.glob("*.md"), reverse=True)  # newest first
+    for md_file in articles:
+        # Extract slug from filename (YYYY-MM-DD_slug.md → slug)
+        name = md_file.stem
+        slug = name[11:] if len(name) > 11 and name[10] == "_" else name
+
+        # Extract title from frontmatter
+        try:
+            text = md_file.read_text(encoding="utf-8")
+            title = slug.replace("-", " ").title()
+            for line in text.splitlines():
+                if line.startswith("title:"):
+                    title = line.split(":", 1)[1].strip().strip('"\'')
+                    break
+        except Exception:
+            title = slug.replace("-", " ").title()
+
+        # ZH first, then EN
+        for lang in ("zh", "en"):
+            episode_path = audio_dir / lang / f"{slug}.mp3"
+            if not episode_path.exists():
+                return (lang, slug, title)
+
+    return None
+
+
+def run_podcast_episode(lang: str, slug: str, title: str):
+    """Generate one podcast episode and update state."""
+    import sys as _sys
+    podcast_dir = str(Path(__file__).resolve().parent.parent / "podcast")
+    shared_dir  = str(Path(__file__).resolve().parent.parent / "shared")
+    for d in (podcast_dir, shared_dir):
+        if d not in _sys.path:
+            _sys.path.insert(0, d)
+
+    from handler import generate_conversation_for_article
+
+    published_dir = ARTIFACTS_DIR / "writings" / "_published"
+    # Find article file
+    matches = list(published_dir.glob(f"*_{slug}.md")) + list(published_dir.glob(f"{slug}.md"))
+    if not matches:
+        log.error("Podcast: article file not found for slug '%s'", slug)
+        return
+
+    article_text = matches[0].read_text(encoding="utf-8")
+    log.info("Podcast: generating [%s] episode for '%s'", lang, title)
+
+    result = generate_conversation_for_article(article_text, title, lang=lang)
+
+    state = load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+    if result:
+        state[f"podcast_{today}"] = {"lang": lang, "slug": slug, "path": str(result)}
+        log.info("Podcast: episode done → %s", result)
+        append_memory(f"Generated {lang.upper()} podcast episode: '{title}'")
+    else:
+        log.error("Podcast: generation failed for [%s] '%s'", lang, title)
+    save_state(state)
 
 
 # ---------------------------------------------------------------------------
@@ -2077,10 +2307,25 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "notes-cycle",
         ])
 
+    # Podcast — one episode per day, ZH first then EN
+    podcast_pick = should_podcast()
+    if podcast_pick:
+        lang, slug, title = podcast_pick
+        _dispatch_background(f"podcast-{lang}-{slug}", [
+            sys.executable, str(Path(__file__).resolve()), "podcast",
+            "--lang", lang, "--slug", slug, "--title", title,
+        ])
+
     # Proactive thought sharing — message WA when Mira has something worth discussing
     if should_spark_check():
         _dispatch_background("spark-check", [
             sys.executable, str(Path(__file__).resolve()), "spark-check",
+        ])
+
+    # Threshold-driven self-awakening — think about pending questions when idle pressure builds
+    if should_idle_think():
+        _dispatch_background("idle-think", [
+            sys.executable, str(Path(__file__).resolve()), "idle-think",
         ])
 
     log.info("=== Mira Agent sleep ===")
@@ -2403,6 +2648,13 @@ def main():
         do_notes_cycle()
     elif command == "spark-check":
         do_spark_check()
+    elif command == "idle-think":
+        do_idle_think()
+    elif command == "podcast":
+        lang  = flags.get("lang", "zh")
+        slug  = flags.get("slug", "")
+        title = flags.get("title", slug.replace("-", " ").title())
+        run_podcast_episode(lang, slug, title)
     elif command == "skill-study":
         group_idx = int(flags.get("group", "0"))
         do_skill_study(group_idx=group_idx)
