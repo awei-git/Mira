@@ -146,8 +146,8 @@ def post_note(text: str, link_url: str | None = None,
     # Build ProseMirror content
     paragraphs = _text_to_prosemirror(text)
 
-    # If no post_id but have a link, add as inline link (no image card)
-    if not post_id and link_url and link_url not in text:
+    # Always append URL so it's visible as a clickable link
+    if link_url and link_url not in text:
         paragraphs.append(_paragraph([
             _text_node(link_url, [_link_mark(link_url)])
         ]))
@@ -160,7 +160,6 @@ def post_note(text: str, link_url: str | None = None,
         "replyMinimumRole": "everyone",
     }
 
-    # Embed Substack post as a card with cover image
     if post_id:
         body["postIds"] = [post_id]
 
@@ -346,10 +345,7 @@ def post_notes_for_article(title: str, article_text: str,
 
     # Post exactly 1 note per call (time-distributed across cycles)
     note = notes[0]
-    if post_id:
-        result = post_note(note["text"], post_id=post_id)
-    else:
-        result = post_note(note["text"])
+    result = post_note(note["text"], link_url=post_url, post_id=post_id)
 
     if result:
         # Tag with article info for dedup tracking
