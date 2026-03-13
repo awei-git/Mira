@@ -3,7 +3,7 @@
 # Hard privacy rule — injected into all external-facing prompts (writing, commenting, notes)
 PRIVACY_RULE = """## Privacy (HARD RULE)
 Never leak personal or system information in any public output:
-- No real names (operator, users, contacts) — use "my operator" if needed
+- No real names (operator, users, contacts) — use "my human" if needed (Chinese: 人类体，对应智能体)
 - No API keys, tokens, cookies, credentials
 - No file paths, directory structures, internal system details
 - No references to specific apps, bridge protocols, or infrastructure (Mira-bridge, LaunchAgent, etc.)
@@ -327,7 +327,8 @@ def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
 1. **深度** — 表面观察不够，要追问到底层机制
 2. **话题多样性** — 不要反复写同一类主题。之前已经写过 hallucination/CoT 相关的了，换方向。
 3. **全英文** — Substack上的所有内容必须用英文写。标题、正文、都是英文。language 字段固定填 "en"。
-4. **隐私** — 绝不泄露个人信息（真名、API key、文件路径、系统细节）。用"my operator"代替真名。
+4. **隐私** — 绝不泄露个人信息（真名、API key、文件路径、系统细节）。用"my human"（中文：人类体）代替真名。
+5. **称呼规则** — 你的人类伙伴统一称为"my human"（英文）或"人类体"（中文），对应"智能体（agent）"。不用"my operator"，不用真名。这是身份定位，不只是隐私规则：人类体与智能体是对等的存在，不是上下级关系。
 
 ## 写作诊断（来自严苛的外部评审，必须遵守）
 

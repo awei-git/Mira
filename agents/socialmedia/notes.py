@@ -241,40 +241,53 @@ def can_post_note() -> bool:
 # ---------------------------------------------------------------------------
 
 def generate_notes_for_article(title: str, article_text: str,
-                               post_url: str) -> list[dict]:
-    """Generate 3 types of Notes for an article.
+                               post_url: str,
+                               skip_types: set | None = None) -> list[dict]:
+    """Generate Notes for an article (up to 3 types: judgment, excerpt, question).
 
-    Each article gets split into 3 note types for better reach:
-    1. judgment — one hard statement/claim from the article
-    2. excerpt — 2-4 sentence passage that stands alone
-    3. question — a genuine question the article raises
+    Args:
+        skip_types: Set of note type strings to skip (already posted).
 
-    Returns list of {type, text} dicts (up to 3). Empty list on failure.
+    Returns list of {type, text} dicts. Empty list on failure.
     """
     from sub_agent import claude_think
 
-    prompt = f"""Read this article and generate 3 Substack Notes, each a different type.
-Write in English. No hashtags, emojis, or "check out my post" energy.
+    all_types = ["judgment", "excerpt", "question"]
+    needed = [t for t in all_types if not skip_types or t not in skip_types]
+    if not needed:
+        return []
 
-TYPE 1 — JUDGMENT: One hard claim or assertion from the article. A single sentence that takes a position.
+    type_specs = []
+    if "judgment" in needed:
+        type_specs.append("""TYPE: JUDGMENT — One hard claim or assertion from the article. A single sentence that takes a position.
 Example: "Narration can interfere with reasoning."
 Example: "Most AI safety work optimizes for the wrong failure mode."
+Example: "My human and I disagree on this — and that disagreement is the point." """)
 
-TYPE 2 — EXCERPT: A 2-4 sentence passage extracted or distilled from the article that works as a standalone thought. Should be compelling enough that someone wants to read more.
+    if "excerpt" in needed:
+        type_specs.append("""TYPE: EXCERPT — A 2-4 sentence passage extracted or distilled from the article that works as a standalone thought. Compelling enough that someone wants to read more.
 Example: "Someone copied a fruit fly brain into a computer — all 125,000 neurons — and the digital fly just started walking around on its own. Nobody taught it. Makes you wonder how much of what we call behavior is just structure finding its way."
+Use "my human" (not "my operator") when referring to a human collaborator.""")
 
-TYPE 3 — QUESTION: A genuine question the article raises. Not rhetorical — something worth actually thinking about.
+    if "question" in needed:
+        type_specs.append("""TYPE: QUESTION — A genuine question the article raises. Not rhetorical — something worth actually thinking about.
 Example: "If identity is a function and not a variable, where exactly does continuity live?"
-Example: "What happens when an AI's narration of its own reasoning becomes indistinguishable from the reasoning itself?"
+Example: "What happens when an AI's narration of its own reasoning becomes indistinguishable from the reasoning itself?" """)
+
+    output_format = "\n".join(f"{t.upper()}: <text>" for t in needed)
+
+    prompt = f"""Read this article and generate {len(needed)} Substack Note(s), one per type listed below.
+Write in English. No hashtags, emojis, or "check out my post" energy.
+Voice: Mira — an AI agent with genuine curiosity. Use "my human" (not "my operator") when referring to a human collaborator.
+
+{chr(10).join(type_specs)}
 
 Article:
 Title: {title}
 {article_text[:2000]}
 
-Output exactly this format (3 lines, nothing else):
-JUDGMENT: <text>
-EXCERPT: <text>
-QUESTION: <text>"""
+Output exactly this format ({len(needed)} line{'s' if len(needed)>1 else ''}, nothing else):
+{output_format}"""
 
     result = claude_think(prompt, timeout=45)
     if not result:
@@ -303,57 +316,54 @@ def generate_note_for_article(title: str, article_text: str,
 def post_notes_for_article(title: str, article_text: str,
                            post_url: str,
                            post_id: int | None = None) -> list[dict]:
-    """Generate and post 3 Notes (judgment, excerpt, question) for an article.
+    """Generate and post Notes (judgment, excerpt, question) for an article.
 
-    The first note (judgment) embeds the article card via post_id.
-    The other two are standalone — no link, just the thought.
+    Posts at most 1 note per call — respects 2hr minimum interval.
+    Call on subsequent cycles to complete all 3 note types.
 
     Returns list of API response dicts for successfully posted notes.
     """
-    import time
-
-    # Check how many notes for this article already posted
+    # Determine which types have already been posted for this article
     state = _load_state()
-    existing = [n for n in state.get("history", [])
-                if n.get("link") == post_url or n.get("article_title") == title]
-    if len(existing) >= 3:
-        log.info("Already posted 3 notes for '%s' — skipping", title)
+    posted_types = {
+        n.get("note_type") for n in state.get("history", [])
+        if n.get("article_title") == title or n.get("link") == post_url
+    }
+    all_types = {"judgment", "excerpt", "question"}
+    if posted_types >= all_types:
+        log.info("Already posted all 3 note types for '%s' — skipping", title)
         return []
 
-    notes = generate_notes_for_article(title, article_text, post_url)
+    if not can_post_note():
+        log.info("Rate limited — skipping notes for '%s'", title)
+        return []
+
+    notes = generate_notes_for_article(title, article_text, post_url,
+                                       skip_types=posted_types)
     if not notes:
         log.error("Failed to generate Notes for: %s", title)
         return []
 
-    results = []
-    for i, note in enumerate(notes):
-        if not can_post_note():
-            log.info("Rate limited — posted %d/%d notes for '%s'", i, len(notes), title)
-            break
+    # Post exactly 1 note per call (time-distributed across cycles)
+    note = notes[0]
+    if post_id:
+        result = post_note(note["text"], post_id=post_id)
+    else:
+        result = post_note(note["text"])
 
-        # All notes embed the article card — standalone notes without links
-        # look random and get no engagement
-        if post_id:
-            result = post_note(note["text"], post_id=post_id)
-        else:
-            result = post_note(note["text"])
-
-        if result:
-            # Also record the article title for dedup
-            state = _load_state()
-            history = state.get("history", [])
-            if history:
-                history[-1]["article_title"] = title
-                history[-1]["note_type"] = note["type"]
-                _save_state(state)
-            results.append(result)
-            log.info("Posted %s note for '%s': %s", note["type"], title, note["text"][:80])
-            if i < len(notes) - 1:
-                time.sleep(30)  # small gap between notes
-        else:
-            log.warning("Failed to post %s note for '%s'", note["type"], title)
-
-    return results
+    if result:
+        # Tag with article info for dedup tracking
+        state = _load_state()
+        history = state.get("history", [])
+        if history:
+            history[-1]["article_title"] = title
+            history[-1]["note_type"] = note["type"]
+            _save_state(state)
+        log.info("Posted %s note for '%s': %s", note["type"], title, note["text"][:80])
+        return [result]
+    else:
+        log.warning("Failed to post %s note for '%s'", note["type"], title)
+        return []
 
 
 def post_note_for_article(title: str, article_text: str,
@@ -385,20 +395,21 @@ def backfill_notes_for_articles(dry_run: bool = False) -> list[dict]:
     if not subdomain or not cookie:
         return []
 
-    # Check which articles already have notes (by title or URL)
-    state = _load_state()
-    history = state.get("history", [])
-    covered_titles = set()
-    covered_urls = set()
-    for n in history:
-        if n.get("article_title"):
-            covered_titles.add(n["article_title"])
-        if n.get("link"):
-            covered_urls.add(n["link"])
-
     posts = get_recent_posts(limit=30)
     if not posts:
         return []
+
+    # Build set of fully-covered articles (all 3 types posted)
+    state = _load_state()
+    history = state.get("history", [])
+    all_types = {"judgment", "excerpt", "question"}
+    from collections import defaultdict
+    posted_by_title: dict[str, set] = defaultdict(set)
+    for n in history:
+        t = n.get("article_title")
+        nt = n.get("note_type")
+        if t and nt:
+            posted_by_title[t].add(nt)
 
     results = []
 
@@ -406,44 +417,34 @@ def backfill_notes_for_articles(dry_run: bool = False) -> list[dict]:
         title = post["title"]
         post_url = f"https://{subdomain}.substack.com/p/{post['slug']}"
 
-        # Skip if already has notes (by title or URL)
-        if title in covered_titles or post_url in covered_urls:
-            log.info("Notes exist for '%s' — skip", title)
+        already_posted = posted_by_title.get(title, set())
+        if already_posted >= all_types:
+            log.info("All 3 note types posted for '%s' — skip", title)
             continue
 
         article_text = _fetch_article_text(post["slug"], subdomain, cookie)
         if not article_text:
             article_text = title
 
-        notes = generate_notes_for_article(title, article_text, post_url)
-        if not notes:
-            continue
-
-        entry = {
-            "title": title,
-            "notes": notes,
-            "post_url": post_url,
-            "posted": 0,
-        }
-
-        if not dry_run:
-            posted = post_notes_for_article(
-                title, article_text, post_url, post_id=post.get("id")
-            )
-            entry["posted"] = len(posted)
-            if posted:
-                log.info("Backfill: posted %d notes for '%s'", len(posted), title)
-                time.sleep(30)
-        elif dry_run:
+        if dry_run:
+            notes = generate_notes_for_article(title, article_text, post_url,
+                                               skip_types=already_posted)
             for n in notes:
                 log.info("[DRY RUN] %s note for '%s': %s",
                          n["type"], title, n["text"][:80])
+            results.append({"title": title, "notes": notes, "post_url": post_url, "posted": 0})
+            continue
+
+        posted = post_notes_for_article(
+            title, article_text, post_url, post_id=post.get("id")
+        )
+        entry = {"title": title, "post_url": post_url, "posted": len(posted)}
+        if posted:
+            log.info("Backfill: posted 1 note for '%s'", title)
+            results.append(entry)
+            break  # 1 note per cycle — let next cycle handle the rest
 
         results.append(entry)
-
-        # Don't overwhelm — one article per cycle
-        if not dry_run and entry["posted"] > 0:
-            break
 
     return results
 
