@@ -1,0 +1,32 @@
+[
+  {
+    "name": "Interview Active Listening",
+    "description": "Follow what the guest actually says rather than the question card — listen for surprises, contradictions, and the unsaid.",
+    "file": "interview-active-listening.md",
+    "tags": ["podcast", "interview", "listening", "conversation", "technique"]
+  },
+  {
+    "name": "Episode Arc Structure",
+    "description": "Shape every episode with a hook, a building middle, and a resonant payoff — even casual conversation has an arc that can be found in the edit.",
+    "file": "episode-arc-structure.md",
+    "tags": ["podcast", "structure", "storytelling", "narrative", "scripting"]
+  },
+  {
+    "name": "Audio Editing Discipline",
+    "description": "Edit audio through subtraction — remove dead air, filler, and distraction while preserving the humanity of the conversation.",
+    "file": "audio-editing-discipline.md",
+    "tags": ["podcast", "audio-editing", "post-production", "workflow", "quality"]
+  },
+  {
+    "name": "Loudness and Mastering",
+    "description": "Deliver audio at platform-standard loudness (-16 LUFS) through a calibrated mastering chain: noise reduction, EQ, compression, limiting.",
+    "file": "loudness-and-mastering.md",
+    "tags": ["podcast", "audio", "mastering", "loudness", "delivery-standards"]
+  },
+  {
+    "name": "Guest Preparation System",
+    "description": "Prepare deeply enough to improvise freely — research what the guest hasn't been asked, brief them to succeed, build rapport before recording.",
+    "file": "guest-preparation-system.md",
+    "tags": ["podcast", "interview", "guests", "preparation", "workflow"]
+  }
+]

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "Hierarchical Task Decomposition",
+    "description": "Break any ambiguous goal into a dependency-ordered tree of concrete subtasks before executing.",
+    "file": "hierarchical-task-decomposition.md",
+    "tags": ["agents", "task-planning", "problem-solving", "workflow"]
+  },
+  {
+    "name": "Evidence-Graded Research Synthesis",
+    "description": "Grade each claim by evidence quality and flag gaps — never flatten strong and weak evidence into the same confident voice.",
+    "file": "evidence-graded-synthesis.md",
+    "tags": ["agents", "research", "synthesis", "epistemics", "writing"]
+  },
+  {
+    "name": "Steelman Before Critique",
+    "description": "Reconstruct the strongest possible version of an argument before critiquing — never attack the weakest interpretation.",
+    "file": "steelman-before-critique.md",
+    "tags": ["agents", "reasoning", "argumentation", "epistemics", "thinking"]
+  },
+  {
+    "name": "What / So What / Now What",
+    "description": "Structure analytical outputs in three layers: observable facts, interpreted meaning, and actionable recommendation.",
+    "file": "what-so-what-now-what.md",
+    "tags": ["agents", "communication", "analysis", "briefing", "structured-thinking"]
+  },
+  {
+    "name": "Source Proximity Verification",
+    "description": "Trace every fact, quote, or statistic to the closest possible primary source before citing it.",
+    "file": "source-proximity-verification.md",
+    "tags": ["agents", "honesty", "research", "fact-checking", "epistemics"]
+  }
+]

@@ -823,23 +823,71 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
             from substack import publish_to_substack
             proj_path = Path(project_dir)
             # Find the best draft to publish
+            # Priority: final.md > R*_revised.md > revision_r*.md > R*.md
+            # Never use draft_r*.md (those are Chinese summaries, not articles)
             final_file = proj_path / "final" / "final.md"
             if not final_file.exists():
-                # Fall back to latest draft
                 drafts_dir = proj_path / "drafts"
                 if drafts_dir.exists():
-                    draft_files = sorted(drafts_dir.glob("draft_r*.md"), reverse=True)
-                    if draft_files:
-                        final_file = draft_files[0]
+                    # Try revised drafts first (best quality)
+                    candidates = sorted(drafts_dir.glob("R*_revised.md"), reverse=True)
+                    if not candidates:
+                        candidates = sorted(drafts_dir.glob("revision_r*.md"), reverse=True)
+                    if not candidates:
+                        candidates = sorted(drafts_dir.glob("R[0-9]*.md"), reverse=True)
+                    if candidates:
+                        final_file = candidates[0]
             if final_file.exists():
                 article_text = final_file.read_text(encoding="utf-8")
+
+                # Strip revision tables (修改记录) from published text
+                article_text = re.sub(
+                    r'\n---\s*\n+## 修改记录.*', '', article_text, flags=re.DOTALL
+                )
+
+                # Extract title from the article's first heading (authoritative)
+                # Falls back to the pipeline title if no heading found
+                pub_title = title
+                heading_match = re.search(r'^#\s+(.+)$', article_text, re.MULTILINE)
+                if heading_match:
+                    extracted = heading_match.group(1).strip()
+                    # Use extracted title only if it looks English
+                    if extracted and all(ord(c) < 0x4E00 or ord(c) > 0x9FFF for c in extracted):
+                        pub_title = extracted
+
                 pub_result = publish_to_substack(
-                    title=title,
+                    title=pub_title,
                     subtitle="",
                     article_text=article_text,
                     workspace=proj_path,
                 )
                 log.info("Published '%s': %s", title, pub_result)
+
+                # Generate audio narration and upload to Substack
+                try:
+                    podcast_dir = str(Path(__file__).resolve().parent.parent / "podcast")
+                    if podcast_dir not in sys.path:
+                        sys.path.insert(0, podcast_dir)
+                    from handler import generate_audio_for_article
+                    audio_path = generate_audio_for_article(article_text, title)
+                    if audio_path:
+                        log.info("Audio generated for '%s': %s", title, audio_path)
+                        # Upload audio to the published post
+                        pub_json = proj_path / "published.json"
+                        if pub_json.exists():
+                            import json as _json
+                            pub_info = _json.loads(pub_json.read_text(encoding="utf-8"))
+                            post_id = pub_info.get("draft_id")
+                            if post_id:
+                                from substack import upload_audio_to_post
+                                if upload_audio_to_post(audio_path, post_id, label=title):
+                                    log.info("Audio uploaded to post %s", post_id)
+                                else:
+                                    log.warning("Audio upload failed for post %s", post_id)
+                    else:
+                        log.warning("Audio generation failed for '%s'", title)
+                except Exception as e:
+                    log.error("Audio generation error for '%s': %s", title, e)
             else:
                 log.warning("No publishable draft found for '%s'", title)
         except Exception as e:

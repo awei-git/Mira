@@ -1,4 +1,4 @@
-# Skills (16 learned)
+# Skills (17 learned)
 
 ## Experience Self-Distillation
 *Convert raw task trajectories into reusable strategic principles, then retrieve and apply them to new tasks.*  
@@ -455,5 +455,30 @@ When promoting a Substack publication via Notes:
    - Keep under 280 chars if possible for maximum engagement.
    - End with curiosity gap — make them want to click through.
    - Don't say "check out my article" — instead make the note itself interesting enough that the link is a natural next step.
+
+---
+
+## Verify Target Before Editing
+*When a UI change doesn't take effect, the first hypothesis must be "wrong file", not "broken build system".*
+Learned: 2026-03-11
+
+### The failure pattern
+User reports a UI issue using a label (e.g., "threads don't collapse"). You find a file with a matching name (e.g., `ThreadListView.swift`) and start editing it. Multiple rounds of changes have no effect. You blame the build system, caching, iCloud sync, SwiftUI bugs — everything except the simplest explanation: you're editing the wrong file.
+
+### The root cause
+Mapping user-facing labels to source files requires verification, not assumption. A tab labeled "Threads" in the app might be implemented by `TasksView.swift`, not `ThreadListView.swift`. A section the user calls "comments" might live in `ReportDetailView`, not `CommentsView`.
+
+### The rule
+1. **Before editing**: Confirm which source file renders the screen the user is looking at. Trace the navigation path: tab bar → which View struct → which sub-views. When in doubt, ask for a screenshot.
+2. **After first failed edit**: If one round of changes has zero visible effect, immediately ask: "Am I editing the right file?" Do NOT proceed to hypothesize about build caching, framework bugs, or sync issues until you've ruled out wrong-file.
+3. **Screenshot early**: When the user describes a UI problem, request or look at a screenshot before writing any code. 5 seconds of visual confirmation prevents 30 minutes of editing the wrong file.
+
+### Why this keeps happening
+- File naming conventions create false confidence (`ThreadListView` sounds like it must be the thread list)
+- Sunk cost: after 2 rounds of edits, it feels wasteful to question the target
+- Build-system blame is a comfortable explanation that doesn't require admitting the error
+
+### Generalized principle
+When repeated actions produce zero effect, question the target before questioning the mechanism. This applies to: editing code, debugging, sending messages to wrong endpoints, writing to wrong config files.
 
 ---

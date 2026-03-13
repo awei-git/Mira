@@ -407,23 +407,58 @@ def rebuild_skills_md():
 
 # Tags that indicate a skill is actionable for Claude Code sessions
 _ACTIONABLE_TAGS = {"writing", "craft", "fiction", "dialogue", "video", "editing",
-                    "agents", "coding", "architecture", "tool-use", "debugging"}
+                    "agents", "coding", "architecture", "tool-use", "debugging",
+                    "math", "proof", "latex", "exposition", "publishing",
+                    "research", "problem-solving", "asymptotics"}
 
 # CLAUDE.md lives at MtJoy root so all Claude Code sessions in MtJoy see it
 _CLAUDE_MD = MIRA_ROOT.parent / "CLAUDE.md"
 
 
+_AGENT_SKILL_INDEXES = [
+    # Per-agent skill index files (relative to agents dir)
+    Path(__file__).parent.parent / "math" / "skills" / "index.json",
+    Path(__file__).parent.parent / "coder" / "skills" / "index.json",
+    Path(__file__).parent.parent / "general" / "skills" / "index.json",
+    Path(__file__).parent.parent / "analyst" / "skills" / "index.json",
+    Path(__file__).parent.parent / "explorer" / "skills" / "index.json",
+    Path(__file__).parent.parent / "photo" / "skills" / "index.json",
+    Path(__file__).parent.parent / "video" / "skills" / "index.json",
+    Path(__file__).parent.parent / "podcast" / "skills" / "index.json",
+    Path(__file__).parent.parent / "socialmedia" / "skills" / "index.json",
+    Path(__file__).parent.parent / "writer" / "skills" / "index.json",
+    Path(__file__).parent.parent / "researcher" / "skills" / "index.json",
+    Path(__file__).parent.parent / "super" / "skills" / "index.json",
+]
+
+
+def _load_all_skill_indexes() -> list[dict]:
+    """Load skills from soul/learned/ plus all per-agent skill indexes."""
+    all_skills = []
+    # Primary soul/learned index
+    if SKILLS_INDEX.exists():
+        try:
+            all_skills.extend(json.loads(SKILLS_INDEX.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError):
+            pass
+    # Per-agent indexes
+    for index_path in _AGENT_SKILL_INDEXES:
+        if index_path.exists():
+            try:
+                all_skills.extend(json.loads(index_path.read_text(encoding="utf-8")))
+            except (json.JSONDecodeError, OSError):
+                pass
+    return all_skills
+
+
 def _sync_skills_to_claude_md():
-    """Rebuild the skills section of MtJoy/CLAUDE.md from the skills index.
+    """Rebuild the skills section of MtJoy/CLAUDE.md from all skill indexes.
 
     Only promotes skills with actionable tags. Keeps existing non-skill
     content in CLAUDE.md intact.
     """
-    if not SKILLS_INDEX.exists():
-        return
-    try:
-        index = json.loads(SKILLS_INDEX.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    index = _load_all_skill_indexes()
+    if not index:
         return
 
     # Filter: only skills with at least one actionable tag
@@ -445,7 +480,7 @@ def _sync_skills_to_claude_md():
         tags = ", ".join(skill.get("tags", []))
         skill_lines.append(f"- **{name}** [{tags}]: {desc}")
     skill_lines.append("")
-    skill_lines.append(f"Full skill details: `Mira/soul/skills/`")
+    skill_lines.append(f"Full skill details: `Mira/agents/shared/soul/learned/` and `Mira/agents/math/skills/`")
     skill_lines.append("")
 
     skills_block = "\n".join(skill_lines)

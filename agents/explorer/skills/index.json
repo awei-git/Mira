@@ -1,0 +1,32 @@
+[
+  {
+    "name": "Information Triage",
+    "description": "Process high-volume feeds rapidly by classifying items on signal strength × relevance to route attention where it creates most value.",
+    "file": "information-triage.md",
+    "tags": ["explorer", "research", "curation", "signal-noise", "workflow"]
+  },
+  {
+    "name": "Weak Signal Detection",
+    "description": "Identify early-stage indicators of emerging trends by monitoring anomalous patterns at the periphery of mainstream discourse.",
+    "file": "weak-signal-detection.md",
+    "tags": ["explorer", "trends", "forecasting", "horizon-scanning", "research"]
+  },
+  {
+    "name": "Progressive Distillation",
+    "description": "Compress source material through staged passes — capture → bold → extract → implication → connect — so knowledge becomes more actionable each time.",
+    "file": "progressive-distillation.md",
+    "tags": ["explorer", "knowledge-management", "reading", "synthesis", "notes"]
+  },
+  {
+    "name": "Cross-Domain Synthesis",
+    "description": "Strip domain-specific language to find transferable mechanisms, then apply source-domain solutions to target-domain problems.",
+    "file": "cross-domain-synthesis.md",
+    "tags": ["explorer", "synthesis", "creativity", "analogy", "knowledge"]
+  },
+  {
+    "name": "Intelligence Briefing Craft",
+    "description": "Write actionable briefings using key-judgment-first structure, explicit confidence levels, and implication framing from intelligence tradecraft.",
+    "file": "intelligence-briefing-craft.md",
+    "tags": ["explorer", "briefing", "writing", "analysis", "communication"]
+  }
+]

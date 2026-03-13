@@ -33,6 +33,32 @@ log = logging.getLogger("task_worker")
 
 TASKS_DIR = MIRA_DIR / "tasks"
 
+# ---------------------------------------------------------------------------
+# Super-agent skill loader
+# ---------------------------------------------------------------------------
+
+_SUPER_SKILLS_DIR = Path(__file__).resolve().parent / "skills"
+_SUPER_SKILLS_INDEX = _SUPER_SKILLS_DIR / "index.json"
+
+
+def _load_super_skills() -> str:
+    """Load all super-agent orchestration skills as a single context block."""
+    if not _SUPER_SKILLS_INDEX.exists():
+        return ""
+    try:
+        index = json.loads(_SUPER_SKILLS_INDEX.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ""
+    sections = []
+    for entry in index:
+        skill_file = _SUPER_SKILLS_DIR / entry.get("file", "")
+        if skill_file.exists():
+            try:
+                sections.append(skill_file.read_text(encoding="utf-8").strip())
+            except OSError:
+                pass
+    return "\n\n---\n\n".join(sections)
+
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -803,37 +829,39 @@ If a previous round already produced content, reference it in your plan (e.g. us
     else:
         conversation_context = f"User request: {content[:500]}"
 
-    prompt = f"""You are a task planner. Decompose this user request into ordered execution steps.
+    super_skills = _load_super_skills()
+    skills_section = f"\n\n## Orchestration Skills\n{super_skills}\n" if super_skills else ""
 
-Available agents:
+    prompt = f"""You are a task planner and orchestrator. Decompose this user request into ordered execution steps.{skills_section}
+
+## Available Agents
 - briefing: Fetch feeds and generate a news briefing / summary
 - writing: Write or create text content (article, story, essay, post, translation)
 - publish: Publish EXISTING content to a platform (Substack, Instagram, Threads)
 - analyst: Market analysis, competitive intelligence, trend detection, industry research, market sizing
-- video: Video editing — analyze footage, generate screenplay, cut highlights, mix music. Use when the user wants to edit, cut, or process video files.
-- general: Answer questions, search, analyze, code, file operations, etc.
-- clarify: Ask the user a question ONLY if the request is genuinely ambiguous and you cannot proceed without more info.
+- math: Mathematical proofs, derivations, calculations, paper writing/review
+- video: Video editing — analyze footage, generate screenplay, cut highlights, mix music
+- podcast: Generate audio narration for an article. Converts written text to spoken audio (TTS)
+- general: Answer questions, search, analyze, code, file operations, anything else
+- clarify: Ask the user a question ONLY if the request is genuinely ambiguous and cannot be inferred
 
-Rules:
-- If the request needs content CREATED then PUBLISHED, use writing first then publish.
-- If publishing existing content, just use publish.
-- Talking ABOUT writing (e.g. "写作技巧") is general, not writing.
-- AVOID using clarify. The user expects you to just do things. Only clarify if you truly cannot figure out what they want.
-- NEVER ask for confirmation before starting work. Just do it. The user sent the request because they want it done.
-- Most simple requests need only 1 step. Use multiple steps only when truly needed.
-- If the user asked you to write something AND publish it, use writing + publish steps.
+## Rules
+- Apply the routing, intent-inference, and instruction-crafting skills above to produce the best plan.
+- Most requests need only 1 step. Use multiple steps only when data dependencies genuinely require it.
+- Write instructions tailored to each agent — not just a copy of the user's words.
+- Match instruction language to the user's language.
+- NEVER ask for confirmation before starting. AVOID clarify unless truly impossible to infer.
 
+## Output
 Output ONLY a JSON array. Each element: {{"agent": "...", "instruction": "..."}}
-The instruction should be a clear directive for that agent, in the user's language.
 
-Examples:
+## Examples
 - "今天有什么新闻" → [{{"agent": "briefing", "instruction": "生成今日新闻简报"}}]
-- "写一篇关于AI的文章" → [{{"agent": "writing", "instruction": "写一篇关于AI的文章"}}]
+- "写一篇关于AI的文章" → [{{"agent": "writing", "instruction": "写一篇600-800字的Substack文章，探讨AI的某个具体有趣角度，有独特观点"}}]
 - "写一个Hello World发到substack" → [{{"agent": "writing", "instruction": "写一篇简短的Hello World文章"}}, {{"agent": "publish", "instruction": "将上一步写好的文章发布到Substack"}}]
-- "今天有没有什么发substack的内容啊？写点什么吧？" → [{{"agent": "writing", "instruction": "基于今天的briefing内容，选一个有意思的话题写一篇适合发Substack的文章"}}, {{"agent": "publish", "instruction": "将上一步写好的文章发布到Substack"}}]
-- "把自由意志那篇发到substack" → [{{"agent": "publish", "instruction": "将'自由意志'文章发布到Substack"}}]
-- "分析一下AI agent市场" → [{{"agent": "analyst", "instruction": "分析AI agent市场的竞争格局、主要玩家和趋势"}}]
+- "分析一下AI agent市场" → [{{"agent": "analyst", "instruction": "分析2026年AI agent市场的竞争格局：主要玩家、市场份额估算、战略差异化点和近期趋势"}}]
 - "帮我剪这些旅游视频 /path/to/videos" → [{{"agent": "video", "instruction": "剪辑 /path/to/videos 里的视频，生成3-5分钟精彩集锦"}}]
+- "把自由意志那篇发到substack" → [{{"agent": "publish", "instruction": "将'自由意志'文章发布到Substack"}}]
 
 {conversation_context}
 
@@ -847,7 +875,7 @@ JSON:"""
             if match:
                 steps = json.loads(match.group())
                 # Validate
-                valid_agents = {"briefing", "writing", "publish", "analyst", "video", "general", "clarify"}
+                valid_agents = {"briefing", "writing", "publish", "analyst", "video", "podcast", "math", "general", "clarify"}
                 validated = []
                 for s in steps:
                     if isinstance(s, dict) and s.get("agent") in valid_agents:
@@ -884,6 +912,7 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
             "publish": ("Publishing...", "paperplane"),
             "analyst": ("Analyzing...", "chart.bar"),
             "video": ("Processing video...", "film"),
+            "podcast": ("Generating audio...", "waveform"),
             "general": ("Working...", "gear"),
             "clarify": ("Need your input", "questionmark.bubble"),
         }
@@ -913,6 +942,12 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
 
         elif agent == "video":
             _handle_video(workspace, task_id, instruction, sender, thread_id)
+
+        elif agent == "podcast":
+            _handle_podcast(workspace, task_id, instruction, sender, thread_id)
+
+        elif agent == "math":
+            _handle_math(workspace, task_id, instruction, sender, thread_id)
 
         else:
             _handle_general(workspace, task_id, instruction, sender, thread_id)
@@ -952,7 +987,71 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
         if is_multi and not is_last and result_file.exists():
             result_file.unlink()
 
+    # Synthesize outputs for multi-step plans
+    if is_multi and prev_output:
+        synthesized = _synthesize_outputs(content, plan, prev_output)
+        if synthesized:
+            (workspace / "output.md").write_text(synthesized, encoding="utf-8")
+            prev_output = synthesized
+
     log.info("Plan execution complete (%d steps)", len(plan))
+
+
+def _synthesize_outputs(original_request: str, plan: list[dict],
+                        final_output: str) -> str:
+    """Synthesize the final output of a multi-step plan into a coherent response.
+
+    Only called for multi-step plans where the last step's raw output
+    may benefit from integration with the original request context.
+    Skips synthesis if the last agent was publish (nothing to synthesize).
+    """
+    last_agent = plan[-1].get("agent", "")
+    # No synthesis needed for publish/clarify — the output is the result
+    if last_agent in ("publish", "clarify"):
+        return ""
+
+    # Also skip if the output is already short/clean (single-step feel)
+    if len(final_output) < 200:
+        return ""
+
+    super_skills = _load_super_skills()
+    synthesis_skill = ""
+    if super_skills:
+        # Extract just the Response Synthesis section for efficiency
+        for block in super_skills.split("---"):
+            if "Response Synthesis" in block:
+                synthesis_skill = block.strip()
+                break
+
+    steps_summary = "; ".join(
+        f"{s['agent']}: {s['instruction'][:60]}" for s in plan
+    )
+
+    prompt = f"""You are synthesizing the output of a multi-step agent plan into a single coherent response.
+
+{synthesis_skill}
+
+## Original user request
+{original_request[:500]}
+
+## Steps executed
+{steps_summary}
+
+## Final step output (the most complete output)
+{final_output[:4000]}
+
+## Your task
+Apply the Response Synthesis skill: integrate this output into the clearest, most direct answer to the original request.
+- Lead with what matters most
+- Remove redundancy
+- Add connective tissue between sections if needed
+- Match the user's language
+- Do NOT add meta-commentary like "I have completed the following steps..."
+
+Synthesized response:"""
+
+    result = claude_think(prompt, timeout=60, tier="light")
+    return result or ""
 
 
 # ---------------------------------------------------------------------------
@@ -1260,6 +1359,38 @@ def _handle_video(workspace: Path, task_id: str, content: str,
 
 
 # ---------------------------------------------------------------------------
+# Podcast handler — article → audio
+# ---------------------------------------------------------------------------
+
+def _handle_podcast(workspace: Path, task_id: str, content: str,
+                    sender: str, thread_id: str):
+    """Handle audio/podcast generation requests via the podcast agent."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "podcast_handler", str(_AGENTS_DIR / "podcast" / "handler.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        podcast_handle = mod.handle
+
+        log.info("Running podcast pipeline for task %s", task_id)
+        summary = podcast_handle(workspace, task_id, content, sender, thread_id)
+    except Exception as e:
+        log.error("Podcast handler crashed: %s", e)
+        _write_result(workspace, task_id, "error", f"音频生成失败: {e}")
+        return
+
+    if summary:
+        _write_result(workspace, task_id, "done", summary, tags=["podcast", "audio"])
+        log.info("Podcast task %s completed", task_id)
+        if thread_id:
+            _update_thread_memory(thread_id, content, summary)
+    else:
+        _write_result(workspace, task_id, "error", "音频生成返回空结果")
+        log.error("Podcast task %s failed: empty response", task_id)
+
+
+# ---------------------------------------------------------------------------
 # General handler — claude_act
 # ---------------------------------------------------------------------------
 
@@ -1385,6 +1516,55 @@ def _write_comment_reply_sidecar(thread_id: str, reply: str):
         except (json.JSONDecodeError, OSError) as e:
             log.warning("Could not update comment task file: %s", e)
 
+
+def _handle_math(workspace: Path, task_id: str, content: str,
+                 sender: str, thread_id: str):
+    """Handle math research tasks via the math agent."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "math_handler", str(_AGENTS_DIR / "math" / "handler.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        thread_history = load_thread_history(thread_id)
+        thread_memory = load_thread_memory(thread_id)
+
+        log.info("Running math agent for task %s", task_id)
+        summary = mod.handle(
+            workspace, task_id, content, sender, thread_id,
+            thread_history=thread_history, thread_memory=thread_memory,
+        )
+    except ClaudeTimeoutError:
+        _write_result(workspace, task_id, "error", "数学任务超时，请缩小范围重试。")
+        log.error("Math task %s timed out", task_id)
+        return
+    except Exception as e:
+        log.error("Math handler crashed: %s", e)
+        _write_result(workspace, task_id, "error", f"数学任务失败: {e}")
+        return
+
+    if summary:
+        tags = smart_classify(content, summary)
+        tags.append("math")
+        _write_result(workspace, task_id, "done", summary, tags=tags)
+        log.info("Math task %s completed", task_id)
+
+        if thread_id:
+            _update_thread_memory(thread_id, content, summary)
+
+        try:
+            try_extract_skill(summary, content)
+        except Exception as e:
+            log.warning("Skill extraction failed: %s", e)
+    else:
+        _write_result(workspace, task_id, "error", "数学任务返回空结果")
+        log.error("Math task %s failed: empty response", task_id)
+
+
+# ---------------------------------------------------------------------------
+# General handler — catch-all
+# ---------------------------------------------------------------------------
 
 def _handle_general(workspace: Path, task_id: str, content: str,
                     sender: str, thread_id: str):

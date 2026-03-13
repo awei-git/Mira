@@ -133,7 +133,7 @@ def start_project(title: str, body: str, workspace: Path):
 
 def _analyze(body: str) -> dict:
     """Ask Claude to classify the writing type and parameters."""
-    result = claude_think(analyze_writing_prompt(body), timeout=CLAUDE_TIMEOUT_PLAN)
+    result = claude_think(analyze_writing_prompt(body), timeout=CLAUDE_TIMEOUT_PLAN, tier="heavy")
     try:
         m = re.search(r"\{[^{}]*\}", result, re.DOTALL)
         analysis = json.loads(m.group()) if m else json.loads(result)
@@ -590,7 +590,7 @@ def _parse_chapter_structure(outline: str) -> list[dict]:
 如果大纲没有明确的章节划分，请根据情节结构合理划分章节（通常8-15章）。
 只输出JSON数组。"""
 
-    result = claude_think(prompt, timeout=120)
+    result = claude_think(prompt, timeout=120, tier="heavy")
     if not result:
         return []
 
@@ -622,6 +622,7 @@ def _harsh_review_cycle(vd: Path, draft: str, outline: str,
         review = claude_think(
             harsh_review_prompt(current_draft, criteria, rnd, outline, prev_reviews),
             timeout=300,
+            tier="heavy",
         )
 
         if not review:
@@ -756,7 +757,7 @@ def start_from_plan(title: str, plan_path: str, writing_type: str = "novel"):
 
         if not chapter_text:
             log.warning("Both API writers failed for ch%d, falling back to Claude", i)
-            chapter_text = claude_think(prompt, timeout=600)
+            chapter_text = claude_think(prompt, timeout=600, tier="heavy")
 
         if not chapter_text:
             log.error("All writers failed for chapter %d — skipping", i)

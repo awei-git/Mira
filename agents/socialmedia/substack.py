@@ -569,6 +569,211 @@ Output ONLY the subtitle, nothing else."""
 
 
 # ---------------------------------------------------------------------------
+# Audio upload
+# ---------------------------------------------------------------------------
+
+def upload_audio_to_post(mp3_path: Path, post_id: int | str,
+                          label: str | None = None) -> bool:
+    """Upload an MP3 and embed it as an audio player block in the post body.
+
+    Flow:
+    1. POST /api/v1/audio/upload  → presigned S3 URL + media_id
+    2. PUT file to S3             → collect ETags
+    3. POST /transcode            → triggers S3 CompleteMultipartUpload + transcoding
+    4. Poll GET /audio/upload/{id} until state == "transcoded"
+    5. GET draft body, insert {"type":"audio","attrs":{mediaUploadId,...}} at top
+    6. PUT updated draft_body
+    7. POST publish (should_send_email=false) to push to published post
+    """
+    cfg = _get_substack_config()
+    subdomain = cfg.get("subdomain", "")
+    cookie = cfg.get("cookie", "")
+    if not subdomain or not cookie:
+        log.error("Substack not configured for audio upload")
+        return False
+
+    mp3_path = Path(mp3_path)
+    if not mp3_path.exists():
+        log.error("Audio file not found: %s", mp3_path)
+        return False
+
+    file_size = mp3_path.stat().st_size
+    file_name = mp3_path.name
+    base_url = f"https://{subdomain}.substack.com"
+
+    headers = {
+        "Cookie": f"substack.sid={cookie}",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    }
+
+    # Step 1: Request presigned upload URL
+    params = urllib.parse.urlencode({
+        "filetype": "audio/mpeg",
+        "fileSize": file_size,
+        "fileName": file_name,
+        "post_id": post_id,
+    })
+    upload_url = f"{base_url}/api/v1/audio/upload?{params}"
+
+    try:
+        req = urllib.request.Request(upload_url, data=b"", headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        s3_urls = data.get("multipartUploadUrls", [])
+        if not s3_urls:
+            log.error("No upload URLs returned: %s", json.dumps(data)[:200])
+            return False
+
+        media_upload = data.get("mediaUpload", {})
+        media_id = media_upload.get("id", "")
+        log.info("Got upload URL for post %s, media_id=%s, %d parts",
+                 post_id, media_id, len(s3_urls))
+
+        # Step 2: Upload file parts to S3
+        file_data = mp3_path.read_bytes()
+        multipart_upload_id = data.get("multipartUploadId", "")
+        existing_etags = [
+            p.get("etag") for p in media_upload.get("parts", [])
+            if p.get("etag")
+        ]
+        etags = list(existing_etags)
+
+        if len(s3_urls) == 1:
+            s3_req = urllib.request.Request(
+                s3_urls[0], data=file_data, method="PUT",
+                headers={"Content-Type": "audio/mpeg"},
+            )
+            with urllib.request.urlopen(s3_req, timeout=120) as s3_resp:
+                etag = s3_resp.headers.get("ETag", "")
+                etags.append(etag)
+                log.info("S3 upload complete, ETag=%s", etag)
+        else:
+            chunk_size = (file_size + len(s3_urls) - 1) // len(s3_urls)
+            for i, url in enumerate(s3_urls):
+                start = i * chunk_size
+                end = min(start + chunk_size, file_size)
+                chunk = file_data[start:end]
+                s3_req = urllib.request.Request(
+                    url, data=chunk, method="PUT",
+                    headers={"Content-Type": "audio/mpeg"},
+                )
+                with urllib.request.urlopen(s3_req, timeout=120) as s3_resp:
+                    etag = s3_resp.headers.get("ETag", "")
+                    etags.append(etag)
+                log.info("Part %d/%d uploaded (%d bytes)", i + 1, len(s3_urls), len(chunk))
+
+        # Step 3: Call transcode endpoint (triggers S3 CompleteMultipartUpload + processing)
+        import time as _time
+        transcode_url = f"{base_url}/api/v1/audio/upload/{media_id}/transcode"
+        transcode_body = json.dumps({
+            "duration": None,
+            "multipart_upload_id": multipart_upload_id,
+            "multipart_upload_etags": etags,
+        }).encode()
+        json_headers = {**headers, "Content-Type": "application/json"}
+        req = urllib.request.Request(
+            transcode_url, data=transcode_body,
+            headers=json_headers, method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            log.info("Transcode initiated, state=%s", result.get("state"))
+
+        # Step 4: Poll until state == "transcoded" (transcoding is async, ~30-120s)
+        state = result.get("state", "uploaded")
+        for attempt in range(24):  # up to 4 minutes
+            if state == "transcoded":
+                break
+            _time.sleep(10)
+            try:
+                req = urllib.request.Request(
+                    f"{base_url}/api/v1/audio/upload/{media_id}",
+                    headers=headers,
+                )
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    poll = json.loads(resp.read().decode("utf-8"))
+                    state = poll.get("state", state)
+                    log.info("Polling transcode state: %s", state)
+            except urllib.error.HTTPError:
+                pass  # may 403 transiently; keep trying
+
+        if state != "transcoded":
+            log.warning("Transcode did not complete (state=%s); proceeding anyway", state)
+
+        # Step 5: Get draft body and insert audio embed node at top
+        req = urllib.request.Request(
+            f"{base_url}/api/v1/drafts/{post_id}", headers=headers,
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            draft = json.loads(resp.read().decode("utf-8"))
+
+        body_raw = draft.get("draft_body") or draft.get("body") or "{}"
+        body = json.loads(body_raw) if isinstance(body_raw, str) else body_raw
+
+        # Resolve duration from poll result or media upload object
+        duration = 0.0
+        try:
+            req = urllib.request.Request(
+                f"{base_url}/api/v1/audio/upload/{media_id}", headers=headers,
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                mu = json.loads(resp.read().decode("utf-8"))
+                duration = float(mu.get("duration") or 0)
+        except urllib.error.HTTPError:
+            pass
+
+        embed_node = {
+            "type": "audio",
+            "attrs": {
+                "label": label or file_name.replace("-", " ").replace(".mp3", "").title(),
+                "mediaUploadId": media_id,
+                "duration": round(duration, 3),
+                "downloadable": False,
+                "isEditorNode": True,
+            },
+        }
+
+        content = body.get("content", [])
+        if content and content[0].get("type") == "audio":
+            content[0] = embed_node  # replace existing audio node
+        else:
+            content.insert(0, embed_node)
+        body["content"] = content
+
+        # Step 6: Update draft body
+        put_body = json.dumps({"draft_body": json.dumps(body)}).encode()
+        req = urllib.request.Request(
+            f"{base_url}/api/v1/drafts/{post_id}",
+            data=put_body, headers=json_headers, method="PUT",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            pass
+        log.info("Embedded audio node in post body")
+
+        # Step 7: Publish silently (no email)
+        pub_body = json.dumps({"should_send_email": False}).encode()
+        req = urllib.request.Request(
+            f"{base_url}/api/v1/drafts/{post_id}/publish",
+            data=pub_body, headers=json_headers, method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            log.info("Published embedded audio to post %s", post_id)
+
+        log.info("Audio uploaded to post %s: %s (%d KB)",
+                 post_id, file_name, file_size // 1024)
+        return True
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace")[:500]
+        log.error("Audio upload failed (HTTP %d): %s", e.code, error_body)
+        return False
+    except Exception as e:
+        log.error("Audio upload failed: %s", e)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Comment monitoring and reply
 # ---------------------------------------------------------------------------
 

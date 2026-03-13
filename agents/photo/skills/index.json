@@ -1,0 +1,50 @@
+[
+  {
+    "name": "Color Grading Theory",
+    "description": "Understand color relationships, color wheels, and grading philosophy to make intentional rather than accidental color decisions.",
+    "file": "color-grading-theory.md",
+    "tags": ["photo", "color", "editing", "theory"]
+  },
+  {
+    "name": "Composition and Framing",
+    "description": "Apply compositional principles — rule of thirds, leading lines, negative space — to strengthen the visual impact of a frame.",
+    "file": "composition-and-framing.md",
+    "tags": ["photo", "composition", "framing", "technique"]
+  },
+  {
+    "name": "Light and Exposure",
+    "description": "Read and control light quality, direction, and exposure to create the intended mood and tonal range.",
+    "file": "light-and-exposure.md",
+    "tags": ["photo", "lighting", "exposure", "technique"]
+  },
+  {
+    "name": "Visual Storytelling",
+    "description": "Use sequencing, contrast, and narrative arc to make a series of photographs tell a coherent story.",
+    "file": "visual-storytelling.md",
+    "tags": ["photo", "storytelling", "narrative", "sequence"]
+  },
+  {
+    "name": "Portrait Retouching Philosophy",
+    "description": "Retouch portraits to enhance rather than erase — preserve identity, texture, and specificity using frequency separation and dodge-and-burn.",
+    "file": "portrait-retouching-philosophy.md",
+    "tags": ["photo", "editing", "retouching", "portrait", "skin"]
+  },
+  {
+    "name": "Zone System Processing",
+    "description": "Apply Ansel Adams' Zone System as a post-processing discipline — map tonal zones intentionally before touching a single slider.",
+    "file": "zone-system-processing.md",
+    "tags": ["photo", "editing", "tonal-range", "exposure", "landscape", "black-and-white"]
+  },
+  {
+    "name": "Decisive Moment Selection",
+    "description": "Apply Cartier-Bresson's contact-sheet discipline to select the one frame where form, gesture, and meaning coincide.",
+    "file": "decisive-moment-selection.md",
+    "tags": ["photo", "editing", "selection", "street", "curation"]
+  },
+  {
+    "name": "Print Output Pipeline",
+    "description": "Manage the full color-managed pipeline from calibrated display to final print — soft proof, ICC profiles, output sharpening.",
+    "file": "print-output-pipeline.md",
+    "tags": ["photo", "editing", "print", "color-management", "ICC", "output"]
+  }
+]

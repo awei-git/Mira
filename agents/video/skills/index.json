@@ -1,0 +1,50 @@
+[
+  {
+    "name": "Cut Rhythm and Pacing",
+    "description": "Control the emotional tempo of a sequence through cut timing, duration, and the relationship between sound and picture.",
+    "file": "cut-rhythm-and-pacing.md",
+    "tags": ["video", "editing", "rhythm", "pacing", "timing"]
+  },
+  {
+    "name": "Montage and Juxtaposition",
+    "description": "Create meaning through the collision of images — use Kuleshov effect and intellectual montage to generate ideas no single shot contains.",
+    "file": "montage-and-juxtaposition.md",
+    "tags": ["video", "editing", "montage", "juxtaposition", "meaning"]
+  },
+  {
+    "name": "Sound-First Editing",
+    "description": "Build the edit on the audio track first — dialogue, performance, and music drive all picture decisions.",
+    "file": "sound-first-editing.md",
+    "tags": ["video", "editing", "sound", "audio", "workflow"]
+  },
+  {
+    "name": "Visual Continuity",
+    "description": "Maintain spatial and temporal continuity across cuts — eyeline match, screen direction, and the 180-degree rule.",
+    "file": "visual-continuity.md",
+    "tags": ["video", "editing", "continuity", "technique", "grammar"]
+  },
+  {
+    "name": "Node-Based Color Grading",
+    "description": "Work in a node-based pipeline (DaVinci Resolve) with isolated corrections per node — input, primary, LUT, secondary, output.",
+    "file": "node-based-color-grading.md",
+    "tags": ["video", "color-grading", "davinci-resolve", "cinematography", "post-production"]
+  },
+  {
+    "name": "Documentary Assembly Edit",
+    "description": "Build documentary structure from transcripts and paper cuts — assemble from story logic rather than chronology.",
+    "file": "documentary-assembly-edit.md",
+    "tags": ["video", "editing", "documentary", "structure", "storytelling"]
+  },
+  {
+    "name": "B-Roll Strategy",
+    "description": "Use B-roll as a parallel narrative layer that illustrates, contrasts, or extends the primary audio — never as decoration.",
+    "file": "b-roll-strategy.md",
+    "tags": ["video", "editing", "b-roll", "storytelling", "visual-coverage"]
+  },
+  {
+    "name": "Titles and Motion Graphics",
+    "description": "Design titles and graphics that serve the story — communicate information at the right moment and disappear without being noticed.",
+    "file": "titles-and-motion-graphics.md",
+    "tags": ["video", "editing", "motion-graphics", "titles", "typography", "design"]
+  }
+]

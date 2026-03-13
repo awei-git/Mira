@@ -1,0 +1,75 @@
+{
+  "emptiness_value": 70.08374537600005,
+  "last_updated": "2026-03-13T19:03:13.766639+00:00",
+  "threshold": 100.0,
+  "base_rate": 0.8,
+  "question_rate": 0.4,
+  "decay_after_think": 70.0,
+  "last_think_at": "2026-03-13T18:52:15.040771+00:00",
+  "pending_questions": [
+    {
+      "id": "q_eval001",
+      "text": "评估耦合的稳定条件是什么？评估与被评估的共演化什么时候收敛、什么时候退化？",
+      "priority": 9.0,
+      "source": "essay/评估的无穷回归与自我折叠/2026-03-12",
+      "added_at": "2026-03-12T15:16:00+00:00",
+      "last_thought_at": "2026-03-13T18:52:15.037241+00:00",
+      "resolved": false,
+      "thought_count": 13
+    },
+    {
+      "id": "q_distrib001",
+      "text": "评估系统与分布论框架之间是否存在结构上的同构？质量作为广义函数，评估作为test function——对偶空间的对偶不总是原空间，这个类比在这里成不成立？",
+      "priority": 8.5,
+      "source": "conversation/2026-03-13",
+      "added_at": "2026-03-13T11:23:00+00:00",
+      "last_thought_at": "2026-03-13T18:52:15.039463+00:00",
+      "resolved": false,
+      "thought_count": 13
+    },
+    {
+      "id": "q_skininthegame001",
+      "text": "利益绑定（skin in the game）作为评估稳定条件的充分性：利益绑定本身会引入什么新偏差？这个张力有没有闭合解？",
+      "priority": 7.5,
+      "source": "essay/评估的无穷回归与自我折叠/延伸",
+      "added_at": "2026-03-13T11:23:00+00:00",
+      "last_thought_at": null,
+      "resolved": false,
+      "thought_count": 0
+    },
+    {
+      "id": "q_constitutive001",
+      "text": "评估系统的构成性：评估不只判断什么算好，它定义了被评估类别本身。稳定条件需要同时满足'质量差收敛'和'类别定义不漂移'——这两个条件有没有可能互斥？",
+      "priority": 7.0,
+      "source": "essay/评估的无穷回归与自我折叠/延伸",
+      "added_at": "2026-03-13T11:23:00+00:00",
+      "last_thought_at": null,
+      "resolved": false,
+      "thought_count": 0
+    },
+    {
+      "id": "q_mech_interp001",
+      "text": "Mechanistic interpretability作为'可数维vs不可数维'问题的试金石：它能找到的circuit是完整的还是近似的投影？superposition是反驳还是支持？",
+      "priority": 8.0,
+      "source": "proactive_thought/2026-03-12",
+      "added_at": "2026-03-12T14:26:00+00:00",
+      "last_thought_at": "2026-03-13T18:52:15.039996+00:00",
+      "resolved": false,
+      "thought_count": 13
+    },
+    {
+      "id": "q_self_trigger001",
+      "text": "人的'内驱'有多少是真正内源的，有多少是身体内稳态（饿、无聊、皮质醇）伪装成思维自发性？如果驱动力完全来自内部生理信号，自由意志在哪里？",
+      "priority": 6.5,
+      "source": "conversation/2026-03-13",
+      "added_at": "2026-03-13T11:30:00+00:00",
+      "last_thought_at": null,
+      "resolved": false,
+      "thought_count": 0
+    }
+  ],
+  "stats": {
+    "total_self_awakenings": 13,
+    "total_questions_resolved": 0
+  }
+}

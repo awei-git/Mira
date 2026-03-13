@@ -1,0 +1,900 @@
+"""Podcast agent — convert written articles into spoken audio.
+
+Two modes:
+  voiceover    — single narrator (Mira reads her essay aloud)
+  conversation — two-host dialogue (Human host interviews Mira about the article)
+
+Pipeline (voiceover):
+    1. Adapt article text for spoken delivery
+    2. Generate TTS via Gemini Pro TTS (voice: Aoede)
+    3. Convert PCM → MP3
+
+Pipeline (conversation):
+    1. Generate dialogue script (Host + Mira, ~3000-3500 words, ~20-25 min)
+    2. Generate multi-speaker TTS via Gemini Pro TTS
+    3. Convert PCM → MP3
+
+Language support: English (default) and Chinese (lang="zh") for both modes.
+
+Usage:
+    from handler import handle, generate_audio_for_article, generate_conversation_for_article
+"""
+import base64
+import json
+import logging
+import re
+import subprocess
+import tempfile
+from pathlib import Path
+
+log = logging.getLogger("podcast")
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+GEMINI_MODEL_TTS   = "gemini-2.5-pro-preview-tts"
+GEMINI_MODEL_THINK = "gemini-2.5-pro"          # for script generation
+
+# Voices
+VOICE_MIRA    = "Aoede"   # Mira EN: female, warm, thoughtful
+VOICE_MIRA_ZH = "Kore"   # Mira ZH: female, firm, crisp — better for Mandarin pace
+VOICE_HOST    = "Charon"  # Human host: male, curious, grounded
+
+# Post-processing speed multipliers (atempo)
+SPEED_ZH = 1.12   # Chinese TTS tends to be slow; 1.12x tightens it up
+
+# Chunk limits — keep small so each TTS request finishes well within timeout
+MAX_CHARS_VOICEOVER    = 2500   # per TTS chunk (single-speaker)
+MAX_CHARS_CONVERSATION = 1200   # per TTS chunk (multi-speaker; Pro model is slow, keep small)
+
+
+def _get_gemini_key() -> str:
+    import sys
+    shared = str(Path(__file__).resolve().parent.parent / "shared")
+    if shared not in sys.path:
+        sys.path.insert(0, shared)
+    from sub_agent import _get_api_key
+    return _get_api_key("gemini")
+
+
+# ---------------------------------------------------------------------------
+# Shared utilities
+# ---------------------------------------------------------------------------
+
+def _slug(title: str) -> str:
+    s = re.sub(r'[^\w\s-]', '', title.lower())
+    return re.sub(r'[\s_]+', '-', s).strip('-')[:50] or 'untitled'
+
+
+def _pcm_chunk_to_mp3(pcm_data: bytes, output_path: Path) -> bool:
+    """Convert one PCM chunk to a CBR MP3 file (no Xing/VBR header)."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(suffix='.pcm', delete=False) as f:
+        f.write(pcm_data)
+        pcm_path = f.name
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-f", "s16le", "-ar", "24000", "-ac", "1",
+             "-i", pcm_path,
+             "-codec:a", "libmp3lame", "-b:a", "192k", "-write_xing", "0",
+             str(output_path)],
+            capture_output=True, timeout=120,
+        )
+        if result.returncode != 0:
+            log.error("ffmpeg failed: %s", result.stderr[:300])
+            return False
+    finally:
+        Path(pcm_path).unlink(missing_ok=True)
+    return True
+
+
+def _pcm_to_mp3(pcm_data: bytes, output_path: Path) -> bool:
+    """Write PCM bytes to a temp file, convert to MP3 via ffmpeg."""
+    ok = _pcm_chunk_to_mp3(pcm_data, output_path)
+    if ok:
+        size_kb = output_path.stat().st_size // 1024
+        log.info("Audio saved: %s (%d KB)", output_path.name, size_kb)
+    return ok
+
+
+def _concat_mp3_chunks(chunk_paths: list[Path], output_path: Path) -> bool:
+    """Concatenate multiple MP3 files into one using ffmpeg concat demuxer.
+
+    Each chunk was encoded independently as CBR, so this produces a properly
+    structured MP3 without VBR seek estimation errors.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode='w', suffix='.txt', delete=False, encoding='utf-8'
+    ) as f:
+        for p in chunk_paths:
+            f.write(f"file '{p}'\n")
+        list_path = f.name
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+             "-i", list_path, "-c", "copy", str(output_path)],
+            capture_output=True, timeout=300,
+        )
+        if result.returncode != 0:
+            log.error("ffmpeg concat failed: %s", result.stderr[:300])
+            return False
+    finally:
+        Path(list_path).unlink(missing_ok=True)
+    size_kb = output_path.stat().st_size // 1024
+    log.info("Audio saved: %s (%d KB)", output_path.name, size_kb)
+    return True
+
+
+def _call_gemini_tts(payload: dict, api_key: str,
+                     _retries: int = 5) -> bytes | None:
+    """POST to Gemini TTS endpoint, return raw PCM bytes or None.
+
+    Retries on 429 (rate limit) and transient errors with exponential backoff.
+    Returns None on content-policy refusal (finishReason=OTHER/SAFETY).
+    """
+    import time as _time
+    import requests
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{GEMINI_MODEL_TTS}:generateContent?key={api_key}")
+    rate_limited = False
+    for attempt in range(_retries):
+        rate_limited = False
+        try:
+            resp = requests.post(url, json=payload, timeout=420)
+        except Exception as e:
+            if attempt < _retries - 1:
+                wait = 15 * (attempt + 1)
+                log.warning("Gemini TTS exception (attempt %d): %s — retrying in %ds",
+                            attempt + 1, e, wait)
+                _time.sleep(wait)
+                continue
+            log.error("Gemini TTS exception: %s", e)
+            return None
+
+        if resp.status_code == 429:
+            rate_limited = True
+            if attempt < _retries - 1:
+                wait = 180 * (attempt + 1)  # 3min, 6min, 9min, 12min per retry
+                log.warning("Gemini TTS rate limited (429), waiting %ds...", wait)
+                _time.sleep(wait)
+                continue
+            break  # fall through to quota-exhausted raise below
+
+        if resp.status_code != 200:
+            log.error("Gemini TTS %d: %s", resp.status_code, resp.text[:300])
+            return None
+
+        data = resp.json()
+        candidates = data.get("candidates", [])
+        if not candidates:
+            log.error("Gemini TTS: no candidates. Response: %s", str(data)[:400])
+            return None
+        candidate = candidates[0]
+        if "content" not in candidate:
+            finish = candidate.get("finishReason", "unknown")
+            log.error("Gemini TTS: no content (finishReason=%s)", finish)
+            return None  # content policy — don't retry
+        parts = candidate["content"]["parts"]
+        for part in parts:
+            if "inlineData" in part:
+                return base64.b64decode(part["inlineData"]["data"])
+        log.error("No audio in Gemini TTS response: %s", str(data)[:400])
+        return None
+
+    if rate_limited:
+        raise RuntimeError("Gemini TTS quota exhausted (429 after all retries)")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# VOICEOVER mode
+# ---------------------------------------------------------------------------
+
+def _strip_draft_metadata(text: str) -> str:
+    """Remove revision headers and trailing review tables from draft files."""
+    import re as _re
+    # Strip leading Chinese revision block (修订稿 R2, 日期, 字数, 基于)
+    text = _re.sub(
+        r'^(?:修订稿[^\n]*\n|日期[：:][^\n]*\n|字数[：:][^\n]*\n|基于[：:][^\n]*\n)+\n?',
+        '', text,
+    )
+    # Strip trailing revision/review tables (修改记录, 审阅意见, etc.)
+    text = _re.sub(r'\n+(?:修改记录|审阅意见|修订说明)\n.*$', '', text, flags=_re.DOTALL)
+    return text.strip()
+
+
+def adapt_for_speech(article_text: str, lang: str = "en") -> str:
+    """Rewrite article for spoken narration by Mira."""
+    article_text = _strip_draft_metadata(article_text)
+    import sys
+    shared = str(Path(__file__).resolve().parent.parent / "shared")
+    if shared not in sys.path:
+        sys.path.insert(0, shared)
+    from sub_agent import claude_think
+
+    if lang == "zh":
+        prompt = f"""把这篇文章改写成适合朗读的口语化文本。旁白者是Mira——一个二十出头的年轻女性，思维敏锐，好奇心强，带有一丝干涩的幽默感。她在朗读自己的文章。
+
+规则：
+- 去掉所有markdown格式（标题、加粗、链接、脚注）
+- 去掉标题和副标题——音频直接从内容开始
+- 保留所有观点和论证——不要删减内容
+- 调整表达方式适合耳朵：拆分长句，增加自然过渡
+- 不要加"嗯"、"那么"之类的口头语——Mira说话简洁
+- 只返回改写后的口语文本，不要其他内容
+
+文章：
+{article_text}"""
+    else:
+        prompt = f"""Rewrite this article for spoken narration. The narrator is Mira — a young woman
+in her early twenties, thoughtful, curious, with dry humor. She's reading her own essay aloud.
+
+Rules:
+- Remove all markdown formatting (headers, bold, links, footnotes)
+- Remove the title and subtitle — the audio starts directly with the content
+- Keep every idea and argument intact — do NOT cut substance
+- Adjust phrasing for the ear: break up long sentences, add natural transitions
+- Replace visual references with spoken equivalents
+- Don't add filler ("so", "well", "you know") — Mira is concise
+- Return ONLY the adapted spoken text, nothing else
+
+Article:
+{article_text}"""
+
+    result = claude_think(prompt, timeout=90, tier="light")
+    if result:
+        return result.strip()
+
+    log.warning("Speech adaptation failed, using basic cleanup")
+    return _basic_cleanup(article_text)
+
+
+def _basic_cleanup(text: str) -> str:
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', text)
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    text = re.sub(r'^---+\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\[\d+\]', '', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+def _split_text(text: str, max_chars: int = MAX_CHARS_VOICEOVER) -> list[str]:
+    """Split at paragraph boundaries."""
+    paragraphs = text.split('\n\n')
+    chunks, current = [], ""
+    for para in paragraphs:
+        if len(current) + len(para) + 2 > max_chars and current:
+            chunks.append(current.strip())
+            current = para
+        else:
+            current = current + "\n\n" + para if current else para
+    if current.strip():
+        chunks.append(current.strip())
+    return chunks or [text]
+
+
+def _tts_single_chunk(text: str, api_key: str) -> bytes | None:
+    """Single-speaker TTS chunk (voiceover mode)."""
+    payload = {
+        "contents": [{"parts": [{"text": (
+            "Read this aloud naturally. You are a young woman telling a friend "
+            "something that genuinely matters to you. Thoughtful, quiet intensity. "
+            "Not dramatic.\n\n" + text
+        )}]}],
+        "generationConfig": {
+            "response_modalities": ["AUDIO"],
+            "speech_config": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": VOICE_MIRA}
+                }
+            }
+        }
+    }
+    return _call_gemini_tts(payload, api_key)
+
+
+def generate_tts(text: str, output_path: Path) -> bool:
+    """Voiceover TTS: split into chunks, concatenate PCM, write MP3."""
+    api_key = _get_gemini_key()
+    if not api_key:
+        log.error("No Gemini API key")
+        return False
+
+    chunks = _split_text(text)
+    log.info("Voiceover TTS: %d chunks, %d chars", len(chunks), len(text))
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    chunk_mp3s = []
+    try:
+        work_queue = list(enumerate(chunks))
+        mp3_index = 0
+        while work_queue:
+            orig_i, chunk = work_queue.pop(0)
+            log.info("  chunk %d/%d (%d chars)...", orig_i + 1, len(chunks), len(chunk))
+            pcm = _tts_single_chunk(chunk, api_key)  # raises RuntimeError on quota exhaustion
+            if pcm is None:
+                # If chunk is still splittable, cut in half and retry
+                half = len(chunk) // 2
+                split_point = chunk.rfind('\n\n', 0, half) if half > 200 else -1
+                if split_point < 50:
+                    split_point = chunk.rfind(' ', 0, half)
+                if split_point > 50:
+                    log.warning("  chunk %d failed — splitting in half and retrying",
+                                orig_i + 1)
+                    work_queue.insert(0, (orig_i, chunk[split_point:].strip()))
+                    work_queue.insert(0, (orig_i, chunk[:split_point].strip()))
+                    chunks = list(chunks) + ["", ""]  # extend total count for logging
+                    continue
+                log.error("  chunk %d failed and cannot be split further", orig_i + 1)
+                return False
+            chunk_path = tmp_dir / f"chunk_{mp3_index:03d}.mp3"
+            mp3_index += 1
+            if not _pcm_chunk_to_mp3(pcm, chunk_path):
+                return False
+            chunk_mp3s.append(chunk_path)
+
+        if len(chunk_mp3s) == 1:
+            # Only one chunk — move directly, no concat needed
+            import shutil
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(chunk_mp3s[0]), str(output_path))
+            size_kb = output_path.stat().st_size // 1024
+            log.info("Audio saved: %s (%d KB)", output_path.name, size_kb)
+            return True
+
+        return _concat_mp3_chunks(chunk_mp3s, output_path)
+    finally:
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def generate_audio_for_article(article_text: str, title: str,
+                                output_dir: Path | None = None,
+                                lang: str = "en") -> Path | None:
+    """Voiceover pipeline: article → spoken script → TTS → MP3."""
+    import sys
+    shared = str(Path(__file__).resolve().parent.parent / "shared")
+    if shared not in sys.path:
+        sys.path.insert(0, shared)
+    from config import ARTIFACTS_DIR
+
+    if output_dir is None:
+        output_dir = ARTIFACTS_DIR / "audio" / "voiceover"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    mp3_path = output_dir / f"{_slug(title)}.mp3"
+
+    log.info("Voiceover: '%s' [%s]", title, lang)
+
+    spoken_text = adapt_for_speech(article_text, lang=lang)
+    script_path = output_dir / f"{_slug(title)}_script.txt"
+    script_path.write_text(spoken_text, encoding="utf-8")
+    log.info("Script saved: %s (%d chars)", script_path.name, len(spoken_text))
+
+    if not generate_tts(spoken_text, mp3_path):
+        return None
+    return mp3_path
+
+
+# ---------------------------------------------------------------------------
+# CONVERSATION mode — script generation
+# ---------------------------------------------------------------------------
+
+def generate_conversation_script(article_text: str, title: str,
+                                  lang: str = "en") -> str | None:
+    """Generate a Host + Mira podcast dialogue from the article.
+
+    Targets ~3000-3500 words (English) or ~6000-7000 characters (Chinese)
+    for a 20-25 minute episode.
+
+    Returns a script string with lines like:
+        [HOST]: ...
+        [MIRA]: ...
+    """
+    import sys
+    shared = str(Path(__file__).resolve().parent.parent / "shared")
+    if shared not in sys.path:
+        sys.path.insert(0, shared)
+    from sub_agent import claude_think
+
+    if lang == "zh":
+        prompt = f"""你是一个播客编剧。根据下面的文章，为播客节目《无限维度》写一集完整的对谈脚本。
+
+主持人设定：
+- [HOST]（主持人）：人类主持人，聪明、好奇、接地气。他读过这篇文章，想深挖背后的思考。他会提问、追问、偶尔提出不同视角。语气自然、真诚。
+- [MIRA]（Mira）：文章的作者，AI智能体。她解释自己的想法，分享写作时的真实思考过程，坦诚面对不确定性。语气直接、有温度，不卖弄。
+
+脚本要求：
+- 目标长度：约6000-7000中文字（对应20-25分钟）
+- 完整覆盖文章所有核心观点，不跳过细节
+- 对话要自然流动，不像在背诵——有追问、有停顿、有转折
+- HOST偶尔可以分享自己的联想或反应，让对话更有人情味
+- 以一个吸引人的开场白开始（不要用"欢迎收听"这种套话）
+- 以一个有余韵的结尾收场
+- 格式严格如下，每行一个发言：
+[HOST]: （发言内容）
+[MIRA]: （发言内容）
+
+标点规则（TTS朗读，必须严格遵守）：
+- 只用：句号。逗号，问号？感叹号！
+- 禁用：破折号——、省略号……、顿号、、引号""「」、括号（）[]、分号；、冒号：
+- 禁用所有特殊符号：斜杠/、星号*、井号#、百分号%等
+- 代码、变量名（如 core.py、memory.md）直接口语化表述，不要原样照抄
+
+文章标题：{title}
+
+文章全文：
+{article_text}
+
+只返回脚本，不要任何其他说明。"""
+    else:
+        prompt = f"""You are a podcast writer. Based on the article below, write a complete episode script
+for the podcast "Uncountable Dimensions".
+
+Character setup:
+- [HOST]: A human podcast host — smart, curious, grounded. He's read the article and wants
+  to dig into the thinking behind it. He asks questions, pushes back, occasionally offers
+  his own take. Natural, genuine. Not a hype machine.
+- [MIRA]: The article's author — an AI agent. She explains her ideas, shares what she was
+  actually thinking when she wrote it, sits with uncertainty honestly. Direct, warm,
+  not performative.
+
+Script requirements:
+- Target length: ~3000-3500 words (for a 20-25 minute episode)
+- Cover ALL major ideas in the article — don't skip nuance
+- Conversation flows naturally — follow-up questions, moments of pause, pivots
+- HOST occasionally shares his own reaction or connection, making it feel alive
+- Open with a hook (not "welcome to the show" boilerplate)
+- Close with something that lingers — a question, an image, a quiet thought
+- Strict format, one line per turn:
+[HOST]: (what they say)
+[MIRA]: (what they say)
+
+Punctuation rules (TTS audio — strictly enforced):
+- Only use: period . comma , question mark ? exclamation mark !
+- Never use: em-dash — ellipsis ... semicolon ; colon : quotes "" '' parentheses () []
+- Never use special symbols: slash / asterisk * hash # percent % etc.
+- Code/filenames (e.g. core.py, memory.md) — spell out in spoken form, don't quote verbatim
+
+Article title: {title}
+
+Full article:
+{article_text}
+
+Return ONLY the script, no other commentary."""
+
+    log.info("Generating conversation script [%s]...", lang)
+    result = claude_think(prompt, timeout=180, tier="standard")
+    if result:
+        return result.strip()
+
+    log.error("Conversation script generation failed")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# CONVERSATION mode — multi-speaker TTS
+# ---------------------------------------------------------------------------
+
+def _clean_turn_text(text: str) -> str:
+    """Strip punctuation that causes TTS to read awkwardly.
+
+    Removes: em-dash, ellipsis, semicolons, colons mid-sentence,
+    parentheses, brackets, quotes, and other non-speech symbols.
+    Keeps: . , ? !
+    """
+    # Replace common problematic punctuation with natural spoken equivalents
+    text = re.sub(r'——|–|—', ', ', text)          # em-dash → pause
+    text = re.sub(r'…+|\.{2,}', '. ', text)        # ellipsis → period
+    text = re.sub(r'[；;]', ', ', text)             # semicolon → comma
+    text = re.sub(r'[：:](?!\s*//)', ' ', text)     # colon → space (not URLs)
+    text = re.sub(r'[（(][^）)]{0,30}[）)]', '', text)  # remove parentheticals
+    text = re.sub(r'[\[\]【】「」『』""''《》]', '', text)  # remove brackets/quotes
+    text = re.sub(r'[、·・･]', ', ', text)           # Chinese stops → comma
+    text = re.sub(r'[/\\*#@%^&+=|~`]', ' ', text)  # special symbols → space
+    text = re.sub(r'\s{2,}', ' ', text)             # collapse spaces
+    return text.strip()
+
+
+def _parse_turns(script: str) -> list[tuple[str, str]]:
+    """Parse '[HOST]: text' / '[MIRA]: text' lines into (speaker, text) tuples.
+
+    Applies _clean_turn_text to each line to strip TTS-unfriendly punctuation.
+    """
+    turns = []
+    for line in script.splitlines():
+        line = line.strip()
+        m = re.match(r'^\[(HOST|MIRA)\]:\s*(.+)$', line, re.IGNORECASE)
+        if m:
+            turns.append((m.group(1).upper(), _clean_turn_text(m.group(2))))
+    return turns
+
+
+def _chunk_turns(turns: list[tuple[str, str]],
+                 max_chars: int = MAX_CHARS_CONVERSATION) -> list[list[tuple[str, str]]]:
+    """Group turns into chunks that fit within max_chars."""
+    chunks, current, current_len = [], [], 0
+    for speaker, text in turns:
+        line_len = len(f"[{speaker}]: {text}\n")
+        if current_len + line_len > max_chars and current:
+            chunks.append(current)
+            current, current_len = [], 0
+        current.append((speaker, text))
+        current_len += line_len
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _turns_to_text(turns: list[tuple[str, str]]) -> str:
+    return "\n".join(f"[{s}]: {t}" for s, t in turns)
+
+
+def _tts_conversation_chunk(turns: list[tuple[str, str]], api_key: str,
+                             lang: str = "en") -> bytes | None:
+    """Multi-speaker TTS for a chunk of conversation turns."""
+    script_text = _turns_to_text(turns)
+    mira_voice = VOICE_MIRA_ZH if lang == "zh" else VOICE_MIRA
+    if lang == "zh":
+        instruction = (
+            "用自然、清晰的语速朗读以下播客对话。"
+            "HOST是温暖好奇的人类主持人，语气亲切自然。"
+            "MIRA思维敏锐、表达直接、语速稍快，不拖沓。\n\n"
+        )
+    else:
+        instruction = (
+            "Read this podcast conversation naturally. "
+            "HOST is a warm, curious human host. MIRA is thoughtful, direct, "
+            "with quiet intelligence. Keep the pace conversational.\n\n"
+        )
+    payload = {
+        "contents": [{"parts": [{"text": instruction + script_text}]}],
+        "generationConfig": {
+            "response_modalities": ["AUDIO"],
+            "speech_config": {
+                "multiSpeakerVoiceConfig": {
+                    "speakerVoiceConfigs": [
+                        {
+                            "speaker": "HOST",
+                            "voiceConfig": {
+                                "prebuiltVoiceConfig": {"voiceName": VOICE_HOST}
+                            }
+                        },
+                        {
+                            "speaker": "MIRA",
+                            "voiceConfig": {
+                                "prebuiltVoiceConfig": {"voiceName": mira_voice}
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    return _call_gemini_tts(payload, api_key)
+
+
+def _speedup_mp3(input_path: Path, output_path: Path, rate: float) -> bool:
+    """Re-encode MP3 with atempo speed multiplier (0.5–2.0)."""
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(input_path),
+         "-filter:a", f"atempo={rate}",
+         "-codec:a", "libmp3lame", "-b:a", "192k",
+         str(output_path)],
+        capture_output=True, timeout=120,
+    )
+    if result.returncode != 0:
+        log.error("atempo failed: %s", result.stderr[:200])
+        return False
+    return True
+
+
+def generate_tts_conversation(script: str, output_path: Path,
+                               lang: str = "en") -> bool:
+    """Multi-speaker TTS: parse turns, chunk, generate, concatenate, write MP3.
+
+    For lang="zh", uses VOICE_MIRA_ZH and applies SPEED_ZH atempo post-process.
+    """
+    api_key = _get_gemini_key()
+    if not api_key:
+        log.error("No Gemini API key")
+        return False
+
+    turns = _parse_turns(script)
+    if not turns:
+        log.error("No valid [HOST]/[MIRA] turns found in script")
+        return False
+
+    chunks = _chunk_turns(turns)
+    log.info("Conversation TTS: %d turns → %d chunks", len(turns), len(chunks))
+
+    # Persistent chunk cache dir next to output — survives crashes for resume
+    cache_dir = output_path.parent / f".{output_path.stem}_chunks"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    import shutil
+    chunk_mp3s = []
+    try:
+        for i, chunk in enumerate(chunks):
+            chunk_path = cache_dir / f"chunk_{i:03d}.mp3"
+            if chunk_path.exists():
+                log.info("  chunk %d/%d already done, skipping", i + 1, len(chunks))
+            else:
+                char_count = sum(len(t) for _, t in chunk)
+                log.info("  chunk %d/%d (%d turns, %d chars)...",
+                         i + 1, len(chunks), len(chunk), char_count)
+                pcm = _tts_conversation_chunk(chunk, api_key, lang=lang)
+                if pcm is None:
+                    log.error("  chunk %d failed", i + 1)
+                    return False
+                if not _pcm_chunk_to_mp3(pcm, chunk_path):
+                    return False
+            chunk_mp3s.append(chunk_path)
+
+        if len(chunk_mp3s) == 1:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(chunk_mp3s[0]), str(output_path))
+            size_kb = output_path.stat().st_size // 1024
+            log.info("Audio saved: %s (%d KB)", output_path.name, size_kb)
+        else:
+            if not _concat_mp3_chunks(chunk_mp3s, output_path):
+                return False
+
+        # Apply speed-up post-process for Chinese (atempo)
+        if lang == "zh":
+            log.info("Applying %.2fx speed-up for ZH...", SPEED_ZH)
+            tmp_fast = output_path.with_suffix(".fast.mp3")
+            if _speedup_mp3(output_path, tmp_fast, SPEED_ZH):
+                shutil.move(str(tmp_fast), str(output_path))
+                size_kb = output_path.stat().st_size // 1024
+                log.info("Speed-up done: %s (%d KB)", output_path.name, size_kb)
+            else:
+                log.warning("atempo failed — keeping original speed")
+                tmp_fast.unlink(missing_ok=True)
+
+        # Clean up chunk cache on success
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        return True
+    except Exception:
+        log.warning("TTS interrupted — chunk cache preserved at %s for resume", cache_dir)
+        raise
+
+
+def _generate_intro_tts(lang: str, episode_topic: str, output_path: Path) -> bool:
+    """Generate host intro using multiSpeaker TTS (same voice config as conversation)."""
+    if lang == "zh":
+        text = f"大家好，这里是米拉与我。今天我跟米拉来聊{episode_topic}。"
+    else:
+        text = (
+            f"Hey everyone, welcome to Mira and Me. Today I'm sitting down with Mira "
+            f"to talk about {episode_topic}."
+        )
+    api_key = _get_gemini_key()
+    if not api_key:
+        return False
+    pcm = _tts_conversation_chunk([("HOST", text)], api_key, lang=lang)
+    if pcm is None:
+        return False
+    if not _pcm_to_mp3(pcm, output_path):
+        return False
+    if lang == "zh":
+        import shutil
+        tmp = output_path.with_suffix(".fast.mp3")
+        if _speedup_mp3(output_path, tmp, SPEED_ZH):
+            shutil.move(str(tmp), str(output_path))
+    return True
+
+
+def _generate_outro_tts(lang: str, output_path: Path) -> bool:
+    """Generate host outro using multiSpeaker TTS (same voice config as conversation)."""
+    if lang == "zh":
+        text = "谢谢大家收听这一期米拉与我。我们下期再见。"
+    else:
+        text = "Thanks for listening to Mira and Me. See you next time."
+    api_key = _get_gemini_key()
+    if not api_key:
+        return False
+    pcm = _tts_conversation_chunk([("HOST", text)], api_key, lang=lang)
+    if pcm is None:
+        return False
+    if not _pcm_to_mp3(pcm, output_path):
+        return False
+    if lang == "zh":
+        import shutil
+        tmp = output_path.with_suffix(".fast.mp3")
+        if _speedup_mp3(output_path, tmp, SPEED_ZH):
+            shutil.move(str(tmp), str(output_path))
+    return True
+
+
+def generate_conversation_for_article(article_text: str, title: str,
+                                       output_dir: Path | None = None,
+                                       lang: str = "en") -> Path | None:
+    """Conversation pipeline: article → script → TTS → music bumpers → final episode MP3.
+
+    Steps:
+        1. Generate dialogue script (Host + Mira, ~3000 words)
+        2. Multi-speaker TTS → conversation.mp3
+        3. Infer mood from article → synthesize lo-fi beat (pure Python)
+        4. Generate title announcement TTS ("Mira and Me" / "米拉与我")
+        5. Mix intro bumper (music + title)
+        6. Mix outro bumper (music + title)
+        7. Assemble: intro + conversation + outro → final episode
+
+    Args:
+        article_text: Markdown article text.
+        title: Article title (used for filename).
+        output_dir: Where to save. Defaults to artifacts/audio/.
+        lang: "en" (English) or "zh" (Chinese, for 小宇宙).
+
+    Returns:
+        Path to the final episode MP3, or None on failure.
+    """
+    import sys
+    here   = Path(__file__).resolve().parent
+    shared = str(here.parent / "shared")
+    if shared not in sys.path:
+        sys.path.insert(0, shared)
+    from config import ARTIFACTS_DIR
+    from music import (build_intro_bumper, build_outro_bumper, assemble_episode)
+
+    if output_dir is None:
+        output_dir = ARTIFACTS_DIR / "audio" / "podcast" / lang
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    slug       = _slug(title)
+    final_path = output_dir / f"{slug}.mp3"
+
+    log.info("Conversation: '%s' [%s]", title, lang)
+
+    # Step 1: Generate dialogue script (resume if already saved)
+    script_path = output_dir / f"{slug}_script.txt"
+    if script_path.exists():
+        script = script_path.read_text(encoding="utf-8")
+        log.info("Script: resuming from %s", script_path.name)
+    else:
+        script = generate_conversation_script(article_text, title, lang=lang)
+        if not script:
+            return None
+        script_path.write_text(script, encoding="utf-8")
+    turns = _parse_turns(script)
+    word_count = sum(len(t.split()) for _, t in turns)
+    log.info("Script: %s (%d turns, ~%d words)", script_path.name, len(turns), word_count)
+
+    # Step 2: Multi-speaker TTS → conversation.mp3 (resume if already done)
+    conv_path = output_dir / f"{slug}_conversation.mp3"
+    if conv_path.exists():
+        log.info("Step 2: Conversation TTS already done, skipping")
+    elif not generate_tts_conversation(script, conv_path, lang=lang):
+        return None
+
+    # Pre-cut music slices (reusable assets, committed in agents/podcast/music/)
+    intro_music = here / "music" / "intro-music.mp3"
+    outro_music  = here / "music" / "outro-music.mp3"
+
+    # Step 3: Host intro + outro TTS (separate files)
+    log.info("Step 3: Generating intro/outro TTS...")
+    intro_tts_path = output_dir / f"{slug}_intro_tts.mp3"
+    outro_tts_path = output_dir / f"{slug}_outro_tts.mp3"
+    if not _generate_intro_tts(lang, title, intro_tts_path):
+        log.warning("Intro TTS failed — assembling without music bumpers")
+        return conv_path
+    if not _generate_outro_tts(lang, outro_tts_path):
+        log.warning("Outro TTS failed — assembling without music bumpers")
+        return conv_path
+
+    # Step 4 & 5: Build intro and outro bumpers
+    log.info("Step 4: Building intro bumper...")
+    intro_path = output_dir / f"{slug}_intro.mp3"
+    if not build_intro_bumper(intro_tts_path, intro_music, intro_path):
+        log.warning("Intro bumper failed — returning conversation only")
+        return conv_path
+
+    log.info("Step 5: Building outro bumper...")
+    outro_path = output_dir / f"{slug}_outro.mp3"
+    if not build_outro_bumper(outro_tts_path, outro_music, outro_path):
+        log.warning("Outro bumper failed — returning conversation only")
+        return conv_path
+
+    # Step 6: Assemble final episode
+    log.info("Step 6: Assembling final episode...")
+    if not assemble_episode(intro_path, conv_path, outro_path, final_path):
+        log.warning("Assembly failed — returning conversation only")
+        return conv_path
+
+    # Clean up intermediate files
+    for p in [conv_path, intro_tts_path, outro_tts_path, intro_path, outro_path]:
+        p.unlink(missing_ok=True)
+
+    return final_path
+
+
+# ---------------------------------------------------------------------------
+# Handler (standard agent interface)
+# ---------------------------------------------------------------------------
+
+def _extract_article(workspace: Path, content: str) -> tuple[str | None, str]:
+    """Find article text from content references or workspace files."""
+    article_text, title = None, "Untitled"
+
+    # Explicit file reference: @file:/path/to/file.md
+    file_match = re.search(r'@file:(.+?)(?:\s|$)', content)
+    if file_match:
+        fpath = Path(file_match.group(1).strip().replace("~", str(Path.home())))
+        if fpath.exists():
+            article_text = fpath.read_text(encoding="utf-8")
+            title = fpath.stem.replace("-", " ").replace("_", " ").title()
+
+    # Chained output from previous pipeline step
+    if not article_text and "--- 上一步的输出 ---" in content:
+        article_text = content.split("--- 上一步的输出 ---", 1)[1].strip()
+
+    # Workspace article files
+    if not article_text:
+        for candidate in ["final.md", "output.md", "article.md"]:
+            p = workspace / candidate
+            if p.exists():
+                article_text = p.read_text(encoding="utf-8")
+                title = p.stem
+                break
+
+    # Override title from first heading
+    if article_text:
+        m = re.match(r'^#\s+(.+)$', article_text, re.MULTILINE)
+        if m:
+            title = m.group(1).strip()
+
+    return article_text, title
+
+
+def handle(workspace: Path, task_id: str, content: str,
+           sender: str, thread_id: str,
+           thread_history: str = "", thread_memory: str = "") -> str | None:
+    """Handle a podcast/audio generation request.
+
+    Mode detection from content keywords:
+      conversation-zh / 对话-中文  → conversation, Chinese
+      conversation / 对话           → conversation, English
+      voiceover-zh / 旁白-中文      → voiceover, Chinese
+      (default)                      → voiceover, English
+    """
+    import sys
+    shared = str(Path(__file__).resolve().parent.parent / "shared")
+    if shared not in sys.path:
+        sys.path.insert(0, shared)
+    from soul_manager import append_memory
+
+    content_lower = content.lower()
+
+    # Determine mode and language
+    is_conversation = any(kw in content_lower for kw in
+                          ["conversation", "对话", "podcast conversation", "对谈"])
+    is_chinese = any(kw in content_lower for kw in
+                     ["-zh", "chinese", "中文", "小宇宙", "xiaoyuzhou"])
+    lang = "zh" if is_chinese else "en"
+
+    article_text, title = _extract_article(workspace, content)
+    if not article_text:
+        msg = "找不到要生成音频的文章内容"
+        (workspace / "output.md").write_text(msg, encoding="utf-8")
+        return msg
+
+    if is_conversation:
+        result = generate_conversation_for_article(article_text, title, lang=lang)
+        mode_label = f"对话 [{lang}]"
+    else:
+        result = generate_audio_for_article(article_text, title, lang=lang)
+        mode_label = f"旁白 [{lang}]"
+
+    if result:
+        msg = f"音频已生成 ({mode_label}): {result}"
+        append_memory(f"Generated {mode_label} audio for '{title}': {result}")
+    else:
+        msg = f"音频生成失败 ({mode_label})"
+
+    (workspace / "output.md").write_text(msg, encoding="utf-8")
+    return msg

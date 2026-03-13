@@ -193,7 +193,7 @@ def _revise_screenplay(workspace: Path, state: dict, feedback: str) -> str:
 - 如果用户想加/减内容，调整片段选择
 - 输出完整的修改后 screenplay，不要解释"""
 
-    revised = claude_think(prompt, timeout=120)
+    revised = claude_think(prompt, timeout=120, tier="light")
     if not revised:
         return "修改失败，请再说一次你想怎么调整"
 

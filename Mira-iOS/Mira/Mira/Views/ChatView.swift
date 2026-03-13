@@ -17,6 +17,7 @@ struct ChatView: View {
     @State private var scrollProxy: ScrollViewProxy?
     @FocusState private var inputFocused: Bool
     @FocusState private var searchFocused: Bool
+    @State private var showOlderMessages = false
 
     /// Messages filtered by current thread
     private var filteredMessages: [TBMessage] {
@@ -29,6 +30,24 @@ struct ChatView: View {
             msgs = msgs.filter { $0.content.lowercased().contains(query) }
         }
         return msgs
+    }
+
+    /// Recent messages (today + yesterday); older ones hidden behind "show more"
+    private var recentMessages: [TBMessage] {
+        if showOlderMessages || !bridge.currentThreadId.isEmpty || !activeSearch.isEmpty {
+            return filteredMessages
+        }
+        let cal = Calendar.current
+        return filteredMessages.filter { msg in
+            cal.isDateInToday(msg.date) || cal.isDateInYesterday(msg.date)
+        }
+    }
+
+    private var olderMessageCount: Int {
+        if showOlderMessages || !bridge.currentThreadId.isEmpty || !activeSearch.isEmpty {
+            return 0
+        }
+        return filteredMessages.count - recentMessages.count
     }
 
     var body: some View {
@@ -94,7 +113,20 @@ struct ChatView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 6) {
-                            ForEach(filteredMessages) { msg in
+                            // "Show older" button
+                            if olderMessageCount > 0 {
+                                Button {
+                                    withAnimation { showOlderMessages = true }
+                                } label: {
+                                    Text("显示更早的 \(olderMessageCount) 条消息")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.blue)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 8)
+                                }
+                            }
+
+                            ForEach(recentMessages) { msg in
                                 ChatBubble(
                                     message: msg,
                                     ackStatus: bridge.ackStatus(for: msg.id),
@@ -112,7 +144,7 @@ struct ChatView: View {
                         scrollProxy = proxy
                         scrollToBottom(proxy)
                     }
-                    .onChange(of: filteredMessages.count) {
+                    .onChange(of: recentMessages.count) {
                         scrollToBottom(proxy)
                     }
                 }

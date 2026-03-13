@@ -1,0 +1,98 @@
+[
+  {
+    "name": "Abstraction and Generalization",
+    "description": "Identify the essential structure behind a specific problem and extend it to a broader class.",
+    "file": "abstraction-and-generalization.md",
+    "tags": ["math", "research", "abstraction", "pattern-recognition", "problem-solving"]
+  },
+  {
+    "name": "Advanced Proof Tactics",
+    "description": "Compactness, probabilistic method, double counting, extremality, and topological invariants for hard theorems.",
+    "file": "advanced-proof-tactics.md",
+    "tags": ["math", "proof", "compactness", "probabilistic-method", "topology", "analysis"]
+  },
+  {
+    "name": "Asymptotic Analysis",
+    "description": "Big-O notation, Laplace method, saddle-point method, Stirling, Watson's lemma for asymptotic expansions.",
+    "file": "asymptotic-analysis.md",
+    "tags": ["math", "analysis", "asymptotics", "Laplace-method", "saddle-point"]
+  },
+  {
+    "name": "Computational Verification",
+    "description": "Validate mathematical claims through numeric computation or symbolic algebra before investing proof effort.",
+    "file": "computational-verification.md",
+    "tags": ["math", "computation", "verification", "experimental-math"]
+  },
+  {
+    "name": "Conjecture Formulation and Testing",
+    "description": "Systematic workflow for generating, sharpening, stress-testing, and deciding whether to prove a conjecture.",
+    "file": "conjecture-formulation.md",
+    "tags": ["math", "research", "conjectures", "counterexamples", "discovery"]
+  },
+  {
+    "name": "Gaussian Moment Inequalities",
+    "description": "Bound expectations of products/absolute values of Gaussian variables using permanents, hafnians, and Wick formula.",
+    "file": "gaussian-moment-inequalities.md",
+    "tags": ["math", "probability", "gaussian", "inequalities", "permanents"]
+  },
+  {
+    "name": "Literature Synthesis",
+    "description": "Extract, connect, and organize results across multiple papers into a coherent knowledge structure.",
+    "file": "literature-synthesis.md",
+    "tags": ["math", "research", "literature-review", "knowledge-management"]
+  },
+  {
+    "name": "Math Paper Writing",
+    "description": "Structure, exposition, LaTeX conventions, and revision workflow for writing rigorous mathematics papers.",
+    "file": "math-paper-writing.md",
+    "tags": ["math", "writing", "latex", "exposition", "publishing"]
+  },
+  {
+    "name": "Mathematical Problem-Solving Heuristics",
+    "description": "Polya's four-phase framework plus 12 core heuristic moves and Tao-style research heuristics.",
+    "file": "problem-solving-heuristics.md",
+    "tags": ["math", "problem-solving", "heuristics", "research", "strategy"]
+  },
+  {
+    "name": "Proof Strategy Selection",
+    "description": "Choose the most effective proof technique (direct, contradiction, induction, compactness, etc.) for a given theorem type.",
+    "file": "proof-strategy-selection.md",
+    "tags": ["math", "proof", "reasoning", "strategy"]
+  },
+  {
+    "name": "Random Zeros and Rice Formula",
+    "description": "Count expected zeros of random polynomial/analytic/harmonic functions using the Kac-Rice formula.",
+    "file": "random-zeros-rice-formula.md",
+    "tags": ["math", "probability", "random-polynomials", "rice-formula", "gaussian"]
+  },
+  {
+    "name": "Reading Mathematics Papers",
+    "description": "Efficient strategies for reading and extracting insight from research papers at different depth levels.",
+    "file": "reading-math-papers.md",
+    "tags": ["math", "research", "paper-reading", "comprehension"]
+  },
+  {
+    "name": "Small Deviation Probabilities",
+    "description": "Estimate P(||X|| < ε) as ε→0 for Gaussian processes via negative moments, blocking, and permanent bounds.",
+    "file": "small-deviation-probabilities.md",
+    "tags": ["math", "probability", "gaussian", "small-deviation", "negative-moments"]
+  },
+  {
+    "name": "SPDE Uniqueness Techniques",
+    "description": "Yamada-Watanabe, BDSDE, and Malliavin calculus methods for existence and uniqueness of stochastic PDEs.",
+    "file": "spde-uniqueness-techniques.md",
+    "tags": ["math", "probability", "stochastic-pde", "uniqueness", "malliavin"]
+  },
+  {
+    "name": "Spin Glass Models and Gaussian Bounds",
+    "description": "Khatri-Sidak inequality and Gaussian comparison tools for bounding maxima of correlated Gaussian fields.",
+    "file": "spin-glass-gaussian-bounds.md",
+    "tags": ["math", "probability", "statistical-physics", "gaussian-comparison"]
+  },
+  {
+    "name": "Stochastic Process Fundamentals",
+    "description": "Brownian motion, martingales, Poisson processes, Gaussian processes, and key comparison inequalities.",
+    "file": "stochastic-process-fundamentals.md",
+    "tags": ["math", "probability", "stochastic-processes", "martingales", "gaussian"]
+  }
+]

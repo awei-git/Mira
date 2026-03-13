@@ -5,6 +5,8 @@ struct TasksView: View {
     var bridge: BridgeService
     @State private var showNewTask = false
     @State private var filter: TaskFilter = .all
+    @State private var collapsedSections: Set<String> = []  // sections the user manually collapsed
+    @State private var expandedSections: Set<String> = []   // older sections the user manually expanded
 
     enum TaskFilter: String, CaseIterable {
         case all = "全部"
@@ -79,7 +81,23 @@ struct TasksView: View {
                 } else {
                     List {
                         ForEach(groupedByDay, id: \.key) { group in
-                            Section {
+                            let isRecent = group.key == "今天" || group.key == "昨天"
+                            let isExpanded = isRecent
+                                ? !collapsedSections.contains(group.key)
+                                : expandedSections.contains(group.key)
+
+                            Section(isExpanded: Binding(
+                                get: { isExpanded },
+                                set: { newVal in
+                                    if isRecent {
+                                        if newVal { collapsedSections.remove(group.key) }
+                                        else { collapsedSections.insert(group.key) }
+                                    } else {
+                                        if newVal { expandedSections.insert(group.key) }
+                                        else { expandedSections.remove(group.key) }
+                                    }
+                                }
+                            )) {
                                 ForEach(group.tasks) { task in
                                     NavigationLink(value: task.id) {
                                         TaskRow(task: task)
@@ -99,7 +117,7 @@ struct TasksView: View {
                             }
                         }
                     }
-                    .listStyle(.plain)
+                    .listStyle(.sidebar)
                 }
             }
             .navigationTitle("Threads")

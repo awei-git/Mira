@@ -189,13 +189,18 @@ MODELS = {
     },
     "gemini": {
         "provider": "gemini",
-        "model_id": "gemini-2.5-flash",
+        "model_id": "gemini-3.1-flash-lite-preview",
         "style": "Fast, multimodal, good at long-context and structured output",
     },
     "gemini-pro": {
         "provider": "gemini",
-        "model_id": "gemini-2.5-pro",
+        "model_id": "gemini-3.1-pro-preview",
         "style": "Most capable Gemini, strong reasoning and code generation",
+    },
+    "codex": {
+        "provider": "openai",
+        "model_id": "gpt-5.4",
+        "style": "OpenAI GPT-5.4 — used as Claude fallback when quota is hit",
     },
 }
 
@@ -204,6 +209,7 @@ _models_cfg = _cfg.get("models", {})
 WRITING_MODELS = _models_cfg.get("writing", ["claude", "gpt5", "deepseek", "gemini"])
 REVIEW_MODELS = _models_cfg.get("review", ["claude", "gpt5", "gemini"])
 DEFAULT_MODEL = _models_cfg.get("default", "claude")
+CLAUDE_FALLBACK_MODEL = _models_cfg.get("claude_fallback", "codex")
 
 # Writing workflow
 MIN_REVIEW_ROUNDS = 5
