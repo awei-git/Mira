@@ -39,7 +39,7 @@ from config import (
 )
 from sub_agent import model_think, claude_think
 from notes_bridge import create_note, fetch_notes
-from soul_manager import load_soul, format_soul, append_memory
+from soul_manager import load_soul, format_soul
 from prompts import (
     analyze_writing_prompt, plan_propose_prompt, plan_critique_prompt,
     plan_synthesize_prompt, write_draft_prompt, review_draft_prompt,
@@ -125,9 +125,6 @@ def start_project(title: str, body: str, workspace: Path):
         f"请审阅并编辑上面的计划。完成后将 Status 改为 done。"
     )
     create_note(NOTES_INBOX_FOLDER, f"计划: {title}", note_body)
-    append_memory(
-        f"Writing project '{title}' [{type_key}] started — plan posted for review"
-    )
     log.info("Plan posted for user review: %s", title)
 
 
@@ -255,10 +252,6 @@ def _on_plan_approved(ws: Path, p: dict, plan_text: str) -> str:
     )
     create_note(NOTES_INBOX_FOLDER, f"初稿: {title}", note_body)
 
-    append_memory(
-        f"Writing '{title}' v{v}: {len(drafts)} drafts, "
-        f"{MIN_REVIEW_ROUNDS} review rounds, converged. Awaiting feedback."
-    )
     log.info("Draft posted for feedback: %s (v%d)", title, v)
     return "await_feedback"
 
@@ -321,7 +314,6 @@ def _on_feedback(ws: Path, p: dict, feedback: str) -> str:
     )
     create_note(NOTES_INBOX_FOLDER, f"初稿: {title}", note_body)
 
-    append_memory(f"Writing '{title}' v{v}: revised from feedback, re-reviewed")
     log.info("Revised draft posted: %s (v%d)", title, v)
     return "await_feedback"
 
@@ -342,8 +334,17 @@ def _finalize(ws: Path, p: dict) -> str:
         f"完成: {title}",
         f"'{title}' 已定稿 (v{v})。\n\n{final_text[:3000]}",
     )
-    append_memory(f"Writing project '{title}' finalized at v{v}")
     log.info("Project finalized: %s (v%d)", title, v)
+
+    # --- Self-iteration: extract craft skills from finished article ---
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+        from self_iteration import on_article_complete
+        type_key = p.get("type", "essay")
+        on_article_complete(title, final_text, type_key)
+    except Exception as e:
+        import logging
+        logging.getLogger("writing").warning("Article skill distillation failed: %s", e)
 
     # --- Self-evaluation: score this piece ---
     try:
@@ -809,10 +810,6 @@ def start_from_plan(title: str, plan_path: str, writing_type: str = "novel"):
     )
     create_note(NOTES_INBOX_FOLDER, f"初稿: {title}", note_body)
 
-    append_memory(
-        f"Writing '{title}': {len(all_chapter_texts)}-chapter draft "
-        f"(GPT-5/DeepSeek writers + Claude harsh review) complete."
-    )
     log.info("Draft posted for feedback: %s", title)
 
 
@@ -901,9 +898,19 @@ def run_full_pipeline(title: str, body: str) -> tuple[Path, str]:
     project["phase"] = "done"
     _save_project(ws, project)
 
-    append_memory(
-        f"Writing '{title}' [{type_key}]: full pipeline complete → {ws}"
-    )
+    # Add to content catalog
+    try:
+        from soul_manager import catalog_add
+        catalog_add({
+            "type": type_key,
+            "title": title,
+            "path": str(ws / "final.md"),
+            "topics": [],
+            "status": "draft",
+        })
+    except Exception as _e:
+        log.warning("Catalog add failed: %s", _e)
+
     log.info("Full pipeline done: '%s' (%d chars)", title, len(final_text))
 
     return ws, final_text

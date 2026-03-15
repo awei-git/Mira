@@ -23,7 +23,8 @@ sys.path.insert(0, str(_AGENTS_DIR / "general"))
 import shutil
 
 from config import MIRA_DIR, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR, MEMORY_FILE, WORLDVIEW_FILE
-from soul_manager import load_soul, format_soul, append_memory, save_skill
+from soul_manager import (load_soul, format_soul, append_memory, save_skill,
+                         save_episode, recall_context)
 from sub_agent import claude_act, claude_think, ClaudeTimeoutError
 from prompts import respond_prompt
 from writing_workflow import run_full_pipeline
@@ -611,6 +612,13 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
     journals = _load_recent_journals(3)
     briefings = _load_recent_briefings(2)
 
+    # Proactive recall — search memory for relevant prior context
+    prior_recall = ""
+    try:
+        prior_recall = recall_context(latest_msg)
+    except Exception as e:
+        log.warning("Discussion recall failed: %s", e)
+
     # Build the discussion prompt
     prompt = f"""You are Mira. You are having a conversation with {sender} — not executing a task.
 
@@ -628,6 +636,8 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
 
 ## Recent readings (briefings)
 {briefings if briefings else "(no recent briefings)"}
+
+{f"## Relevant prior context (from past conversations and work){chr(10)}{prior_recall}" if prior_recall else ""}
 
 {conv_history if conv_history else ""}
 
@@ -789,9 +799,19 @@ def main():
         # If discussion handler returned empty, fall through to normal planning
         log.warning("Discussion handler returned empty, falling through to task planning")
 
+    # --- Proactive recall: search memory for relevant prior context ---
+    prior_context = ""
+    try:
+        prior_context = recall_context(msg_content)
+        if prior_context:
+            log.info("Proactive recall found relevant context (%d chars)", len(prior_context))
+    except Exception as e:
+        log.warning("Proactive recall failed: %s", e)
+
     # --- Plan and execute via LLM ---
     _emit_status(args.task_id, "Planning...", "list.bullet.clipboard")
-    plan = _plan_task(msg_content, conversation=conversation, exec_history=exec_history)
+    plan = _plan_task(msg_content, conversation=conversation, exec_history=exec_history,
+                      prior_context=prior_context)
     log.info("Plan: %s", plan)
 
     _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id)
@@ -803,7 +823,8 @@ def main():
 # LLM-based task planning
 # ---------------------------------------------------------------------------
 
-def _plan_task(content: str, conversation: str = "", exec_history: str = "") -> list[dict]:
+def _plan_task(content: str, conversation: str = "", exec_history: str = "",
+               prior_context: str = "") -> list[dict]:
     """Use LLM to decompose a request into an ordered list of steps.
 
     Each step is {"agent": "<name>", "instruction": "<what to do>"}.
@@ -814,6 +835,8 @@ def _plan_task(content: str, conversation: str = "", exec_history: str = "") -> 
     """
     conversation_context = ""
     context_parts = []
+    if prior_context:
+        context_parts.append(f"## Prior context from memory\n{prior_context}")
     if exec_history:
         context_parts.append(exec_history)
     if conversation:
@@ -1119,8 +1142,6 @@ def _handle_briefing(workspace: Path, task_id: str, content: str,
     summary = f"生成了{today}的briefing，基于{len(items)}条feed内容。"
     (workspace / "summary.txt").write_text(summary, encoding="utf-8")
     _write_result(workspace, task_id, "done", summary, tags=["briefing", "explore"])
-
-    append_memory(f"On-demand briefing for {sender}: {len(items)} items")
 
     if thread_id:
         _update_thread_memory(thread_id, content, summary)
@@ -1458,9 +1479,6 @@ def _handle_article_comment(workspace: Path, task_id: str, thread_id: str,
     try:
         reply = claude_think(prompt, timeout=30)
     except ClaudeTimeoutError:
-        reply = "脑子转不过来了，等我想想再回你。"
-    except Exception as e:
-        log.error("Comment reply generation failed: %s", e)
         reply = None
 
     if reply:
@@ -1617,6 +1635,29 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
         json.dumps(result, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+    # --- Archive conversation as episode for long-term recall ---
+    if status in ("done", "completed", "error", "failed"):
+        try:
+            task_file = TASKS_DIR / f"{task_id}.json"
+            if task_file.exists():
+                task_data = json.loads(task_file.read_text(encoding="utf-8"))
+                messages = task_data.get("messages", [])
+                title = task_data.get("title", task_id)
+                if len(messages) >= 2:  # Only archive meaningful conversations
+                    save_episode(task_id, title, messages, tags=tags)
+        except Exception as e:
+            log.warning("Episode archival failed for %s: %s", task_id, e)
+
+    # --- Self-iteration: extract lessons from failures ---
+    if status in ("error", "failed"):
+        try:
+            from self_iteration import extract_failure_lesson, save_failure_lesson
+            lesson = extract_failure_lesson(task_id, summary[:200], summary)
+            if lesson:
+                save_failure_lesson(lesson)
+        except Exception as e:
+            log.warning("Failure lesson extraction failed for %s: %s", task_id, e)
 
 
 def _update_thread_memory(thread_id: str, request: str, summary: str):

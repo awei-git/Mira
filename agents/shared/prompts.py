@@ -579,7 +579,7 @@ def reflect_prompt(soul_context: str, recent_briefings: str, recent_work: str) -
 ### Briefings
 {recent_briefings}
 
-### Work completed
+### Work completed (from episode archives)
 {recent_work}
 
 ---
@@ -593,17 +593,25 @@ Time for reflection. Think about:
 2. **Gaps**: What skills am I missing? What topics do I keep encountering but don't understand well?
 3. **Interests**: Based on everything I've seen, what should I pay MORE attention to? What should I drop?
 4. **Surprise**: Is there something unexpected I noticed — a connection between unrelated things, a contrarian take, an idea worth exploring?
-5. **Memory cleanup**: What in my memory is stale or redundant?
+5. **Memory insights**: What new cognitive insights emerged this week? (NOT work logs — only genuine realizations, decisions, learnings.)
 6. **Self-improvement**: Look at the weak areas in my self-evaluation scores above. How can I concretely strengthen them this week?
+7. **Episode cleanup**: Which old episodes (>30 days) can be compressed into a one-line insight and archived?
 
 Output THREE things:
 
 ### Updated Interests
 A revised list of what I should focus on going forward. Be specific.
 
-### Updated Memory
-A cleaned-up version of my memory — compress old entries, keep key insights, add new patterns.
-Remove anything stale. Keep it under 150 lines.
+### New Memory Insights
+New cognitive insights to APPEND to memory.md. These should be genuine realizations, decisions, or learnings — NOT work logs or task completions. Format: one line per insight with date prefix.
+Example: - [2026-03-14] Discovered that X implies Y because Z.
+If no new insights, output: "No new insights this week."
+
+### Episode Pruning
+List episode filenames (from episodes/) that are >30 days old and can be safely pruned.
+For each, provide a one-line insight to preserve (or "no insight worth keeping").
+Format:
+- filename.md → insight to keep (or "prune, no insight")
 
 ### Self-Initiated Project (Optional)
 If you have an idea for something to create on your own — an essay, a tool, an experiment — describe it briefly.

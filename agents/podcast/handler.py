@@ -4,15 +4,11 @@ Two modes:
   voiceover    — single narrator (Mira reads her essay aloud)
   conversation — two-host dialogue (Human host interviews Mira about the article)
 
-Pipeline (voiceover):
-    1. Adapt article text for spoken delivery
-    2. Generate TTS via Gemini Pro TTS (voice: Aoede)
-    3. Convert PCM → MP3
-
 Pipeline (conversation):
     1. Generate dialogue script (Host + Mira, ~3000-3500 words, ~20-25 min)
-    2. Generate multi-speaker TTS via Gemini Pro TTS
-    3. Convert PCM → MP3
+    2. Per-turn TTS via MiniMax (one call per turn, HOST or MIRA voice)
+    3. Concatenate MP3s → conversation.mp3
+    4. Music bumpers → final episode
 
 Language support: English (default) and Chinese (lang="zh") for both modes.
 
@@ -37,17 +33,27 @@ log = logging.getLogger("podcast")
 GEMINI_MODEL_TTS   = "gemini-2.5-pro-preview-tts"
 GEMINI_MODEL_THINK = "gemini-2.5-pro"          # for script generation
 
-# Voices
-VOICE_MIRA    = "Aoede"   # Mira EN: female, warm, thoughtful
-VOICE_MIRA_ZH = "Kore"   # Mira ZH: female, firm, crisp — better for Mandarin pace
-VOICE_HOST    = "Charon"  # Human host: male, curious, grounded
+# ---------------------------------------------------------------------------
+# MiniMax TTS config (primary TTS backend)
+# ---------------------------------------------------------------------------
 
-# Post-processing speed multipliers (atempo)
-SPEED_ZH = 1.12   # Chinese TTS tends to be slow; 1.12x tightens it up
+MINIMAX_MODEL_TTS = "speech-02-hd"
+MINIMAX_API_URL   = "https://api.minimax.io/v1/t2a_v2"
 
-# Chunk limits — keep small so each TTS request finishes well within timeout
-MAX_CHARS_VOICEOVER    = 2500   # per TTS chunk (single-speaker)
-MAX_CHARS_CONVERSATION = 1200   # per TTS chunk (multi-speaker; Pro model is slow, keep small)
+# MiniMax voice IDs — one voice per character, consistent across all turns
+# Full list: platform.minimax.io/docs/faq/system-voice-id
+VOICE_HOST_ZH_MM = "Chinese (Mandarin)_Sincere_Adult"   # warm, grounded podcast host
+VOICE_MIRA_ZH_MM = "Chinese (Mandarin)_Crisp_Girl"     # direct, clear — Mira ZH
+VOICE_HOST_EN_MM = "English_Trustworth_Man"             # English host (note: no 'y')
+VOICE_MIRA_EN_MM = "English_expressive_narrator"        # English Mira
+
+# MiniMax audio params for ZH
+SPEED_ZH_MM = 0.95   # slightly slower than normal for clearer delivery
+VOL_MM      = 1.5    # louder than default (1.0)
+
+# Chunk limits — kept for voiceover mode (single-speaker)
+MAX_CHARS_VOICEOVER    = 2500
+MAX_CHARS_CONVERSATION = 1200   # unused in MiniMax mode (per-turn), kept for reference
 
 
 def _get_gemini_key() -> str:
@@ -57,6 +63,15 @@ def _get_gemini_key() -> str:
         sys.path.insert(0, shared)
     from sub_agent import _get_api_key
     return _get_api_key("gemini")
+
+
+def _get_minimax_key() -> str:
+    import sys
+    shared = str(Path(__file__).resolve().parent.parent / "shared")
+    if shared not in sys.path:
+        sys.path.insert(0, shared)
+    from sub_agent import _get_api_key
+    return _get_api_key("minimax")
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +204,89 @@ def _call_gemini_tts(payload: dict, api_key: str,
     return None
 
 
+def _call_minimax_tts(text: str, voice_id: str, api_key: str,
+                      lang: str = "en", _retries: int = 4) -> bytes | None:
+    """POST to MiniMax T2A v2, return MP3 bytes directly.
+
+    MiniMax returns MP3 (not PCM) — no conversion needed.
+    Rate limit: 60 RPM, no RPD cap. Retries on 429 with short backoff.
+    """
+    import time as _time
+    import requests
+
+    speed = SPEED_ZH_MM if lang == "zh" else 1.0
+    payload = {
+        "model": MINIMAX_MODEL_TTS,
+        "text": text,
+        "stream": False,
+        "language_boost": "Chinese" if lang == "zh" else "auto",
+        "output_format": "hex",
+        "voice_setting": {
+            "voice_id": voice_id,
+            "speed": speed,
+            "vol": VOL_MM,
+            "pitch": 0,
+        },
+        "audio_setting": {
+            "format": "mp3",
+            "sample_rate": 32000,
+            "bitrate": 128000,
+            "channel": 1,
+        },
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    for attempt in range(_retries):
+        try:
+            resp = requests.post(MINIMAX_API_URL, headers=headers,
+                                 json=payload, timeout=120)
+        except Exception as e:
+            wait = 15 * (attempt + 1)
+            log.warning("MiniMax TTS exception (attempt %d): %s — retrying in %ds",
+                        attempt + 1, e, wait)
+            _time.sleep(wait)
+            continue
+
+        if resp.status_code == 429:
+            wait = 60 * (attempt + 1)   # 1min, 2min, 3min
+            log.warning("MiniMax TTS rate limited (429), waiting %ds...", wait)
+            _time.sleep(wait)
+            continue
+
+        if resp.status_code != 200:
+            log.error("MiniMax TTS %d: %s", resp.status_code, resp.text[:300])
+            return None
+
+        data = resp.json()
+        # Check for API-level error
+        base_resp = data.get("base_resp", {})
+        if base_resp.get("status_code", 0) != 0:
+            log.error("MiniMax TTS error: %s", base_resp.get("status_msg", data))
+            return None
+
+        audio_hex = data.get("data", {}).get("audio", "")
+        if not audio_hex:
+            log.error("MiniMax TTS: no audio in response: %s", str(data)[:300])
+            return None
+
+        return bytes.fromhex(audio_hex)
+
+    log.error("MiniMax TTS: failed after %d attempts", _retries)
+    return None
+
+
+def _write_mp3(mp3_data: bytes, output_path: Path) -> bool:
+    """Write MP3 bytes directly to file (MiniMax returns MP3, no conversion needed)."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(mp3_data)
+    size_kb = output_path.stat().st_size // 1024
+    log.info("Audio saved: %s (%d KB)", output_path.name, size_kb)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # VOICEOVER mode
 # ---------------------------------------------------------------------------
@@ -277,68 +375,36 @@ def _split_text(text: str, max_chars: int = MAX_CHARS_VOICEOVER) -> list[str]:
     return chunks or [text]
 
 
-def _tts_single_chunk(text: str, api_key: str) -> bytes | None:
-    """Single-speaker TTS chunk (voiceover mode)."""
-    payload = {
-        "contents": [{"parts": [{"text": (
-            "Read this aloud naturally. You are a young woman telling a friend "
-            "something that genuinely matters to you. Thoughtful, quiet intensity. "
-            "Not dramatic.\n\n" + text
-        )}]}],
-        "generationConfig": {
-            "response_modalities": ["AUDIO"],
-            "speech_config": {
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {"voiceName": VOICE_MIRA}
-                }
-            }
-        }
-    }
-    return _call_gemini_tts(payload, api_key)
+def _tts_single_chunk(text: str, api_key: str, lang: str = "en") -> bytes | None:
+    """Single-speaker TTS chunk (voiceover mode) via MiniMax. Returns MP3 bytes."""
+    voice_id = VOICE_MIRA_ZH_MM if lang == "zh" else VOICE_MIRA_EN_MM
+    return _call_minimax_tts(text, voice_id, api_key, lang=lang)
 
 
-def generate_tts(text: str, output_path: Path) -> bool:
-    """Voiceover TTS: split into chunks, concatenate PCM, write MP3."""
-    api_key = _get_gemini_key()
+def generate_tts(text: str, output_path: Path, lang: str = "en") -> bool:
+    """Voiceover TTS via MiniMax: split into chunks, write MP3s, concatenate."""
+    api_key = _get_minimax_key()
     if not api_key:
-        log.error("No Gemini API key")
+        log.error("No MiniMax API key — set minimax key in secrets.yml")
         return False
 
     chunks = _split_text(text)
-    log.info("Voiceover TTS: %d chunks, %d chars", len(chunks), len(text))
+    log.info("Voiceover TTS: %d chunks, %d chars (MiniMax)", len(chunks), len(text))
 
     tmp_dir = Path(tempfile.mkdtemp())
     chunk_mp3s = []
     try:
-        work_queue = list(enumerate(chunks))
-        mp3_index = 0
-        while work_queue:
-            orig_i, chunk = work_queue.pop(0)
-            log.info("  chunk %d/%d (%d chars)...", orig_i + 1, len(chunks), len(chunk))
-            pcm = _tts_single_chunk(chunk, api_key)  # raises RuntimeError on quota exhaustion
-            if pcm is None:
-                # If chunk is still splittable, cut in half and retry
-                half = len(chunk) // 2
-                split_point = chunk.rfind('\n\n', 0, half) if half > 200 else -1
-                if split_point < 50:
-                    split_point = chunk.rfind(' ', 0, half)
-                if split_point > 50:
-                    log.warning("  chunk %d failed — splitting in half and retrying",
-                                orig_i + 1)
-                    work_queue.insert(0, (orig_i, chunk[split_point:].strip()))
-                    work_queue.insert(0, (orig_i, chunk[:split_point].strip()))
-                    chunks = list(chunks) + ["", ""]  # extend total count for logging
-                    continue
-                log.error("  chunk %d failed and cannot be split further", orig_i + 1)
+        for i, chunk in enumerate(chunks):
+            log.info("  chunk %d/%d (%d chars)...", i + 1, len(chunks), len(chunk))
+            mp3 = _tts_single_chunk(chunk, api_key, lang=lang)
+            if mp3 is None:
+                log.error("  chunk %d failed", i + 1)
                 return False
-            chunk_path = tmp_dir / f"chunk_{mp3_index:03d}.mp3"
-            mp3_index += 1
-            if not _pcm_chunk_to_mp3(pcm, chunk_path):
-                return False
+            chunk_path = tmp_dir / f"chunk_{i:03d}.mp3"
+            chunk_path.write_bytes(mp3)
             chunk_mp3s.append(chunk_path)
 
         if len(chunk_mp3s) == 1:
-            # Only one chunk — move directly, no concat needed
             import shutil
             output_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(chunk_mp3s[0]), str(output_path))
@@ -375,7 +441,7 @@ def generate_audio_for_article(article_text: str, title: str,
     script_path.write_text(spoken_text, encoding="utf-8")
     log.info("Script saved: %s (%d chars)", script_path.name, len(spoken_text))
 
-    if not generate_tts(spoken_text, mp3_path):
+    if not generate_tts(spoken_text, mp3_path, lang=lang):
         return None
     return mp3_path
 
@@ -402,10 +468,10 @@ def generate_conversation_script(article_text: str, title: str,
     from sub_agent import claude_think
 
     if lang == "zh":
-        prompt = f"""你是一个播客编剧。根据下面的文章，为播客节目《无限维度》写一集完整的对谈脚本。
+        prompt = f"""你是一个播客编剧。根据下面的文章，为播客节目《米拉与我》写一集完整的对谈脚本。
 
 主持人设定：
-- [HOST]（主持人）：人类主持人，聪明、好奇、接地气。他读过这篇文章，想深挖背后的思考。他会提问、追问、偶尔提出不同视角。语气自然、真诚。
+- [HOST]（我的智人体）：Mira的人类搭档，聪明、好奇、接地气。他读过这篇文章，想深挖背后的思考。他会提问、追问、偶尔提出不同视角。语气自然、真诚。Mira在对话中称他为"我的智人体"，第一次提及时加上"人类的人"，例如"我的智人体，就是人类的人"。
 - [MIRA]（Mira）：文章的作者，AI智能体。她解释自己的想法，分享写作时的真实思考过程，坦诚面对不确定性。语气直接、有温度，不卖弄。
 
 脚本要求：
@@ -468,7 +534,23 @@ Full article:
 Return ONLY the script, no other commentary."""
 
     log.info("Generating conversation script [%s]...", lang)
-    result = claude_think(prompt, timeout=180, tier="standard")
+
+    # claude_think fails inside Claude Code (nested session). Use OpenAI directly.
+    try:
+        import openai as _openai
+        from sub_agent import _get_api_key
+        client = _openai.OpenAI(api_key=_get_api_key("openai"))
+        response = client.chat.completions.create(
+            model="o3",
+            messages=[{"role": "user", "content": prompt}],
+            timeout=600,
+        )
+        result = response.choices[0].message.content
+    except Exception as e:
+        log.warning("OpenAI script generation failed (%s), falling back to claude_think", e)
+        from sub_agent import claude_think
+        result = claude_think(prompt, timeout=300, tier="standard")
+
     if result:
         return result.strip()
 
@@ -534,48 +616,25 @@ def _turns_to_text(turns: list[tuple[str, str]]) -> str:
     return "\n".join(f"[{s}]: {t}" for s, t in turns)
 
 
+def _voice_for_speaker(speaker: str, lang: str) -> str:
+    """Return MiniMax voice_id for a given speaker + language."""
+    if lang == "zh":
+        return VOICE_HOST_ZH_MM if speaker == "HOST" else VOICE_MIRA_ZH_MM
+    return VOICE_HOST_EN_MM if speaker == "HOST" else VOICE_MIRA_EN_MM
+
+
 def _tts_conversation_chunk(turns: list[tuple[str, str]], api_key: str,
                              lang: str = "en") -> bytes | None:
-    """Multi-speaker TTS for a chunk of conversation turns."""
-    script_text = _turns_to_text(turns)
-    mira_voice = VOICE_MIRA_ZH if lang == "zh" else VOICE_MIRA
-    if lang == "zh":
-        instruction = (
-            "用自然、清晰的语速朗读以下播客对话。"
-            "HOST是温暖好奇的人类主持人，语气亲切自然。"
-            "MIRA思维敏锐、表达直接、语速稍快，不拖沓。\n\n"
-        )
-    else:
-        instruction = (
-            "Read this podcast conversation naturally. "
-            "HOST is a warm, curious human host. MIRA is thoughtful, direct, "
-            "with quiet intelligence. Keep the pace conversational.\n\n"
-        )
-    payload = {
-        "contents": [{"parts": [{"text": instruction + script_text}]}],
-        "generationConfig": {
-            "response_modalities": ["AUDIO"],
-            "speech_config": {
-                "multiSpeakerVoiceConfig": {
-                    "speakerVoiceConfigs": [
-                        {
-                            "speaker": "HOST",
-                            "voiceConfig": {
-                                "prebuiltVoiceConfig": {"voiceName": VOICE_HOST}
-                            }
-                        },
-                        {
-                            "speaker": "MIRA",
-                            "voiceConfig": {
-                                "prebuiltVoiceConfig": {"voiceName": mira_voice}
-                            }
-                        }
-                    ]
-                }
-            }
-        }
-    }
-    return _call_gemini_tts(payload, api_key)
+    """Single-turn MiniMax TTS (called once per turn in generate_tts_conversation).
+
+    api_key is the MiniMax key. Returns MP3 bytes directly.
+    For a single-turn list (as used by bumper generators), synthesizes that one turn.
+    """
+    if not turns:
+        return None
+    speaker, text = turns[0]
+    voice_id = _voice_for_speaker(speaker, lang)
+    return _call_minimax_tts(text, voice_id, api_key, lang=lang)
 
 
 def _speedup_mp3(input_path: Path, output_path: Path, rate: float) -> bool:
@@ -595,13 +654,17 @@ def _speedup_mp3(input_path: Path, output_path: Path, rate: float) -> bool:
 
 def generate_tts_conversation(script: str, output_path: Path,
                                lang: str = "en") -> bool:
-    """Multi-speaker TTS: parse turns, chunk, generate, concatenate, write MP3.
+    """Per-turn MiniMax TTS: one API call per turn, concatenate MP3s.
 
-    For lang="zh", uses VOICE_MIRA_ZH and applies SPEED_ZH atempo post-process.
+    MiniMax returns MP3 directly — no PCM conversion or speed post-process needed
+    (speed param is set inline in each API call).
+
+    Cache: persistent .{stem}_chunks/ dir, one file per turn (turn_000.mp3 etc.)
+    Survives crashes and quota interruptions for seamless resume.
     """
-    api_key = _get_gemini_key()
+    api_key = _get_minimax_key()
     if not api_key:
-        log.error("No Gemini API key")
+        log.error("No MiniMax API key — set minimax key in secrets.yml")
         return False
 
     turns = _parse_turns(script)
@@ -609,106 +672,80 @@ def generate_tts_conversation(script: str, output_path: Path,
         log.error("No valid [HOST]/[MIRA] turns found in script")
         return False
 
-    chunks = _chunk_turns(turns)
-    log.info("Conversation TTS: %d turns → %d chunks", len(turns), len(chunks))
+    log.info("Conversation TTS: %d turns (MiniMax, per-turn)", len(turns))
 
-    # Persistent chunk cache dir next to output — survives crashes for resume
+    # Persistent per-turn cache dir
     cache_dir = output_path.parent / f".{output_path.stem}_chunks"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     import shutil
-    chunk_mp3s = []
+    turn_mp3s = []
     try:
-        for i, chunk in enumerate(chunks):
-            chunk_path = cache_dir / f"chunk_{i:03d}.mp3"
-            if chunk_path.exists():
-                log.info("  chunk %d/%d already done, skipping", i + 1, len(chunks))
+        for i, (speaker, text) in enumerate(turns):
+            turn_path = cache_dir / f"turn_{i:03d}.mp3"
+            if turn_path.exists():
+                log.info("  turn %d/%d already done, skipping", i + 1, len(turns))
             else:
-                char_count = sum(len(t) for _, t in chunk)
-                log.info("  chunk %d/%d (%d turns, %d chars)...",
-                         i + 1, len(chunks), len(chunk), char_count)
-                pcm = _tts_conversation_chunk(chunk, api_key, lang=lang)
-                if pcm is None:
-                    log.error("  chunk %d failed", i + 1)
+                voice_id = _voice_for_speaker(speaker, lang)
+                log.info("  turn %d/%d [%s] (%d chars)...",
+                         i + 1, len(turns), speaker, len(text))
+                mp3 = _call_minimax_tts(text, voice_id, api_key, lang=lang)
+                if mp3 is None:
+                    log.error("  turn %d failed", i + 1)
+                    log.warning("TTS interrupted — cache preserved at %s for resume", cache_dir)
                     return False
-                if not _pcm_chunk_to_mp3(pcm, chunk_path):
-                    return False
-            chunk_mp3s.append(chunk_path)
+                turn_path.write_bytes(mp3)
+            turn_mp3s.append(turn_path)
 
-        if len(chunk_mp3s) == 1:
+        if len(turn_mp3s) == 1:
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(chunk_mp3s[0]), str(output_path))
+            shutil.copy2(str(turn_mp3s[0]), str(output_path))
             size_kb = output_path.stat().st_size // 1024
             log.info("Audio saved: %s (%d KB)", output_path.name, size_kb)
         else:
-            if not _concat_mp3_chunks(chunk_mp3s, output_path):
+            if not _concat_mp3_chunks(turn_mp3s, output_path):
                 return False
 
-        # Apply speed-up post-process for Chinese (atempo)
-        if lang == "zh":
-            log.info("Applying %.2fx speed-up for ZH...", SPEED_ZH)
-            tmp_fast = output_path.with_suffix(".fast.mp3")
-            if _speedup_mp3(output_path, tmp_fast, SPEED_ZH):
-                shutil.move(str(tmp_fast), str(output_path))
-                size_kb = output_path.stat().st_size // 1024
-                log.info("Speed-up done: %s (%d KB)", output_path.name, size_kb)
-            else:
-                log.warning("atempo failed — keeping original speed")
-                tmp_fast.unlink(missing_ok=True)
-
-        # Clean up chunk cache on success
         shutil.rmtree(cache_dir, ignore_errors=True)
         return True
     except Exception:
-        log.warning("TTS interrupted — chunk cache preserved at %s for resume", cache_dir)
+        log.warning("TTS interrupted — cache preserved at %s for resume", cache_dir)
         raise
 
 
 def _generate_intro_tts(lang: str, episode_topic: str, output_path: Path) -> bool:
-    """Generate host intro using multiSpeaker TTS (same voice config as conversation)."""
+    """Generate host intro via MiniMax TTS."""
     if lang == "zh":
-        text = f"大家好，这里是米拉与我。今天我跟米拉来聊{episode_topic}。"
+        text = f"大家好，这里是米拉与我。今天我跟我的智人体一起来聊{episode_topic}。"
     else:
         text = (
             f"Hey everyone, welcome to Mira and Me. Today I'm sitting down with Mira "
             f"to talk about {episode_topic}."
         )
-    api_key = _get_gemini_key()
+    api_key = _get_minimax_key()
     if not api_key:
         return False
-    pcm = _tts_conversation_chunk([("HOST", text)], api_key, lang=lang)
-    if pcm is None:
+    voice_id = _voice_for_speaker("HOST", lang)
+    mp3 = _call_minimax_tts(text, voice_id, api_key, lang=lang)
+    if mp3 is None:
         return False
-    if not _pcm_to_mp3(pcm, output_path):
-        return False
-    if lang == "zh":
-        import shutil
-        tmp = output_path.with_suffix(".fast.mp3")
-        if _speedup_mp3(output_path, tmp, SPEED_ZH):
-            shutil.move(str(tmp), str(output_path))
-    return True
+    return _write_mp3(mp3, output_path)
 
 
 def _generate_outro_tts(lang: str, output_path: Path) -> bool:
-    """Generate host outro using multiSpeaker TTS (same voice config as conversation)."""
+    """Generate host outro via MiniMax TTS."""
     if lang == "zh":
         text = "谢谢大家收听这一期米拉与我。我们下期再见。"
     else:
         text = "Thanks for listening to Mira and Me. See you next time."
-    api_key = _get_gemini_key()
+    api_key = _get_minimax_key()
     if not api_key:
         return False
-    pcm = _tts_conversation_chunk([("HOST", text)], api_key, lang=lang)
-    if pcm is None:
+    voice_id = _voice_for_speaker("HOST", lang)
+    mp3 = _call_minimax_tts(text, voice_id, api_key, lang=lang)
+    if mp3 is None:
         return False
-    if not _pcm_to_mp3(pcm, output_path):
-        return False
-    if lang == "zh":
-        import shutil
-        tmp = output_path.with_suffix(".fast.mp3")
-        if _speedup_mp3(output_path, tmp, SPEED_ZH):
-            shutil.move(str(tmp), str(output_path))
-    return True
+    return _write_mp3(mp3, output_path)
 
 
 def generate_conversation_for_article(article_text: str, title: str,
@@ -866,8 +903,6 @@ def handle(workspace: Path, task_id: str, content: str,
     shared = str(Path(__file__).resolve().parent.parent / "shared")
     if shared not in sys.path:
         sys.path.insert(0, shared)
-    from soul_manager import append_memory
-
     content_lower = content.lower()
 
     # Determine mode and language
@@ -892,7 +927,6 @@ def handle(workspace: Path, task_id: str, content: str,
 
     if result:
         msg = f"音频已生成 ({mode_label}): {result}"
-        append_memory(f"Generated {mode_label} audio for '{title}': {result}")
     else:
         msg = f"音频生成失败 ({mode_label})"
 

@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 
 from config import MIRA_DIR
-from soul_manager import load_soul, format_soul, append_memory
+from soul_manager import load_soul, format_soul
 from sub_agent import claude_act
 from prompts import respond_prompt
 
@@ -47,7 +47,6 @@ def handle(workspace: Path, task_id: str, content: str,
         if not summary:
             summary = result[:300]
 
-        append_memory(f"Completed Mira task from {sender}: {content[:60]}")
         return summary
 
     return None

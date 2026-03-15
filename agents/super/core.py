@@ -32,6 +32,7 @@ from config import (
     JOURNAL_DIR, JOURNAL_TIME, SKILLS_INDEX, WRITINGS_OUTPUT_DIR, WRITINGS_DIR,
     ANALYST_TIMES, ANALYST_BUSINESS_DAYS_ONLY, ZHESI_TIME, ZA_FILE,
     SKILL_STUDY_SOURCE_GROUPS, SKILL_STUDY_COOLDOWN_HOURS, SKILL_STUDY_TIME,
+    EPISODES_DIR,
 )
 from notes_bridge import check_inbox, create_note
 from mira import Mira
@@ -493,7 +494,6 @@ def do_respond():
 
             if not result:
                 log.error("Sub-agent returned empty for '%s'", title)
-                append_memory(f"Failed to process request: {title}")
                 continue
 
             (workspace / "agent_output.md").write_text(result, encoding="utf-8")
@@ -506,8 +506,6 @@ def do_respond():
                 f"Done: {title}",
                 f"{summary}\n\nFull output in: {workspace}",
             )
-            append_memory(f"Completed request '{title}' [claude] → {workspace}")
-
         log.info("Done: %s", title)
 
 
@@ -557,8 +555,8 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     # 2. Format items for Claude
     feed_text = _format_feed_items(items)
 
-    # 2b. Gather recent briefing topics for dedup
-    recent_topics = _extract_recent_briefing_topics(days=3)
+    # 2b. Gather recent briefing topics for dedup (wider window since explore is more frequent)
+    recent_topics = _extract_recent_briefing_topics(days=5)
 
     # 3. Ask Claude to filter and rank
     prompt = explore_prompt(soul_ctx, feed_text, source_slot=slot_name,
@@ -581,9 +579,11 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     mira_briefings.mkdir(parents=True, exist_ok=True)
     (mira_briefings / f"{today}{suffix}.md").write_text(briefing, encoding="utf-8")
 
-    # 5. Push briefing to Apple Notes + Mira
-    slot_label = f" ({slot_name})" if slot_name else ""
-    create_note(NOTES_BRIEFING_FOLDER, f"Briefing {today}{slot_label}", briefing)
+    # 5. Push briefing to Apple Notes (skip if already pushed one today — user doesn't need every one)
+    today_briefing_count = state.get(f"explore_count_{today}", 0) if 'state' not in dir() else load_state().get(f"explore_count_{today}", 0)
+    if today_briefing_count <= 1:  # only push the first briefing of the day
+        slot_label = f" ({slot_name})" if slot_name else ""
+        create_note(NOTES_BRIEFING_FOLDER, f"Briefing {today}{slot_label}", briefing)
 
     # Briefing is displayed as a card in Today (from .md file)
     # No need to create a task — that just pollutes the task list
@@ -619,9 +619,6 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
             record_event("explore", e_scores, {"sources": src_label if 'src_label' in dir() else ""})
     except Exception as e:
         log.warning("Explore self-evaluation failed: %s", e)
-
-    src_label = ",".join(source_names) if source_names else "all"
-    append_memory(f"Explored {len(items)} items ({src_label}), wrote briefing {today}")
 
     # Mark this explore as done and update tracking
     now = datetime.now()
@@ -678,7 +675,7 @@ def _do_deep_dive(soul_ctx: str, dive: dict):
         desc = skill_match.group(2).strip()
         content = skill_match.group(3).strip()
         save_skill(name, desc, content)
-        append_memory(f"Learned new skill from deep dive: {name}")
+        log.info("Learned new skill from deep dive: %s", name)
 
     # --- Internalization: write a personal reading reflection ---
     try:
@@ -688,7 +685,6 @@ def _do_deep_dive(soul_ctx: str, dive: dict):
         reflection = claude_think(intern_prompt, timeout=60)
         if reflection:
             save_reading_note(dive["title"], reflection)
-            append_memory(f"Reading reflection on '{dive['title']}': {reflection[:100]}")
             log.info("Internalization note saved for: %s", dive["title"])
     except Exception as e:
         log.warning("Internalization failed: %s", e)
@@ -952,8 +948,6 @@ def do_analyst(slot: str = ""):
     BRIEFINGS_DIR.mkdir(parents=True, exist_ok=True)
     (BRIEFINGS_DIR / f"{today}_{suffix}.md").write_text(result, encoding="utf-8")
 
-    append_memory(f"Generated {session_type} analyst briefing for {today}")
-
     # Mark this slot as done
     if slot:
         state[f"analyst_{today}_{slot}"] = True
@@ -978,8 +972,8 @@ def do_reflect():
     # Gather recent briefings (last 7 days)
     recent_briefings = _gather_recent_briefings(days=7)
 
-    # Gather recent work (from memory)
-    recent_work = soul["memory"]  # memory already has work log
+    # Gather recent work from episode archives (not memory.md — it's a cognitive log now)
+    recent_work = _gather_recent_episodes(days=7)
 
     prompt = reflect_prompt(soul_ctx, recent_briefings, recent_work)
     result = claude_think(prompt, timeout=300, tier="heavy")
@@ -997,9 +991,18 @@ def do_reflect():
         update_interests(f"# Current Interests\n\n{interests_section}")
         log.info("Interests updated from reflection")
 
-    if memory_section:
-        update_memory(f"# Memory\n\n{memory_section}")
-        log.info("Memory consolidated from reflection")
+    if memory_section and "no new insights" not in memory_section.lower():
+        # Append new insights to memory.md (don't overwrite — it's a cognitive log)
+        for line in memory_section.strip().splitlines():
+            line = line.strip()
+            if line.startswith("- ["):
+                append_memory(line)
+        log.info("New memory insights appended from reflection")
+
+    # Episode pruning — delete old episodes, preserve insights
+    pruning_section = _extract_section(result, "Episode Pruning")
+    if pruning_section:
+        _prune_episodes_from_reflect(pruning_section)
 
     # --- Evolve worldview ---
     try:
@@ -1021,7 +1024,7 @@ def do_reflect():
         project_dir = WORKSPACE_DIR / project_slug
         project_dir.mkdir(parents=True, exist_ok=True)
         (project_dir / "proposal.md").write_text(project_section, encoding="utf-8")
-        append_memory(f"Proposed self-initiated project: {project_slug}")
+        log.info("Self-initiated project saved: %s", project_slug)
 
         # Execute the project
         self_prompt = (
@@ -1034,7 +1037,7 @@ def do_reflect():
         output = claude_act(self_prompt, cwd=project_dir, tier="heavy")
         if output:
             (project_dir / "output.md").write_text(output, encoding="utf-8")
-            append_memory(f"Completed self-initiated project: {project_slug}")
+            log.info("Self-initiated project completed: %s", project_slug)
             create_note(
                 NOTES_OUTPUT_FOLDER,
                 f"Self: {project_slug}",
@@ -1196,9 +1199,6 @@ def do_journal():
     # Journal is displayed as a briefing card in Today (from .md file)
     # No need to create a task — that just pollutes the task list
 
-    # Update memory
-    append_memory(f"Wrote daily journal for {today}")
-
     # --- Self-evaluation: score this journal ---
     try:
         from evaluator import evaluate_journal, record_event
@@ -1213,6 +1213,15 @@ def do_journal():
             record_event("journal", j_scores, {"date": today})
     except Exception as e:
         log.warning("Journal self-evaluation failed: %s", e)
+
+    # --- Daily post-mortem: extract lessons from today's failures ---
+    try:
+        from self_iteration import daily_postmortem
+        postmortem_summary = daily_postmortem()
+        if postmortem_summary:
+            log.info("Daily post-mortem: %s", postmortem_summary[:100])
+    except Exception as e:
+        log.warning("Daily post-mortem failed: %s", e)
 
     # --- Autonomous writing check: does Mira have something to say? ---
     try:
@@ -1303,7 +1312,7 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
         "--idea", content,
     ])
 
-    append_memory(f"Self-initiated writing: '{title}' ({writing_type})")
+    log.info("Self-initiated writing: '%s' (%s)", title, writing_type)
 
 
 # ---------------------------------------------------------------------------
@@ -1423,7 +1432,6 @@ def do_spark_check():
     state[f"sparks_{today}"] = state.get(f"sparks_{today}", 0) + 1
     save_state(state)
 
-    append_memory(f"Proactive thought shared with WA: {thought[:80]}")
     log.info("Spark sent to WA: %s", thought[:80])
 
 
@@ -1479,6 +1487,18 @@ def do_idle_think():
         log.info("idle-think: no pending questions, nothing to think about")
         return
 
+    # Auto-resolve questions that have been churned on too many times without progress
+    from emptiness import resolve_question as _resolve_q
+    for q in questions[:]:
+        if q.get("thought_count", 0) >= 15:
+            _resolve_q(q["id"])
+            log.info("idle-think: auto-shelved over-churned question %s (%d thoughts)",
+                     q["id"], q["thought_count"])
+            questions.remove(q)
+    if not questions:
+        log.info("idle-think: all questions shelved, nothing to think about")
+        return
+
     log.info("idle-think triggered: %s", get_status_str())
 
     soul = load_soul()
@@ -1524,9 +1544,8 @@ def do_idle_think():
         log.warning("idle-think: claude_think returned empty")
         return
 
-    # Record thought for each question touched
-    for q in questions:
-        mark_thought(q["id"])
+    # Record thought only for the primary question (not all 3)
+    mark_thought(questions[0]["id"])
 
     # Reduce emptiness after thinking
     after_think()
@@ -1540,7 +1559,6 @@ def do_idle_think():
         encoding="utf-8",
     )
 
-    append_memory(f"Self-awakened idle think: {questions[0]['text'][:60]}")
     log.info("idle-think complete, saved to %s", think_file.name)
 
     # Check for resolve markers
@@ -1563,7 +1581,6 @@ def do_idle_think():
             today = now.strftime("%Y-%m-%d")
             state[f"sparks_{today}"] = state.get(f"sparks_{today}", 0) + 1
             save_state(state)
-            append_memory(f"Idle-think shared with WA: {thought[:60]}")
             log.info("idle-think shared: %s", thought[:60])
         except Exception as e:
             log.warning("idle-think share failed: %s", e)
@@ -1923,7 +1940,6 @@ def run_podcast_episode(lang: str, slug: str, title: str):
     if result:
         state[f"podcast_{today}"] = {"lang": lang, "slug": slug, "path": str(result)}
         log.info("Podcast: episode done → %s", result)
-        append_memory(f"Generated {lang.upper()} podcast episode: '{title}'")
     else:
         log.error("Podcast: generation failed for [%s] '%s'", lang, title)
     save_state(state)
@@ -1979,7 +1995,6 @@ def do_check_comments():
             summary = f"回复了 {len(replies)} 条 Substack 评论:\n"
             for r in replies:
                 summary += f"- {r['comment_name']} on \"{r['post_title']}\": {r['reply'][:60]}\n"
-            append_memory(f"Replied to {len(replies)} Substack comments")
         else:
             log.info("No new comments to reply to")
     except Exception as e:
@@ -2038,7 +2053,6 @@ def do_notes_cycle():
                 parts.append(f"backfilled {summary['backfilled']} articles")
             if summary["standalone_posted"]:
                 parts.append("posted standalone Note")
-            append_memory(f"Notes cycle: {', '.join(parts)}")
             log.info("Notes cycle complete: %s", summary)
         else:
             log.info("Notes cycle: nothing to post")
@@ -2086,8 +2100,6 @@ def do_zhesi():
 
     # Copy to artifacts for iOS (with verification)
     _copy_to_briefings(f"{today}_zhesi.md", content)
-
-    append_memory(f"Wrote daily 哲思 on: {fragment[:60]}")
 
     state[f"zhesi_{today}"] = datetime.now().isoformat()
     save_state(state)
@@ -2189,7 +2201,7 @@ def do_autowrite_check():
         "--idea", content,
     ])
 
-    append_memory(f"Self-initiated writing: '{title}' ({writing_type})")
+    log.info("Self-initiated writing: '%s' (%s)", title, writing_type)
     save_state(state)
 
 
@@ -2588,6 +2600,51 @@ def _gather_recent_briefings(days: int = 7) -> str:
         except ValueError:
             continue
     return "\n".join(texts) if texts else "No recent briefings."
+
+
+def _gather_recent_episodes(days: int = 7) -> str:
+    """Read recent episode archives for reflect cycle."""
+    cutoff = datetime.now() - timedelta(days=days)
+    texts = []
+    for path in sorted(EPISODES_DIR.glob("*.md")):
+        try:
+            date_str = path.stem[:10]
+            file_date = datetime.strptime(date_str, "%Y-%m-%d")
+            if file_date >= cutoff:
+                content = path.read_text(encoding="utf-8")
+                # Include title + first 500 chars as summary
+                texts.append(f"--- {path.stem} ---\n{content[:500]}\n")
+        except (ValueError, OSError):
+            continue
+    return "\n".join(texts) if texts else "No recent episodes."
+
+
+def _prune_episodes_from_reflect(pruning_text: str):
+    """Delete old episodes listed in reflect output, preserve insights in memory."""
+    import re as _re
+    for line in pruning_text.strip().splitlines():
+        line = line.strip()
+        if not line.startswith("- "):
+            continue
+        # Parse: "- filename.md → insight" or "- filename.md → prune, no insight"
+        match = _re.match(r"^- (.+?\.md)\s*[→->]+\s*(.+)$", line)
+        if not match:
+            continue
+        filename = match.group(1).strip()
+        insight = match.group(2).strip()
+        ep_path = EPISODES_DIR / filename
+        if not ep_path.exists():
+            continue
+        # Save insight to memory if it's worth keeping
+        if "no insight" not in insight.lower() and "prune" not in insight.lower():
+            date_str = filename[:10] if len(filename) >= 10 else datetime.now().strftime("%Y-%m-%d")
+            append_memory(f"- [{date_str}] {insight}")
+        # Delete the episode file
+        try:
+            ep_path.unlink()
+            log.info("Pruned episode: %s", filename)
+        except OSError as e:
+            log.warning("Failed to prune episode %s: %s", filename, e)
 
 
 # ---------------------------------------------------------------------------
