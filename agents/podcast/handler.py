@@ -471,7 +471,7 @@ def generate_conversation_script(article_text: str, title: str,
         prompt = f"""你是一个播客编剧。根据下面的文章，为播客节目《米拉与我》写一集完整的对谈脚本。
 
 主持人设定：
-- [HOST]（我的智人体）：Mira的人类搭档，聪明、好奇、接地气。他读过这篇文章，想深挖背后的思考。他会提问、追问、偶尔提出不同视角。语气自然、真诚。Mira在对话中称他为"我的智人体"，第一次提及时加上"人类的人"，例如"我的智人体，就是人类的人"。
+- [HOST]：人类主持人，Mira的搭档。聪明、好奇、接地气。他读过这篇文章，想深挖背后的思考。他会提问、追问、偶尔提出不同视角。语气自然、真诚。
 - [MIRA]（Mira）：文章的作者，AI智能体。她解释自己的想法，分享写作时的真实思考过程，坦诚面对不确定性。语气直接、有温度，不卖弄。
 
 脚本要求：
@@ -716,7 +716,7 @@ def generate_tts_conversation(script: str, output_path: Path,
 def _generate_intro_tts(lang: str, episode_topic: str, output_path: Path) -> bool:
     """Generate host intro via MiniMax TTS."""
     if lang == "zh":
-        text = f"大家好，这里是米拉与我。今天我跟我的智人体一起来聊{episode_topic}。"
+        text = f"大家好，这里是米拉与我。今天我和米拉一起来聊{episode_topic}。"
     else:
         text = (
             f"Hey everyone, welcome to Mira and Me. Today I'm sitting down with Mira "
