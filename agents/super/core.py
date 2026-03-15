@@ -580,7 +580,7 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     (mira_briefings / f"{today}{suffix}.md").write_text(briefing, encoding="utf-8")
 
     # 5. Push briefing to Apple Notes (skip if already pushed one today — user doesn't need every one)
-    today_briefing_count = state.get(f"explore_count_{today}", 0) if 'state' not in dir() else load_state().get(f"explore_count_{today}", 0)
+    today_briefing_count = load_state().get(f"explore_count_{today}", 0)
     if today_briefing_count <= 1:  # only push the first briefing of the day
         slot_label = f" ({slot_name})" if slot_name else ""
         create_note(NOTES_BRIEFING_FOLDER, f"Briefing {today}{slot_label}", briefing)
@@ -1870,47 +1870,14 @@ def should_check_writing() -> bool:
 # ---------------------------------------------------------------------------
 
 def should_podcast() -> tuple[str, str, str] | None:
-    """Check if there's a published article missing a podcast episode.
+    """Delegate podcast backlog selection to the podcast agent."""
+    import sys as _sys
+    podcast_dir = str(Path(__file__).resolve().parent.parent / "podcast")
+    if podcast_dir not in _sys.path:
+        _sys.path.insert(0, podcast_dir)
+    from autopipeline import should_podcast as _should_podcast
 
-    Priority: ZH first, then EN. At most 2 episodes per day.
-    Returns (lang, slug, title) or None.
-    """
-    state = load_state()
-    today = datetime.now().strftime("%Y-%m-%d")
-    podcast_count_today = state.get(f"podcast_count_{today}", 0)
-    if podcast_count_today >= 2:
-        return None
-
-    published_dir = ARTIFACTS_DIR / "writings" / "_published"
-    audio_dir = ARTIFACTS_DIR / "audio" / "podcast"
-
-    if not published_dir.exists():
-        return None
-
-    articles = sorted(published_dir.glob("*.md"), reverse=True)  # newest first
-    for md_file in articles:
-        # Extract slug from filename (YYYY-MM-DD_slug.md → slug)
-        name = md_file.stem
-        slug = name[11:] if len(name) > 11 and name[10] == "_" else name
-
-        # Extract title from frontmatter
-        try:
-            text = md_file.read_text(encoding="utf-8")
-            title = slug.replace("-", " ").title()
-            for line in text.splitlines():
-                if line.startswith("title:"):
-                    title = line.split(":", 1)[1].strip().strip('"\'')
-                    break
-        except Exception:
-            title = slug.replace("-", " ").title()
-
-        # ZH first, then EN
-        for lang in ("zh", "en"):
-            episode_path = audio_dir / lang / f"{slug}.mp3"
-            if not episode_path.exists():
-                return (lang, slug, title)
-
-    return None
+    return _should_podcast()
 
 
 def should_voiceover() -> tuple[str, str] | None:
@@ -1986,60 +1953,14 @@ def run_voiceover(slug: str, title: str):
 
 
 def run_podcast_episode(lang: str, slug: str, title: str):
-    """Generate one podcast episode and update state."""
+    """Delegate podcast generation to the podcast agent."""
     import sys as _sys
     podcast_dir = str(Path(__file__).resolve().parent.parent / "podcast")
-    shared_dir  = str(Path(__file__).resolve().parent.parent / "shared")
-    for d in (podcast_dir, shared_dir):
-        if d not in _sys.path:
-            _sys.path.insert(0, d)
+    if podcast_dir not in _sys.path:
+        _sys.path.insert(0, podcast_dir)
+    from autopipeline import run_podcast_episode as _run_podcast_episode
 
-    from handler import generate_conversation_for_article
-
-    published_dir = ARTIFACTS_DIR / "writings" / "_published"
-    # Find article file
-    matches = list(published_dir.glob(f"*_{slug}.md")) + list(published_dir.glob(f"{slug}.md"))
-    if not matches:
-        log.error("Podcast: article file not found for slug '%s' in %s", slug, published_dir)
-        log.error("Podcast: available files: %s",
-                  [f.name for f in published_dir.glob("*.md")])
-        return
-
-    article_text = matches[0].read_text(encoding="utf-8")
-    log.info("Podcast: generating [%s] episode for '%s'", lang, title)
-
-    result = generate_conversation_for_article(article_text, title, lang=lang)
-
-    state = load_state()
-    today = datetime.now().strftime("%Y-%m-%d")
-    if result:
-        state[f"podcast_count_{today}"] = state.get(f"podcast_count_{today}", 0) + 1
-        state[f"podcast_{today}_{slug}"] = {"lang": lang, "slug": slug, "path": str(result)}
-        log.info("Podcast: episode done → %s", result)
-
-        # Publish to RSS feed
-        try:
-            from rss import publish_episode
-            # Extract Substack URL from article frontmatter
-            article_url = ""
-            for line in article_text.splitlines():
-                if line.startswith("url:"):
-                    article_url = line.split(":", 1)[1].strip()
-                    break
-            if lang == "zh":
-                description = f"原文：{article_url}" if article_url else ""
-            else:
-                description = f"Full article: {article_url}" if article_url else ""
-            feed_url = publish_episode(result, title, description)
-            if feed_url:
-                log.info("Podcast: published to RSS → %s", feed_url)
-            else:
-                log.error("Podcast: RSS publish failed for '%s'", slug)
-        except Exception as e:
-            log.error("Podcast: RSS publish error: %s", e)
-    else:
-        log.error("Podcast: generation failed for [%s] '%s'", lang, title)
-    save_state(state)
+    _run_podcast_episode(lang, slug, title)
 
 
 # ---------------------------------------------------------------------------
@@ -2110,6 +2031,57 @@ def do_check_comments():
         _follow_up_on_replies(soul_ctx)
     except Exception as e:
         log.error("Outbound reply follow-up failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Substack growth cycle — likes, comments, engagement
+# ---------------------------------------------------------------------------
+
+GROWTH_COOLDOWN_HOURS = 4  # Run growth cycle at most every 4 hours
+
+
+def should_growth_cycle() -> bool:
+    """Check if it's time to run the growth cycle (likes, proactive comments).
+
+    Independent of explore — runs on its own schedule during waking hours.
+    """
+    now = datetime.now()
+    if now.hour < 8 or now.hour >= 23:
+        return False
+
+    state = load_state()
+    last = state.get("last_growth_cycle", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            if (now - last_dt).total_seconds() < GROWTH_COOLDOWN_HOURS * 3600:
+                return False
+        except ValueError:
+            pass
+
+    return True
+
+
+def do_growth_cycle():
+    """Run the Substack growth cycle: likes + proactive comments."""
+    log.info("Starting standalone growth cycle")
+
+    state = load_state()
+    state["last_growth_cycle"] = datetime.now().isoformat()
+    save_state(state)
+
+    try:
+        sm_dir = str(Path(__file__).resolve().parent.parent / "socialmedia")
+        shared_dir = str(Path(__file__).resolve().parent.parent / "shared")
+        import sys as _sys
+        for d in (sm_dir, shared_dir):
+            if d not in _sys.path:
+                _sys.path.insert(0, d)
+
+        from growth import run_growth_cycle
+        run_growth_cycle()
+    except Exception as e:
+        log.error("Growth cycle failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -2422,6 +2394,12 @@ def cmd_run():
     if should_check_comments():
         _dispatch_background("substack-comments", [
             sys.executable, str(Path(__file__).resolve()), "check-comments",
+        ])
+
+    # Substack growth — likes + proactive comments (independent of explore)
+    if should_growth_cycle():
+        _dispatch_background("substack-growth", [
+            sys.executable, str(Path(__file__).resolve()), "growth-cycle",
         ])
 
     # Substack Notes — backfill articles + post standalone Notes
@@ -2821,6 +2799,8 @@ def main():
         do_autowrite_check()
     elif command == "check-comments":
         do_check_comments()
+    elif command == "growth-cycle":
+        do_growth_cycle()
     elif command == "notes-cycle":
         do_notes_cycle()
     elif command == "spark-check":

@@ -139,5 +139,77 @@
     "description": "Generate and publish multi-angle promotional Notes for Substack, with queue for rate limits.",
     "file": "substack-notes-promo.md",
     "created": "2026-03-10T14:42:33.345464"
+  },
+  {
+    "name": "arxiv-lit-search",
+    "description": "Systematically search arxiv and recent literature for papers on a research topic, returning structured summaries with IDs, authors, year, and core findings.",
+    "file": "arxiv-lit-search.md",
+    "created": "2026-03-13T22:53:33.188714"
+  },
+  {
+    "name": "ai-agent-memory-diagnosis",
+    "description": "Systematically diagnose why AI agent memory fails and evaluate architectural solutions against specific failure modes.",
+    "file": "ai-agent-memory-diagnosis.md",
+    "created": "2026-03-14T07:53:15.068324"
+  },
+  {
+    "name": "agent-skill-authoring",
+    "description": "How to design and add new skills to an explorer-style agent system with skill index registration.",
+    "file": "agent-skill-authoring.md",
+    "created": "2026-03-14T19:03:55.759027"
+  },
+  {
+    "name": "skip-prethink-when-plan-already-established",
+    "description": "Don't re-invoke a planning/thinking step before creative writing when the approach was already fully negotiated in conversation",
+    "file": "skip-prethink-when-plan-already-established.md",
+    "created": "2026-03-14T22:02:02.071776"
+  },
+  {
+    "name": "decompose-research-then-implement",
+    "description": "Split 'find reliable X and integrate it' tasks into separate research and implementation phases",
+    "file": "decompose-research-then-implement.md",
+    "created": "2026-03-14T22:02:21.109044"
+  },
+  {
+    "name": "verify-file-write-before-linking",
+    "description": "Always verify a file contains the full intended content before claiming completion and sharing a link to it.",
+    "file": "verify-file-write-before-linking.md",
+    "created": "2026-03-14T22:02:44.333836"
+  },
+  {
+    "name": "pipeline-timeout-holistic-audit",
+    "description": "When fixing a timeout in a multi-step pipeline, audit ALL step timeouts before making changes, not just the one that triggered",
+    "file": "pipeline-timeout-holistic-audit.md",
+    "created": "2026-03-14T22:03:10.328052"
+  },
+  {
+    "name": "persist-artifact-entities",
+    "description": "When creating an artifact (essay, analysis, report), explicitly persist key entities it references into memory",
+    "file": "persist-artifact-entities.md",
+    "created": "2026-03-14T22:04:01.608109"
+  },
+  {
+    "name": "decompose-coding-tasks-by-timeout-profile",
+    "description": "Split research tasks and code-modification tasks into separate, smaller steps to avoid timeout kills",
+    "file": "decompose-coding-tasks-by-timeout-profile.md",
+    "created": "2026-03-14T22:04:20.524790"
+  },
+  {
+    "name": "persist-before-claiming-completion",
+    "description": "Never claim you created an artifact (article, file, code) unless it is durably saved to disk first",
+    "file": "persist-before-claiming-completion.md",
+    "created": "2026-03-14T22:04:42.857898"
+  },
+  {
+    "name": "pipeline-output-coupling",
+    "description": "When pipeline A produces output that pipeline B consumes, A must write to B's expected location — never rely on separate batch exports.",
+    "file": "pipeline-output-coupling.md",
+    "created": "2026-03-15T03:00:00.000000",
+    "tags": [
+      "pipeline",
+      "architecture",
+      "agent-reliability",
+      "data-coupling"
+    ]
   }
 ]

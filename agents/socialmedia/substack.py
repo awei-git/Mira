@@ -557,6 +557,25 @@ Output ONLY the subtitle, nothing else."""
         except Exception as _cat_e:
             log.warning("Catalog add failed: %s", _cat_e)
 
+        # Copy to _published/ for podcast pipeline
+        try:
+            pub_dir = workspace.parent / "_published"
+            pub_dir.mkdir(parents=True, exist_ok=True)
+            slug = pub_data.get("slug", str(draft_id))
+            pub_date = (pub_data.get("post_date") or "")[:10]
+            if not pub_date:
+                from datetime import datetime as _dt
+                pub_date = _dt.now().strftime("%Y-%m-%d")
+            pub_file = pub_dir / f"{pub_date}_{slug}.md"
+            pub_file.write_text(
+                f'---\ntitle: "{title}"\ndate: {pub_date}\nurl: {post_url}\n---\n\n'
+                f'# {title}\n\n{article_text}\n',
+                encoding="utf-8",
+            )
+            log.info("Copied to _published: %s", pub_file.name)
+        except Exception as _pub_e:
+            log.warning("Copy to _published failed (non-fatal): %s", _pub_e)
+
         # Auto-post a Note promoting this article
         try:
             from notes import post_note_for_article
@@ -1540,7 +1559,7 @@ def check_outbound_comment_replies() -> list[dict]:
     history = state.get("comment_history", [])
 
     # Only check comments from last 7 days
-    from datetime import timezone
+    from datetime import datetime, timezone, timedelta
     cutoff = datetime.now(timezone.utc) - timedelta(days=7)
 
     new_replies = []
