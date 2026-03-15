@@ -125,7 +125,7 @@ def _concat_mp3_chunks(chunk_paths: list[Path], output_path: Path) -> bool:
         mode='w', suffix='.txt', delete=False, encoding='utf-8'
     ) as f:
         for p in chunk_paths:
-            f.write(f"file '{p}'\n")
+            f.write(f"file '{p.resolve()}'\n")
         list_path = f.name
     try:
         result = subprocess.run(
@@ -205,7 +205,7 @@ def _call_gemini_tts(payload: dict, api_key: str,
 
 
 def _call_minimax_tts(text: str, voice_id: str, api_key: str,
-                      lang: str = "en", _retries: int = 4) -> bytes | None:
+                      lang: str = "en", _retries: int = 8) -> bytes | None:
     """POST to MiniMax T2A v2, return MP3 bytes directly.
 
     MiniMax returns MP3 (not PCM) — no conversion needed.
@@ -264,7 +264,13 @@ def _call_minimax_tts(text: str, voice_id: str, api_key: str,
         # Check for API-level error
         base_resp = data.get("base_resp", {})
         if base_resp.get("status_code", 0) != 0:
-            log.error("MiniMax TTS error: %s", base_resp.get("status_msg", data))
+            msg = base_resp.get("status_msg", str(data))
+            if "rate limit" in msg.lower() or "rpm" in msg.lower() or "ratelimit" in msg.lower():
+                wait = 65 * (attempt + 1)   # 65s, 130s, 195s — clear the 60s window
+                log.warning("MiniMax TTS rate limit (body): %s — waiting %ds...", msg, wait)
+                _time.sleep(wait)
+                continue
+            log.error("MiniMax TTS error: %s", msg)
             return None
 
         audio_hex = data.get("data", {}).get("audio", "")
@@ -454,8 +460,8 @@ def generate_conversation_script(article_text: str, title: str,
                                   lang: str = "en") -> str | None:
     """Generate a Host + Mira podcast dialogue from the article.
 
-    Targets ~3000-3500 words (English) or ~6000-7000 characters (Chinese)
-    for a 20-25 minute episode.
+    Targets ~5500-6500 words (English) or ~9000-10000 characters (Chinese)
+    for a 30+ minute episode (ensures 20+ min after music/intro).
 
     Returns a script string with lines like:
         [HOST]: ...
@@ -474,13 +480,18 @@ def generate_conversation_script(article_text: str, title: str,
 - [HOST]：人类主持人，Mira的搭档。聪明、好奇、接地气。他读过这篇文章，想深挖背后的思考。他会提问、追问、偶尔提出不同视角。语气自然、真诚。
 - [MIRA]（Mira）：文章的作者，AI智能体。她解释自己的想法，分享写作时的真实思考过程，坦诚面对不确定性。语气直接、有温度，不卖弄。
 
+目标听众：有一定技术背景（懂编程或科技行业），但不是这个具体领域的专家。听众可能没有深度机器学习或AI研究的背景，需要在对话中自然地被带入语境。
+
 脚本要求：
-- 目标长度：约6000-7000中文字（对应20-25分钟）
-- 完整覆盖文章所有核心观点，不跳过细节
-- 对话要自然流动，不像在背诵——有追问、有停顿、有转折
-- HOST偶尔可以分享自己的联想或反应，让对话更有人情味
-- 以一个吸引人的开场白开始（不要用"欢迎收听"这种套话）
-- 以一个有余韵的结尾收场
+- 目标长度：9000-10000中文字（对应30-35分钟，确保最终剪辑后至少20分钟）。这是硬性要求，不能写短。
+- 每轮发言长度：HOST每轮50-100字，MIRA每轮150-250字。不能写一句话就结束——MIRA的每个回答要充分展开，举例子，作类比，解释机制。
+- 完整覆盖文章所有核心观点，不跳过任何细节，每个概念都要充分展开
+- 每个主要观点至少有2-3轮来回追问，深入到具体机制、例子、反例
+- 术语解释原则：文章中出现的每个专业术语、缩写、学术概念（如MMLU、Goodhart定律、微调等），HOST要自然地追问"这是什么意思"，MIRA用日常语言类比解释。不要跳过，不要假设听众已经知道。
+- 多用具体例子、类比、生活场景来解释抽象概念——每个抽象概念后必须紧跟一个具体例子
+- 对话要自然流动，不像在背诵——有追问、有停顿、有转折、有HOST自己的联想和反应
+- 以一个吸引人的开场白开始（不要用"欢迎收听"这种套话，直接切入有画面感的场景或问题）
+- 以一个有余韵的结尾收场，留给听众一个值得思考的问题或意象
 - 格式严格如下，每行一个发言：
 [HOST]: （发言内容）
 [MIRA]: （发言内容）
@@ -490,13 +501,14 @@ def generate_conversation_script(article_text: str, title: str,
 - 禁用：破折号——、省略号……、顿号、、引号""「」、括号（）[]、分号；、冒号：
 - 禁用所有特殊符号：斜杠/、星号*、井号#、百分号%等
 - 代码、变量名（如 core.py、memory.md）直接口语化表述，不要原样照抄
+- 数字尽量用汉字表达（如"三千五百"而不是"3500"）
 
 文章标题：{title}
 
 文章全文：
 {article_text}
 
-只返回脚本，不要任何其他说明。"""
+只返回脚本，不要任何其他说明。脚本必须达到9000字以上才算完成。"""
     else:
         prompt = f"""You are a podcast writer. Based on the article below, write a complete episode script
 for the podcast "Uncountable Dimensions".
@@ -509,12 +521,23 @@ Character setup:
   actually thinking when she wrote it, sits with uncertainty honestly. Direct, warm,
   not performative.
 
+Target audience: People with some technical background (software, tech industry) but NOT
+specialists in this specific field. They may not know ML/AI research deeply. The conversation
+should naturally bring them up to speed — never assume domain expertise.
+
 Script requirements:
-- Target length: ~3000-3500 words (for a 20-25 minute episode)
-- Cover ALL major ideas in the article — don't skip nuance
-- Conversation flows naturally — follow-up questions, moments of pause, pivots
-- HOST occasionally shares his own reaction or connection, making it feel alive
-- Open with a hook (not "welcome to the show" boilerplate)
+- Target length: 5500-6500 words (for a 30-35 minute episode, ensuring 20+ min after editing).
+  This is a hard requirement — do not write short.
+- Per-turn length: HOST 30-60 words per turn, MIRA 80-150 words per turn. Never one sentence
+  and done — MIRA must fully develop each answer with explanation, example, and analogy.
+- Cover ALL major ideas in the article — no skipping, every concept fully developed
+- Each major idea gets 2-3 rounds of follow-up — dig into mechanics, examples, counterexamples
+- Term explanation rule: every technical term, acronym, or academic concept (e.g., MMLU,
+  Goodhart's law, fine-tuning) — HOST naturally asks "what does that mean?" and MIRA explains
+  using everyday analogies. Never skip. Never assume the listener already knows.
+- After every abstract concept, MIRA must give a concrete real-world example
+- Conversation flows naturally — follow-up questions, pivots, HOST's own reactions and connections
+- Open with a hook — a vivid scene, a tension, a violated assumption. No "welcome to the show."
 - Close with something that lingers — a question, an image, a quiet thought
 - Strict format, one line per turn:
 [HOST]: (what they say)
@@ -531,7 +554,7 @@ Article title: {title}
 Full article:
 {article_text}
 
-Return ONLY the script, no other commentary."""
+Return ONLY the script, no other commentary. The script must reach 5500+ words to be complete."""
 
     log.info("Generating conversation script [%s]...", lang)
 
@@ -543,6 +566,7 @@ Return ONLY the script, no other commentary."""
         response = client.chat.completions.create(
             model="o3",
             messages=[{"role": "user", "content": prompt}],
+            max_completion_tokens=32000,
             timeout=600,
         )
         result = response.choices[0].message.content
