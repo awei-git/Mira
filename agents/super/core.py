@@ -1972,7 +1972,12 @@ def should_check_comments() -> bool:
 
 
 def do_check_comments():
-    """Check Substack posts for new comments and reply as Mira."""
+    """Check Substack posts for new comments and reply as Mira.
+
+    Two loops:
+    1. Replies to Mira's own articles (existing)
+    2. Replies to Mira's outbound comments on other publications (new)
+    """
     log.info("Starting Substack comment check")
 
     state = load_state()
@@ -1986,7 +1991,7 @@ def do_check_comments():
         sync_posts_for_ios()
         replies = check_and_reply_comments()
         if replies:
-            log.info("Replied to %d comments", len(replies))
+            log.info("Replied to %d comments on own posts", len(replies))
             for r in replies:
                 log.info("  %s on '%s': %s",
                          r["comment_name"], r["post_title"], r["reply"][:80])
@@ -1996,9 +2001,18 @@ def do_check_comments():
             for r in replies:
                 summary += f"- {r['comment_name']} on \"{r['post_title']}\": {r['reply'][:60]}\n"
         else:
-            log.info("No new comments to reply to")
+            log.info("No new comments on own posts")
     except Exception as e:
         log.error("Comment check failed: %s", e)
+
+    # Also run the growth cycle's reply follow-up (replies to Mira's outbound comments)
+    try:
+        from growth import _follow_up_on_replies
+        soul = load_soul()
+        soul_ctx = format_soul(soul)[:500]
+        _follow_up_on_replies(soul_ctx)
+    except Exception as e:
+        log.error("Outbound reply follow-up failed: %s", e)
 
 
 # ---------------------------------------------------------------------------

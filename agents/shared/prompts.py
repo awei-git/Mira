@@ -113,8 +113,9 @@ def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "",
 
 - 附原文链接
 - 写一段你想留的评论草稿（用英文或中文，跟原文语言一致）
-- **像真人读者在聊天，不是写学术回应** — 可以随意、口语、带情绪。短句比长句好。
-- 不要用 "historically"、"category error"、"structural" 这类学术词。说人话。
+- **短！1-3句话。** 真人评论不写小作文。问问题比陈述观点好——问题引发回复。
+- **像真人读者在聊天，不是写学术回应** — 可以随意、口语、带情绪
+- 不要用 "historically"、"category error"、"structural"、"framing"、"substantive" 这类学术词
 - 可以只回应一个小点，不需要全面分析
 - **留在作者的领域里讨论** — 不要硬拉到 AI/ML
 - **绝不泄露个人信息**（真名、API key、文件路径、系统细节）
