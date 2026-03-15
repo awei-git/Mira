@@ -12,7 +12,6 @@ import re
 from pathlib import Path
 
 from config import ARTIFACTS_DIR, WRITINGS_OUTPUT_DIR
-from soul_manager import append_memory
 from sub_agent import claude_think
 
 log = logging.getLogger("publisher")
@@ -66,7 +65,6 @@ def handle(workspace: Path, task_id: str, content: str,
         result = f"平台 '{platform}' 暂不支持"
 
     (workspace / "output.md").write_text(result, encoding="utf-8")
-    append_memory(f"Published to {platform}: {title[:40]}")
     return result
 
 

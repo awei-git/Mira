@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import ARTIFACTS_DIR
-from soul_manager import append_memory
 from sub_agent import claude_think
 
 log = logging.getLogger("analyst_agent")
@@ -102,7 +101,6 @@ If the briefing doesn't cover this topic, start your answer with [GAP] and still
         (workspace / "output.md").write_text(result, encoding="utf-8")
         summary = result[:300]
         (workspace / "summary.txt").write_text(summary, encoding="utf-8")
-        append_memory(f"Answered analyst question from {sender}: {content[:60]}")
         log.info("Analyst task %s: answered (%d chars)", task_id, len(result))
         return summary
 

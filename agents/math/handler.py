@@ -96,7 +96,7 @@ def handle(workspace: Path, task_id: str, content: str,
     if shared_dir not in sys.path:
         sys.path.insert(0, shared_dir)
 
-    from soul_manager import load_soul, format_soul, append_memory
+    from soul_manager import load_soul, format_soul
     from sub_agent import claude_think
 
     soul = load_soul()
@@ -135,5 +135,4 @@ If the task requires computational verification, suggest concrete checks.
         return None
 
     (workspace / "output.md").write_text(result, encoding="utf-8")
-    append_memory(f"Handled math task from {sender}: {content[:80]}")
     return result[:400]

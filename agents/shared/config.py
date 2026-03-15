@@ -118,6 +118,15 @@ WORLDVIEW_FILE = SOUL_DIR / "worldview.md"
 # Reading notes — personal reflections from deep dives
 READING_NOTES_DIR = SOUL_DIR / "reading_notes"
 
+# Conversation archive — full conversation content indexed for recall across sessions
+CONVERSATIONS_DIR = SOUL_DIR / "conversations"
+
+# Episode archive — complete task conversations saved for long-term recall
+EPISODES_DIR = SOUL_DIR / "episodes"
+
+# Content catalog — structured metadata for all produced content (articles, papers, audio, video)
+CATALOG_FILE = SOUL_DIR / "catalog.jsonl"
+
 # Dynamically learned skills
 SKILLS_DIR = SOUL_DIR / "learned"
 SKILLS_INDEX = SKILLS_DIR / "index.json"

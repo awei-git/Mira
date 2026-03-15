@@ -8,7 +8,8 @@ from pathlib import Path
 from config import (
     IDENTITY_FILE, MEMORY_FILE, INTERESTS_FILE, WORLDVIEW_FILE,
     READING_NOTES_DIR, SKILLS_DIR, SKILLS_INDEX, SKILLS_FILE,
-    MAX_MEMORY_LINES, MIRA_ROOT,
+    MAX_MEMORY_LINES, MIRA_ROOT, CONVERSATIONS_DIR,
+    EPISODES_DIR, CATALOG_FILE,
 )
 
 log = logging.getLogger("mira")
@@ -541,19 +542,195 @@ def auto_flush(context_summary: str):
     """Save important context before it's lost (e.g. before context compaction).
 
     Call this when an agent session is winding down or context is large.
-    Appends a compressed summary to memory and triggers index rebuild.
+    Saves to conversations/ archive (NOT memory.md — that's for cognitive insights only).
     """
     if not context_summary or len(context_summary.strip()) < 50:
         return
 
-    # Save as a memory entry
-    append_memory(f"[auto-flush] {context_summary[:300]}")
+    # Save as a conversation archive file (indexed by memory_index)
+    CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M")
+    path = CONVERSATIONS_DIR / f"flush_{ts}.md"
+    path.write_text(
+        f"# Context Flush ({ts})\n\n{context_summary[:2000]}\n",
+        encoding="utf-8",
+    )
+    log.info("Auto-flush saved to %s", path.name)
 
     # Trigger async index rebuild (non-blocking)
     try:
         rebuild_memory_index()
     except Exception:
         pass  # Best-effort
+
+
+# ---------------------------------------------------------------------------
+# Episode Archival — save complete conversations for long-term recall
+# ---------------------------------------------------------------------------
+
+def save_episode(task_id: str, title: str, messages: list[dict],
+                 tags: list[str] | None = None):
+    """Archive a complete task conversation as a searchable episode.
+
+    Episodes are indexed by memory_index for semantic search, enabling
+    Mira to recall past discussions, decisions, and context.
+    """
+    EPISODES_DIR.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+    ts = datetime.now().strftime("%H%M")
+
+    # Deduplicate: remove any existing episode for this task_id
+    for existing in EPISODES_DIR.glob("*.md"):
+        try:
+            head = existing.read_text(encoding="utf-8")[:200]
+            if f"Task: {task_id}" in head:
+                existing.unlink()
+                log.info("Replaced existing episode for task %s", task_id)
+                break
+        except OSError:
+            continue
+
+    # Build readable markdown from conversation
+    lines = [f"# Episode: {title}", f"*Task: {task_id} | Date: {today}*", ""]
+    if tags:
+        lines.append(f"Tags: {', '.join(tags)}")
+        lines.append("")
+
+    for msg in messages:
+        sender = msg.get("sender", "?")
+        content = msg.get("content", "")
+        # Skip status cards
+        if content.startswith('{"type":'):
+            continue
+        msg_ts = msg.get("timestamp", "")[:16]
+        lines.append(f"**[{msg_ts}] {sender}**: {content}")
+        lines.append("")
+
+    slug = re.sub(r"[^\w\s-]", "", title.lower())[:40].strip().replace(" ", "-")
+    filename = f"{today}_{ts}_{slug or task_id}.md"
+    path = EPISODES_DIR / filename
+    path.write_text("\n".join(lines), encoding="utf-8")
+    log.info("Episode saved: %s (%d messages)", filename, len(messages))
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Content Catalog — structured metadata for all produced content
+# ---------------------------------------------------------------------------
+
+def catalog_add(entry: dict):
+    """Add an entry to the content catalog.
+
+    Entry should have: type, title, date, path, topics, status.
+    Optional: substack_id, description, source_task.
+    Deduplicates by (type, title) — updates existing entry if found.
+    """
+    CATALOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    # Load existing entries
+    entries = []
+    if CATALOG_FILE.exists():
+        for line in CATALOG_FILE.read_text(encoding="utf-8").strip().splitlines():
+            if line.strip():
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+    # Ensure required fields
+    entry.setdefault("date", datetime.now().strftime("%Y-%m-%d"))
+    entry.setdefault("topics", [])
+    entry.setdefault("status", "draft")
+
+    # Deduplicate by (type, title)
+    key = (entry.get("type", ""), entry.get("title", ""))
+    entries = [e for e in entries if (e.get("type", ""), e.get("title", "")) != key]
+    entries.append(entry)
+
+    # Write back
+    lines = [json.dumps(e, ensure_ascii=False) for e in entries]
+    CATALOG_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    log.info("Catalog +: [%s] %s", entry.get("type"), entry.get("title", "")[:60])
+
+
+def catalog_search(query: str, content_type: str | None = None) -> list[dict]:
+    """Search the content catalog by keyword. Returns matching entries."""
+    if not CATALOG_FILE.exists():
+        return []
+
+    query_lower = query.lower()
+    results = []
+    for line in CATALOG_FILE.read_text(encoding="utf-8").strip().splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if content_type and entry.get("type") != content_type:
+            continue
+        # Match against title, topics, description
+        searchable = " ".join([
+            entry.get("title", ""),
+            " ".join(entry.get("topics", [])),
+            entry.get("description", ""),
+        ]).lower()
+        if query_lower in searchable:
+            results.append(entry)
+
+    return results
+
+
+def catalog_list(content_type: str | None = None) -> list[dict]:
+    """List all catalog entries, optionally filtered by type."""
+    if not CATALOG_FILE.exists():
+        return []
+
+    entries = []
+    for line in CATALOG_FILE.read_text(encoding="utf-8").strip().splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if content_type and entry.get("type") != content_type:
+            continue
+        entries.append(entry)
+
+    return entries
+
+
+# ---------------------------------------------------------------------------
+# Proactive Recall — search memory before acting
+# ---------------------------------------------------------------------------
+
+def recall_context(query: str, max_chars: int = 2000) -> str:
+    """Search memory for relevant prior context before starting a task.
+
+    Returns formatted context string for injection into task prompts.
+    Searches both semantic memory index and content catalog.
+    """
+    parts = []
+
+    # 1. Semantic memory search (episodes, journals, reading notes, etc.)
+    mem_results = search_memory(query, top_k=3)
+    if mem_results:
+        parts.append("## Relevant memories\n" + mem_results)
+
+    # 2. Content catalog search
+    catalog_hits = catalog_search(query)
+    if catalog_hits:
+        cat_lines = ["## Related content I've produced"]
+        for hit in catalog_hits[:5]:
+            cat_lines.append(
+                f"- [{hit.get('type')}] \"{hit.get('title')}\" "
+                f"({hit.get('date', '?')}, {hit.get('status', '?')})"
+            )
+        parts.append("\n".join(cat_lines))
+
+    result = "\n\n".join(parts)
+    return result[:max_chars] if result else ""
 
 
 # ---------------------------------------------------------------------------

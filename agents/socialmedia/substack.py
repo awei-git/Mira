@@ -541,6 +541,22 @@ Output ONLY the subtitle, nothing else."""
             encoding="utf-8",
         )
 
+        # Add to content catalog
+        try:
+            from soul_manager import catalog_add
+            catalog_add({
+                "type": "article",
+                "title": title,
+                "path": str(workspace),
+                "topics": [],  # will be enriched by smart_classify
+                "status": "published",
+                "substack_id": draft_id,
+                "url": post_url,
+                "description": (subtitle or "")[:200],
+            })
+        except Exception as _cat_e:
+            log.warning("Catalog add failed: %s", _cat_e)
+
         # Auto-post a Note promoting this article
         try:
             from notes import post_note_for_article

@@ -22,6 +22,7 @@ from pathlib import Path
 from config import (
     SOUL_DIR, IDENTITY_FILE, MEMORY_FILE, INTERESTS_FILE, WORLDVIEW_FILE,
     READING_NOTES_DIR, SKILLS_DIR, SKILLS_INDEX, JOURNAL_DIR, SECRETS_FILE,
+    CONVERSATIONS_DIR, EPISODES_DIR, CATALOG_FILE,
 )
 
 log = logging.getLogger("mira.memory_index")
@@ -228,6 +229,43 @@ def _gather_sources() -> list[dict]:
                 "path": str(path),
                 "content": path.read_text(encoding="utf-8"),
             })
+
+    # Conversation archives — full task conversations saved for recall across sessions
+    if CONVERSATIONS_DIR.exists():
+        for path in sorted(CONVERSATIONS_DIR.glob("*.md")):
+            try:
+                sources.append({
+                    "source": "conversation",
+                    "path": str(path),
+                    "content": path.read_text(encoding="utf-8"),
+                })
+            except OSError:
+                continue
+
+    # Episodes — complete task conversations archived for long-term recall
+    if EPISODES_DIR.exists():
+        for path in sorted(EPISODES_DIR.glob("*.md")):
+            try:
+                sources.append({
+                    "source": "episode",
+                    "path": str(path),
+                    "content": path.read_text(encoding="utf-8"),
+                })
+            except OSError:
+                continue
+
+    # Content catalog — metadata for all produced content
+    if CATALOG_FILE.exists():
+        try:
+            content = CATALOG_FILE.read_text(encoding="utf-8")
+            if content.strip():
+                sources.append({
+                    "source": "catalog",
+                    "path": str(CATALOG_FILE),
+                    "content": content,
+                })
+        except OSError:
+            pass
 
     return sources
 
