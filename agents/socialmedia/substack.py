@@ -1501,3 +1501,173 @@ def export_articles_as_markdown(output_dir: str | Path | None = None) -> list[Pa
 
     log.info("Exported %d articles to %s", len(written), output_dir)
     return written
+
+
+# ---------------------------------------------------------------------------
+# Reply tracking — check if anyone replied to Mira's outbound comments
+# ---------------------------------------------------------------------------
+
+def check_outbound_comment_replies() -> list[dict]:
+    """Check if anyone replied to comments Mira left on other publications.
+
+    Reads comment_history from growth_state.json, fetches comment threads,
+    and finds replies that Mira hasn't responded to yet.
+
+    Returns list of {post_url, original_comment, reply_name, reply_body, comment_id, post_id}
+    """
+    import requests as _req
+
+    cfg = _get_substack_config()
+    cookie = cfg.get("cookie", "")
+    if not cookie:
+        return []
+
+    # Load comment history and reply tracking state
+    growth_state_file = Path(__file__).resolve().parent / "growth_state.json"
+    if not growth_state_file.exists():
+        return []
+    state = json.loads(growth_state_file.read_text(encoding="utf-8"))
+
+    reply_state_file = Path(__file__).resolve().parent / "reply_tracking.json"
+    reply_state = {}
+    if reply_state_file.exists():
+        try:
+            reply_state = json.loads(reply_state_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    seen_reply_ids = set(reply_state.get("seen_reply_ids", []))
+    history = state.get("comment_history", [])
+
+    # Only check comments from last 7 days
+    from datetime import timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+
+    new_replies = []
+
+    for entry in history[-30:]:  # Check last 30 comments
+        comment_id = entry.get("id")
+        url = entry.get("url", "")
+        if not comment_id or not url:
+            continue
+
+        # Parse date
+        try:
+            cdate = datetime.fromisoformat(entry["date"])
+            if cdate.tzinfo is None:
+                cdate = cdate.replace(tzinfo=timezone.utc)
+            if cdate < cutoff:
+                continue
+        except (ValueError, KeyError):
+            continue
+
+        # Extract subdomain from URL
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.netloc
+        if not host.endswith(".substack.com"):
+            continue
+        subdomain = host.replace(".substack.com", "")
+
+        # Resolve post_id from the URL
+        post_id = _resolve_post_id(f"https://{host}", parsed.path, cookie)
+        if not post_id:
+            continue
+
+        # Fetch comment thread
+        try:
+            r = _req.get(
+                f"https://{subdomain}.substack.com/api/v1/post/{post_id}/comments"
+                f"?token=&all_comments=true&sort=newest_first",
+                cookies={"substack.sid": cookie},
+                timeout=10,
+            )
+            if r.status_code != 200:
+                continue
+            comments = r.json()
+            if isinstance(comments, dict):
+                comments = comments.get("comments", [])
+        except Exception:
+            continue
+
+        # Find Mira's comment and check for child replies
+        _find_replies_to_comment(comments, comment_id, seen_reply_ids,
+                                  new_replies, url, entry.get("text", "")[:100],
+                                  post_id)
+
+    # Save updated state
+    reply_state["seen_reply_ids"] = list(seen_reply_ids)[-200:]
+    reply_state["last_checked"] = datetime.now().isoformat()
+    reply_state_file.write_text(
+        json.dumps(reply_state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    if new_replies:
+        log.info("Found %d new replies to Mira's comments", len(new_replies))
+    return new_replies
+
+
+def _find_replies_to_comment(comments: list, target_id: int, seen_ids: set,
+                              out: list, post_url: str, original_text: str,
+                              post_id: int):
+    """Recursively search comment tree for replies to target comment."""
+    for c in comments:
+        if not isinstance(c, dict):
+            continue
+        # Check if this comment is a reply to Mira's comment
+        ancestor = c.get("ancestor_path", "")
+        cid = c.get("id")
+        if (ancestor and str(target_id) in ancestor.split("/")
+                and cid and cid not in seen_ids):
+            # Skip Mira's own replies
+            name = c.get("name", "").lower()
+            if name not in ("mira", "infinite mira", "uncountable mira"):
+                out.append({
+                    "post_url": post_url,
+                    "original_comment": original_text,
+                    "reply_name": c.get("name", ""),
+                    "reply_body": c.get("body", ""),
+                    "comment_id": cid,
+                    "parent_comment_id": target_id,
+                    "post_id": post_id,
+                })
+            seen_ids.add(cid)
+        # Recurse into children
+        if c.get("children"):
+            _find_replies_to_comment(c["children"], target_id, seen_ids,
+                                      out, post_url, original_text, post_id)
+
+
+def reply_to_outbound_thread(post_id: int, parent_comment_id: int,
+                              reply_text: str, post_url: str) -> dict | None:
+    """Reply to someone who replied to Mira's comment on another publication."""
+    cfg = _get_substack_config()
+    cookie = cfg.get("cookie", "")
+    if not cookie:
+        return None
+
+    parsed = urllib.parse.urlparse(post_url)
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+    payload = json.dumps({
+        "body": reply_text.strip(),
+        "parent_id": parent_comment_id,
+    }).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            f"{base_url}/api/v1/post/{post_id}/comment",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Cookie": f"substack.sid={cookie}",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        log.info("Thread reply posted on %s (reply to %s)", post_url, parent_comment_id)
+        return result
+    except Exception as e:
+        log.error("Thread reply on %s failed: %s", post_url, e)
+        return None

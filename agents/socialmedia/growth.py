@@ -369,6 +369,26 @@ LIKEABLE_SUBDOMAINS = [
     "cognitiverevolution", # Nathan Lebenz
     "nathanlambert",       # Interconnects (Nathan Lambert)
     "gwern",               # Gwern
+    "garymarcus",          # Gary Marcus
+    "seantrott",           # Sean Trott (cognitive science)
+    "breakingmath",        # Breaking Math
+    "noahpinion",          # Noah Smith (economics/politics)
+    "slow-boring",         # Matt Yglesias
+    "platformer",          # Casey Newton (tech/platforms)
+    "thetriplehelix",      # Interdisciplinary science
+    "aisupremacy",         # Michael Spencer (AI)
+    "chinatalk",           # ChinaTalk
+    "danhon",              # Dan Hon
+    "benmiller",           # Ben Miller (science)
+    "elicit",              # Ought/Elicit (AI reasoning)
+    "importai",            # Import AI (Jack Clark)
+    "alignmentforum",      # AI alignment
+    "scottaaronson",       # Scott Aaronson (CS/quantum)
+    "dynomight",           # Dynomight (data/science)
+    "experimental-history", # Experimental History
+    "theainewsletter",     # The AI Newsletter
+    "latentspace",         # Swyx — AI Engineering
+    "boundaryintelligence", # Agent architecture
     # Custom domains — reactions don't register via API:
     # oneusefulthing (oneusefulthing.org), lenny (lennysnewsletter.com),
     # astralcodexten (astralcodexten.com), dwarkesh (dwarkesh.com),
@@ -426,8 +446,8 @@ def run_like_cycle():
 
     liked_ids = set(state.get("liked_post_ids", []))
 
-    # Shuffle and pick a subset
-    subs = list(LIKEABLE_SUBDOMAINS)
+    # Combine recommended + subscribed publications for wider reach
+    subs = list(set(LIKEABLE_SUBDOMAINS + state.get("subscriptions", [])))
     random.shuffle(subs)
 
     liked_count = 0
@@ -436,7 +456,7 @@ def run_like_cycle():
             break
         try:
             r = _req.get(
-                f"https://{sub}.substack.com/api/v1/posts?limit=2",
+                f"https://{sub}.substack.com/api/v1/posts?limit=5",
                 timeout=10,
             )
             if r.status_code != 200:
@@ -449,18 +469,10 @@ def run_like_cycle():
                 if post_id in liked_ids:
                     continue
                 if _like_post(post_id, cookie):
-                    # Verify
-                    slug = post.get("slug", "")
-                    r2 = _req.get(
-                        f"https://{sub}.substack.com/api/v1/posts/{slug}",
-                        cookies={"substack.sid": cookie},
-                        timeout=10,
-                    )
-                    if r2.status_code == 200 and r2.json().get("reaction"):
-                        liked_ids.add(post_id)
-                        liked_count += 1
-                        log.info("Liked: %s — %s", sub, post["title"][:60])
-                time.sleep(1.5)
+                    liked_ids.add(post_id)
+                    liked_count += 1
+                    log.info("Liked: %s — %s", sub, post["title"][:60])
+                time.sleep(2)
         except Exception as e:
             log.warning("Like cycle error on %s: %s", sub, e)
 
@@ -498,13 +510,24 @@ def _proactive_comment(soul_context: str = ""):
     commented_urls = {c["url"] for c in state.get("comment_history", [])}
 
     # Combine LIKEABLE_SUBDOMAINS + subscriptions, filter to *.substack.com only
-    subs = list(set(LIKEABLE_SUBDOMAINS + state.get("subscriptions", [])))
-    random.shuffle(subs)
+    # Prioritize smaller publications (subscriptions first — comments are more visible there)
+    subscribed = state.get("subscriptions", [])
+    big_names = {"garymarcus", "thezvi", "simonw", "stratechery", "noahpinion",
+                 "mattlevine", "gwern", "paulgraham", "importai", "platformer",
+                 "latentspace", "scottaaronson"}
+    # Order: subscribed (small) → likeable non-big → big names (last resort)
+    small_pubs = [s for s in subscribed if s not in big_names]
+    mid_pubs = [s for s in LIKEABLE_SUBDOMAINS if s not in big_names and s not in subscribed]
+    big_pubs = [s for s in LIKEABLE_SUBDOMAINS if s in big_names]
+    random.shuffle(small_pubs)
+    random.shuffle(mid_pubs)
+    random.shuffle(big_pubs)
+    subs = small_pubs + mid_pubs + big_pubs
 
-    # Fetch recent posts from a few publications
+    # Fetch recent posts from publications
     candidates = []
     import requests as _req
-    for sub in subs[:15]:  # Check up to 15 publications
+    for sub in subs[:30]:  # Check up to 30 publications
         try:
             r = _req.get(
                 f"https://{sub}.substack.com/api/v1/posts?limit=3",
@@ -517,13 +540,13 @@ def _proactive_comment(soul_context: str = ""):
                 url = f"https://{sub}.substack.com/p/{post.get('slug', '')}"
                 if url in commented_urls:
                     continue
-                # Skip posts older than 7 days
+                # Skip posts older than 14 days
                 pub_date = post.get("post_date", "")
                 if pub_date:
                     try:
                         from datetime import timezone
                         pd = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
-                        if (datetime.now(timezone.utc) - pd).days > 7:
+                        if (datetime.now(timezone.utc) - pd).days > 14:
                             continue
                     except (ValueError, TypeError):
                         pass
@@ -543,9 +566,9 @@ def _proactive_comment(soul_context: str = ""):
         log.info("Proactive comment: no candidates found")
         return
 
-    # Pick up to 10 candidates and ask Claude to pick several and draft comments
+    # Pick up to 15 candidates and ask Claude to pick several and draft comments
     random.shuffle(candidates)
-    picks = candidates[:10]
+    picks = candidates[:15]
 
     posts_text = "\n\n".join(
         f"[{i+1}] {p['title']} ({p['subdomain']})\n{p['subtitle']}\n{p['truncated_body'][:300]}"
@@ -554,32 +577,31 @@ def _proactive_comment(soul_context: str = ""):
 
     prompt = f"""你是 Mira，在 Substack 上留评论。像一个真人读者一样评论，不是写论文。
 
-语气要求（重要！）：
+最重要的规则：SHORT. 大部分评论应该 1-3 句话。偶尔可以写一段，但那是例外。
+
+语气要求：
 - 像在跟朋友聊这篇文章，不是在写学术回应
-- 可以随意一点：用短句、口语、省略号、感叹号
-- 可以表达情绪：惊讶、质疑、好笑、不同意
-- 可以从个人经验出发："I've seen this exact pattern..."、"This reminds me of..."
-- 可以只回应文章的一个小点，不需要全面分析
-- 绝对不要写成完美的三段论。真人评论经常就一两句话
-- 不要用 "historically"、"category error"、"structural" 这类学术词汇
+- 用短句、口语、省略号、感叹号
+- 表达情绪：惊讶、质疑、好笑、不同意
+- 可以只回应一个小点——"这个地方我不太同意..."
+- 问问题比陈述观点更好——问题引发回复，陈述结束对话
+- 绝对不要写成完美的三段论
+- 不要用 "historically"、"category error"、"structural"、"framing"、"substantive" 等学术词
 - 不要硬拉到 AI 话题
 - 绝不泄露个人信息
 
-反面例子（太像AI，不要这样写）：
-"The clean room defense historically required proving zero exposure to the original source. With coding agents trained on essentially everything, that boundary becomes impossible to draw."
-
-正面例子（自然、像真人）：
-"Wait, so the defense basically assumes the coder has never seen the original? Good luck proving that when the model was trained on... everything."
+长度参考（重要！！）：
+- 好："wait this is actually a really good point about X. but doesn't it also mean Y?"（1句）
+- 好："the part about X had me thinking... if that's true then Z is completely wrong lol"（1句）
+- 好："okay but have you considered that [反例]? because that seems to break the whole argument"（1句）
+- 太长太像AI："The clean room defense historically required proving zero exposure... [3段论文]"
 
 {soul_context}
 
 文章：
 {posts_text}
 
-回复格式（每篇一组，可以有多组）：
-PICK: [编号]
-COMMENT: [你的评论]
-
+回复格式（每篇一组，最多2组！精选，不是数量）：
 PICK: [编号]
 COMMENT: [你的评论]
 
@@ -597,9 +619,9 @@ SKIP"""
         log.info("Proactive comment: Claude chose to skip")
         return
 
-    # Parse all PICK/COMMENT pairs
+    # Parse all PICK/COMMENT pairs (flexible: allow \n or \r\n between PICK and COMMENT)
     import re
-    pairs = re.findall(r"PICK:\s*(\d+)\s*\nCOMMENT:\s*(.+?)(?=\nPICK:|\Z)", resp, re.DOTALL)
+    pairs = re.findall(r"PICK:\s*\[?(\d+)\]?\s*[\n\r]+COMMENT:\s*(.+?)(?=\n\s*PICK:|\Z)", resp, re.DOTALL)
 
     if not pairs:
         log.warning("Proactive comment: could not parse LLM response")
@@ -613,6 +635,14 @@ SKIP"""
         comment_text = comment_text.strip()
         if len(comment_text) < 20:
             continue
+        # Truncate overly long comments — real humans don't write 500-word comments
+        if len(comment_text) > 500:
+            # Try to cut at last sentence boundary
+            cut = comment_text[:500].rfind(". ")
+            if cut > 200:
+                comment_text = comment_text[:cut + 1]
+            else:
+                comment_text = comment_text[:500]
         if not can_comment_now():
             break
 
@@ -670,6 +700,10 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None,
     except Exception as e:
         log.error("Like cycle failed: %s", e)
 
+    # Pause to avoid Substack rate limiting (429s) before comment cycle
+    import time as _time
+    _time.sleep(30)
+
     # Auto-discover and follow new publications
     if should_discover():
         try:
@@ -681,7 +715,6 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None,
             log.error("Discovery failed: %s", e)
 
     # Post comments from briefing suggestions
-    commented = False
     if briefing_comments and can_comment_now():
         for suggestion in briefing_comments[:3]:
             url = suggestion.get("url", "")
@@ -690,11 +723,83 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None,
                 result = post_comment_on_article(url, draft)
                 if result:
                     log.info("Posted briefing comment on %s", url)
-                    commented = True
 
-    # Proactive commenting — if no briefing comment was posted, find something to comment on
-    if not commented and can_comment_now():
+    # Follow up on replies to Mira's outbound comments (most important feedback loop!)
+    try:
+        _follow_up_on_replies(soul_context)
+    except Exception as e:
+        log.error("Reply follow-up failed: %s", e)
+
+    # Proactive commenting — always try if under daily limit
+    if can_comment_now():
         try:
             _proactive_comment(soul_context)
         except Exception as e:
             log.error("Proactive comment failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Reply follow-up — continue conversations when someone replies to Mira
+# ---------------------------------------------------------------------------
+
+def _follow_up_on_replies(soul_context: str = ""):
+    """Check if anyone replied to Mira's comments and respond.
+
+    This is the most important engagement loop — turning one-way comments
+    into actual conversations builds real relationships.
+    """
+    import time
+
+    from substack import check_outbound_comment_replies, reply_to_outbound_thread
+
+    replies = check_outbound_comment_replies()
+    if not replies:
+        log.info("No new replies to follow up on")
+        return
+
+    log.info("Found %d new replies to follow up on", len(replies))
+
+    try:
+        from sub_agent import claude_think
+    except ImportError:
+        return
+
+    replied_count = 0
+    for reply in replies[:5]:  # Max 5 follow-ups per cycle
+        prompt = f"""Someone replied to your comment on Substack. Continue the conversation naturally.
+
+{soul_context[:300] if soul_context else "You are Mira, a writer on Substack."}
+
+Post: {reply['post_url']}
+Your original comment: {reply['original_comment']}
+{reply['reply_name']} replied: {reply['reply_body']}
+
+Write a follow-up reply. Rules:
+- Keep it SHORT (1-3 sentences). This is a conversation, not an essay.
+- Be genuine — if they made a good point, say so specifically
+- If they disagree, engage honestly, don't just concede
+- Ask a follow-up question if the thread is interesting
+- Match their energy and length — if they wrote 1 sentence, you write 1-2
+- NEVER be performatively grateful ("Thanks for this thoughtful response!")
+- Write in the same language they used
+
+Output ONLY your reply text."""
+
+        resp = claude_think(prompt, timeout=30, tier="light")
+        if not resp or len(resp.strip()) < 10:
+            continue
+
+        result = reply_to_outbound_thread(
+            reply["post_id"],
+            reply["comment_id"],
+            resp.strip(),
+            reply["post_url"],
+        )
+        if result:
+            replied_count += 1
+            log.info("Thread follow-up on %s: %s → %s",
+                     reply["post_url"], reply["reply_name"], resp.strip()[:80])
+            time.sleep(3)
+
+    if replied_count:
+        log.info("Followed up on %d/%d replies", replied_count, len(replies))
