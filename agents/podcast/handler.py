@@ -38,7 +38,7 @@ GEMINI_MODEL_THINK = "gemini-2.5-pro"          # for script generation
 # ---------------------------------------------------------------------------
 
 MINIMAX_MODEL_TTS = "speech-02-hd"
-MINIMAX_API_URL   = "https://api.minimax.io/v1/t2a_v2"
+MINIMAX_API_URL   = "https://api.minimax.io/v1/text_to_speech"   # t2a_v2 returns 2053 on Audio Starter plan
 
 # MiniMax voice IDs — one voice per character, consistent across all turns
 # Full list: platform.minimax.io/docs/faq/system-voice-id
@@ -206,33 +206,26 @@ def _call_gemini_tts(payload: dict, api_key: str,
 
 def _call_minimax_tts(text: str, voice_id: str, api_key: str,
                       lang: str = "en", _retries: int = 8) -> bytes | None:
-    """POST to MiniMax T2A v2, return MP3 bytes directly.
+    """POST to MiniMax text_to_speech, return MP3 bytes directly.
 
-    MiniMax returns MP3 (not PCM) — no conversion needed.
-    Rate limit: 60 RPM, no RPD cap. Retries on 429 with short backoff.
+    Uses /v1/text_to_speech (Audio Starter plan compatible).
+    /v1/t2a_v2 returns 2053 on Audio Starter plan.
+    Rate limit: retries on both 429 and body-level rate limit codes.
     """
     import time as _time
-    import requests
+    import requests, base64
 
     speed = SPEED_ZH_MM if lang == "zh" else 1.0
     payload = {
         "model": MINIMAX_MODEL_TTS,
         "text": text,
-        "stream": False,
-        "language_boost": "Chinese" if lang == "zh" else "auto",
-        "output_format": "hex",
-        "voice_setting": {
-            "voice_id": voice_id,
-            "speed": speed,
-            "vol": VOL_MM,
-            "pitch": 0,
-        },
-        "audio_setting": {
-            "format": "mp3",
-            "sample_rate": 32000,
-            "bitrate": 128000,
-            "channel": 1,
-        },
+        "voice_id": voice_id,
+        "speed": speed,
+        "vol": VOL_MM,
+        "pitch": 0,
+        "audio_sample_rate": 32000,
+        "bitrate": 128000,
+        "format": "mp3",
     }
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -251,7 +244,7 @@ def _call_minimax_tts(text: str, voice_id: str, api_key: str,
             continue
 
         if resp.status_code == 429:
-            wait = 60 * (attempt + 1)   # 1min, 2min, 3min
+            wait = 60 * (attempt + 1)
             log.warning("MiniMax TTS rate limited (429), waiting %ds...", wait)
             _time.sleep(wait)
             continue
@@ -261,24 +254,29 @@ def _call_minimax_tts(text: str, voice_id: str, api_key: str,
             return None
 
         data = resp.json()
-        # Check for API-level error
         base_resp = data.get("base_resp", {})
         if base_resp.get("status_code", 0) != 0:
             msg = base_resp.get("status_msg", str(data))
-            if "rate limit" in msg.lower() or "rpm" in msg.lower() or "ratelimit" in msg.lower():
-                wait = 65 * (attempt + 1)   # 65s, 130s, 195s — clear the 60s window
-                log.warning("MiniMax TTS rate limit (body): %s — waiting %ds...", msg, wait)
+            code = base_resp.get("status_code", 0)
+            if code in (1002, 1039) or "rate limit" in msg.lower() or "rpm" in msg.lower():
+                wait = 65 * (attempt + 1)
+                log.warning("MiniMax TTS rate limit (body %d): %s — waiting %ds...", code, msg, wait)
                 _time.sleep(wait)
                 continue
             log.error("MiniMax TTS error: %s", msg)
             return None
 
-        audio_hex = data.get("data", {}).get("audio", "")
-        if not audio_hex:
-            log.error("MiniMax TTS: no audio in response: %s", str(data)[:300])
+        # text_to_speech returns audio_file as hex or base64
+        audio_raw = data.get("audio_file", "")
+        if not audio_raw:
+            log.error("MiniMax TTS: no audio_file in response: %s", str(data)[:300])
             return None
 
-        return bytes.fromhex(audio_hex)
+        # Try hex first, fall back to base64
+        try:
+            return bytes.fromhex(audio_raw)
+        except ValueError:
+            return base64.b64decode(audio_raw)
 
     log.error("MiniMax TTS: failed after %d attempts", _retries)
     return None
