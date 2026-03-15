@@ -22,6 +22,8 @@ sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 sys.path.insert(0, str(_AGENTS_DIR / "explorer"))
 
+import health_monitor
+
 from config import (
     MIRA_ROOT, WORKSPACE_DIR, BRIEFINGS_DIR, LOGS_DIR, STATE_FILE,
     NOTES_INBOX_FOLDER, NOTES_BRIEFING_FOLDER, NOTES_OUTPUT_FOLDER,
@@ -1174,9 +1176,16 @@ def do_journal():
     soul = load_soul()
     soul_ctx = format_soul(soul)
 
-    # Inject stats and reading notes into briefing summary
+    # Inject stats, health, and reading notes into briefing summary
     if stats_summary:
         briefing_summary += f"\n\n## Substack Stats\n{stats_summary}"
+    try:
+        pipeline_health = health_monitor.generate_health_summary()
+        if pipeline_health:
+            briefing_summary += f"\n\n{pipeline_health}"
+        health_monitor.prune_old_stats()
+    except Exception as e:
+        log.warning("Health summary generation failed: %s", e)
     if reading_notes:
         briefing_summary += f"\n\n## Reading Notes (recent insights)\n{reading_notes[:2000]}"
 
@@ -2334,6 +2343,13 @@ def cmd_run():
     except Exception as e:
         log.warning("App feed sync/read failed: %s", e)
 
+    # --- Harvest background process outcomes & check health ---
+    try:
+        health_monitor.harvest_all()
+        health_monitor.check_anomalies()
+    except Exception as e:
+        log.error("Health monitor failed: %s", e)
+
     # --- All heavy work below runs in background processes ---
 
     # Writing pipeline
@@ -2465,6 +2481,10 @@ def _dispatch_background(name: str, cmd: list[str]):
             return
         except (OSError, ValueError):
             pass  # process gone, safe to start new one
+
+        # Harvest outcome of the dead process
+        health_monitor.record_outcome(name)
+
         # Cooldown: don't re-dispatch if the PID file was written recently
         try:
             import time as _time
@@ -2483,6 +2503,7 @@ def _dispatch_background(name: str, cmd: list[str]):
             cwd=str(MIRA_ROOT / "agents" / "super"),
         )
         pid_file.write_text(str(proc.pid))
+        health_monitor.record_dispatch(name, proc.pid)
         log.info("Background '%s' dispatched (PID %d)", name, proc.pid)
     except Exception as e:
         log.error("Failed to dispatch background '%s': %s", name, e)
