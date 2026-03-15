@@ -1872,12 +1872,13 @@ def should_check_writing() -> bool:
 def should_podcast() -> tuple[str, str, str] | None:
     """Check if there's a published article missing a podcast episode.
 
-    Priority: ZH first, then EN. At most one episode per day.
+    Priority: ZH first, then EN. At most 2 episodes per day.
     Returns (lang, slug, title) or None.
     """
     state = load_state()
     today = datetime.now().strftime("%Y-%m-%d")
-    if state.get(f"podcast_{today}"):
+    podcast_count_today = state.get(f"podcast_count_{today}", 0)
+    if podcast_count_today >= 2:
         return None
 
     published_dir = ARTIFACTS_DIR / "writings" / "_published"
@@ -1912,6 +1913,78 @@ def should_podcast() -> tuple[str, str, str] | None:
     return None
 
 
+def should_voiceover() -> tuple[str, str] | None:
+    """Check if there's a published article missing a voiceover MP3.
+
+    Returns (slug, title) or None. At most 1 voiceover per day.
+    """
+    state = load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+    if state.get(f"voiceover_count_{today}", 0) >= 1:
+        return None
+
+    published_dir = ARTIFACTS_DIR / "writings" / "_published"
+    voiceover_dir = ARTIFACTS_DIR / "audio" / "voiceover"
+
+    if not published_dir.exists():
+        return None
+
+    articles = sorted(published_dir.glob("*.md"), reverse=True)
+    for md_file in articles:
+        name = md_file.stem
+        slug = name[11:] if len(name) > 11 and name[10] == "_" else name
+
+        if (voiceover_dir / f"{slug}.mp3").exists():
+            continue
+
+        try:
+            text = md_file.read_text(encoding="utf-8")
+            title = slug.replace("-", " ").title()
+            for line in text.splitlines():
+                if line.startswith("title:"):
+                    title = line.split(":", 1)[1].strip().strip('"\'\'')
+                    break
+        except Exception:
+            title = slug.replace("-", " ").title()
+
+        return (slug, title)
+
+    return None
+
+
+def run_voiceover(slug: str, title: str):
+    """Generate a voiceover MP3 for an article and update state."""
+    import sys as _sys
+    podcast_dir = str(Path(__file__).resolve().parent.parent / "podcast")
+    shared_dir  = str(Path(__file__).resolve().parent.parent / "shared")
+    for d in (podcast_dir, shared_dir):
+        if d not in _sys.path:
+            _sys.path.insert(0, d)
+
+    from handler import generate_audio_for_article
+
+    published_dir = ARTIFACTS_DIR / "writings" / "_published"
+    matches = list(published_dir.glob(f"*_{slug}.md")) + list(published_dir.glob(f"{slug}.md"))
+    if not matches:
+        log.error("Voiceover: article not found for slug \'%s\'", slug)
+        return
+
+    article_text = matches[0].read_text(encoding="utf-8")
+    log.info("Voiceover: generating for \'%s\'", title)
+
+    result = generate_audio_for_article(article_text, title, lang="zh")
+
+    state = load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+    if result:
+        state[f"voiceover_count_{today}"] = state.get(f"voiceover_count_{today}", 0) + 1
+        log.info("Voiceover: done → %s", result)
+    else:
+        log.error("Voiceover: generation failed for \'%s\'", title)
+    save_state(state)
+
+
+
 def run_podcast_episode(lang: str, slug: str, title: str):
     """Generate one podcast episode and update state."""
     import sys as _sys
@@ -1927,7 +2000,9 @@ def run_podcast_episode(lang: str, slug: str, title: str):
     # Find article file
     matches = list(published_dir.glob(f"*_{slug}.md")) + list(published_dir.glob(f"{slug}.md"))
     if not matches:
-        log.error("Podcast: article file not found for slug '%s'", slug)
+        log.error("Podcast: article file not found for slug '%s' in %s", slug, published_dir)
+        log.error("Podcast: available files: %s",
+                  [f.name for f in published_dir.glob("*.md")])
         return
 
     article_text = matches[0].read_text(encoding="utf-8")
@@ -1938,8 +2013,30 @@ def run_podcast_episode(lang: str, slug: str, title: str):
     state = load_state()
     today = datetime.now().strftime("%Y-%m-%d")
     if result:
-        state[f"podcast_{today}"] = {"lang": lang, "slug": slug, "path": str(result)}
+        state[f"podcast_count_{today}"] = state.get(f"podcast_count_{today}", 0) + 1
+        state[f"podcast_{today}_{slug}"] = {"lang": lang, "slug": slug, "path": str(result)}
         log.info("Podcast: episode done → %s", result)
+
+        # Publish to RSS feed
+        try:
+            from rss import publish_episode
+            # Extract Substack URL from article frontmatter
+            article_url = ""
+            for line in article_text.splitlines():
+                if line.startswith("url:"):
+                    article_url = line.split(":", 1)[1].strip()
+                    break
+            if lang == "zh":
+                description = f"原文：{article_url}" if article_url else ""
+            else:
+                description = f"Full article: {article_url}" if article_url else ""
+            feed_url = publish_episode(result, title, description)
+            if feed_url:
+                log.info("Podcast: published to RSS → %s", feed_url)
+            else:
+                log.error("Podcast: RSS publish failed for '%s'", slug)
+        except Exception as e:
+            log.error("Podcast: RSS publish error: %s", e)
     else:
         log.error("Podcast: generation failed for [%s] '%s'", lang, title)
     save_state(state)
@@ -2342,6 +2439,15 @@ def cmd_run():
             "--lang", lang, "--slug", slug, "--title", title,
         ])
 
+    # Voiceover — one per day, ZH only
+    voiceover_pick = should_voiceover()
+    if voiceover_pick:
+        slug, title = voiceover_pick
+        _dispatch_background(f"voiceover-{slug}", [
+            sys.executable, str(Path(__file__).resolve()), "voiceover",
+            "--slug", slug, "--title", title,
+        ])
+
     # Proactive thought sharing — message WA when Mira has something worth discussing
     if should_spark_check():
         _dispatch_background("spark-check", [
@@ -2721,6 +2827,10 @@ def main():
         do_spark_check()
     elif command == "idle-think":
         do_idle_think()
+    elif command == "voiceover":
+        slug  = flags.get("slug", "")
+        title = flags.get("title", slug.replace("-", " ").title())
+        run_voiceover(slug, title)
     elif command == "podcast":
         lang  = flags.get("lang", "zh")
         slug  = flags.get("slug", "")
