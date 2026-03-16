@@ -946,7 +946,7 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
                     agent_message=f"写作进行中，当前状态: {final_state}",
                 )
         except Exception as e:
-        log.error("Failed to update bridge: %s", e)
+            log.error("Failed to update bridge: %s", e)
 
 
 USAGE = """Usage: writing_agent.py <command> [args]
