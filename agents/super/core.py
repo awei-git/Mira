@@ -1274,9 +1274,16 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
     Runs after daily journal. If Mira decides she has something to say,
     creates an auto-task and dispatches the writing pipeline.
     """
+    # Guard: don't trigger if publishing is disabled
+    from config import SUBSTACK_PUBLISHING_DISABLED
+    if SUBSTACK_PUBLISHING_DISABLED:
+        log.info("Autonomous writing skipped: Substack publishing is disabled")
+        return
+
     # Detect recurring themes across recent journals + reading notes
     themes = detect_recurring_themes(days=7)
     recent_reading = load_recent_reading_notes(days=7)
+    recent_published = _extract_recent_published_titles(days=14)
 
     # Ask Mira if she wants to write
     prompt = autonomous_writing_prompt(
@@ -1284,6 +1291,7 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
         recurring_themes="\n".join(f"- {t}" for t in themes) if themes else "",
         recent_reading=recent_reading[:2000],
         recent_journal=recent_journal[:1500],
+        recent_published=recent_published,
     )
     result = claude_think(prompt, timeout=60)
     if not result:
@@ -2224,6 +2232,12 @@ def do_autowrite_check():
     Draws from 杂.md ideas + recent readings + recurring themes.
     More proactive than the journal-only trigger.
     """
+    # Guard: don't bother if publishing is disabled
+    from config import SUBSTACK_PUBLISHING_DISABLED
+    if SUBSTACK_PUBLISHING_DISABLED:
+        log.info("Autowrite check skipped: Substack publishing is disabled")
+        return
+
     log.info("Starting autonomous writing check")
 
     soul = load_soul()
@@ -2245,12 +2259,15 @@ def do_autowrite_check():
         if journals:
             recent_journal = journals[0].read_text(encoding="utf-8")[:1500]
 
+    recent_published = _extract_recent_published_titles(days=14)
+
     prompt = autonomous_writing_prompt(
         soul_ctx,
         recurring_themes="\n".join(f"- {t}" for t in themes) if themes else "",
         recent_reading=recent_reading[:2000],
         recent_journal=recent_journal,
         za_fragments=za_fragments,
+        recent_published=recent_published,
     )
     result = claude_think(prompt, timeout=60)
     if not result:
@@ -2745,6 +2762,43 @@ def _extract_recent_briefing_topics(days: int = 3) -> str:
             seen.add(key)
             unique.append(t)
     return "\n".join(unique[:30]) if unique else ""
+
+
+def _extract_recent_published_titles(days: int = 14) -> str:
+    """Extract titles of recently published articles for autowrite dedup.
+
+    Reads filenames from artifacts/writings/_published/ to build a list
+    of what Mira has already written, so she doesn't repeat topics.
+    """
+    published_dir = ARTIFACTS_DIR / "writings" / "_published"
+    if not published_dir.exists():
+        return ""
+    cutoff = datetime.now() - timedelta(days=days)
+    titles = []
+    for path in sorted(published_dir.glob("*.md"), reverse=True):
+        try:
+            date_str = path.stem[:10]
+            file_date = datetime.strptime(date_str, "%Y-%m-%d")
+            if file_date < cutoff:
+                continue
+        except ValueError:
+            continue
+        # Extract title from first heading or filename
+        try:
+            content = path.read_text(encoding="utf-8")
+            for line in content.split("\n"):
+                line = line.strip()
+                if line.startswith("# "):
+                    titles.append(f"- [{date_str}] {line[2:]}")
+                    break
+            else:
+                # Fallback to filename
+                slug = path.stem[11:]  # after YYYY-MM-DD_
+                titles.append(f"- [{date_str}] {slug.replace('-', ' ').title()}")
+        except Exception:
+            slug = path.stem[11:]
+            titles.append(f"- [{date_str}] {slug.replace('-', ' ').title()}")
+    return "\n".join(titles) if titles else ""
 
 
 def _gather_recent_briefings(days: int = 7) -> str:

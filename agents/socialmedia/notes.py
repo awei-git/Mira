@@ -132,6 +132,15 @@ def post_note(text: str, link_url: str | None = None,
     Returns:
         API response dict with note ID, or None on failure.
     """
+    # Guard: respect the global kill switch
+    try:
+        from config import SUBSTACK_PUBLISHING_DISABLED
+        if SUBSTACK_PUBLISHING_DISABLED:
+            log.warning("Substack Notes 已被禁用（config.yml: publishing.substack_disabled=true）")
+            return None
+    except ImportError:
+        pass
+
     from substack import _get_substack_config
     import urllib.request
     import urllib.error

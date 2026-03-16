@@ -390,6 +390,16 @@ def _upload_image_to_substack(image_path: str, subdomain: str, cookie: str) -> s
 def publish_to_substack(title: str, subtitle: str,
                         article_text: str, workspace: Path) -> str:
     """Publish an article to Substack. Returns status message."""
+    # Guard: respect the global kill switch
+    try:
+        from config import SUBSTACK_PUBLISHING_DISABLED
+        if SUBSTACK_PUBLISHING_DISABLED:
+            msg = "Substack 发布已被禁用（config.yml: publishing.substack_disabled=true）。"
+            log.warning(msg)
+            return msg
+    except ImportError:
+        pass
+
     cfg = _get_substack_config()
     subdomain = cfg.get("subdomain", "")
     cookie = cfg.get("cookie", "")

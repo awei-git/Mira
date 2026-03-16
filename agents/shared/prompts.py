@@ -281,7 +281,8 @@ def internalize_prompt(soul_context: str, title: str, analysis: str) -> str:
 
 def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
                                recent_reading: str, recent_journal: str,
-                               za_fragments: str = "") -> str:
+                               za_fragments: str = "",
+                               recent_published: str = "") -> str:
     """Prompt for Mira to decide if she has something worth writing about."""
     za_section = ""
     if za_fragments:
@@ -311,7 +312,13 @@ def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
 ## 最近的日记
 {recent_journal or "最近没有日记。"}
 {za_section}
+{f"""
+## 已发布的文章（不要重复！）
 
+{recent_published}
+
+以上是你最近已经发布的文章。**绝对不要写相同或相似的主题。** 如果你的想法跟已发布文章有明显重叠（同一个论点、同一个切入角度、同一个核心概念），直接放弃这个方向，想别的。换一个完全不同的主题。
+""" if recent_published else ""}
 ---
 
 ## 写作方向
