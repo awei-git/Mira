@@ -325,8 +325,8 @@ def _call_minimax_tts(text: str, voice_id: str, api_key: str,
         except ValueError:
             return base64.b64decode(audio_raw)
 
-    log.error("MiniMax TTS: failed after %d attempts — treating as quota exhaustion", _retries)
-    raise RuntimeError("MiniMax TTS quota exhausted (rate limited after all retries)")
+    log.error("MiniMax TTS: failed after %d attempts", _retries)
+    return None
 
 
 def _write_mp3(mp3_data: bytes, output_path: Path) -> bool:
@@ -737,14 +737,8 @@ def _tts_call_with_fallback(text: str, speaker: str,
             log.error("No MiniMax API key — set minimax key in secrets.yml")
             return None, ''
         voice_id = _voice_for_speaker_minimax(speaker, lang)
-        try:
-            mp3 = _call_minimax_tts(text, voice_id, api_key, lang=lang)
-            return (mp3, 'mp3') if mp3 is not None else (None, '')
-        except RuntimeError as e:
-            if "quota exhausted" in str(e):
-                return None, 'quota'
-            log.error("MiniMax TTS unexpected error: %s", e)
-            return None, ''
+        mp3 = _call_minimax_tts(text, voice_id, api_key, lang=lang)
+        return (mp3, 'mp3') if mp3 is not None else (None, '')
 
     if TTS_PROVIDER == 'minimax':
         return _try_minimax()
