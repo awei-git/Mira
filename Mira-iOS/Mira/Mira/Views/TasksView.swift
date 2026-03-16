@@ -100,7 +100,7 @@ struct TasksView: View {
                             )) {
                                 ForEach(group.tasks) { task in
                                     NavigationLink(value: task.id) {
-                                        TaskRow(task: task)
+                                        TaskRow(task: task, isUnread: bridge.isUnread(task.id))
                                     }
                                     .swipeActions(edge: .trailing) {
                                         Button(role: .destructive) {
@@ -310,16 +310,26 @@ struct TaskAttachedFile: Identifiable {
 
 struct TaskRow: View {
     let task: MiraTask
+    var isUnread: Bool = false
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: task.statusIcon)
-                .foregroundStyle(colorForStatus(task.statusColor))
-                .font(.title3)
-                .frame(width: 28)
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: task.statusIcon)
+                    .foregroundStyle(colorForStatus(task.statusColor))
+                    .font(.title3)
+                    .frame(width: 28)
+                if isUnread {
+                    Circle()
+                        .fill(.blue)
+                        .frame(width: 8, height: 8)
+                        .offset(x: 4, y: -4)
+                }
+            }
             VStack(alignment: .leading, spacing: 3) {
                 Text(task.title)
                     .font(.body)
+                    .fontWeight(isUnread ? .semibold : .regular)
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     ForEach(task.tags.prefix(3), id: \.self) { tag in

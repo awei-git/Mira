@@ -42,7 +42,7 @@ def _parse_simple_yaml(text: str) -> dict:
                 # inline list like ["a", "b"]
                 try:
                     result[key] = json.loads(val)
-                except Exception:
+                except (json.JSONDecodeError, ValueError):
                     result[key] = val
                 current_section = None
             else:
@@ -56,7 +56,7 @@ def _parse_simple_yaml(text: str) -> dict:
             if val.startswith("["):
                 try:
                     result[current_section][key] = json.loads(val)
-                except Exception:
+                except (json.JSONDecodeError, ValueError):
                     result[current_section][key] = val
             else:
                 try:
@@ -69,7 +69,9 @@ def _load_config() -> dict:
     if _CONFIG_FILE.exists():
         try:
             return _parse_simple_yaml(_CONFIG_FILE.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, ValueError) as e:
+            import logging
+            logging.getLogger("mira.config").warning("Failed to load config.yml: %s", e)
             return {}
     return {}
 
@@ -219,6 +221,10 @@ WRITING_MODELS = _models_cfg.get("writing", ["claude", "gpt5", "deepseek", "gemi
 REVIEW_MODELS = _models_cfg.get("review", ["claude", "gpt5", "gemini"])
 DEFAULT_MODEL = _models_cfg.get("default", "claude")
 CLAUDE_FALLBACK_MODEL = _models_cfg.get("claude_fallback", "codex")
+
+# Publishing controls
+_publishing_cfg = _cfg.get("publishing", {})
+SUBSTACK_PUBLISHING_DISABLED = _publishing_cfg.get("substack_disabled", False)
 
 # Writing workflow
 MIN_REVIEW_ROUNDS = 5

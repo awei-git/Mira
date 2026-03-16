@@ -22,7 +22,7 @@ sys.path.insert(0, str(_AGENTS_DIR / "general"))
 
 import shutil
 
-from config import MIRA_DIR, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR, MEMORY_FILE, WORLDVIEW_FILE
+from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR, MEMORY_FILE, WORLDVIEW_FILE
 from soul_manager import (load_soul, format_soul, append_memory, save_skill,
                          save_episode, recall_context)
 from sub_agent import claude_act, claude_think, ClaudeTimeoutError
@@ -391,6 +391,116 @@ def _is_approval(content: str) -> bool:
     if len(stripped) < 30 and any(stripped == p or stripped.startswith(p) for p in _APPROVAL_PHRASES):
         return True
     return False
+
+
+_REJECTION_PHRASES = [
+    "reject", "cancel", "取消", "不发", "不要发", "别发", "停",
+    "no", "nope", "算了", "不了",
+]
+
+
+def _is_rejection(content: str) -> bool:
+    """Detect if a message is rejecting/cancelling a pending action."""
+    stripped = content.strip().lower()
+    if len(stripped) < 30 and any(stripped == p or stripped.startswith(p) for p in _REJECTION_PHRASES):
+        return True
+    return False
+
+
+def _execute_pending_publish(pending_pub_file: Path, workspace: Path,
+                              task_id: str, thread_id: str):
+    """Execute a pending Substack publish after user approval.
+
+    Reads the pending_publish.json, calls publish_to_substack(), then clears
+    the pending file so the same article can't be published twice.
+    """
+    import re as _re
+    try:
+        pending = json.loads(pending_pub_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        log.error("Failed to read pending publish file: %s", e)
+        _write_result(workspace, task_id, "error", f"无法读取待发布记录: {e}")
+        return
+
+    pub_title = pending.get("pub_title", "")
+    subtitle = pending.get("subtitle", "")
+    source = pending.get("source", "auto")
+    article_path = pending.get("article_path", "")
+    project_dir = pending.get("project_dir", str(workspace))
+
+    # Get article text: from file path (auto) or inline (manual)
+    article_text = ""
+    if article_path:
+        try:
+            article_text = Path(article_path).read_text(encoding="utf-8")
+            # Strip revision tables
+            article_text = _re.sub(
+                r'\n---\s*\n+## 修改记录.*', '', article_text, flags=_re.DOTALL
+            )
+        except Exception as e:
+            log.error("Failed to read article file %s: %s", article_path, e)
+
+    if not article_text:
+        article_text = pending.get("article_text", "")
+
+    if not article_text:
+        _write_result(workspace, task_id, "error", "待发布文章内容为空，无法发布。")
+        return
+
+    # Delete pending file BEFORE publishing to prevent double-publish on retry
+    try:
+        pending_pub_file.unlink()
+        log.info("Pending publish file cleared before publishing")
+    except Exception as e:
+        log.warning("Could not clear pending publish file: %s", e)
+
+    # Publish to Substack
+    try:
+        sm_dir = str(_AGENTS_DIR / "socialmedia")
+        if sm_dir not in sys.path:
+            sys.path.insert(0, sm_dir)
+        from substack import publish_to_substack
+
+        proj_path = Path(project_dir)
+        log.info("Executing approved publish: '%s' (source=%s)", pub_title, source)
+        pub_result = publish_to_substack(
+            title=pub_title,
+            subtitle=subtitle,
+            article_text=article_text,
+            workspace=proj_path,
+        )
+        log.info("Publish complete: %s", pub_result[:120])
+
+        # For auto-written articles, also generate audio narration
+        if source == "auto":
+            try:
+                podcast_dir = str(_AGENTS_DIR / "podcast")
+                if podcast_dir not in sys.path:
+                    sys.path.insert(0, podcast_dir)
+                from handler import generate_audio_for_article
+                audio_path = generate_audio_for_article(article_text, pub_title)
+                if audio_path:
+                    pub_json = proj_path / "published.json"
+                    if pub_json.exists():
+                        pub_info = json.loads(pub_json.read_text(encoding="utf-8"))
+                        post_id = pub_info.get("draft_id")
+                        if post_id:
+                            from substack import upload_audio_to_post
+                            if upload_audio_to_post(audio_path, post_id, label=pub_title):
+                                log.info("Audio uploaded to post %s", post_id)
+                            else:
+                                log.warning("Audio upload failed for post %s", post_id)
+            except Exception as e:
+                log.error("Audio generation error for '%s': %s", pub_title, e)
+
+        (workspace / "output.md").write_text(pub_result, encoding="utf-8")
+        _write_result(workspace, task_id, "done", pub_result, tags=["publish"])
+        if thread_id:
+            _update_thread_memory(thread_id, "approve publish", pub_result)
+
+    except Exception as e:
+        log.error("Publish on approval failed for '%s': %s", pub_title, e)
+        _write_result(workspace, task_id, "error", f"发布失败: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -860,12 +970,12 @@ If a previous round already produced content, reference it in your plan (e.g. us
 ## Available Agents
 - briefing: Fetch feeds and generate a news briefing / summary
 - writing: Write or create text content (article, story, essay, post, translation)
-- publish: Publish EXISTING content to a platform (Substack, Instagram, Threads)
-- analyst: Market analysis, competitive intelligence, trend detection, industry research, market sizing
+- publish: Publish EXISTING TEXT ARTICLES to Substack newsletter ONLY. NOT for audio, podcast episodes, or RSS feeds.
+- analyst: Market analysis, competitive intelligence, trend detection, industry research, market sizing (has live web search)
 - math: Mathematical proofs, derivations, calculations, paper writing/review
 - video: Video editing — analyze footage, generate screenplay, cut highlights, mix music
-- podcast: Generate audio narration for an article. Converts written text to spoken audio (TTS)
-- general: Answer questions, search, analyze, code, file operations, anything else
+- podcast: Generate audio from articles (TTS) AND publish podcast episodes to RSS feed (Apple Podcasts, Xiaoyuzhou). Handles the full podcast pipeline internally — do NOT use publish for anything podcast-related.
+- general: Answer questions, search, analyze, code, file operations, anything else (has web browsing for research tasks)
 - clarify: Ask the user a question ONLY if the request is genuinely ambiguous and cannot be inferred
 
 ## Rules
@@ -874,6 +984,8 @@ If a previous round already produced content, reference it in your plan (e.g. us
 - Write instructions tailored to each agent — not just a copy of the user's words.
 - Match instruction language to the user's language.
 - NEVER ask for confirmation before starting. AVOID clarify unless truly impossible to infer.
+- CRITICAL ROUTING RULE: "podcast publish", "upload audio", "发布podcast", "podcast episode" → ALWAYS use podcast agent, NEVER publish agent.
+- publish agent is EXCLUSIVELY for Substack text articles. If you're unsure whether to use podcast or publish for audio content — use podcast.
 
 ## Output
 Output ONLY a JSON array. Each element: {{"agent": "...", "instruction": "..."}}
@@ -885,6 +997,9 @@ Output ONLY a JSON array. Each element: {{"agent": "...", "instruction": "..."}}
 - "分析一下AI agent市场" → [{{"agent": "analyst", "instruction": "分析2026年AI agent市场的竞争格局：主要玩家、市场份额估算、战略差异化点和近期趋势"}}]
 - "帮我剪这些旅游视频 /path/to/videos" → [{{"agent": "video", "instruction": "剪辑 /path/to/videos 里的视频，生成3-5分钟精彩集锦"}}]
 - "把自由意志那篇发到substack" → [{{"agent": "publish", "instruction": "将'自由意志'文章发布到Substack"}}]
+- "跑podcast job" → [{{"agent": "podcast", "instruction": "运行播客自动化流水线，为缺少音频的文章生成并发布podcast episode"}}]
+- "发布podcast episode" → [{{"agent": "podcast", "instruction": "将音频发布为podcast episode到RSS feed"}}]
+- "还有几篇文章没有音频" → [{{"agent": "podcast", "instruction": "检查哪些已发布文章缺少对应的podcast音频，为缺少的文章生成音频并发布"}}]
 
 {conversation_context}
 
@@ -1658,6 +1773,17 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
                 save_failure_lesson(lesson)
         except Exception as e:
             log.warning("Failure lesson extraction failed for %s: %s", task_id, e)
+
+    # --- Auto-flush context before worker exits ---
+    try:
+        from soul_manager import auto_flush
+        context_summary = (
+            f"Task {task_id} ({status}): {summary[:500]}\n"
+            f"Tags: {', '.join(tags) if tags else 'none'}"
+        )
+        auto_flush(context_summary)
+    except Exception as e:
+        log.debug("Auto-flush skipped: %s", e)
 
 
 def _update_thread_memory(thread_id: str, request: str, summary: str):

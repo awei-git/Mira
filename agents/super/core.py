@@ -7,6 +7,7 @@ Modes:
     explore — fetch sources and write briefing
     reflect — weekly reflection and memory consolidation
 """
+import fcntl
 import json
 import logging
 import os
@@ -72,9 +73,18 @@ def load_state() -> dict:
 
 
 def save_state(state: dict):
-    STATE_FILE.write_text(
-        json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    lock_file = STATE_FILE.with_suffix(".lock")
+    try:
+        with open(lock_file, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                STATE_FILE.write_text(
+                    json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+    except BlockingIOError:
+        log.warning("State file locked by another process, skipping save")
 
 
 # ---------------------------------------------------------------------------
@@ -150,8 +160,8 @@ def do_talk():
             })
             if t_scores:
                 record_event("task_complete", t_scores, {"task_id": rec.task_id})
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Task self-evaluation skipped: %s", e)
 
     # --- Phase B: Dispatch new messages to background workers ---
     messages = bridge.poll()
@@ -1169,8 +1179,8 @@ def do_journal():
         reading_notes = load_recent_reading_notes(days=3)
         if reading_notes:
             log.info("Loaded recent reading notes for journal context")
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to load reading notes for journal: %s", e)
 
     # --- Ask Claude to write the journal ---
     soul = load_soul()
@@ -1244,6 +1254,13 @@ def do_journal():
         rebuild_memory_index()
     except Exception as e:
         log.warning("Memory index rebuild after journal failed: %s", e)
+
+    # Run retention policy to prune old files (daily)
+    try:
+        from soul_manager import run_retention_policy
+        run_retention_policy()
+    except Exception as e:
+        log.warning("Retention policy failed: %s", e)
 
     # Mark done in state
     state = load_state()
@@ -1392,8 +1409,8 @@ def do_spark_check():
             recent_conversations = "\n".join(
                 f"- {r.get('content_preview', '')[:100]}" for r in recent
             )
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("Spark-check conversation retrieval failed: %s", e)
 
     prompt = spark_check_prompt(soul_ctx, recent_reading,
                                 recent_journal, recent_conversations)
@@ -1468,8 +1485,8 @@ def should_idle_think() -> bool:
         task_mgr = TaskManager()
         if task_mgr.get_active_count() > 0:
             return False
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("Active task count check failed: %s", e)
 
     # Advance emptiness value for this cycle, then check threshold
     tick()
@@ -1576,8 +1593,8 @@ def do_idle_think():
         for match in re.finditer(r'\[RESOLVE:\s*(q_\w+)\]', result):
             resolve_question(match.group(1))
             log.info("idle-think: resolved question %s", match.group(1))
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("idle-think question resolution failed: %s", e)
 
     # Check for share markers — post proactively to WA
     share_match = re.search(r'\[SHARE:\s*(.+?)\]', result, re.DOTALL)
@@ -1920,7 +1937,7 @@ def should_voiceover() -> tuple[str, str] | None:
                 if line.startswith("title:"):
                     title = line.split(":", 1)[1].strip().strip('"\'\'')
                     break
-        except Exception:
+        except (OSError, UnicodeDecodeError):
             title = slug.replace("-", " ").title()
 
         return (slug, title)
@@ -2173,8 +2190,8 @@ def do_zhesi():
     recent_reading = ""
     try:
         recent_reading = load_recent_reading_notes(days=7)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to load reading notes for zhesi: %s", e)
 
     prompt = zhesi_prompt(soul_ctx, fragment, recent_reading)
     result = claude_think(prompt, timeout=120)
@@ -2218,8 +2235,8 @@ def do_autowrite_check():
     recent_reading = ""
     try:
         recent_reading = load_recent_reading_notes(days=7)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to load reading notes for autowrite: %s", e)
 
     # Get most recent journal
     recent_journal = ""
@@ -2335,7 +2352,7 @@ def cmd_run():
 
     # Sync Mira's own status + read all app feeds
     try:
-        from agents.shared.app_feeds import read_app_feeds, sync_mira_status
+        from app_feeds import read_app_feeds, sync_mira_status
         sync_mira_status()
         feeds = read_app_feeds()
         if feeds:
@@ -2424,23 +2441,32 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "notes-cycle",
         ])
 
-    # Podcast — one episode per day, ZH first then EN
-    podcast_pick = should_podcast()
-    if podcast_pick:
-        lang, slug, title = podcast_pick
-        _dispatch_background(f"podcast-{lang}-{slug}", [
-            sys.executable, str(Path(__file__).resolve()), "podcast",
-            "--lang", lang, "--slug", slug, "--title", title,
-        ])
-
-    # Voiceover — one per day, ZH only
-    voiceover_pick = should_voiceover()
-    if voiceover_pick:
-        slug, title = voiceover_pick
-        _dispatch_background(f"voiceover-{slug}", [
-            sys.executable, str(Path(__file__).resolve()), "voiceover",
-            "--slug", slug, "--title", title,
-        ])
+    # Podcast — one episode at a time (TTS APIs are rate-limited)
+    # Check if ANY podcast/voiceover process is already running before dispatching.
+    _any_audio_running = any(
+        _is_bg_running(f.stem)
+        for f in _BG_PID_DIR.glob("podcast-*.pid")
+    ) or any(
+        _is_bg_running(f.stem)
+        for f in _BG_PID_DIR.glob("voiceover-*.pid")
+    )
+    if not _any_audio_running:
+        podcast_pick = should_podcast()
+        if podcast_pick:
+            lang, slug, title = podcast_pick
+            _dispatch_background(f"podcast-{lang}-{slug}", [
+                sys.executable, str(Path(__file__).resolve()), "podcast",
+                "--lang", lang, "--slug", slug, "--title", title,
+            ])
+        else:
+            # Voiceover — only when no podcast queued either
+            voiceover_pick = should_voiceover()
+            if voiceover_pick:
+                slug, title = voiceover_pick
+                _dispatch_background(f"voiceover-{slug}", [
+                    sys.executable, str(Path(__file__).resolve()), "voiceover",
+                    "--slug", slug, "--title", title,
+                ])
 
     # Proactive thought sharing — message WA when Mira has something worth discussing
     if should_spark_check():
@@ -2464,6 +2490,19 @@ def cmd_run():
 _BG_PID_DIR = MIRA_ROOT / "agents" / ".bg_pids"
 
 
+def _is_bg_running(name: str) -> bool:
+    """Check if a background process is still alive by its PID file."""
+    pid_file = _BG_PID_DIR / f"{name}.pid"
+    if not pid_file.exists():
+        return False
+    try:
+        old_pid = int(pid_file.read_text().strip())
+        os.kill(old_pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def _dispatch_background(name: str, cmd: list[str]):
     """Spawn a background process if one isn't already running for this name.
 
@@ -2483,13 +2522,17 @@ def _dispatch_background(name: str, cmd: list[str]):
             pass  # process gone, safe to start new one
 
         # Harvest outcome of the dead process
-        health_monitor.record_outcome(name)
+        try:
+            health_monitor.record_outcome(name)
+        except Exception as e:
+            log.debug("record_outcome('%s') failed: %s", name, e)
 
         # Cooldown: don't re-dispatch if the PID file was written recently
         try:
             import time as _time
             age = _time.time() - pid_file.stat().st_mtime
             if age < 300:  # 5-minute cooldown
+                log.debug("Background '%s' in cooldown (%ds since last run)", name, int(age))
                 return
         except OSError:
             pass
@@ -2770,6 +2813,26 @@ def _prune_episodes_from_reflect(pruning_text: str):
 # CLI
 # ---------------------------------------------------------------------------
 
+def _prune_old_logs(logs_dir: Path, keep_days: int = 14):
+    """Remove log files older than keep_days to prevent unbounded disk growth."""
+    try:
+        cutoff = datetime.now() - timedelta(days=keep_days)
+        for log_file in logs_dir.glob("*.log"):
+            try:
+                # Match YYYY-MM-DD.log or bg-*.log by mtime
+                name = log_file.stem
+                if name[:4].isdigit():
+                    file_date = datetime.strptime(name[:10], "%Y-%m-%d")
+                    if file_date < cutoff:
+                        log_file.unlink()
+                elif log_file.stat().st_mtime < cutoff.timestamp():
+                    log_file.unlink()
+            except (ValueError, OSError):
+                continue
+    except OSError:
+        pass
+
+
 def main():
     # Set up logging
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -2784,6 +2847,9 @@ def main():
             ),
         ],
     )
+
+    # Prune old log files (keep 14 days)
+    _prune_old_logs(LOGS_DIR)
 
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
 

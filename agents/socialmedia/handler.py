@@ -9,12 +9,46 @@ Usage from task_worker:
 import json
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 
-from config import ARTIFACTS_DIR, WRITINGS_OUTPUT_DIR
+from config import ARTIFACTS_DIR, WRITINGS_OUTPUT_DIR, SUBSTACK_PUBLISHING_DISABLED, MIRA_ROOT
 from sub_agent import claude_think
 
 log = logging.getLogger("publisher")
+
+# ---------------------------------------------------------------------------
+# Content guard — block publishing error messages (CLAUDE.md: 发布前必须确认内容)
+# ---------------------------------------------------------------------------
+
+# Keywords that indicate the "content" is actually an error message, not real content
+_ERROR_KEYWORDS = [
+    "找不到", "错误", "失败", "exception", "traceback", "error",
+    "failed", "not found", "无法", "没有找到", "cannot", "unable",
+]
+# Real articles are long; anything shorter than this is almost certainly not publishable
+_MIN_PUBLISH_CHARS = 200
+
+
+def _content_looks_like_error(text: str) -> tuple[bool, str]:
+    """Return (True, reason) if text looks like an error message, not publishable content.
+
+    This is the code-level enforcement of CLAUDE.md rule:
+    'Substack 发布前必须确认内容 — 如果内容看起来是错误信息或过短，强制拒绝发布'
+    """
+    stripped = text.strip()
+    if len(stripped) < _MIN_PUBLISH_CHARS:
+        return True, f"内容过短（{len(stripped)} 字符，最少需要 {_MIN_PUBLISH_CHARS}）"
+    lower = stripped.lower()
+    for kw in _ERROR_KEYWORDS:
+        if kw in lower:
+            # Only flag if the error keyword appears early (first 20% of content)
+            # to avoid false positives for articles that discuss errors
+            early_section = lower[: max(200, len(lower) // 5)]
+            if kw in early_section:
+                return True, f"内容包含错误关键词「{kw}」，疑似上一步的错误信息"
+    return False, ""
+
 
 # Platform registry — add new platforms here
 PLATFORMS = {
@@ -36,6 +70,12 @@ def handle(workspace: Path, task_id: str, content: str,
            sender: str, thread_id: str) -> str | None:
     """Handle a publish request. Returns summary or None on failure."""
 
+    # Guard: Substack publishing disabled
+    if SUBSTACK_PUBLISHING_DISABLED:
+        msg = "Substack 发布已被禁用（config.yml: publishing.substack_disabled=true）。如需重新启用，请修改 config.yml。"
+        (workspace / "output.md").write_text(msg, encoding="utf-8")
+        return msg
+
     # Step 1: Figure out what to publish and where
     plan = _plan_publish(content)
     if not plan:
@@ -55,16 +95,59 @@ def handle(workspace: Path, task_id: str, content: str,
         (workspace / "output.md").write_text(msg, encoding="utf-8")
         return msg
 
+    # Step 2b: Content guard — HARD block if content looks like an error message.
+    # This is the code-level enforcement of CLAUDE.md: 发布前必须确认内容.
+    # Guards against pipeline errors (e.g., podcast agent returns error string,
+    # which gets chained to publish agent and published verbatim).
+    is_error, error_reason = _content_looks_like_error(article_text)
+    if is_error:
+        msg = (f"🚫 发布被拒绝：{error_reason}。\n"
+               f"内容预览（前 150 字符）：{article_text[:150]!r}\n\n"
+               f"请检查上一步是否成功完成，确认内容正确后再重试。")
+        log.error("PUBLISH BLOCKED (content guard): %s | preview: %s",
+                  error_reason, article_text[:100])
+        (workspace / "output.md").write_text(msg, encoding="utf-8")
+        return None  # None → task_worker marks as status="error"
+
     # Step 3: Dispatch to platform
     if platform == "substack":
-        from substack import publish_to_substack
-        result = publish_to_substack(title, subtitle, article_text, workspace)
+        # HARD RULE (CLAUDE.md): show article to user and wait for approval before publishing.
+        # Save pending approval — task_worker will execute publish on "approve" reply.
+        pending = {
+            "pub_title": title,
+            "subtitle": subtitle,
+            "article_text": article_text,
+            "project_dir": str(workspace),
+            "created": datetime.now().isoformat(),
+            "source": "manual",
+        }
+        pending_file = MIRA_ROOT / ".pending_publish.json"
+        pending_file.write_text(
+            json.dumps(pending, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        log.info("Pending approval saved for manual publish '%s'", title)
+
+        preview_text = article_text[:4000]
+        if len(article_text) > 4000:
+            preview_text += f"\n\n[...文章还有 {len(article_text) - 4000} 字，已截断]"
+        result = (
+            f"终稿预览 — 确认发布到 Substack？\n\n"
+            f"**{title}**\n\n"
+            f"---\n\n"
+            f"{preview_text}\n\n"
+            f"---\n\n"
+            f"回复 approve 确认发布，reject 取消。"
+        )
+        # Return NEEDS_APPROVAL prefix so _handle_publish() marks task as needs-input
+        result = "NEEDS_APPROVAL:" + result
     elif platform == "substack_note":
         result = _handle_note(content, article_text, workspace)
     else:
         result = f"平台 '{platform}' 暂不支持"
 
-    (workspace / "output.md").write_text(result, encoding="utf-8")
+    actual_result = result[len("NEEDS_APPROVAL:"):] if result.startswith("NEEDS_APPROVAL:") else result
+    (workspace / "output.md").write_text(actual_result, encoding="utf-8")
     return result
 
 
@@ -137,34 +220,67 @@ Example: {{"platform": "substack_note", "source": "", "title": "", "subtitle": "
     return {"platform": "substack", "source": "", "title": "", "subtitle": ""}
 
 
+_MIN_ARTICLE_BYTES = 3000  # stubs are <500 bytes; real revised articles are >>3000
+
+
+def _find_article_in_project(project_dir: Path) -> str | None:
+    """Find the publishable article in a writing project directory."""
+    # final.md is the gold standard
+    final = project_dir / "final.md"
+    if final.exists():
+        return final.read_text(encoding="utf-8")
+    # draft_r2.md+ are the actual revised articles written by Claude
+    drafts_dir = project_dir / "drafts"
+    if drafts_dir.exists():
+        candidates = [
+            f for f in sorted(drafts_dir.glob("draft_r[2-9].md"), reverse=True)
+            if f.stat().st_size >= _MIN_ARTICLE_BYTES
+        ]
+        if candidates:
+            return candidates[0].read_text(encoding="utf-8")
+        # R*_revised.md as fallback
+        rev_candidates = sorted(drafts_dir.glob("R*_revised.md"), reverse=True)
+        if rev_candidates:
+            return rev_candidates[0].read_text(encoding="utf-8")
+    return None
+
+
 def _resolve_content(source: str, original_msg: str) -> str | None:
     """Find the article content to publish — search writings, artifacts, or use inline."""
 
-    # Check if source is a direct file path
+    # Check if source is a direct file path (absolute)
     if source and Path(source).exists():
         return Path(source).read_text(encoding="utf-8")
 
-    # Search in writings output
-    if source:
-        for candidate in WRITINGS_OUTPUT_DIR.iterdir():
-            if not candidate.is_dir():
-                continue
-            if source.lower() in candidate.name.lower():
-                final = candidate / "final.md"
-                if final.exists():
-                    return final.read_text(encoding="utf-8")
-                # Try any .md file
-                for md in sorted(candidate.glob("*.md"), reverse=True):
-                    return md.read_text(encoding="utf-8")
-
-    # Search in artifacts/writings
     writings_dir = ARTIFACTS_DIR / "writings"
+
+    # If source looks like a relative path (e.g. "drafts/draft_r2.md"),
+    # search for it inside project directories
+    if source and "/" in source:
+        file_name = source.rsplit("/", 1)[-1]
+        if writings_dir.exists():
+            for candidate in writings_dir.iterdir():
+                if not candidate.is_dir() or candidate.name.startswith("_"):
+                    continue
+                target = candidate / source
+                if target.exists():
+                    return target.read_text(encoding="utf-8")
+                # Also try just the filename under drafts/
+                target2 = candidate / "drafts" / file_name
+                if target2.exists() and target2.stat().st_size >= _MIN_ARTICLE_BYTES:
+                    return target2.read_text(encoding="utf-8")
+
+    # Search in writings output by project name
     if source and writings_dir.exists():
+        # Normalize: strip path separators in case source is a fragment
+        search_term = source.replace("/", " ").replace("_", "-").lower()
         for candidate in writings_dir.iterdir():
-            if source.lower() in candidate.name.lower():
-                final = candidate / "final.md"
-                if final.exists():
-                    return final.read_text(encoding="utf-8")
+            if not candidate.is_dir() or candidate.name.startswith("_"):
+                continue
+            if source.lower() in candidate.name.lower() or search_term in candidate.name.lower():
+                article = _find_article_in_project(candidate)
+                if article:
+                    return article
 
     # Check for chained output from previous agent step
     separator = "--- 上一步的输出 ---"

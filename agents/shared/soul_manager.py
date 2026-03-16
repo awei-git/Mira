@@ -49,8 +49,8 @@ def format_soul(soul: dict) -> str:
         if card:
             parts.append("\n\n# My Self-Evaluation Scores\n")
             parts.append(card)
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("Scorecard loading skipped: %s", e)
 
     return "".join(parts)
 
@@ -428,7 +428,6 @@ _AGENT_SKILL_INDEXES = [
     Path(__file__).parent.parent / "podcast" / "skills" / "index.json",
     Path(__file__).parent.parent / "socialmedia" / "skills" / "index.json",
     Path(__file__).parent.parent / "writer" / "skills" / "index.json",
-    Path(__file__).parent.parent / "researcher" / "skills" / "index.json",
     Path(__file__).parent.parent / "super" / "skills" / "index.json",
 ]
 
@@ -560,8 +559,8 @@ def auto_flush(context_summary: str):
     # Trigger async index rebuild (non-blocking)
     try:
         rebuild_memory_index()
-    except Exception:
-        pass  # Best-effort
+    except Exception as e:
+        log.warning("Auto-flush index rebuild failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -731,6 +730,55 @@ def recall_context(query: str, max_chars: int = 2000) -> str:
 
     result = "\n\n".join(parts)
     return result[:max_chars] if result else ""
+
+
+# ---------------------------------------------------------------------------
+# Retention policy — prevent unbounded growth of journal/reading_notes/episodes
+# ---------------------------------------------------------------------------
+
+RETENTION_DAYS_JOURNAL = 90       # keep 3 months of daily journals
+RETENTION_DAYS_READING_NOTES = 90 # keep 3 months of reading notes
+RETENTION_DAYS_EPISODES = 60      # keep 2 months of episodes
+
+
+def prune_old_files(directory: Path, max_age_days: int, label: str = "") -> int:
+    """Delete files older than max_age_days from a date-prefixed directory.
+
+    Files must start with YYYY-MM-DD to be considered for pruning.
+    Returns the number of files deleted.
+    """
+    if not directory.exists():
+        return 0
+
+    cutoff = datetime.now() - __import__("datetime").timedelta(days=max_age_days)
+    deleted = 0
+    for path in directory.glob("*.md"):
+        try:
+            date_str = path.stem[:10]
+            file_date = datetime.strptime(date_str, "%Y-%m-%d")
+            if file_date < cutoff:
+                path.unlink()
+                deleted += 1
+        except (ValueError, OSError):
+            continue
+    if deleted:
+        log.info("Retention: pruned %d old %s files (>%d days)",
+                 deleted, label or directory.name, max_age_days)
+    return deleted
+
+
+def run_retention_policy():
+    """Prune old files across all date-indexed directories.
+
+    Call from journal cycle (daily) to keep disk usage bounded.
+    """
+    total = 0
+    total += prune_old_files(READING_NOTES_DIR, RETENTION_DAYS_READING_NOTES, "reading_notes")
+    total += prune_old_files(EPISODES_DIR, RETENTION_DAYS_EPISODES, "episodes")
+    # Journal: keep longer history since it's the primary record
+    journal_dir = MEMORY_FILE.parent / "journal"
+    total += prune_old_files(journal_dir, RETENTION_DAYS_JOURNAL, "journal")
+    return total
 
 
 # ---------------------------------------------------------------------------

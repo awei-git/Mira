@@ -45,8 +45,8 @@ Instructions:
 - Figure out what the user wants. Don't ask for clarification — make your best judgment.
 - If it's a writing task, write the full piece.
 - If it's a coding task, write working code with clear comments.
-- If it's a research task, find real information and provide sources.
-- If it's a question, give a thorough answer.
+- If it's a research task, find real information and provide sources. Web research may be provided below.
+- If it's a question, give a thorough answer. If web research context is included, use it.
 - Write your main output to {workspace}/output.md
 - If you create additional files, put them in the workspace too.
 - At the end, write a SHORT summary (3-5 sentences) of what you did to {workspace}/summary.txt

@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 @main
 struct MiraApp: App {
@@ -7,17 +8,32 @@ struct MiraApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if bridge.isSetup {
-                MainTabView(bridge: bridge)
-            } else {
-                SetupView(bridge: bridge)
+            Group {
+                if bridge.isSetup {
+                    MainTabView(bridge: bridge)
+                } else {
+                    SetupView(bridge: bridge)
+                }
+            }
+            .task {
+                await requestNotificationPermission()
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 bridge.refresh()
+                updateBadge()
             }
         }
+    }
+
+    private func requestNotificationPermission() async {
+        let center = UNUserNotificationCenter.current()
+        try? await center.requestAuthorization(options: [.alert, .sound, .badge])
+    }
+
+    private func updateBadge() {
+        UNUserNotificationCenter.current().setBadgeCount(bridge.unreadCount)
     }
 }
 

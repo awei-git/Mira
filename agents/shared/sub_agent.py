@@ -7,6 +7,7 @@ Supports multiple model "flavors" for different writing styles:
 """
 import json
 import logging
+import os
 import random
 import subprocess
 import urllib.request
@@ -19,6 +20,42 @@ from config import (
 )
 
 log = logging.getLogger("mira")
+
+
+# ---------------------------------------------------------------------------
+# Secrets redaction — prevent API keys from leaking into logs
+# ---------------------------------------------------------------------------
+
+_redact_cache: list[str] = []
+
+
+def _init_redact_cache():
+    """Build a list of secret values to redact from log output."""
+    global _redact_cache
+    if _redact_cache:
+        return
+    try:
+        secrets = _load_secrets()
+        keys = secrets.get("api_keys", {})
+        for v in keys.values():
+            if isinstance(v, str) and len(v) > 8:
+                _redact_cache.append(v)
+            elif isinstance(v, dict):
+                for sv in v.values():
+                    if isinstance(sv, str) and len(sv) > 8:
+                        _redact_cache.append(sv)
+    except Exception:
+        pass
+
+
+def redact_secrets(text: str) -> str:
+    """Replace any known secret values in text with [REDACTED]."""
+    _init_redact_cache()
+    for secret in _redact_cache:
+        if secret in text:
+            text = text.replace(secret, "[REDACTED]")
+    return text
+
 
 # ---------------------------------------------------------------------------
 # Secrets loader (lazy, cached)
@@ -90,6 +127,8 @@ def _get_api_key(provider: str) -> str:
         return keys.get("deepseek", "")
     elif provider == "gemini":
         return keys.get("gemini", "")
+    elif provider == "minimax":
+        return keys.get("minimax", "")
     return ""
 
 
@@ -161,12 +200,14 @@ def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK,
     On quota/rate-limit errors, automatically falls back to CLAUDE_FALLBACK_MODEL.
     """
     model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
+    # Strip CLAUDECODE env var to allow nested Claude CLI sessions (LaunchAgent)
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     try:
         result = subprocess.run(
             [CLAUDE_BIN, "-p", prompt, "--setting-sources", "user",
              "--model", model_id],
             capture_output=True, text=True, timeout=timeout,
-            cwd="/tmp",
+            cwd="/tmp", env=env,
         )
     except subprocess.TimeoutExpired:
         log.error("claude_think timed out (%ds)", timeout)
@@ -205,11 +246,13 @@ def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT,
         "Bash(command:*),Read,Write,Edit,Glob,Grep,WebFetch(url:*)",
     ]
 
+    # Strip CLAUDECODE env var to allow nested Claude CLI sessions (LaunchAgent)
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     try:
         result = subprocess.run(
             cmd,
             capture_output=True, text=True, timeout=timeout,
-            cwd=str(cwd) if cwd else None,
+            cwd=str(cwd) if cwd else None, env=env,
         )
     except subprocess.TimeoutExpired:
         log.error("claude_act timed out (%ds)", timeout)
@@ -280,11 +323,11 @@ def _gemini_call(model_id: str, prompt: str,
             log.info("API call: gemini/%s → %d chars", model_id, len(content))
             return content.strip()
     except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8", errors="replace")[:300]
+        error_body = redact_secrets(e.read().decode("utf-8", errors="replace")[:300])
         log.error("API gemini/%s HTTP %d: %s", model_id, e.code, error_body)
         return ""
     except Exception as e:
-        log.error("API gemini/%s failed: %s", model_id, e)
+        log.error("API gemini/%s failed: %s", model_id, redact_secrets(str(e)))
         return ""
 
 
@@ -341,11 +384,11 @@ def _api_call(provider: str, model_id: str, prompt: str,
             log.info("API call: %s/%s → %d chars", provider, model_used, len(content))
             return content.strip()
     except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8", errors="replace")[:300]
+        error_body = redact_secrets(e.read().decode("utf-8", errors="replace")[:300])
         log.error("API %s/%s HTTP %d: %s", provider, model_id, e.code, error_body)
         return ""
     except Exception as e:
-        log.error("API %s/%s failed: %s", provider, model_id, e)
+        log.error("API %s/%s failed: %s", provider, model_id, redact_secrets(str(e)))
         return ""
 
 

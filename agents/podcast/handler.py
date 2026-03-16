@@ -6,8 +6,8 @@ Two modes:
 
 Pipeline (conversation):
     1. Generate dialogue script (Host + Mira, ~3000-3500 words, ~20-25 min)
-    2. Per-turn TTS via MiniMax (one call per turn, HOST or MIRA voice)
-    3. Concatenate MP3s → conversation.mp3
+    2. Per-turn TTS via Gemini (one call per turn, HOST or MIRA voice)
+    3. PCM → MP3 per turn, concatenate → conversation.mp3
     4. Music bumpers → final episode
 
 Language support: English (default) and Chinese (lang="zh") for both modes.
@@ -21,6 +21,7 @@ import logging
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 log = logging.getLogger("podcast")
@@ -51,9 +52,26 @@ VOICE_MIRA_EN_MM = "English_expressive_narrator"        # English Mira
 SPEED_ZH_MM = 0.95   # slightly slower than normal for clearer delivery
 VOL_MM      = 1.5    # louder than default (1.0)
 
+# ---------------------------------------------------------------------------
+# Gemini TTS config (active TTS backend — switched from MiniMax 2026-03-16)
+# MiniMax kept as fallback reference but all live calls now use Gemini.
+# ---------------------------------------------------------------------------
+VOICE_MIRA_EN_GEMINI = "Aoede"   # Mira EN: female, warm, thoughtful
+VOICE_MIRA_ZH_GEMINI = "Kore"    # Mira ZH: female, firm, crisp (the "crispy" voice)
+VOICE_HOST_GEMINI    = "Charon"  # Human host: male, curious, grounded
+SPEED_ZH_GEMINI      = 1.12      # Gemini ZH tends to be slow; 1.12x tightens it up
+
+# ---------------------------------------------------------------------------
+# TTS provider selection
+# ---------------------------------------------------------------------------
+# 'gemini'  — Gemini only (may hit QPM limits on long episodes)
+# 'minimax' — MiniMax only (charges per character; wallet balance preserved)
+# 'auto'    — Gemini first; on 429 quota exhaustion, fallback to MiniMax
+TTS_PROVIDER = "minimax"
+
 # Chunk limits — kept for voiceover mode (single-speaker)
 MAX_CHARS_VOICEOVER    = 2500
-MAX_CHARS_CONVERSATION = 1200   # unused in MiniMax mode (per-turn), kept for reference
+MAX_CHARS_CONVERSATION = 1200   # unused in per-turn mode, kept for reference
 
 
 def _get_gemini_key() -> str:
@@ -171,6 +189,11 @@ def _call_gemini_tts(payload: dict, api_key: str,
 
         if resp.status_code == 429:
             rate_limited = True
+            # Check for daily quota exhaustion (different from QPM — don't retry)
+            err_text = resp.text
+            if "per_day" in err_text or "per_model_per_day" in err_text:
+                log.error("Gemini TTS daily quota exhausted — cannot retry today")
+                raise RuntimeError("Gemini TTS quota exhausted (429 after all retries)")
             if attempt < _retries - 1:
                 wait = 180 * (attempt + 1)  # 3min, 6min, 9min, 12min per retry
                 log.warning("Gemini TTS rate limited (429), waiting %ds...", wait)
@@ -202,6 +225,30 @@ def _call_gemini_tts(payload: dict, api_key: str,
     if rate_limited:
         raise RuntimeError("Gemini TTS quota exhausted (429 after all retries)")
     return None
+
+
+def _call_gemini_tts_text(text: str, voice_name: str, lang: str,
+                           api_key: str) -> bytes | None:
+    """Single-speaker Gemini TTS for one text segment. Returns PCM bytes (24kHz s16le mono).
+
+    voice_name: one of VOICE_MIRA_EN_GEMINI, VOICE_MIRA_ZH_GEMINI, VOICE_HOST_GEMINI
+    """
+    if lang == "zh":
+        instruction = "用自然清晰的语速朗读以下文本，语气亲切，表达直接。\n\n"
+    else:
+        instruction = "Read this aloud naturally. Thoughtful, conversational, not dramatic.\n\n"
+    payload = {
+        "contents": [{"parts": [{"text": instruction + text}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": voice_name}
+                }
+            }
+        }
+    }
+    return _call_gemini_tts(payload, api_key)
 
 
 def _call_minimax_tts(text: str, voice_id: str, api_key: str,
@@ -380,32 +427,37 @@ def _split_text(text: str, max_chars: int = MAX_CHARS_VOICEOVER) -> list[str]:
 
 
 def _tts_single_chunk(text: str, api_key: str, lang: str = "en") -> bytes | None:
-    """Single-speaker TTS chunk (voiceover mode) via MiniMax. Returns MP3 bytes."""
-    voice_id = VOICE_MIRA_ZH_MM if lang == "zh" else VOICE_MIRA_EN_MM
-    return _call_minimax_tts(text, voice_id, api_key, lang=lang)
+    """Single-speaker TTS chunk (voiceover mode) via Gemini. Returns PCM bytes."""
+    voice = VOICE_MIRA_ZH_GEMINI if lang == "zh" else VOICE_MIRA_EN_GEMINI
+    return _call_gemini_tts_text(text, voice, lang, api_key)
 
 
 def generate_tts(text: str, output_path: Path, lang: str = "en") -> bool:
-    """Voiceover TTS via MiniMax: split into chunks, write MP3s, concatenate."""
-    api_key = _get_minimax_key()
-    if not api_key:
-        log.error("No MiniMax API key — set minimax key in secrets.yml")
-        return False
+    """Voiceover TTS: split into chunks, convert to MP3, concatenate.
 
+    Uses TTS_PROVIDER (gemini / minimax / auto) — see config at top of file.
+    """
     chunks = _split_text(text)
-    log.info("Voiceover TTS: %d chunks, %d chars (MiniMax)", len(chunks), len(text))
+    log.info("Voiceover TTS: %d chunks, %d chars [provider=%s]",
+             len(chunks), len(text), TTS_PROVIDER)
 
     tmp_dir = Path(tempfile.mkdtemp())
     chunk_mp3s = []
     try:
         for i, chunk in enumerate(chunks):
             log.info("  chunk %d/%d (%d chars)...", i + 1, len(chunks), len(chunk))
-            mp3 = _tts_single_chunk(chunk, api_key, lang=lang)
-            if mp3 is None:
+            data, fmt = _tts_call_with_fallback(chunk, "MIRA", lang)
+            if data is None:
                 log.error("  chunk %d failed", i + 1)
                 return False
             chunk_path = tmp_dir / f"chunk_{i:03d}.mp3"
-            chunk_path.write_bytes(mp3)
+            if fmt == 'mp3':
+                if not _write_mp3(data, chunk_path):
+                    return False
+            else:
+                if not _pcm_chunk_to_mp3(data, chunk_path):
+                    log.error("  chunk %d PCM→MP3 conversion failed", i + 1)
+                    return False
             chunk_mp3s.append(chunk_path)
 
         if len(chunk_mp3s) == 1:
@@ -639,24 +691,80 @@ def _turns_to_text(turns: list[tuple[str, str]]) -> str:
 
 
 def _voice_for_speaker(speaker: str, lang: str) -> str:
-    """Return MiniMax voice_id for a given speaker + language."""
-    if lang == "zh":
-        return VOICE_HOST_ZH_MM if speaker == "HOST" else VOICE_MIRA_ZH_MM
-    return VOICE_HOST_EN_MM if speaker == "HOST" else VOICE_MIRA_EN_MM
+    """Return Gemini voice name for a given speaker + language."""
+    if speaker == "HOST":
+        return VOICE_HOST_GEMINI
+    return VOICE_MIRA_ZH_GEMINI if lang == "zh" else VOICE_MIRA_EN_GEMINI
+
+
+def _voice_for_speaker_minimax(speaker: str, lang: str) -> str:
+    """Return MiniMax voice ID for a given speaker + language."""
+    if speaker == "HOST":
+        return VOICE_HOST_ZH_MM if lang == "zh" else VOICE_HOST_EN_MM
+    return VOICE_MIRA_ZH_MM if lang == "zh" else VOICE_MIRA_EN_MM
+
+
+def _tts_call_with_fallback(text: str, speaker: str,
+                             lang: str) -> tuple[bytes | None, str]:
+    """Unified TTS call respecting TTS_PROVIDER.
+
+    Returns (bytes, format) where format is 'pcm' (Gemini) or 'mp3' (MiniMax).
+    Returns (None, '') on total failure.
+
+    Fallback logic for 'auto':
+    - Try Gemini first.
+    - If Gemini raises RuntimeError("quota exhausted"), switch to MiniMax.
+    - MiniMax failure is terminal (returns (None, '')).
+    """
+    def _try_gemini() -> tuple[bytes | None, str]:
+        api_key = _get_gemini_key()
+        if not api_key:
+            log.error("No Gemini API key — set gemini key in secrets.yml")
+            return None, ''
+        voice_name = _voice_for_speaker(speaker, lang)
+        try:
+            pcm = _call_gemini_tts_text(text, voice_name, lang, api_key)
+            return (pcm, 'pcm') if pcm is not None else (None, '')
+        except RuntimeError as e:
+            if "quota exhausted" in str(e):
+                return None, 'quota'
+            log.error("Gemini TTS unexpected error: %s", e)
+            return None, ''
+
+    def _try_minimax() -> tuple[bytes | None, str]:
+        api_key = _get_minimax_key()
+        if not api_key:
+            log.error("No MiniMax API key — set minimax key in secrets.yml")
+            return None, ''
+        voice_id = _voice_for_speaker_minimax(speaker, lang)
+        mp3 = _call_minimax_tts(text, voice_id, api_key, lang=lang)
+        return (mp3, 'mp3') if mp3 is not None else (None, '')
+
+    if TTS_PROVIDER == 'minimax':
+        return _try_minimax()
+    elif TTS_PROVIDER == 'gemini':
+        data, fmt = _try_gemini()
+        return (data, fmt) if fmt not in ('', 'quota') else (None, '')
+    else:  # 'auto': gemini first, fallback to minimax on quota exhaustion
+        data, fmt = _try_gemini()
+        if fmt == 'quota':
+            log.warning("Gemini TTS quota exhausted — falling back to MiniMax")
+            return _try_minimax()
+        return (data, fmt) if fmt else (None, '')
 
 
 def _tts_conversation_chunk(turns: list[tuple[str, str]], api_key: str,
                              lang: str = "en") -> bytes | None:
-    """Single-turn MiniMax TTS (called once per turn in generate_tts_conversation).
+    """Single-turn Gemini TTS (called once per turn in generate_tts_conversation).
 
-    api_key is the MiniMax key. Returns MP3 bytes directly.
+    api_key is the Gemini key. Returns PCM bytes (24kHz s16le mono).
     For a single-turn list (as used by bumper generators), synthesizes that one turn.
     """
     if not turns:
         return None
     speaker, text = turns[0]
-    voice_id = _voice_for_speaker(speaker, lang)
-    return _call_minimax_tts(text, voice_id, api_key, lang=lang)
+    voice_name = _voice_for_speaker(speaker, lang)
+    return _call_gemini_tts_text(text, voice_name, lang, api_key)
 
 
 def _speedup_mp3(input_path: Path, output_path: Path, rate: float) -> bool:
@@ -676,25 +784,21 @@ def _speedup_mp3(input_path: Path, output_path: Path, rate: float) -> bool:
 
 def generate_tts_conversation(script: str, output_path: Path,
                                lang: str = "en") -> bool:
-    """Per-turn MiniMax TTS: one API call per turn, concatenate MP3s.
+    """Per-turn TTS: one API call per turn, MP3 per turn, concatenate.
 
-    MiniMax returns MP3 directly — no PCM conversion or speed post-process needed
-    (speed param is set inline in each API call).
+    Uses TTS_PROVIDER (gemini / minimax / auto) — see config at top of file.
+    Gemini returns PCM bytes converted via ffmpeg; MiniMax returns MP3 directly.
+    For lang="zh" with Gemini, applies 1.12x speed-up post-process.
 
     Cache: persistent .{stem}_chunks/ dir, one file per turn (turn_000.mp3 etc.)
     Survives crashes and quota interruptions for seamless resume.
     """
-    api_key = _get_minimax_key()
-    if not api_key:
-        log.error("No MiniMax API key — set minimax key in secrets.yml")
-        return False
-
     turns = _parse_turns(script)
     if not turns:
         log.error("No valid [HOST]/[MIRA] turns found in script")
         return False
 
-    log.info("Conversation TTS: %d turns (MiniMax, per-turn)", len(turns))
+    log.info("Conversation TTS: %d turns [provider=%s]", len(turns), TTS_PROVIDER)
 
     # Persistent per-turn cache dir
     cache_dir = output_path.parent / f".{output_path.stem}_chunks"
@@ -708,15 +812,24 @@ def generate_tts_conversation(script: str, output_path: Path,
             if turn_path.exists():
                 log.info("  turn %d/%d already done, skipping", i + 1, len(turns))
             else:
-                voice_id = _voice_for_speaker(speaker, lang)
                 log.info("  turn %d/%d [%s] (%d chars)...",
                          i + 1, len(turns), speaker, len(text))
-                mp3 = _call_minimax_tts(text, voice_id, api_key, lang=lang)
-                if mp3 is None:
+                data, fmt = _tts_call_with_fallback(text, speaker, lang)
+                if data is None:
                     log.error("  turn %d failed", i + 1)
                     log.warning("TTS interrupted — cache preserved at %s for resume", cache_dir)
                     return False
-                turn_path.write_bytes(mp3)
+                if fmt == 'mp3':
+                    if not _write_mp3(data, turn_path):
+                        log.error("  turn %d MP3 write failed", i + 1)
+                        return False
+                else:
+                    if not _pcm_chunk_to_mp3(data, turn_path):
+                        log.error("  turn %d PCM→MP3 conversion failed", i + 1)
+                        return False
+                # Brief pause between TTS calls to avoid burst rate limits.
+                # MiniMax handles ~20 RPM solo; Gemini QPM needs ~6s.
+                time.sleep(4 if fmt == 'mp3' else 6)
             turn_mp3s.append(turn_path)
 
         if len(turn_mp3s) == 1:
@@ -728,6 +841,18 @@ def generate_tts_conversation(script: str, output_path: Path,
             if not _concat_mp3_chunks(turn_mp3s, output_path):
                 return False
 
+        # Gemini ZH tends to be slow — apply speed-up post-process
+        if lang == "zh":
+            log.info("Applying %.2fx speed-up for ZH...", SPEED_ZH_GEMINI)
+            tmp_fast = output_path.with_suffix(".fast.mp3")
+            if _speedup_mp3(output_path, tmp_fast, SPEED_ZH_GEMINI):
+                shutil.move(str(tmp_fast), str(output_path))
+                size_kb = output_path.stat().st_size // 1024
+                log.info("Speed-up done: %s (%d KB)", output_path.name, size_kb)
+            else:
+                log.warning("atempo failed — keeping original speed")
+                tmp_fast.unlink(missing_ok=True)
+
         shutil.rmtree(cache_dir, ignore_errors=True)
         return True
     except Exception:
@@ -736,7 +861,7 @@ def generate_tts_conversation(script: str, output_path: Path,
 
 
 def _generate_intro_tts(lang: str, episode_topic: str, output_path: Path) -> bool:
-    """Generate host intro via MiniMax TTS."""
+    """Generate host intro TTS (respects TTS_PROVIDER)."""
     if lang == "zh":
         text = f"大家好，这里是米拉与我。今天我和米拉一起来聊{episode_topic}。"
     else:
@@ -744,30 +869,26 @@ def _generate_intro_tts(lang: str, episode_topic: str, output_path: Path) -> boo
             f"Hey everyone, welcome to Mira and Me. Today I'm sitting down with Mira "
             f"to talk about {episode_topic}."
         )
-    api_key = _get_minimax_key()
-    if not api_key:
+    data, fmt = _tts_call_with_fallback(text, "HOST", lang)
+    if data is None:
         return False
-    voice_id = _voice_for_speaker("HOST", lang)
-    mp3 = _call_minimax_tts(text, voice_id, api_key, lang=lang)
-    if mp3 is None:
-        return False
-    return _write_mp3(mp3, output_path)
+    if fmt == 'mp3':
+        return _write_mp3(data, output_path)
+    return _pcm_to_mp3(data, output_path)
 
 
 def _generate_outro_tts(lang: str, output_path: Path) -> bool:
-    """Generate host outro via MiniMax TTS."""
+    """Generate host outro TTS (respects TTS_PROVIDER)."""
     if lang == "zh":
         text = "谢谢大家收听这一期米拉与我。我们下期再见。"
     else:
         text = "Thanks for listening to Mira and Me. See you next time."
-    api_key = _get_minimax_key()
-    if not api_key:
+    data, fmt = _tts_call_with_fallback(text, "HOST", lang)
+    if data is None:
         return False
-    voice_id = _voice_for_speaker("HOST", lang)
-    mp3 = _call_minimax_tts(text, voice_id, api_key, lang=lang)
-    if mp3 is None:
-        return False
-    return _write_mp3(mp3, output_path)
+    if fmt == 'mp3':
+        return _write_mp3(data, output_path)
+    return _pcm_to_mp3(data, output_path)
 
 
 def generate_conversation_for_article(article_text: str, title: str,
@@ -938,7 +1059,9 @@ def handle(workspace: Path, task_id: str, content: str,
     if not article_text:
         msg = "找不到要生成音频的文章内容"
         (workspace / "output.md").write_text(msg, encoding="utf-8")
-        return msg
+        # Return None (not the error string) so task_worker marks this as status="error"
+        # and aborts the pipeline — prevents the error message from being passed downstream
+        return None
 
     if is_conversation:
         result = generate_conversation_for_article(article_text, title, lang=lang)
@@ -949,8 +1072,10 @@ def handle(workspace: Path, task_id: str, content: str,
 
     if result:
         msg = f"音频已生成 ({mode_label}): {result}"
+        (workspace / "output.md").write_text(msg, encoding="utf-8")
+        return msg
     else:
         msg = f"音频生成失败 ({mode_label})"
-
-    (workspace / "output.md").write_text(msg, encoding="utf-8")
-    return msg
+        (workspace / "output.md").write_text(msg, encoding="utf-8")
+        # Return None so task_worker marks this as status="error" and aborts the pipeline
+        return None

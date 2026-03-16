@@ -100,15 +100,40 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
             "Authorization": f"Bearer {api_key}",
         },
     )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read())
-        # Sort by index to preserve order
-        data = sorted(result["data"], key=lambda x: x["index"])
-        return [d["embedding"] for d in data]
-    except Exception as e:
-        log.error("Embedding API failed: %s", e)
-        return [[] for _ in texts]
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read())
+            # Sort by index to preserve order
+            data = sorted(result["data"], key=lambda x: x["index"])
+            embeddings = [d["embedding"] for d in data]
+            # Validate embedding dimensions
+            for emb in embeddings:
+                if emb and len(emb) != EMBEDDING_DIMS:
+                    log.error("Embedding dimension mismatch: got %d, expected %d",
+                              len(emb), EMBEDDING_DIMS)
+                    return [[] for _ in texts]
+            return embeddings
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                log.warning("Embedding API rate limited, retrying in %ds...", wait)
+                time.sleep(wait)
+                continue
+            log.error("Embedding API HTTP %d: %s", e.code,
+                      e.read().decode("utf-8", errors="replace")[:200])
+            return [[] for _ in texts]
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                log.warning("Embedding API failed (attempt %d/%d): %s, retrying in %ds...",
+                            attempt + 1, max_retries, e, wait)
+                time.sleep(wait)
+                continue
+            log.error("Embedding API failed after %d attempts: %s", max_retries, e)
+            return [[] for _ in texts]
+    return [[] for _ in texts]
 
 
 def _embed_single(text: str) -> list[float]:
@@ -280,73 +305,74 @@ def rebuild_index(force: bool = False) -> int:
         Number of chunks embedded.
     """
     conn = _get_db()
-    sources = _gather_sources()
+    try:
+        sources = _gather_sources()
 
-    # Chunk everything
-    all_chunks = []
-    for src in sources:
-        chunks = _chunk_text(src["content"], src["source"], src["path"])
-        all_chunks.extend(chunks)
+        # Chunk everything
+        all_chunks = []
+        for src in sources:
+            chunks = _chunk_text(src["content"], src["source"], src["path"])
+            all_chunks.extend(chunks)
 
-    # Check which chunks need embedding
-    to_embed = []
-    for i, chunk in enumerate(all_chunks):
-        chunk_id = f"{chunk['source']}:{_content_hash(chunk['content'])}"
-        chunk["id"] = chunk_id
-        chunk["hash"] = _content_hash(chunk["content"])
+        # Check which chunks need embedding
+        to_embed = []
+        for i, chunk in enumerate(all_chunks):
+            chunk_id = f"{chunk['source']}:{_content_hash(chunk['content'])}"
+            chunk["id"] = chunk_id
+            chunk["hash"] = _content_hash(chunk["content"])
 
-        if not force:
-            row = conn.execute(
-                "SELECT content_hash FROM chunks WHERE id = ?", (chunk_id,)
-            ).fetchone()
-            if row and row[0] == chunk["hash"]:
-                continue  # unchanged
+            if not force:
+                row = conn.execute(
+                    "SELECT content_hash FROM chunks WHERE id = ?", (chunk_id,)
+                ).fetchone()
+                if row and row[0] == chunk["hash"]:
+                    continue  # unchanged
 
-        to_embed.append((i, chunk))
+            to_embed.append((i, chunk))
 
-    if not to_embed:
+        if not to_embed:
+            log.info("Memory index: all %d chunks up to date", len(all_chunks))
+            return 0
+
+        # Batch embed
+        texts = [chunk["content"] for _, chunk in to_embed]
+        log.info("Embedding %d chunks (of %d total)...", len(texts), len(all_chunks))
+
+        # Embed in batches of 50 with exponential backoff
+        batch_size = 50
+        embeddings = []
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start:start + batch_size]
+            batch_embs = _embed_texts(batch)
+            embeddings.extend(batch_embs)
+            if start + batch_size < len(texts):
+                time.sleep(0.5)  # Rate limit courtesy
+
+        # Upsert
+        now = datetime.now().isoformat()
+        for (_, chunk), emb in zip(to_embed, embeddings):
+            blob = _vec_to_blob(emb) if emb else None
+            conn.execute(
+                """INSERT OR REPLACE INTO chunks
+                   (id, source, source_path, content, embedding, updated_at, content_hash)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (chunk["id"], chunk["source"], chunk["source_path"],
+                 chunk["content"], blob, now, chunk["hash"]),
+            )
+
+        # Clean up stale chunks (from deleted files)
+        current_ids = {c["id"] for c in all_chunks}
+        existing_ids = {row[0] for row in conn.execute("SELECT id FROM chunks").fetchall()}
+        stale = existing_ids - current_ids
+        if stale:
+            conn.executemany("DELETE FROM chunks WHERE id = ?", [(cid,) for cid in stale])
+            log.info("Removed %d stale chunks", len(stale))
+
+        conn.commit()
+        log.info("Memory index rebuilt: %d chunks embedded", len(to_embed))
+        return len(to_embed)
+    finally:
         conn.close()
-        log.info("Memory index: all %d chunks up to date", len(all_chunks))
-        return 0
-
-    # Batch embed
-    texts = [chunk["content"] for _, chunk in to_embed]
-    log.info("Embedding %d chunks (of %d total)...", len(texts), len(all_chunks))
-
-    # Embed in batches of 50
-    batch_size = 50
-    embeddings = []
-    for start in range(0, len(texts), batch_size):
-        batch = texts[start:start + batch_size]
-        batch_embs = _embed_texts(batch)
-        embeddings.extend(batch_embs)
-        if start + batch_size < len(texts):
-            time.sleep(0.5)  # Rate limit courtesy
-
-    # Upsert
-    now = datetime.now().isoformat()
-    for (_, chunk), emb in zip(to_embed, embeddings):
-        blob = _vec_to_blob(emb) if emb else None
-        conn.execute(
-            """INSERT OR REPLACE INTO chunks
-               (id, source, source_path, content, embedding, updated_at, content_hash)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (chunk["id"], chunk["source"], chunk["source_path"],
-             chunk["content"], blob, now, chunk["hash"]),
-        )
-
-    # Clean up stale chunks (from deleted files)
-    current_ids = {c["id"] for c in all_chunks}
-    existing_ids = {row[0] for row in conn.execute("SELECT id FROM chunks").fetchall()}
-    stale = existing_ids - current_ids
-    if stale:
-        conn.executemany("DELETE FROM chunks WHERE id = ?", [(cid,) for cid in stale])
-        log.info("Removed %d stale chunks", len(stale))
-
-    conn.commit()
-    conn.close()
-    log.info("Memory index rebuilt: %d chunks embedded", len(to_embed))
-    return len(to_embed)
 
 
 # ---------------------------------------------------------------------------
@@ -388,24 +414,24 @@ def search(query: str, top_k: int = 5,
         List of dicts with keys: content, source, source_path, score.
     """
     conn = _get_db()
+    try:
+        # Get query embedding
+        query_emb = _embed_single(query)
 
-    # Get query embedding
-    query_emb = _embed_single(query)
-
-    # Fetch all chunks (with optional source filter)
-    if source_filter:
-        rows = conn.execute(
-            "SELECT id, source, source_path, content, embedding, updated_at "
-            "FROM chunks WHERE source = ?",
-            (source_filter,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT id, source, source_path, content, embedding, updated_at "
-            "FROM chunks"
-        ).fetchall()
-
-    conn.close()
+        # Fetch all chunks (with optional source filter)
+        if source_filter:
+            rows = conn.execute(
+                "SELECT id, source, source_path, content, embedding, updated_at "
+                "FROM chunks WHERE source = ?",
+                (source_filter,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, source, source_path, content, embedding, updated_at "
+                "FROM chunks"
+            ).fetchall()
+    finally:
+        conn.close()
 
     if not rows:
         return []
@@ -481,14 +507,16 @@ def search_formatted(query: str, top_k: int = 5,
 def get_stats() -> dict:
     """Get index statistics."""
     conn = _get_db()
-    total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-    by_source = dict(conn.execute(
-        "SELECT source, COUNT(*) FROM chunks GROUP BY source"
-    ).fetchall())
-    has_embedding = conn.execute(
-        "SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL"
-    ).fetchone()[0]
-    conn.close()
+    try:
+        total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        by_source = dict(conn.execute(
+            "SELECT source, COUNT(*) FROM chunks GROUP BY source"
+        ).fetchall())
+        has_embedding = conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL"
+        ).fetchone()[0]
+    finally:
+        conn.close()
     return {
         "total_chunks": total,
         "embedded_chunks": has_embedding,

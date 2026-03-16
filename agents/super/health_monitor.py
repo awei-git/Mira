@@ -3,6 +3,7 @@
 Tracks dispatch/outcome of background processes, detects repeated failures,
 sends alerts via iPhone bridge, and generates daily health summaries.
 """
+import fcntl
 import json
 import logging
 import os
@@ -44,9 +45,20 @@ def _load_health() -> dict:
 
 
 def _save_health(health: dict):
-    tmp = _HEALTH_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(health, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(_HEALTH_FILE)
+    lock_file = _HEALTH_FILE.with_suffix(".lock")
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(lock_file, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                tmp = _HEALTH_FILE.with_suffix(".tmp")
+                tmp.write_text(json.dumps(health, indent=2, ensure_ascii=False),
+                               encoding="utf-8")
+                tmp.replace(_HEALTH_FILE)
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+    except BlockingIOError:
+        log.debug("Health file locked by another process, skipping write")
 
 
 # ---------------------------------------------------------------------------

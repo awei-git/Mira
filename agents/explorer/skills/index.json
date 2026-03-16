@@ -28,5 +28,35 @@
     "description": "Write actionable briefings using key-judgment-first structure, explicit confidence levels, and implication framing from intelligence tradecraft.",
     "file": "intelligence-briefing-craft.md",
     "tags": ["explorer", "briefing", "writing", "analysis", "communication"]
+  },
+  {
+    "name": "Hacker News Signal Extraction",
+    "description": "Read HN front page, Ask HN, and Show HN using comment-section quality, score/comment ratios, and temporal patterns to distinguish insight from noise.",
+    "file": "hackernews.md",
+    "tags": ["explorer", "hackernews", "curation", "tech", "signal-noise"]
+  },
+  {
+    "name": "GitHub Trending Analysis",
+    "description": "Identify genuinely emerging open-source projects from GitHub Trending by reading stars/forks ratio, repository age, and cross-source confirmation signals.",
+    "file": "github-trending.md",
+    "tags": ["explorer", "github", "open-source", "trends", "development"]
+  },
+  {
+    "name": "Web Search — Query Formulation",
+    "description": "Design progressively constrained search queries and interpret result quality using operator toolkit, domain authority signals, and engine-switching heuristics.",
+    "file": "web-search.md",
+    "tags": ["explorer", "web-search", "research", "duckduckgo", "query-design"]
+  },
+  {
+    "name": "Arxiv Search — Explorer Feed Strategy",
+    "description": "Configure arxiv category feeds, rapidly assess paper quality from title/abstract patterns, and layer by recency for directional vs. structural trend signals.",
+    "file": "arxiv-search.md",
+    "tags": ["explorer", "arxiv", "research", "papers", "AI", "signal-detection"]
+  },
+  {
+    "name": "Reddit Hot Posts — Signal Extraction",
+    "description": "Select high-signal subreddits, read comment-section patterns, and use upvote/comment ratios to extract community sentiment and fast-breaking developments.",
+    "file": "reddit-hot.md",
+    "tags": ["explorer", "reddit", "social-signals", "trends", "community"]
   }
 ]

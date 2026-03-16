@@ -104,6 +104,7 @@ struct TaskDetailView: View {
             }
             .navigationTitle(task.title)
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear { bridge.markAsRead(taskId) }
         } else {
             ContentUnavailableView("任务未找到", systemImage: "questionmark.circle")
         }

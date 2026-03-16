@@ -60,8 +60,8 @@ A standard research paper has these components, in this order:
 **Rule 1: State before you prove.**
 Every theorem and lemma must be stated completely before its proof begins. Readers should be able to understand what you are claiming without reading the proof.
 
-**Rule 2: Structure long proofs.**
-If a proof is longer than half a page, break it into steps labeled "Step 1, Step 2, ..." or introduce intermediate claims as sub-lemmas. Do not write a wall of equations with no orientation.
+**Rule 2: Structure long proofs — one lemma at a time.**
+If a proof is longer than half a page, break it into separate lemmas. Each lemma should be at most half a page. Verify each lemma independently (via review) before proceeding to the next. This prevents error compounding — large multi-page rewrites introduce new bugs faster than they fix old ones. When fixing a broken proof, never rewrite the whole thing at once; isolate the broken step, write a replacement lemma, verify it, then connect it back.
 
 **Rule 3: Explain the strategy.**
 Before the detailed calculation, write 1-2 sentences of proof strategy: "We use induction on the length of the word. The base case is immediate; for the inductive step, we split into two cases depending on the last letter." The reader should know where you are going before you start going there.

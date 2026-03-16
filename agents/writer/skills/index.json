@@ -1,0 +1,104 @@
+[
+  {
+    "name": "Character Desire and Contradiction",
+    "description": "Build characters around a core contradiction — what they want vs. what they need — and let the story force it to the surface.",
+    "file": "character-desire-contradiction.md",
+    "tags": ["writing", "craft", "fiction", "characterization"]
+  },
+  {
+    "name": "Conceptual Metaphor as Structure",
+    "description": "Let the SF core concept also be the literal embodiment of the story's theme — concept and emotional arc as one.",
+    "file": "conceptual-metaphor-as-structure.md",
+    "tags": ["writing", "craft", "fiction", "science-fiction"]
+  },
+  {
+    "name": "Defamiliarization",
+    "description": "Make the familiar strange by shifting the observation angle — SF's unique cognitive reversal ability.",
+    "file": "defamiliarization.md",
+    "tags": ["writing", "craft", "fiction", "science-fiction"]
+  },
+  {
+    "name": "Dialogue Subtext",
+    "description": "Write dialogue where the real meaning lives below the surface — characters talk about one thing but communicate another.",
+    "file": "dialogue-subtext.md",
+    "tags": ["writing", "craft", "fiction", "dialogue"]
+  },
+  {
+    "name": "Earned Ending",
+    "description": "Construct an ending that feels both surprising and inevitable — resolves the thematic question in a way the reader didn't predict.",
+    "file": "earned-ending.md",
+    "tags": ["writing", "craft", "fiction", "structure"]
+  },
+  {
+    "name": "Free Indirect Discourse",
+    "description": "Blend third-person narration with a character's inner voice — slide between narrator authority and character subjectivity.",
+    "file": "free-indirect-discourse.md",
+    "tags": ["writing", "craft", "fiction", "voice"]
+  },
+  {
+    "name": "Iceberg Principle",
+    "description": "Know 100% of your story's world, show only 10-20% on the page — the unseen mass gives the visible surface its gravity.",
+    "file": "iceberg-principle.md",
+    "tags": ["writing", "craft", "fiction", "worldbuilding"]
+  },
+  {
+    "name": "Image Systems",
+    "description": "Create a network of recurring images that accumulate meaning across a story — theme expressed through pattern, not statement.",
+    "file": "image-systems.md",
+    "tags": ["writing", "craft", "fiction", "imagery"]
+  },
+  {
+    "name": "Incluing",
+    "description": "Convey worldbuilding through character behavior, assumptions, and casual references instead of exposition dumps.",
+    "file": "incluing.md",
+    "tags": ["writing", "craft", "fiction", "science-fiction", "worldbuilding"]
+  },
+  {
+    "name": "Novum Extrapolation Chain",
+    "description": "From one core novum, systematically derive 2nd, 3rd, 4th order consequences — SF's core ideation tool.",
+    "file": "novum-extrapolation-chain.md",
+    "tags": ["writing", "craft", "fiction", "science-fiction"]
+  },
+  {
+    "name": "Objective Correlative",
+    "description": "Externalize internal emotion through a concrete object, scene, or chain of events — make the reader feel without telling.",
+    "file": "objective-correlative.md",
+    "tags": ["writing", "craft", "fiction", "emotion"]
+  },
+  {
+    "name": "POV Camera Discipline",
+    "description": "Control what the reader sees by treating POV as a camera with strict rules — what it can show, what it must hide, when to cut.",
+    "file": "pov-camera-discipline.md",
+    "tags": ["writing", "craft", "fiction", "pov"]
+  },
+  {
+    "name": "Psychic Distance",
+    "description": "Control how close or far the reader feels from a character's consciousness using Gardner's five-level spectrum.",
+    "file": "psychic-distance.md",
+    "tags": ["writing", "craft", "fiction", "voice"]
+  },
+  {
+    "name": "Scene-Level Tension",
+    "description": "Maintain reader engagement line-by-line through micro-tension — small unresolved questions, withheld information, disrupted expectations.",
+    "file": "scene-level-tension.md",
+    "tags": ["writing", "craft", "fiction", "pacing"]
+  },
+  {
+    "name": "Sentence Rhythm",
+    "description": "Control pace, emphasis, and emotional texture through deliberate variation in sentence length, structure, and sound.",
+    "file": "sentence-rhythm.md",
+    "tags": ["writing", "craft", "fiction", "prose"]
+  },
+  {
+    "name": "Strategic Withholding",
+    "description": "Deliberately leave key information out — the gaps the reader fills with imagination are more powerful than anything written.",
+    "file": "strategic-withholding.md",
+    "tags": ["writing", "craft", "fiction", "technique"]
+  },
+  {
+    "name": "Telling Detail",
+    "description": "Select one or two hyper-specific details to stand in for an entire scene, character, or setting.",
+    "file": "telling-detail.md",
+    "tags": ["writing", "craft", "fiction", "description"]
+  }
+]

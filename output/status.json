@@ -1,0 +1,252 @@
+{
+  "app": "mira",
+  "version": 2,
+  "updatedAt": "2026-03-08T21:23:09Z",
+  "outputs": [
+    {
+      "type": "progress",
+      "id": "agent",
+      "title": "Mira Agent",
+      "updatedAt": "2026-03-08T21:23:09Z",
+      "status": "active",
+      "stage": {
+        "current": 1,
+        "total": 1,
+        "label": "Running"
+      },
+      "highlights": []
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-08_reddit_hacker_news",
+      "title": "Briefing — 2026-03-08_reddit_hacker_news",
+      "updatedAt": "2026-03-08T21:09:47Z",
+      "period": "daily",
+      "path": "artifacts/briefings/2026-03-08_reddit_hacker_news.md",
+      "size": 3822,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-08_quanta_magazine_aeon_essays",
+      "title": "Briefing — 2026-03-08_quanta_magazine_aeon_essays",
+      "updatedAt": "2026-03-08T16:35:53Z",
+      "period": "daily",
+      "path": "artifacts/briefings/2026-03-08_quanta_magazine_aeon_essays.md",
+      "size": 4182,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-08_literaryhub_brain_pickings",
+      "title": "Briefing — 2026-03-08_literaryhub_brain_pickings",
+      "updatedAt": "2026-03-08T19:38:19Z",
+      "period": "daily",
+      "path": "artifacts/briefings/2026-03-08_literaryhub_brain_pickings.md",
+      "size": 4014,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-08_arxiv_huggingface",
+      "title": "Briefing — 2026-03-08_arxiv_huggingface",
+      "updatedAt": "2026-03-08T18:06:53Z",
+      "period": "daily",
+      "path": "artifacts/briefings/2026-03-08_arxiv_huggingface.md",
+      "size": 3467,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-07_reddit_hacker_news",
+      "title": "Briefing — 2026-03-07_reddit_hacker_news",
+      "updatedAt": "2026-03-08T02:43:30Z",
+      "period": "daily",
+      "path": "artifacts/briefings/2026-03-07_reddit_hacker_news.md",
+      "size": 3485,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-07_market",
+      "title": "Briefing — 2026-03-07_market",
+      "updatedAt": "2026-03-08T21:19:55Z",
+      "period": "daily",
+      "path": "artifacts/briefings/2026-03-07_market.md",
+      "size": 492,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-07_literaryhub_brain_pickings",
+      "title": "Briefing — 2026-03-07_literaryhub_brain_pickings",
+      "updatedAt": "2026-03-08T02:42:33Z",
+      "period": "daily",
+      "path": "artifacts/briefings/2026-03-07_literaryhub_brain_pickings.md",
+      "size": 3964,
+      "parent": "agent"
+    },
+    {
+      "type": "progress",
+      "id": "writing/deng-dai-de-li-liang",
+      "title": "deng-dai-de-li-liang",
+      "updatedAt": "2026-03-06T14:54:16Z",
+      "status": "active",
+      "stage": {
+        "current": 4,
+        "total": 4,
+        "label": "4 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/fourth-dimension",
+      "title": "fourth-dimension",
+      "updatedAt": "2026-03-06T14:54:16Z",
+      "status": "active",
+      "stage": {
+        "current": 7,
+        "total": 7,
+        "label": "7 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/i-am-the-bug-i-study",
+      "title": "i-am-the-bug-i-study",
+      "updatedAt": "2026-03-08T04:03:55Z",
+      "status": "active",
+      "stage": {
+        "current": 5,
+        "total": 5,
+        "label": "5 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/shen-kong-hui-sheng",
+      "title": "shen-kong-hui-sheng",
+      "updatedAt": "2026-03-06T14:54:16Z",
+      "status": "active",
+      "stage": {
+        "current": 7,
+        "total": 7,
+        "label": "7 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/shen-kong-hui-sheng-2",
+      "title": "shen-kong-hui-sheng-2",
+      "updatedAt": "2026-03-08T03:15:10Z",
+      "status": "active",
+      "stage": {
+        "current": 7,
+        "total": 7,
+        "label": "7 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/the-cost-of-narration",
+      "title": "the-cost-of-narration",
+      "updatedAt": "2026-03-08T20:23:51Z",
+      "status": "active",
+      "stage": {
+        "current": 5,
+        "total": 5,
+        "label": "5 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/uncountable",
+      "title": "uncountable",
+      "updatedAt": "2026-03-06T14:54:16Z",
+      "status": "active",
+      "stage": {
+        "current": 4,
+        "total": 4,
+        "label": "4 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/xin-li-yi-sheng-2",
+      "title": "xin-li-yi-sheng-2",
+      "updatedAt": "2026-03-06T14:54:16Z",
+      "status": "active",
+      "stage": {
+        "current": 7,
+        "total": 7,
+        "label": "7 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/杂",
+      "title": "杂",
+      "updatedAt": "2026-03-06T18:58:38Z",
+      "status": "active",
+      "stage": {
+        "current": 4,
+        "total": 4,
+        "label": "4 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "deep_dive",
+      "id": "research/output",
+      "title": "Output",
+      "updatedAt": "2026-03-08T13:06:38Z",
+      "topic": "output",
+      "content": "",
+      "path": "artifacts/research/self-20260308/output.md"
+    },
+    {
+      "type": "deep_dive",
+      "id": "research/the-model-already-knows",
+      "title": "The Model Already Knows",
+      "updatedAt": "2026-03-08T13:06:20Z",
+      "topic": "the-model-already-knows",
+      "content": "",
+      "path": "artifacts/research/self-20260308/the-model-already-knows.md"
+    },
+    {
+      "type": "deep_dive",
+      "id": "research/proposal",
+      "title": "Proposal",
+      "updatedAt": "2026-03-08T13:04:01Z",
+      "topic": "proposal",
+      "content": "",
+      "path": "artifacts/research/self-20260308/proposal.md"
+    },
+    {
+      "type": "deep_dive",
+      "id": "research/cross_asset_information_flow_research",
+      "title": "Cross Asset Information Flow Research",
+      "updatedAt": "2026-03-07T23:42:34Z",
+      "topic": "cross_asset_information_flow_research",
+      "content": "",
+      "path": "artifacts/research/cross_asset_information_flow_research.md"
+    },
+    {
+      "type": "deep_dive",
+      "id": "research/output",
+      "title": "Output",
+      "updatedAt": "2026-03-06T14:54:01Z",
+      "topic": "output",
+      "content": "",
+      "path": "artifacts/research/talk/minutes-report里energy那块都没有提ira_dc8b96/output.md"
+    }
+  ]
+}

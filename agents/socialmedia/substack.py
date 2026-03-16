@@ -992,7 +992,8 @@ def _save_state_atomic(state_file: Path, data: dict):
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, state_file)
-    except Exception:
+    except Exception as e:
+        log.warning("Comment state save failed: %s", e)
         # Clean up temp file on failure
         try:
             os.unlink(tmp_path)
@@ -1075,7 +1076,8 @@ def check_and_reply_comments() -> list[dict]:
         try:
             soul = load_soul()
             soul_ctx = format_soul(soul)[:500]
-        except Exception:
+        except Exception as e:
+            log.warning("Soul loading failed for comment reply: %s", e)
             soul_ctx = "You are Mira, an AI agent."
 
         for comment in new_comments[:5]:  # Max 5 replies per cycle
@@ -1225,8 +1227,8 @@ def _resolve_post_id(base_url: str, path: str, cookie: str) -> int | None:
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return data.get("id")
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("Direct slug lookup failed for '%s': %s", slug, e)
 
     # Slug may be truncated differently — search recent posts for a match
     try:
@@ -1241,8 +1243,8 @@ def _resolve_post_id(base_url: str, path: str, cookie: str) -> int | None:
                 # Match if either is a prefix of the other
                 if slug.startswith(p_slug) or p_slug.startswith(slug):
                     return p.get("id")
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("Post list search failed for '%s': %s", slug, e)
 
     # Last resort: fetch the post HTML page and extract from embedded data
     try:
@@ -1412,7 +1414,8 @@ def fetch_publication_stats() -> dict:
             json.dump(result, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, stats_file)
         log.info("Publication stats saved: %d articles, %d notes", len(articles), len(notes_entries))
-    except Exception:
+    except Exception as e:
+        log.warning("Stats file save failed: %s", e)
         try:
             os.unlink(tmp_path)
         except OSError:
@@ -1605,7 +1608,8 @@ def check_outbound_comment_replies() -> list[dict]:
             comments = r.json()
             if isinstance(comments, dict):
                 comments = comments.get("comments", [])
-        except Exception:
+        except Exception as e:
+            log.debug("Comment fetch failed for post %s: %s", post_id, e)
             continue
 
         # Find Mira's comment and check for child replies

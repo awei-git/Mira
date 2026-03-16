@@ -182,6 +182,25 @@ def post_note(text: str, link_url: str | None = None,
         note_id = result.get("id")
         log.info("Posted Note (id=%s): %s", note_id, text[:80])
 
+        # Verify the note actually exists (anti-spam can silently drop)
+        if note_id:
+            import time as _time
+            _time.sleep(1)
+            try:
+                verify_req = urllib.request.Request(
+                    f"https://{subdomain}.substack.com/api/v1/comment/{note_id}",
+                    headers={
+                        "Cookie": f"substack.sid={cookie}; connect.sid={cookie}",
+                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                    },
+                )
+                with urllib.request.urlopen(verify_req, timeout=10) as vresp:
+                    log.info("Note %s verified — exists", note_id)
+            except urllib.error.HTTPError as ve:
+                if ve.code == 404:
+                    log.warning("Note %s silently dropped by anti-spam (200 but 404 on verify)", note_id)
+                    return None
+
         # Record in state
         _record_note(text, note_id, link_url)
 
@@ -510,8 +529,8 @@ def generate_standalone_note(briefing_text: str = "",
             if briefings:
                 # Use the most recent briefing
                 briefing_text = briefings[-1].read_text(encoding="utf-8")[:3000]
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to load briefing for note generation: %s", e)
 
     if not briefing_text:
         return None

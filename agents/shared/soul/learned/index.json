@@ -105,12 +105,6 @@
     ]
   },
   {
-    "name": "quote-verification",
-    "description": "Verify any attributed quote via external search before including it in output.",
-    "file": "quote-verification.md",
-    "created": "2026-03-10T10:18:11.749337"
-  },
-  {
     "name": "citation-verification",
     "description": "Never output unverified citations — use search tools first or mark [未验证]",
     "file": "citation-verification.md",
@@ -211,5 +205,59 @@
       "agent-reliability",
       "data-coupling"
     ]
+  },
+  {
+    "name": "error-context-must-be-diagnostic",
+    "description": "Task failure logs must capture actionable diagnostic information, not just a generic failure string",
+    "file": "error-context-must-be-diagnostic.md",
+    "created": "2026-03-16T09:57:00.586102"
+  },
+  {
+    "name": "find-latest-screenshot",
+    "description": "When a user references a screenshot without giving a path, locate and read the most recent image file from common drop locations.",
+    "file": "find-latest-screenshot.md",
+    "created": "2026-03-16T11:37:02.269750"
+  },
+  {
+    "name": "multi-agent-pipeline-failure-analysis",
+    "description": "Root cause analysis framework for multi-agent pipeline failures, distinguishing routing errors from error propagation errors.",
+    "file": "multi-agent-pipeline-failure-analysis.md",
+    "created": "2026-03-16T12:30:14.043102"
+  },
+  {
+    "name": "multi-agent-pipeline-hardening",
+    "description": "Three-layer defense pattern for preventing cascading failures and bad outputs in multi-agent pipelines.",
+    "file": "multi-agent-pipeline-hardening.md",
+    "created": "2026-03-16T12:45:59.038216"
+  },
+  {
+    "name": "diagnose-automation-silence",
+    "description": "Diagnose why an automation script ran but produced no output, separating logic bugs from external resource failures.",
+    "file": "diagnose-automation-silence.md",
+    "created": "2026-03-16T13:23:59.726359"
+  },
+  {
+    "name": "diagnose-stuck-process",
+    "description": "Diagnose a stuck background process: verify liveness, find logs, identify bottleneck, recommend kill-or-wait.",
+    "file": "diagnose-stuck-process.md",
+    "created": "2026-03-16T14:25:51.341539"
+  },
+  {
+    "name": "dual-provider-api-fallback",
+    "description": "Add a config-driven fallback mechanism when integrating two API providers (e.g., primary hits 429/quota, auto-switch to secondary).",
+    "file": "dual-provider-api-fallback.md",
+    "created": "2026-03-16T14:43:56.756676"
+  },
+  {
+    "name": "substack-dedup-post",
+    "description": "Find and remove duplicate Substack posts via the API, preserving the original.",
+    "file": "substack-dedup-post.md",
+    "created": "2026-03-16T15:31:36.921344"
+  },
+  {
+    "name": "audit-autonomous-pipeline-compliance",
+    "description": "Diagnose why an autonomous pipeline ignores instructions by tracing all execution paths and config reads.",
+    "file": "audit-autonomous-pipeline-compliance.md",
+    "created": "2026-03-16T15:41:13.850972"
   }
 ]

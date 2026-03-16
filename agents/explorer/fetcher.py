@@ -212,6 +212,34 @@ def fetch_hackernews(count: int = 30, min_points: int = 0) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Web Search (DuckDuckGo HTML — no API key required)
+# ---------------------------------------------------------------------------
+
+def fetch_web_search(query: str, max_results: int = 10) -> list[dict]:
+    """Search DuckDuckGo and return structured results.
+
+    Delegates to web_browser.search() for the actual DDG call.
+    Returns list of {source, title, summary, url, query} dicts.
+    """
+    try:
+        from web_browser import search as wb_search
+        results = wb_search(query, max_results=max_results)
+        return [
+            {
+                "source": "duckduckgo",
+                "title": r.title,
+                "summary": r.snippet[:300],
+                "url": r.url,
+                "query": query,
+            }
+            for r in results
+        ]
+    except Exception as e:
+        log.error("Web search failed for '%s': %s", query, e)
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Lobsters (JSON API)
 # ---------------------------------------------------------------------------
 
@@ -391,6 +419,16 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
             )
             all_items.extend(items)
             log.info("Dev.to: %d items", len(items))
+
+    # Web Search (DuckDuckGo — query driven, not config-driven)
+    # Supports "web_search:QUERY" entries in source_names
+    for name in names_lower:
+        if name.startswith("web_search:"):
+            query = name[len("web_search:"):]
+            if query:
+                items = fetch_web_search(query, max_results=10)
+                all_items.extend(items)
+                log.info("Web search '%s': %d items", query, len(items))
 
     # Specific RSS feeds by name, or all RSS
     rss_feeds = sources.get("rss", [])

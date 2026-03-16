@@ -111,8 +111,10 @@ def update_idea_status(idea_path: Path, updates: dict):
 
     for key, value in updates.items():
         pattern = rf"(^[ \t]*-[ \t]*\*\*{re.escape(key)}\*\*:[ \t]*)(.*)$"
-        replacement = rf"\g<1>{value}"
-        text = re.sub(pattern, replacement, text, flags=re.MULTILINE)
+        new_text = re.sub(pattern, rf"\g<1>{value}", text, flags=re.MULTILINE)
+        if new_text == text:
+            log.warning("Field '%s' not found in %s — status update skipped", key, idea_path.name)
+        text = new_text
 
     idea_path.write_text(text, encoding="utf-8")
     log.info("Updated %s: %s", idea_path.name, updates)
@@ -812,31 +814,53 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
     final_state = final_idea.get("state", "unknown")
     log.info("Auto writing '%s' finished in state: %s", title, final_state)
 
-    # Auto-publish if writing completed successfully
+    # HARD RULE (CLAUDE.md): never auto-publish without user approval.
+    # When writing is done, save article to pending_publish.json and ask for confirmation.
     project_dir = final_idea.get("project_dir", "")
+    approval_sent = False
     if final_state in ("done", "awaiting_feedback") and project_dir:
-        log.info("Auto-publishing '%s' to Substack", title)
+        log.info("Writing done for '%s', requesting user approval before publishing", title)
         try:
-            sm_dir = str(Path(__file__).resolve().parent.parent / "socialmedia")
-            if sm_dir not in sys.path:
-                sys.path.insert(0, sm_dir)
-            from substack import publish_to_substack
+            shared_dir = str(Path(__file__).resolve().parent.parent / "shared")
+            if shared_dir not in sys.path:
+                sys.path.insert(0, shared_dir)
             proj_path = Path(project_dir)
-            # Find the best draft to publish
-            # Priority: final.md > R*_revised.md > revision_r*.md > R*.md
-            # Never use draft_r*.md (those are Chinese summaries, not articles)
+
+            # Find the best draft to publish.
+            # Priority: final.md > draft_r[2+] (substantial) > R*_revised.md
+            #           > revision_r*.md (substantial) > R[0-9]*.md
+            # NOTE: draft_r1.md is a stub (sign-off message), not an article.
+            #       draft_r2.md and above ARE the real revised articles.
+            #       revision_r*.md is ALSO a sign-off stub — never use it as article text.
+            MIN_ARTICLE_BYTES = 3000  # stubs are <500 bytes; real articles are >>3000
             final_file = proj_path / "final" / "final.md"
             if not final_file.exists():
                 drafts_dir = proj_path / "drafts"
                 if drafts_dir.exists():
-                    # Try revised drafts first (best quality)
+                    # Try R*_revised.md first (explicit revised outputs)
                     candidates = sorted(drafts_dir.glob("R*_revised.md"), reverse=True)
                     if not candidates:
-                        candidates = sorted(drafts_dir.glob("revision_r*.md"), reverse=True)
+                        # draft_r2.md+ are the actual revised articles (round 2+)
+                        candidates = [
+                            f for f in sorted(
+                                drafts_dir.glob("draft_r[2-9].md"), reverse=True
+                            )
+                            if f.stat().st_size >= MIN_ARTICLE_BYTES
+                        ]
                     if not candidates:
                         candidates = sorted(drafts_dir.glob("R[0-9]*.md"), reverse=True)
+                    # revision_r*.md is a sign-off stub — skip unless nothing else found
+                    # and it's substantial
+                    if not candidates:
+                        candidates = [
+                            f for f in sorted(
+                                drafts_dir.glob("revision_r*.md"), reverse=True
+                            )
+                            if f.stat().st_size >= MIN_ARTICLE_BYTES
+                        ]
                     if candidates:
                         final_file = candidates[0]
+
             if final_file.exists():
                 article_text = final_file.read_text(encoding="utf-8")
 
@@ -846,7 +870,6 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
                 )
 
                 # Extract title from the article's first heading (authoritative)
-                # Falls back to the pipeline title if no heading found
                 pub_title = title
                 heading_match = re.search(r'^#\s+(.+)$', article_text, re.MULTILINE)
                 if heading_match:
@@ -855,67 +878,74 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
                     if extracted and all(ord(c) < 0x4E00 or ord(c) > 0x9FFF for c in extracted):
                         pub_title = extracted
 
-                pub_result = publish_to_substack(
-                    title=pub_title,
-                    subtitle="",
-                    article_text=article_text,
-                    workspace=proj_path,
+                # Save to global pending_publish.json — task_worker picks this up on "approve"
+                import json as _json
+                from config import MIRA_ROOT
+                pending = {
+                    "pub_title": pub_title,
+                    "article_path": str(final_file),
+                    "project_dir": str(proj_path),
+                    "created": datetime.now().isoformat(),
+                    "source": "auto",
+                }
+                pending_file = MIRA_ROOT / ".pending_publish.json"
+                pending_file.write_text(
+                    _json.dumps(pending, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
                 )
-                log.info("Published '%s': %s", title, pub_result)
+                log.info("Pending approval saved for '%s' at %s", pub_title, pending_file)
 
-                # Generate audio narration and upload to Substack
-                try:
-                    podcast_dir = str(Path(__file__).resolve().parent.parent / "podcast")
-                    if podcast_dir not in sys.path:
-                        sys.path.insert(0, podcast_dir)
-                    from handler import generate_audio_for_article
-                    audio_path = generate_audio_for_article(article_text, title)
-                    if audio_path:
-                        log.info("Audio generated for '%s': %s", title, audio_path)
-                        # Upload audio to the published post
-                        pub_json = proj_path / "published.json"
-                        if pub_json.exists():
-                            import json as _json
-                            pub_info = _json.loads(pub_json.read_text(encoding="utf-8"))
-                            post_id = pub_info.get("draft_id")
-                            if post_id:
-                                from substack import upload_audio_to_post
-                                if upload_audio_to_post(audio_path, post_id, label=title):
-                                    log.info("Audio uploaded to post %s", post_id)
-                                else:
-                                    log.warning("Audio upload failed for post %s", post_id)
-                    else:
-                        log.warning("Audio generation failed for '%s'", title)
-                except Exception as e:
-                    log.error("Audio generation error for '%s': %s", title, e)
+                # Notify user via bridge with full article text
+                from mira import Mira as _BridgeMira
+                _bridge = _BridgeMira()
+                _today = datetime.now().strftime("%Y-%m-%d")
+                _task_id = f"autowrite_{_today}"
+                preview_text = article_text[:4000]
+                if len(article_text) > 4000:
+                    preview_text += f"\n\n[...文章还有 {len(article_text) - 4000} 字，已截断]"
+                approval_msg = (
+                    f"写好了！终稿如下，确认后发布。\n\n"
+                    f"**{pub_title}**\n\n"
+                    f"---\n\n"
+                    f"{preview_text}\n\n"
+                    f"---\n\n"
+                    f"回复 approve 确认发布，reject 取消。"
+                )
+                _bridge.update_task_status(
+                    _task_id, "needs-input",
+                    agent_message=approval_msg,
+                )
+                approval_sent = True
+                log.info("Approval request sent for '%s'", pub_title)
             else:
                 log.warning("No publishable draft found for '%s'", title)
         except Exception as e:
-            log.error("Auto-publish failed for '%s': %s", title, e)
+            log.error("Approval setup failed for '%s': %s", title, e)
 
-    # Notify bridge so user sees the result
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-        from mira import Mira
-        bridge = Mira()
-        today = datetime.now().strftime("%Y-%m-%d")
-        task_id = f"autowrite_{today}"
-        if final_state in ("done", "awaiting_feedback"):
-            bridge.update_task_status(
-                task_id, "done",
-                agent_message=f"写完并发布了！项目在 {project_dir}",
-            )
-        elif final_state == "error":
-            bridge.update_task_status(
-                task_id, "error",
-                agent_message=f"写作出错了: {final_idea.get('last_error', 'unknown')}",
-            )
-        else:
-            bridge.update_task_status(
-                task_id, "working",
-                agent_message=f"写作进行中，当前状态: {final_state}",
-            )
-    except Exception as e:
+    # Bridge status update — only for non-approval states
+    if not approval_sent:
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+            from mira import Mira
+            bridge = Mira()
+            today = datetime.now().strftime("%Y-%m-%d")
+            task_id = f"autowrite_{today}"
+            if final_state in ("done", "awaiting_feedback"):
+                bridge.update_task_status(
+                    task_id, "working",
+                    agent_message=f"写完了，等待用户确认发布。项目在 {project_dir}",
+                )
+            elif final_state == "error":
+                bridge.update_task_status(
+                    task_id, "error",
+                    agent_message=f"写作出错了: {final_idea.get('last_error', 'unknown')}",
+                )
+            else:
+                bridge.update_task_status(
+                    task_id, "working",
+                    agent_message=f"写作进行中，当前状态: {final_state}",
+                )
+        except Exception as e:
         log.error("Failed to update bridge: %s", e)
 
 

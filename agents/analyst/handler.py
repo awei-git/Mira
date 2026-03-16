@@ -45,24 +45,44 @@ def _find_latest_report() -> Path | None:
     return pdfs[0] if pdfs else None
 
 
+def _web_supplement(content: str, max_chars: int = 4000) -> str:
+    """Fetch live web data to supplement Tetra briefing."""
+    try:
+        from web_browser import search_and_read
+        import re
+        query = re.sub(r"[，。！？\n]", " ", content[:120]).strip()
+        log.info("Fetching web supplement for analyst: %s", query[:60])
+        result = search_and_read(query, max_results=3, max_chars_per_page=1500)
+        if result and "[No search results" not in result:
+            return result[:max_chars]
+    except Exception as e:
+        log.warning("Web supplement failed: %s", e)
+    return ""
+
+
 def handle(workspace: Path, task_id: str, content: str,
            sender: str, thread_id: str,
            thread_history: str = "", thread_memory: str = "") -> str | None:
-    """Answer a market question using Tetra briefing as context.
+    """Answer a market question using Tetra briefing + live web data.
 
     1. Load latest Tetra briefing (real data from daily pipeline)
-    2. claude_think answers the user's question with that context
+    2. Fetch live web research to supplement
+    3. claude_think answers the user's question with combined context
     """
-    log.info("Analyst task %s: answering with Tetra context", task_id)
+    log.info("Analyst task %s: answering with Tetra + web context", task_id)
 
     briefing_path = _find_latest_briefing()
-    if not briefing_path:
-        log.warning("No Tetra briefing found, cannot answer")
-        return None
+    briefing = ""
+    briefing_label = "none"
+    if briefing_path:
+        briefing = briefing_path.read_text(encoding="utf-8").strip()
+        briefing_label = briefing_path.stem
 
-    briefing = briefing_path.read_text(encoding="utf-8").strip()
-    if not briefing:
-        log.warning("Tetra briefing is empty: %s", briefing_path.name)
+    # Fetch live web data to supplement
+    web_data = _web_supplement(content)
+
+    if not briefing and not web_data:
+        log.warning("No Tetra briefing and web search failed — cannot answer")
         return None
 
     # Build context
@@ -75,19 +95,30 @@ def handle(workspace: Path, task_id: str, content: str,
     pdf = _find_latest_report()
     pdf_note = f"\n\nFull PDF report: `{pdf}`" if pdf else ""
 
-    prompt = f"""Based on the following Tetra market intelligence, answer the user's question.
-Use specific data from the report. Be concise and direct.
-
-=== TETRA DAILY BRIEFING ({briefing_path.stem}) ===
+    tetra_section = ""
+    if briefing:
+        tetra_section = f"""=== TETRA DAILY BRIEFING ({briefing_label}) ===
 {briefing}
-{pdf_note}
+{pdf_note}"""
+
+    web_section = ""
+    if web_data:
+        web_section = f"""=== LIVE WEB RESEARCH ===
+{web_data}"""
+
+    prompt = f"""Based on the following market intelligence, answer the user's question.
+Use specific data from the sources. Be concise and direct.
+
+{tetra_section}
+
+{web_section}
 {extra}
 
 === USER QUESTION ===
 {content}
 
 Answer in the same language as the question.
-If the briefing doesn't cover this topic, start your answer with [GAP] and still try your best to answer.
+If neither source covers this topic well, start your answer with [GAP] and still try your best to answer.
 """
 
     result = claude_think(prompt, timeout=60, tier="heavy")

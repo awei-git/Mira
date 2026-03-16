@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UserNotifications
 
 /// Handles reading/writing JSON files to the Mira iCloud Drive folder.
 @MainActor
@@ -21,6 +22,19 @@ final class BridgeService {
     // Task-based state (new dashboard UI)
     var tasks: [MiraTask] = []
     var needsInputCount: Int { tasks.filter(\.needsInput).count }
+
+    // Notification tracking
+    /// Count of tasks with unread agent replies (for badge)
+    var unreadCount: Int {
+        tasks.filter { task in
+            guard let lastMsg = task.messages.last, lastMsg.sender == "agent" else { return false }
+            return !readTaskIDs.contains(task.id)
+        }.count
+    }
+    /// Task IDs the user has opened/read
+    private var readTaskIDs: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "readTaskIDs") ?? [])
+    /// Previous task message counts — used to detect new agent replies
+    private var previousMessageCounts: [String: Int] = [:]
     var activeTasks: [MiraTask] { tasks.filter(\.isActive).sorted { $0.updatedDate > $1.updatedDate } }
     var doneTasks: [MiraTask] { tasks.filter { $0.status == "done" }.sorted { $0.updatedDate > $1.updatedDate } }
     var todayBriefings: [MiraTask] {
@@ -350,6 +364,73 @@ final class BridgeService {
         loadHeartbeat()
         loadThreads()
         loadTasks()
+        checkForNewRepliesAndNotify()
+        updateBadge()
+    }
+
+    /// Check if a task has unread agent replies
+    func isUnread(_ taskID: String) -> Bool {
+        guard let task = tasks.first(where: { $0.id == taskID }),
+              let lastMsg = task.messages.last,
+              lastMsg.sender == "agent" else { return false }
+        return !readTaskIDs.contains(taskID)
+    }
+
+    /// Mark a task as read (call when user opens a task detail)
+    func markAsRead(_ taskID: String) {
+        readTaskIDs.insert(taskID)
+        UserDefaults.standard.set(Array(readTaskIDs), forKey: "readTaskIDs")
+        updateBadge()
+    }
+
+    private func updateBadge() {
+        UNUserNotificationCenter.current().setBadgeCount(unreadCount)
+    }
+
+    private func checkForNewRepliesAndNotify() {
+        // First load: mark all existing tasks as read (no spam on fresh install)
+        if !UserDefaults.standard.bool(forKey: "notificationsInitialized") {
+            for task in tasks { readTaskIDs.insert(task.id) }
+            UserDefaults.standard.set(Array(readTaskIDs), forKey: "readTaskIDs")
+            UserDefaults.standard.set(true, forKey: "notificationsInitialized")
+        }
+
+        for task in tasks {
+            let currentCount = task.messages.count
+            let previousCount = previousMessageCounts[task.id] ?? currentCount
+
+            if currentCount > previousCount {
+                // Check if the new message(s) are from agent
+                let newMessages = task.messages.suffix(currentCount - previousCount)
+                for msg in newMessages where msg.sender == "agent" {
+                    // Mark as unread
+                    readTaskIDs.remove(task.id)
+                    UserDefaults.standard.set(Array(readTaskIDs), forKey: "readTaskIDs")
+                    // Fire notification
+                    sendLocalNotification(
+                        title: task.title,
+                        body: msg.content.prefix(200).description
+                    )
+                }
+            }
+            previousMessageCounts[task.id] = currentCount
+        }
+    }
+
+    private func sendLocalNotification(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Mira"
+        content.subtitle = title
+        content.body = body
+        content.sound = .default
+        content.badge = NSNumber(value: unreadCount)
+
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil  // fire immediately
+        )
+        UNUserNotificationCenter.current().add(request)
     }
 
     // MARK: - Load sent messages from inbox (persist across restarts)

@@ -61,8 +61,10 @@ TYPE_SCAFFOLD = {
     },
 }
 
-# Chinese type aliases → canonical English type
+# Type aliases → canonical English type
 TYPE_ALIASES = {
+    "technical": "essay",
+    "article": "essay",
     "博客": "blog",
     "散文": "essay",
     "随笔": "essay",
