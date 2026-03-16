@@ -252,7 +252,7 @@ def _call_gemini_tts_text(text: str, voice_name: str, lang: str,
 
 
 def _call_minimax_tts(text: str, voice_id: str, api_key: str,
-                      lang: str = "en", _retries: int = 8) -> bytes | None:
+                      lang: str = "en", _retries: int = 3) -> bytes | None:
     """POST to MiniMax text_to_speech, return MP3 bytes directly.
 
     Uses /v1/text_to_speech (Audio Starter plan compatible).
@@ -325,8 +325,8 @@ def _call_minimax_tts(text: str, voice_id: str, api_key: str,
         except ValueError:
             return base64.b64decode(audio_raw)
 
-    log.error("MiniMax TTS: failed after %d attempts", _retries)
-    return None
+    log.error("MiniMax TTS: failed after %d attempts — treating as quota exhaustion", _retries)
+    raise RuntimeError("MiniMax TTS quota exhausted (rate limited after all retries)")
 
 
 def _write_mp3(mp3_data: bytes, output_path: Path) -> bool:
@@ -737,8 +737,14 @@ def _tts_call_with_fallback(text: str, speaker: str,
             log.error("No MiniMax API key — set minimax key in secrets.yml")
             return None, ''
         voice_id = _voice_for_speaker_minimax(speaker, lang)
-        mp3 = _call_minimax_tts(text, voice_id, api_key, lang=lang)
-        return (mp3, 'mp3') if mp3 is not None else (None, '')
+        try:
+            mp3 = _call_minimax_tts(text, voice_id, api_key, lang=lang)
+            return (mp3, 'mp3') if mp3 is not None else (None, '')
+        except RuntimeError as e:
+            if "quota exhausted" in str(e):
+                return None, 'quota'
+            log.error("MiniMax TTS unexpected error: %s", e)
+            return None, ''
 
     if TTS_PROVIDER == 'minimax':
         return _try_minimax()
