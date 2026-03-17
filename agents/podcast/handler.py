@@ -626,7 +626,7 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
         response = client.chat.completions.create(
             model="gpt-5.4",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=16000,
+            max_completion_tokens=16000,
             timeout=600,
         )
         result = response.choices[0].message.content
@@ -669,7 +669,7 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
                     {"role": "assistant", "content": result},
                     {"role": "user", "content": extend_prompt},
                 ],
-                max_tokens=16000,
+                max_completion_tokens=16000,
                 timeout=600,
             )
             extension = ext_response.choices[0].message.content.strip()
