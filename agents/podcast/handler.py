@@ -547,11 +547,14 @@ def generate_conversation_script(article_text: str, title: str,
 [MIRA]: （发言内容）
 
 标点规则（TTS朗读，必须严格遵守）：
-- 只用：句号。逗号，问号？感叹号！
+- 必须使用：句号。逗号，问号？感叹号！这四种标点是TTS停顿的唯一依据，一定要用够
+- 每个句子必须以句号、问号或感叹号结尾。逗号用来分隔从句，给听众喘息的机会
+- 长句必须用逗号断开，每个逗号前不超过15个字。没有标点的长句听起来像机关枪
 - 禁用：破折号——、省略号……、顿号、、引号""「」、括号（）[]、分号；、冒号：
 - 禁用所有特殊符号：斜杠/、星号*、井号#、百分号%等
 - 代码、变量名（如 core.py、memory.md）直接口语化表述，不要原样照抄
 - 数字尽量用汉字表达（如"三千五百"而不是"3500"）
+- 多音字注意：避免使用容易读错的多音字（如单独的"重"、"调"、"行"），用明确的替代词
 
 文章标题：{title}
 
@@ -641,32 +644,118 @@ def _clean_turn_text(text: str) -> str:
 
     Removes: em-dash, ellipsis, semicolons, colons mid-sentence,
     parentheses, brackets, quotes, and other non-speech symbols.
-    Keeps: . , ? !
+    Preserves: 。，？！ . , ? ! (these drive TTS pausing)
     """
     # Replace common problematic punctuation with natural spoken equivalents
-    text = re.sub(r'——|–|—', ', ', text)          # em-dash → pause
-    text = re.sub(r'…+|\.{2,}', '. ', text)        # ellipsis → period
-    text = re.sub(r'[；;]', ', ', text)             # semicolon → comma
-    text = re.sub(r'[：:](?!\s*//)', ' ', text)     # colon → space (not URLs)
+    text = re.sub(r'——|–|—', '，', text)            # em-dash → comma (pause)
+    text = re.sub(r'…+|\.{2,}', '。', text)         # ellipsis → period
+    text = re.sub(r'[；;]', '，', text)              # semicolon → comma
+    text = re.sub(r'[：:](?!\s*//)', '，', text)     # colon → comma (not URLs)
     text = re.sub(r'[（(][^）)]{0,30}[）)]', '', text)  # remove parentheticals
     text = re.sub(r'[\[\]【】「」『』""''《》]', '', text)  # remove brackets/quotes
-    text = re.sub(r'[、·・･]', ', ', text)           # Chinese stops → comma
+    text = re.sub(r'[、·・･]', '，', text)            # Chinese stops → comma
     text = re.sub(r'[/\\*#@%^&+=|~`]', ' ', text)  # special symbols → space
     text = re.sub(r'\s{2,}', ' ', text)             # collapse spaces
     return text.strip()
 
 
+# ---------------------------------------------------------------------------
+# Polyphonic character disambiguation (多音字)
+# ---------------------------------------------------------------------------
+
+# Common polyphonic words where TTS engines get the reading wrong.
+# Format: {wrong_context: replacement_text}
+# Strategy: replace with a synonym/rephrasing that has only one reading,
+# or add context words that force the correct pronunciation.
+_POLYPHONIC_FIXES = {
+    # 重 — zhòng (heavy/important) vs chóng (again/repeat)
+    '重复': '反复',           # chóngfù → fǎnfù (repeat)
+    '重新': '从新',           # chóngxīn → cóngxīn (anew) — less ambiguous
+    '重来': '再来',           # chónglái → zàilái
+    '重建': '再建',           # chóngjiàn → zàijiàn (rebuild)
+    '重叠': '叠加',           # chóngdié → diéjiā (overlap)
+    # 调 — diào (tune/transfer) vs tiáo (adjust)
+    '调整': '调整',           # tiáozhěng — usually correct, keep
+    '调查': '调查',           # diàochá — usually correct, keep
+    '调节': '调节',           # tiáojié — usually correct, keep
+    '格调': '风格',           # gédiào → fēnggé (style)
+    '声调': '音调',           # shēngdiào → yīndiào (tone)
+    # 行 — háng (row/profession) vs xíng (walk/OK)
+    '行业': '行业',           # hángyè — usually correct
+    '行为': '行为',           # xíngwéi — usually correct
+    '银行': '银行',           # yínháng — usually correct
+    '不行': '不可以',         # bùxíng → bùkěyǐ (unambiguous)
+    '行了': '好了',           # xíngle → hǎole (OK, done)
+    # 长 — cháng (long) vs zhǎng (grow/chief)
+    '成长': '成长',           # chéngzhǎng — usually correct
+    '长度': '长度',           # chángdù — usually correct
+    '长大': '长大',           # zhǎngdà — usually correct
+    # 还 — hái (still) vs huán (return)
+    '归还': '返还',           # guīhuán → fǎnhuán (return)
+    '偿还': '偿付',           # chánghuán → chángfù (repay)
+    # 得 — dé (obtain) vs de (particle) vs děi (must)
+    '得到': '获得',           # dédào → huòdé (obtain)
+    '觉得': '觉得',           # juéde — usually correct
+    # 了 — le (particle) vs liǎo (finish/understand)
+    '了解': '理解',           # liǎojiě → lǐjiě (understand)
+    '了不起': '了不起',       # liǎobuqǐ — usually correct
+}
+
+
+def _fix_polyphonic_chars(text: str) -> str:
+    """Replace commonly mispronounced polyphonic words with unambiguous alternatives.
+
+    Only substitutes words that TTS engines consistently get wrong.
+    Context-safe words (where TTS usually infers correctly) are left alone.
+    """
+    for original, replacement in _POLYPHONIC_FIXES.items():
+        if original != replacement:  # skip no-op entries
+            text = text.replace(original, replacement)
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Breathing pauses (气口) — insert explicit pause markers for natural pacing
+# ---------------------------------------------------------------------------
+
+def _add_breathing_pauses(text: str, provider: str = "minimax") -> str:
+    """Insert explicit pause markers after punctuation for more natural TTS pacing.
+
+    MiniMax uses <#seconds#> syntax for pauses.
+    Gemini respects SSML <break> tags or natural punctuation pausing.
+    """
+    if provider == "minimax":
+        # Sentence-ending punctuation → longer pause (breathing point)
+        text = re.sub(r'([。.])(\s*)', r'\1<#0.6#>\2', text)
+        text = re.sub(r'([？?！!])(\s*)', r'\1<#0.5#>\2', text)
+        # Clause-ending comma → short breath
+        text = re.sub(r'([，,])(\s*)', r'\1<#0.3#>\2', text)
+        # Prevent double-pause from consecutive markers
+        text = re.sub(r'(<#[\d.]+#>)\s*(<#[\d.]+#>)', r'\1', text)
+    elif provider == "gemini":
+        # Gemini handles punctuation pauses naturally, but add breaks
+        # at sentence boundaries for extra breathing room
+        text = re.sub(r'([。.])(\s*)', r'\1 \2', text)  # extra space = slight pause
+    return text
+
+
 def _parse_turns(script: str) -> list[tuple[str, str]]:
     """Parse '[HOST]: text' / '[MIRA]: text' lines into (speaker, text) tuples.
 
-    Applies _clean_turn_text to each line to strip TTS-unfriendly punctuation.
+    Preprocessing pipeline per turn:
+    1. _clean_turn_text — strip TTS-unfriendly punctuation (preserve 。，？！)
+    2. _fix_polyphonic_chars — disambiguate common polyphonic words (多音字)
+    3. _add_breathing_pauses — insert explicit pause markers (气口)
     """
     turns = []
     for line in script.splitlines():
         line = line.strip()
         m = re.match(r'^\[(HOST|MIRA)\]:\s*(.+)$', line, re.IGNORECASE)
         if m:
-            turns.append((m.group(1).upper(), _clean_turn_text(m.group(2))))
+            text = _clean_turn_text(m.group(2))
+            text = _fix_polyphonic_chars(text)
+            text = _add_breathing_pauses(text, provider=TTS_PROVIDER)
+            turns.append((m.group(1).upper(), text))
     return turns
 
 
