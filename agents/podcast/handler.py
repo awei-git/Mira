@@ -773,11 +773,10 @@ def _add_breathing_pauses(text: str, provider: str = "minimax") -> str:
     Gemini respects SSML <break> tags or natural punctuation pausing.
     """
     if provider == "minimax":
-        # Sentence-ending punctuation → longer pause (breathing point)
-        text = re.sub(r'([。.])(\s*)', r'\1<#0.8#>\2', text)
-        text = re.sub(r'([？?！!])(\s*)', r'\1<#0.7#>\2', text)
-        # Clause-ending comma → short breath
-        text = re.sub(r'([，,])(\s*)', r'\1<#0.4#>\2', text)
+        # Only add pauses at sentence boundaries, not every comma
+        text = re.sub(r'([。.])(\s*)', r'\1<#0.4#>\2', text)
+        text = re.sub(r'([？?！!])(\s*)', r'\1<#0.3#>\2', text)
+        # No pause on commas — let TTS handle natural comma pacing
         # Prevent double-pause from consecutive markers
         text = re.sub(r'(<#[\d.]+#>)\s*(<#[\d.]+#>)', r'\1', text)
     elif provider == "gemini":
@@ -806,9 +805,6 @@ def _parse_turns(script: str) -> list[tuple[str, str]]:
             text = _clean_turn_text(m.group(2))
             text = _fix_polyphonic_chars(text)
             text = _add_breathing_pauses(text, provider=TTS_PROVIDER)
-            # Add a pause at the start when speaker switches (natural turn-taking gap)
-            if prev_speaker and speaker != prev_speaker and TTS_PROVIDER == "minimax":
-                text = f"<#0.6#>{text}"
             prev_speaker = speaker
             turns.append((speaker, text))
     return turns
@@ -953,7 +949,7 @@ def generate_tts_conversation(script: str, output_path: Path,
     try:
         for i, (speaker, text) in enumerate(turns):
             turn_path = cache_dir / f"turn_{i:03d}.mp3"
-            if turn_path.exists():
+            if turn_path.exists() and turn_path.stat().st_size > 1000:
                 log.info("  turn %d/%d already done, skipping", i + 1, len(turns))
             else:
                 log.info("  turn %d/%d [%s] (%d chars)...",
