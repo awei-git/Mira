@@ -312,18 +312,15 @@ def publish_episode(
     mp3_url = _copy_mp3_to_repo(mp3_path)
     log.info("MP3 URL: %s", mp3_url)
     transcript_url = _copy_transcript_to_repo(mp3_path)
-    transcript_txt = None
     if transcript_url:
-        script_path = mp3_path.parent / f"{mp3_path.stem}_script.txt"
-        transcript_txt = script_path.read_text(encoding="utf-8")
         log.info("Transcript URL: %s", transcript_url)
 
-    # 3. Add episode to feed
+    # 3. Add episode to feed (transcript as link only, not inline)
     file_size    = _get_file_size(mp3_path)
     duration_sec = _get_duration_seconds(mp3_path)
     _add_episode_to_feed(
         rss, title, slug, mp3_url, file_size, duration_sec, description, pub_date,
-        transcript_url=transcript_url, transcript_txt=transcript_txt,
+        transcript_url=transcript_url,
     )
     _save_feed(rss, feed_path)
 
