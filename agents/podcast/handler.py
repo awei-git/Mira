@@ -620,31 +620,19 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
     log.info("Generating conversation script [%s]...", lang)
 
     try:
-        import anthropic as _anthropic
+        import openai as _openai
         from sub_agent import _get_api_key
-        client = _anthropic.Anthropic(api_key=_get_api_key("anthropic"))
-        response = client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=16000,
+        client = _openai.OpenAI(api_key=_get_api_key("openai"))
+        response = client.chat.completions.create(
+            model="gpt-5.4",
             messages=[{"role": "user", "content": prompt}],
+            max_tokens=16000,
             timeout=600,
         )
-        result = response.content[0].text
+        result = response.choices[0].message.content
     except Exception as e:
-        log.warning("Anthropic script generation failed (%s), falling back to OpenAI", e)
-        try:
-            import openai as _openai
-            client = _openai.OpenAI(api_key=_get_api_key("openai"))
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=16000,
-                timeout=600,
-            )
-            result = response.choices[0].message.content
-        except Exception as e2:
-            log.error("All script generation backends failed: %s", e2)
-            result = None
+        log.error("Script generation failed: %s", e)
+        result = None
 
     if not result:
         log.error("Conversation script generation failed")
@@ -674,17 +662,17 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
             "\n".join(result.splitlines()[-10:])
         )
         try:
-            ext_response = client.messages.create(
-                model="claude-opus-4-6",
-                max_tokens=16000,
+            ext_response = client.chat.completions.create(
+                model="gpt-5.4",
                 messages=[
                     {"role": "user", "content": prompt},
                     {"role": "assistant", "content": result},
                     {"role": "user", "content": extend_prompt},
                 ],
+                max_tokens=16000,
                 timeout=600,
             )
-            extension = ext_response.content[0].text.strip()
+            extension = ext_response.choices[0].message.content.strip()
             if extension:
                 result = result + "\n" + extension
                 new_count = len(_re.findall(r'[\u4e00-\u9fff]', result)) if lang == "zh" else len(result.split())
