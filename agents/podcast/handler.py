@@ -49,7 +49,7 @@ VOICE_HOST_EN_MM = "English_Trustworth_Man"             # English host (note: no
 VOICE_MIRA_EN_MM = "English_expressive_narrator"        # English Mira
 
 # MiniMax audio params for ZH
-SPEED_ZH_MM = 0.95   # slightly slower than normal for clearer delivery
+SPEED_ZH_MM = 1.05   # slightly above normal for energy
 VOL_MM      = 1.5    # louder than default (1.0)
 
 # ---------------------------------------------------------------------------
@@ -773,10 +773,9 @@ def _add_breathing_pauses(text: str, provider: str = "minimax") -> str:
     Gemini respects SSML <break> tags or natural punctuation pausing.
     """
     if provider == "minimax":
-        # Only add pauses at sentence boundaries, not every comma
-        text = re.sub(r'([。.])(\s*)', r'\1<#0.4#>\2', text)
-        text = re.sub(r'([？?！!])(\s*)', r'\1<#0.3#>\2', text)
-        # No pause on commas — let TTS handle natural comma pacing
+        # No explicit pauses — let TTS handle pacing naturally.
+        # Adding pauses after every sentence reinforces falling intonation.
+        pass
         # Prevent double-pause from consecutive markers
         text = re.sub(r'(<#[\d.]+#>)\s*(<#[\d.]+#>)', r'\1', text)
     elif provider == "gemini":
