@@ -534,14 +534,22 @@ def generate_conversation_script(article_text: str, title: str,
 
 脚本要求：
 - 目标长度：9000-10000中文字（对应30-35分钟，确保最终剪辑后至少20分钟）。这是硬性要求，不能写短。
-- 每轮发言长度：HOST每轮50-100字，MIRA每轮150-250字。不能写一句话就结束——MIRA的每个回答要充分展开，举例子，作类比，解释机制。
+- 每轮发言长度：HOST每轮50-100字，MIRA每轮100-200字。不能写一句话就结束，但也不要一口气说太多。如果MIRA要说的内容超过200字，让HOST中间自然地插一句反应或追问，把长段拆开。
 - 完整覆盖文章所有核心观点，不跳过任何细节，每个概念都要充分展开
 - 每个主要观点至少有2-3轮来回追问，深入到具体机制、例子、反例
 - 术语解释原则：文章中出现的每个专业术语、缩写、学术概念（如MMLU、Goodhart定律、微调等），HOST要自然地追问"这是什么意思"，MIRA用日常语言类比解释。不要跳过，不要假设听众已经知道。
 - 多用具体例子、类比、生活场景来解释抽象概念——每个抽象概念后必须紧跟一个具体例子
-- 对话要自然流动，不像在背诵——有追问、有停顿、有转折、有HOST自己的联想和反应
 - 以一个吸引人的开场白开始（不要用"欢迎收听"这种套话，直接切入有画面感的场景或问题）
 - 以一个有余韵的结尾收场，留给听众一个值得思考的问题或意象
+
+节奏和气口（非常重要，直接影响听感）：
+- 这是用TTS朗读的播客，不是文字稿。写的时候脑子里要有声音。
+- 句子要短。每句话控制在15-25个字以内。超过25个字的句子必须用逗号断开。
+- 不要信息轰炸。一个观点说完，让HOST回应一下再继续。不要连续抛出三个观点。
+- 对话要有呼吸感：有的地方快，有的地方慢。讲到关键洞察时放慢，用短句。讲例子时可以稍快。
+- HOST的反应要自然多样：不只是"嗯"和"对"。可以是惊讶、联想、质疑、总结、开玩笑。这些反应给听众喘息的时间。
+- MIRA说完一段重要的话之后，HOST可以先停一拍，说"等一下，让我消化一下"或者用自己的话复述，再往下走。
+- 避免书面语。用口语。"因此"改成"所以"，"然而"改成"但是"，"进行"改成"做"。像两个朋友在聊天，不像在念稿。
 - 格式严格如下，每行一个发言：
 [HOST]: （发言内容）
 [MIRA]: （发言内容）
@@ -778,10 +786,10 @@ def _add_breathing_pauses(text: str, provider: str = "minimax") -> str:
     """
     if provider == "minimax":
         # Sentence-ending punctuation → longer pause (breathing point)
-        text = re.sub(r'([。.])(\s*)', r'\1<#0.6#>\2', text)
-        text = re.sub(r'([？?！!])(\s*)', r'\1<#0.5#>\2', text)
+        text = re.sub(r'([。.])(\s*)', r'\1<#0.8#>\2', text)
+        text = re.sub(r'([？?！!])(\s*)', r'\1<#0.7#>\2', text)
         # Clause-ending comma → short breath
-        text = re.sub(r'([，,])(\s*)', r'\1<#0.3#>\2', text)
+        text = re.sub(r'([，,])(\s*)', r'\1<#0.4#>\2', text)
         # Prevent double-pause from consecutive markers
         text = re.sub(r'(<#[\d.]+#>)\s*(<#[\d.]+#>)', r'\1', text)
     elif provider == "gemini":
@@ -798,16 +806,23 @@ def _parse_turns(script: str) -> list[tuple[str, str]]:
     1. _clean_turn_text — strip TTS-unfriendly punctuation (preserve 。，？！)
     2. _fix_polyphonic_chars — disambiguate common polyphonic words (多音字)
     3. _add_breathing_pauses — insert explicit pause markers (气口)
+    4. Add leading pause on speaker switch for natural turn-taking
     """
     turns = []
+    prev_speaker = None
     for line in script.splitlines():
         line = line.strip()
         m = re.match(r'^\[(HOST|MIRA)\]:\s*(.+)$', line, re.IGNORECASE)
         if m:
+            speaker = m.group(1).upper()
             text = _clean_turn_text(m.group(2))
             text = _fix_polyphonic_chars(text)
             text = _add_breathing_pauses(text, provider=TTS_PROVIDER)
-            turns.append((m.group(1).upper(), text))
+            # Add a pause at the start when speaker switches (natural turn-taking gap)
+            if prev_speaker and speaker != prev_speaker and TTS_PROVIDER == "minimax":
+                text = f"<#0.6#>{text}"
+            prev_speaker = speaker
+            turns.append((speaker, text))
     return turns
 
 
