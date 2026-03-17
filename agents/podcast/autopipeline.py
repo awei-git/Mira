@@ -93,7 +93,7 @@ def should_podcast() -> tuple[str, str, str] | None:
         slug = name[11:] if len(name) > 11 and name[10] == "_" else name
         title = _extract_title(md_file, slug)
 
-        for lang in ("zh", "en"):
+        for lang in ("zh",):  # EN disabled for now
             episode_path = audio_dir / lang / f"{slug}.mp3"
             if episode_path.exists():
                 continue
