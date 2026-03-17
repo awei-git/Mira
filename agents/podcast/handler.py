@@ -39,7 +39,7 @@ GEMINI_MODEL_THINK = "gemini-2.5-pro"          # for script generation
 # ---------------------------------------------------------------------------
 
 MINIMAX_MODEL_TTS = "speech-02-hd"
-MINIMAX_API_URL   = "https://api.minimax.io/v1/text_to_speech"   # t2a_v2 returns 2053 on Audio Starter plan
+MINIMAX_API_URL   = "https://api.minimax.io/v1/t2a_v2"
 
 # MiniMax voice IDs — one voice per character, consistent across all turns
 # Full list: platform.minimax.io/docs/faq/system-voice-id
@@ -266,7 +266,7 @@ def _call_minimax_tts(text: str, voice_id: str, api_key: str,
     payload = {
         "model": MINIMAX_MODEL_TTS,
         "text": text,
-        "voice_id": voice_id,
+        "timber_weights": [{"voice_id": voice_id, "weight": 1}],
         "speed": speed,
         "vol": VOL_MM,
         "pitch": 0,
@@ -313,10 +313,10 @@ def _call_minimax_tts(text: str, voice_id: str, api_key: str,
             log.error("MiniMax TTS error: %s", msg)
             return None
 
-        # text_to_speech returns audio_file as hex or base64
-        audio_raw = data.get("audio_file", "")
+        # t2a_v2 returns audio under data.audio; text_to_speech uses audio_file
+        audio_raw = data.get("audio_file", "") or (data.get("data") or {}).get("audio", "")
         if not audio_raw:
-            log.error("MiniMax TTS: no audio_file in response: %s", str(data)[:300])
+            log.error("MiniMax TTS: no audio in response: %s", str(data)[:300])
             return None
 
         # Try hex first, fall back to base64
