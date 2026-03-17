@@ -611,22 +611,32 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
 
     log.info("Generating conversation script [%s]...", lang)
 
-    # claude_think fails inside Claude Code (nested session). Use OpenAI directly.
     try:
-        import openai as _openai
+        import anthropic as _anthropic
         from sub_agent import _get_api_key
-        client = _openai.OpenAI(api_key=_get_api_key("openai"))
-        response = client.chat.completions.create(
-            model="o3",
+        client = _anthropic.Anthropic(api_key=_get_api_key("anthropic"))
+        response = client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=16000,
             messages=[{"role": "user", "content": prompt}],
-            max_completion_tokens=32000,
             timeout=600,
         )
-        result = response.choices[0].message.content
+        result = response.content[0].text
     except Exception as e:
-        log.warning("OpenAI script generation failed (%s), falling back to claude_think", e)
-        from sub_agent import claude_think
-        result = claude_think(prompt, timeout=300, tier="standard")
+        log.warning("Anthropic script generation failed (%s), falling back to OpenAI", e)
+        try:
+            import openai as _openai
+            client = _openai.OpenAI(api_key=_get_api_key("openai"))
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=16000,
+                timeout=600,
+            )
+            result = response.choices[0].message.content
+        except Exception as e2:
+            log.error("All script generation backends failed: %s", e2)
+            result = None
 
     if not result:
         log.error("Conversation script generation failed")
@@ -656,17 +666,17 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
             "\n".join(result.splitlines()[-10:])
         )
         try:
-            ext_response = client.chat.completions.create(
-                model="o3",
+            ext_response = client.messages.create(
+                model="claude-opus-4-6",
+                max_tokens=16000,
                 messages=[
                     {"role": "user", "content": prompt},
                     {"role": "assistant", "content": result},
                     {"role": "user", "content": extend_prompt},
                 ],
-                max_completion_tokens=32000,
                 timeout=600,
             )
-            extension = ext_response.choices[0].message.content.strip()
+            extension = ext_response.content[0].text.strip()
             if extension:
                 result = result + "\n" + extension
                 new_count = len(_re.findall(r'[\u4e00-\u9fff]', result)) if lang == "zh" else len(result.split())
