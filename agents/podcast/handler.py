@@ -628,11 +628,53 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
         from sub_agent import claude_think
         result = claude_think(prompt, timeout=300, tier="standard")
 
-    if result:
-        return result.strip()
+    if not result:
+        log.error("Conversation script generation failed")
+        return None
 
-    log.error("Conversation script generation failed")
-    return None
+    result = result.strip()
+
+    # Check length and extend if too short
+    min_chars = 9000 if lang == "zh" else 5500
+    import re as _re
+    char_count = len(_re.findall(r'[\u4e00-\u9fff]', result)) if lang == "zh" else len(result.split())
+    if char_count < min_chars * 0.8:
+        log.warning("Script too short (%d vs %d target), requesting continuation...", char_count, min_chars)
+        extend_prompt = (
+            f"你写的脚本只有{char_count}字，远低于要求的{min_chars}字。"
+            f"请从下面脚本的最后一轮对话继续往下写，补充更多内容。"
+            f"要求：继续深入讨论文章中还没展开的观点，多举例子，多追问。"
+            f"格式和之前一样，每行 [HOST]: 或 [MIRA]: 开头。"
+            f"只返回新增的对话部分。\n\n"
+            f"已有脚本的最后10行：\n" +
+            "\n".join(result.splitlines()[-10:])
+        ) if lang == "zh" else (
+            f"The script is only {char_count} words, well below the {min_chars} target. "
+            f"Continue from the last line below, adding more discussion depth, examples, and follow-ups. "
+            f"Same format: [HOST]: / [MIRA]: lines only.\n\n"
+            f"Last 10 lines:\n" +
+            "\n".join(result.splitlines()[-10:])
+        )
+        try:
+            ext_response = client.chat.completions.create(
+                model="o3",
+                messages=[
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": result},
+                    {"role": "user", "content": extend_prompt},
+                ],
+                max_completion_tokens=32000,
+                timeout=600,
+            )
+            extension = ext_response.choices[0].message.content.strip()
+            if extension:
+                result = result + "\n" + extension
+                new_count = len(_re.findall(r'[\u4e00-\u9fff]', result)) if lang == "zh" else len(result.split())
+                log.info("Extended script: %d → %d chars", char_count, new_count)
+        except Exception as e:
+            log.warning("Script extension failed: %s", e)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
