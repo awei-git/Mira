@@ -1268,6 +1268,120 @@ def do_journal():
     save_state(state)
 
 
+# ---------------------------------------------------------------------------
+# Daily status report — sent to WA via bridge at 22:00
+# ---------------------------------------------------------------------------
+
+DAILY_REPORT_TIME = time(22, 0)
+
+
+def should_daily_report() -> bool:
+    """Check if it's time for the daily status report (once per day, at 22:00)."""
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), DAILY_REPORT_TIME)
+    delta = (now - scheduled).total_seconds() / 60
+    if delta < 0 or delta > 60:
+        return False
+    state = load_state()
+    return not state.get(f"daily_report_{now.strftime('%Y-%m-%d')}")
+
+
+def do_daily_report():
+    """Generate and send a daily status report to WA via the Mira bridge.
+
+    Covers: tasks completed, thoughts/insights, errors, items needing attention.
+    Independent from journal — this is an operational report for the user.
+    """
+    log.info("Starting daily status report")
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # --- Gather data ---
+
+    # 1. Tasks completed today
+    tasks = _gather_today_tasks()
+
+    # 2. Skills learned today
+    skills = _gather_today_skills()
+
+    # 3. Health summary (pipeline errors)
+    health_text = ""
+    try:
+        health_text = health_monitor.generate_health_summary()
+    except Exception as e:
+        log.warning("Health summary for report failed: %s", e)
+
+    # 4. Today's journal (if exists) — extract key thoughts
+    journal_excerpt = ""
+    journal_path = JOURNAL_DIR / f"{today}.md"
+    if journal_path.exists():
+        journal_excerpt = journal_path.read_text(encoding="utf-8")[:2000]
+
+    # 5. Substack stats
+    stats_text = ""
+    try:
+        sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
+        from substack import fetch_publication_stats
+        stats = fetch_publication_stats()
+        if stats and stats.get("summary"):
+            stats_text = stats["summary"]
+    except Exception as e:
+        log.debug("Stats for report: %s", e)
+
+    # 6. Pending items needing user attention
+    from config import MIRA_ROOT
+    pending_items = []
+    pending_file = MIRA_ROOT / ".pending_publish.json"
+    if pending_file.exists():
+        pending_items.append("有一篇文章等你审批发布")
+
+    # --- Build report ---
+    sections = []
+    sections.append(f"Mira 日报 {today}")
+    sections.append("=" * 30)
+
+    if tasks:
+        sections.append(f"\n今天做了什么:\n{tasks}")
+    else:
+        sections.append("\n今天做了什么:\n没有完成的任务。")
+
+    if skills:
+        sections.append(f"\n学到的新技能:\n{skills}")
+
+    if journal_excerpt:
+        # Extract first 500 chars of journal as thought summary
+        lines = journal_excerpt.split("\n")
+        thought_lines = [l for l in lines if l.strip() and not l.startswith("#")][:8]
+        if thought_lines:
+            sections.append(f"\n今天在想什么:\n" + "\n".join(thought_lines)[:600])
+
+    if stats_text:
+        sections.append(f"\nSubstack 数据:\n{stats_text}")
+
+    # Errors section
+    if health_text:
+        sections.append(f"\n{health_text}")
+
+    if pending_items:
+        sections.append(f"\n需要你介入:\n" + "\n".join(f"- {item}" for item in pending_items))
+    else:
+        sections.append("\n需要你介入:\n无。")
+
+    report = "\n".join(sections)
+
+    # --- Send via bridge ---
+    try:
+        bridge = Mira()
+        bridge.post(report)
+        log.info("Daily report sent to bridge")
+    except Exception as e:
+        log.error("Failed to send daily report: %s", e)
+
+    # Mark done
+    state = load_state()
+    state[f"daily_report_{today}"] = datetime.now().isoformat()
+    save_state(state)
+
+
 def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
     """Check if Mira has accumulated enough insight to write something on her own.
 
@@ -2412,6 +2526,11 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "journal",
         ])
 
+    if should_daily_report():
+        _dispatch_background("daily-report", [
+            sys.executable, str(Path(__file__).resolve()), "daily-report",
+        ])
+
     # Analyst — dual schedule (pre-market + post-market)
     analyst_slot = should_analyst()
     if analyst_slot:
@@ -2948,6 +3067,8 @@ def main():
         do_spark_check()
     elif command == "idle-think":
         do_idle_think()
+    elif command == "daily-report":
+        do_daily_report()
     elif command == "voiceover":
         slug  = flags.get("slug", "")
         title = flags.get("title", slug.replace("-", " ").title())
