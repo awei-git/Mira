@@ -16,7 +16,7 @@ from pathlib import Path
 from config import MIRA_DIR, TASK_TIMEOUT, TASK_TIMEOUT_LONG
 
 # Tags that get the long timeout (writing pipeline, deep research)
-_LONG_TIMEOUT_TAGS = {"writing", "write", "novel", "essay", "blog", "research", "深度研究"}
+_LONG_TIMEOUT_TAGS = {"writing", "write", "novel", "essay", "blog", "research", "深度研究", "coding"}
 
 log = logging.getLogger("mira")
 
@@ -58,8 +58,25 @@ class TaskRecord:
 
 
 def classify_task(content: str) -> list[str]:
-    """Placeholder returning empty tags. Smart tags are assigned by task_worker."""
-    return []
+    """Pre-classify task by keywords so timeout is set correctly at dispatch.
+
+    Full smart classification still happens in task_worker post-completion,
+    but this ensures long tasks get adequate timeout before they start.
+    """
+    tags = []
+    lower = content.lower()
+
+    _WRITING_KW = ["写", "文章", "essay", "blog", "write", "novel", "research",
+                   "深度研究", "rewrite", "改写", "重写", "稿"]
+    _CODE_KW = ["修改", "implement", "fix", "code", "refactor", "改进",
+                "framework", "pipeline", "publish", "发布", "podcast", "跑"]
+
+    if any(kw in lower for kw in _WRITING_KW):
+        tags.append("writing")
+    if any(kw in lower for kw in _CODE_KW):
+        tags.append("coding")
+
+    return tags
 
 
 class TaskManager:

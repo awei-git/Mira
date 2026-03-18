@@ -678,14 +678,13 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None,
              post_count,
              "ENABLED" if post_count >= MIN_POSTS_TO_ENABLE_COMMENTING else "DISABLED")
 
-    # Notes cycle runs regardless of post count (Notes help discovery)
+    # Notes cycle: drain queued notes (queued when articles are published)
     try:
         from notes import run_notes_cycle
         notes_summary = run_notes_cycle(briefing_text, soul_context)
-        if notes_summary.get("backfilled") or notes_summary.get("standalone_posted"):
-            log.info("Notes cycle: backfilled=%d, standalone=%s",
-                     notes_summary.get("backfilled", 0),
-                     notes_summary.get("standalone_posted", False))
+        if notes_summary.get("queue_posted"):
+            log.info("Notes cycle: posted 1 note, %d remaining",
+                     notes_summary.get("queue_remaining", 0))
     except Exception as e:
         log.error("Notes cycle failed: %s", e)
 

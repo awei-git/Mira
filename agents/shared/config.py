@@ -173,7 +173,7 @@ CLAUDE_TIMEOUT_PLAN = 300    # seconds for medium calls (analyze, review, plan)
 CLAUDE_TIMEOUT_ACT = 600     # seconds for complex calls (write, code, research)
 
 _limits = _cfg.get("limits", {})
-TASK_TIMEOUT = _limits.get("task_timeout", 600)
+TASK_TIMEOUT = _limits.get("task_timeout", 900)  # Must exceed CLAUDE_TIMEOUT_ACT (600s) + startup overhead
 TASK_TIMEOUT_LONG = _limits.get("task_timeout_long", 3600)  # writing pipeline, research
 CLEANUP_DAYS = _limits.get("cleanup_days", 3)
 

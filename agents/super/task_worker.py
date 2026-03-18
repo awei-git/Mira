@@ -498,6 +498,26 @@ def _execute_pending_publish(pending_pub_file: Path, workspace: Path,
         if thread_id:
             _update_thread_memory(thread_id, "approve publish", pub_result)
 
+        # Queue 5 Notes for the new article (posted gradually over next cycles)
+        try:
+            notes_dir = str(_AGENTS_DIR / "socialmedia")
+            if notes_dir not in sys.path:
+                sys.path.insert(0, notes_dir)
+            from notes import queue_notes_for_article
+            pub_json = proj_path / "published.json"
+            pub_post_id = None
+            if pub_json.exists():
+                pub_info = json.loads(pub_json.read_text(encoding="utf-8"))
+                pub_post_id = pub_info.get("draft_id")
+            queue_notes_for_article(
+                title=pub_title,
+                article_text=article_text[:3000],
+                post_url=pub_info.get("url", "") if pub_json.exists() else "",
+                post_id=pub_post_id,
+            )
+        except Exception as e:
+            log.error("Notes queueing failed for '%s': %s", pub_title, e)
+
     except Exception as e:
         log.error("Publish on approval failed for '%s': %s", pub_title, e)
         _write_result(workspace, task_id, "error", f"发布失败: {e}")
