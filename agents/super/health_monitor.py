@@ -191,8 +191,10 @@ def _maybe_alert(name: str, health: dict | None = None):
     consecutive = proc.get("consecutive_failures", 0)
 
     # Determine threshold based on criticality
+    # Check both full name and prefix (e.g. "writing-pipeline" and "explore-quanta")
     base_name = name.split("-")[0] if "-" in name else name
-    threshold = CRITICAL_FAILURE_THRESHOLD if base_name in CRITICAL_PROCESSES else CONSECUTIVE_FAILURE_THRESHOLD
+    is_critical = name in CRITICAL_PROCESSES or base_name in CRITICAL_PROCESSES
+    threshold = CRITICAL_FAILURE_THRESHOLD if is_critical else CONSECUTIVE_FAILURE_THRESHOLD
 
     if consecutive < threshold:
         return
@@ -210,9 +212,9 @@ def _maybe_alert(name: str, health: dict | None = None):
         except ValueError:
             pass
 
-    # Daily cap
+    # Daily cap — critical processes bypass the cap
     daily = health.get("daily_stats", {}).get(today, {})
-    if daily.get("alerts_sent", 0) >= MAX_ALERTS_PER_DAY:
+    if not is_critical and daily.get("alerts_sent", 0) >= MAX_ALERTS_PER_DAY:
         return
 
     # Send alert via Mira bridge
