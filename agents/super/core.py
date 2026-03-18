@@ -3075,20 +3075,31 @@ def _prune_episodes_from_reflect(pruning_text: str):
 # CLI
 # ---------------------------------------------------------------------------
 
+_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5MB per log file
+
+
 def _prune_old_logs(logs_dir: Path, keep_days: int = 14):
-    """Remove log files older than keep_days to prevent unbounded disk growth."""
+    """Remove old log files and truncate oversized ones."""
     try:
         cutoff = datetime.now() - timedelta(days=keep_days)
         for log_file in logs_dir.glob("*.log"):
             try:
-                # Match YYYY-MM-DD.log or bg-*.log by mtime
                 name = log_file.stem
+                # Remove old files
                 if name[:4].isdigit():
                     file_date = datetime.strptime(name[:10], "%Y-%m-%d")
                     if file_date < cutoff:
                         log_file.unlink()
+                        continue
                 elif log_file.stat().st_mtime < cutoff.timestamp():
                     log_file.unlink()
+                    continue
+
+                # Truncate oversized bg-*.log files (keep tail)
+                if log_file.stat().st_size > _LOG_MAX_BYTES:
+                    content = log_file.read_bytes()
+                    # Keep last 2MB
+                    log_file.write_bytes(content[-2 * 1024 * 1024:])
             except (ValueError, OSError):
                 continue
     except OSError:
