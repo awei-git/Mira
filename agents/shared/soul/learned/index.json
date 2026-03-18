@@ -259,5 +259,23 @@
     "description": "Diagnose why an autonomous pipeline ignores instructions by tracing all execution paths and config reads.",
     "file": "audit-autonomous-pipeline-compliance.md",
     "created": "2026-03-16T15:41:13.850972"
+  },
+  {
+    "name": "check-existing-artifacts-before-creating",
+    "description": "Before starting any writing or creation task, verify the artifact doesn't already exist",
+    "file": "check-existing-artifacts-before-creating.md",
+    "created": "2026-03-16T22:02:04.948837"
+  },
+  {
+    "name": "permission-revocation-must-propagate-to-pipelines",
+    "description": "When a user revokes permission for an external action, immediately audit and disable ALL automated pipelines that could trigger it — not just the current session's behavior.",
+    "file": "permission-revocation-must-propagate-to-pipelines.md",
+    "created": "2026-03-16T22:02:31.209202"
+  },
+  {
+    "name": "agent-error-must-be-diagnostic",
+    "description": "Task failures in agent pipelines must emit enough context to be actionable — 'unable to generate reply' is a symptom, not a cause",
+    "file": "agent-error-must-be-diagnostic.md",
+    "created": "2026-03-17T13:16:18.516895"
   }
 ]

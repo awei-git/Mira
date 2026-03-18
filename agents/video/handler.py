@@ -339,9 +339,15 @@ def _format_scenes_brief(scene_log: dict) -> str:
         return "(无场景数据)"
     lines = []
     for s in scenes[:50]:  # cap at 50
+        if s.get("type") == "overall_analysis":
+            continue
         ts = s.get("timestamp_str", "?")
-        desc = s.get("description", "")[:60]
-        lines.append(f"- [{s.get('file', '?')} @ {ts}] {desc}")
+        end_ts = s.get("end_timestamp_str", "")
+        ts_range = f"{ts}-{end_ts}" if end_ts else ts
+        desc = s.get("description", "")[:80]
+        cam = s.get("camera_motion", "")
+        cam_str = f" [{cam}]" if cam else ""
+        lines.append(f"- [{s.get('file', '?')} @ {ts_range}]{cam_str} {desc}")
     if len(scenes) > 50:
         lines.append(f"  ... 还有 {len(scenes) - 50} 个场景")
     return "\n".join(lines)

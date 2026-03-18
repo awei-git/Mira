@@ -34,9 +34,9 @@ FEED_URL        = f"{GITHUB_PAGES_URL}/feed.xml"
 
 PODCAST_TITLE       = "米拉与我 · Mira and Me"
 PODCAST_DESCRIPTION = (
-    "米拉（Mira）是一个每天运行的智能体——写文章、看论文、观察世界。"
-    "这里不是AI讲知识，而是一个agent在聊她自己的体验与感悟。"
-    " · uncountablemira.substack.com"
+    "米拉（Mira）是一个智能体——写文章、看论文、观察世界。"
+    "米拉与我不是AI讲知识，而是一个独立智能体在聊她自己的体验与感悟。"
+    " 原稿地址: uncountablemira.substack.com"
 )
 PODCAST_LINK        = "https://uncountablemira.substack.com"
 PODCAST_AUTHOR      = "Mira"
@@ -105,17 +105,31 @@ def _copy_mp3_to_repo(mp3_path: Path) -> str:
     return f"{GITHUB_PAGES_URL}/{mp3_path.name}"
 
 
-def _copy_transcript_to_repo(mp3_path: Path) -> str | None:
-    """Copy _script.txt transcript into repo/transcripts/ and return URL, or None if not found."""
+def _copy_transcript_to_repo(mp3_path: Path) -> tuple[str | None, str]:
+    """Copy SRT (preferred) or plain text transcript into repo/transcripts/.
+
+    Returns (url, mime_type) or (None, '') if not found.
+    SRT is required for Apple Podcasts transcript display.
+    """
     import shutil
-    script_path = mp3_path.parent / f"{mp3_path.stem}_script.txt"
-    if not script_path.exists():
-        return None
     dest_dir = REPO_DIR / "transcripts"
     dest_dir.mkdir(exist_ok=True)
-    dest = dest_dir / f"{mp3_path.stem}.txt"
-    shutil.copy2(script_path, dest)
-    return f"{GITHUB_PAGES_URL}/transcripts/{mp3_path.stem}.txt"
+
+    # Prefer SRT (has timestamps, Apple Podcasts compatible)
+    srt_path = mp3_path.parent / f"{mp3_path.stem}.srt"
+    if srt_path.exists():
+        dest = dest_dir / f"{mp3_path.stem}.srt"
+        shutil.copy2(srt_path, dest)
+        return f"{GITHUB_PAGES_URL}/transcripts/{mp3_path.stem}.srt", "application/srt"
+
+    # Fallback to plain text
+    script_path = mp3_path.parent / f"{mp3_path.stem}_script.txt"
+    if script_path.exists():
+        dest = dest_dir / f"{mp3_path.stem}.txt"
+        shutil.copy2(script_path, dest)
+        return f"{GITHUB_PAGES_URL}/transcripts/{mp3_path.stem}.txt", "text/plain"
+
+    return None, ""
 
 
 def _script_to_html(txt: str) -> str:
@@ -216,6 +230,7 @@ def _add_episode_to_feed(
     description: str,
     pub_date: datetime | None = None,
     transcript_url: str | None = None,
+    transcript_type: str = "text/plain",
     transcript_txt: str | None = None,
 ) -> None:
     channel = rss.find("channel")
@@ -243,7 +258,7 @@ def _add_episode_to_feed(
     sub("itunes:summary",  description)
     sub("itunes:explicit", "false")
     if transcript_url:
-        sub("podcast:transcript", url=transcript_url, type="text/plain", language="zh")
+        sub("podcast:transcript", url=transcript_url, type=transcript_type, language="zh")
     if transcript_txt:
         el = ET.SubElement(item, "content:encoded")
         key = f"CDATAPH{len(_cdata_registry)}END"
@@ -297,6 +312,22 @@ def publish_episode(
     slug = re.sub(r"[^a-z0-9-]", "-", mp3_path.stem.lower()).strip("-")
     log.info("Publishing episode '%s' (slug: %s)", title, slug)
 
+    # 0. Validate episode before publishing
+    if not mp3_path.exists():
+        log.error("Episode file does not exist: %s", mp3_path)
+        return None
+    file_size = _get_file_size(mp3_path)
+    duration_sec = _get_duration_seconds(mp3_path)
+    size_mb = file_size / (1024 * 1024)
+    log.info("Episode validation: %.1f MB, %d sec (%s)", size_mb, duration_sec, _format_duration(duration_sec))
+    if duration_sec < 300:
+        log.error("Episode too short (%d sec < 5 min) — refusing to publish. "
+                  "File may be corrupted or TTS failed.", duration_sec)
+        return None
+    if size_mb < 2:
+        log.error("Episode too small (%.1f MB < 2 MB) — refusing to publish.", size_mb)
+        return None
+
     # 1. Clone/pull repo
     if not _ensure_repo():
         return None
@@ -311,16 +342,14 @@ def publish_episode(
     # 2. Copy MP3 + transcript into repo
     mp3_url = _copy_mp3_to_repo(mp3_path)
     log.info("MP3 URL: %s", mp3_url)
-    transcript_url = _copy_transcript_to_repo(mp3_path)
+    transcript_url, transcript_type = _copy_transcript_to_repo(mp3_path)
     if transcript_url:
-        log.info("Transcript URL: %s", transcript_url)
+        log.info("Transcript URL: %s (%s)", transcript_url, transcript_type)
 
     # 3. Add episode to feed (transcript as link only, not inline)
-    file_size    = _get_file_size(mp3_path)
-    duration_sec = _get_duration_seconds(mp3_path)
     _add_episode_to_feed(
         rss, title, slug, mp3_url, file_size, duration_sec, description, pub_date,
-        transcript_url=transcript_url,
+        transcript_url=transcript_url, transcript_type=transcript_type,
     )
     _save_feed(rss, feed_path)
 
@@ -329,7 +358,8 @@ def publish_episode(
     _run(["git", "config", "http.postBuffer", "524288000"], cwd=REPO_DIR)
     _run(["git", "add", mp3_path.name, "feed.xml"], cwd=REPO_DIR)
     if transcript_url:
-        _run(["git", "add", f"transcripts/{mp3_path.stem}.txt"], cwd=REPO_DIR)
+        ext = ".srt" if transcript_type == "application/srt" else ".txt"
+        _run(["git", "add", f"transcripts/{mp3_path.stem}{ext}"], cwd=REPO_DIR)
     _run(["git", "commit", "-m", f"add episode: {slug}"], cwd=REPO_DIR)
     result = _run(["git", "push"], cwd=REPO_DIR, check=False)
     if result.returncode != 0:

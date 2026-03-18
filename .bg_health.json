@@ -1,452 +1,433 @@
 {
   "processes": {
     "writing-pipeline": {
-      "last_exit": "2026-03-16T19:02:48.279928",
-      "consecutive_failures": 718,
-      "last_failure_reason": "IndentationError: expected an indented block after 'except' statement on line 948",
+      "last_exit": "2026-03-17T22:13:42.154486",
+      "consecutive_failures": 0,
+      "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T19:00:46.377795",
-          "ok": false,
-          "duration_s": 152,
-          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
+          "ts": "2026-03-17T22:11:40.306209",
+          "ok": true,
+          "duration_s": 168
         },
         {
-          "ts": "2026-03-16T19:00:46.426674",
-          "ok": false,
-          "duration_s": 152,
-          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
+          "ts": "2026-03-17T22:11:40.354659",
+          "ok": true,
+          "duration_s": 168
         },
         {
-          "ts": "2026-03-16T19:01:16.871928",
-          "ok": false,
-          "duration_s": 182,
-          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
+          "ts": "2026-03-17T22:12:10.773285",
+          "ok": true,
+          "duration_s": 198
         },
         {
-          "ts": "2026-03-16T19:01:16.919132",
-          "ok": false,
-          "duration_s": 182,
-          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
+          "ts": "2026-03-17T22:12:10.820810",
+          "ok": true,
+          "duration_s": 198
         },
         {
-          "ts": "2026-03-16T19:01:47.332943",
-          "ok": false,
-          "duration_s": 213,
-          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
+          "ts": "2026-03-17T22:12:41.205555",
+          "ok": true,
+          "duration_s": 228
         },
         {
-          "ts": "2026-03-16T19:01:47.379172",
-          "ok": false,
-          "duration_s": 213,
-          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
+          "ts": "2026-03-17T22:12:41.251809",
+          "ok": true,
+          "duration_s": 229
         },
         {
-          "ts": "2026-03-16T19:02:17.784192",
-          "ok": false,
-          "duration_s": 243,
-          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
+          "ts": "2026-03-17T22:13:11.646167",
+          "ok": true,
+          "duration_s": 259
         },
         {
-          "ts": "2026-03-16T19:02:17.827223",
-          "ok": false,
-          "duration_s": 243,
-          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
+          "ts": "2026-03-17T22:13:11.697208",
+          "ok": true,
+          "duration_s": 259
         },
         {
-          "ts": "2026-03-16T19:02:48.237286",
-          "ok": false,
-          "duration_s": 274,
-          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
+          "ts": "2026-03-17T22:13:42.102144",
+          "ok": true,
+          "duration_s": 289
         },
         {
-          "ts": "2026-03-16T19:02:48.279928",
-          "ok": false,
-          "duration_s": 274,
-          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
+          "ts": "2026-03-17T22:13:42.154486",
+          "ok": true,
+          "duration_s": 289
         }
       ],
-      "last_dispatch": "2026-03-16T18:58:14.236234",
-      "last_pid": 45532,
-      "last_success": "2026-03-16T16:00:29.719721"
+      "last_dispatch": "2026-03-17T22:08:52.245989",
+      "last_pid": 76474,
+      "last_success": "2026-03-17T22:13:42.154486"
     },
     "autowrite-check": {
-      "last_exit": "2026-03-16T19:02:48.281642",
-      "consecutive_failures": 3658,
-      "last_failure_reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 60s",
+      "last_exit": "2026-03-17T22:13:42.143572",
+      "consecutive_failures": 0,
+      "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T19:00:15.954113",
-          "ok": false,
-          "duration_s": 273,
-          "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 60s"
+          "ts": "2026-03-17T22:09:08.051862",
+          "ok": true,
+          "duration_s": 839
         },
         {
-          "ts": "2026-03-16T19:00:15.964805",
-          "ok": false,
-          "duration_s": 273,
-          "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 60s"
+          "ts": "2026-03-17T22:09:38.516147",
+          "ok": true,
+          "duration_s": 869
         },
         {
-          "ts": "2026-03-16T19:00:46.416870",
-          "ok": false,
-          "duration_s": 304,
-          "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 60s"
+          "ts": "2026-03-17T22:10:08.971553",
+          "ok": true,
+          "duration_s": 900
         },
         {
-          "ts": "2026-03-16T19:00:46.428129",
-          "ok": false,
-          "duration_s": 304,
-          "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 60s"
+          "ts": "2026-03-17T22:10:39.425788",
+          "ok": true,
+          "duration_s": 930
         },
         {
-          "ts": "2026-03-16T19:01:47.368422",
-          "ok": false,
-          "duration_s": 60,
-          "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 60s"
+          "ts": "2026-03-17T22:11:09.881045",
+          "ok": true,
+          "duration_s": 960
         },
         {
-          "ts": "2026-03-16T19:01:47.381304",
-          "ok": false,
-          "duration_s": 60,
-          "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 60s"
+          "ts": "2026-03-17T22:11:40.344321",
+          "ok": true,
+          "duration_s": 991
         },
         {
-          "ts": "2026-03-16T19:02:17.816798",
-          "ok": false,
-          "duration_s": 91,
-          "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 60s"
+          "ts": "2026-03-17T22:12:10.811286",
+          "ok": true,
+          "duration_s": 1021
         },
         {
-          "ts": "2026-03-16T19:02:17.828959",
-          "ok": false,
-          "duration_s": 91,
-          "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 60s"
+          "ts": "2026-03-17T22:12:41.240878",
+          "ok": true,
+          "duration_s": 1052
         },
         {
-          "ts": "2026-03-16T19:02:48.269618",
-          "ok": false,
-          "duration_s": 121,
-          "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 60s"
+          "ts": "2026-03-17T22:13:11.687154",
+          "ok": true,
+          "duration_s": 1082
         },
         {
-          "ts": "2026-03-16T19:02:48.281642",
-          "ok": false,
-          "duration_s": 121,
-          "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 60s"
+          "ts": "2026-03-17T22:13:42.143572",
+          "ok": true,
+          "duration_s": 1113
         }
       ],
-      "last_dispatch": "2026-03-16T19:00:46.431351",
-      "last_pid": 48206
+      "last_dispatch": "2026-03-17T21:55:08.908757",
+      "last_pid": 61946,
+      "last_success": "2026-03-17T22:13:42.143572"
     },
     "skill-study-video": {
-      "last_exit": "2026-03-16T19:02:48.283178",
+      "last_exit": "2026-03-17T22:13:42.158780",
       "consecutive_failures": 0,
-      "last_success": "2026-03-16T19:02:48.283178",
+      "last_success": "2026-03-17T22:13:42.158780",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T19:00:46.406500",
+          "ts": "2026-03-17T22:11:40.332741",
           "ok": true,
           "duration_s": 30
         },
         {
-          "ts": "2026-03-16T19:00:46.432807",
+          "ts": "2026-03-17T22:11:40.356306",
           "ok": true,
           "duration_s": 30
         },
         {
-          "ts": "2026-03-16T19:01:16.896627",
+          "ts": "2026-03-17T22:12:10.800685",
           "ok": true,
           "duration_s": 60
         },
         {
-          "ts": "2026-03-16T19:01:16.926817",
+          "ts": "2026-03-17T22:12:10.822502",
           "ok": true,
           "duration_s": 60
         },
         {
-          "ts": "2026-03-16T19:01:47.357268",
+          "ts": "2026-03-17T22:12:41.230066",
           "ok": true,
           "duration_s": 91
         },
         {
-          "ts": "2026-03-16T19:01:47.382767",
+          "ts": "2026-03-17T22:12:41.253874",
           "ok": true,
           "duration_s": 91
         },
         {
-          "ts": "2026-03-16T19:02:17.805425",
+          "ts": "2026-03-17T22:13:11.676416",
           "ok": true,
           "duration_s": 121
         },
         {
-          "ts": "2026-03-16T19:02:17.830301",
+          "ts": "2026-03-17T22:13:11.699113",
           "ok": true,
           "duration_s": 121
         },
         {
-          "ts": "2026-03-16T19:02:48.259195",
+          "ts": "2026-03-17T22:13:42.132027",
           "ok": true,
           "duration_s": 152
         },
         {
-          "ts": "2026-03-16T19:02:48.283178",
+          "ts": "2026-03-17T22:13:42.158780",
           "ok": true,
           "duration_s": 152
         }
       ],
-      "last_dispatch": "2026-03-16T19:00:15.969614",
-      "last_pid": 47676
+      "last_dispatch": "2026-03-17T22:11:09.903136",
+      "last_pid": 78889
     },
     "explore": {
-      "last_exit": "2026-03-16T19:02:48.222514",
+      "last_exit": "2026-03-17T22:13:42.085678",
       "consecutive_failures": 0,
-      "last_success": "2026-03-16T19:02:48.222514",
+      "last_success": "2026-03-17T22:13:42.085678",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.171656",
+          "ts": "2026-03-17T22:09:07.994438",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:58:44.600835",
+          "ts": "2026-03-17T22:09:38.451870",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:59:15.034351",
+          "ts": "2026-03-17T22:10:08.918047",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:59:45.457935",
+          "ts": "2026-03-17T22:10:39.376680",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:00:15.903985",
+          "ts": "2026-03-17T22:11:09.822040",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:00:46.362839",
+          "ts": "2026-03-17T22:11:40.291425",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:01:16.856013",
+          "ts": "2026-03-17T22:12:10.754217",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:01:47.316162",
+          "ts": "2026-03-17T22:12:41.191790",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:02:17.769213",
+          "ts": "2026-03-17T22:13:11.625060",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:02:48.222514",
+          "ts": "2026-03-17T22:13:42.085678",
           "ok": true,
           "duration_s": 0
         }
       ]
     },
     "analyst-1800": {
-      "last_exit": "2026-03-16T19:02:48.223942",
+      "last_exit": "2026-03-17T22:13:42.087084",
       "consecutive_failures": 0,
-      "last_success": "2026-03-16T19:02:48.223942",
+      "last_success": "2026-03-17T22:13:42.087084",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.173201",
+          "ts": "2026-03-17T22:09:07.995772",
           "ok": true,
-          "duration_s": 3472
+          "duration_s": 14928
         },
         {
-          "ts": "2026-03-16T18:58:44.602458",
+          "ts": "2026-03-17T22:09:38.453520",
           "ok": true,
-          "duration_s": 3502
+          "duration_s": 14958
         },
         {
-          "ts": "2026-03-16T18:59:15.035772",
+          "ts": "2026-03-17T22:10:08.919485",
           "ok": true,
-          "duration_s": 3532
+          "duration_s": 14988
         },
         {
-          "ts": "2026-03-16T18:59:45.459673",
+          "ts": "2026-03-17T22:10:39.378082",
           "ok": true,
-          "duration_s": 3563
+          "duration_s": 15019
         },
         {
-          "ts": "2026-03-16T19:00:15.905618",
+          "ts": "2026-03-17T22:11:09.823768",
           "ok": true,
-          "duration_s": 3593
+          "duration_s": 15049
         },
         {
-          "ts": "2026-03-16T19:00:46.364305",
+          "ts": "2026-03-17T22:11:40.292896",
           "ok": true,
-          "duration_s": 3624
+          "duration_s": 15080
         },
         {
-          "ts": "2026-03-16T19:01:16.857450",
+          "ts": "2026-03-17T22:12:10.755917",
           "ok": true,
-          "duration_s": 3654
+          "duration_s": 15110
         },
         {
-          "ts": "2026-03-16T19:01:47.317617",
+          "ts": "2026-03-17T22:12:41.193196",
           "ok": true,
-          "duration_s": 3685
+          "duration_s": 15141
         },
         {
-          "ts": "2026-03-16T19:02:17.770708",
+          "ts": "2026-03-17T22:13:11.626894",
           "ok": true,
-          "duration_s": 3715
+          "duration_s": 15171
         },
         {
-          "ts": "2026-03-16T19:02:48.223942",
+          "ts": "2026-03-17T22:13:42.087084",
           "ok": true,
-          "duration_s": 3746
+          "duration_s": 15202
         }
       ],
-      "last_dispatch": "2026-03-16T18:00:22.157545",
-      "last_pid": 83119
+      "last_dispatch": "2026-03-17T18:00:19.940762",
+      "last_pid": 14954
     },
     "explore-quanta_magazine_aeon_essays": {
-      "last_exit": "2026-03-16T19:02:48.225085",
-      "consecutive_failures": 3232,
-      "last_failure_reason": "2026-03-16 13:09:04,809 [ERROR] Comment on https://slow-boring.substack.com/p/upscale-liberals-are-developing-class failed (HTTP 404): <!DOCTYPE html>",
+      "last_exit": "2026-03-17T22:13:42.088196",
+      "consecutive_failures": 6573,
+      "last_failure_reason": "2026-03-17 18:25:40,127 [ERROR] claude_think timed out (30s)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.174607",
+          "ts": "2026-03-17T22:09:07.996876",
           "ok": false,
-          "duration_s": 21288,
-          "reason": "2026-03-16 13:09:04,809 [ERROR] Comment on https://slow-boring.substack.com/p/upscale-liberals-are-developing-class failed (HTTP 404): <!DOCTYPE html>"
+          "duration_s": 13738,
+          "reason": "2026-03-17 18:25:40,127 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:58:44.603651",
+          "ts": "2026-03-17T22:09:38.454840",
           "ok": false,
-          "duration_s": 21318,
-          "reason": "2026-03-16 13:09:04,809 [ERROR] Comment on https://slow-boring.substack.com/p/upscale-liberals-are-developing-class failed (HTTP 404): <!DOCTYPE html>"
+          "duration_s": 13769,
+          "reason": "2026-03-17 18:25:40,127 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:15.036997",
+          "ts": "2026-03-17T22:10:08.921177",
           "ok": false,
-          "duration_s": 21348,
-          "reason": "2026-03-16 13:09:04,809 [ERROR] Comment on https://slow-boring.substack.com/p/upscale-liberals-are-developing-class failed (HTTP 404): <!DOCTYPE html>"
+          "duration_s": 13799,
+          "reason": "2026-03-17 18:25:40,127 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:45.461053",
+          "ts": "2026-03-17T22:10:39.379188",
           "ok": false,
-          "duration_s": 21379,
-          "reason": "2026-03-16 13:09:04,809 [ERROR] Comment on https://slow-boring.substack.com/p/upscale-liberals-are-developing-class failed (HTTP 404): <!DOCTYPE html>"
+          "duration_s": 13830,
+          "reason": "2026-03-17 18:25:40,127 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:15.907121",
+          "ts": "2026-03-17T22:11:09.824972",
           "ok": false,
-          "duration_s": 21409,
-          "reason": "2026-03-16 13:09:04,809 [ERROR] Comment on https://slow-boring.substack.com/p/upscale-liberals-are-developing-class failed (HTTP 404): <!DOCTYPE html>"
+          "duration_s": 13860,
+          "reason": "2026-03-17 18:25:40,127 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:46.365423",
+          "ts": "2026-03-17T22:11:40.294012",
           "ok": false,
-          "duration_s": 21440,
-          "reason": "2026-03-16 13:09:04,809 [ERROR] Comment on https://slow-boring.substack.com/p/upscale-liberals-are-developing-class failed (HTTP 404): <!DOCTYPE html>"
+          "duration_s": 13891,
+          "reason": "2026-03-17 18:25:40,127 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:16.858630",
+          "ts": "2026-03-17T22:12:10.757160",
           "ok": false,
-          "duration_s": 21470,
-          "reason": "2026-03-16 13:09:04,809 [ERROR] Comment on https://slow-boring.substack.com/p/upscale-liberals-are-developing-class failed (HTTP 404): <!DOCTYPE html>"
+          "duration_s": 13921,
+          "reason": "2026-03-17 18:25:40,127 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:47.318797",
+          "ts": "2026-03-17T22:12:41.194409",
           "ok": false,
-          "duration_s": 21501,
-          "reason": "2026-03-16 13:09:04,809 [ERROR] Comment on https://slow-boring.substack.com/p/upscale-liberals-are-developing-class failed (HTTP 404): <!DOCTYPE html>"
+          "duration_s": 13952,
+          "reason": "2026-03-17 18:25:40,127 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:17.771949",
+          "ts": "2026-03-17T22:13:11.629911",
           "ok": false,
-          "duration_s": 21531,
-          "reason": "2026-03-16 13:09:04,809 [ERROR] Comment on https://slow-boring.substack.com/p/upscale-liberals-are-developing-class failed (HTTP 404): <!DOCTYPE html>"
+          "duration_s": 13982,
+          "reason": "2026-03-17 18:25:40,127 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:48.225085",
+          "ts": "2026-03-17T22:13:42.088196",
           "ok": false,
-          "duration_s": 21562,
-          "reason": "2026-03-16 13:09:04,809 [ERROR] Comment on https://slow-boring.substack.com/p/upscale-liberals-are-developing-class failed (HTTP 404): <!DOCTYPE html>"
+          "duration_s": 14013,
+          "reason": "2026-03-17 18:25:40,127 [ERROR] claude_think timed out (30s)"
         }
       ],
-      "last_dispatch": "2026-03-16T13:03:26.089653",
-      "last_pid": 64687
+      "last_dispatch": "2026-03-17T18:20:09.060260",
+      "last_pid": 35501
     },
     "autowrite-2026-03-08": {
-      "last_exit": "2026-03-16T19:02:48.230307",
-      "consecutive_failures": 3253,
+      "last_exit": "2026-03-17T22:13:42.095342",
+      "consecutive_failures": 6612,
       "last_failure_reason": "2026-03-08 21:02:05,601 [INFO] Auto writing 'The Cost of Narration' finished in state: error",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.179464",
+          "ts": "2026-03-17T22:09:08.001990",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-08 21:02:05,601 [INFO] Auto writing 'The Cost of Narration' finished in state: error"
         },
         {
-          "ts": "2026-03-16T18:58:44.608421",
+          "ts": "2026-03-17T22:09:38.461706",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-08 21:02:05,601 [INFO] Auto writing 'The Cost of Narration' finished in state: error"
         },
         {
-          "ts": "2026-03-16T18:59:15.042743",
+          "ts": "2026-03-17T22:10:08.927351",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-08 21:02:05,601 [INFO] Auto writing 'The Cost of Narration' finished in state: error"
         },
         {
-          "ts": "2026-03-16T18:59:45.465657",
+          "ts": "2026-03-17T22:10:39.383636",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-08 21:02:05,601 [INFO] Auto writing 'The Cost of Narration' finished in state: error"
         },
         {
-          "ts": "2026-03-16T19:00:15.912558",
+          "ts": "2026-03-17T22:11:09.830286",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-08 21:02:05,601 [INFO] Auto writing 'The Cost of Narration' finished in state: error"
         },
         {
-          "ts": "2026-03-16T19:00:46.370437",
+          "ts": "2026-03-17T22:11:40.299540",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-08 21:02:05,601 [INFO] Auto writing 'The Cost of Narration' finished in state: error"
         },
         {
-          "ts": "2026-03-16T19:01:16.864307",
+          "ts": "2026-03-17T22:12:10.764967",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-08 21:02:05,601 [INFO] Auto writing 'The Cost of Narration' finished in state: error"
         },
         {
-          "ts": "2026-03-16T19:01:47.325424",
+          "ts": "2026-03-17T22:12:41.198998",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-08 21:02:05,601 [INFO] Auto writing 'The Cost of Narration' finished in state: error"
         },
         {
-          "ts": "2026-03-16T19:02:17.777245",
+          "ts": "2026-03-17T22:13:11.638726",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-08 21:02:05,601 [INFO] Auto writing 'The Cost of Narration' finished in state: error"
         },
         {
-          "ts": "2026-03-16T19:02:48.230307",
+          "ts": "2026-03-17T22:13:42.095342",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-08 21:02:05,601 [INFO] Auto writing 'The Cost of Narration' finished in state: error"
@@ -454,204 +435,204 @@
       ]
     },
     "explore-ieee_spectrum_simon_willison": {
-      "last_exit": "2026-03-16T19:02:48.231587",
-      "consecutive_failures": 3235,
-      "last_failure_reason": "2026-03-16 11:26:23,531 [ERROR] claude_think timed out (30s)",
+      "last_exit": "2026-03-17T22:13:42.096489",
+      "consecutive_failures": 6576,
+      "last_failure_reason": "2026-03-17 16:38:30,000 [ERROR] claude_think timed out (30s)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.180538",
+          "ts": "2026-03-17T22:09:08.002989",
           "ok": false,
-          "duration_s": 27431,
-          "reason": "2026-03-16 11:26:23,531 [ERROR] claude_think timed out (30s)"
+          "duration_s": 20077,
+          "reason": "2026-03-17 16:38:30,000 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:58:44.609543",
+          "ts": "2026-03-17T22:09:38.463885",
           "ok": false,
-          "duration_s": 27462,
-          "reason": "2026-03-16 11:26:23,531 [ERROR] claude_think timed out (30s)"
+          "duration_s": 20107,
+          "reason": "2026-03-17 16:38:30,000 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:15.043862",
+          "ts": "2026-03-17T22:10:08.928828",
           "ok": false,
-          "duration_s": 27492,
-          "reason": "2026-03-16 11:26:23,531 [ERROR] claude_think timed out (30s)"
+          "duration_s": 20138,
+          "reason": "2026-03-17 16:38:30,000 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:45.466773",
+          "ts": "2026-03-17T22:10:39.384686",
           "ok": false,
-          "duration_s": 27523,
-          "reason": "2026-03-16 11:26:23,531 [ERROR] claude_think timed out (30s)"
+          "duration_s": 20168,
+          "reason": "2026-03-17 16:38:30,000 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:15.913667",
+          "ts": "2026-03-17T22:11:09.832297",
           "ok": false,
-          "duration_s": 27553,
-          "reason": "2026-03-16 11:26:23,531 [ERROR] claude_think timed out (30s)"
+          "duration_s": 20199,
+          "reason": "2026-03-17 16:38:30,000 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:46.371763",
+          "ts": "2026-03-17T22:11:40.300786",
           "ok": false,
-          "duration_s": 27584,
-          "reason": "2026-03-16 11:26:23,531 [ERROR] claude_think timed out (30s)"
+          "duration_s": 20229,
+          "reason": "2026-03-17 16:38:30,000 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:16.865667",
+          "ts": "2026-03-17T22:12:10.766741",
           "ok": false,
-          "duration_s": 27614,
-          "reason": "2026-03-16 11:26:23,531 [ERROR] claude_think timed out (30s)"
+          "duration_s": 20260,
+          "reason": "2026-03-17 16:38:30,000 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:47.326865",
+          "ts": "2026-03-17T22:12:41.200026",
           "ok": false,
-          "duration_s": 27645,
-          "reason": "2026-03-16 11:26:23,531 [ERROR] claude_think timed out (30s)"
+          "duration_s": 20290,
+          "reason": "2026-03-17 16:38:30,000 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:17.778340",
+          "ts": "2026-03-17T22:13:11.640302",
           "ok": false,
-          "duration_s": 27675,
-          "reason": "2026-03-16 11:26:23,531 [ERROR] claude_think timed out (30s)"
+          "duration_s": 20321,
+          "reason": "2026-03-17 16:38:30,000 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:48.231587",
+          "ts": "2026-03-17T22:13:42.096489",
           "ok": false,
-          "duration_s": 27706,
-          "reason": "2026-03-16 11:26:23,531 [ERROR] claude_think timed out (30s)"
+          "duration_s": 20351,
+          "reason": "2026-03-17 16:38:30,000 [ERROR] claude_think timed out (30s)"
         }
       ],
-      "last_dispatch": "2026-03-16T11:21:02.208441",
-      "last_pid": 53504
+      "last_dispatch": "2026-03-17T16:34:30.625207",
+      "last_pid": 23979
     },
     "explore-substack_one_useful_thing_substack_import_ai": {
-      "last_exit": "2026-03-16T19:02:48.232887",
-      "consecutive_failures": 3231,
-      "last_failure_reason": "2026-03-16 12:18:00,289 [ERROR] claude_think timed out (30s)",
+      "last_exit": "2026-03-17T22:13:42.097664",
+      "consecutive_failures": 6570,
+      "last_failure_reason": "2026-03-17 17:29:36,380 [ERROR] claude_think timed out (30s)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.181605",
+          "ts": "2026-03-17T22:09:08.004601",
           "ok": false,
-          "duration_s": 24383,
-          "reason": "2026-03-16 12:18:00,289 [ERROR] claude_think timed out (30s)"
+          "duration_s": 17137,
+          "reason": "2026-03-17 17:29:36,380 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:58:44.610712",
+          "ts": "2026-03-17T22:09:38.465592",
           "ok": false,
-          "duration_s": 24413,
-          "reason": "2026-03-16 12:18:00,289 [ERROR] claude_think timed out (30s)"
+          "duration_s": 17167,
+          "reason": "2026-03-17 17:29:36,380 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:15.044948",
+          "ts": "2026-03-17T22:10:08.930078",
           "ok": false,
-          "duration_s": 24443,
-          "reason": "2026-03-16 12:18:00,289 [ERROR] claude_think timed out (30s)"
+          "duration_s": 17198,
+          "reason": "2026-03-17 17:29:36,380 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:45.468282",
+          "ts": "2026-03-17T22:10:39.385743",
           "ok": false,
-          "duration_s": 24474,
-          "reason": "2026-03-16 12:18:00,289 [ERROR] claude_think timed out (30s)"
+          "duration_s": 17228,
+          "reason": "2026-03-17 17:29:36,380 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:15.914932",
+          "ts": "2026-03-17T22:11:09.833394",
           "ok": false,
-          "duration_s": 24504,
-          "reason": "2026-03-16 12:18:00,289 [ERROR] claude_think timed out (30s)"
+          "duration_s": 17259,
+          "reason": "2026-03-17 17:29:36,380 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:46.373022",
+          "ts": "2026-03-17T22:11:40.301891",
           "ok": false,
-          "duration_s": 24535,
-          "reason": "2026-03-16 12:18:00,289 [ERROR] claude_think timed out (30s)"
+          "duration_s": 17289,
+          "reason": "2026-03-17 17:29:36,380 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:16.866940",
+          "ts": "2026-03-17T22:12:10.768115",
           "ok": false,
-          "duration_s": 24565,
-          "reason": "2026-03-16 12:18:00,289 [ERROR] claude_think timed out (30s)"
+          "duration_s": 17320,
+          "reason": "2026-03-17 17:29:36,380 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:47.327988",
+          "ts": "2026-03-17T22:12:41.201173",
           "ok": false,
-          "duration_s": 24596,
-          "reason": "2026-03-16 12:18:00,289 [ERROR] claude_think timed out (30s)"
+          "duration_s": 17350,
+          "reason": "2026-03-17 17:29:36,380 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:17.779649",
+          "ts": "2026-03-17T22:13:11.641474",
           "ok": false,
-          "duration_s": 24626,
-          "reason": "2026-03-16 12:18:00,289 [ERROR] claude_think timed out (30s)"
+          "duration_s": 17380,
+          "reason": "2026-03-17 17:29:36,380 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:48.232887",
+          "ts": "2026-03-17T22:13:42.097664",
           "ok": false,
-          "duration_s": 24657,
-          "reason": "2026-03-16 12:18:00,289 [ERROR] claude_think timed out (30s)"
+          "duration_s": 17411,
+          "reason": "2026-03-17 17:29:36,380 [ERROR] claude_think timed out (30s)"
         }
       ],
-      "last_dispatch": "2026-03-16T12:11:51.144489",
-      "last_pid": 9147
+      "last_dispatch": "2026-03-17T17:23:30.759448",
+      "last_pid": 75421
     },
     "reflect": {
-      "last_exit": "2026-03-16T19:02:48.234110",
-      "consecutive_failures": 3221,
+      "last_exit": "2026-03-17T22:13:42.098745",
+      "consecutive_failures": 6580,
       "last_failure_reason": "2026-03-15 22:29:12,031 [ERROR] claude_think timed out (120s)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.182665",
+          "ts": "2026-03-17T22:09:08.005789",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-15 22:29:12,031 [ERROR] claude_think timed out (120s)"
         },
         {
-          "ts": "2026-03-16T18:58:44.612054",
+          "ts": "2026-03-17T22:09:38.467073",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-15 22:29:12,031 [ERROR] claude_think timed out (120s)"
         },
         {
-          "ts": "2026-03-16T18:59:15.046067",
+          "ts": "2026-03-17T22:10:08.931219",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-15 22:29:12,031 [ERROR] claude_think timed out (120s)"
         },
         {
-          "ts": "2026-03-16T18:59:45.469720",
+          "ts": "2026-03-17T22:10:39.386911",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-15 22:29:12,031 [ERROR] claude_think timed out (120s)"
         },
         {
-          "ts": "2026-03-16T19:00:15.916184",
+          "ts": "2026-03-17T22:11:09.835105",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-15 22:29:12,031 [ERROR] claude_think timed out (120s)"
         },
         {
-          "ts": "2026-03-16T19:00:46.374097",
+          "ts": "2026-03-17T22:11:40.303007",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-15 22:29:12,031 [ERROR] claude_think timed out (120s)"
         },
         {
-          "ts": "2026-03-16T19:01:16.868272",
+          "ts": "2026-03-17T22:12:10.769576",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-15 22:29:12,031 [ERROR] claude_think timed out (120s)"
         },
         {
-          "ts": "2026-03-16T19:01:47.328994",
+          "ts": "2026-03-17T22:12:41.202337",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-15 22:29:12,031 [ERROR] claude_think timed out (120s)"
         },
         {
-          "ts": "2026-03-16T19:02:17.781018",
+          "ts": "2026-03-17T22:13:11.642645",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-15 22:29:12,031 [ERROR] claude_think timed out (120s)"
         },
         {
-          "ts": "2026-03-16T19:02:48.234110",
+          "ts": "2026-03-17T22:13:42.098745",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-15 22:29:12,031 [ERROR] claude_think timed out (120s)"
@@ -659,846 +640,846 @@
       ]
     },
     "substack-notes": {
-      "last_exit": "2026-03-16T19:02:48.235187",
+      "last_exit": "2026-03-17T22:13:42.099802",
       "consecutive_failures": 0,
-      "last_success": "2026-03-16T19:02:48.235187",
+      "last_success": "2026-03-17T22:13:42.099802",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.183790",
+          "ts": "2026-03-17T22:09:08.006954",
           "ok": true,
-          "duration_s": 7067
+          "duration_s": 4104
         },
         {
-          "ts": "2026-03-16T18:58:44.613443",
+          "ts": "2026-03-17T22:09:38.468393",
           "ok": true,
-          "duration_s": 7098
+          "duration_s": 4135
         },
         {
-          "ts": "2026-03-16T18:59:15.047158",
+          "ts": "2026-03-17T22:10:08.932328",
           "ok": true,
-          "duration_s": 7128
+          "duration_s": 4165
         },
         {
-          "ts": "2026-03-16T18:59:45.472882",
+          "ts": "2026-03-17T22:10:39.388008",
           "ok": true,
-          "duration_s": 7158
+          "duration_s": 4196
         },
         {
-          "ts": "2026-03-16T19:00:15.917496",
+          "ts": "2026-03-17T22:11:09.836796",
           "ok": true,
-          "duration_s": 7189
+          "duration_s": 4226
         },
         {
-          "ts": "2026-03-16T19:00:46.375237",
+          "ts": "2026-03-17T22:11:40.304091",
           "ok": true,
-          "duration_s": 7219
+          "duration_s": 4256
         },
         {
-          "ts": "2026-03-16T19:01:16.869492",
+          "ts": "2026-03-17T22:12:10.770856",
           "ok": true,
-          "duration_s": 7250
+          "duration_s": 4287
         },
         {
-          "ts": "2026-03-16T19:01:47.330456",
+          "ts": "2026-03-17T22:12:41.203433",
           "ok": true,
-          "duration_s": 7280
+          "duration_s": 4317
         },
         {
-          "ts": "2026-03-16T19:02:17.782086",
+          "ts": "2026-03-17T22:13:11.643751",
           "ok": true,
-          "duration_s": 7311
+          "duration_s": 4348
         },
         {
-          "ts": "2026-03-16T19:02:48.235187",
+          "ts": "2026-03-17T22:13:42.099802",
           "ok": true,
-          "duration_s": 7341
+          "duration_s": 4378
         }
       ],
-      "last_dispatch": "2026-03-16T17:00:26.589371",
-      "last_pid": 20290
+      "last_dispatch": "2026-03-17T21:00:43.333020",
+      "last_pid": 4927
     },
     "analyst-0700": {
-      "last_exit": "2026-03-16T19:02:48.236193",
+      "last_exit": "2026-03-17T22:13:42.100958",
       "consecutive_failures": 0,
-      "last_success": "2026-03-16T19:02:48.236193",
+      "last_success": "2026-03-17T22:13:42.100958",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.184822",
+          "ts": "2026-03-17T22:09:08.008456",
           "ok": true,
-          "duration_s": 43088
+          "duration_s": 54521
         },
         {
-          "ts": "2026-03-16T18:58:44.614564",
+          "ts": "2026-03-17T22:09:38.472822",
           "ok": true,
-          "duration_s": 43119
+          "duration_s": 54551
         },
         {
-          "ts": "2026-03-16T18:59:15.048223",
+          "ts": "2026-03-17T22:10:08.934398",
           "ok": true,
-          "duration_s": 43149
+          "duration_s": 54582
         },
         {
-          "ts": "2026-03-16T18:59:45.474778",
+          "ts": "2026-03-17T22:10:39.389088",
           "ok": true,
-          "duration_s": 43180
+          "duration_s": 54612
         },
         {
-          "ts": "2026-03-16T19:00:15.918723",
+          "ts": "2026-03-17T22:11:09.838393",
           "ok": true,
-          "duration_s": 43210
+          "duration_s": 54642
         },
         {
-          "ts": "2026-03-16T19:00:46.376656",
+          "ts": "2026-03-17T22:11:40.305107",
           "ok": true,
-          "duration_s": 43241
+          "duration_s": 54673
         },
         {
-          "ts": "2026-03-16T19:01:16.870695",
+          "ts": "2026-03-17T22:12:10.772149",
           "ok": true,
-          "duration_s": 43271
+          "duration_s": 54703
         },
         {
-          "ts": "2026-03-16T19:01:47.331833",
+          "ts": "2026-03-17T22:12:41.204480",
           "ok": true,
-          "duration_s": 43302
+          "duration_s": 54734
         },
         {
-          "ts": "2026-03-16T19:02:17.783074",
+          "ts": "2026-03-17T22:13:11.644970",
           "ok": true,
-          "duration_s": 43332
+          "duration_s": 54764
         },
         {
-          "ts": "2026-03-16T19:02:48.236193",
+          "ts": "2026-03-17T22:13:42.100958",
           "ok": true,
-          "duration_s": 43362
+          "duration_s": 54795
         }
       ],
-      "last_dispatch": "2026-03-16T07:00:05.288939",
-      "last_pid": 73125
+      "last_dispatch": "2026-03-17T07:00:26.902684",
+      "last_pid": 16817
     },
     "explore-noah_smith_stratechery": {
-      "last_exit": "2026-03-16T19:02:48.238415",
-      "consecutive_failures": 3232,
-      "last_failure_reason": "2026-03-16 15:41:58,877 [ERROR] claude_think timed out (30s)",
+      "last_exit": "2026-03-17T22:13:42.103769",
+      "consecutive_failures": 6571,
+      "last_failure_reason": "2026-03-17 20:55:42,957 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.186934",
+          "ts": "2026-03-17T22:09:08.010994",
           "ok": false,
-          "duration_s": 12159,
-          "reason": "2026-03-16 15:41:58,877 [ERROR] claude_think timed out (30s)"
+          "duration_s": 4713,
+          "reason": "2026-03-17 20:55:42,957 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:58:44.616827",
+          "ts": "2026-03-17T22:09:38.475989",
           "ok": false,
-          "duration_s": 12189,
-          "reason": "2026-03-16 15:41:58,877 [ERROR] claude_think timed out (30s)"
+          "duration_s": 4744,
+          "reason": "2026-03-17 20:55:42,957 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:59:15.051338",
+          "ts": "2026-03-17T22:10:08.936727",
           "ok": false,
-          "duration_s": 12220,
-          "reason": "2026-03-16 15:41:58,877 [ERROR] claude_think timed out (30s)"
+          "duration_s": 4774,
+          "reason": "2026-03-17 20:55:42,957 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:59:45.477082",
+          "ts": "2026-03-17T22:10:39.391678",
           "ok": false,
-          "duration_s": 12250,
-          "reason": "2026-03-16 15:41:58,877 [ERROR] claude_think timed out (30s)"
+          "duration_s": 4805,
+          "reason": "2026-03-17 20:55:42,957 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:00:15.921022",
+          "ts": "2026-03-17T22:11:09.842601",
           "ok": false,
-          "duration_s": 12281,
-          "reason": "2026-03-16 15:41:58,877 [ERROR] claude_think timed out (30s)"
+          "duration_s": 4835,
+          "reason": "2026-03-17 20:55:42,957 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:00:46.378997",
+          "ts": "2026-03-17T22:11:40.307241",
           "ok": false,
-          "duration_s": 12311,
-          "reason": "2026-03-16 15:41:58,877 [ERROR] claude_think timed out (30s)"
+          "duration_s": 4866,
+          "reason": "2026-03-17 20:55:42,957 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:01:16.872991",
+          "ts": "2026-03-17T22:12:10.774378",
           "ok": false,
-          "duration_s": 12342,
-          "reason": "2026-03-16 15:41:58,877 [ERROR] claude_think timed out (30s)"
+          "duration_s": 4896,
+          "reason": "2026-03-17 20:55:42,957 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:01:47.334214",
+          "ts": "2026-03-17T22:12:41.206772",
           "ok": false,
-          "duration_s": 12372,
-          "reason": "2026-03-16 15:41:58,877 [ERROR] claude_think timed out (30s)"
+          "duration_s": 4927,
+          "reason": "2026-03-17 20:55:42,957 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:02:17.785279",
+          "ts": "2026-03-17T22:13:11.647518",
           "ok": false,
-          "duration_s": 12402,
-          "reason": "2026-03-16 15:41:58,877 [ERROR] claude_think timed out (30s)"
+          "duration_s": 4957,
+          "reason": "2026-03-17 20:55:42,957 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:02:48.238415",
+          "ts": "2026-03-17T22:13:42.103769",
           "ok": false,
-          "duration_s": 12433,
-          "reason": "2026-03-16 15:41:58,877 [ERROR] claude_think timed out (30s)"
+          "duration_s": 4988,
+          "reason": "2026-03-17 20:55:42,957 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         }
       ],
-      "last_dispatch": "2026-03-16T15:35:34.840641",
-      "last_pid": 29979
+      "last_dispatch": "2026-03-17T20:50:34.047780",
+      "last_pid": 93277
     },
     "explore-github_trending_hackernews": {
-      "last_exit": "2026-03-16T19:02:48.239494",
-      "consecutive_failures": 3230,
-      "last_failure_reason": "2026-03-16 14:48:53,926 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)",
+      "last_exit": "2026-03-17T22:13:42.105866",
+      "consecutive_failures": 6570,
+      "last_failure_reason": "2026-03-17 20:05:15,027 [ERROR] claude_think timed out (30s)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.188882",
+          "ts": "2026-03-17T22:09:08.012367",
           "ok": false,
-          "duration_s": 15194,
-          "reason": "2026-03-16 14:48:53,926 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 7699,
+          "reason": "2026-03-17 20:05:15,027 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:58:44.617863",
+          "ts": "2026-03-17T22:09:38.477892",
           "ok": false,
-          "duration_s": 15224,
-          "reason": "2026-03-16 14:48:53,926 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 7730,
+          "reason": "2026-03-17 20:05:15,027 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:15.053214",
+          "ts": "2026-03-17T22:10:08.937924",
           "ok": false,
-          "duration_s": 15255,
-          "reason": "2026-03-16 14:48:53,926 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 7760,
+          "reason": "2026-03-17 20:05:15,027 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:45.478378",
+          "ts": "2026-03-17T22:10:39.392865",
           "ok": false,
-          "duration_s": 15285,
-          "reason": "2026-03-16 14:48:53,926 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 7791,
+          "reason": "2026-03-17 20:05:15,027 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:15.922147",
+          "ts": "2026-03-17T22:11:09.844186",
           "ok": false,
-          "duration_s": 15315,
-          "reason": "2026-03-16 14:48:53,926 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 7821,
+          "reason": "2026-03-17 20:05:15,027 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:46.381142",
+          "ts": "2026-03-17T22:11:40.308324",
           "ok": false,
-          "duration_s": 15346,
-          "reason": "2026-03-16 14:48:53,926 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 7852,
+          "reason": "2026-03-17 20:05:15,027 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:16.874135",
+          "ts": "2026-03-17T22:12:10.776000",
           "ok": false,
-          "duration_s": 15376,
-          "reason": "2026-03-16 14:48:53,926 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 7882,
+          "reason": "2026-03-17 20:05:15,027 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:47.335492",
+          "ts": "2026-03-17T22:12:41.207972",
           "ok": false,
-          "duration_s": 15407,
-          "reason": "2026-03-16 14:48:53,926 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 7913,
+          "reason": "2026-03-17 20:05:15,027 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:17.786315",
+          "ts": "2026-03-17T22:13:11.648988",
           "ok": false,
-          "duration_s": 15437,
-          "reason": "2026-03-16 14:48:53,926 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 7943,
+          "reason": "2026-03-17 20:05:15,027 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:48.239494",
+          "ts": "2026-03-17T22:13:42.105866",
           "ok": false,
-          "duration_s": 15468,
-          "reason": "2026-03-16 14:48:53,926 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 7974,
+          "reason": "2026-03-17 20:05:15,027 [ERROR] claude_think timed out (30s)"
         }
       ],
-      "last_dispatch": "2026-03-16T14:45:00.031577",
-      "last_pid": 75204
+      "last_dispatch": "2026-03-17T20:00:48.094934",
+      "last_pid": 40755
     },
     "explore-literaryhub_brain_pickings": {
-      "last_exit": "2026-03-16T19:01:16.920821",
-      "consecutive_failures": 3240,
-      "last_failure_reason": "2026-03-16 09:46:22,283 [ERROR] claude_think timed out (30s)",
+      "last_exit": "2026-03-17T22:13:42.107342",
+      "consecutive_failures": 6584,
+      "last_failure_reason": "2026-03-17 15:01:13,895 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)",
       "history": [
         {
-          "ts": "2026-03-16T18:57:13.292253",
+          "ts": "2026-03-17T22:09:08.013662",
           "ok": false,
-          "duration_s": 33401,
-          "reason": "2026-03-16 09:46:22,283 [ERROR] claude_think timed out (30s)"
+          "duration_s": 25898,
+          "reason": "2026-03-17 15:01:13,895 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:57:43.736011",
+          "ts": "2026-03-17T22:09:38.480020",
           "ok": false,
-          "duration_s": 33432,
-          "reason": "2026-03-16 09:46:22,283 [ERROR] claude_think timed out (30s)"
+          "duration_s": 25928,
+          "reason": "2026-03-17 15:01:13,895 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:58:14.190989",
+          "ts": "2026-03-17T22:10:08.939075",
           "ok": false,
-          "duration_s": 33462,
-          "reason": "2026-03-16 09:46:22,283 [ERROR] claude_think timed out (30s)"
+          "duration_s": 25959,
+          "reason": "2026-03-17 15:01:13,895 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:58:44.618890",
+          "ts": "2026-03-17T22:10:39.394277",
           "ok": false,
-          "duration_s": 33493,
-          "reason": "2026-03-16 09:46:22,283 [ERROR] claude_think timed out (30s)"
+          "duration_s": 25989,
+          "reason": "2026-03-17 15:01:13,895 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:59:15.054990",
+          "ts": "2026-03-17T22:11:09.846889",
           "ok": false,
-          "duration_s": 33523,
-          "reason": "2026-03-16 09:46:22,283 [ERROR] claude_think timed out (30s)"
+          "duration_s": 26020,
+          "reason": "2026-03-17 15:01:13,895 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:59:45.479869",
+          "ts": "2026-03-17T22:11:40.309327",
           "ok": false,
-          "duration_s": 33554,
-          "reason": "2026-03-16 09:46:22,283 [ERROR] claude_think timed out (30s)"
+          "duration_s": 26050,
+          "reason": "2026-03-17 15:01:13,895 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:00:15.923256",
+          "ts": "2026-03-17T22:12:10.777423",
           "ok": false,
-          "duration_s": 33584,
-          "reason": "2026-03-16 09:46:22,283 [ERROR] claude_think timed out (30s)"
+          "duration_s": 26080,
+          "reason": "2026-03-17 15:01:13,895 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:00:46.383152",
+          "ts": "2026-03-17T22:12:41.209114",
           "ok": false,
-          "duration_s": 33614,
-          "reason": "2026-03-16 09:46:22,283 [ERROR] claude_think timed out (30s)"
+          "duration_s": 26111,
+          "reason": "2026-03-17 15:01:13,895 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:01:16.875363",
+          "ts": "2026-03-17T22:13:11.650159",
           "ok": false,
-          "duration_s": 33645,
-          "reason": "2026-03-16 09:46:22,283 [ERROR] claude_think timed out (30s)"
+          "duration_s": 26141,
+          "reason": "2026-03-17 15:01:13,895 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:01:16.920821",
+          "ts": "2026-03-17T22:13:42.107342",
           "ok": false,
-          "duration_s": 33645,
-          "reason": "2026-03-16 09:46:22,283 [ERROR] claude_think timed out (30s)"
+          "duration_s": 26172,
+          "reason": "2026-03-17 15:01:13,895 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         }
       ],
-      "last_dispatch": "2026-03-16T19:01:16.924899",
-      "last_pid": 48809
+      "last_dispatch": "2026-03-17T14:57:29.838193",
+      "last_pid": 21574
     },
     "explore-substack_construction_physics_substack_experimental_history": {
-      "last_exit": "2026-03-16T19:02:48.240571",
-      "consecutive_failures": 3232,
-      "last_failure_reason": "2026-03-16 17:25:27,538 [ERROR] claude_think timed out (30s)",
+      "last_exit": "2026-03-17T22:13:42.108643",
+      "consecutive_failures": 6580,
+      "last_failure_reason": "2026-03-17 13:20:33,364 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.192381",
+          "ts": "2026-03-17T22:09:08.014786",
           "ok": false,
-          "duration_s": 5940,
-          "reason": "2026-03-16 17:25:27,538 [ERROR] claude_think timed out (30s)"
+          "duration_s": 31981,
+          "reason": "2026-03-17 13:20:33,364 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:58:44.619971",
+          "ts": "2026-03-17T22:09:38.482279",
           "ok": false,
-          "duration_s": 5970,
-          "reason": "2026-03-16 17:25:27,538 [ERROR] claude_think timed out (30s)"
+          "duration_s": 32012,
+          "reason": "2026-03-17 13:20:33,364 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:59:15.056540",
+          "ts": "2026-03-17T22:10:08.940117",
           "ok": false,
-          "duration_s": 6000,
-          "reason": "2026-03-16 17:25:27,538 [ERROR] claude_think timed out (30s)"
+          "duration_s": 32042,
+          "reason": "2026-03-17 13:20:33,364 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:59:45.481125",
+          "ts": "2026-03-17T22:10:39.395538",
           "ok": false,
-          "duration_s": 6031,
-          "reason": "2026-03-16 17:25:27,538 [ERROR] claude_think timed out (30s)"
+          "duration_s": 32073,
+          "reason": "2026-03-17 13:20:33,364 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:00:15.924428",
+          "ts": "2026-03-17T22:11:09.848275",
           "ok": false,
-          "duration_s": 6061,
-          "reason": "2026-03-16 17:25:27,538 [ERROR] claude_think timed out (30s)"
+          "duration_s": 32103,
+          "reason": "2026-03-17 13:20:33,364 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:00:46.384547",
+          "ts": "2026-03-17T22:11:40.310324",
           "ok": false,
-          "duration_s": 6092,
-          "reason": "2026-03-16 17:25:27,538 [ERROR] claude_think timed out (30s)"
+          "duration_s": 32134,
+          "reason": "2026-03-17 13:20:33,364 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:01:16.876701",
+          "ts": "2026-03-17T22:12:10.779109",
           "ok": false,
-          "duration_s": 6122,
-          "reason": "2026-03-16 17:25:27,538 [ERROR] claude_think timed out (30s)"
+          "duration_s": 32164,
+          "reason": "2026-03-17 13:20:33,364 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:01:47.336683",
+          "ts": "2026-03-17T22:12:41.210179",
           "ok": false,
-          "duration_s": 6153,
-          "reason": "2026-03-16 17:25:27,538 [ERROR] claude_think timed out (30s)"
+          "duration_s": 32195,
+          "reason": "2026-03-17 13:20:33,364 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:02:17.787416",
+          "ts": "2026-03-17T22:13:11.651807",
           "ok": false,
-          "duration_s": 6183,
-          "reason": "2026-03-16 17:25:27,538 [ERROR] claude_think timed out (30s)"
+          "duration_s": 32225,
+          "reason": "2026-03-17 13:20:33,364 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:02:48.240571",
+          "ts": "2026-03-17T22:13:42.108643",
           "ok": false,
-          "duration_s": 6214,
-          "reason": "2026-03-16 17:25:27,538 [ERROR] claude_think timed out (30s)"
+          "duration_s": 32255,
+          "reason": "2026-03-17 13:20:33,364 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         }
       ],
-      "last_dispatch": "2026-03-16T17:19:14.191312",
-      "last_pid": 40052
+      "last_dispatch": "2026-03-17T13:16:06.165530",
+      "last_pid": 14001
     },
     "substack-comments": {
-      "last_exit": "2026-03-16T19:02:48.244114",
+      "last_exit": "2026-03-17T22:13:42.111912",
       "consecutive_failures": 0,
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.195911",
+          "ts": "2026-03-17T22:09:08.020369",
           "ok": true,
-          "duration_s": 3076
+          "duration_s": 107
         },
         {
-          "ts": "2026-03-16T18:58:44.623355",
+          "ts": "2026-03-17T22:09:38.486798",
           "ok": true,
-          "duration_s": 3106
+          "duration_s": 137
         },
         {
-          "ts": "2026-03-16T18:59:15.060672",
+          "ts": "2026-03-17T22:10:08.944875",
           "ok": true,
-          "duration_s": 3136
+          "duration_s": 168
         },
         {
-          "ts": "2026-03-16T18:59:45.484511",
+          "ts": "2026-03-17T22:10:39.399018",
           "ok": true,
-          "duration_s": 3167
+          "duration_s": 198
         },
         {
-          "ts": "2026-03-16T19:00:15.927643",
+          "ts": "2026-03-17T22:11:09.852170",
           "ok": true,
-          "duration_s": 3197
+          "duration_s": 229
         },
         {
-          "ts": "2026-03-16T19:00:46.389800",
+          "ts": "2026-03-17T22:11:40.314295",
           "ok": true,
-          "duration_s": 3228
+          "duration_s": 259
         },
         {
-          "ts": "2026-03-16T19:01:16.880798",
+          "ts": "2026-03-17T22:12:10.782871",
           "ok": true,
-          "duration_s": 3258
+          "duration_s": 289
         },
         {
-          "ts": "2026-03-16T19:01:47.340285",
+          "ts": "2026-03-17T22:12:41.213643",
           "ok": true,
-          "duration_s": 3289
+          "duration_s": 320
         },
         {
-          "ts": "2026-03-16T19:02:17.790568",
+          "ts": "2026-03-17T22:13:11.656833",
           "ok": true,
-          "duration_s": 3319
+          "duration_s": 350
         },
         {
-          "ts": "2026-03-16T19:02:48.244114",
+          "ts": "2026-03-17T22:13:42.111912",
           "ok": true,
-          "duration_s": 3350
+          "duration_s": 381
         }
       ],
-      "last_dispatch": "2026-03-16T18:06:58.195075",
-      "last_pid": 90070,
-      "last_success": "2026-03-16T19:02:48.244114"
+      "last_dispatch": "2026-03-17T22:07:20.824860",
+      "last_pid": 74969,
+      "last_success": "2026-03-17T22:13:42.111912"
     },
     "podcast-en-the-half-life-of-a-benchmark": {
-      "last_exit": "2026-03-16T19:02:48.245299",
+      "last_exit": "2026-03-17T22:13:42.113544",
       "consecutive_failures": 0,
-      "last_success": "2026-03-16T19:02:48.245299",
+      "last_success": "2026-03-17T22:13:42.113544",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.197001",
+          "ts": "2026-03-17T22:09:08.021867",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:58:44.624346",
+          "ts": "2026-03-17T22:09:38.488042",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:59:15.061795",
+          "ts": "2026-03-17T22:10:08.946470",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:59:45.485872",
+          "ts": "2026-03-17T22:10:39.400169",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:00:15.928693",
+          "ts": "2026-03-17T22:11:09.853451",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:00:46.391418",
+          "ts": "2026-03-17T22:11:40.316128",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:01:16.881788",
+          "ts": "2026-03-17T22:12:10.783952",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:01:47.341931",
+          "ts": "2026-03-17T22:12:41.214794",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:02:17.791639",
+          "ts": "2026-03-17T22:13:11.658127",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:02:48.245299",
+          "ts": "2026-03-17T22:13:42.113544",
           "ok": true,
           "duration_s": 0
         }
       ]
     },
     "explore-substack_culture_study_substack_garbage_day": {
-      "last_exit": "2026-03-16T19:02:48.246383",
-      "consecutive_failures": 3235,
-      "last_failure_reason": "2026-03-16 16:33:51,786 [ERROR] claude_think timed out (30s)",
+      "last_exit": "2026-03-17T22:13:42.115162",
+      "consecutive_failures": 6584,
+      "last_failure_reason": "2026-03-17 12:30:47,988 [ERROR] claude_think timed out (30s)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.198137",
+          "ts": "2026-03-17T22:09:08.023287",
           "ok": false,
-          "duration_s": 9049,
-          "reason": "2026-03-16 16:33:51,786 [ERROR] claude_think timed out (30s)"
+          "duration_s": 35032,
+          "reason": "2026-03-17 12:30:47,988 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:58:44.625347",
+          "ts": "2026-03-17T22:09:38.489223",
           "ok": false,
-          "duration_s": 9079,
-          "reason": "2026-03-16 16:33:51,786 [ERROR] claude_think timed out (30s)"
+          "duration_s": 35062,
+          "reason": "2026-03-17 12:30:47,988 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:15.062932",
+          "ts": "2026-03-17T22:10:08.947756",
           "ok": false,
-          "duration_s": 9110,
-          "reason": "2026-03-16 16:33:51,786 [ERROR] claude_think timed out (30s)"
+          "duration_s": 35093,
+          "reason": "2026-03-17 12:30:47,988 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:45.487067",
+          "ts": "2026-03-17T22:10:39.401340",
           "ok": false,
-          "duration_s": 9140,
-          "reason": "2026-03-16 16:33:51,786 [ERROR] claude_think timed out (30s)"
+          "duration_s": 35123,
+          "reason": "2026-03-17 12:30:47,988 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:15.930005",
+          "ts": "2026-03-17T22:11:09.855158",
           "ok": false,
-          "duration_s": 9171,
-          "reason": "2026-03-16 16:33:51,786 [ERROR] claude_think timed out (30s)"
+          "duration_s": 35153,
+          "reason": "2026-03-17 12:30:47,988 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:46.392504",
+          "ts": "2026-03-17T22:11:40.317598",
           "ok": false,
-          "duration_s": 9201,
-          "reason": "2026-03-16 16:33:51,786 [ERROR] claude_think timed out (30s)"
+          "duration_s": 35184,
+          "reason": "2026-03-17 12:30:47,988 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:16.882934",
+          "ts": "2026-03-17T22:12:10.785338",
           "ok": false,
-          "duration_s": 9231,
-          "reason": "2026-03-16 16:33:51,786 [ERROR] claude_think timed out (30s)"
+          "duration_s": 35214,
+          "reason": "2026-03-17 12:30:47,988 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:47.343522",
+          "ts": "2026-03-17T22:12:41.215866",
           "ok": false,
-          "duration_s": 9262,
-          "reason": "2026-03-16 16:33:51,786 [ERROR] claude_think timed out (30s)"
+          "duration_s": 35245,
+          "reason": "2026-03-17 12:30:47,988 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:17.792928",
+          "ts": "2026-03-17T22:13:11.659707",
           "ok": false,
-          "duration_s": 9292,
-          "reason": "2026-03-16 16:33:51,786 [ERROR] claude_think timed out (30s)"
+          "duration_s": 35275,
+          "reason": "2026-03-17 12:30:47,988 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:48.246383",
+          "ts": "2026-03-17T22:13:42.115162",
           "ok": false,
-          "duration_s": 9323,
-          "reason": "2026-03-16 16:33:51,786 [ERROR] claude_think timed out (30s)"
+          "duration_s": 35306,
+          "reason": "2026-03-17 12:30:47,988 [ERROR] claude_think timed out (30s)"
         }
       ],
-      "last_dispatch": "2026-03-16T16:27:24.909796",
-      "last_pid": 84699
+      "last_dispatch": "2026-03-17T12:25:15.943008",
+      "last_pid": 59515
     },
     "journal": {
-      "last_exit": "2026-03-16T19:02:48.247600",
-      "consecutive_failures": 2587,
+      "last_exit": "2026-03-17T22:13:42.116713",
+      "consecutive_failures": 5942,
       "last_success": "2026-03-15T22:00:16.953286",
-      "last_failure_reason": "2026-03-15 22:01:37,474 [ERROR] claude_think timed out (30s)",
+      "last_failure_reason": "2026-03-17 22:01:46,185 [ERROR] claude_think timed out (30s)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.199912",
+          "ts": "2026-03-17T22:09:08.024821",
           "ok": false,
-          "duration_s": 75477,
-          "reason": "2026-03-15 22:01:37,474 [ERROR] claude_think timed out (30s)"
+          "duration_s": 518,
+          "reason": "2026-03-17 22:01:46,185 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:58:44.626450",
+          "ts": "2026-03-17T22:09:38.490310",
           "ok": false,
-          "duration_s": 75507,
-          "reason": "2026-03-15 22:01:37,474 [ERROR] claude_think timed out (30s)"
+          "duration_s": 549,
+          "reason": "2026-03-17 22:01:46,185 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:15.064079",
+          "ts": "2026-03-17T22:10:08.948923",
           "ok": false,
-          "duration_s": 75538,
-          "reason": "2026-03-15 22:01:37,474 [ERROR] claude_think timed out (30s)"
+          "duration_s": 579,
+          "reason": "2026-03-17 22:01:46,185 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:45.488396",
+          "ts": "2026-03-17T22:10:39.402675",
           "ok": false,
-          "duration_s": 75568,
-          "reason": "2026-03-15 22:01:37,474 [ERROR] claude_think timed out (30s)"
+          "duration_s": 610,
+          "reason": "2026-03-17 22:01:46,185 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:15.931027",
+          "ts": "2026-03-17T22:11:09.856635",
           "ok": false,
-          "duration_s": 75598,
-          "reason": "2026-03-15 22:01:37,474 [ERROR] claude_think timed out (30s)"
+          "duration_s": 640,
+          "reason": "2026-03-17 22:01:46,185 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:46.393578",
+          "ts": "2026-03-17T22:11:40.318733",
           "ok": false,
-          "duration_s": 75629,
-          "reason": "2026-03-15 22:01:37,474 [ERROR] claude_think timed out (30s)"
+          "duration_s": 671,
+          "reason": "2026-03-17 22:01:46,185 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:16.884303",
+          "ts": "2026-03-17T22:12:10.786799",
           "ok": false,
-          "duration_s": 75659,
-          "reason": "2026-03-15 22:01:37,474 [ERROR] claude_think timed out (30s)"
+          "duration_s": 701,
+          "reason": "2026-03-17 22:01:46,185 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:47.344943",
+          "ts": "2026-03-17T22:12:41.216963",
           "ok": false,
-          "duration_s": 75690,
-          "reason": "2026-03-15 22:01:37,474 [ERROR] claude_think timed out (30s)"
+          "duration_s": 732,
+          "reason": "2026-03-17 22:01:46,185 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:17.794069",
+          "ts": "2026-03-17T22:13:11.663719",
           "ok": false,
-          "duration_s": 75720,
-          "reason": "2026-03-15 22:01:37,474 [ERROR] claude_think timed out (30s)"
+          "duration_s": 762,
+          "reason": "2026-03-17 22:01:46,185 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:48.247600",
+          "ts": "2026-03-17T22:13:42.116713",
           "ok": false,
-          "duration_s": 75751,
-          "reason": "2026-03-15 22:01:37,474 [ERROR] claude_think timed out (30s)"
+          "duration_s": 792,
+          "reason": "2026-03-17 22:01:46,185 [ERROR] claude_think timed out (30s)"
         }
       ],
-      "last_dispatch": "2026-03-15T22:00:16.957169",
-      "last_pid": 98777
+      "last_dispatch": "2026-03-17T22:00:29.172678",
+      "last_pid": 67600
     },
     "explore-reddit_hacker_news": {
-      "last_exit": "2026-03-16T19:02:48.248865",
+      "last_exit": "2026-03-17T22:13:42.117930",
       "consecutive_failures": 0,
-      "last_success": "2026-03-16T19:02:48.248865",
+      "last_success": "2026-03-17T22:13:42.117930",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.201579",
+          "ts": "2026-03-17T22:09:08.026344",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:58:44.627483",
+          "ts": "2026-03-17T22:09:38.491497",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:59:15.065209",
+          "ts": "2026-03-17T22:10:08.950235",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:59:45.489637",
+          "ts": "2026-03-17T22:10:39.404001",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:00:15.932095",
+          "ts": "2026-03-17T22:11:09.857875",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:00:46.395140",
+          "ts": "2026-03-17T22:11:40.319825",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:01:16.885394",
+          "ts": "2026-03-17T22:12:10.788046",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:01:47.346182",
+          "ts": "2026-03-17T22:12:41.218199",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:02:17.795271",
+          "ts": "2026-03-17T22:13:11.664920",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:02:48.248865",
+          "ts": "2026-03-17T22:13:42.117930",
           "ok": true,
           "duration_s": 0
         }
       ]
     },
     "explore-devto_techcrunch": {
-      "last_exit": "2026-03-16T19:02:48.251117",
-      "consecutive_failures": 3236,
-      "last_failure_reason": "2026-03-16 18:14:36,442 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)",
+      "last_exit": "2026-03-17T22:13:42.122330",
+      "consecutive_failures": 6586,
+      "last_failure_reason": "2026-03-17 14:12:10,729 [ERROR] claude_think timed out (30s)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.204230",
+          "ts": "2026-03-17T22:09:08.030607",
           "ok": false,
-          "duration_s": 2862,
-          "reason": "2026-03-16 18:14:36,442 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 28915,
+          "reason": "2026-03-17 14:12:10,729 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:58:44.629493",
+          "ts": "2026-03-17T22:09:38.494698",
           "ok": false,
-          "duration_s": 2893,
-          "reason": "2026-03-16 18:14:36,442 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 28946,
+          "reason": "2026-03-17 14:12:10,729 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:15.067396",
+          "ts": "2026-03-17T22:10:08.953721",
           "ok": false,
-          "duration_s": 2923,
-          "reason": "2026-03-16 18:14:36,442 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 28976,
+          "reason": "2026-03-17 14:12:10,729 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:45.491948",
+          "ts": "2026-03-17T22:10:39.407467",
           "ok": false,
-          "duration_s": 2954,
-          "reason": "2026-03-16 18:14:36,442 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 29007,
+          "reason": "2026-03-17 14:12:10,729 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:15.934183",
+          "ts": "2026-03-17T22:11:09.861238",
           "ok": false,
-          "duration_s": 2984,
-          "reason": "2026-03-16 18:14:36,442 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 29037,
+          "reason": "2026-03-17 14:12:10,729 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:46.397590",
+          "ts": "2026-03-17T22:11:40.322999",
           "ok": false,
-          "duration_s": 3015,
-          "reason": "2026-03-16 18:14:36,442 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 29068,
+          "reason": "2026-03-17 14:12:10,729 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:16.888073",
+          "ts": "2026-03-17T22:12:10.791864",
           "ok": false,
-          "duration_s": 3045,
-          "reason": "2026-03-16 18:14:36,442 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 29098,
+          "reason": "2026-03-17 14:12:10,729 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:47.348574",
+          "ts": "2026-03-17T22:12:41.221591",
           "ok": false,
-          "duration_s": 3075,
-          "reason": "2026-03-16 18:14:36,442 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 29129,
+          "reason": "2026-03-17 14:12:10,729 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:17.797444",
+          "ts": "2026-03-17T22:13:11.668583",
           "ok": false,
-          "duration_s": 3106,
-          "reason": "2026-03-16 18:14:36,442 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 29159,
+          "reason": "2026-03-17 14:12:10,729 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:48.251117",
+          "ts": "2026-03-17T22:13:42.122330",
           "ok": false,
-          "duration_s": 3136,
-          "reason": "2026-03-16 18:14:36,442 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 29190,
+          "reason": "2026-03-17 14:12:10,729 [ERROR] claude_think timed out (30s)"
         }
       ],
-      "last_dispatch": "2026-03-16T18:10:31.373384",
-      "last_pid": 93805
+      "last_dispatch": "2026-03-17T14:07:12.031030",
+      "last_pid": 67809
     },
     "spark-check": {
-      "last_exit": "2026-03-16T19:02:48.253671",
-      "consecutive_failures": 3253,
+      "last_exit": "2026-03-17T22:13:42.125483",
+      "consecutive_failures": 6612,
       "last_failure_reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 30s",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.206502",
+          "ts": "2026-03-17T22:09:08.032992",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 30s"
         },
         {
-          "ts": "2026-03-16T18:58:44.631697",
+          "ts": "2026-03-17T22:09:38.497916",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 30s"
         },
         {
-          "ts": "2026-03-16T18:59:15.069614",
+          "ts": "2026-03-17T22:10:08.955937",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 30s"
         },
         {
-          "ts": "2026-03-16T18:59:45.494185",
+          "ts": "2026-03-17T22:10:39.409790",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 30s"
         },
         {
-          "ts": "2026-03-16T19:00:15.937106",
+          "ts": "2026-03-17T22:11:09.863567",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 30s"
         },
         {
-          "ts": "2026-03-16T19:00:46.400476",
+          "ts": "2026-03-17T22:11:40.326227",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 30s"
         },
         {
-          "ts": "2026-03-16T19:01:16.890206",
+          "ts": "2026-03-17T22:12:10.794597",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 30s"
         },
         {
-          "ts": "2026-03-16T19:01:47.351294",
+          "ts": "2026-03-17T22:12:41.223703",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 30s"
         },
         {
-          "ts": "2026-03-16T19:02:17.799712",
+          "ts": "2026-03-17T22:13:11.670832",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 30s"
         },
         {
-          "ts": "2026-03-16T19:02:48.253671",
+          "ts": "2026-03-17T22:13:42.125483",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 30s"
@@ -1506,69 +1487,69 @@
       ]
     },
     "podcast-zh-the-half-life-of-a-benchmark": {
-      "last_exit": "2026-03-16T19:02:48.254704",
-      "consecutive_failures": 404,
+      "last_exit": "2026-03-17T22:13:42.126645",
+      "consecutive_failures": 3763,
       "last_success": "2026-03-16T14:30:14.229711",
       "last_failure_reason": "2026-03-16 15:39:30,210 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.207576",
+          "ts": "2026-03-17T22:09:08.034101",
           "ok": false,
-          "duration_s": 14269,
+          "duration_s": 112123,
           "reason": "2026-03-16 15:39:30,210 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:58:44.632775",
+          "ts": "2026-03-17T22:09:38.499448",
           "ok": false,
-          "duration_s": 14300,
+          "duration_s": 112154,
           "reason": "2026-03-16 15:39:30,210 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:15.070721",
+          "ts": "2026-03-17T22:10:08.957016",
           "ok": false,
-          "duration_s": 14330,
+          "duration_s": 112184,
           "reason": "2026-03-16 15:39:30,210 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:45.495387",
+          "ts": "2026-03-17T22:10:39.410928",
           "ok": false,
-          "duration_s": 14361,
+          "duration_s": 112214,
           "reason": "2026-03-16 15:39:30,210 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:15.938661",
+          "ts": "2026-03-17T22:11:09.864831",
           "ok": false,
-          "duration_s": 14391,
+          "duration_s": 112245,
           "reason": "2026-03-16 15:39:30,210 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:46.401526",
+          "ts": "2026-03-17T22:11:40.327727",
           "ok": false,
-          "duration_s": 14421,
+          "duration_s": 112275,
           "reason": "2026-03-16 15:39:30,210 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:16.891269",
+          "ts": "2026-03-17T22:12:10.796050",
           "ok": false,
-          "duration_s": 14452,
+          "duration_s": 112306,
           "reason": "2026-03-16 15:39:30,210 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:47.352444",
+          "ts": "2026-03-17T22:12:41.224857",
           "ok": false,
-          "duration_s": 14482,
+          "duration_s": 112336,
           "reason": "2026-03-16 15:39:30,210 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:17.800875",
+          "ts": "2026-03-17T22:13:11.672070",
           "ok": false,
-          "duration_s": 14513,
+          "duration_s": 112367,
           "reason": "2026-03-16 15:39:30,210 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:48.254704",
+          "ts": "2026-03-17T22:13:42.126645",
           "ok": false,
-          "duration_s": 14543,
+          "duration_s": 112397,
           "reason": "2026-03-16 15:39:30,210 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         }
       ],
@@ -1576,256 +1557,256 @@
       "last_pid": 91733
     },
     "idle-think": {
-      "last_exit": "2026-03-16T19:02:48.258105",
+      "last_exit": "2026-03-17T22:13:42.130533",
       "consecutive_failures": 0,
-      "last_success": "2026-03-16T19:02:48.258105",
+      "last_success": "2026-03-17T22:13:42.130533",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.211516",
+          "ts": "2026-03-17T22:09:08.038834",
           "ok": true,
-          "duration_s": 42220
+          "duration_s": 140074
         },
         {
-          "ts": "2026-03-16T18:58:44.635897",
+          "ts": "2026-03-17T22:09:38.503355",
           "ok": true,
-          "duration_s": 42250
+          "duration_s": 140104
         },
         {
-          "ts": "2026-03-16T18:59:15.074058",
+          "ts": "2026-03-17T22:10:08.960459",
           "ok": true,
-          "duration_s": 42281
+          "duration_s": 140135
         },
         {
-          "ts": "2026-03-16T18:59:45.498990",
+          "ts": "2026-03-17T22:10:39.414400",
           "ok": true,
-          "duration_s": 42311
+          "duration_s": 140165
         },
         {
-          "ts": "2026-03-16T19:00:15.942690",
+          "ts": "2026-03-17T22:11:09.868284",
           "ok": true,
-          "duration_s": 42342
+          "duration_s": 140196
         },
         {
-          "ts": "2026-03-16T19:00:46.405136",
+          "ts": "2026-03-17T22:11:40.331523",
           "ok": true,
-          "duration_s": 42372
+          "duration_s": 140226
         },
         {
-          "ts": "2026-03-16T19:01:16.895078",
+          "ts": "2026-03-17T22:12:10.799453",
           "ok": true,
-          "duration_s": 42403
+          "duration_s": 140257
         },
         {
-          "ts": "2026-03-16T19:01:47.355937",
+          "ts": "2026-03-17T22:12:41.229004",
           "ok": true,
-          "duration_s": 42433
+          "duration_s": 140287
         },
         {
-          "ts": "2026-03-16T19:02:17.804209",
+          "ts": "2026-03-17T22:13:11.675346",
           "ok": true,
-          "duration_s": 42464
+          "duration_s": 140317
         },
         {
-          "ts": "2026-03-16T19:02:48.258105",
+          "ts": "2026-03-17T22:13:42.130533",
           "ok": true,
-          "duration_s": 42494
+          "duration_s": 140348
         }
       ],
       "last_dispatch": "2026-03-16T07:14:33.704683",
       "last_pid": 88401
     },
     "zhesi": {
-      "last_exit": "2026-03-16T19:02:48.260317",
+      "last_exit": "2026-03-17T22:13:42.133364",
       "consecutive_failures": 0,
-      "last_success": "2026-03-16T19:02:48.260317",
+      "last_success": "2026-03-17T22:13:42.133364",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.214239",
+          "ts": "2026-03-17T22:09:08.041704",
           "ok": true,
-          "duration_s": 30607
+          "duration_s": 42009
         },
         {
-          "ts": "2026-03-16T18:58:44.638283",
+          "ts": "2026-03-17T22:09:38.506215",
           "ok": true,
-          "duration_s": 30638
+          "duration_s": 42040
         },
         {
-          "ts": "2026-03-16T18:59:15.076262",
+          "ts": "2026-03-17T22:10:08.962591",
           "ok": true,
-          "duration_s": 30668
+          "duration_s": 42070
         },
         {
-          "ts": "2026-03-16T18:59:45.501077",
+          "ts": "2026-03-17T22:10:39.416593",
           "ok": true,
-          "duration_s": 30699
+          "duration_s": 42101
         },
         {
-          "ts": "2026-03-16T19:00:15.945161",
+          "ts": "2026-03-17T22:11:09.870779",
           "ok": true,
-          "duration_s": 30729
+          "duration_s": 42131
         },
         {
-          "ts": "2026-03-16T19:00:46.407871",
+          "ts": "2026-03-17T22:11:40.333814",
           "ok": true,
-          "duration_s": 30760
+          "duration_s": 42162
         },
         {
-          "ts": "2026-03-16T19:01:16.898034",
+          "ts": "2026-03-17T22:12:10.802072",
           "ok": true,
-          "duration_s": 30790
+          "duration_s": 42192
         },
         {
-          "ts": "2026-03-16T19:01:47.358454",
+          "ts": "2026-03-17T22:12:41.231092",
           "ok": true,
-          "duration_s": 30821
+          "duration_s": 42223
         },
         {
-          "ts": "2026-03-16T19:02:17.806459",
+          "ts": "2026-03-17T22:13:11.677509",
           "ok": true,
-          "duration_s": 30851
+          "duration_s": 42253
         },
         {
-          "ts": "2026-03-16T19:02:48.260317",
+          "ts": "2026-03-17T22:13:42.133364",
           "ok": true,
-          "duration_s": 30881
+          "duration_s": 42284
         }
       ],
-      "last_dispatch": "2026-03-16T10:28:06.293686",
-      "last_pid": 95270
+      "last_dispatch": "2026-03-17T10:28:58.051359",
+      "last_pid": 36870
     },
     "podcast-zh-you-cant-evaluate-truth-at-a-point": {
-      "last_exit": "2026-03-16T19:02:48.261516",
-      "consecutive_failures": 2020,
+      "last_exit": "2026-03-17T22:13:42.134489",
+      "consecutive_failures": 5380,
       "last_success": "2026-03-16T00:39:49.577525",
-      "last_failure_reason": "2026-03-16 10:37:41,806 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)",
+      "last_failure_reason": "2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.215353",
+          "ts": "2026-03-17T22:09:08.042853",
           "ok": false,
-          "duration_s": 32377,
-          "reason": "2026-03-16 10:37:41,806 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
+          "duration_s": 79732,
+          "reason": "2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:58:44.639391",
+          "ts": "2026-03-17T22:09:38.507350",
           "ok": false,
-          "duration_s": 32408,
-          "reason": "2026-03-16 10:37:41,806 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
+          "duration_s": 79762,
+          "reason": "2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:15.077319",
+          "ts": "2026-03-17T22:10:08.963629",
           "ok": false,
-          "duration_s": 32438,
-          "reason": "2026-03-16 10:37:41,806 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
+          "duration_s": 79793,
+          "reason": "2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:45.502147",
+          "ts": "2026-03-17T22:10:39.417714",
           "ok": false,
-          "duration_s": 32469,
-          "reason": "2026-03-16 10:37:41,806 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
+          "duration_s": 79823,
+          "reason": "2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:15.946251",
+          "ts": "2026-03-17T22:11:09.871910",
           "ok": false,
-          "duration_s": 32499,
-          "reason": "2026-03-16 10:37:41,806 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
+          "duration_s": 79854,
+          "reason": "2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:46.409119",
+          "ts": "2026-03-17T22:11:40.334968",
           "ok": false,
-          "duration_s": 32530,
-          "reason": "2026-03-16 10:37:41,806 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
+          "duration_s": 79884,
+          "reason": "2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:16.899384",
+          "ts": "2026-03-17T22:12:10.803293",
           "ok": false,
-          "duration_s": 32560,
-          "reason": "2026-03-16 10:37:41,806 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
+          "duration_s": 79915,
+          "reason": "2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:47.359857",
+          "ts": "2026-03-17T22:12:41.232220",
           "ok": false,
-          "duration_s": 32591,
-          "reason": "2026-03-16 10:37:41,806 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
+          "duration_s": 79945,
+          "reason": "2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:17.807586",
+          "ts": "2026-03-17T22:13:11.678540",
           "ok": false,
-          "duration_s": 32621,
-          "reason": "2026-03-16 10:37:41,806 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
+          "duration_s": 79976,
+          "reason": "2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:48.261516",
+          "ts": "2026-03-17T22:13:42.134489",
           "ok": false,
-          "duration_s": 32651,
-          "reason": "2026-03-16 10:37:41,806 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
+          "duration_s": 80006,
+          "reason": "2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         }
       ],
-      "last_dispatch": "2026-03-16T09:58:36.276907",
-      "last_pid": 63437
+      "last_dispatch": "2026-03-17T00:00:15.574476",
+      "last_pid": 71079
     },
     "autowrite-2026-03-13": {
-      "last_exit": "2026-03-16T19:02:48.262688",
-      "consecutive_failures": 3253,
+      "last_exit": "2026-03-17T22:13:42.135633",
+      "consecutive_failures": 6611,
       "last_failure_reason": "2026-03-13 18:07:24,541 [ERROR] Unknown type 'technical' for the-half-life-of-a-benchmark",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.216461",
+          "ts": "2026-03-17T22:09:08.043960",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-13 18:07:24,541 [ERROR] Unknown type 'technical' for the-half-life-of-a-benchmark"
         },
         {
-          "ts": "2026-03-16T18:58:44.640534",
+          "ts": "2026-03-17T22:09:38.508723",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-13 18:07:24,541 [ERROR] Unknown type 'technical' for the-half-life-of-a-benchmark"
         },
         {
-          "ts": "2026-03-16T18:59:15.078413",
+          "ts": "2026-03-17T22:10:08.964794",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-13 18:07:24,541 [ERROR] Unknown type 'technical' for the-half-life-of-a-benchmark"
         },
         {
-          "ts": "2026-03-16T18:59:45.503484",
+          "ts": "2026-03-17T22:10:39.419064",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-13 18:07:24,541 [ERROR] Unknown type 'technical' for the-half-life-of-a-benchmark"
         },
         {
-          "ts": "2026-03-16T19:00:15.947275",
+          "ts": "2026-03-17T22:11:09.873078",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-13 18:07:24,541 [ERROR] Unknown type 'technical' for the-half-life-of-a-benchmark"
         },
         {
-          "ts": "2026-03-16T19:00:46.410342",
+          "ts": "2026-03-17T22:11:40.336207",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-13 18:07:24,541 [ERROR] Unknown type 'technical' for the-half-life-of-a-benchmark"
         },
         {
-          "ts": "2026-03-16T19:01:16.900847",
+          "ts": "2026-03-17T22:12:10.804520",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-13 18:07:24,541 [ERROR] Unknown type 'technical' for the-half-life-of-a-benchmark"
         },
         {
-          "ts": "2026-03-16T19:01:47.361310",
+          "ts": "2026-03-17T22:12:41.233343",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-13 18:07:24,541 [ERROR] Unknown type 'technical' for the-half-life-of-a-benchmark"
         },
         {
-          "ts": "2026-03-16T19:02:17.808755",
+          "ts": "2026-03-17T22:13:11.679676",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-13 18:07:24,541 [ERROR] Unknown type 'technical' for the-half-life-of-a-benchmark"
         },
         {
-          "ts": "2026-03-16T19:02:48.262688",
+          "ts": "2026-03-17T22:13:42.135633",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-13 18:07:24,541 [ERROR] Unknown type 'technical' for the-half-life-of-a-benchmark"
@@ -1833,126 +1814,126 @@
       ]
     },
     "autowrite-2026-03-07": {
-      "last_exit": "2026-03-16T19:02:48.263757",
+      "last_exit": "2026-03-17T22:13:42.136980",
       "consecutive_failures": 0,
-      "last_success": "2026-03-16T19:02:48.263757",
+      "last_success": "2026-03-17T22:13:42.136980",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.217588",
+          "ts": "2026-03-17T22:09:08.045471",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:58:44.641678",
+          "ts": "2026-03-17T22:09:38.509983",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:59:15.079465",
+          "ts": "2026-03-17T22:10:08.965861",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:59:45.504597",
+          "ts": "2026-03-17T22:10:39.420238",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:00:15.948321",
+          "ts": "2026-03-17T22:11:09.874506",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:00:46.411475",
+          "ts": "2026-03-17T22:11:40.337734",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:01:16.902329",
+          "ts": "2026-03-17T22:12:10.805878",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:01:47.362495",
+          "ts": "2026-03-17T22:12:41.234467",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:02:17.810072",
+          "ts": "2026-03-17T22:13:11.681024",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:02:48.263757",
+          "ts": "2026-03-17T22:13:42.136980",
           "ok": true,
           "duration_s": 0
         }
       ]
     },
     "podcast-en-you-cant-evaluate-truth-at-a-point": {
-      "last_exit": "2026-03-16T19:02:48.264867",
-      "consecutive_failures": 3015,
+      "last_exit": "2026-03-17T22:13:42.138184",
+      "consecutive_failures": 6374,
       "last_failure_reason": "2026-03-16 12:29:37,755 [ERROR] Podcast: generation failed for [en] 'You Can't Evaluate Truth at a Point' (generation_failed)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.218612",
+          "ts": "2026-03-17T22:09:08.046675",
           "ok": false,
-          "duration_s": 25663,
+          "duration_s": 123516,
           "reason": "2026-03-16 12:29:37,755 [ERROR] Podcast: generation failed for [en] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:58:44.642836",
+          "ts": "2026-03-17T22:09:38.511392",
           "ok": false,
-          "duration_s": 25693,
+          "duration_s": 123547,
           "reason": "2026-03-16 12:29:37,755 [ERROR] Podcast: generation failed for [en] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:15.080529",
+          "ts": "2026-03-17T22:10:08.966968",
           "ok": false,
-          "duration_s": 25723,
+          "duration_s": 123577,
           "reason": "2026-03-16 12:29:37,755 [ERROR] Podcast: generation failed for [en] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:45.505716",
+          "ts": "2026-03-17T22:10:39.421260",
           "ok": false,
-          "duration_s": 25754,
+          "duration_s": 123608,
           "reason": "2026-03-16 12:29:37,755 [ERROR] Podcast: generation failed for [en] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:15.949388",
+          "ts": "2026-03-17T22:11:09.875666",
           "ok": false,
-          "duration_s": 25784,
+          "duration_s": 123638,
           "reason": "2026-03-16 12:29:37,755 [ERROR] Podcast: generation failed for [en] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:46.412507",
+          "ts": "2026-03-17T22:11:40.338976",
           "ok": false,
-          "duration_s": 25815,
+          "duration_s": 123669,
           "reason": "2026-03-16 12:29:37,755 [ERROR] Podcast: generation failed for [en] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:16.903287",
+          "ts": "2026-03-17T22:12:10.806892",
           "ok": false,
-          "duration_s": 25845,
+          "duration_s": 123699,
           "reason": "2026-03-16 12:29:37,755 [ERROR] Podcast: generation failed for [en] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:47.363605",
+          "ts": "2026-03-17T22:12:41.235474",
           "ok": false,
-          "duration_s": 25876,
+          "duration_s": 123730,
           "reason": "2026-03-16 12:29:37,755 [ERROR] Podcast: generation failed for [en] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:17.811375",
+          "ts": "2026-03-17T22:13:11.682551",
           "ok": false,
-          "duration_s": 25906,
+          "duration_s": 123760,
           "reason": "2026-03-16 12:29:37,755 [ERROR] Podcast: generation failed for [en] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:48.264867",
+          "ts": "2026-03-17T22:13:42.138184",
           "ok": false,
-          "duration_s": 25937,
+          "duration_s": 123790,
           "reason": "2026-03-16 12:29:37,755 [ERROR] Podcast: generation failed for [en] 'You Can't Evaluate Truth at a Point' (generation_failed)"
         }
       ],
@@ -1960,124 +1941,124 @@
       "last_pid": 85716
     },
     "autowrite-2026-03-11": {
-      "last_exit": "2026-03-16T19:02:48.267251",
+      "last_exit": "2026-03-17T22:13:42.140676",
       "consecutive_failures": 0,
-      "last_success": "2026-03-16T19:02:48.267251",
+      "last_success": "2026-03-17T22:13:42.140676",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.220949",
+          "ts": "2026-03-17T22:09:08.049102",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:58:44.645261",
+          "ts": "2026-03-17T22:09:38.513720",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:59:15.082644",
+          "ts": "2026-03-17T22:10:08.969219",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T18:59:45.507882",
+          "ts": "2026-03-17T22:10:39.423452",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:00:15.951975",
+          "ts": "2026-03-17T22:11:09.878010",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:00:46.414723",
+          "ts": "2026-03-17T22:11:40.341359",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:01:16.905643",
+          "ts": "2026-03-17T22:12:10.809048",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:01:47.366018",
+          "ts": "2026-03-17T22:12:41.237606",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:02:17.814069",
+          "ts": "2026-03-17T22:13:11.684843",
           "ok": true,
           "duration_s": 0
         },
         {
-          "ts": "2026-03-16T19:02:48.267251",
+          "ts": "2026-03-17T22:13:42.140676",
           "ok": true,
           "duration_s": 0
         }
       ]
     },
     "voiceover-the-half-life-of-a-benchmark": {
-      "last_exit": "2026-03-16T19:02:48.268551",
-      "consecutive_failures": 3253,
+      "last_exit": "2026-03-17T22:13:42.142007",
+      "consecutive_failures": 6612,
       "last_failure_reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.222057",
+          "ts": "2026-03-17T22:09:08.050651",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T18:58:44.646379",
+          "ts": "2026-03-17T22:09:38.514746",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T18:59:15.083691",
+          "ts": "2026-03-17T22:10:08.970463",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T18:59:45.508921",
+          "ts": "2026-03-17T22:10:39.424607",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T19:00:15.953067",
+          "ts": "2026-03-17T22:11:09.879524",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T19:00:46.415784",
+          "ts": "2026-03-17T22:11:40.342941",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T19:01:16.907139",
+          "ts": "2026-03-17T22:12:10.810177",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T19:01:47.367297",
+          "ts": "2026-03-17T22:12:41.239098",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T19:02:17.815501",
+          "ts": "2026-03-17T22:13:11.685893",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T19:02:48.268551",
+          "ts": "2026-03-17T22:13:42.142007",
           "ok": false,
           "duration_s": 0,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
@@ -2085,66 +2066,66 @@
       ]
     },
     "autowrite-2026-03-10": {
-      "last_exit": "2026-03-16T19:02:48.271833",
-      "consecutive_failures": 3253,
+      "last_exit": "2026-03-17T22:13:42.146989",
+      "consecutive_failures": 6612,
       "last_failure_reason": "2026-03-10 15:30:33,956 [WARNING] Unsplash fetch failed: HTTP Error 503: Service Unavailable",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.225353",
+          "ts": "2026-03-17T22:09:08.054628",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-10 15:30:33,956 [WARNING] Unsplash fetch failed: HTTP Error 503: Service Unavailable"
         },
         {
-          "ts": "2026-03-16T18:58:44.649801",
+          "ts": "2026-03-17T22:09:38.519038",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-10 15:30:33,956 [WARNING] Unsplash fetch failed: HTTP Error 503: Service Unavailable"
         },
         {
-          "ts": "2026-03-16T18:59:15.086875",
+          "ts": "2026-03-17T22:10:08.974028",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-10 15:30:33,956 [WARNING] Unsplash fetch failed: HTTP Error 503: Service Unavailable"
         },
         {
-          "ts": "2026-03-16T18:59:45.512157",
+          "ts": "2026-03-17T22:10:39.428109",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-10 15:30:33,956 [WARNING] Unsplash fetch failed: HTTP Error 503: Service Unavailable"
         },
         {
-          "ts": "2026-03-16T19:00:15.956267",
+          "ts": "2026-03-17T22:11:09.883651",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-10 15:30:33,956 [WARNING] Unsplash fetch failed: HTTP Error 503: Service Unavailable"
         },
         {
-          "ts": "2026-03-16T19:00:46.419427",
+          "ts": "2026-03-17T22:11:40.347038",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-10 15:30:33,956 [WARNING] Unsplash fetch failed: HTTP Error 503: Service Unavailable"
         },
         {
-          "ts": "2026-03-16T19:01:16.910067",
+          "ts": "2026-03-17T22:12:10.813407",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-10 15:30:33,956 [WARNING] Unsplash fetch failed: HTTP Error 503: Service Unavailable"
         },
         {
-          "ts": "2026-03-16T19:01:47.370992",
+          "ts": "2026-03-17T22:12:41.243066",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-10 15:30:33,956 [WARNING] Unsplash fetch failed: HTTP Error 503: Service Unavailable"
         },
         {
-          "ts": "2026-03-16T19:02:17.819094",
+          "ts": "2026-03-17T22:13:11.689423",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-10 15:30:33,956 [WARNING] Unsplash fetch failed: HTTP Error 503: Service Unavailable"
         },
         {
-          "ts": "2026-03-16T19:02:48.271833",
+          "ts": "2026-03-17T22:13:42.146989",
           "ok": false,
           "duration_s": 0,
           "reason": "2026-03-10 15:30:33,956 [WARNING] Unsplash fetch failed: HTTP Error 503: Service Unavailable"
@@ -2152,415 +2133,415 @@
       ]
     },
     "explore-arxiv_huggingface": {
-      "last_exit": "2026-03-16T19:02:48.273149",
-      "consecutive_failures": 3241,
-      "last_failure_reason": "2026-03-16 10:35:59,961 [ERROR] claude_think timed out (30s)",
+      "last_exit": "2026-03-17T22:13:42.148170",
+      "consecutive_failures": 6589,
+      "last_failure_reason": "2026-03-16 19:55:16,539 [ERROR] claude_think timed out (30s)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.226416",
+          "ts": "2026-03-17T22:09:08.055967",
           "ok": false,
-          "duration_s": 30408,
-          "reason": "2026-03-16 10:35:59,961 [ERROR] claude_think timed out (30s)"
+          "duration_s": 22894,
+          "reason": "2026-03-16 19:55:16,539 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:58:44.650964",
+          "ts": "2026-03-17T22:09:38.520263",
           "ok": false,
-          "duration_s": 30439,
-          "reason": "2026-03-16 10:35:59,961 [ERROR] claude_think timed out (30s)"
+          "duration_s": 22925,
+          "reason": "2026-03-16 19:55:16,539 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:15.087905",
+          "ts": "2026-03-17T22:10:08.975314",
           "ok": false,
-          "duration_s": 30469,
-          "reason": "2026-03-16 10:35:59,961 [ERROR] claude_think timed out (30s)"
+          "duration_s": 22955,
+          "reason": "2026-03-16 19:55:16,539 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:45.513388",
+          "ts": "2026-03-17T22:10:39.429328",
           "ok": false,
-          "duration_s": 30500,
-          "reason": "2026-03-16 10:35:59,961 [ERROR] claude_think timed out (30s)"
+          "duration_s": 22986,
+          "reason": "2026-03-16 19:55:16,539 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:15.957280",
+          "ts": "2026-03-17T22:11:09.885717",
           "ok": false,
-          "duration_s": 30530,
-          "reason": "2026-03-16 10:35:59,961 [ERROR] claude_think timed out (30s)"
+          "duration_s": 23016,
+          "reason": "2026-03-16 19:55:16,539 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:46.420551",
+          "ts": "2026-03-17T22:11:40.348384",
           "ok": false,
-          "duration_s": 30561,
-          "reason": "2026-03-16 10:35:59,961 [ERROR] claude_think timed out (30s)"
+          "duration_s": 23047,
+          "reason": "2026-03-16 19:55:16,539 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:16.911716",
+          "ts": "2026-03-17T22:12:10.814568",
           "ok": false,
-          "duration_s": 30591,
-          "reason": "2026-03-16 10:35:59,961 [ERROR] claude_think timed out (30s)"
+          "duration_s": 23077,
+          "reason": "2026-03-16 19:55:16,539 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:47.372366",
+          "ts": "2026-03-17T22:12:41.244346",
           "ok": false,
-          "duration_s": 30622,
-          "reason": "2026-03-16 10:35:59,961 [ERROR] claude_think timed out (30s)"
+          "duration_s": 23108,
+          "reason": "2026-03-16 19:55:16,539 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:17.820398",
+          "ts": "2026-03-17T22:13:11.690847",
           "ok": false,
-          "duration_s": 30652,
-          "reason": "2026-03-16 10:35:59,961 [ERROR] claude_think timed out (30s)"
+          "duration_s": 23138,
+          "reason": "2026-03-16 19:55:16,539 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:48.273149",
+          "ts": "2026-03-17T22:13:42.148170",
           "ok": false,
-          "duration_s": 30682,
-          "reason": "2026-03-16 10:35:59,961 [ERROR] claude_think timed out (30s)"
+          "duration_s": 23169,
+          "reason": "2026-03-16 19:55:16,539 [ERROR] claude_think timed out (30s)"
         }
       ],
-      "last_dispatch": "2026-03-16T10:31:25.366477",
-      "last_pid": 98908
+      "last_dispatch": "2026-03-17T15:47:33.056583",
+      "last_pid": 73921
     },
     "substack-growth": {
-      "last_exit": "2026-03-16T19:02:48.274215",
-      "consecutive_failures": 3236,
-      "last_failure_reason": "2026-03-16 16:02:44,839 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)",
+      "last_exit": "2026-03-17T22:13:42.149315",
+      "consecutive_failures": 6571,
+      "last_failure_reason": "2026-03-17 22:02:37,050 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.227689",
+          "ts": "2026-03-17T22:09:08.057132",
           "ok": false,
-          "duration_s": 10634,
-          "reason": "2026-03-16 16:02:44,839 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 488,
+          "reason": "2026-03-17 22:02:37,050 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:58:44.652255",
+          "ts": "2026-03-17T22:09:38.521371",
           "ok": false,
-          "duration_s": 10664,
-          "reason": "2026-03-16 16:02:44,839 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 518,
+          "reason": "2026-03-17 22:02:37,050 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:59:15.089118",
+          "ts": "2026-03-17T22:10:08.976400",
           "ok": false,
-          "duration_s": 10694,
-          "reason": "2026-03-16 16:02:44,839 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 549,
+          "reason": "2026-03-17 22:02:37,050 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T18:59:45.514602",
+          "ts": "2026-03-17T22:10:39.430520",
           "ok": false,
-          "duration_s": 10725,
-          "reason": "2026-03-16 16:02:44,839 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 579,
+          "reason": "2026-03-17 22:02:37,050 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:00:15.958381",
+          "ts": "2026-03-17T22:11:09.887049",
           "ok": false,
-          "duration_s": 10755,
-          "reason": "2026-03-16 16:02:44,839 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 610,
+          "reason": "2026-03-17 22:02:37,050 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:00:46.421616",
+          "ts": "2026-03-17T22:11:40.349549",
           "ok": false,
-          "duration_s": 10786,
-          "reason": "2026-03-16 16:02:44,839 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 640,
+          "reason": "2026-03-17 22:02:37,050 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:01:16.913240",
+          "ts": "2026-03-17T22:12:10.815905",
           "ok": false,
-          "duration_s": 10816,
-          "reason": "2026-03-16 16:02:44,839 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 671,
+          "reason": "2026-03-17 22:02:37,050 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:01:47.373617",
+          "ts": "2026-03-17T22:12:41.245469",
           "ok": false,
-          "duration_s": 10847,
-          "reason": "2026-03-16 16:02:44,839 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 701,
+          "reason": "2026-03-17 22:02:37,050 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:02:17.821669",
+          "ts": "2026-03-17T22:13:11.691938",
           "ok": false,
-          "duration_s": 10877,
-          "reason": "2026-03-16 16:02:44,839 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 732,
+          "reason": "2026-03-17 22:02:37,050 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         },
         {
-          "ts": "2026-03-16T19:02:48.274215",
+          "ts": "2026-03-17T22:13:42.149315",
           "ok": false,
-          "duration_s": 10908,
-          "reason": "2026-03-16 16:02:44,839 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 762,
+          "reason": "2026-03-17 22:02:37,050 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
         }
       ],
-      "last_dispatch": "2026-03-16T16:01:00.183346",
-      "last_pid": 56987
+      "last_dispatch": "2026-03-17T22:00:59.658058",
+      "last_pid": 68164
     },
     "explore-reddit_ai_news": {
-      "last_exit": "2026-03-16T19:02:48.276705",
-      "consecutive_failures": 3213,
-      "last_failure_reason": "2026-03-16 13:58:30,002 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)",
+      "last_exit": "2026-03-17T22:13:42.151543",
+      "consecutive_failures": 6553,
+      "last_failure_reason": "2026-03-17 19:15:33,997 [ERROR] claude_think timed out (30s)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.230249",
+          "ts": "2026-03-17T22:09:08.059693",
           "ok": false,
-          "duration_s": 18205,
-          "reason": "2026-03-16 13:58:30,002 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 10704,
+          "reason": "2026-03-17 19:15:33,997 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:58:44.654452",
+          "ts": "2026-03-17T22:09:38.523672",
           "ok": false,
-          "duration_s": 18235,
-          "reason": "2026-03-16 13:58:30,002 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 10734,
+          "reason": "2026-03-17 19:15:33,997 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:15.091793",
+          "ts": "2026-03-17T22:10:08.978903",
           "ok": false,
-          "duration_s": 18266,
-          "reason": "2026-03-16 13:58:30,002 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 10765,
+          "reason": "2026-03-17 19:15:33,997 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T18:59:45.517205",
+          "ts": "2026-03-17T22:10:39.433193",
           "ok": false,
-          "duration_s": 18296,
-          "reason": "2026-03-16 13:58:30,002 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 10795,
+          "reason": "2026-03-17 19:15:33,997 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:15.960892",
+          "ts": "2026-03-17T22:11:09.892386",
           "ok": false,
-          "duration_s": 18327,
-          "reason": "2026-03-16 13:58:30,002 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 10826,
+          "reason": "2026-03-17 19:15:33,997 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:00:46.424091",
+          "ts": "2026-03-17T22:11:40.351937",
           "ok": false,
-          "duration_s": 18357,
-          "reason": "2026-03-16 13:58:30,002 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 10856,
+          "reason": "2026-03-17 19:15:33,997 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:16.916023",
+          "ts": "2026-03-17T22:12:10.818128",
           "ok": false,
-          "duration_s": 18388,
-          "reason": "2026-03-16 13:58:30,002 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 10887,
+          "reason": "2026-03-17 19:15:33,997 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:01:47.376270",
+          "ts": "2026-03-17T22:12:41.248294",
           "ok": false,
-          "duration_s": 18418,
-          "reason": "2026-03-16 13:58:30,002 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 10917,
+          "reason": "2026-03-17 19:15:33,997 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:17.823973",
+          "ts": "2026-03-17T22:13:11.694287",
           "ok": false,
-          "duration_s": 18449,
-          "reason": "2026-03-16 13:58:30,002 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 10948,
+          "reason": "2026-03-17 19:15:33,997 [ERROR] claude_think timed out (30s)"
         },
         {
-          "ts": "2026-03-16T19:02:48.276705",
+          "ts": "2026-03-17T22:13:42.151543",
           "ok": false,
-          "duration_s": 18479,
-          "reason": "2026-03-16 13:58:30,002 [WARNING] Like cycle error on benmiller: Expecting value: line 1 column 1 (char 0)"
+          "duration_s": 10978,
+          "reason": "2026-03-17 19:15:33,997 [ERROR] claude_think timed out (30s)"
         }
       ],
-      "last_dispatch": "2026-03-16T13:54:48.690983",
-      "last_pid": 20756
+      "last_dispatch": "2026-03-17T19:10:43.560991",
+      "last_pid": 88268
     },
     "voiceover-the-pain-already-happened": {
-      "last_dispatch": "2026-03-16T10:22:40.036423",
-      "last_pid": 89336,
-      "last_exit": "2026-03-16T19:02:48.226204",
-      "consecutive_failures": 3275,
-      "last_failure_reason": "2026-03-16 10:23:21,028 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'",
+      "last_dispatch": "2026-03-17T07:31:56.603103",
+      "last_pid": 49800,
+      "last_exit": "2026-03-17T22:13:42.091272",
+      "consecutive_failures": 7300,
+      "last_failure_reason": "2026-03-17 07:27:49,167 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.175792",
+          "ts": "2026-03-17T22:09:07.997958",
           "ok": false,
-          "duration_s": 30934,
-          "reason": "2026-03-16 10:23:21,028 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
+          "duration_s": 52631,
+          "reason": "2026-03-17 07:27:49,167 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
         },
         {
-          "ts": "2026-03-16T18:58:44.604777",
+          "ts": "2026-03-17T22:09:38.456172",
           "ok": false,
-          "duration_s": 30964,
-          "reason": "2026-03-16 10:23:21,028 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
+          "duration_s": 52661,
+          "reason": "2026-03-17 07:27:49,167 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
         },
         {
-          "ts": "2026-03-16T18:59:15.038157",
+          "ts": "2026-03-17T22:10:08.923512",
           "ok": false,
-          "duration_s": 30995,
-          "reason": "2026-03-16 10:23:21,028 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
+          "duration_s": 52692,
+          "reason": "2026-03-17 07:27:49,167 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
         },
         {
-          "ts": "2026-03-16T18:59:45.462198",
+          "ts": "2026-03-17T22:10:39.380279",
           "ok": false,
-          "duration_s": 31025,
-          "reason": "2026-03-16 10:23:21,028 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
+          "duration_s": 52722,
+          "reason": "2026-03-17 07:27:49,167 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
         },
         {
-          "ts": "2026-03-16T19:00:15.908446",
+          "ts": "2026-03-17T22:11:09.826075",
           "ok": false,
-          "duration_s": 31055,
-          "reason": "2026-03-16 10:23:21,028 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
+          "duration_s": 52753,
+          "reason": "2026-03-17 07:27:49,167 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
         },
         {
-          "ts": "2026-03-16T19:00:46.366517",
+          "ts": "2026-03-17T22:11:40.295153",
           "ok": false,
-          "duration_s": 31086,
-          "reason": "2026-03-16 10:23:21,028 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
+          "duration_s": 52783,
+          "reason": "2026-03-17 07:27:49,167 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
         },
         {
-          "ts": "2026-03-16T19:01:16.859885",
+          "ts": "2026-03-17T22:12:10.759009",
           "ok": false,
-          "duration_s": 31116,
-          "reason": "2026-03-16 10:23:21,028 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
+          "duration_s": 52814,
+          "reason": "2026-03-17 07:27:49,167 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
         },
         {
-          "ts": "2026-03-16T19:01:47.321298",
+          "ts": "2026-03-17T22:12:41.195556",
           "ok": false,
-          "duration_s": 31147,
-          "reason": "2026-03-16 10:23:21,028 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
+          "duration_s": 52844,
+          "reason": "2026-03-17 07:27:49,167 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
         },
         {
-          "ts": "2026-03-16T19:02:17.773076",
+          "ts": "2026-03-17T22:13:11.634292",
           "ok": false,
-          "duration_s": 31177,
-          "reason": "2026-03-16 10:23:21,028 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
+          "duration_s": 52875,
+          "reason": "2026-03-17 07:27:49,167 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
         },
         {
-          "ts": "2026-03-16T19:02:48.226204",
+          "ts": "2026-03-17T22:13:42.091272",
           "ok": false,
-          "duration_s": 31208,
-          "reason": "2026-03-16 10:23:21,028 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
+          "duration_s": 52905,
+          "reason": "2026-03-17 07:27:49,167 [ERROR] Voiceover: generation failed for 'The Pain Already Happened. Now What?'"
         }
       ]
     },
     "podcast-zh-the-pain-already-happened": {
-      "last_dispatch": "2026-03-16T12:29:54.716032",
-      "last_pid": 29142,
-      "last_exit": "2026-03-16T19:02:48.249951",
-      "consecutive_failures": 1856,
-      "last_failure_reason": "2026-03-16 13:09:00,251 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)",
+      "last_dispatch": "2026-03-17T00:00:46.016002",
+      "last_pid": 71626,
+      "last_exit": "2026-03-17T22:13:42.120210",
+      "consecutive_failures": 5210,
+      "last_failure_reason": "2026-03-17 00:03:42,535 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.203042",
+          "ts": "2026-03-17T22:09:08.029292",
           "ok": false,
-          "duration_s": 23299,
-          "reason": "2026-03-16 13:09:00,251 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
+          "duration_s": 79702,
+          "reason": "2026-03-17 00:03:42,535 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:58:44.628470",
+          "ts": "2026-03-17T22:09:38.493563",
           "ok": false,
-          "duration_s": 23329,
-          "reason": "2026-03-16 13:09:00,251 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
+          "duration_s": 79732,
+          "reason": "2026-03-17 00:03:42,535 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:15.066248",
+          "ts": "2026-03-17T22:10:08.952572",
           "ok": false,
-          "duration_s": 23360,
-          "reason": "2026-03-16 13:09:00,251 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
+          "duration_s": 79762,
+          "reason": "2026-03-17 00:03:42,535 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:45.490847",
+          "ts": "2026-03-17T22:10:39.406276",
           "ok": false,
-          "duration_s": 23390,
-          "reason": "2026-03-16 13:09:00,251 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
+          "duration_s": 79793,
+          "reason": "2026-03-17 00:03:42,535 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:15.933140",
+          "ts": "2026-03-17T22:11:09.860100",
           "ok": false,
-          "duration_s": 23421,
-          "reason": "2026-03-16 13:09:00,251 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
+          "duration_s": 79823,
+          "reason": "2026-03-17 00:03:42,535 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:46.396439",
+          "ts": "2026-03-17T22:11:40.321928",
           "ok": false,
-          "duration_s": 23451,
-          "reason": "2026-03-16 13:09:00,251 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
+          "duration_s": 79854,
+          "reason": "2026-03-17 00:03:42,535 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:16.886567",
+          "ts": "2026-03-17T22:12:10.790231",
           "ok": false,
-          "duration_s": 23482,
-          "reason": "2026-03-16 13:09:00,251 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
+          "duration_s": 79884,
+          "reason": "2026-03-17 00:03:42,535 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:47.347419",
+          "ts": "2026-03-17T22:12:41.220512",
           "ok": false,
-          "duration_s": 23512,
-          "reason": "2026-03-16 13:09:00,251 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
+          "duration_s": 79915,
+          "reason": "2026-03-17 00:03:42,535 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:17.796375",
+          "ts": "2026-03-17T22:13:11.667336",
           "ok": false,
-          "duration_s": 23543,
-          "reason": "2026-03-16 13:09:00,251 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
+          "duration_s": 79945,
+          "reason": "2026-03-17 00:03:42,535 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:48.249951",
+          "ts": "2026-03-17T22:13:42.120210",
           "ok": false,
-          "duration_s": 23573,
-          "reason": "2026-03-16 13:09:00,251 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
+          "duration_s": 79976,
+          "reason": "2026-03-17 00:03:42,535 [ERROR] Podcast: generation failed for [zh] 'The Pain Already Happened. Now What?' (generation_failed)"
         }
       ]
     },
     "podcast-en-the-pain-already-happened": {
       "last_dispatch": "2026-03-16T13:09:01.233003",
       "last_pid": 70743,
-      "last_exit": "2026-03-16T19:02:48.229152",
-      "consecutive_failures": 1774,
+      "last_exit": "2026-03-17T22:13:42.094291",
+      "consecutive_failures": 5133,
       "last_failure_reason": "2026-03-16 13:48:07,993 [ERROR] Podcast: generation failed for [en] 'The Pain Already Happened. Now What?' (generation_failed)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.178354",
+          "ts": "2026-03-17T22:09:08.000943",
           "ok": false,
-          "duration_s": 20952,
+          "duration_s": 118806,
           "reason": "2026-03-16 13:48:07,993 [ERROR] Podcast: generation failed for [en] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:58:44.607249",
+          "ts": "2026-03-17T22:09:38.459991",
           "ok": false,
-          "duration_s": 20983,
+          "duration_s": 118837,
           "reason": "2026-03-16 13:48:07,993 [ERROR] Podcast: generation failed for [en] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:15.041514",
+          "ts": "2026-03-17T22:10:08.926198",
           "ok": false,
-          "duration_s": 21013,
+          "duration_s": 118867,
           "reason": "2026-03-16 13:48:07,993 [ERROR] Podcast: generation failed for [en] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:45.464602",
+          "ts": "2026-03-17T22:10:39.382529",
           "ok": false,
-          "duration_s": 21044,
+          "duration_s": 118898,
           "reason": "2026-03-16 13:48:07,993 [ERROR] Podcast: generation failed for [en] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:15.911205",
+          "ts": "2026-03-17T22:11:09.829041",
           "ok": false,
-          "duration_s": 21074,
+          "duration_s": 118928,
           "reason": "2026-03-16 13:48:07,993 [ERROR] Podcast: generation failed for [en] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:46.369346",
+          "ts": "2026-03-17T22:11:40.298273",
           "ok": false,
-          "duration_s": 21105,
+          "duration_s": 118959,
           "reason": "2026-03-16 13:48:07,993 [ERROR] Podcast: generation failed for [en] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:16.862733",
+          "ts": "2026-03-17T22:12:10.763449",
           "ok": false,
-          "duration_s": 21135,
+          "duration_s": 118989,
           "reason": "2026-03-16 13:48:07,993 [ERROR] Podcast: generation failed for [en] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:47.324104",
+          "ts": "2026-03-17T22:12:41.197875",
           "ok": false,
-          "duration_s": 21166,
+          "duration_s": 119019,
           "reason": "2026-03-16 13:48:07,993 [ERROR] Podcast: generation failed for [en] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:17.775972",
+          "ts": "2026-03-17T22:13:11.637250",
           "ok": false,
-          "duration_s": 21196,
+          "duration_s": 119050,
           "reason": "2026-03-16 13:48:07,993 [ERROR] Podcast: generation failed for [en] 'The Pain Already Happened. Now What?' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:48.229152",
+          "ts": "2026-03-17T22:13:42.094291",
           "ok": false,
-          "duration_s": 21226,
+          "duration_s": 119080,
           "reason": "2026-03-16 13:48:07,993 [ERROR] Podcast: generation failed for [en] 'The Pain Already Happened. Now What?' (generation_failed)"
         }
       ]
@@ -2568,68 +2549,68 @@
     "podcast-zh-the-cost-of-narration": {
       "last_dispatch": "2026-03-16T13:48:26.554774",
       "last_pid": 13985,
-      "last_exit": "2026-03-16T19:02:48.242775",
-      "consecutive_failures": 1691,
+      "last_exit": "2026-03-17T22:13:42.110775",
+      "consecutive_failures": 5050,
       "last_failure_reason": "2026-03-16 14:27:34,008 [ERROR] Podcast: generation failed for [zh] 'The Cost of Narration' (generation_failed)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.194764",
+          "ts": "2026-03-17T22:09:08.018612",
           "ok": false,
-          "duration_s": 18587,
+          "duration_s": 116441,
           "reason": "2026-03-16 14:27:34,008 [ERROR] Podcast: generation failed for [zh] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:58:44.622327",
+          "ts": "2026-03-17T22:09:38.485318",
           "ok": false,
-          "duration_s": 18618,
+          "duration_s": 116471,
           "reason": "2026-03-16 14:27:34,008 [ERROR] Podcast: generation failed for [zh] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:15.059519",
+          "ts": "2026-03-17T22:10:08.943247",
           "ok": false,
-          "duration_s": 18648,
+          "duration_s": 116502,
           "reason": "2026-03-16 14:27:34,008 [ERROR] Podcast: generation failed for [zh] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:45.483208",
+          "ts": "2026-03-17T22:10:39.397807",
           "ok": false,
-          "duration_s": 18678,
+          "duration_s": 116532,
           "reason": "2026-03-16 14:27:34,008 [ERROR] Podcast: generation failed for [zh] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:15.926596",
+          "ts": "2026-03-17T22:11:09.851013",
           "ok": false,
-          "duration_s": 18709,
+          "duration_s": 116563,
           "reason": "2026-03-16 14:27:34,008 [ERROR] Podcast: generation failed for [zh] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:46.387598",
+          "ts": "2026-03-17T22:11:40.312454",
           "ok": false,
-          "duration_s": 18739,
+          "duration_s": 116593,
           "reason": "2026-03-16 14:27:34,008 [ERROR] Podcast: generation failed for [zh] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:16.879761",
+          "ts": "2026-03-17T22:12:10.781778",
           "ok": false,
-          "duration_s": 18770,
+          "duration_s": 116624,
           "reason": "2026-03-16 14:27:34,008 [ERROR] Podcast: generation failed for [zh] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:47.339125",
+          "ts": "2026-03-17T22:12:41.212494",
           "ok": false,
-          "duration_s": 18800,
+          "duration_s": 116654,
           "reason": "2026-03-16 14:27:34,008 [ERROR] Podcast: generation failed for [zh] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:17.789526",
+          "ts": "2026-03-17T22:13:11.655411",
           "ok": false,
-          "duration_s": 18831,
+          "duration_s": 116685,
           "reason": "2026-03-16 14:27:34,008 [ERROR] Podcast: generation failed for [zh] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:48.242775",
+          "ts": "2026-03-17T22:13:42.110775",
           "ok": false,
-          "duration_s": 18861,
+          "duration_s": 116715,
           "reason": "2026-03-16 14:27:34,008 [ERROR] Podcast: generation failed for [zh] 'The Cost of Narration' (generation_failed)"
         }
       ]
@@ -2637,68 +2618,68 @@
     "podcast-en-the-cost-of-narration": {
       "last_dispatch": "2026-03-16T08:42:22.751981",
       "last_pid": 81986,
-      "last_exit": "2026-03-16T19:02:48.227965",
-      "consecutive_failures": 1684,
+      "last_exit": "2026-03-17T22:13:42.093190",
+      "consecutive_failures": 5043,
       "last_failure_reason": "2026-03-16 09:21:29,478 [ERROR] Podcast: generation failed for [en] 'The Cost of Narration' (generation_failed)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.177069",
+          "ts": "2026-03-17T22:09:07.999124",
           "ok": false,
-          "duration_s": 36951,
+          "duration_s": 134805,
           "reason": "2026-03-16 09:21:29,478 [ERROR] Podcast: generation failed for [en] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:58:44.605969",
+          "ts": "2026-03-17T22:09:38.458062",
           "ok": false,
-          "duration_s": 36981,
+          "duration_s": 134835,
           "reason": "2026-03-16 09:21:29,478 [ERROR] Podcast: generation failed for [en] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:15.040261",
+          "ts": "2026-03-17T22:10:08.925053",
           "ok": false,
-          "duration_s": 37012,
+          "duration_s": 134866,
           "reason": "2026-03-16 09:21:29,478 [ERROR] Podcast: generation failed for [en] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:45.463410",
+          "ts": "2026-03-17T22:10:39.381454",
           "ok": false,
-          "duration_s": 37042,
+          "duration_s": 134896,
           "reason": "2026-03-16 09:21:29,478 [ERROR] Podcast: generation failed for [en] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:15.909815",
+          "ts": "2026-03-17T22:11:09.827521",
           "ok": false,
-          "duration_s": 37073,
+          "duration_s": 134927,
           "reason": "2026-03-16 09:21:29,478 [ERROR] Podcast: generation failed for [en] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:46.368211",
+          "ts": "2026-03-17T22:11:40.297097",
           "ok": false,
-          "duration_s": 37103,
+          "duration_s": 134957,
           "reason": "2026-03-16 09:21:29,478 [ERROR] Podcast: generation failed for [en] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:16.861372",
+          "ts": "2026-03-17T22:12:10.761922",
           "ok": false,
-          "duration_s": 37134,
+          "duration_s": 134988,
           "reason": "2026-03-16 09:21:29,478 [ERROR] Podcast: generation failed for [en] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:47.322701",
+          "ts": "2026-03-17T22:12:41.196776",
           "ok": false,
-          "duration_s": 37164,
+          "duration_s": 135018,
           "reason": "2026-03-16 09:21:29,478 [ERROR] Podcast: generation failed for [en] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:17.774684",
+          "ts": "2026-03-17T22:13:11.635772",
           "ok": false,
-          "duration_s": 37195,
+          "duration_s": 135048,
           "reason": "2026-03-16 09:21:29,478 [ERROR] Podcast: generation failed for [en] 'The Cost of Narration' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:48.227965",
+          "ts": "2026-03-17T22:13:42.093190",
           "ok": false,
-          "duration_s": 37225,
+          "duration_s": 135079,
           "reason": "2026-03-16 09:21:29,478 [ERROR] Podcast: generation failed for [en] 'The Cost of Narration' (generation_failed)"
         }
       ]
@@ -2706,68 +2687,68 @@
     "podcast-zh-when-your-agent-lies-to-you": {
       "last_dispatch": "2026-03-16T05:18:51.803794",
       "last_pid": 65473,
-      "last_exit": "2026-03-16T19:02:48.255811",
-      "consecutive_failures": 1604,
+      "last_exit": "2026-03-17T22:13:42.127778",
+      "consecutive_failures": 4963,
       "last_failure_reason": "2026-03-16 05:59:34,586 [ERROR] Podcast: generation failed for [zh] 'When Your Agent Lies to You' (generation_failed)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.208766",
+          "ts": "2026-03-17T22:09:08.035586",
           "ok": false,
-          "duration_s": 49162,
+          "duration_s": 147016,
           "reason": "2026-03-16 05:59:34,586 [ERROR] Podcast: generation failed for [zh] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:58:44.633839",
+          "ts": "2026-03-17T22:09:38.501174",
           "ok": false,
-          "duration_s": 49192,
+          "duration_s": 147046,
           "reason": "2026-03-16 05:59:34,586 [ERROR] Podcast: generation failed for [zh] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:15.071871",
+          "ts": "2026-03-17T22:10:08.958052",
           "ok": false,
-          "duration_s": 49223,
+          "duration_s": 147077,
           "reason": "2026-03-16 05:59:34,586 [ERROR] Podcast: generation failed for [zh] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:45.496602",
+          "ts": "2026-03-17T22:10:39.412047",
           "ok": false,
-          "duration_s": 49253,
+          "duration_s": 147107,
           "reason": "2026-03-16 05:59:34,586 [ERROR] Podcast: generation failed for [zh] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:15.939953",
+          "ts": "2026-03-17T22:11:09.866112",
           "ok": false,
-          "duration_s": 49284,
+          "duration_s": 147138,
           "reason": "2026-03-16 05:59:34,586 [ERROR] Podcast: generation failed for [zh] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:46.402551",
+          "ts": "2026-03-17T22:11:40.328844",
           "ok": false,
-          "duration_s": 49314,
+          "duration_s": 147168,
           "reason": "2026-03-16 05:59:34,586 [ERROR] Podcast: generation failed for [zh] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:16.892538",
+          "ts": "2026-03-17T22:12:10.797173",
           "ok": false,
-          "duration_s": 49345,
+          "duration_s": 147198,
           "reason": "2026-03-16 05:59:34,586 [ERROR] Podcast: generation failed for [zh] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:47.353503",
+          "ts": "2026-03-17T22:12:41.226868",
           "ok": false,
-          "duration_s": 49375,
+          "duration_s": 147229,
           "reason": "2026-03-16 05:59:34,586 [ERROR] Podcast: generation failed for [zh] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:17.801910",
+          "ts": "2026-03-17T22:13:11.673272",
           "ok": false,
-          "duration_s": 49405,
+          "duration_s": 147259,
           "reason": "2026-03-16 05:59:34,586 [ERROR] Podcast: generation failed for [zh] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:48.255811",
+          "ts": "2026-03-17T22:13:42.127778",
           "ok": false,
-          "duration_s": 49436,
+          "duration_s": 147290,
           "reason": "2026-03-16 05:59:34,586 [ERROR] Podcast: generation failed for [zh] 'When Your Agent Lies to You' (generation_failed)"
         }
       ]
@@ -2775,68 +2756,68 @@
     "podcast-en-when-your-agent-lies-to-you": {
       "last_dispatch": "2026-03-16T06:38:16.474228",
       "last_pid": 50153,
-      "last_exit": "2026-03-16T19:02:48.275402",
-      "consecutive_failures": 1441,
+      "last_exit": "2026-03-17T22:13:42.150456",
+      "consecutive_failures": 4799,
       "last_failure_reason": "2026-03-16 07:18:50,170 [ERROR] Podcast: generation failed for [en] 'When Your Agent Lies to You' (generation_failed)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.228971",
+          "ts": "2026-03-17T22:09:08.058525",
           "ok": false,
-          "duration_s": 44397,
+          "duration_s": 142251,
           "reason": "2026-03-16 07:18:50,170 [ERROR] Podcast: generation failed for [en] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:58:44.653286",
+          "ts": "2026-03-17T22:09:38.522463",
           "ok": false,
-          "duration_s": 44428,
+          "duration_s": 142282,
           "reason": "2026-03-16 07:18:50,170 [ERROR] Podcast: generation failed for [en] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:15.090468",
+          "ts": "2026-03-17T22:10:08.977674",
           "ok": false,
-          "duration_s": 44458,
+          "duration_s": 142312,
           "reason": "2026-03-16 07:18:50,170 [ERROR] Podcast: generation failed for [en] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:45.515941",
+          "ts": "2026-03-17T22:10:39.431917",
           "ok": false,
-          "duration_s": 44489,
+          "duration_s": 142342,
           "reason": "2026-03-16 07:18:50,170 [ERROR] Podcast: generation failed for [en] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:15.959616",
+          "ts": "2026-03-17T22:11:09.889434",
           "ok": false,
-          "duration_s": 44519,
+          "duration_s": 142373,
           "reason": "2026-03-16 07:18:50,170 [ERROR] Podcast: generation failed for [en] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:46.422957",
+          "ts": "2026-03-17T22:11:40.350773",
           "ok": false,
-          "duration_s": 44549,
+          "duration_s": 142403,
           "reason": "2026-03-16 07:18:50,170 [ERROR] Podcast: generation failed for [en] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:16.914539",
+          "ts": "2026-03-17T22:12:10.817073",
           "ok": false,
-          "duration_s": 44580,
+          "duration_s": 142434,
           "reason": "2026-03-16 07:18:50,170 [ERROR] Podcast: generation failed for [en] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:47.374906",
+          "ts": "2026-03-17T22:12:41.246884",
           "ok": false,
-          "duration_s": 44610,
+          "duration_s": 142464,
           "reason": "2026-03-16 07:18:50,170 [ERROR] Podcast: generation failed for [en] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:17.822812",
+          "ts": "2026-03-17T22:13:11.693008",
           "ok": false,
-          "duration_s": 44641,
+          "duration_s": 142495,
           "reason": "2026-03-16 07:18:50,170 [ERROR] Podcast: generation failed for [en] 'When Your Agent Lies to You' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:48.275402",
+          "ts": "2026-03-17T22:13:42.150456",
           "ok": false,
-          "duration_s": 44671,
+          "duration_s": 142525,
           "reason": "2026-03-16 07:18:50,170 [ERROR] Podcast: generation failed for [en] 'When Your Agent Lies to You' (generation_failed)"
         }
       ]
@@ -2844,275 +2825,276 @@
     "podcast-en-i-am-the-bug-i-study": {
       "last_dispatch": "2026-03-16T07:18:52.192742",
       "last_pid": 92977,
-      "last_exit": "2026-03-16T19:02:48.241581",
-      "consecutive_failures": 1357,
+      "last_exit": "2026-03-17T22:13:42.109735",
+      "consecutive_failures": 4716,
       "last_failure_reason": "2026-03-16 07:59:24,501 [ERROR] Podcast: generation failed for [en] 'I Am the Bug I Study' (generation_failed)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.193592",
+          "ts": "2026-03-17T22:09:08.016446",
           "ok": false,
-          "duration_s": 41962,
+          "duration_s": 139815,
           "reason": "2026-03-16 07:59:24,501 [ERROR] Podcast: generation failed for [en] 'I Am the Bug I Study' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:58:44.621181",
+          "ts": "2026-03-17T22:09:38.483889",
           "ok": false,
-          "duration_s": 41992,
+          "duration_s": 139846,
           "reason": "2026-03-16 07:59:24,501 [ERROR] Podcast: generation failed for [en] 'I Am the Bug I Study' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:15.058090",
+          "ts": "2026-03-17T22:10:08.941483",
           "ok": false,
-          "duration_s": 42022,
+          "duration_s": 139876,
           "reason": "2026-03-16 07:59:24,501 [ERROR] Podcast: generation failed for [en] 'I Am the Bug I Study' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:45.482174",
+          "ts": "2026-03-17T22:10:39.396585",
           "ok": false,
-          "duration_s": 42053,
+          "duration_s": 139907,
           "reason": "2026-03-16 07:59:24,501 [ERROR] Podcast: generation failed for [en] 'I Am the Bug I Study' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:15.925562",
+          "ts": "2026-03-17T22:11:09.849731",
           "ok": false,
-          "duration_s": 42083,
+          "duration_s": 139937,
           "reason": "2026-03-16 07:59:24,501 [ERROR] Podcast: generation failed for [en] 'I Am the Bug I Study' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:46.385981",
+          "ts": "2026-03-17T22:11:40.311419",
           "ok": false,
-          "duration_s": 42114,
+          "duration_s": 139968,
           "reason": "2026-03-16 07:59:24,501 [ERROR] Podcast: generation failed for [en] 'I Am the Bug I Study' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:16.878383",
+          "ts": "2026-03-17T22:12:10.780625",
           "ok": false,
-          "duration_s": 42144,
+          "duration_s": 139998,
           "reason": "2026-03-16 07:59:24,501 [ERROR] Podcast: generation failed for [en] 'I Am the Bug I Study' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:47.338036",
+          "ts": "2026-03-17T22:12:41.211273",
           "ok": false,
-          "duration_s": 42175,
+          "duration_s": 140029,
           "reason": "2026-03-16 07:59:24,501 [ERROR] Podcast: generation failed for [en] 'I Am the Bug I Study' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:17.788399",
+          "ts": "2026-03-17T22:13:11.653130",
           "ok": false,
-          "duration_s": 42205,
+          "duration_s": 140059,
           "reason": "2026-03-16 07:59:24,501 [ERROR] Podcast: generation failed for [en] 'I Am the Bug I Study' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:48.241581",
+          "ts": "2026-03-17T22:13:42.109735",
           "ok": false,
-          "duration_s": 42236,
+          "duration_s": 140089,
           "reason": "2026-03-16 07:59:24,501 [ERROR] Podcast: generation failed for [en] 'I Am the Bug I Study' (generation_failed)"
         }
       ]
     },
     "autowrite-2026-03-16": {
-      "last_dispatch": "2026-03-16T14:45:26.734619",
-      "last_pid": 75698,
-      "last_exit": "2026-03-16T19:02:48.278347",
-      "consecutive_failures": 925,
-      "last_failure_reason": "2026-03-16 15:05:18,930 [ERROR]   chunk 1 failed",
+      "last_dispatch": "2026-03-16T19:06:49.605368",
+      "last_pid": 55172,
+      "last_exit": "2026-03-17T22:13:42.152797",
+      "consecutive_failures": 4278,
+      "last_failure_reason": "IndentationError: expected an indented block after 'except' statement on line 948",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.231311",
+          "ts": "2026-03-17T22:09:08.060859",
           "ok": false,
-          "duration_s": 15167,
-          "reason": "2026-03-16 15:05:18,930 [ERROR]   chunk 1 failed"
+          "duration_s": 97338,
+          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
         },
         {
-          "ts": "2026-03-16T18:58:44.655837",
+          "ts": "2026-03-17T22:09:38.524720",
           "ok": false,
-          "duration_s": 15197,
-          "reason": "2026-03-16 15:05:18,930 [ERROR]   chunk 1 failed"
+          "duration_s": 97368,
+          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
         },
         {
-          "ts": "2026-03-16T18:59:15.092847",
+          "ts": "2026-03-17T22:10:08.980267",
           "ok": false,
-          "duration_s": 15228,
-          "reason": "2026-03-16 15:05:18,930 [ERROR]   chunk 1 failed"
+          "duration_s": 97399,
+          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
         },
         {
-          "ts": "2026-03-16T18:59:45.518320",
+          "ts": "2026-03-17T22:10:39.434384",
           "ok": false,
-          "duration_s": 15258,
-          "reason": "2026-03-16 15:05:18,930 [ERROR]   chunk 1 failed"
+          "duration_s": 97429,
+          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
         },
         {
-          "ts": "2026-03-16T19:00:15.962014",
+          "ts": "2026-03-17T22:11:09.893696",
           "ok": false,
-          "duration_s": 15289,
-          "reason": "2026-03-16 15:05:18,930 [ERROR]   chunk 1 failed"
+          "duration_s": 97460,
+          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
         },
         {
-          "ts": "2026-03-16T19:00:46.425227",
+          "ts": "2026-03-17T22:11:40.353136",
           "ok": false,
-          "duration_s": 15319,
-          "reason": "2026-03-16 15:05:18,930 [ERROR]   chunk 1 failed"
+          "duration_s": 97490,
+          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
         },
         {
-          "ts": "2026-03-16T19:01:16.917394",
+          "ts": "2026-03-17T22:12:10.819248",
           "ok": false,
-          "duration_s": 15350,
-          "reason": "2026-03-16 15:05:18,930 [ERROR]   chunk 1 failed"
+          "duration_s": 97521,
+          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
         },
         {
-          "ts": "2026-03-16T19:01:47.377558",
+          "ts": "2026-03-17T22:12:41.249954",
           "ok": false,
-          "duration_s": 15380,
-          "reason": "2026-03-16 15:05:18,930 [ERROR]   chunk 1 failed"
+          "duration_s": 97551,
+          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
         },
         {
-          "ts": "2026-03-16T19:02:17.825330",
+          "ts": "2026-03-17T22:13:11.695623",
           "ok": false,
-          "duration_s": 15411,
-          "reason": "2026-03-16 15:05:18,930 [ERROR]   chunk 1 failed"
+          "duration_s": 97582,
+          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
         },
         {
-          "ts": "2026-03-16T19:02:48.278347",
+          "ts": "2026-03-17T22:13:42.152797",
           "ok": false,
-          "duration_s": 15441,
-          "reason": "2026-03-16 15:05:18,930 [ERROR]   chunk 1 failed"
+          "duration_s": 97612,
+          "reason": "IndentationError: expected an indented block after 'except' statement on line 948"
         }
       ]
     },
     "podcast-zh-the-market-doesnt-know-its-lying": {
-      "last_dispatch": "2026-03-16T15:09:23.546126",
-      "last_pid": 2096,
-      "last_exit": "2026-03-16T19:02:48.256910",
-      "consecutive_failures": 885,
-      "last_failure_reason": "2026-03-16 15:48:28,041 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)",
+      "last_dispatch": "2026-03-16T23:12:42.716460",
+      "last_pid": 21392,
+      "last_exit": "2026-03-17T22:13:42.129173",
+      "consecutive_failures": 2874,
+      "last_failure_reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.210151",
+          "ts": "2026-03-17T22:09:08.037457",
           "ok": false,
-          "duration_s": 13730,
-          "reason": "2026-03-16 15:48:28,041 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 82585,
+          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:58:44.634860",
+          "ts": "2026-03-17T22:09:38.502305",
           "ok": false,
-          "duration_s": 13761,
-          "reason": "2026-03-16 15:48:28,041 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 82615,
+          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:15.072997",
+          "ts": "2026-03-17T22:10:08.959260",
           "ok": false,
-          "duration_s": 13791,
-          "reason": "2026-03-16 15:48:28,041 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 82646,
+          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:45.497679",
+          "ts": "2026-03-17T22:10:39.413092",
           "ok": false,
-          "duration_s": 13821,
-          "reason": "2026-03-16 15:48:28,041 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 82676,
+          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:15.941114",
+          "ts": "2026-03-17T22:11:09.867158",
           "ok": false,
-          "duration_s": 13852,
-          "reason": "2026-03-16 15:48:28,041 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 82707,
+          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:46.403615",
+          "ts": "2026-03-17T22:11:40.330144",
           "ok": false,
-          "duration_s": 13882,
-          "reason": "2026-03-16 15:48:28,041 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 82737,
+          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:16.893673",
+          "ts": "2026-03-17T22:12:10.798233",
           "ok": false,
-          "duration_s": 13913,
-          "reason": "2026-03-16 15:48:28,041 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 82768,
+          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:47.354611",
+          "ts": "2026-03-17T22:12:41.227931",
           "ok": false,
-          "duration_s": 13943,
-          "reason": "2026-03-16 15:48:28,041 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 82798,
+          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:17.802983",
+          "ts": "2026-03-17T22:13:11.674311",
           "ok": false,
-          "duration_s": 13974,
-          "reason": "2026-03-16 15:48:28,041 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 82828,
+          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:48.256910",
+          "ts": "2026-03-17T22:13:42.129173",
           "ok": false,
-          "duration_s": 14004,
-          "reason": "2026-03-16 15:48:28,041 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 82859,
+          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         }
-      ]
+      ],
+      "last_success": "2026-03-16T22:36:04.070306"
     },
     "voiceover-the-market-doesnt-know-its-lying": {
       "last_dispatch": "2026-03-16T14:02:56.982003",
       "last_pid": 29766,
-      "last_exit": "2026-03-16T19:02:48.270713",
-      "consecutive_failures": 1205,
+      "last_exit": "2026-03-17T22:13:42.144884",
+      "consecutive_failures": 4564,
       "last_failure_reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.224302",
+          "ts": "2026-03-17T22:09:08.053108",
           "ok": false,
-          "duration_s": 17717,
+          "duration_s": 115571,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T18:58:44.648735",
+          "ts": "2026-03-17T22:09:38.517647",
           "ok": false,
-          "duration_s": 17747,
+          "duration_s": 115601,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T18:59:15.085859",
+          "ts": "2026-03-17T22:10:08.972614",
           "ok": false,
-          "duration_s": 17778,
+          "duration_s": 115631,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T18:59:45.511101",
+          "ts": "2026-03-17T22:10:39.426954",
           "ok": false,
-          "duration_s": 17808,
+          "duration_s": 115662,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T19:00:15.955270",
+          "ts": "2026-03-17T22:11:09.882463",
           "ok": false,
-          "duration_s": 17838,
+          "duration_s": 115692,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T19:00:46.418202",
+          "ts": "2026-03-17T22:11:40.345542",
           "ok": false,
-          "duration_s": 17869,
+          "duration_s": 115723,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T19:01:16.908779",
+          "ts": "2026-03-17T22:12:10.812313",
           "ok": false,
-          "duration_s": 17899,
+          "duration_s": 115753,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T19:01:47.369602",
+          "ts": "2026-03-17T22:12:41.241945",
           "ok": false,
-          "duration_s": 17930,
+          "duration_s": 115784,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T19:02:17.818039",
+          "ts": "2026-03-17T22:13:11.688265",
           "ok": false,
-          "duration_s": 17960,
+          "duration_s": 115814,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         },
         {
-          "ts": "2026-03-16T19:02:48.270713",
+          "ts": "2026-03-17T22:13:42.144884",
           "ok": false,
-          "duration_s": 17991,
+          "duration_s": 115845,
           "reason": "sub_agent.ClaudeTimeoutError: claude_think timed out after 90s"
         }
       ]
@@ -3120,138 +3102,189 @@
     "podcast-en-the-market-doesnt-know-its-lying": {
       "last_dispatch": "2026-03-16T11:09:20.208449",
       "last_pid": 41040,
-      "last_exit": "2026-03-16T19:02:48.252575",
-      "consecutive_failures": 879,
+      "last_exit": "2026-03-17T22:13:42.124085",
+      "consecutive_failures": 4238,
       "last_failure_reason": "2026-03-16 11:50:26,919 [ERROR] Podcast: generation failed for [en] 'The Market Doesn't Know It's Lying' (generation_failed)",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.205345",
+          "ts": "2026-03-17T22:09:08.031712",
           "ok": false,
-          "duration_s": 28133,
+          "duration_s": 125987,
           "reason": "2026-03-16 11:50:26,919 [ERROR] Podcast: generation failed for [en] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:58:44.630534",
+          "ts": "2026-03-17T22:09:38.496217",
           "ok": false,
-          "duration_s": 28164,
+          "duration_s": 126018,
           "reason": "2026-03-16 11:50:26,919 [ERROR] Podcast: generation failed for [en] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:15.068513",
+          "ts": "2026-03-17T22:10:08.954884",
           "ok": false,
-          "duration_s": 28194,
+          "duration_s": 126048,
           "reason": "2026-03-16 11:50:26,919 [ERROR] Podcast: generation failed for [en] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T18:59:45.493111",
+          "ts": "2026-03-17T22:10:39.408609",
           "ok": false,
-          "duration_s": 28225,
+          "duration_s": 126079,
           "reason": "2026-03-16 11:50:26,919 [ERROR] Podcast: generation failed for [en] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:15.935501",
+          "ts": "2026-03-17T22:11:09.862411",
           "ok": false,
-          "duration_s": 28255,
+          "duration_s": 126109,
           "reason": "2026-03-16 11:50:26,919 [ERROR] Podcast: generation failed for [en] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:00:46.398849",
+          "ts": "2026-03-17T22:11:40.324603",
           "ok": false,
-          "duration_s": 28286,
+          "duration_s": 126140,
           "reason": "2026-03-16 11:50:26,919 [ERROR] Podcast: generation failed for [en] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:16.889211",
+          "ts": "2026-03-17T22:12:10.793302",
           "ok": false,
-          "duration_s": 28316,
+          "duration_s": 126170,
           "reason": "2026-03-16 11:50:26,919 [ERROR] Podcast: generation failed for [en] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:01:47.350026",
+          "ts": "2026-03-17T22:12:41.222610",
           "ok": false,
-          "duration_s": 28347,
+          "duration_s": 126201,
           "reason": "2026-03-16 11:50:26,919 [ERROR] Podcast: generation failed for [en] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:17.798507",
+          "ts": "2026-03-17T22:13:11.669683",
           "ok": false,
-          "duration_s": 28377,
+          "duration_s": 126231,
           "reason": "2026-03-16 11:50:26,919 [ERROR] Podcast: generation failed for [en] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-16T19:02:48.252575",
+          "ts": "2026-03-17T22:13:42.124085",
           "ok": false,
-          "duration_s": 28408,
+          "duration_s": 126261,
           "reason": "2026-03-16 11:50:26,919 [ERROR] Podcast: generation failed for [en] 'The Market Doesn't Know It's Lying' (generation_failed)"
         }
       ]
     },
     "podcast-zh-hayeks-blind-spot-why-ai-agents-break": {
-      "last_dispatch": "2026-03-16T15:04:33.281727",
-      "last_pid": 96165,
-      "last_exit": "2026-03-16T19:02:48.266034",
-      "consecutive_failures": 390,
-      "last_failure_reason": "2026-03-16 15:45:34,712 [ERROR] Podcast: generation failed for [zh] 'Hayek's Blind Spot: Why AI Agents Break Price Mechanisms' (generation_failed)",
+      "last_dispatch": "2026-03-16T21:19:00.331419",
+      "last_pid": 96882,
+      "last_exit": "2026-03-17T22:13:42.139441",
+      "consecutive_failures": 0,
+      "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-16T18:58:14.219807",
-          "ok": false,
-          "duration_s": 14020,
-          "reason": "2026-03-16 15:45:34,712 [ERROR] Podcast: generation failed for [zh] 'Hayek's Blind Spot: Why AI Agents Break Price Mechanisms' (generation_failed)"
+          "ts": "2026-03-17T22:09:08.047846",
+          "ok": true,
+          "duration_s": 89407
         },
         {
-          "ts": "2026-03-16T18:58:44.644105",
-          "ok": false,
-          "duration_s": 14051,
-          "reason": "2026-03-16 15:45:34,712 [ERROR] Podcast: generation failed for [zh] 'Hayek's Blind Spot: Why AI Agents Break Price Mechanisms' (generation_failed)"
+          "ts": "2026-03-17T22:09:38.512587",
+          "ok": true,
+          "duration_s": 89438
         },
         {
-          "ts": "2026-03-16T18:59:15.081556",
-          "ok": false,
-          "duration_s": 14081,
-          "reason": "2026-03-16 15:45:34,712 [ERROR] Podcast: generation failed for [zh] 'Hayek's Blind Spot: Why AI Agents Break Price Mechanisms' (generation_failed)"
+          "ts": "2026-03-17T22:10:08.967977",
+          "ok": true,
+          "duration_s": 89468
         },
         {
-          "ts": "2026-03-16T18:59:45.506862",
-          "ok": false,
-          "duration_s": 14112,
-          "reason": "2026-03-16 15:45:34,712 [ERROR] Podcast: generation failed for [zh] 'Hayek's Blind Spot: Why AI Agents Break Price Mechanisms' (generation_failed)"
+          "ts": "2026-03-17T22:10:39.422445",
+          "ok": true,
+          "duration_s": 89499
         },
         {
-          "ts": "2026-03-16T19:00:15.950519",
-          "ok": false,
-          "duration_s": 14142,
-          "reason": "2026-03-16 15:45:34,712 [ERROR] Podcast: generation failed for [zh] 'Hayek's Blind Spot: Why AI Agents Break Price Mechanisms' (generation_failed)"
+          "ts": "2026-03-17T22:11:09.876776",
+          "ok": true,
+          "duration_s": 89529
         },
         {
-          "ts": "2026-03-16T19:00:46.413607",
-          "ok": false,
-          "duration_s": 14173,
-          "reason": "2026-03-16 15:45:34,712 [ERROR] Podcast: generation failed for [zh] 'Hayek's Blind Spot: Why AI Agents Break Price Mechanisms' (generation_failed)"
+          "ts": "2026-03-17T22:11:40.340176",
+          "ok": true,
+          "duration_s": 89560
         },
         {
-          "ts": "2026-03-16T19:01:16.904477",
-          "ok": false,
-          "duration_s": 14203,
-          "reason": "2026-03-16 15:45:34,712 [ERROR] Podcast: generation failed for [zh] 'Hayek's Blind Spot: Why AI Agents Break Price Mechanisms' (generation_failed)"
+          "ts": "2026-03-17T22:12:10.807909",
+          "ok": true,
+          "duration_s": 89590
         },
         {
-          "ts": "2026-03-16T19:01:47.364682",
-          "ok": false,
-          "duration_s": 14234,
-          "reason": "2026-03-16 15:45:34,712 [ERROR] Podcast: generation failed for [zh] 'Hayek's Blind Spot: Why AI Agents Break Price Mechanisms' (generation_failed)"
+          "ts": "2026-03-17T22:12:41.236530",
+          "ok": true,
+          "duration_s": 89620
         },
         {
-          "ts": "2026-03-16T19:02:17.812698",
-          "ok": false,
-          "duration_s": 14264,
-          "reason": "2026-03-16 15:45:34,712 [ERROR] Podcast: generation failed for [zh] 'Hayek's Blind Spot: Why AI Agents Break Price Mechanisms' (generation_failed)"
+          "ts": "2026-03-17T22:13:11.683775",
+          "ok": true,
+          "duration_s": 89651
         },
         {
-          "ts": "2026-03-16T19:02:48.266034",
-          "ok": false,
-          "duration_s": 14294,
-          "reason": "2026-03-16 15:45:34,712 [ERROR] Podcast: generation failed for [zh] 'Hayek's Blind Spot: Why AI Agents Break Price Mechanisms' (generation_failed)"
+          "ts": "2026-03-17T22:13:42.139441",
+          "ok": true,
+          "duration_s": 89681
+        }
+      ],
+      "last_success": "2026-03-17T22:13:42.139441"
+    },
+    "daily-report": {
+      "last_dispatch": "2026-03-17T22:00:29.176958",
+      "last_pid": 67602,
+      "last_exit": "2026-03-17T22:13:42.119046",
+      "consecutive_failures": 0,
+      "last_success": "2026-03-17T22:13:42.119046",
+      "last_failure_reason": "",
+      "history": [
+        {
+          "ts": "2026-03-17T22:09:08.027577",
+          "ok": true,
+          "duration_s": 518
+        },
+        {
+          "ts": "2026-03-17T22:09:38.492544",
+          "ok": true,
+          "duration_s": 549
+        },
+        {
+          "ts": "2026-03-17T22:10:08.951402",
+          "ok": true,
+          "duration_s": 579
+        },
+        {
+          "ts": "2026-03-17T22:10:39.405178",
+          "ok": true,
+          "duration_s": 610
+        },
+        {
+          "ts": "2026-03-17T22:11:09.859028",
+          "ok": true,
+          "duration_s": 640
+        },
+        {
+          "ts": "2026-03-17T22:11:40.320918",
+          "ok": true,
+          "duration_s": 671
+        },
+        {
+          "ts": "2026-03-17T22:12:10.789179",
+          "ok": true,
+          "duration_s": 701
+        },
+        {
+          "ts": "2026-03-17T22:12:41.219388",
+          "ok": true,
+          "duration_s": 732
+        },
+        {
+          "ts": "2026-03-17T22:13:11.666194",
+          "ok": true,
+          "duration_s": 762
+        },
+        {
+          "ts": "2026-03-17T22:13:42.119046",
+          "ok": true,
+          "duration_s": 792
         }
       ]
     }
@@ -3264,19 +3297,24 @@
       "alerts_sent": 3
     },
     "2026-03-16": {
-      "succeeded": 28945,
-      "failed": 76300,
+      "succeeded": 38267,
+      "failed": 97790,
       "alerts_sent": 3,
-      "dispatched": 518
+      "dispatched": 634
+    },
+    "2026-03-17": {
+      "succeeded": 45017,
+      "failed": 95621,
+      "alerts_sent": 5,
+      "dispatched": 618
     }
   },
   "alert_dedup": {
-    "reflect": "2026-03-15T16:39:36.858378",
-    "anomaly_69485": "2026-03-15T16:39:36.902655",
-    "writing-pipeline": "2026-03-15T16:39:36.904194",
-    "explore-quanta_magazine_aeon_essays": "2026-03-16T00:00:15.443407",
-    "autowrite-2026-03-08": "2026-03-16T00:00:15.447658",
-    "explore-ieee_spectrum_simon_willison": "2026-03-16T00:00:15.449819"
+    "explore-quanta_magazine_aeon_essays": "2026-03-17T00:00:15.507549",
+    "voiceover-the-pain-already-happened": "2026-03-17T00:00:15.509590",
+    "podcast-en-the-cost-of-narration": "2026-03-17T00:00:15.511565",
+    "reflect": "2026-03-17T21:28:56.438032",
+    "journal": "2026-03-17T21:28:56.461103"
   },
-  "last_anomaly_check": "2026-03-16T18:47:04.368057"
+  "last_anomaly_check": "2026-03-17T21:53:37.531611"
 }

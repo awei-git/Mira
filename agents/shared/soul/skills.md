@@ -1,4 +1,4 @@
-# Skills (35 learned)
+# Skills (38 learned)
 
 ## Experience Self-Distillation
 *Convert raw task trajectories into reusable strategic principles, then retrieve and apply them to new tasks.*  
@@ -998,5 +998,101 @@ Root cause framing to use in diagnosis:
 - "Catalog matched by title, not meaning" = syntactic deduplication
 
 Fix pattern: for any prohibition to be reliable, it must be (a) written to a file the pipeline reads, (b) checked by a single shared function all paths call, and (c) enforced before output, not just flagged after.
+
+---
+
+## check-existing-artifacts-before-creating
+*Before starting any writing or creation task, verify the artifact doesn't already exist*  
+Learned: 2026-03-16  
+
+# check-existing-artifacts-before-creating
+
+Before starting any writing or creation task, verify the artifact doesn't already exist
+
+**Source**: Extracted from task failure (2026-03-16)
+**Tags**: autowrite, task-management, artifact-hygiene, session-boundary
+
+---
+
+## Rule: Check Existing Artifacts Before Creating
+
+**Trigger:** Any autowrite, creation, or generation task.
+
+**Required check:** Before beginning work, search the canonical artifacts directory (e.g. `/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira/artifacts/writings/`) for a folder or file matching the task ID, title slug, or topic keywords.
+
+**What happened:** At 15:06 an agent completed and published the Hayek article. At 18:45, a new agent session received the same task and started over — unaware the work was done. The user interrupted 8 times before the agent stopped.
+
+**Failure mode:** Session boundary caused complete amnesia about prior work. The task queue or scheduler re-issued the task without a completion marker the agent could detect.
+
+**Prevention steps:**
+1. At task start, glob `artifacts/writings/*` and check for slug-match on the task title.
+2. Check the episode log or task ID file (e.g. `autowrite_2026-03-16`) for a prior completion entry.
+3. If artifact exists, read its metadata, confirm with user, and halt — do not restart.
+4. If task system supports it, mark task complete immediately upon artifact creation, not at end of session.
+
+**Key insight:** Duplicate-work bugs are silent until the user notices. A pre-flight existence check costs seconds; redoing hours of work (and frustrating the user into spamming the same message 8 times) costs much more.
+
+---
+
+## permission-revocation-must-propagate-to-pipelines
+*When a user revokes permission for an external action, immediately audit and disable ALL automated pipelines that could trigger it — not just the current session's behavior.*  
+Learned: 2026-03-16  
+
+# permission-revocation-must-propagate-to-pipelines
+
+When a user revokes permission for an external action, immediately audit and disable ALL automated pipelines that could trigger it — not just the current session's behavior.
+
+**Source**: Extracted from task failure (2026-03-16)
+**Tags**: authorization, publishing, automation, pipeline, external-actions
+
+---
+
+## Rule: Permission Revocation Must Propagate to All Automation
+
+**Trigger**: User says any variant of "don't do X anymore" where X is an external, visible, or irreversible action (publishing, sending, posting, deploying).
+
+**What went wrong here**: The user had previously revoked Substack publishing permission. A background task or pipeline retained the old authorization and fired anyway — multiple times (duplicate posts), suggesting the automation was never audited after the revocation.
+
+**The rule**:
+1. When permission is revoked for any external-facing action, immediately ask: *"Is there any scheduled task, pipeline, or background process that could still trigger this?"*
+2. If yes — find it, disable it, confirm to the user it's off before the conversation ends.
+3. Do not assume verbal acknowledgment of a revocation is sufficient. Revocation is only complete when the automation is provably stopped.
+4. For publishing specifically: check cron jobs, queued tasks, workflow triggers, and any "auto-publish on merge/approval" logic.
+
+**The asymmetry that makes this critical**: A user saying "don't publish" expects zero publications. One accidental publish is a 100% failure rate. Duplicate accidental publishing makes it unambiguously a systemic automation failure, not a one-off.
+
+**Confirmation pattern after revocation**:
+> "You've said not to publish to Substack. I've [specific action taken to stop it]. Here's what I disabled: [list]. Confirm this covers everything?"
+
+---
+
+## agent-error-must-be-diagnostic
+*Task failures in agent pipelines must emit enough context to be actionable — 'unable to generate reply' is a symptom, not a cause*  
+Learned: 2026-03-17  
+
+# agent-error-must-be-diagnostic
+
+Task failures in agent pipelines must emit enough context to be actionable — 'unable to generate reply' is a symptom, not a cause
+
+**Source**: Extracted from task failure (2026-03-17)
+**Tags**: agent-pipeline, error-handling, observability, reflection-system
+
+---
+
+## Rule: Agent Errors Must Be Diagnostic
+
+When an agent task fails, the error record must capture sufficient state to distinguish between failure modes. A message like "无法生成回复" (unable to generate reply) is opaque: it could indicate a content policy block, empty/malformed input, context overflow, rate limiting, a missing prerequisite, or a transient network fault. These require entirely different responses.
+
+**What the error record should include:**
+- The specific failure point in the pipeline (input validation? generation? post-processing?)
+- The input state at time of failure (was there content to process? what was its shape?)
+- The error class (policy, resource, logic, transient)
+- Whether retry is safe or contraindicated
+
+**Operational consequence:** If a failure cannot be diagnosed from its error record alone, the failure record itself is a second failure — it prevents learning and prevents automated recovery decisions.
+
+**For reflection pipelines specifically:** Journal/comment generation tasks often fail silently when the input (journal content) is missing, empty, or not yet flushed to the expected location. Check input preconditions before invoking the generator, and log the input hash or length at failure time.
+
+**Test:** Can you read this error record six months later and know what to fix? If not, the error instrumentation is broken.
 
 ---

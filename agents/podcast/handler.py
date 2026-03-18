@@ -67,7 +67,7 @@ SPEED_ZH_GEMINI      = 1.12      # Gemini ZH tends to be slow; 1.12x tightens it
 # 'gemini'  — Gemini only (may hit QPM limits on long episodes)
 # 'minimax' — MiniMax only (charges per character; wallet balance preserved)
 # 'auto'    — Gemini first; on 429 quota exhaustion, fallback to MiniMax
-TTS_PROVIDER = "minimax"
+TTS_PROVIDER = "auto"   # gemini first, fallback to minimax per-turn
 
 # Chunk limits — kept for voiceover mode (single-speaker)
 MAX_CHARS_VOICEOVER    = 2500
@@ -804,6 +804,9 @@ def _parse_turns(script: str) -> list[tuple[str, str]]:
             text = _clean_turn_text(m.group(2))
             text = _fix_polyphonic_chars(text)
             text = _add_breathing_pauses(text, provider=TTS_PROVIDER)
+            # Pad very short turns — Gemini rejects texts < ~10 chars
+            if len(text) < 15:
+                text = f"嗯，{text}" if any('\u4e00' <= c <= '\u9fff' for c in text) else f"Hmm, {text}"
             prev_speaker = speaker
             turns.append((speaker, text))
     return turns
@@ -884,12 +887,13 @@ def _tts_call_with_fallback(text: str, speaker: str,
     elif TTS_PROVIDER == 'gemini':
         data, fmt = _try_gemini()
         return (data, fmt) if fmt not in ('', 'quota') else (None, '')
-    else:  # 'auto': gemini first, fallback to minimax on quota exhaustion
+    else:  # 'auto': gemini first, fallback to minimax on any failure
         data, fmt = _try_gemini()
-        if fmt == 'quota':
-            log.warning("Gemini TTS quota exhausted — falling back to MiniMax")
+        if fmt in ('', 'quota'):
+            reason = "quota exhausted" if fmt == 'quota' else "failed"
+            log.warning("Gemini TTS %s — falling back to MiniMax for this turn", reason)
             return _try_minimax()
-        return (data, fmt) if fmt else (None, '')
+        return (data, fmt)
 
 
 def _tts_conversation_chunk(turns: list[tuple[str, str]], api_key: str,
@@ -904,6 +908,62 @@ def _tts_conversation_chunk(turns: list[tuple[str, str]], api_key: str,
     speaker, text = turns[0]
     voice_name = _voice_for_speaker(speaker, lang)
     return _call_gemini_tts_text(text, voice_name, lang, api_key)
+
+
+def _get_mp3_duration(mp3_path: Path) -> float:
+    """Get MP3 duration in seconds via ffprobe."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_format", str(mp3_path)],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+        import json as _json
+        data = _json.loads(result.stdout)
+        return float(data["format"]["duration"])
+    except Exception:
+        return 0.0
+
+
+def _format_srt_time(seconds: float) -> str:
+    """Format seconds as SRT timestamp: HH:MM:SS,mmm"""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds % 1) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def _generate_srt_from_chunks(
+    turns: list[tuple[str, str]],
+    turn_mp3s: list[Path],
+    output_path: Path,
+) -> None:
+    """Generate SRT transcript from per-turn chunk durations.
+
+    Accounts for intro bumper offset (~15s) so timestamps align with
+    the final assembled episode.
+    """
+    srt_path = output_path.parent / f"{output_path.stem}.srt"
+    intro_offset = 15.0  # intro bumper is ~15s
+
+    lines = []
+    cursor = intro_offset
+    for i, (mp3_path, (speaker, text)) in enumerate(zip(turn_mp3s, turns)):
+        dur = _get_mp3_duration(mp3_path)
+        if dur <= 0:
+            continue
+        start = cursor
+        end = cursor + dur
+        lines.append(str(i + 1))
+        lines.append(f"{_format_srt_time(start)} --> {_format_srt_time(end)}")
+        lines.append(f"[{speaker}]: {text}")
+        lines.append("")
+        cursor = end
+
+    if lines:
+        srt_path.write_text("\n".join(lines), encoding="utf-8")
+        log.info("SRT transcript: %s (%d entries)", srt_path.name, len(turns))
 
 
 def _speedup_mp3(input_path: Path, output_path: Path, rate: float) -> bool:
@@ -981,7 +1041,8 @@ def generate_tts_conversation(script: str, output_path: Path,
                 return False
 
         # Gemini ZH tends to be slow — apply speed-up post-process
-        if lang == "zh":
+        # MiniMax already uses SPEED_ZH_MM in the API call, no post-process needed
+        if lang == "zh" and TTS_PROVIDER == "gemini":
             log.info("Applying %.2fx speed-up for ZH...", SPEED_ZH_GEMINI)
             tmp_fast = output_path.with_suffix(".fast.mp3")
             if _speedup_mp3(output_path, tmp_fast, SPEED_ZH_GEMINI):
@@ -991,6 +1052,9 @@ def generate_tts_conversation(script: str, output_path: Path,
             else:
                 log.warning("atempo failed — keeping original speed")
                 tmp_fast.unlink(missing_ok=True)
+
+        # Generate SRT transcript from chunk durations before cleanup
+        _generate_srt_from_chunks(turns, turn_mp3s, output_path)
 
         shutil.rmtree(cache_dir, ignore_errors=True)
         return True

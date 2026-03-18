@@ -11,8 +11,8 @@ from pathlib import Path
 log = logging.getLogger("video.editor")
 
 
-FFMPEG_PROMPT = """You are an expert ffmpeg engineer. Generate a complete ffmpeg command
-to edit a travel video based on this screenplay.
+FFMPEG_PROMPT = """You are an expert ffmpeg engineer. Generate a shell script to edit a video
+based on this screenplay. Use multiple passes for reliability.
 
 ## Screenplay
 {screenplay}
@@ -26,29 +26,47 @@ to edit a travel video based on this screenplay.
 ## Output
 {output_path}
 
-## Requirements
+## Architecture: Multi-pass pipeline
 
-1. Generate a SINGLE ffmpeg command that produces the final video
-2. Use filter_complex for all operations
-3. For each clip in the screenplay:
-   - trim to the specified timestamps (use trim/atrim + setpts/asetpts)
-   - Apply any noted transitions (xfade for crossfade/dissolve/fade)
-4. Standardize all clips:
-   - Resolution: 1920x1080 (scale + pad if needed)
-   - Frame rate: 30fps
-   - Pixel format: yuv420p
-   - Audio: aac 192k stereo
-5. Use -preset medium -crf 18 for quality
-6. If a clip's timestamps are approximate (e.g. "~00:12"), use the nearest second
+### Pass 1: Extract and process individual clips
+For each clip in the screenplay:
+- trim to the specified timestamps (use -ss BEFORE -i for fast seek)
+- Apply speed changes if noted:
+  - Slow motion: setpts=2.0*PTS, atempo=0.5
+  - Speed up: setpts=0.5*PTS, atempo=2.0
+  - Speed ramp: split into segments, apply different speeds, concat
+  - For smooth slow-mo, use minterpolate=fps=60:mi_mode=mci
+- Apply color grading if noted:
+  - Warm cinematic: colortemperature=6500,eq=contrast=1.1:brightness=0.02:saturation=1.15
+  - Cool: colortemperature=4500,eq=saturation=0.9
+  - Vintage: curves=vintage,eq=saturation=0.8:contrast=1.05
+  - Natural: no filter needed
+  - If a .cube LUT file is specified: lut3d=file=path.cube
+- Standardize: scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p
+- Save each clip as clip_001.mp4, clip_002.mp4, etc.
 
-## Important
-- Each input file needs its own -i flag
-- Keep the filter_complex as simple as possible
-- Use concat demuxer approach if filter_complex gets too complex
-- Test each trim range is within the file's duration
-- Output ONLY the ffmpeg command, nothing else. No explanation.
-- If the command is too complex for a single filter_complex, output a shell script
-  that runs multiple ffmpeg passes and concatenates at the end.
+### Pass 2: Apply transitions
+- For simple cuts: use concat demuxer (fastest, most reliable)
+- For crossfade/dissolve: use xfade=transition=fade:duration=0.5:offset=N
+- For J-cut (audio leads video): offset audio trim to start earlier
+- For L-cut (audio trails): extend audio trim past video end
+
+### Pass 3: Final assembly
+- Concatenate all processed clips
+- Apply global color correction if specified
+- Audio: aac 192k stereo
+- Video: -preset medium -crf 18
+
+## Rules
+- Use -ss BEFORE -i for input seeking (fast seek)
+- Each clip extraction is a separate ffmpeg command
+- Use intermediate files in {work_dir}/clips/
+- Create a concat_list.txt for the final concatenation
+- The script must be self-contained bash, runnable as: bash edit_run.sh
+- Include set -e for error handling
+- Include mkdir -p for clip directories
+- Output ONLY the shell script, no explanation.
+- If timestamps are approximate (e.g. "~00:12"), use the nearest second.
 """
 
 
