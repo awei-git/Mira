@@ -2071,7 +2071,7 @@ def do_check_comments():
 # Substack growth cycle — likes, comments, engagement
 # ---------------------------------------------------------------------------
 
-GROWTH_COOLDOWN_HOURS = 4  # Run growth cycle at most every 4 hours
+GROWTH_COOLDOWN_HOURS = 2  # Run growth cycle every 2 hours (8:00-23:00 = ~7 runs/day)
 
 
 def should_growth_cycle() -> bool:
