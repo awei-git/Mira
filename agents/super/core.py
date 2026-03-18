@@ -88,6 +88,62 @@ def save_state(state: dict):
 
 
 # ---------------------------------------------------------------------------
+# Session context — rolling short-term memory across cycles (Level 1)
+# ---------------------------------------------------------------------------
+
+_SESSION_FILE = MIRA_ROOT / ".session_context.json"
+_SESSION_MAX_ENTRIES = 40  # ~20 minutes of context at 30s cycles
+
+
+def load_session_context() -> list[dict]:
+    """Load recent session context entries. Each entry is one cycle's decisions."""
+    if not _SESSION_FILE.exists():
+        return []
+    try:
+        data = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def save_session_context(entries: list[dict]):
+    """Save session context, keeping only the most recent entries."""
+    trimmed = entries[-_SESSION_MAX_ENTRIES:]
+    try:
+        _SESSION_FILE.write_text(
+            json.dumps(trimmed, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    except OSError as e:
+        log.warning("Failed to save session context: %s", e)
+
+
+def session_record(action: str, detail: str = "", **extra) -> dict:
+    """Create a session context entry."""
+    entry = {
+        "ts": datetime.now().isoformat(),
+        "action": action,
+    }
+    if detail:
+        entry["detail"] = detail
+    entry.update(extra)
+    return entry
+
+
+def session_has_recent(action: str, hours: float = 1.0,
+                       ctx: list[dict] | None = None) -> dict | None:
+    """Check if a specific action was recorded recently. Returns the entry or None."""
+    if ctx is None:
+        ctx = load_session_context()
+    cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+    for entry in reversed(ctx):
+        if entry.get("ts", "") < cutoff:
+            break
+        if entry.get("action") == action:
+            return entry
+    return None
+
+
+# ---------------------------------------------------------------------------
 # TALK mode — handle messages from Mira (iPhone ↔ Mac)
 # ---------------------------------------------------------------------------
 
@@ -1434,6 +1490,11 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
 
     log.info("Autonomous writing triggered: '%s' [%s]", title, writing_type)
 
+    # Record in session context
+    ctx = load_session_context()
+    ctx.append(session_record("autowrite_triggered", title, topic=title))
+    save_session_context(ctx)
+
     today = datetime.now().strftime("%Y-%m-%d")
     task_id = f"autowrite_{today}"
 
@@ -2352,6 +2413,14 @@ def do_autowrite_check():
         log.info("Autowrite check skipped: Substack publishing is disabled")
         return
 
+    # Check session context: don't re-trigger if we recently decided to write or skip
+    if session_has_recent("autowrite_triggered", hours=4):
+        log.info("Autowrite check skipped: already triggered recently (session context)")
+        return
+    if session_has_recent("autowrite_skip", hours=2):
+        log.info("Autowrite check skipped: recently decided not to write (session context)")
+        return
+
     log.info("Starting autonomous writing check")
 
     soul = load_soul()
@@ -2406,6 +2475,11 @@ def do_autowrite_check():
     if not decision.get("should_write"):
         log.info("Autonomous writing: Mira chose not to write (%s)",
                  decision.get("reason", "")[:80])
+        # Record decision in session context so next cycle knows
+        ctx = load_session_context()
+        ctx.append(session_record("autowrite_skip",
+                                  decision.get("reason", "")[:100]))
+        save_session_context(ctx)
         save_state(state)
         return
 
@@ -2416,6 +2490,11 @@ def do_autowrite_check():
     writing_type = decision.get("type", "essay")
 
     log.info("Autonomous writing triggered: '%s' [%s]", title, writing_type)
+
+    # Record in session context — prevents duplicate triggers in subsequent cycles
+    ctx = load_session_context()
+    ctx.append(session_record("autowrite_triggered", title, topic=title))
+    save_session_context(ctx)
 
     today = datetime.now().strftime("%Y-%m-%d")
     task_id = f"autowrite_{today}"
@@ -2457,6 +2536,10 @@ def cmd_run():
     so heartbeat and Mira polling stay responsive.
     """
     log.info("=== Mira Agent wake ===")
+
+    # Load session context from previous cycles
+    _session_ctx = load_session_context()
+    _session_new = []  # entries from this cycle
 
     # Safety net: ensure today's journal/zhesi are visible to iOS
     try:
@@ -2515,6 +2598,7 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "explore",
             "--sources", sources_arg, "--slot", explore_pick["label"],
         ])
+        _session_new.append(session_record("explore", explore_pick["label"]))
 
     if should_reflect():
         _dispatch_background("reflect", [
@@ -2570,6 +2654,7 @@ def cmd_run():
         _dispatch_background("substack-growth", [
             sys.executable, str(Path(__file__).resolve()), "growth-cycle",
         ])
+        _session_new.append(session_record("growth_cycle"))
 
     # Substack Notes — backfill articles + post standalone Notes
     if should_post_notes():
@@ -2615,6 +2700,10 @@ def cmd_run():
         _dispatch_background("idle-think", [
             sys.executable, str(Path(__file__).resolve()), "idle-think",
         ])
+
+    # Save session context for next cycle
+    if _session_new:
+        save_session_context(_session_ctx + _session_new)
 
     log.info("=== Mira Agent sleep ===")
 
