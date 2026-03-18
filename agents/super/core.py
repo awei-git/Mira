@@ -2713,6 +2713,22 @@ def cmd_run():
 # ---------------------------------------------------------------------------
 
 _BG_PID_DIR = MIRA_ROOT / "agents" / ".bg_pids"
+MAX_CONCURRENT_BG = 2  # Max background processes running at once
+
+
+def _count_bg_running() -> int:
+    """Count how many background processes are currently alive."""
+    if not _BG_PID_DIR.exists():
+        return 0
+    count = 0
+    for pid_file in _BG_PID_DIR.glob("*.pid"):
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            os.kill(old_pid, 0)
+            count += 1
+        except (OSError, ValueError):
+            pass
+    return count
 
 
 def _is_bg_running(name: str) -> bool:
@@ -2731,10 +2747,19 @@ def _is_bg_running(name: str) -> bool:
 def _dispatch_background(name: str, cmd: list[str]):
     """Spawn a background process if one isn't already running for this name.
 
+    Enforces a global concurrency limit (MAX_CONCURRENT_BG) to prevent
+    too many Claude CLI subprocesses from competing for resources.
     Tracks PID to avoid duplicate runs. Fire-and-forget.
     """
     _BG_PID_DIR.mkdir(parents=True, exist_ok=True)
     pid_file = _BG_PID_DIR / f"{name}.pid"
+
+    # Global concurrency limit — don't spawn if too many are already running
+    running = _count_bg_running()
+    if running >= MAX_CONCURRENT_BG:
+        log.debug("Background '%s' deferred — %d/%d slots occupied",
+                  name, running, MAX_CONCURRENT_BG)
+        return
 
     # Check if a previous run is still active or finished recently
     if pid_file.exists():
