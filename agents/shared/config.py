@@ -46,11 +46,14 @@ def _parse_simple_yaml(text: str) -> dict:
                     result[key] = val
                 current_section = None
             else:
-                # Try to coerce to int
-                try:
-                    result[key] = int(val)
-                except ValueError:
-                    result[key] = val
+                # Try to coerce to bool, then int
+                if val.lower() in ('true', 'false'):
+                    result[key] = val.lower() == 'true'
+                else:
+                    try:
+                        result[key] = int(val)
+                    except ValueError:
+                        result[key] = val
                 current_section = None
         elif current_section and indent > 0:
             if val.startswith("["):
@@ -59,10 +62,13 @@ def _parse_simple_yaml(text: str) -> dict:
                 except (json.JSONDecodeError, ValueError):
                     result[current_section][key] = val
             else:
-                try:
-                    result[current_section][key] = int(val)
-                except ValueError:
-                    result[current_section][key] = val
+                if val.lower() in ('true', 'false'):
+                    result[current_section][key] = val.lower() == 'true'
+                else:
+                    try:
+                        result[current_section][key] = int(val)
+                    except ValueError:
+                        result[current_section][key] = val
     return result
 
 def _load_config() -> dict:

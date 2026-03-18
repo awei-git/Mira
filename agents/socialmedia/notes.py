@@ -365,6 +365,20 @@ def post_notes_for_article(title: str, article_text: str,
         log.info("Rate limited — skipping notes for '%s'", title)
         return []
 
+    # Skip note types that have failed 3+ times (avoid infinite retry loop)
+    MAX_RETRIES = 3
+    skip_failed = set()
+    for nt in all_types - posted_types:
+        fail_key = f"fail_{title}_{nt}"
+        if state.get(fail_key, 0) >= MAX_RETRIES:
+            skip_failed.add(nt)
+    if skip_failed:
+        log.info("Skipping %s for '%s' — failed %d+ times", skip_failed, title, MAX_RETRIES)
+    posted_types = posted_types | skip_failed
+
+    if posted_types >= all_types:
+        return []
+
     notes = generate_notes_for_article(title, article_text, post_url,
                                        skip_types=posted_types)
     if not notes:
@@ -376,17 +390,25 @@ def post_notes_for_article(title: str, article_text: str,
     result = post_note(note["text"], link_url=post_url, post_id=post_id)
 
     if result:
-        # Tag with article info for dedup tracking
+        # Tag with article info for dedup tracking + clear failure counter
         state = _load_state()
         history = state.get("history", [])
         if history:
             history[-1]["article_title"] = title
             history[-1]["note_type"] = note["type"]
-            _save_state(state)
+        fail_key = f"fail_{title}_{note['type']}"
+        state.pop(fail_key, None)
+        _save_state(state)
         log.info("Posted %s note for '%s': %s", note["type"], title, note["text"][:80])
         return [result]
     else:
-        log.warning("Failed to post %s note for '%s'", note["type"], title)
+        # Track failure count to avoid infinite retry loops
+        state = _load_state()
+        fail_key = f"fail_{title}_{note['type']}"
+        state[fail_key] = state.get(fail_key, 0) + 1
+        _save_state(state)
+        log.warning("Failed to post %s note for '%s' (attempt %d)",
+                     note["type"], title, state[fail_key])
         return []
 
 

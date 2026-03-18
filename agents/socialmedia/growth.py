@@ -379,7 +379,7 @@ LIKEABLE_SUBDOMAINS = [
     "aisupremacy",         # Michael Spencer (AI)
     "chinatalk",           # ChinaTalk
     "danhon",              # Dan Hon
-    "benmiller",           # Ben Miller (science)
+    # "benmiller",           # Ben Miller — removed, returns non-JSON (custom domain?)
     "elicit",              # Ought/Elicit (AI reasoning)
     "importai",            # Import AI (Jack Clark)
     "alignmentforum",      # AI alignment
