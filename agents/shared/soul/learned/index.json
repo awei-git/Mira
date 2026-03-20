@@ -277,5 +277,11 @@
     "description": "Task failures in agent pipelines must emit enough context to be actionable — 'unable to generate reply' is a symptom, not a cause",
     "file": "agent-error-must-be-diagnostic.md",
     "created": "2026-03-17T13:16:18.516895"
+  },
+  {
+    "name": "writing-pipeline-timeout-handling",
+    "description": "Prevent and recover from claude_think timeouts in automated writing pipelines",
+    "file": "writing-pipeline-timeout-handling.md",
+    "created": "2026-03-18T23:23:11.583563"
   }
 ]

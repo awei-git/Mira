@@ -318,13 +318,38 @@ def _on_feedback(ws: Path, p: dict, feedback: str) -> str:
     return "await_feedback"
 
 
+def _strip_revision_metadata(text: str) -> str:
+    """Strip LLM-added revision metadata headers and review tables from draft text.
+
+    Removes patterns like:
+      # 修订稿 R1
+      日期：...
+      ---
+    and trailing:
+      ---
+      ## 修改记录
+      ...
+    """
+    # Strip leading "# 修订稿 R{n}\n...\n---\n\n" block
+    text = re.sub(r'^# 修订稿.*?\n---\n\n', '', text, flags=re.DOTALL)
+    # Strip trailing "---\n\n## 修改记录\n..." section
+    text = re.sub(r'\n---\n\n## 修改记录\b[\s\S]*$', '', text)
+    return text.strip()
+
+
 def _finalize(ws: Path, p: dict) -> str:
     """Produce final version."""
     title = p["title"]
     v = p["version"]
     final_text = (ws / "versions" / f"v{v}" / "converged.md").read_text(encoding="utf-8")
+    final_text = _strip_revision_metadata(final_text)
 
-    (ws / "final.md").write_text(f"# {title}\n\n{final_text}", encoding="utf-8")
+    # Don't prepend title if converged draft already starts with a heading
+    if final_text.lstrip().startswith("#"):
+        file_content = final_text
+    else:
+        file_content = f"# {title}\n\n{final_text}"
+    (ws / "final.md").write_text(file_content, encoding="utf-8")
 
     p["phase"] = "done"
     _save_project(ws, p)
@@ -892,7 +917,11 @@ def run_full_pipeline(title: str, body: str) -> tuple[Path, str]:
     (vd / "converged.md").write_text(final_draft, encoding="utf-8")
 
     # --- Finalize ---
-    final_text = f"# {title}\n\n{final_draft}"
+    final_draft = _strip_revision_metadata(final_draft)
+    if final_draft.lstrip().startswith("#"):
+        final_text = final_draft
+    else:
+        final_text = f"# {title}\n\n{final_draft}"
     (ws / "final.md").write_text(final_text, encoding="utf-8")
 
     project["phase"] = "done"

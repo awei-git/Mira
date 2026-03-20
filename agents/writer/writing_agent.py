@@ -864,6 +864,10 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
             if final_file.exists():
                 article_text = final_file.read_text(encoding="utf-8")
 
+                # Strip revision header (修订稿 R1, 日期, 字数, 基于) from top
+                article_text = re.sub(
+                    r'^#\s*修订稿.*?\n---\s*\n+', '', article_text, flags=re.DOTALL
+                )
                 # Strip revision tables (修改记录) from published text
                 article_text = re.sub(
                     r'\n---\s*\n+## 修改记录.*', '', article_text, flags=re.DOTALL

@@ -418,7 +418,7 @@ Output ONLY valid JSON mapping each key to a number. No explanation.
 Example: {{"{list(criteria.keys())[0]}": 6.5}}"""
 
     try:
-        result = claude_think(prompt, timeout=30)
+        result = claude_think(prompt, timeout=90)
         if not result:
             return {}
         # Parse JSON from response (handle markdown code blocks)
@@ -941,7 +941,7 @@ def generate_weekly_report() -> str | None:
 输出纯文本，不要 markdown。"""
 
     try:
-        assessment = claude_think(prompt, timeout=30)
+        assessment = claude_think(prompt, timeout=90)
     except Exception:
         assessment = None
 

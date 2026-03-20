@@ -32,7 +32,7 @@ struct TBThread: Identifiable, Codable, Equatable {
     }
 
     var lastActiveDate: Date {
-        ISO8601DateFormatter().date(from: lastActive) ?? .distantPast
+        ISO8601DateFormatter.shared.date(from: lastActive) ?? .distantPast
     }
 
     /// Create a new thread locally
@@ -40,8 +40,8 @@ struct TBThread: Identifiable, Codable, Equatable {
         TBThread(
             id: UUID().uuidString.prefix(8).lowercased().description,
             title: title,
-            createdAt: ISO8601DateFormatter().string(from: Date()),
-            lastActive: ISO8601DateFormatter().string(from: Date())
+            createdAt: ISO8601DateFormatter.shared.string(from: Date()),
+            lastActive: ISO8601DateFormatter.shared.string(from: Date())
         )
     }
 }

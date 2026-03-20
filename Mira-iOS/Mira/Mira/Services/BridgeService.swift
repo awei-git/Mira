@@ -22,6 +22,12 @@ final class BridgeService {
     // Task-based state (new dashboard UI)
     var tasks: [MiraTask] = []
     var needsInputCount: Int { tasks.filter(\.needsInput).count }
+    var iCloudAvailable: Bool = true
+    var isInitialLoading: Bool = false
+
+    // Incremental loading — track file mod dates to skip unchanged files
+    private var taskFileModDates: [String: Date] = [:]
+    private var taskCache: [String: MiraTask] = [:]
 
     // Notification tracking
     /// Count of tasks with unread agent replies (for badge)
@@ -52,8 +58,8 @@ final class BridgeService {
     /// Artifacts directory
     var artifactsURL: URL? {
         if let root = _rootURL {
-            // New setup: MtJoy root selected
-            return root.appendingPathComponent("Mira/artifacts")
+            // MtJoy root selected — artifacts at MtJoy/Mira-Artifacts
+            return root.appendingPathComponent("Mira-Artifacts")
         }
         // Legacy: bridge folder selected, artifacts synced inside bridge
         return bridgeURL?.appendingPathComponent("artifacts")
@@ -120,9 +126,9 @@ final class BridgeService {
 
         // Detect by folder name: "Mira-bridge" = legacy, anything else = workspace root
         let folderName = url.lastPathComponent
-        let isRoot = folderName != "Mira-bridge"
+        let isRoot = folderName != "Mira-bridge" && folderName != "Mira-Bridge"
 
-        let actualBridge = isRoot ? url.appendingPathComponent("Mira/Mira-bridge") : url
+        let actualBridge = isRoot ? url.appendingPathComponent("Mira-Bridge") : url
         let actualRoot: URL? = isRoot ? url : nil
 
         // Ensure bridge dir exists (trigger iCloud download if needed)
@@ -176,7 +182,7 @@ final class BridgeService {
             let isRoot = UserDefaults.standard.bool(forKey: "bookmark_is_root")
             if isRoot {
                 _rootURL = url
-                bridgeURL = url.appendingPathComponent("Mira/Mira-bridge")
+                bridgeURL = url.appendingPathComponent("Mira-Bridge")
             } else {
                 bridgeURL = url
             }
@@ -195,6 +201,21 @@ final class BridgeService {
         for sub in ["inbox", "outbox", "ack", "threads", "tasks"] {
             let dir = base.appendingPathComponent(sub)
             try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            // Trigger iCloud download for each subdirectory
+            try? fm.startDownloadingUbiquitousItem(at: dir)
+        }
+        // Also trigger download of key files
+        try? fm.startDownloadingUbiquitousItem(at: base.appendingPathComponent("heartbeat.json"))
+
+        // Show loading state briefly on first setup if tasks dir is empty
+        let tasksDir = base.appendingPathComponent("tasks")
+        let hasFiles = (try? fm.contentsOfDirectory(atPath: tasksDir.path))?.isEmpty == false
+        if !hasFiles && tasks.isEmpty {
+            isInitialLoading = true
+            // Clear loading after a few poll cycles
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                self?.isInitialLoading = false
+            }
         }
     }
 
@@ -266,13 +287,12 @@ final class BridgeService {
         guard let inbox = inboxURL else { return }
         guard let idx = tasks.firstIndex(where: { $0.id == taskId }) else { return }
 
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = ISO8601DateFormatter.shared.string(from: Date())
         let newMsg = TaskMessage(sender: senderID, content: content, timestamp: now)
         tasks[idx].messages.append(newMsg)
         tasks[idx].updatedAt = now
-        if tasks[idx].status == "done" || tasks[idx].status == "failed" {
-            tasks[idx].status = "queued"
-        }
+        // Don't reset status — agent owns status via .status.json sidecar.
+        // Only write the messages + updatedAt to disk, preserving agent status.
         writeTaskFile(tasks[idx])
 
         // Also send via inbox
@@ -293,7 +313,14 @@ final class BridgeService {
         guard let tasksDir = tasksURL else { return }
         let fileURL = tasksDir.appendingPathComponent("\(task.id).json")
         do {
-            let data = try encoder.encode(task)
+            // Read existing file to preserve agent-owned status
+            var taskToWrite = task
+            if let existing = try? Data(contentsOf: fileURL),
+               let diskTask = try? JSONDecoder().decode(MiraTask.self, from: existing) {
+                // Agent owns status — preserve whatever is on disk
+                taskToWrite.status = diskTask.status
+            }
+            let data = try encoder.encode(taskToWrite)
             try data.write(to: fileURL, options: .atomic)
         } catch {
             log("writeTaskFile error: \(error)")
@@ -364,6 +391,9 @@ final class BridgeService {
         loadHeartbeat()
         loadThreads()
         loadTasks()
+        // Evict messages older than 7 days
+        let cutoff = Date().addingTimeInterval(-7 * 86400)
+        messages.removeAll { $0.date <= cutoff }
         checkForNewRepliesAndNotify()
         updateBadge()
     }
@@ -387,14 +417,26 @@ final class BridgeService {
         UNUserNotificationCenter.current().setBadgeCount(unreadCount)
     }
 
+    /// IDs of outbox messages we've already notified about (persisted, insertion-ordered)
+    private var notifiedMessageList: [String] = UserDefaults.standard.stringArray(forKey: "notifiedMessageIDs") ?? []
+    private lazy var notifiedMessageIDs: Set<String> = Set(notifiedMessageList)
+
     private func checkForNewRepliesAndNotify() {
         // First load: mark all existing tasks as read (no spam on fresh install)
         if !UserDefaults.standard.bool(forKey: "notificationsInitialized") {
             for task in tasks { readTaskIDs.insert(task.id) }
             UserDefaults.standard.set(Array(readTaskIDs), forKey: "readTaskIDs")
+            // Also mark all current messages as already notified
+            for msg in messages where msg.isFromAgent {
+                if notifiedMessageIDs.insert(msg.id).inserted {
+                    notifiedMessageList.append(msg.id)
+                }
+            }
+            UserDefaults.standard.set(notifiedMessageList, forKey: "notifiedMessageIDs")
             UserDefaults.standard.set(true, forKey: "notificationsInitialized")
         }
 
+        // --- Task-based notifications (existing) ---
         for task in tasks {
             let currentCount = task.messages.count
             let previousCount = previousMessageCounts[task.id] ?? currentCount
@@ -411,10 +453,41 @@ final class BridgeService {
                         title: task.title,
                         body: msg.content.prefix(200).description
                     )
+                    if notifiedMessageIDs.insert(msg.id).inserted {
+                        notifiedMessageList.append(msg.id)
+                    }
                 }
             }
             previousMessageCounts[task.id] = currentCount
         }
+
+        // --- Standalone outbox message notifications (journal, daily report, etc.) ---
+        let cal = Calendar.current
+        for msg in messages where msg.isFromAgent {
+            // Only notify for recent messages (today/yesterday) we haven't seen
+            guard !notifiedMessageIDs.contains(msg.id),
+                  cal.isDateInToday(msg.date) || cal.isDateInYesterday(msg.date)
+            else { continue }
+
+            // Determine a title from content
+            let firstLine = msg.content.prefix(80).components(separatedBy: "\n").first ?? "Mira"
+            sendLocalNotification(
+                title: String(firstLine),
+                body: String(msg.content.dropFirst(firstLine.count).prefix(200))
+            )
+            if notifiedMessageIDs.insert(msg.id).inserted {
+                notifiedMessageList.append(msg.id)
+            }
+        }
+
+        // Persist and cap — evict oldest first (list is insertion-ordered)
+        if notifiedMessageList.count > 500 {
+            let excess = notifiedMessageList.count - 500
+            let evicted = Set(notifiedMessageList.prefix(excess))
+            notifiedMessageList.removeFirst(excess)
+            notifiedMessageIDs.subtract(evicted)
+        }
+        UserDefaults.standard.set(notifiedMessageList, forKey: "notifiedMessageIDs")
     }
 
     private func sendLocalNotification(title: String, body: String) {
@@ -438,6 +511,7 @@ final class BridgeService {
     private func loadSentMessages() {
         guard let inbox = inboxURL else { return }
         let fm = FileManager.default
+        let cutoff = Date().addingTimeInterval(-7 * 86400)
 
         do {
             let files = try fm.contentsOfDirectory(
@@ -450,6 +524,7 @@ final class BridgeService {
 
                 let data = try Data(contentsOf: fileURL)
                 let msg = try decoder.decode(TBMessage.self, from: data)
+                guard msg.date > cutoff else { continue }
                 if !messages.contains(where: { $0.id == msg.id }) {
                     messages.append(msg)
                 }
@@ -467,6 +542,7 @@ final class BridgeService {
             return
         }
         let fm = FileManager.default
+        let cutoff = Date().addingTimeInterval(-7 * 86400)
 
         do {
             let files = try fm.contentsOfDirectory(
@@ -487,6 +563,7 @@ final class BridgeService {
                 do {
                     let data = try Data(contentsOf: fileURL)
                     let msg = try decoder.decode(TBMessage.self, from: data)
+                    guard msg.date > cutoff else { continue }
                     if !messages.contains(where: { $0.id == msg.id }) {
                         messages.append(msg)
                         log("loadReplies: loaded \(msg.id) from \(name)")
@@ -576,7 +653,6 @@ final class BridgeService {
         let fm = FileManager.default
 
         // Load status.json as source of truth for task status
-        // Maps both task_id and thread_id to the real status
         var statusMap: [String: String] = [:]
         let statusFile = tasksDir.appendingPathComponent("status.json")
         if fm.isReadableFile(atPath: statusFile.path),
@@ -590,7 +666,6 @@ final class BridgeService {
                 default: mapped = st
                 }
                 if let tid = rec["task_id"] as? String { statusMap[tid] = mapped }
-                // Also map by thread_id (iOS task_id may differ from Python task_id)
                 if let threadId = rec["thread_id"] as? String, !threadId.isEmpty {
                     statusMap[threadId] = mapped
                 }
@@ -616,98 +691,125 @@ final class BridgeService {
         }
 
         var loaded: [MiraTask] = []
+        var currentFileIDs: Set<String> = []
         do {
             let files = try fm.contentsOfDirectory(
-                at: tasksDir, includingPropertiesForKeys: nil,
+                at: tasksDir,
+                includingPropertiesForKeys: [.contentModificationDateKey],
                 options: [.skipsHiddenFiles]
             )
+            iCloudAvailable = true
+
             for fileURL in files where fileURL.pathExtension == "json" {
-                // Skip non-task files and auto-generated content (shown as cards, not tasks)
                 let name = fileURL.deletingPathExtension().lastPathComponent
                 if name == "status" || name == "history" { continue }
                 if name.hasPrefix("briefing_") || name.hasPrefix("journal_") { continue }
+                if name.hasSuffix(".status") || name.hasSuffix(".reply") { continue }
+                currentFileIDs.insert(name)
 
                 // Trigger iCloud download if needed
                 if !fm.isReadableFile(atPath: fileURL.path) {
                     try? fm.startDownloadingUbiquitousItem(at: fileURL)
                     continue
                 }
+
+                // Incremental: skip file if mod date hasn't changed and we have a cache
+                let modDate = (try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+                // Also check sidecar mod dates
+                let statusSidecar = tasksDir.appendingPathComponent("\(name).status.json")
+                let replySidecar = tasksDir.appendingPathComponent("\(name).reply.json")
+                let sidecarMod = [statusSidecar, replySidecar].compactMap { url -> Date? in
+                    (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+                }.max()
+                let latestMod = [modDate, sidecarMod].compactMap { $0 }.max()
+
+                if let cached = taskCache[name],
+                   let latest = latestMod,
+                   let prev = taskFileModDates[name],
+                   latest <= prev {
+                    // File unchanged — use cached task, just update status from statusMap
+                    var task = cached
+                    if let trueStatus = statusMap[task.id] { task.status = trueStatus }
+                    loaded.append(task)
+                    continue
+                }
+
                 do {
                     let data = try Data(contentsOf: fileURL)
                     var task = try decoder.decode(MiraTask.self, from: data)
-                    // Fix status from status.json (task_manager) if task file is stale
+                    // Fix status from status.json
                     if let trueStatus = statusMap[task.id], trueStatus != task.status {
                         task.status = trueStatus
                     }
-                    // Also check per-task .status.json sidecar (written by agent)
-                    let statusSidecar = tasksDir.appendingPathComponent("\(name).status.json")
+                    // Status sidecar is authoritative
                     if fm.isReadableFile(atPath: statusSidecar.path),
                        let sData = try? Data(contentsOf: statusSidecar),
                        let sDict = try? JSONSerialization.jsonObject(with: sData) as? [String: Any],
                        let sStatus = sDict["status"] as? String {
-                        // Agent's status sidecar is authoritative — it never gets
-                        // overwritten by iOS because only the agent writes to it.
-                        if sStatus != task.status {
-                            task.status = sStatus
-                        }
+                        task.status = sStatus
                     }
-                    // Merge agent replies from sidecar file (survives iCloud sync races)
-                    // Dedup by content hash (sender+content) to prevent duplicates from
-                    // multiple write paths or iCloud sync races.
-                    let replyFile = tasksDir.appendingPathComponent("\(name).reply.json")
-                    if fm.isReadableFile(atPath: replyFile.path),
-                       let replyData = try? Data(contentsOf: replyFile),
+                    // Merge replies from sidecar
+                    if fm.isReadableFile(atPath: replySidecar.path),
+                       let replyData = try? Data(contentsOf: replySidecar),
                        let replies = try? JSONSerialization.jsonObject(with: replyData) as? [[String: Any]] {
-                        // Build content-based fingerprint set from existing messages
-                        let existingFingerprints = Set(task.messages.map { msg in
-                            "\(msg.sender)|\(msg.content.prefix(200))"
-                        })
+                        let existingFingerprints = Set(task.messages.map { "\($0.sender)|\($0.content.prefix(200))" })
                         for reply in replies {
                             let sender = reply["sender"] as? String ?? "agent"
                             let content = reply["content"] as? String ?? ""
                             let ts = reply["timestamp"] as? String ?? ""
                             let fingerprint = "\(sender)|\(content.prefix(200))"
                             if !content.isEmpty && !existingFingerprints.contains(fingerprint) {
-                                task.messages.append(TaskMessage(
-                                    sender: sender,
-                                    content: content,
-                                    timestamp: ts
-                                ))
+                                task.messages.append(TaskMessage(sender: sender, content: content, timestamp: ts))
                             }
                         }
                         task.messages.sort { $0.timestamp < $1.timestamp }
                     }
-                    // Also merge agent replies from outbox (last resort if sidecar was lost)
+                    // Merge from outbox (last resort)
                     if let outboxReplies = outboxByThread[task.id] {
-                        let existingFingerprints = Set(task.messages.map { msg in
-                            "\(msg.sender)|\(msg.content.prefix(200))"
-                        })
+                        let existingFingerprints = Set(task.messages.map { "\($0.sender)|\($0.content.prefix(200))" })
                         for reply in outboxReplies {
                             let content = reply["content"] as? String ?? ""
                             let ts = reply["timestamp"] as? String ?? ""
-                            let cleanContent = content.components(separatedBy: "\n---\nAgent:").first ?? content
-                            let trimmed = cleanContent.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let trimmed = (content.components(separatedBy: "\n---\nAgent:").first ?? content)
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
                             let fingerprint = "agent|\(trimmed.prefix(200))"
                             if !trimmed.isEmpty && !existingFingerprints.contains(fingerprint) {
-                                task.messages.append(TaskMessage(
-                                    sender: "agent",
-                                    content: trimmed,
-                                    timestamp: ts
-                                ))
+                                task.messages.append(TaskMessage(sender: "agent", content: trimmed, timestamp: ts))
                             }
                         }
                         task.messages.sort { $0.timestamp < $1.timestamp }
                     }
+                    // Update cache
+                    taskCache[name] = task
+                    if let latest = latestMod { taskFileModDates[name] = latest }
                     loaded.append(task)
                 } catch {
                     log("loadTasks: decode failed for \(fileURL.lastPathComponent): \(error)")
                 }
             }
         } catch {
+            iCloudAvailable = false
             log("loadTasks error: \(error)")
         }
 
-        tasks = loaded.sorted { $0.updatedDate > $1.updatedDate }
+        // Evict deleted tasks from cache
+        let staleKeys = Set(taskCache.keys).subtracting(currentFileIDs)
+        for key in staleKeys {
+            taskCache.removeValue(forKey: key)
+            taskFileModDates.removeValue(forKey: key)
+        }
+
+        // Cap: keep all active tasks + most recent 50 completed
+        let active = loaded.filter(\.isActive)
+        let done = loaded.filter { !$0.isActive }
+            .sorted { $0.updatedDate > $1.updatedDate }
+        tasks = (active + Array(done.prefix(50)))
+            .sorted { $0.updatedDate > $1.updatedDate }
+
+        // Clear initial loading state once we have data
+        if isInitialLoading && !tasks.isEmpty {
+            isInitialLoading = false
+        }
     }
 
     // MARK: - Helpers

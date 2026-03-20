@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -27,7 +28,7 @@ import health_monitor
 
 from config import (
     MIRA_ROOT, WORKSPACE_DIR, BRIEFINGS_DIR, LOGS_DIR, STATE_FILE,
-    NOTES_INBOX_FOLDER, NOTES_BRIEFING_FOLDER, NOTES_OUTPUT_FOLDER,
+    NOTES_INBOX_FOLDER, NOTES_BRIEFING_FOLDER, NOTES_OUTPUT_FOLDER, NOTES_TODAY_FOLDER,
     EXPLORE_SOURCE_GROUPS, EXPLORE_COOLDOWN_MINUTES,
     EXPLORE_ACTIVE_START, EXPLORE_ACTIVE_END, EXPLORE_MAX_PER_DAY,
     REFLECT_DAY, REFLECT_TIME,
@@ -750,7 +751,7 @@ def _do_deep_dive(soul_ctx: str, dive: dict):
         soul = load_soul()
         soul_ctx_full = format_soul(soul)
         intern_prompt = internalize_prompt(soul_ctx_full, dive["title"], result[:3000])
-        reflection = claude_think(intern_prompt, timeout=60)
+        reflection = claude_think(intern_prompt, timeout=120)
         if reflection:
             save_reading_note(dive["title"], reflection)
             log.info("Internalization note saved for: %s", dive["title"])
@@ -786,7 +787,7 @@ Be specific. "AI is advancing" is not an insight. "Small fine-tuned models beati
 
 Write in the language of the briefing content."""
 
-    result = claude_think(prompt, timeout=60)
+    result = claude_think(prompt, timeout=120)
     if not result or len(result) < 50:
         log.info("No insights extracted from briefing (too short or empty)")
         return
@@ -1271,8 +1272,13 @@ def do_journal():
     # Copy to briefings dir so iOS can read it (with verification)
     _copy_to_briefings(f"{today}_journal.md", journal_content)
 
-    # Journal is displayed as a briefing card in Today (from .md file)
-    # No need to create a task — that just pollutes the task list
+    # Send to bridge with thread_id so iOS app fires a notification
+    try:
+        bridge = Mira()
+        bridge.post(journal_content[:2000], thread_id="daily_updates")
+        log.info("Journal sent to bridge (daily_updates thread)")
+    except Exception as e:
+        log.warning("Failed to send journal to bridge: %s", e)
 
     # --- Self-evaluation: score this journal ---
     try:
@@ -1366,13 +1372,7 @@ def do_daily_report():
     except Exception as e:
         log.warning("Health summary for report failed: %s", e)
 
-    # 4. Today's journal (if exists) — extract key thoughts
-    journal_excerpt = ""
-    journal_path = JOURNAL_DIR / f"{today}.md"
-    if journal_path.exists():
-        journal_excerpt = journal_path.read_text(encoding="utf-8")[:2000]
-
-    # 5. Substack stats
+    # 4. Substack stats
     stats_text = ""
     try:
         sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
@@ -1383,6 +1383,9 @@ def do_daily_report():
     except Exception as e:
         log.debug("Stats for report: %s", e)
 
+    # 5. Comments posted today
+    comments_text = _gather_today_comments()
+
     # 6. Pending items needing user attention
     from config import MIRA_ROOT
     pending_items = []
@@ -1390,32 +1393,32 @@ def do_daily_report():
     if pending_file.exists():
         pending_items.append("有一篇文章等你审批发布")
 
-    # --- Build report ---
+    # --- Build report (pure technical — no reflections) ---
     sections = []
     sections.append(f"Mira 日报 {today}")
     sections.append("=" * 30)
 
     if tasks:
-        sections.append(f"\n今天做了什么:\n{tasks}")
+        sections.append(f"\n完成的任务:\n{tasks}")
     else:
-        sections.append("\n今天做了什么:\n没有完成的任务。")
+        sections.append("\n完成的任务:\n无。")
 
     if skills:
-        sections.append(f"\n学到的新技能:\n{skills}")
+        sections.append(f"\n新技能:\n{skills}")
 
-    if journal_excerpt:
-        # Extract first 500 chars of journal as thought summary
-        lines = journal_excerpt.split("\n")
-        thought_lines = [l for l in lines if l.strip() and not l.startswith("#")][:8]
-        if thought_lines:
-            sections.append(f"\n今天在想什么:\n" + "\n".join(thought_lines)[:600])
+    # Errors / pipeline health
+    if health_text:
+        sections.append(f"\n{health_text}")
+    else:
+        sections.append("\n错误/异常:\n无。")
+
+    if comments_text:
+        sections.append(f"\n今日发出的评论:\n{comments_text}")
+    else:
+        sections.append("\n今日发出的评论:\n无。")
 
     if stats_text:
         sections.append(f"\nSubstack 数据:\n{stats_text}")
-
-    # Errors section
-    if health_text:
-        sections.append(f"\n{health_text}")
 
     if pending_items:
         sections.append(f"\n需要你介入:\n" + "\n".join(f"- {item}" for item in pending_items))
@@ -1424,10 +1427,17 @@ def do_daily_report():
 
     report = "\n".join(sections)
 
-    # --- Send via bridge ---
+    # --- Post to Apple Notes "today" folder ---
+    try:
+        create_note(NOTES_TODAY_FOLDER, f"日报 {today}", report)
+        log.info("Daily report posted to Notes '%s'", NOTES_TODAY_FOLDER)
+    except Exception as e:
+        log.error("Failed to post daily report to Notes: %s", e)
+
+    # --- Also send via bridge (with thread_id for iOS notification) ---
     try:
         bridge = Mira()
-        bridge.post(report)
+        bridge.post(report, thread_id="daily_updates")
         log.info("Daily report sent to bridge")
     except Exception as e:
         log.error("Failed to send daily report: %s", e)
@@ -1463,7 +1473,7 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
         recent_journal=recent_journal[:1500],
         recent_published=recent_published,
     )
-    result = claude_think(prompt, timeout=60)
+    result = claude_think(prompt, timeout=120)
     if not result:
         return
 
@@ -1597,7 +1607,7 @@ def do_spark_check():
 
     prompt = spark_check_prompt(soul_ctx, recent_reading,
                                 recent_journal, recent_conversations)
-    result = claude_think(prompt, timeout=30)
+    result = claude_think(prompt, timeout=120)
 
     # Update state regardless of result
     from soul_manager import get_memory_size
@@ -1851,6 +1861,25 @@ def _gather_today_skills() -> str:
                 lines.append(f"- **{skill['name']}**: {skill.get('description', '')}")
     except (json.JSONDecodeError, OSError):
         pass
+    return "\n".join(lines)
+
+
+def _gather_today_comments() -> str:
+    """Read comments posted today from growth_state.json."""
+    growth_file = _AGENTS_DIR / "socialmedia" / "growth_state.json"
+    if not growth_file.exists():
+        return ""
+    today = datetime.now().strftime("%Y-%m-%d")
+    lines = []
+    try:
+        data = json.loads(growth_file.read_text(encoding="utf-8"))
+        for entry in data.get("comment_history", []):
+            if entry.get("date", "")[:10] == today:
+                url = entry.get("url", "")
+                text = entry.get("text", "")[:120].replace("\n", " ")
+                lines.append(f"- {url}\n  \"{text}...\"")
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning("Failed to read comment history: %s", e)
     return "\n".join(lines)
 
 
@@ -2393,6 +2422,14 @@ def do_zhesi():
     # Copy to artifacts for iOS (with verification)
     _copy_to_briefings(f"{today}_zhesi.md", content)
 
+    # Send to bridge so user gets notification
+    try:
+        bridge = Mira()
+        bridge.post(content[:2000], thread_id="daily_updates")
+        log.info("哲思 sent to bridge")
+    except Exception as e:
+        log.warning("Failed to send 哲思 to bridge: %s", e)
+
     state[f"zhesi_{today}"] = datetime.now().isoformat()
     save_state(state)
 
@@ -2452,7 +2489,7 @@ def do_autowrite_check():
         za_fragments=za_fragments,
         recent_published=recent_published,
     )
-    result = claude_think(prompt, timeout=60)
+    result = claude_think(prompt, timeout=120)
     if not result:
         log.info("Autonomous writing check: empty response")
         state = load_state()
@@ -3228,5 +3265,65 @@ def main():
         sys.exit(1)
 
 
+def _send_crash_notification(error: str):
+    """Send crash notification to iPhone via bridge. Minimal deps — must work even if imports are broken."""
+    try:
+        import json, uuid
+        from pathlib import Path
+        from datetime import datetime, timezone as tz
+        bridge_outbox = Path(__file__).resolve().parent.parent.parent / "Mira-bridge" / "outbox"
+        bridge_outbox.mkdir(parents=True, exist_ok=True)
+        msg_id = uuid.uuid4().hex[:8]
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        iso = datetime.now(tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Truncate error to avoid huge messages
+        short_err = error[:500] if len(error) > 500 else error
+        data = {
+            "id": msg_id,
+            "sender": "system",
+            "timestamp": iso,
+            "type": "text",
+            "content": f"Mira crashed during execution.\n\n{short_err}\n\nCheck logs for full traceback.",
+            "thread_id": "",
+            "priority": "high",
+        }
+        path = bridge_outbox / f"crash_{ts}_{msg_id}.json"
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass  # If even the notification fails, nothing we can do
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise  # Let sys.exit() propagate normally
+    except Exception as exc:
+        import traceback
+        tb = traceback.format_exc()
+        # Log to file even if logging isn't set up
+        try:
+            crash_path = Path("/tmp/mira-crash.log")
+            with open(crash_path, "a") as f:
+                f.write(f"\n{'='*60}\n{datetime.now().isoformat()}\n{tb}\n")
+        except Exception:
+            pass
+        # Try logging if available
+        try:
+            logging.critical("Unhandled exception in main():\n%s", tb)
+        except Exception:
+            pass
+        # Notify user — but rate-limit to avoid notification spam
+        # Only send if no crash notification in the last 10 minutes
+        try:
+            last_crash_file = Path("/tmp/mira-last-crash-notify")
+            should_notify = True
+            if last_crash_file.exists():
+                age = time.time() - last_crash_file.stat().st_mtime
+                should_notify = age > 600  # 10 minutes
+            if should_notify:
+                _send_crash_notification(str(exc))
+                last_crash_file.write_text(str(exc))
+        except Exception:
+            pass
+        sys.exit(1)

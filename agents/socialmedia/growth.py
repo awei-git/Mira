@@ -784,7 +784,7 @@ Write a follow-up reply. Rules:
 
 Output ONLY your reply text."""
 
-        resp = claude_think(prompt, timeout=30, tier="light")
+        resp = claude_think(prompt, timeout=90, tier="light")
         if not resp or len(resp.strip()) < 10:
             continue
 

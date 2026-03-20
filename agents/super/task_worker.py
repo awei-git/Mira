@@ -316,7 +316,7 @@ Result: {summary[:300] if summary else '(pending)'}
 Example output: ["写作", "science-fiction", "自由意志"]"""
 
     try:
-        result = claude_think(prompt, timeout=30)
+        result = claude_think(prompt, timeout=90)
         if result:
             # Extract JSON array from response
             import re
@@ -352,7 +352,7 @@ Content:
 If no reusable skill can be extracted, just say "No new skill from this task."
 """
     import re
-    result = claude_think(prompt, timeout=60)
+    result = claude_think(prompt, timeout=120)
     if not result or "no new skill" in result.lower():
         return
 
@@ -600,7 +600,7 @@ You are editing existing content based on the user's instruction.
 - Match the language of the original content."""
 
     try:
-        result = claude_think(prompt, timeout=60)
+        result = claude_think(prompt, timeout=120)
     except ClaudeTimeoutError:
         result = None
     except Exception as e:
@@ -784,7 +784,7 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
 - Don't start with "That's a great question" or similar filler. Just respond."""
 
     try:
-        response = claude_think(prompt, timeout=45)
+        response = claude_think(prompt, timeout=90)
     except ClaudeTimeoutError:
         # First timeout — retry once with a longer timeout
         log.info("Discussion timed out at 45s, retrying with 90s")
@@ -995,6 +995,7 @@ If a previous round already produced content, reference it in your plan (e.g. us
 - math: Mathematical proofs, derivations, calculations, paper writing/review
 - video: Video editing — analyze footage, generate screenplay, cut highlights, mix music
 - podcast: Generate audio from articles (TTS) AND publish podcast episodes to RSS feed (Apple Podcasts, Xiaoyuzhou). Handles the full podcast pipeline internally — do NOT use publish for anything podcast-related.
+- secret: PRIVATE MODE — runs entirely on local LLM (Ollama), nothing leaves this machine. Route here for: personal finance, health, legal, passwords, family matters, 隐私敏感内容, anything the user explicitly marks as private/secret/隐私/私密
 - general: Answer questions, search, analyze, code, file operations, anything else (has web browsing for research tasks)
 - clarify: Ask the user a question ONLY if the request is genuinely ambiguous and cannot be inferred
 
@@ -1017,6 +1018,8 @@ Output ONLY a JSON array. Each element: {{"agent": "...", "instruction": "..."}}
 - "分析一下AI agent市场" → [{{"agent": "analyst", "instruction": "分析2026年AI agent市场的竞争格局：主要玩家、市场份额估算、战略差异化点和近期趋势"}}]
 - "帮我剪这些旅游视频 /path/to/videos" → [{{"agent": "video", "instruction": "剪辑 /path/to/videos 里的视频，生成3-5分钟精彩集锦"}}]
 - "把自由意志那篇发到substack" → [{{"agent": "publish", "instruction": "将'自由意志'文章发布到Substack"}}]
+- "帮我算一下税" → [{{"agent": "secret", "instruction": "帮用户计算税务（隐私模式，本地处理）"}}]
+- "private: review my medical results" → [{{"agent": "secret", "instruction": "Review the user's medical results (private mode, local only)"}}]
 - "跑podcast job" → [{{"agent": "podcast", "instruction": "运行播客自动化流水线，为缺少音频的文章生成并发布podcast episode"}}]
 - "发布podcast episode" → [{{"agent": "podcast", "instruction": "将音频发布为podcast episode到RSS feed"}}]
 - "还有几篇文章没有音频" → [{{"agent": "podcast", "instruction": "检查哪些已发布文章缺少对应的podcast音频，为缺少的文章生成音频并发布"}}]
@@ -1033,7 +1036,7 @@ JSON:"""
             if match:
                 steps = json.loads(match.group())
                 # Validate
-                valid_agents = {"briefing", "writing", "publish", "analyst", "video", "podcast", "math", "general", "clarify"}
+                valid_agents = {"briefing", "writing", "publish", "analyst", "video", "podcast", "math", "secret", "general", "clarify"}
                 validated = []
                 for s in steps:
                     if isinstance(s, dict) and s.get("agent") in valid_agents:
@@ -1072,6 +1075,7 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
             "video": ("Processing video...", "film"),
             "podcast": ("Generating audio...", "waveform"),
             "general": ("Working...", "gear"),
+            "secret": ("Private mode...", "lock.shield"),
             "clarify": ("Need your input", "questionmark.bubble"),
         }
         status_text, status_icon = _step_icons.get(agent, ("Working...", "gear"))
@@ -1106,6 +1110,9 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
 
         elif agent == "math":
             _handle_math(workspace, task_id, instruction, sender, thread_id)
+
+        elif agent == "secret":
+            _handle_secret(workspace, task_id, instruction, sender, thread_id)
 
         else:
             _handle_general(workspace, task_id, instruction, sender, thread_id)
@@ -1208,7 +1215,7 @@ Apply the Response Synthesis skill: integrate this output into the clearest, mos
 
 Synthesized response:"""
 
-    result = claude_think(prompt, timeout=60, tier="light")
+    result = claude_think(prompt, timeout=120, tier="light")
     return result or ""
 
 
@@ -1612,7 +1619,7 @@ def _handle_article_comment(workspace: Path, task_id: str, thread_id: str,
 - 不要用bullet point列表，用自然段落"""
 
     try:
-        reply = claude_think(prompt, timeout=30)
+        reply = claude_think(prompt, timeout=90)
     except ClaudeTimeoutError:
         reply = None
 
@@ -1713,6 +1720,38 @@ def _handle_math(workspace: Path, task_id: str, content: str,
     else:
         _write_result(workspace, task_id, "error", "数学任务返回空结果")
         log.error("Math task %s failed: empty response", task_id)
+
+
+# ---------------------------------------------------------------------------
+# Secret handler — local LLM only, nothing leaves localhost
+# ---------------------------------------------------------------------------
+
+def _handle_secret(workspace: Path, task_id: str, content: str,
+                   sender: str, thread_id: str):
+    """Handle privacy-sensitive requests via local Ollama. No cloud APIs."""
+    sys.path.insert(0, str(_AGENTS_DIR / "secret"))
+    from handler import handle as secret_handle
+
+    thread_history = load_thread_history(thread_id)
+
+    try:
+        summary = secret_handle(
+            workspace, task_id, content, sender, thread_id,
+            thread_history=thread_history,
+        )
+    except Exception as e:
+        _write_result(workspace, task_id, "error", f"Secret agent 失败: {e}")
+        log.error("Secret task %s failed: %s", task_id, e)
+        return
+
+    if summary:
+        _write_result(workspace, task_id, "done", summary, tags=["private"])
+        log.info("Secret task %s completed (local-only)", task_id)
+        if thread_id:
+            _update_thread_memory(thread_id, content, summary)
+    else:
+        _write_result(workspace, task_id, "error", "本地模型返回了空结果，请确认 Ollama 是否在运行")
+        log.error("Secret task %s failed: empty response", task_id)
 
 
 # ---------------------------------------------------------------------------

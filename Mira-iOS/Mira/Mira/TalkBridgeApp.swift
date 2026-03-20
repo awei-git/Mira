@@ -62,6 +62,33 @@ struct MainTabView: View {
             .padding(.vertical, 6)
             .background(.bar)
 
+            if !bridge.iCloudAvailable {
+                HStack(spacing: 6) {
+                    Image(systemName: "icloud.slash")
+                        .font(.caption)
+                    Text("iCloud unavailable — showing cached data")
+                        .font(.caption)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity)
+                .background(Color.orange)
+            }
+
+            if bridge.isInitialLoading {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Syncing with iCloud…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity)
+                .background(.bar)
+            }
+
             TabView {
                 TodayView(bridge: bridge)
                     .tabItem {

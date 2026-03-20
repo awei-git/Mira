@@ -54,7 +54,7 @@ def _md_to_html(markdown_text: str) -> str:
 Markdown:
 {markdown_text[:8000]}"""
 
-    html = claude_think(prompt, timeout=60)
+    html = claude_think(prompt, timeout=120)
     if html:
         # Strip any markdown code fences from response
         html = html.strip()
@@ -183,43 +183,20 @@ def _parse_inline(html_text: str) -> list:
 def _get_cover_image(title: str, article_text: str, workspace: Path) -> str | None:
     """Get a cover image for the article.
 
-    Priority: personal photos > Unsplash > DALL-E.
+    Priority: personal photos > DALL-E.
     Returns local file path or None.
     """
-    from sub_agent import claude_think
-
-    # Step 0: Try personal photo library (user's own photos, no people)
+    # Always try personal photo library first
     personal = _pick_personal_cover()
     if personal:
         return personal
-
-    # Step 1: Ask Claude for 2-3 search keywords
-    keyword_prompt = f"""Given this article title and excerpt, suggest 2-3 evocative search keywords
-for finding a cover photo on Unsplash. Think abstract, atmospheric, editorial.
-NOT literal — find the visual metaphor.
-
-Title: {title}
-Excerpt: {article_text[:800]}
-
-Output ONLY the keywords separated by spaces. Example: "reflection mirror glass"
-No explanation."""
-
-    keywords = claude_think(keyword_prompt, timeout=20)
-    if keywords:
-        keywords = keywords.strip().strip('"').strip("'")
-        log.info("Cover image search: %s", keywords)
-
-        # Try Unsplash (no API key needed for source.unsplash.com redirect)
-        path = _fetch_unsplash(keywords, workspace)
-        if path:
-            return path
 
     # Fallback: DALL-E
     return _generate_dalle_image(title, article_text, workspace)
 
 
 def _pick_personal_cover() -> str | None:
-    """Pick a personal photo for article cover. Returns resized path or None."""
+    """Pick a personal photo for article cover, avoiding recent repeats."""
     import random
     import subprocess
     import tempfile
@@ -236,14 +213,39 @@ def _pick_personal_cover() -> str | None:
             continue
         extensions = {".jpg", ".jpeg", ".png", ".heic", ".tiff"}
         photos = [p for p in d.iterdir()
-                  if p.suffix.lower() in extensions and p.stat().st_size > 50_000]
+                  if p.suffix.lower() in extensions
+                  and p.stat().st_size > 50_000
+                  and " 2" not in p.name]  # skip macOS duplicates
         if photos:
             break
 
     if not photos:
         return None
 
-    pick = random.choice(photos)
+    # Track recently used photos to avoid repeats
+    from config import MIRA_ROOT
+    history_file = MIRA_ROOT / ".cover_history.json"
+    recent: list[str] = []
+    try:
+        if history_file.exists():
+            recent = json.loads(history_file.read_text("utf-8"))
+    except Exception:
+        pass
+
+    # Exclude recently used (keep last 10)
+    available = [p for p in photos if p.name not in recent]
+    if not available:
+        available = photos  # all used, reset
+
+    pick = random.choice(available)
+
+    # Update history
+    recent.append(pick.name)
+    recent = recent[-10:]  # keep last 10
+    try:
+        history_file.write_text(json.dumps(recent), "utf-8")
+    except Exception:
+        pass
 
     # Resize to Substack cover dimensions (1456px wide)
     tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
@@ -309,7 +311,7 @@ Content excerpt: {article_text[:1000]}
 
 Output ONLY the DALL-E prompt, nothing else. Keep it under 150 words."""
 
-    dalle_prompt = claude_think(prompt_request, timeout=30)
+    dalle_prompt = claude_think(prompt_request, timeout=90)
     if not dalle_prompt:
         return None
 
@@ -586,16 +588,14 @@ Output ONLY the subtitle, nothing else."""
         except Exception as _pub_e:
             log.warning("Copy to _published failed (non-fatal): %s", _pub_e)
 
-        # Auto-post a Note promoting this article
+        # Queue Notes promoting this article (drained by growth cycle)
         try:
-            from notes import post_note_for_article
-            note_result = post_note_for_article(title, article_text, post_url)
-            if note_result:
-                note_id = note_result.get("id")
-                result += f"\n\n同时发布了 Note (id={note_id}) 推广此文章"
-                log.info("Auto-posted Note for article: %s", title)
+            from notes import queue_notes_for_article
+            queue_notes_for_article(title, article_text, post_url)
+            log.info("Queued Notes for article: %s", title)
+            result += "\n\nNotes 已加入队列，将在 growth cycle 中发出"
         except Exception as e:
-            log.warning("Auto Note failed (non-fatal): %s", e)
+            log.warning("Auto Note queue failed (non-fatal): %s", e)
 
         return result
 
@@ -1108,7 +1108,7 @@ Write a genuine, thoughtful reply. Be yourself — direct, curious, honest.
 
 Output ONLY your reply text, nothing else."""
 
-            reply_text = claude_think(prompt, timeout=30)
+            reply_text = claude_think(prompt, timeout=90)
             if not reply_text:
                 continue
 

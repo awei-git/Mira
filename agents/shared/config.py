@@ -98,14 +98,7 @@ LOGS_DIR = MIRA_ROOT / "logs"
 FEEDS_DIR = MIRA_ROOT / "feeds"
 SOURCES_FILE = MIRA_ROOT / "sources.json"
 
-# Artifacts — unified output folder (browsable from Mira app)
-ARTIFACTS_DIR = MIRA_ROOT / "artifacts"
-BRIEFINGS_DIR = ARTIFACTS_DIR / "briefings"
-WRITINGS_OUTPUT_DIR = ARTIFACTS_DIR / "writings"
-RESEARCH_DIR = ARTIFACTS_DIR / "research"
-
-# Legacy aliases
-WORKSPACE_DIR = RESEARCH_DIR
+# Artifacts — subdirectory definitions deferred until iCloud override is applied (see below)
 
 # Apple Notes inbox/outbox (under super agent)
 INBOX_DIR = _AGENTS_DIR / "super" / "notes_inbox"
@@ -146,13 +139,22 @@ SCORES_FILE = SOUL_DIR / "scores.json"
 STATE_FILE = MIRA_ROOT / ".agent_state.json"
 NOTES_SYNC_STATE = INBOX_DIR / ".sync.json"
 
-# Mira-bridge — file-based iPhone <-> Mac messaging over iCloud Drive
-MIRA_BRIDGE_DIR = MIRA_ROOT / "Mira-bridge"
+# ---------------------------------------------------------------------------
+# iCloud paths — bridge and artifacts live on iCloud for iOS app access
+# ---------------------------------------------------------------------------
+_icloud_bridge = _cfg.get("icloud_bridge_path", "")
+_icloud_artifacts = _cfg.get("icloud_artifacts_path", "")
 
-# Artifacts — iOS reads from here (Mira/artifacts/, NOT Mira-bridge/artifacts/)
-ARTIFACTS_DIR = MIRA_ROOT / "artifacts"
+MIRA_BRIDGE_DIR = Path(_icloud_bridge).expanduser() if _icloud_bridge else MIRA_ROOT / "Mira-bridge"
+ARTIFACTS_DIR = Path(_icloud_artifacts).expanduser() if _icloud_artifacts else MIRA_ROOT / "artifacts"
+
+# Artifact subdirectories (on iCloud, browsable from iOS app)
+BRIEFINGS_DIR = ARTIFACTS_DIR / "briefings"
+WRITINGS_OUTPUT_DIR = ARTIFACTS_DIR / "writings"
+RESEARCH_DIR = ARTIFACTS_DIR / "research"
 
 # Legacy aliases
+WORKSPACE_DIR = RESEARCH_DIR
 MIRA_DIR = MIRA_BRIDGE_DIR
 TALKBRIDGE_DIR = MIRA_BRIDGE_DIR
 
@@ -163,6 +165,7 @@ _notes_cfg = _cfg.get("notes", {})
 NOTES_INBOX_FOLDER = _notes_cfg.get("inbox_folder", "Mira")
 NOTES_BRIEFING_FOLDER = _notes_cfg.get("briefing_folder", "Mira Briefings")
 NOTES_OUTPUT_FOLDER = _notes_cfg.get("output_folder", "Mira Results")
+NOTES_TODAY_FOLDER = _notes_cfg.get("today_folder", "today")
 
 # ---------------------------------------------------------------------------
 # Claude CLI
@@ -179,6 +182,21 @@ CLEANUP_DAYS = _limits.get("cleanup_days", 3)
 
 # Secrets file (API keys — always gitignored)
 SECRETS_FILE = _PROJECT_ROOT / "secrets.yml"
+
+# ---------------------------------------------------------------------------
+# Ollama (local LLM — privacy-safe, no network)
+# ---------------------------------------------------------------------------
+_ollama_cfg = _cfg.get("ollama", {})
+OLLAMA_HOST = _ollama_cfg.get("host", "127.0.0.1")
+OLLAMA_PORT = _ollama_cfg.get("port", 11434)
+OLLAMA_DEFAULT_MODEL = _ollama_cfg.get("default_model", "qwen2.5:32b-instruct-q4_K_M")
+OLLAMA_EMBED_MODEL = _ollama_cfg.get("embed_model", "nomic-embed-text")
+
+# ---------------------------------------------------------------------------
+# Database (PostgreSQL — localhost only)
+# ---------------------------------------------------------------------------
+_db_cfg = _cfg.get("database", {})
+DATABASE_URL = _db_cfg.get("url", "postgresql://ai_admin:ai_admin@127.0.0.1:5432/ai_system")
 
 # ---------------------------------------------------------------------------
 # Model registry
@@ -218,6 +236,16 @@ MODELS = {
         "provider": "openai",
         "model_id": "gpt-5.4",
         "style": "OpenAI GPT-5.4 — used as Claude fallback when quota is hit",
+    },
+    "ollama": {
+        "provider": "ollama",
+        "model_id": "qwen2.5:32b-instruct-q4_K_M",
+        "style": "Local LLM — private, no network, good Chinese support",
+    },
+    "ollama-large": {
+        "provider": "ollama",
+        "model_id": "qwen2.5:72b-instruct-q4_K_M",
+        "style": "Local premium LLM — slower but stronger reasoning, fully private",
     },
 }
 
@@ -351,7 +379,7 @@ EXPLORE_MAX_PER_DAY = _sched.get("explore_max_per_day", 8)
 
 REFLECT_DAY = _sched.get("reflect_day", 6)
 REFLECT_TIME = _parse_times([_sched.get("reflect_time", "10:00")])[0]
-JOURNAL_TIME = _parse_times([_sched.get("journal_time", "23:00")])[0]
+JOURNAL_TIME = _parse_times([_sched.get("journal_time", "22:00")])[0]
 
 # Analyst: dual schedule (pre-market + post-market)
 _analyst_raw = _sched.get("analyst_times", _sched.get("analyst_time", ["08:30"]))
@@ -364,7 +392,7 @@ ANALYST_BUSINESS_DAYS_ONLY = _sched.get("analyst_business_days_only", True)
 ZHESI_TIME = _parse_times([_sched.get("zhesi_time", "09:30")])[0]
 
 # 杂.md — philosophical fragments for mining
-ZA_FILE = WRITINGS_DIR / "ideas" / "杂.md"
+ZA_FILE = WRITINGS_DIR / "ideas" / "_杂.md"
 
 # Limits
 MAX_FEED_ITEMS = _limits.get("max_feed_items", 50)

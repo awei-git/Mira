@@ -43,7 +43,7 @@ struct TBMessage: Identifiable, Codable, Equatable {
     }
 
     var date: Date {
-        ISO8601DateFormatter().date(from: timestamp) ?? .distantPast
+        ISO8601DateFormatter.shared.date(from: timestamp) ?? .distantPast
     }
 
     var isFromAgent: Bool {
@@ -54,7 +54,7 @@ struct TBMessage: Identifiable, Codable, Equatable {
         TBMessage(
             id: UUID().uuidString.prefix(8).lowercased().description,
             sender: sender,
-            timestamp: ISO8601DateFormatter().string(from: Date()),
+            timestamp: ISO8601DateFormatter.shared.string(from: Date()),
             content: content,
             threadId: threadId
         )
@@ -104,7 +104,7 @@ struct TBHeartbeat: Codable {
     }
 
     var date: Date {
-        ISO8601DateFormatter().date(from: timestamp) ?? .distantPast
+        ISO8601DateFormatter.shared.date(from: timestamp) ?? .distantPast
     }
 
     var isRecent: Bool {

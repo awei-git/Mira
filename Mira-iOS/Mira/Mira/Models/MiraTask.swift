@@ -1,5 +1,12 @@
 import Foundation
 
+extension ISO8601DateFormatter {
+    static let shared: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter.shared
+        return f
+    }()
+}
+
 /// A task in the Mira system — the core unit of interaction.
 /// Each task has a status, messages (conversation), and optional tags.
 struct MiraTask: Codable, Identifiable {
@@ -21,11 +28,11 @@ struct MiraTask: Codable, Identifiable {
     }
 
     var createdDate: Date {
-        ISO8601DateFormatter().date(from: createdAt) ?? .distantPast
+        ISO8601DateFormatter.shared.date(from: createdAt) ?? .distantPast
     }
 
     var updatedDate: Date {
-        ISO8601DateFormatter().date(from: updatedAt) ?? .distantPast
+        ISO8601DateFormatter.shared.date(from: updatedAt) ?? .distantPast
     }
 
     var isActive: Bool {
@@ -82,7 +89,7 @@ struct MiraTask: Codable, Identifiable {
     /// Create a new user task locally
     static func new(title: String, content: String, sender: String) -> MiraTask {
         let id = UUID().uuidString.prefix(8).lowercased()
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = ISO8601DateFormatter.shared.string(from: Date())
         return MiraTask(
             id: "task_\(id)",
             title: title,
@@ -109,7 +116,7 @@ struct TaskMessage: Codable, Identifiable {
     var isFromAgent: Bool { sender == "agent" }
 
     var date: Date {
-        ISO8601DateFormatter().date(from: timestamp) ?? .distantPast
+        ISO8601DateFormatter.shared.date(from: timestamp) ?? .distantPast
     }
 
     /// Parsed status card data (if this message is a status card)

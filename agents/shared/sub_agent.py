@@ -279,7 +279,70 @@ _API_ENDPOINTS = {
     "openai": "https://api.openai.com/v1/chat/completions",
     "deepseek": "https://api.deepseek.com/chat/completions",
     # Gemini uses a different URL pattern — handled in _gemini_call
+    # Ollama uses a different URL pattern — handled in _ollama_call
 }
+
+
+# ---------------------------------------------------------------------------
+# Ollama (local LLM — no network, privacy-safe)
+# ---------------------------------------------------------------------------
+
+def _ollama_call(model_id: str, prompt: str,
+                 system: str = "", timeout: int = 300) -> str:
+    """Call local Ollama for privacy-sensitive tasks. Never leaves localhost."""
+    from config import OLLAMA_HOST, OLLAMA_PORT
+    endpoint = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
+
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+
+    payload = {
+        "model": model_id,
+        "messages": messages,
+        "stream": False,
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    req = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            content = data["message"]["content"]
+            log.info("Ollama call: %s → %d chars", model_id, len(content))
+            return content.strip()
+    except Exception as e:
+        log.error("Ollama %s failed: %s", model_id, str(e))
+        return ""
+
+
+def ollama_embed(text: str, model: str = "nomic-embed-text") -> list[float]:
+    """Get embedding from local Ollama. Returns empty list on failure."""
+    from config import OLLAMA_HOST, OLLAMA_PORT
+    endpoint = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/embeddings"
+
+    payload = {"model": model, "prompt": text}
+    body = json.dumps(payload).encode("utf-8")
+
+    req = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data["embedding"]
+    except Exception as e:
+        log.error("Ollama embed failed: %s", str(e))
+        return []
 
 
 def _gemini_call(model_id: str, prompt: str,
@@ -334,9 +397,11 @@ def _gemini_call(model_id: str, prompt: str,
 def _api_call(provider: str, model_id: str, prompt: str,
               system: str = "", timeout: int = 120,
               reasoning_effort: str = "") -> str:
-    """Call OpenAI-compatible chat completion API (OpenAI, DeepSeek)."""
+    """Call OpenAI-compatible chat completion API (OpenAI, DeepSeek, Ollama)."""
     if provider == "gemini":
         return _gemini_call(model_id, prompt, system, timeout)
+    if provider == "ollama":
+        return _ollama_call(model_id, prompt, system, timeout)
 
     api_key = _get_api_key(provider)
     if not api_key:

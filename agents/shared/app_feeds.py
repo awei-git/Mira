@@ -24,7 +24,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from agents.shared.config import FEEDS_DIR
+from config import FEEDS_DIR
 
 logger = logging.getLogger("mira.app_feeds")
 
@@ -257,7 +257,7 @@ def sync_mira_status() -> None:
 
     Scans artifacts/ for briefings, writing projects, and research.
     """
-    from agents.shared.config import MIRA_ROOT, ARTIFACTS_DIR, BRIEFINGS_DIR, WRITINGS_OUTPUT_DIR, RESEARCH_DIR
+    from config import MIRA_ROOT, ARTIFACTS_DIR, BRIEFINGS_DIR, WRITINGS_OUTPUT_DIR, RESEARCH_DIR
 
     now = datetime.now(timezone.utc)
     now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -280,7 +280,7 @@ def sync_mira_status() -> None:
     if BRIEFINGS_DIR.exists():
         briefings = sorted(BRIEFINGS_DIR.glob("*.md"), reverse=True)[:7]
         for b in briefings:
-            rel = str(b.relative_to(MIRA_ROOT))
+            rel = str(b.relative_to(ARTIFACTS_DIR))
             stat = b.stat()
             outputs.append({
                 "type": "report",
@@ -318,7 +318,7 @@ def sync_mira_status() -> None:
     if RESEARCH_DIR.exists():
         research_files = sorted(RESEARCH_DIR.glob("**/*.md"), key=lambda p: p.stat().st_mtime, reverse=True)[:5]
         for r in research_files:
-            rel = str(r.relative_to(MIRA_ROOT))
+            rel = str(r.relative_to(ARTIFACTS_DIR))
             stat = r.stat()
             outputs.append({
                 "type": "deep_dive",

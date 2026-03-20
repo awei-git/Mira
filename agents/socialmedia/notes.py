@@ -308,7 +308,7 @@ Title: {title}
 Output exactly 5 notes, each on its own line, prefixed with NOTE1: through NOTE5:
 Each note text should be 1-3 sentences. Make them genuinely different from each other."""
 
-    result = claude_think(prompt, timeout=60)
+    result = claude_think(prompt, timeout=120)
     if not result:
         return []
 
@@ -489,7 +489,7 @@ Material (use as mood/springboard, not source to summarize):
 
 Output ONLY the Note text (1-3 sentences), or "SKIP"."""
 
-    result = claude_think(prompt, timeout=30)
+    result = claude_think(prompt, timeout=90)
     if not result or "SKIP" in result.strip():
         return None
     return result.strip().strip('"')

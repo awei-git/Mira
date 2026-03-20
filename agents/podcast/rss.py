@@ -97,23 +97,25 @@ def _format_duration(seconds: int) -> str:
 
 
 def _copy_mp3_to_repo(mp3_path: Path) -> str:
-    """Copy MP3 into the local repo dir and return the GitHub Pages URL."""
+    """Copy MP3 into repo/podcast/ and return the GitHub Pages URL."""
     import shutil
-    dest = REPO_DIR / mp3_path.name
+    dest_dir = REPO_DIR / "audios"
+    dest_dir.mkdir(exist_ok=True)
+    dest = dest_dir / mp3_path.name
     if not dest.exists():
         shutil.copy2(mp3_path, dest)
-    return f"{GITHUB_PAGES_URL}/{mp3_path.name}"
+    return f"{GITHUB_PAGES_URL}/audios/{mp3_path.name}"
 
 
 def _copy_transcript_to_repo(mp3_path: Path) -> tuple[str | None, str]:
-    """Copy SRT (preferred) or plain text transcript into repo/transcripts/.
+    """Copy SRT (preferred) or plain text transcript into repo/podcast/transcripts/.
 
     Returns (url, mime_type) or (None, '') if not found.
     SRT is required for Apple Podcasts transcript display.
     """
     import shutil
     dest_dir = REPO_DIR / "transcripts"
-    dest_dir.mkdir(exist_ok=True)
+    dest_dir.mkdir(parents=True, exist_ok=True)
 
     # Prefer SRT (has timestamps, Apple Podcasts compatible)
     srt_path = mp3_path.parent / f"{mp3_path.stem}.srt"
@@ -356,7 +358,7 @@ def publish_episode(
     # 4. Commit + push (increase buffer for large MP3 files)
     log.info("Committing MP3 + transcript + feed update...")
     _run(["git", "config", "http.postBuffer", "524288000"], cwd=REPO_DIR)
-    _run(["git", "add", mp3_path.name, "feed.xml"], cwd=REPO_DIR)
+    _run(["git", "add", f"audios/{mp3_path.name}", "feed.xml"], cwd=REPO_DIR)
     if transcript_url:
         ext = ".srt" if transcript_type == "application/srt" else ".txt"
         _run(["git", "add", f"transcripts/{mp3_path.stem}{ext}"], cwd=REPO_DIR)

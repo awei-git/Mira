@@ -18,7 +18,7 @@ from sub_agent import claude_think
 
 log = logging.getLogger("analyst_agent")
 
-_TETRA_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Tetra"
+_TETRA_DIR = Path.home() / "Sandbox" / "Tetra"
 _BRIEFINGS_DIR = ARTIFACTS_DIR / "briefings"
 _REPORTS_DIR = _TETRA_DIR / "reports"
 _FEEDBACK_FILE = _TETRA_DIR / "feedback" / "gaps.jsonl"
@@ -121,7 +121,7 @@ Answer in the same language as the question.
 If neither source covers this topic well, start your answer with [GAP] and still try your best to answer.
 """
 
-    result = claude_think(prompt, timeout=60, tier="heavy")
+    result = claude_think(prompt, timeout=120, tier="heavy")
 
     if result:
         # Detect gap — log feedback for Tetra to improve next run

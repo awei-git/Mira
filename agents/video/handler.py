@@ -29,7 +29,7 @@ from sub_agent import claude_think, _get_api_key
 from scene_analyzer import analyze_all
 from screenplay import generate_screenplay
 from editor import generate_edit_command, execute_edit
-from music_mixer import mix_music, find_music
+from music_mixer import mix_music, find_music, auto_select_music, get_duration
 
 log = logging.getLogger("video.handler")
 
@@ -89,7 +89,7 @@ def handle(workspace: Path, task_id: str, instruction: str,
         "output_dir": str(output_dir),
         "music_path": str(music_path) if music_path else None,
         "target_minutes": 4.0,
-        "transcribe": transcribe,
+        "transcribe": True,  # always transcribe — detect dialogue for ducking
     })
     _save_state(workspace, state)
 
@@ -253,12 +253,31 @@ def _run_cut(workspace: Path, state: dict) -> str:
 
     log.info("Phase 3 complete: rough cut ready")
 
+    # ── Extract speech segments for ducking ──
+    speech_segments = []
+    if scene_log_path.exists():
+        scene_log = json.loads(scene_log_path.read_text(encoding="utf-8"))
+        for s in scene_log.get("scenes", []):
+            if s.get("type") == "transcript":
+                # Extract timestamp from transcript scenes
+                speech_segments.append({
+                    "start": s.get("timestamp", 0),
+                    "end": s.get("timestamp", 0) + 3,  # estimate 3s per segment
+                    "text": s.get("description", "").replace("[AUDIO] ", ""),
+                })
+    if speech_segments:
+        log.info("Found %d speech segments for audio ducking", len(speech_segments))
+
+    # Track music source for credits
+    music_credit = ""
+
     # ── Phase 4: Music ──
     final_output = output_dir / "final.mp4"
 
     if music_path and music_path.exists():
         log.info("=== Phase 4: Music Mix ===")
-        success = mix_music(rough_cut, music_path, final_output)
+        success = mix_music(rough_cut, music_path, final_output,
+                           speech_segments=speech_segments)
         if not success:
             log.warning("Music mix failed, using rough cut as final")
             final_output = rough_cut
@@ -267,13 +286,53 @@ def _run_cut(workspace: Path, state: dict) -> str:
         music_dir = input_dir / "music"
         available = find_music(music_dir) if music_dir.exists() else []
         if available:
-            log.info("=== Phase 4: Music Mix (auto-selected: %s) ===", available[0].name)
-            success = mix_music(rough_cut, available[0], final_output)
+            log.info("=== Phase 4: Music Mix (local: %s) ===", available[0].name)
+            success = mix_music(rough_cut, available[0], final_output,
+                               speech_segments=speech_segments)
             if not success:
                 final_output = rough_cut
         else:
-            log.info("No music provided, skipping Phase 4")
-            final_output = rough_cut
+            # Auto-download royalty-free music from Incompetech
+            log.info("=== Phase 4: Auto Music Selection ===")
+            # Determine mood from screenplay
+            sp_text = screenplay.lower()
+            if any(w in sp_text for w in ["epic", "adventure", "exciting", "energetic"]):
+                mood = "adventure"
+            elif any(w in sp_text for w in ["cinematic", "dramatic", "intense"]):
+                mood = "cinematic"
+            elif any(w in sp_text for w in ["playful", "fun", "humorous", "bouncy"]):
+                mood = "playful"
+            elif any(w in sp_text for w in ["calm", "peaceful", "contemplative", "serene"]):
+                mood = "contemplative"
+            elif any(w in sp_text for w in ["warm", "tender", "intimate", "gentle"]):
+                mood = "warm"
+            else:
+                mood = "joyful"
+
+            video_dur = get_duration(rough_cut) if rough_cut.exists() else 180
+            music_file = auto_select_music(mood, video_dur, workspace / "music")
+
+            if music_file:
+                log.info("Auto music: %s (mood: %s)", music_file.name, mood)
+                # Find the track title for credits
+                from music_mixer import _fetch_catalog
+                catalog = _fetch_catalog()
+                for t in catalog:
+                    if t.get("filename") == music_file.name:
+                        music_credit = (
+                            f"Music: \"{t.get('title', '').strip()}\" "
+                            f"by Kevin MacLeod (incompetech.com), "
+                            f"Licensed under CC BY 3.0"
+                        )
+                        break
+
+                success = mix_music(rough_cut, music_file, final_output,
+                                   speech_segments=speech_segments)
+                if not success:
+                    final_output = rough_cut
+            else:
+                log.info("No music found, using rough cut as final")
+                final_output = rough_cut
 
     # ── Done ──
     state["phase"] = "done"
@@ -295,6 +354,15 @@ def _run_cut(workspace: Path, state: dict) -> str:
         f"- Screenplay: v{state.get('screenplay_version', 1)}\n"
         f"- 输出: {final_output}\n"
     )
+    if speech_segments:
+        summary += f"- 对话保留: {len(speech_segments)} 段 (自动 ducking)\n"
+    if music_credit:
+        summary += f"\n**Credits**\n{music_credit}\n"
+
+    # Save credits file alongside output
+    if music_credit:
+        credits_path = output_dir / "CREDITS.txt"
+        credits_path.write_text(music_credit + "\n", encoding="utf-8")
 
     (workspace / "summary.md").write_text(summary, encoding="utf-8")
     log.info("Pipeline complete: %s", final_output)
