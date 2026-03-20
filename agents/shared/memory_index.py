@@ -1,10 +1,11 @@
-"""Semantic memory index — vector + keyword search across all soul files.
+"""Semantic memory index — DEPRECATED fallback, see memory_store.py.
+
+Primary memory is now PostgreSQL + pgvector via memory_store.py.
+This SQLite-based module is kept as a fallback when Postgres is unavailable.
 
 Uses SQLite for storage and OpenAI text-embedding-3-small for embeddings.
 Indexes: identity, worldview, memory, interests, journal, reading_notes, skills.
 Chunks text into ~400-token pieces with overlap for retrieval.
-
-Inspired by OpenClaw's hybrid search: vector (70%) + keyword (30%).
 """
 import hashlib
 import json

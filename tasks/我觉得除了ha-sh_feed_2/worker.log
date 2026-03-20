@@ -1,0 +1,17 @@
+2026-03-20 15:48:39,435 [INFO] Worker started: task=feed_2026-03-20_zhesi thread=feed_2026-03-20_zhesi
+2026-03-20 15:48:39,435 [INFO] Discussion mode detected for task feed_2026-03-20_zhesi
+2026-03-20 15:48:49,486 [INFO] Episode saved: 2026-03-20_1548_每日哲思-2026-03-20.md (4 messages)
+2026-03-20 15:48:49,570 [INFO] Auto-flush saved to flush_2026-03-20_1548.md
+2026-03-20 15:49:14,020 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error
+2026-03-20 15:49:14,166 [INFO] Rebuilt semantic memory: 793 chunks embedded
+2026-03-20 15:49:14,167 [INFO] Discussion response (25 chars): 消息好像没发完——"除了 hash" 后面是什么？
+2026-03-20 15:49:14,167 [INFO] Worker exiting (discussion)
+2026-03-20 15:53:30,861 [INFO] Worker started: task=feed_2026-03-20_zhesi thread=feed_2026-03-20_zhesi
+2026-03-20 15:53:30,861 [INFO] Discussion mode detected for task feed_2026-03-20_zhesi
+2026-03-20 15:53:36,245 [INFO] Replaced existing episode for task feed_2026-03-20_zhesi
+2026-03-20 15:53:36,246 [INFO] Episode saved: 2026-03-20_1553_每日哲思-2026-03-20.md (8 messages)
+2026-03-20 15:53:36,320 [INFO] Auto-flush saved to flush_2026-03-20_1553.md
+2026-03-20 15:54:00,765 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error
+2026-03-20 15:54:00,908 [INFO] Rebuilt semantic memory: 794 chunks embedded
+2026-03-20 15:54:00,908 [INFO] Discussion response (22 chars): 消息好像断了——"除了hash"之后是什么？
+2026-03-20 15:54:00,908 [INFO] Worker exiting (discussion)

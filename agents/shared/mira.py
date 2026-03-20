@@ -1,11 +1,14 @@
 """Mira — file-based iPhone ↔ Mac messaging over iCloud Drive.
 
-Protocol:
-    inbox/   — phone writes messages here, Mac reads
-    outbox/  — Mac writes replies here, phone reads
-    ack/     — Mac writes ack files here, phone polls for status
-    .processed/ — Mac tracks which inbox messages are already handled
-    .heartbeat  — Mac updates this every poll so phone knows agent is alive
+Protocol (unified MiraItem model):
+    heartbeat.json    — agent liveness
+    manifest.json     — index of all items + timestamps
+    items/            — one file per MiraItem, AGENT-OWNED
+    commands/         — user → agent commands (iOS writes, agent consumes)
+    archive/          — old items moved here
+
+Item types: request, discussion, feed
+Statuses: queued, working, needs-input, done, failed, archived
 """
 import json
 import logging
@@ -13,7 +16,7 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from config import MIRA_DIR
@@ -22,27 +25,35 @@ log = logging.getLogger("mira")
 
 
 def _utc_iso() -> str:
-    """UTC timestamp in iOS-compatible ISO8601 format (no microseconds, Z suffix)."""
+    """UTC timestamp in iOS-compatible ISO8601 format."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _msg_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+def _atomic_write(path: Path, data: dict):
+    """Write JSON atomically via tmp+rename."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False),
+                   encoding="utf-8")
+    tmp.rename(path)
+
+
 # ---------------------------------------------------------------------------
-# iCloud Drive helper — force-download cloud-only files
+# iCloud Drive helper
 # ---------------------------------------------------------------------------
 
 def _ensure_downloaded(path: Path):
     """Force iCloud Drive to download a file if it's a cloud placeholder."""
     try:
-        # brctl download triggers iCloud to fetch the file
-        subprocess.run(
-            ["brctl", "download", str(path)],
-            capture_output=True, timeout=10,
-        )
-        # Wait briefly for download to complete
+        subprocess.run(["brctl", "download", str(path)],
+                       capture_output=True, timeout=10)
         for _ in range(5):
             try:
                 path.read_bytes()
-                return  # readable, done
+                return
             except OSError:
                 time.sleep(0.5)
     except Exception as e:
@@ -50,7 +61,7 @@ def _ensure_downloaded(path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Message model
+# Legacy inbox message (for poll() backward compat during migration)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -66,7 +77,6 @@ class Message:
 
     @classmethod
     def from_file(cls, path: Path) -> "Message | None":
-        # Force iCloud download if file is a cloud placeholder
         _ensure_downloaded(path)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -95,157 +105,514 @@ class Message:
 # ---------------------------------------------------------------------------
 
 class Mira:
-    """File-based message queue over iCloud Drive."""
+    """File-based message queue over iCloud Drive — multi-user item protocol.
 
-    def __init__(self, bridge_dir: Path = MIRA_DIR):
+    Each user has their own namespace: users/{user_id}/items/, commands/, etc.
+    Shared items live in shared/items/.
+    Default user_id is 'ang' for backward compatibility.
+    """
+
+    def __init__(self, bridge_dir: Path = MIRA_DIR, user_id: str = "ang"):
         self.bridge_dir = bridge_dir
-        self.inbox = bridge_dir / "inbox"
-        self.outbox = bridge_dir / "outbox"
-        self.ack_dir = bridge_dir / "ack"
-        self.processed_dir = bridge_dir / ".processed"
-        self.heartbeat_file = bridge_dir / "heartbeat.json"
-        self.tasks_dir = bridge_dir / "tasks"
-        self.threads_dir = bridge_dir / "threads"
-        self.archive_dir = bridge_dir / "archive"
+        self.user_id = user_id
 
-        # Ensure directories exist
-        for d in [self.inbox, self.outbox, self.ack_dir, self.processed_dir,
-                  self.tasks_dir, self.threads_dir, self.archive_dir]:
+        # Per-user paths
+        self.user_dir = bridge_dir / "users" / user_id
+        self.items_dir = self.user_dir / "items"
+        self.commands_dir = self.user_dir / "commands"
+        self.archive_dir = self.user_dir / "archive"
+        self.manifest_file = self.user_dir / "manifest.json"
+        self.user_config_file = self.user_dir / "config.json"
+        self.processed_dir = self.user_dir / ".processed"
+
+        # Global paths (only heartbeat + profiles at root)
+        self.heartbeat_file = bridge_dir / "heartbeat.json"
+        self.profiles_file = bridge_dir / "profiles.json"
+
+        # Ensure directories exist (only per-user, nothing at root)
+        for d in [self.items_dir, self.commands_dir, self.archive_dir,
+                  self.processed_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------------------------------------------
-    # Task state (visible to iOS app)
-    # ------------------------------------------------------------------
+        self._last_heartbeat_data: str = ""
+        self._last_heartbeat_time: float = 0
 
-    def create_task(self, task_id: str, title: str, first_message: str,
-                    sender: str = "user", tags: list[str] | None = None,
-                    origin: str = "user") -> dict:
-        """Create a task file in tasks/ for iOS to display."""
+        # Load user config (agent name etc.)
+        self._user_config = self._load_user_config()
+
+    @property
+    def agent_name(self) -> str:
+        return self._user_config.get("agent_name", "Mira")
+
+    def _load_user_config(self) -> dict:
+        if self.user_config_file.exists():
+            try:
+                return json.loads(self.user_config_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {"agent_name": "Mira", "display_name": self.user_id}
+
+    @classmethod
+    def for_all_users(cls, bridge_dir: Path = MIRA_DIR) -> list["Mira"]:
+        """Create Mira instances for all registered users."""
+        users_dir = bridge_dir / "users"
+        if not users_dir.exists():
+            return [cls(bridge_dir)]
+        instances = []
+        for user_dir in sorted(users_dir.iterdir()):
+            if user_dir.is_dir() and not user_dir.name.startswith("."):
+                instances.append(cls(bridge_dir, user_id=user_dir.name))
+        return instances or [cls(bridge_dir)]
+
+    # ==================================================================
+    # Item CRUD — agent-owned, atomic writes
+    # ==================================================================
+
+    def create_item(self, item_id: str, item_type: str, title: str,
+                    first_message: str, sender: str = "user",
+                    tags: list[str] | None = None,
+                    origin: str = "user",
+                    quick: bool = False,
+                    parent_id: str = "") -> dict:
+        """Create a new item (request, discussion, or feed)."""
         now = _utc_iso()
-        task = {
-            "id": task_id,
+        item = {
+            "id": item_id,
+            "type": item_type,
             "title": title,
             "status": "queued",
             "tags": tags or [],
             "origin": origin,
+            "pinned": False,
+            "quick": quick,
+            "parent_id": parent_id,
             "created_at": now,
             "updated_at": now,
             "messages": [
-                {"sender": sender, "content": first_message, "timestamp": now},
+                {"id": _msg_id(), "sender": sender,
+                 "content": first_message, "timestamp": now, "kind": "text"},
             ],
+            "error": None,
             "result_path": None,
         }
-        self._write_task(task)
-        return task
+        self._write_item(item)
+        self._update_manifest()
+        return item
 
-    def emit_status(self, task_id: str, text: str, icon: str = "gear"):
-        """Emit a lightweight status card to a task's message stream.
+    # --- Convenience creators ---
 
-        Status cards show task progress inline (e.g. "Fetching feeds...",
-        "Writing outline...", "Waiting for approval"). iOS renders these
-        as compact cards instead of regular chat bubbles.
+    def create_task(self, task_id: str, title: str, first_message: str,
+                    sender: str = "user", tags: list[str] | None = None,
+                    origin: str = "user") -> dict:
+        """Create a request item. API-compatible with v1."""
+        return self.create_item(task_id, "request", title, first_message,
+                                sender=sender, tags=tags, origin=origin)
 
-        Args:
-            task_id: The task to emit status to.
-            text: Short status text (e.g. "正在写大纲").
-            icon: SF Symbol name (gear, doc.text, checkmark, clock, etc.)
-        """
-        import json as _json
-        status_content = _json.dumps(
-            {"type": "status", "text": text, "icon": icon},
-            ensure_ascii=False,
+    def create_feed(self, feed_id: str, title: str, content: str,
+                    tags: list[str] | None = None) -> dict:
+        """Create a feed item (briefing, journal, reflection)."""
+        item = self.create_item(feed_id, "feed", title, content,
+                                sender="agent", tags=tags, origin="agent")
+        item["status"] = "done"
+        self._write_item(item)
+        self._update_manifest()
+        return item
+
+    def create_discussion(self, disc_id: str, title: str, first_message: str,
+                          sender: str = "agent", tags: list[str] | None = None,
+                          parent_id: str = "") -> dict:
+        """Create a discussion (Mira-initiated or from feed comment)."""
+        item = self.create_item(disc_id, "discussion", title, first_message,
+                                sender=sender, tags=tags, origin="agent" if sender == "agent" else "user",
+                                parent_id=parent_id)
+        if sender == "agent":
+            item["status"] = "needs-input"
+        self._write_item(item)
+        self._update_manifest()
+        return item
+
+    # --- Item updates ---
+
+    def append_message(self, item_id: str, sender: str, content: str,
+                       kind: str = "text") -> dict | None:
+        """Append a message to an item. Returns updated item or None."""
+        item = self._read_item(item_id)
+        if not item:
+            log.warning("append_message: item %s not found", item_id)
+            return None
+        item["messages"].append({
+            "id": _msg_id(), "sender": sender,
+            "content": content, "timestamp": _utc_iso(), "kind": kind,
+        })
+        item["updated_at"] = _utc_iso()
+        # Reopen if user replies to done/failed
+        if sender != "agent" and item["status"] in ("done", "failed"):
+            item["status"] = "queued"
+        self._write_item(item)
+        self._update_manifest()
+        return item
+
+    def update_status(self, item_id: str, status: str,
+                      agent_message: str = "",
+                      result_path: str = "",
+                      error: dict | None = None):
+        """Update item status with optional message and error."""
+        item = self._read_item(item_id)
+        if not item:
+            log.warning("update_status: item %s not found", item_id)
+            return
+        item["status"] = status
+        item["updated_at"] = _utc_iso()
+        if agent_message:
+            item["messages"].append({
+                "id": _msg_id(), "sender": "agent",
+                "content": agent_message, "timestamp": _utc_iso(),
+                "kind": "text",
+            })
+        if error:
+            item["error"] = {
+                "code": error.get("code", "internal"),
+                "message": error.get("message", "未知错误"),
+                "retryable": error.get("retryable", False),
+                "timestamp": _utc_iso(),
+            }
+            item["messages"].append({
+                "id": _msg_id(), "sender": "agent",
+                "content": item["error"]["message"],
+                "timestamp": _utc_iso(), "kind": "error",
+            })
+        if result_path:
+            item["result_path"] = result_path
+        self._write_item(item)
+        self._update_manifest()
+
+    def emit_status_card(self, item_id: str, text: str, icon: str = "gear"):
+        """Emit a status card message (progress indicator)."""
+        self.append_message(
+            item_id, "agent",
+            json.dumps({"type": "status", "text": text, "icon": icon},
+                       ensure_ascii=False),
+            kind="status_card",
         )
-        msg = {
-            "sender": "agent",
-            "content": status_content,
-            "timestamp": _utc_iso(),
-        }
-        task = self._read_task(task_id)
-        if task:
-            task["messages"].append(msg)
-            task["updated_at"] = _utc_iso()
-            self._write_task(task)
-        # Always write sidecar so iOS gets it even on sync race
-        self._append_reply(task_id, msg)
+
+    def set_tags(self, item_id: str, tags: list[str]):
+        """Update item tags."""
+        item = self._read_item(item_id)
+        if not item:
+            return
+        item["tags"] = tags
+        item["updated_at"] = _utc_iso()
+        self._write_item(item)
+
+    def item_exists(self, item_id: str) -> bool:
+        return (self.items_dir / f"{item_id}.json").exists()
+
+    # --- v1 API compatibility wrappers ---
 
     def update_task_status(self, task_id: str, status: str,
                            agent_message: str = "",
                            result_path: str = ""):
-        """Update a task's status and optionally append an agent message.
+        """v1-compatible: update_task_status → update_status."""
+        self.update_status(task_id, status,
+                           agent_message=agent_message,
+                           result_path=result_path)
 
-        Comment threads (task_id starts with "comment_") use a simplified
-        write path to avoid duplicate messages:
-        - Agent replies are in .reply.json ONLY (written by task_worker)
-        - This method only updates status, never appends messages
-
-        Regular tasks write to:
-        1. Main task JSON (may be overwritten by iOS)
-        2. Reply sidecar ({task_id}.reply.json) — agent messages
-        3. Status sidecar ({task_id}.status.json) — authoritative agent status
-        """
-        is_comment = task_id.startswith("comment_")
-
-        task = self._read_task(task_id)
-        if not task:
-            log.warning("update_task_status: task %s not found, writing sidecars directly", task_id)
-            if agent_message and not is_comment:
-                msg = {"sender": "agent", "content": agent_message, "timestamp": _utc_iso()}
-                self._append_reply(task_id, msg)
-            self._write_status_sidecar(task_id, status, agent_message)
-            return
-
-        task["status"] = status
-        task["updated_at"] = _utc_iso()
-
-        if is_comment:
-            # Comment threads: NEVER write agent messages to task JSON.
-            # Agent replies live exclusively in .reply.json (written by task_worker).
-            # This prevents the duplicate message bug from multiple write paths.
-            pass
-        elif agent_message:
-            msg = {
-                "sender": "agent",
-                "content": agent_message,
-                "timestamp": _utc_iso(),
-            }
-            task["messages"].append(msg)
-            self._append_reply(task_id, msg)
-
-        if result_path:
-            task["result_path"] = result_path
-        self._write_task(task)
-        self._write_status_sidecar(task_id, status, agent_message)
+    def emit_status(self, task_id: str, text: str, icon: str = "gear"):
+        """v1-compatible: emit_status → emit_status_card."""
+        self.emit_status_card(task_id, text, icon)
 
     def append_task_message(self, task_id: str, sender: str, content: str):
-        """Append a message to an existing task (for follow-ups)."""
-        task = self._read_task(task_id)
-        if not task:
-            return
-        task["messages"].append({
-            "sender": sender,
-            "content": content,
-            "timestamp": _utc_iso(),
-        })
-        task["updated_at"] = _utc_iso()
-        # If user sends a follow-up to a done task, reopen it
-        if sender != "agent" and task["status"] in ("done", "failed"):
-            task["status"] = "queued"
-        self._write_task(task)
+        """v1-compatible: append_task_message → append_message."""
+        self.append_message(task_id, sender, content)
 
     def set_task_tags(self, task_id: str, tags: list[str]):
-        """Update task tags (called after smart classification)."""
-        task = self._read_task(task_id)
-        if not task:
-            return
-        task["tags"] = tags
-        self._write_task(task)
+        """v1-compatible: set_task_tags → set_tags."""
+        self.set_tags(task_id, tags)
 
     def task_exists(self, task_id: str) -> bool:
-        """Check if a task file exists (for dedup when handling follow-ups)."""
-        return (self.tasks_dir / f"{task_id}.json").exists()
+        """v1-compatible."""
+        return self.item_exists(task_id)
 
-    def _read_task(self, task_id: str) -> dict | None:
-        path = self.tasks_dir / f"{task_id}.json"
+    # ==================================================================
+    # Sharing
+    # ==================================================================
+
+    def share_item(self, item_id: str):
+        """Copy an item to shared/items/ so all users can see it."""
+        item = self._read_item(item_id)
+        if not item:
+            return
+        item["shared_by"] = self.user_id
+        shared_items = self.bridge_dir / "shared" / "items"
+        shared_items.mkdir(parents=True, exist_ok=True)
+        _atomic_write(shared_items / f"{item_id}.json", item)
+        # Update shared manifest
+        self._update_shared_manifest()
+        log.info("Shared item %s from %s", item_id, self.user_id)
+
+    def _update_shared_manifest(self):
+        """Rebuild shared/manifest.json."""
+        shared_items = self.bridge_dir / "shared" / "items"
+        entries = []
+        if shared_items.exists():
+            for path in shared_items.glob("*.json"):
+                if path.suffix == ".tmp":
+                    continue
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    entries.append({
+                        "id": data["id"],
+                        "type": data.get("type", "request"),
+                        "status": data.get("status", "done"),
+                        "updated_at": data.get("updated_at", ""),
+                    })
+                except (json.JSONDecodeError, OSError, KeyError):
+                    continue
+        manifest_file = self.bridge_dir / "shared" / "manifest.json"
+        _atomic_write(manifest_file, {"updated_at": _utc_iso(), "items": entries})
+
+    # ==================================================================
+    # Todo List
+    # ==================================================================
+
+    @property
+    def todos_file(self) -> Path:
+        return self.user_dir / "todos.json"
+
+    def load_todos(self) -> list[dict]:
+        if not self.todos_file.exists():
+            return []
+        try:
+            return json.loads(self.todos_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+
+    def save_todos(self, todos: list[dict]):
+        _atomic_write(self.todos_file, todos)
+
+    def add_todo(self, title: str, priority: str = "medium") -> dict:
+        todos = self.load_todos()
+        todo = {
+            "id": f"todo_{uuid.uuid4().hex[:8]}",
+            "title": title,
+            "priority": priority,
+            "status": "pending",
+            "created_at": _utc_iso(),
+            "updated_at": _utc_iso(),
+            "response": None,
+        }
+        todos.append(todo)
+        self.save_todos(todos)
+        return todo
+
+    def update_todo(self, todo_id: str, status: str = "",
+                    response: str = "") -> dict | None:
+        todos = self.load_todos()
+        for t in todos:
+            if t["id"] == todo_id:
+                if status:
+                    t["status"] = status
+                if response:
+                    t["response"] = response
+                t["updated_at"] = _utc_iso()
+                self.save_todos(todos)
+                return t
+        return None
+
+    def remove_todo(self, todo_id: str):
+        todos = [t for t in self.load_todos() if t["id"] != todo_id]
+        self.save_todos(todos)
+
+    def get_next_todo(self) -> dict | None:
+        """Get highest priority pending todo for agent to work on."""
+        todos = self.load_todos()
+        pending = [t for t in todos if t["status"] == "pending"]
+        if not pending:
+            return None
+        priority_order = {"high": 0, "medium": 1, "low": 2}
+        pending.sort(key=lambda t: (priority_order.get(t["priority"], 1), t["created_at"]))
+        return pending[0]
+
+    # ==================================================================
+    # Heartbeat
+    # ==================================================================
+
+    def heartbeat(self, agent_status: dict | None = None):
+        """Write heartbeat so phone knows agent is alive. Throttled."""
+        data = {
+            "timestamp": _utc_iso(),
+            "status": "online",
+        }
+        if agent_status:
+            data["busy"] = agent_status.get("busy", False)
+            data["active_count"] = agent_status.get("active_count", 0)
+
+        status_key = json.dumps({k: v for k, v in data.items()
+                                  if k != "timestamp"}, sort_keys=True)
+        now = time.time()
+        if (status_key == self._last_heartbeat_data
+                and now - self._last_heartbeat_time < 60):
+            return
+
+        _atomic_write(self.heartbeat_file, data)
+        self._last_heartbeat_data = status_key
+        self._last_heartbeat_time = now
+
+    # ==================================================================
+    # Command polling (iOS → agent)
+    # ==================================================================
+
+    def poll_commands(self) -> list[dict]:
+        """Read and consume command files from iOS.
+
+        iCloud can hold locks on files (Resource deadlock avoided / EAGAIN).
+        Strategy: copy to temp, read from temp, mark as processed.
+        """
+        import shutil, tempfile
+
+        try:
+            subprocess.run(["brctl", "download", str(self.commands_dir)],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
+
+        commands = []
+        for path in sorted(self.commands_dir.glob("*.json")):
+            if path.suffix == ".tmp":
+                continue
+            # Skip already-processed commands
+            marker = self.processed_dir / f"cmd_{path.stem}"
+            if marker.exists():
+                try:
+                    path.unlink()
+                    marker.unlink()
+                except OSError:
+                    pass
+                continue
+            try:
+                # Copy to temp to avoid iCloud lock
+                tmp = Path(tempfile.mktemp(suffix=".json"))
+                shutil.copy2(str(path), str(tmp))
+                data = json.loads(tmp.read_text(encoding="utf-8"))
+                tmp.unlink()
+                commands.append(data)
+                # Mark as processed
+                marker.write_text(_utc_iso(), encoding="utf-8")
+                try:
+                    path.unlink()
+                    marker.unlink()
+                except OSError:
+                    pass
+            except (json.JSONDecodeError, OSError, shutil.Error) as e:
+                log.warning("poll_commands: retry next cycle %s: %s", path.name, e)
+        return commands
+
+    # ==================================================================
+    # Legacy stubs (no-op, prevent old code from creating root folders)
+    # ==================================================================
+
+    def poll(self) -> list:
+        """Legacy: no-op. Commands are now via poll_commands()."""
+        return []
+
+    def ack(self, msg_id: str, status: str = "received"):
+        """Legacy: no-op."""
+        pass
+
+    def mark_processed(self, msg_path: Path):
+        """Legacy: no-op."""
+        pass
+
+    def reply(self, msg_id: str, recipient: str, content: str,
+              thread_id: str = "") -> str:
+        """Legacy: no-op. Agent replies go through update_task_status()."""
+        return _msg_id()
+
+    def post(self, content: str, sender: str = "agent",
+             thread_id: str = "", msg_type: str = "text") -> str:
+        """Legacy: no-op (feeds/journals now created via create_feed)."""
+        return _msg_id()
+
+    # ==================================================================
+    # Maintenance
+    # ==================================================================
+
+    def cleanup_old(self, days: int = 3):
+        """Archive old done items."""
+        self.archive_done_items(days=7)
+
+    def archive_done_items(self, days: int = 7):
+        """Move done/failed items older than N days to archive/."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        changed = False
+        for path in list(self.items_dir.glob("*.json")):
+            try:
+                item = json.loads(path.read_text(encoding="utf-8"))
+                if item.get("status") not in ("done", "failed"):
+                    continue
+                # Don't archive pinned items
+                if item.get("pinned"):
+                    continue
+                updated = datetime.fromisoformat(
+                    item["updated_at"].replace("Z", "+00:00"))
+                if updated < cutoff:
+                    item["status"] = "archived"
+                    dest = self.archive_dir / path.name
+                    _atomic_write(dest, item)
+                    path.unlink()
+                    changed = True
+                    log.info("Archived item %s", item["id"])
+            except (json.JSONDecodeError, OSError, KeyError):
+                continue
+        if changed:
+            self._update_manifest()
+
+    def archive_thread(self, thread_id: str):
+        """Archive a specific item by ID."""
+        item = self._read_item(thread_id)
+        if not item:
+            return
+        item["status"] = "archived"
+        dest = self.archive_dir / f"{thread_id}.json"
+        _atomic_write(dest, item)
+        src = self.items_dir / f"{thread_id}.json"
+        if src.exists():
+            src.unlink()
+        self._update_manifest()
+        log.info("Archived item %s", thread_id)
+
+    # ==================================================================
+    # Manifest
+    # ==================================================================
+
+    def _update_manifest(self):
+        """Rebuild manifest.json from items/ directory."""
+        entries = []
+        for path in self.items_dir.glob("*.json"):
+            if path.suffix == ".tmp":
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                entries.append({
+                    "id": data["id"],
+                    "type": data.get("type", "request"),
+                    "status": data.get("status", "queued"),
+                    "updated_at": data.get("updated_at", ""),
+                })
+            except (json.JSONDecodeError, OSError, KeyError):
+                continue
+        manifest = {
+            "updated_at": _utc_iso(),
+            "items": entries,
+        }
+        _atomic_write(self.manifest_file, manifest)
+
+    # ==================================================================
+    # Internal helpers
+    # ==================================================================
+
+    def _read_item(self, item_id: str) -> dict | None:
+        path = self.items_dir / f"{item_id}.json"
         if not path.exists():
             return None
         try:
@@ -253,269 +620,6 @@ class Mira:
         except (json.JSONDecodeError, OSError):
             return None
 
-    def _append_reply(self, task_id: str, msg: dict):
-        """Append an agent reply to a sidecar file immune to iCloud sync races."""
-        path = self.tasks_dir / f"{task_id}.reply.json"
-        replies = []
-        if path.exists():
-            try:
-                replies = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                pass
-        replies.append(msg)
-        path.write_text(
-            json.dumps(replies, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-
-    def _write_status_sidecar(self, task_id: str, status: str,
-                               agent_message: str = ""):
-        """Write authoritative agent-side status to a separate file.
-
-        This file is ONLY written by the Mac agent. iOS should read it
-        on app launch / refresh to reconcile with the task JSON.
-        Format: {status, updated_at, last_message (preview)}.
-        """
-        path = self.tasks_dir / f"{task_id}.status.json"
-        data = {
-            "status": status,
-            "updated_at": _utc_iso(),
-        }
-        if agent_message:
-            data["last_message"] = agent_message[:300]
-        path.write_text(
-            json.dumps(data, ensure_ascii=False),
-            encoding="utf-8",
-        )
-
-    def _write_task(self, task: dict):
-        path = self.tasks_dir / f"{task['id']}.json"
-        path.write_text(
-            json.dumps(task, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-
-    def heartbeat(self, agent_status: dict | None = None):
-        """Update heartbeat so phone can check agent is alive.
-
-        Args:
-            agent_status: optional dict from TaskManager.get_status_summary()
-                          with keys: busy, active_count, active_tasks, last_completed
-        """
-        data = {
-            "timestamp": _utc_iso(),
-            "status": "online",
-        }
-        if agent_status is not None:
-            data["busy"] = agent_status.get("busy", False)
-            data["active_count"] = agent_status.get("active_count", 0)
-            data["active_tasks"] = agent_status.get("active_tasks", [])
-            data["last_completed"] = agent_status.get("last_completed", "")
-        self.heartbeat_file.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    def poll(self) -> list[tuple["Message", Path]]:
-        """Scan inbox for new (unprocessed) messages.
-
-        Returns list of (Message, file_path) tuples, sorted by filename (time order).
-        """
-        # Force iCloud to download any new inbox files
-        try:
-            subprocess.run(
-                ["brctl", "download", str(self.inbox)],
-                capture_output=True, timeout=10,
-            )
-        except Exception:
-            pass
-
-        results = []
-
-        for path in sorted(self.inbox.glob("*.json")):
-            # Skip if already processed
-            if (self.processed_dir / path.name).exists():
-                continue
-
-            msg = Message.from_file(path)
-            if msg:
-                results.append((msg, path))
-
-        return results
-
-    def ack(self, msg_id: str, status: str = "received"):
-        """Write ack so phone knows message status.
-
-        Statuses: received → processing → done | error
-        """
-        ack_data = {
-            "message_id": msg_id,
-            "status": status,
-            "timestamp": _utc_iso(),
-        }
-        path = self.ack_dir / f"{msg_id}.json"
-        path.write_text(
-            json.dumps(ack_data, ensure_ascii=False), encoding="utf-8"
-        )
-
-    def mark_processed(self, msg_path: Path):
-        """Record that a message file has been processed (prevents re-processing)."""
-        marker = self.processed_dir / msg_path.name
-        marker.write_text(
-            json.dumps({"processed_at": _utc_iso()}),
-            encoding="utf-8",
-        )
-
-    def reply(self, msg_id: str, recipient: str, content: str,
-              thread_id: str = "") -> str:
-        """Write a reply to outbox for phone to pick up. Returns reply ID."""
-        reply_id = uuid.uuid4().hex[:8]
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        filename = f"{recipient}_{ts}_{reply_id}.json"
-
-        reply_data = {
-            "id": reply_id,
-            "in_reply_to": msg_id,
-            "sender": "agent",
-            "recipient": recipient,
-            "timestamp": _utc_iso(),
-            "type": "text",
-            "content": content,
-            "thread_id": thread_id,
-        }
-
-        path = self.outbox / filename
-        path.write_text(
-            json.dumps(reply_data, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        log.info("Reply written: %s → %s", msg_id, filename)
-        return reply_id
-
-    def post(self, content: str, sender: str = "agent",
-             thread_id: str = "", msg_type: str = "text") -> str:
-        """Post an agent-initiated message (not a reply). Returns message ID.
-
-        Used for proactive messages like daily journals and briefings.
-        """
-        msg_id = uuid.uuid4().hex[:8]
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        filename = f"agent_{ts}_{msg_id}.json"
-
-        data = {
-            "id": msg_id,
-            "sender": sender,
-            "timestamp": _utc_iso(),
-            "type": msg_type,
-            "content": content,
-            "thread_id": thread_id,
-        }
-
-        path = self.outbox / filename
-        path.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        log.info("Posted message: %s → %s", msg_id, filename)
-        return msg_id
-
-    def cleanup_old(self, days: int = 3):
-        """Remove old messages, processed markers, and acks older than N days.
-
-        Skips messages belonging to archived threads.
-        """
-        cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
-
-        # Get archived thread IDs to skip
-        archived_threads = self._get_archived_thread_ids()
-
-        # Clean processed markers and acks
-        for d in [self.processed_dir, self.ack_dir]:
-            for path in d.glob("*.json"):
-                try:
-                    if path.stat().st_mtime < cutoff:
-                        path.unlink()
-                except OSError:
-                    pass
-
-        # Clean old inbox and outbox messages (unless archived)
-        for d in [self.inbox, self.outbox]:
-            for path in d.glob("*.json"):
-                try:
-                    if path.stat().st_mtime < cutoff:
-                        # Check if this message belongs to an archived thread
-                        data = json.loads(path.read_text(encoding="utf-8"))
-                        if data.get("thread_id") in archived_threads:
-                            continue
-                        path.unlink()
-                except (OSError, json.JSONDecodeError):
-                    pass
-
-        count = 0
-        log.info("Cleanup done (cutoff: %d days)", days)
-
-    def _get_archived_thread_ids(self) -> set:
-        """Get set of archived thread IDs."""
-        index_file = self.threads_dir / "index.json"
-        if not index_file.exists():
-            return set()
-        try:
-            threads = json.loads(index_file.read_text(encoding="utf-8"))
-            return {t["id"] for t in threads if t.get("archived")}
-        except (json.JSONDecodeError, OSError):
-            return set()
-
-    def archive_thread(self, thread_id: str):
-        """Archive a thread: collect all messages → save as markdown, mark archived."""
-        # Collect all messages for this thread
-        messages = []
-        for folder in [self.inbox, self.outbox]:
-            for path in sorted(folder.glob("*.json")):
-                try:
-                    data = json.loads(path.read_text(encoding="utf-8"))
-                    if data.get("thread_id") == thread_id:
-                        messages.append(data)
-                except (json.JSONDecodeError, OSError):
-                    continue
-
-        messages.sort(key=lambda m: m.get("timestamp", ""))
-
-        if not messages:
-            log.warning("No messages found for thread %s", thread_id)
-            return
-
-        # Generate markdown
-        lines = [f"# Thread Archive: {thread_id}\n"]
-        lines.append(f"Archived at: {_utc_iso()}\n")
-        lines.append(f"Messages: {len(messages)}\n\n---\n")
-
-        for msg in messages:
-            sender = msg.get("sender", "?")
-            ts = msg.get("timestamp", "")[:19]
-            content = msg.get("content", "")
-            lines.append(f"## [{ts}] {sender}\n")
-            lines.append(f"{content}\n\n---\n")
-
-        # Get thread title from index
-        title = thread_id
-        index_file = self.threads_dir / "index.json"
-        if index_file.exists():
-            try:
-                threads = json.loads(index_file.read_text(encoding="utf-8"))
-                for t in threads:
-                    if t["id"] == thread_id:
-                        title = t.get("title", thread_id)
-                        t["archived"] = True
-                        break
-                index_file.write_text(
-                    json.dumps(threads, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        # Write archive markdown
-        safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip()[:50]
-        archive_file = self.archive_dir / f"{thread_id}_{safe_title}.md"
-        archive_file.write_text("\n".join(lines), encoding="utf-8")
-        log.info("Archived thread %s → %s", thread_id, archive_file.name)
+    def _write_item(self, item: dict):
+        path = self.items_dir / f"{item['id']}.json"
+        _atomic_write(path, item)

@@ -21,11 +21,13 @@ _SOUL_DIR = Path(__file__).resolve().parent / "soul"
 EMPTINESS_FILE = _SOUL_DIR / "emptiness.json"
 
 # Default tuning constants
-DEFAULT_THRESHOLD = 100.0        # emptiness units to trigger self-awakening
+DEFAULT_THRESHOLD = 100.0        # emptiness units to trigger question-mode self-awakening
+CONNECTION_THRESHOLD = 50.0      # lower threshold for connection-mode thinking
 DEFAULT_BASE_RATE = 0.8          # units per minute when idle, no pending questions
 DEFAULT_QUESTION_RATE = 0.4      # additional units per minute per pending question
 DEFAULT_DECAY_AFTER_THINK = 70.0 # emptiness reduction after one think session
 MAX_EMPTINESS = 500.0            # cap so it doesn't explode if agent is offline for days
+MAX_CONTINUATION = 5             # max rounds of continuing same thought chain
 
 
 def _now_iso() -> str:
@@ -108,12 +110,58 @@ def tick() -> float:
 
 
 def check_threshold() -> bool:
-    """Returns True if emptiness has crossed the threshold and self-awakening is due."""
+    """Returns True if emptiness has crossed the threshold and thinking is due.
+
+    Three modes (checked in order):
+    - question: emptiness >= 100, pending questions exist → think about top question
+    - connection: emptiness >= 50, thought_stream has recent entries → find connections
+    - auto_question: emptiness >= 100, no questions but thought_stream > 20 → generate questions
+    """
     state = load_emptiness()
     value = state.get("emptiness_value", 0.0)
     threshold = state.get("threshold", DEFAULT_THRESHOLD)
     has_questions = any(not q.get("resolved") for q in state.get("pending_questions", []))
-    return value >= threshold and has_questions
+
+    if value >= threshold and has_questions:
+        return True
+    if value >= CONNECTION_THRESHOLD:
+        return True  # connection or auto-question mode will be selected in get_think_mode()
+    return False
+
+
+def get_think_mode() -> str | None:
+    """Determine which thinking mode to use based on current state.
+
+    Returns: "question", "connection", "auto_question", or None.
+    """
+    state = load_emptiness()
+    value = state.get("emptiness_value", 0.0)
+    threshold = state.get("threshold", DEFAULT_THRESHOLD)
+    has_questions = any(not q.get("resolved") for q in state.get("pending_questions", []))
+
+    # Check for active thought continuation
+    continuation = state.get("thought_continuation")
+    if continuation and continuation.get("continuation_count", 0) < MAX_CONTINUATION:
+        return "continuation"
+
+    if value >= threshold and has_questions:
+        return "question"
+
+    if value >= CONNECTION_THRESHOLD:
+        # Check if thought_stream has enough entries for connection/auto-question
+        try:
+            from memory_store import get_store
+            stats = get_store().get_stats()
+            thought_count = stats.get("thought_stream", 0)
+        except Exception:
+            thought_count = 0
+
+        if thought_count >= 20 and not has_questions:
+            return "auto_question"
+        if thought_count >= 3:
+            return "connection"
+
+    return None
 
 
 def after_think():
@@ -208,10 +256,58 @@ def resolve_question(q_id: str):
     save_emptiness(state)
 
 
+def start_continuation(thought_id: int, preview: str = ""):
+    """Start tracking a thought chain for cross-cycle continuation."""
+    state = load_emptiness()
+    state["thought_continuation"] = {
+        "active_thread_id": thought_id,
+        "last_output_preview": preview[:200],
+        "continuation_count": 1,
+        "started_at": _now_iso(),
+    }
+    save_emptiness(state)
+
+
+def advance_continuation(thought_id: int, preview: str = ""):
+    """Advance the continuation counter after a thinking round."""
+    state = load_emptiness()
+    cont = state.get("thought_continuation", {})
+    cont["active_thread_id"] = thought_id
+    cont["last_output_preview"] = preview[:200]
+    cont["continuation_count"] = cont.get("continuation_count", 0) + 1
+    state["thought_continuation"] = cont
+    save_emptiness(state)
+
+
+def end_continuation():
+    """End the current thought continuation (crystallized or max rounds reached)."""
+    state = load_emptiness()
+    state.pop("thought_continuation", None)
+    save_emptiness(state)
+
+
+def get_continuation() -> dict | None:
+    """Get the current thought continuation state, or None."""
+    state = load_emptiness()
+    cont = state.get("thought_continuation")
+    if cont and cont.get("continuation_count", 0) < MAX_CONTINUATION:
+        return cont
+    if cont and cont.get("continuation_count", 0) >= MAX_CONTINUATION:
+        end_continuation()
+    return None
+
+
 def get_status_str() -> str:
     """Return a one-line status string for logging/display."""
     state = load_emptiness()
     value = state.get("emptiness_value", 0.0)
     threshold = state.get("threshold", DEFAULT_THRESHOLD)
     active = [q for q in state.get("pending_questions", []) if not q.get("resolved")]
-    return f"emptiness={value:.1f}/{threshold:.0f}, {len(active)} questions pending"
+    mode = get_think_mode()
+    cont = state.get("thought_continuation")
+    parts = [f"emptiness={value:.1f}/{threshold:.0f}", f"{len(active)} questions"]
+    if mode:
+        parts.append(f"mode={mode}")
+    if cont:
+        parts.append(f"cont={cont.get('continuation_count', 0)}/{MAX_CONTINUATION}")
+    return ", ".join(parts)

@@ -1,0 +1,11 @@
+2026-03-20 15:54:32,180 [INFO] Worker started: task=feed_2026-03-20_zhesi thread=feed_2026-03-20_zhesi
+2026-03-20 15:54:32,180 [INFO] Discussion mode detected for task feed_2026-03-20_zhesi
+2026-03-20 15:54:59,271 [INFO] Replaced existing episode for task feed_2026-03-20_zhesi
+2026-03-20 15:54:59,272 [INFO] Episode saved: 2026-03-20_1554_每日哲思-2026-03-20.md (12 messages)
+2026-03-20 15:54:59,356 [INFO] Auto-flush saved to flush_2026-03-20_1554.md
+2026-03-20 15:55:23,710 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error
+2026-03-20 15:55:23,865 [INFO] Rebuilt semantic memory: 795 chunks embedded
+2026-03-20 15:55:23,866 [INFO] Discussion response (442 chars): 对，联想是一个真实的补充，但我想挑一下"帮助很大"这个说法。
+
+联想在慢思考里的作用更像是图遍历——你从一个节点出发，沿着边走到你单靠直接查找找不到的地方。它可以绕开哈希碰撞：如果"公正"直接查询返回的是个混合值，你可以绕路，从"程序"走、
+2026-03-20 15:55:23,866 [INFO] Worker exiting (discussion)

@@ -619,23 +619,38 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
 
     log.info("Generating conversation script [%s]...", lang)
 
+    import sys as _sys
+    _shared = str(Path(__file__).resolve().parent.parent / "shared")
+    if _shared not in _sys.path:
+        _sys.path.insert(0, _shared)
+    from sub_agent import claude_think
+
+    # Primary: Claude Opus (heavy tier, with built-in fallback)
+    result = None
     try:
-        import openai as _openai
-        from sub_agent import _get_api_key
-        client = _openai.OpenAI(api_key=_get_api_key("openai"))
-        response = client.chat.completions.create(
-            model="gpt-5.4",
-            messages=[{"role": "user", "content": prompt}],
-            max_completion_tokens=16000,
-            timeout=600,
-        )
-        result = response.choices[0].message.content
+        result = claude_think(prompt, timeout=600, tier="heavy")
     except Exception as e:
-        log.error("Script generation failed: %s", e)
-        result = None
+        log.error("Script generation (claude) failed: %s", e)
+
+    # Fallback: direct OpenAI call if Claude returns nothing
+    if not result:
+        log.warning("Claude returned empty — trying OpenAI fallback...")
+        try:
+            import openai as _openai
+            from sub_agent import _get_api_key
+            client = _openai.OpenAI(api_key=_get_api_key("openai"))
+            response = client.chat.completions.create(
+                model="gpt-5.4",
+                messages=[{"role": "user", "content": prompt}],
+                max_completion_tokens=16000,
+                timeout=600,
+            )
+            result = response.choices[0].message.content
+        except Exception as e:
+            log.error("Script generation (openai fallback) failed: %s", e)
 
     if not result:
-        log.error("Conversation script generation failed")
+        log.error("Conversation script generation failed (all providers)")
         return None
 
     result = result.strip()
@@ -662,19 +677,9 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
             "\n".join(result.splitlines()[-10:])
         )
         try:
-            ext_response = client.chat.completions.create(
-                model="gpt-5.4",
-                messages=[
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": result},
-                    {"role": "user", "content": extend_prompt},
-                ],
-                max_completion_tokens=16000,
-                timeout=600,
-            )
-            extension = ext_response.choices[0].message.content.strip()
+            extension = claude_think(extend_prompt, timeout=600, tier="heavy")
             if extension:
-                result = result + "\n" + extension
+                result = result + "\n" + extension.strip()
                 new_count = len(_re.findall(r'[\u4e00-\u9fff]', result)) if lang == "zh" else len(result.split())
                 log.info("Extended script: %d → %d chars", char_count, new_count)
         except Exception as e:
@@ -1224,6 +1229,43 @@ def _extract_article(workspace: Path, content: str) -> tuple[str | None, str]:
                 article_text = p.read_text(encoding="utf-8")
                 title = p.stem
                 break
+
+    # Auto-find latest published article if no explicit source
+    if not article_text:
+        import sys as _sys
+        _shared = str(Path(__file__).resolve().parent.parent / "shared")
+        if _shared not in _sys.path:
+            _sys.path.insert(0, _shared)
+        try:
+            from config import WRITINGS_OUTPUT_DIR
+            published_dir = WRITINGS_OUTPUT_DIR / "_published"
+            if published_dir.exists():
+                published = sorted(published_dir.glob("*.md"),
+                                   key=lambda p: p.stat().st_mtime, reverse=True)
+                if published:
+                    article_text = published[0].read_text(encoding="utf-8")
+                    title = published[0].stem.replace("-", " ").replace("_", " ").title()
+        except Exception:
+            pass
+
+    # Also check writings project folders for final.md
+    if not article_text:
+        try:
+            from config import WRITINGS_OUTPUT_DIR
+            projects = sorted(WRITINGS_OUTPUT_DIR.iterdir(),
+                              key=lambda p: p.stat().st_mtime, reverse=True)
+            for proj in projects:
+                if not proj.is_dir() or proj.name.startswith("_"):
+                    continue
+                final = proj / "final" / "final.md"
+                if not final.exists():
+                    final = proj / "final.md"
+                if final.exists():
+                    article_text = final.read_text(encoding="utf-8")
+                    title = proj.name.replace("-", " ").title()
+                    break
+        except Exception:
+            pass
 
     # Override title from first heading
     if article_text:

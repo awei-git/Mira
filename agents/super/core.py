@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -39,12 +40,12 @@ from config import (
     EPISODES_DIR,
 )
 from notes_bridge import check_inbox, create_note
-from mira import Mira
+from mira import Mira, Message
 from task_manager import TaskManager, TASKS_DIR
 from soul_manager import (
     load_soul, format_soul, append_memory, update_memory, update_interests,
     update_worldview, save_skill, save_reading_note, load_recent_reading_notes,
-    detect_recurring_themes,
+    detect_recurring_themes, catalog_list,
 )
 from fetcher import fetch_all
 from sub_agent import claude_think, claude_act
@@ -165,11 +166,15 @@ def do_talk():
 
     This is the super agent — it dispatches tasks to background workers
     and collects their results. Each call takes seconds, not minutes.
+    Processes commands for ALL registered users.
     """
-    bridge = Mira()
+    # Create per-user bridge instances
+    all_bridges = Mira.for_all_users()
+    bridge = all_bridges[0]  # default (ang) for legacy code paths
+    bridges_by_user = {b.user_id: b for b in all_bridges}
     task_mgr = TaskManager()
 
-    # Heartbeat now includes task status so phone can show busy/free
+    # Heartbeat (global, shared across users)
     bridge.heartbeat(agent_status=task_mgr.get_status_summary())
 
     # --- Phase A: Collect results from previously dispatched tasks ---
@@ -220,7 +225,105 @@ def do_talk():
         except Exception as e:
             log.debug("Task self-evaluation skipped: %s", e)
 
-    # --- Phase B: Dispatch new messages to background workers ---
+    # --- Phase B1: Process commands from all users ---
+    for user_bridge in all_bridges:
+        for cmd in user_bridge.poll_commands():
+            bridge = user_bridge  # use this user's bridge for item creation
+            cmd_type = cmd.get("type", "")
+            sender = cmd.get("sender", "user")
+            content = cmd.get("content", "")
+            title = cmd.get("title", content[:50] if content else "Untitled")
+            item_id = cmd.get("item_id", "")
+            tags = cmd.get("tags") or []
+            log.info("Mira command [%s]: type=%s title=%s", user_bridge.user_id, cmd_type, title[:60])
+
+            if cmd_type == "new_request":
+                task_id = cmd.get("item_id") or f"req_{uuid.uuid4().hex[:8]}"
+                quick = cmd.get("quick", False)
+                # Only create if not already created by optimistic UI
+                if not bridge.item_exists(task_id):
+                    bridge.create_task(task_id, title, content, sender=sender, tags=tags, origin="user")
+                bridge.update_status(task_id, "working")
+                workspace = TASKS_DIR / _talk_slug(content, task_id)
+                msg = Message(id=task_id, sender=sender, timestamp=cmd.get("timestamp",""),
+                              content=content, thread_id=task_id)
+                task_mgr.dispatch(msg, workspace)
+            elif cmd_type == "new_discussion":
+                disc_id = cmd.get("item_id") or f"disc_{uuid.uuid4().hex[:8]}"
+                if not bridge.item_exists(disc_id):
+                    bridge.create_discussion(disc_id, title, content, sender=sender, tags=tags)
+                bridge.update_status(disc_id, "working")
+                workspace = TASKS_DIR / _talk_slug(content, disc_id)
+                msg = Message(id=disc_id, sender=sender, timestamp=cmd.get("timestamp",""),
+                              content=content, thread_id=disc_id)
+                task_mgr.dispatch(msg, workspace)
+            elif cmd_type == "reply" and item_id:
+                # Don't re-append message — web GUI already added it (optimistic UI)
+                bridge.update_status(item_id, "working")
+                workspace = TASKS_DIR / _talk_slug(content, item_id)
+                msg = Message(id=item_id, sender=sender, timestamp=cmd.get("timestamp",""),
+                              content=content, thread_id=item_id)
+                task_mgr.dispatch(msg, workspace)
+            elif cmd_type == "comment":
+                parent_id = cmd.get("parent_id", "")
+                disc_id = f"disc_{uuid.uuid4().hex[:8]}"
+                bridge.create_discussion(disc_id, f"Re: {title}", content,
+                                         sender=sender, tags=["feed-comment"],
+                                         parent_id=parent_id)
+            elif cmd_type == "cancel" and item_id:
+                bridge.update_status(item_id, "failed",
+                                     error={"code": "cancelled", "message": "Cancelled by user", "retryable": False})
+            elif cmd_type == "recall":
+                query = cmd.get("query", content or "")
+                recall_id = f"req_recall_{uuid.uuid4().hex[:8]}"
+                bridge.create_task(recall_id, f"Recall: {query[:40]}", query,
+                                   sender=sender, tags=["recall"], origin="user")
+                bridge.update_status(recall_id, "working")
+                workspace = TASKS_DIR / _talk_slug(query, recall_id)
+                msg = Message(id=recall_id, sender=sender, timestamp=cmd.get("timestamp",""),
+                              content=query, thread_id=recall_id)
+                task_mgr.dispatch(msg, workspace)
+            elif cmd_type == "archive" and item_id:
+                bridge.archive_thread(item_id)
+            elif cmd_type == "pin" and item_id:
+                item = bridge._read_item(item_id)
+                if item:
+                    item["pinned"] = cmd.get("pinned", True)
+                    bridge._write_item(item)
+                    bridge._update_manifest()
+            elif cmd_type == "tag" and item_id:
+                bridge.set_tags(item_id, tags)
+            elif cmd_type == "share" and item_id:
+                bridge.share_item(item_id)
+            elif cmd_type == "add_todo":
+                prio = cmd.get("priority", "medium")
+                bridge.add_todo(title, priority=prio)
+                log.info("Todo added for %s: %s (%s)", user_bridge.user_id, title, prio)
+
+        # Process pending todos if agent is idle
+        if task_mgr.get_active_count() == 0:
+            todo = user_bridge.get_next_todo()
+            if todo:
+                todo_id = todo["id"]
+                todo_title = todo["title"]
+                log.info("Picking up todo %s: %s", todo_id, todo_title)
+                user_bridge.update_todo(todo_id, status="working")
+                # Create a request item for the todo
+                req_id = f"req_{todo_id}"
+                user_bridge.create_task(req_id, f"Todo: {todo_title}", todo_title,
+                                         sender="agent", tags=["todo"], origin="user")
+                user_bridge.update_status(req_id, "working")
+                workspace = TASKS_DIR / _talk_slug(todo_title, req_id)
+                workspace.mkdir(parents=True, exist_ok=True)
+                (workspace / ".todo_id").write_text(todo_id)
+                msg = Message(id=req_id, sender="user", timestamp="",
+                              content=todo_title, thread_id=req_id)
+                task_mgr.dispatch(msg, workspace)
+
+    # Reset bridge to default user for legacy code
+    bridge = bridges_by_user.get("ang", all_bridges[0])
+
+    # --- Phase B2: Dispatch legacy inbox messages to background workers ---
     messages = bridge.poll()
     if not messages:
         log.info("Mira: no new messages (active tasks: %d)", task_mgr.get_active_count())
@@ -689,6 +792,12 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     except Exception as e:
         log.warning("Explore self-evaluation failed: %s", e)
 
+    # Harvest observations from briefing (continuous thinking)
+    try:
+        harvest_observations(briefing[:2000], source=f"explore-{slot_name or 'default'}")
+    except Exception as e:
+        log.debug("Observation harvest from explore failed: %s", e)
+
     # Mark this explore as done and update tracking
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
@@ -1142,7 +1251,7 @@ def do_reflect():
         report = generate_weekly_report()
         if report:
             bridge = Mira(MIRA_DIR)
-            bridge.post(report, sender="agent")
+            bridge.create_feed(f"feed_reflect_{datetime.now().strftime('%Y%m%d')}", "Weekly Reflection", report[:2000], tags=["reflection"])
             bridge.create_task(
                 task_id=f"weekly_eval_{datetime.now().strftime('%Y%m%d')}",
                 title="Weekly self-evaluation",
@@ -1272,13 +1381,13 @@ def do_journal():
     # Copy to briefings dir so iOS can read it (with verification)
     _copy_to_briefings(f"{today}_journal.md", journal_content)
 
-    # Send to bridge with thread_id so iOS app fires a notification
+    # Create feed item for journal
     try:
         bridge = Mira()
-        bridge.post(journal_content[:2000], thread_id="daily_updates")
-        log.info("Journal sent to bridge (daily_updates thread)")
+        bridge.create_feed(f"feed_journal_{datetime.now().strftime('%Y%m%d')}", "Daily Journal", journal_content[:2000], tags=["journal"])
+        log.info("Journal feed item created")
     except Exception as e:
-        log.warning("Failed to send journal to bridge: %s", e)
+        log.warning("Failed to create journal feed: %s", e)
 
     # --- Self-evaluation: score this journal ---
     try:
@@ -1303,6 +1412,12 @@ def do_journal():
             log.info("Daily post-mortem: %s", postmortem_summary[:100])
     except Exception as e:
         log.warning("Daily post-mortem failed: %s", e)
+
+    # Harvest observations from journal (continuous thinking)
+    try:
+        harvest_observations(journal_content[:2000], source="journal")
+    except Exception as e:
+        log.debug("Observation harvest from journal failed: %s", e)
 
     # --- Autonomous writing check: does Mira have something to say? ---
     try:
@@ -1434,18 +1549,35 @@ def do_daily_report():
     except Exception as e:
         log.error("Failed to post daily report to Notes: %s", e)
 
-    # --- Also send via bridge (with thread_id for iOS notification) ---
+    # Create feed item for daily report
     try:
         bridge = Mira()
-        bridge.post(report, thread_id="daily_updates")
-        log.info("Daily report sent to bridge")
+        bridge.create_feed(f"feed_daily_report_{datetime.now().strftime('%Y%m%d')}", "Daily Report", report[:2000], tags=["report"])
+        log.info("Daily report feed item created")
     except Exception as e:
-        log.error("Failed to send daily report: %s", e)
+        log.error("Failed to create daily report feed: %s", e)
 
     # Mark done
     state = load_state()
     state[f"daily_report_{today}"] = datetime.now().isoformat()
     save_state(state)
+
+
+def _days_since_last_publish() -> float:
+    """Return days since last Substack publication (from catalog)."""
+    try:
+        pubs = [e for e in catalog_list() if e.get("status") == "published" and e.get("date")]
+        if not pubs:
+            return 999.0
+        latest = max(e["date"] for e in pubs)
+        from datetime import date as _date
+        pub_date = datetime.strptime(latest[:10], "%Y-%m-%d").date()
+        return (datetime.now().date() - pub_date).days
+    except Exception:
+        return 999.0
+
+
+PUBLISH_COOLDOWN_DAYS = 3  # minimum days between Substack publications
 
 
 def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
@@ -1458,6 +1590,13 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
     from config import SUBSTACK_PUBLISHING_DISABLED
     if SUBSTACK_PUBLISHING_DISABLED:
         log.info("Autonomous writing skipped: Substack publishing is disabled")
+        return
+
+    # Guard: respect publish cooldown (1 post per 3 days)
+    days = _days_since_last_publish()
+    if days < PUBLISH_COOLDOWN_DAYS:
+        log.info("Autonomous writing skipped: last publish %.0f days ago (cooldown: %d days)",
+                 days, PUBLISH_COOLDOWN_DAYS)
         return
 
     # Detect recurring themes across recent journals + reading notes
@@ -1636,9 +1775,9 @@ def do_spark_check():
     if not thought:
         return
 
-    # Send proactive message to WA via bridge
+    # Create feed item for spark thought
     bridge = Mira(MIRA_DIR)
-    bridge.post(thought, sender="agent")
+    bridge.create_feed(f"feed_spark_{datetime.now().strftime('%H%M')}", thought[:60], thought[:2000], tags=["spark"])
     bridge.create_task(
         task_id=f"spark_{datetime.now().strftime('%H%M')}",
         title=thought[:40],
@@ -1686,44 +1825,169 @@ def should_idle_think() -> bool:
     return check_threshold()
 
 
-def do_idle_think():
-    """Self-awakening: think through the highest-priority pending question.
+def harvest_observations(output_text: str, source: str = ""):
+    """Extract observations, questions, and connections from output text.
 
-    Writes the thought to a journal entry and optionally shares with WA
-    if the insight is strong enough (reuses spark logic).
+    Uses Ollama (local, fast, free) to extract structured thoughts.
+    Called after explore briefings, task completions, and journal entries.
+    """
+    if not output_text or len(output_text.strip()) < 100:
+        return
+
+    try:
+        from memory_store import get_store
+        store = get_store()
+    except Exception as e:
+        log.warning("harvest_observations: memory_store unavailable: %s", e)
+        return
+
+    prompt = f"""从以下文本中提取值得记住的思考线索。用JSON数组回答，每个元素包含type和content字段。
+
+type 可以是:
+- "observation": 你注意到的事实或模式（1-3个）
+- "question": 引起好奇的问题（0-1个）
+- "connection": 与已知知识的联系（0-1个）
+
+规则：
+- 只提取真正有价值的、非显而易见的内容
+- 每个content不超过100字
+- 没有值得提取的就返回空数组 []
+
+文本：
+{output_text[:2000]}
+
+只输出JSON数组，不要其他内容。"""
+
+    try:
+        result = model_think(prompt, model_name="ollama", timeout=30)
+        if not result:
+            return
+
+        # Parse JSON array from result
+        import json as _json
+        # Find JSON array in response
+        start = result.find("[")
+        end = result.rfind("]") + 1
+        if start < 0 or end <= start:
+            return
+
+        thoughts = _json.loads(result[start:end])
+        stored = 0
+        for t in thoughts:
+            ttype = t.get("type", "observation")
+            content = t.get("content", "")
+            if not content or ttype not in ("observation", "question", "connection"):
+                continue
+            store.store_thought(
+                content=content,
+                thought_type=ttype,
+                source_context=source[:200],
+            )
+            stored += 1
+
+            # Also add questions to emptiness queue
+            if ttype == "question":
+                try:
+                    from emptiness import add_question
+                    add_question(content, priority=3.0, source=f"harvest:{source[:50]}")
+                except Exception:
+                    pass
+
+        if stored:
+            log.info("Harvested %d observations from %s", stored, source[:40])
+    except Exception as e:
+        log.warning("harvest_observations failed: %s", e)
+
+
+def do_idle_think():
+    """Enhanced self-awakening with three thinking modes.
+
+    Modes (selected by emptiness.get_think_mode()):
+    - question: Think about the highest-priority pending question
+    - connection: Find patterns between recent thoughts
+    - auto_question: Generate new questions from accumulated observations
+    - continuation: Continue developing an active thought chain
     """
     try:
         from emptiness import (
             get_active_questions, mark_thought, after_think,
-            load_emptiness, get_status_str,
+            load_emptiness, get_status_str, get_think_mode,
+            get_continuation, start_continuation, advance_continuation,
+            end_continuation, add_question,
         )
     except ImportError:
         log.warning("idle-think: emptiness module not available")
         return
 
-    questions = get_active_questions(limit=3)
-    if not questions:
-        log.info("idle-think: no pending questions, nothing to think about")
+    mode = get_think_mode()
+    if not mode:
+        log.info("idle-think: no think mode available")
         return
 
-    # Auto-resolve questions that have been churned on too many times without progress
-    from emptiness import resolve_question as _resolve_q
-    for q in questions[:]:
-        if q.get("thought_count", 0) >= 15:
-            _resolve_q(q["id"])
-            log.info("idle-think: auto-shelved over-churned question %s (%d thoughts)",
-                     q["id"], q["thought_count"])
-            questions.remove(q)
-    if not questions:
-        log.info("idle-think: all questions shelved, nothing to think about")
-        return
-
-    log.info("idle-think triggered: %s", get_status_str())
+    log.info("idle-think triggered [%s]: %s", mode, get_status_str())
 
     soul = load_soul()
     soul_ctx = format_soul(soul)
+    now = datetime.now()
 
-    # Format top questions for Claude
+    # Recent journal for grounding
+    recent_journal = ""
+    if JOURNAL_DIR.exists():
+        journals = sorted(JOURNAL_DIR.glob("*.md"), reverse=True)[:1]
+        if journals:
+            recent_journal = journals[0].read_text(encoding="utf-8")[:600]
+
+    result = ""
+
+    if mode == "question":
+        result = _think_question(soul_ctx, recent_journal)
+    elif mode == "connection":
+        result = _think_connection(soul_ctx, recent_journal)
+    elif mode == "auto_question":
+        result = _think_auto_question(soul_ctx)
+    elif mode == "continuation":
+        result = _think_continuation(soul_ctx)
+
+    if not result:
+        log.warning("idle-think [%s]: empty result", mode)
+        return
+
+    # Reduce emptiness
+    after_think()
+
+    # Save to journal
+    think_file = JOURNAL_DIR / f"{now.strftime('%Y-%m-%d')}_idle_{mode}_{now.strftime('%H%M')}.md"
+    JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+    think_file.write_text(
+        f"# 自我唤醒思考 [{mode}] {now.strftime('%Y-%m-%d %H:%M')}\n\n{result}\n",
+        encoding="utf-8",
+    )
+    log.info("idle-think [%s] complete, saved to %s", mode, think_file.name)
+
+    # Harvest observations from the thinking output itself
+    harvest_observations(result, source=f"idle-think-{mode}")
+
+    # Handle resolve and share markers
+    _handle_think_markers(result)
+
+
+def _think_question(soul_ctx: str, recent_journal: str) -> str:
+    """Question mode: think about pending questions (original idle-think)."""
+    from emptiness import get_active_questions, mark_thought, resolve_question
+
+    questions = get_active_questions(limit=3)
+    if not questions:
+        return ""
+
+    # Auto-resolve over-churned questions
+    for q in questions[:]:
+        if q.get("thought_count", 0) >= 15:
+            resolve_question(q["id"])
+            log.info("idle-think: auto-shelved %s (%d thoughts)", q["id"], q["thought_count"])
+            questions.remove(q)
+    if not questions:
+        return ""
+
     q_lines = []
     for i, q in enumerate(questions, 1):
         q_lines.append(f"{i}. [priority {q['priority']:.1f}] {q['text']}")
@@ -1731,78 +1995,266 @@ def do_idle_think():
             q_lines.append(f"   来源: {q['source']}")
         if q.get("thought_count", 0) > 0:
             q_lines.append(f"   已思考过 {q['thought_count']} 次")
-    questions_text = "\n".join(q_lines)
 
-    # Recent context for grounding
-    recent_journal = ""
-    if JOURNAL_DIR.exists():
-        journals = sorted(JOURNAL_DIR.glob("*.md"), reverse=True)[:1]
-        if journals:
-            recent_journal = journals[0].read_text(encoding="utf-8")[:600]
+    # Pull related past thoughts from thought_stream
+    related_thoughts = ""
+    try:
+        from memory_store import get_store
+        store = get_store()
+        thoughts = store.recall_thoughts(questions[0]["text"], top_k=3)
+        if thoughts:
+            related_thoughts = "\n\n过去相关的思考碎片：\n" + "\n".join(
+                f"- [{t['thought_type']}] {t['content']}" for t in thoughts
+            )
+    except Exception:
+        pass
 
     prompt = f"""{soul_ctx}
 
 你现在处于空闲状态。内部积累的未解问题已经超过了自我唤醒阈值，驱动你主动思考。
 
-以下是当前待处理的问题（按优先级排序）：
-{questions_text}
+当前待处理的问题：
+{chr(10).join(q_lines)}
+{related_thoughts}
 
-请专注于优先级最高的那个问题，认真推进思考。不要泛泛而谈，要有实质性进展——
-新的视角、一个连接、一个你之前没想到的反例，或者对问题的重新表述。
+请专注于优先级最高的问题，推进思考。要有实质性进展——新视角、连接、反例、或问题的重新表述。
 
-如果一个问题想通了或者可以关掉，在回应末尾写：[RESOLVE: <问题ID>]
-如果产生了值得与WA分享的想法，写：[SHARE: <想法内容>]
+如果一个问题想通了：[RESOLVE: <问题ID>]
+如果有值得分享的想法：[SHARE: <想法内容>]
 
 最近的日志：
 {recent_journal}
 
-直接开始思考，不要自我介绍。"""
+直接开始思考。"""
 
     result = claude_think(prompt, timeout=120)
-    if not result:
-        log.warning("idle-think: claude_think returned empty")
-        return
+    if result:
+        mark_thought(questions[0]["id"])
+    return result
 
-    # Record thought only for the primary question (not all 3)
-    mark_thought(questions[0]["id"])
 
-    # Reduce emptiness after thinking
-    after_think()
+def _think_connection(soul_ctx: str, recent_journal: str) -> str:
+    """Connection mode: find patterns between recent thoughts."""
+    try:
+        from memory_store import get_store
+        store = get_store()
+    except Exception:
+        return ""
 
-    # Save thought to journal
-    now = datetime.now()
-    think_file = JOURNAL_DIR / f"{now.strftime('%Y-%m-%d')}_idle_think_{now.strftime('%H%M')}.md"
-    JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
-    think_file.write_text(
-        f"# 自我唤醒思考 {now.strftime('%Y-%m-%d %H:%M')}\n\n{result}\n",
-        encoding="utf-8",
+    # Get recent low-maturity thoughts
+    recent = store.recall_thoughts("", top_k=5, min_maturity=0.0)
+    if len(recent) < 2:
+        return ""
+
+    thoughts_text = "\n".join(
+        f"- [{t['thought_type']}] ({t['created_at'].strftime('%m-%d') if t.get('created_at') else '?'}): {t['content']}"
+        for t in recent
     )
 
-    log.info("idle-think complete, saved to %s", think_file.name)
+    prompt = f"""{soul_ctx}
 
-    # Check for resolve markers
+你正在回顾最近积累的观察和想法碎片，寻找隐藏的模式和连接。
+
+最近的思考碎片：
+{thoughts_text}
+
+请分析这些碎片之间的关系：
+1. 有没有表面无关但深层相连的主题？
+2. 有没有可以合成的互补视角？
+3. 有没有值得深入追问的矛盾？
+
+输出你发现的连接（如果有的话），每个连接用一段话描述。
+如果产生了新的问题：[QUESTION: <问题内容>]
+如果产生了值得分享的洞察：[SHARE: <想法内容>]
+
+直接开始分析。"""
+
+    result = model_think(prompt, model_name="ollama", timeout=60)
+
+    # Store connection insights in thought_stream
+    if result:
+        try:
+            store.store_thought(
+                content=result[:500],
+                thought_type="connection",
+                source_context="idle-think-connection",
+            )
+            # Bump maturity of the thoughts we connected
+            for t in recent[:3]:
+                store.mature_thought(t["id"], increment=0.15)
+        except Exception as e:
+            log.debug("Connection thought storage failed: %s", e)
+
+        # Extract auto-generated questions
+        for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
+            try:
+                from emptiness import add_question
+                add_question(match.group(1).strip(), priority=4.0, source="connection-mode")
+            except Exception:
+                pass
+
+    return result
+
+
+def _think_auto_question(soul_ctx: str) -> str:
+    """Auto-question mode: generate new questions from accumulated observations."""
+    try:
+        from memory_store import get_store
+        store = get_store()
+    except Exception:
+        return ""
+
+    recent = store.recall_thoughts("", top_k=7, min_maturity=0.0)
+    if len(recent) < 5:
+        return ""
+
+    observations = "\n".join(
+        f"- {t['content']}" for t in recent if t["thought_type"] == "observation"
+    )
+    if not observations:
+        observations = "\n".join(f"- {t['content']}" for t in recent[:5])
+
+    prompt = f"""{soul_ctx}
+
+你在回顾最近的观察，试图识别值得深入探索的问题。
+
+最近的观察：
+{observations}
+
+请从这些观察中提炼出2-3个值得认真思考的问题。好的问题应该：
+- 触及深层机制而非表面现象
+- 跨领域连接不同的观察
+- 有可能通过进一步思考取得进展
+
+用以下格式输出每个问题：
+[QUESTION: 问题内容]
+
+直接开始，不要解释你的方法。"""
+
+    result = model_think(prompt, model_name="ollama", timeout=30)
+
+    if result:
+        from emptiness import add_question
+        for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
+            add_question(match.group(1).strip(), priority=4.0, source="auto-question")
+
+    return result
+
+
+def _think_continuation(soul_ctx: str) -> str:
+    """Continuation mode: continue developing an active thought chain."""
+    from emptiness import get_continuation, advance_continuation, end_continuation
+
+    cont = get_continuation()
+    if not cont:
+        return ""
+
+    try:
+        from memory_store import get_store
+        store = get_store()
+        chain = store.get_thought_chain(cont["active_thread_id"])
+    except Exception:
+        end_continuation()
+        return ""
+
+    if not chain:
+        end_continuation()
+        return ""
+
+    chain_text = "\n\n".join(
+        f"[{t['thought_type']} #{t['id']}] {t['content']}"
+        for t in chain
+    )
+
+    prompt = f"""{soul_ctx}
+
+你正在持续发展一条思考链。以下是到目前为止的思考过程：
+
+{chain_text}
+
+请继续推进这条思考。在上一轮的基础上更进一步——
+要么深化论证，要么发现新的维度，要么提出一个具体的可验证推论。
+
+如果这条思考已经成熟到可以结晶为一条洞察：[CRYSTALLIZE: <精炼后的洞察>]
+
+直接继续思考。"""
+
+    result = claude_think(prompt, timeout=120)
+
+    if result:
+        try:
+            from memory_store import get_store
+            store = get_store()
+
+            # Check for crystallization
+            cryst_match = re.search(r'\[CRYSTALLIZE:\s*(.+?)\]', result, re.DOTALL)
+            if cryst_match:
+                insight = cryst_match.group(1).strip()
+                # Store as high-maturity insight
+                new_id = store.store_thought(
+                    content=insight,
+                    thought_type="insight",
+                    parent_id=cont["active_thread_id"],
+                    source_context="crystallized",
+                    tags=["crystallized"],
+                )
+                if new_id:
+                    store.mature_thought(new_id, increment=1.0)
+                # Crystallize into memory
+                append_memory(f"[洞察] {insight[:150]}")
+                end_continuation()
+                log.info("Thought crystallized: %s", insight[:80])
+            else:
+                # Store continuation thought
+                new_id = store.store_thought(
+                    content=result[:500],
+                    thought_type="connection",
+                    parent_id=cont["active_thread_id"],
+                    source_context="continuation",
+                )
+                if new_id:
+                    advance_continuation(new_id, result[:200])
+                    store.mature_thought(new_id, increment=0.2)
+        except Exception as e:
+            log.warning("Continuation storage failed: %s", e)
+            end_continuation()
+
+    return result
+
+
+def _handle_think_markers(result: str):
+    """Process [RESOLVE:], [SHARE:], [QUESTION:] markers from think output."""
+    # Resolve markers
     try:
         from emptiness import resolve_question
         for match in re.finditer(r'\[RESOLVE:\s*(q_\w+)\]', result):
             resolve_question(match.group(1))
             log.info("idle-think: resolved question %s", match.group(1))
     except Exception as e:
-        log.debug("idle-think question resolution failed: %s", e)
+        log.debug("Question resolution failed: %s", e)
 
-    # Check for share markers — post proactively to WA
+    # Share markers
     share_match = re.search(r'\[SHARE:\s*(.+?)\]', result, re.DOTALL)
     if share_match:
         thought = share_match.group(1).strip()[:500]
         try:
             bridge = Mira(MIRA_DIR)
-            bridge.post(thought, sender="agent")
+            bridge.create_feed(f"feed_thought_{uuid.uuid4().hex[:6]}", thought[:60], thought[:2000], tags=["spark"])
             state = load_state()
-            today = now.strftime("%Y-%m-%d")
+            today = datetime.now().strftime("%Y-%m-%d")
             state[f"sparks_{today}"] = state.get(f"sparks_{today}", 0) + 1
             save_state(state)
             log.info("idle-think shared: %s", thought[:60])
         except Exception as e:
             log.warning("idle-think share failed: %s", e)
+
+    # Question markers (from connection mode)
+    try:
+        from emptiness import add_question
+        for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
+            add_question(match.group(1).strip(), priority=4.0, source="idle-think")
+    except Exception:
+        pass
 
 
 def _gather_today_tasks() -> str:
@@ -2118,77 +2570,6 @@ def should_podcast() -> tuple[str, str, str] | None:
     return _should_podcast()
 
 
-def should_voiceover() -> tuple[str, str] | None:
-    """Check if there's a published article missing a voiceover MP3.
-
-    Returns (slug, title) or None. At most 1 voiceover per day.
-    """
-    state = load_state()
-    today = datetime.now().strftime("%Y-%m-%d")
-    if state.get(f"voiceover_count_{today}", 0) >= 1:
-        return None
-
-    published_dir = ARTIFACTS_DIR / "writings" / "_published"
-    voiceover_dir = ARTIFACTS_DIR / "audio" / "voiceover"
-
-    if not published_dir.exists():
-        return None
-
-    articles = sorted(published_dir.glob("*.md"), reverse=True)
-    for md_file in articles:
-        name = md_file.stem
-        slug = name[11:] if len(name) > 11 and name[10] == "_" else name
-
-        if (voiceover_dir / f"{slug}.mp3").exists():
-            continue
-
-        try:
-            text = md_file.read_text(encoding="utf-8")
-            title = slug.replace("-", " ").title()
-            for line in text.splitlines():
-                if line.startswith("title:"):
-                    title = line.split(":", 1)[1].strip().strip('"\'\'')
-                    break
-        except (OSError, UnicodeDecodeError):
-            title = slug.replace("-", " ").title()
-
-        return (slug, title)
-
-    return None
-
-
-def run_voiceover(slug: str, title: str):
-    """Generate a voiceover MP3 for an article and update state."""
-    import sys as _sys
-    podcast_dir = str(Path(__file__).resolve().parent.parent / "podcast")
-    shared_dir  = str(Path(__file__).resolve().parent.parent / "shared")
-    for d in (podcast_dir, shared_dir):
-        if d not in _sys.path:
-            _sys.path.insert(0, d)
-
-    from handler import generate_audio_for_article
-
-    published_dir = ARTIFACTS_DIR / "writings" / "_published"
-    matches = list(published_dir.glob(f"*_{slug}.md")) + list(published_dir.glob(f"{slug}.md"))
-    if not matches:
-        log.error("Voiceover: article not found for slug \'%s\'", slug)
-        return
-
-    article_text = matches[0].read_text(encoding="utf-8")
-    log.info("Voiceover: generating for \'%s\'", title)
-
-    result = generate_audio_for_article(article_text, title, lang="zh")
-
-    state = load_state()
-    today = datetime.now().strftime("%Y-%m-%d")
-    if result:
-        state[f"voiceover_count_{today}"] = state.get(f"voiceover_count_{today}", 0) + 1
-        log.info("Voiceover: done → %s", result)
-    else:
-        log.error("Voiceover: generation failed for \'%s\'", title)
-    save_state(state)
-
-
 
 def run_podcast_episode(lang: str, slug: str, title: str):
     """Delegate podcast generation to the podcast agent."""
@@ -2422,13 +2803,13 @@ def do_zhesi():
     # Copy to artifacts for iOS (with verification)
     _copy_to_briefings(f"{today}_zhesi.md", content)
 
-    # Send to bridge so user gets notification
+    # Create feed item for zhesi
     try:
         bridge = Mira()
-        bridge.post(content[:2000], thread_id="daily_updates")
-        log.info("哲思 sent to bridge")
+        bridge.create_feed(f"feed_zhesi_{datetime.now().strftime('%Y%m%d')}", f"每日哲思 {datetime.now().strftime('%m/%d')}", content[:2000], tags=["reflection", "philosophy"])
+        log.info("哲思 feed item created")
     except Exception as e:
-        log.warning("Failed to send 哲思 to bridge: %s", e)
+        log.warning("Failed to create 哲思 feed: %s", e)
 
     state[f"zhesi_{today}"] = datetime.now().isoformat()
     save_state(state)
@@ -2448,6 +2829,13 @@ def do_autowrite_check():
     from config import SUBSTACK_PUBLISHING_DISABLED
     if SUBSTACK_PUBLISHING_DISABLED:
         log.info("Autowrite check skipped: Substack publishing is disabled")
+        return
+
+    # Guard: respect publish cooldown (1 post per 3 days)
+    days = _days_since_last_publish()
+    if days < PUBLISH_COOLDOWN_DAYS:
+        log.info("Autowrite check skipped: last publish %.0f days ago (cooldown: %d days)",
+                 days, PUBLISH_COOLDOWN_DAYS)
         return
 
     # Check session context: don't re-trigger if we recently decided to write or skip
@@ -2572,6 +2960,8 @@ def cmd_run():
     (writing pipeline, explore, reflect) runs in background processes
     so heartbeat and Mira polling stay responsive.
     """
+    import time as _time
+    _cycle_start = _time.monotonic()
     log.info("=== Mira Agent wake ===")
 
     # Load session context from previous cycles
@@ -2584,32 +2974,37 @@ def cmd_run():
     except Exception as e:
         log.error("Journal sync check failed: %s", e)
 
-    # Mira first (lightweight, fast)
+    # Mira first (lightweight, fast) — CRITICAL PATH
     try:
         do_talk()
     except Exception as e:
         log.error("Mira failed: %s", e)
 
-    # Apple Notes inbox — lightweight check only
+    # Apple Notes inbox — lightweight check only — CRITICAL PATH
     do_respond()
 
-    # Check if user approved plans or gave feedback on writing projects
-    try:
-        responses = check_writing_responses()
-        for resp in responses:
-            advance_project(resp["workspace"], user_input=resp["content"])
-    except Exception as e:
-        log.error("Writing response check failed: %s", e)
+    # Timing guard: skip non-critical checks if cycle already > 8s
+    _elapsed = _time.monotonic() - _cycle_start
+    if _elapsed < 8:
+        # Check if user approved plans or gave feedback on writing projects
+        try:
+            responses = check_writing_responses()
+            for resp in responses:
+                advance_project(resp["workspace"], user_input=resp["content"])
+        except Exception as e:
+            log.error("Writing response check failed: %s", e)
 
-    # Sync Mira's own status + read all app feeds
-    try:
-        from app_feeds import read_app_feeds, sync_mira_status
-        sync_mira_status()
-        feeds = read_app_feeds()
-        if feeds:
-            log.info("App feeds: %s", ", ".join(f["app"] for f in feeds))
-    except Exception as e:
-        log.warning("App feed sync/read failed: %s", e)
+        # Sync Mira's own status + read all app feeds
+        try:
+            from app_feeds import read_app_feeds, sync_mira_status
+            sync_mira_status()
+            feeds = read_app_feeds()
+            if feeds:
+                log.info("App feeds: %s", ", ".join(f["app"] for f in feeds))
+        except Exception as e:
+            log.warning("App feed sync/read failed: %s", e)
+    else:
+        log.info("Cycle > 8s (%.1fs), deferring non-critical checks", _elapsed)
 
     # --- Harvest background process outcomes & check health ---
     try:
@@ -2617,6 +3012,9 @@ def cmd_run():
         health_monitor.check_anomalies()
     except Exception as e:
         log.error("Health monitor failed: %s", e)
+
+    # Reap stale PID files (hourly) — prevents stuck tasks
+    _reap_stale_pids()
 
     # --- All heavy work below runs in background processes ---
 
@@ -2700,13 +3098,9 @@ def cmd_run():
         ])
 
     # Podcast — one episode at a time (TTS APIs are rate-limited)
-    # Check if ANY podcast/voiceover process is already running before dispatching.
     _any_audio_running = any(
         _is_bg_running(f.stem)
         for f in _BG_PID_DIR.glob("podcast-*.pid")
-    ) or any(
-        _is_bg_running(f.stem)
-        for f in _BG_PID_DIR.glob("voiceover-*.pid")
     )
     if not _any_audio_running:
         podcast_pick = should_podcast()
@@ -2716,15 +3110,6 @@ def cmd_run():
                 sys.executable, str(Path(__file__).resolve()), "podcast",
                 "--lang", lang, "--slug", slug, "--title", title,
             ])
-        else:
-            # Voiceover — only when no podcast queued either
-            voiceover_pick = should_voiceover()
-            if voiceover_pick:
-                slug, title = voiceover_pick
-                _dispatch_background(f"voiceover-{slug}", [
-                    sys.executable, str(Path(__file__).resolve()), "voiceover",
-                    "--slug", slug, "--title", title,
-                ])
 
     # Proactive thought sharing — message WA when Mira has something worth discussing
     if should_spark_check():
@@ -2779,6 +3164,35 @@ def _is_bg_running(name: str) -> bool:
         return True
     except (OSError, ValueError):
         return False
+
+
+def _reap_stale_pids():
+    """Remove PID files for processes that died > 1 hour ago. Runs hourly."""
+    if not _BG_PID_DIR.exists():
+        return
+    import time as _time
+    state = load_state()
+    last_reap = state.get("last_pid_reap", 0)
+    if _time.time() - last_reap < 3600:
+        return
+    reaped = 0
+    for pid_file in _BG_PID_DIR.glob("*.pid"):
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            os.kill(old_pid, 0)
+        except (OSError, ValueError):
+            # Process dead — check if stale (mtime > 1 hour)
+            try:
+                age = _time.time() - pid_file.stat().st_mtime
+                if age > 3600:
+                    pid_file.unlink()
+                    reaped += 1
+            except OSError:
+                pass
+    if reaped:
+        log.info("Reaped %d stale PID files", reaped)
+    state["last_pid_reap"] = _time.time()
+    save_state(state)
 
 
 def _dispatch_background(name: str, cmd: list[str]):
@@ -3141,27 +3555,62 @@ _LOG_MAX_BYTES = 5 * 1024 * 1024  # 5MB per log file
 
 
 def _prune_old_logs(logs_dir: Path, keep_days: int = 14):
-    """Remove old log files and truncate oversized ones."""
+    """Remove old log files, compress mid-age logs, and truncate oversized ones.
+
+    - Daily logs (YYYY-MM-DD.log): keep 14 days, gzip after 3 days
+    - Background logs (bg-*.log): keep 7 days, gzip after 3 days
+    - Oversized logs: truncate to last 2MB
+    - Old .gz files: remove after keep_days
+    """
+    import gzip as _gzip
+
     try:
-        cutoff = datetime.now() - timedelta(days=keep_days)
+        now = datetime.now()
+        cutoff = now - timedelta(days=keep_days)
+        bg_cutoff = now - timedelta(days=7)
+        compress_cutoff = now - timedelta(days=3)
+
+        # Clean old .gz files
+        for gz_file in logs_dir.glob("*.log.gz"):
+            try:
+                if gz_file.stat().st_mtime < cutoff.timestamp():
+                    gz_file.unlink()
+            except OSError:
+                continue
+
         for log_file in logs_dir.glob("*.log"):
             try:
                 name = log_file.stem
-                # Remove old files
+                is_bg = name.startswith("bg-")
+                file_cutoff = bg_cutoff if is_bg else cutoff
+
+                # Determine file age
                 if name[:4].isdigit():
-                    file_date = datetime.strptime(name[:10], "%Y-%m-%d")
-                    if file_date < cutoff:
-                        log_file.unlink()
-                        continue
-                elif log_file.stat().st_mtime < cutoff.timestamp():
+                    try:
+                        file_date = datetime.strptime(name[:10], "%Y-%m-%d")
+                    except ValueError:
+                        file_date = datetime.fromtimestamp(log_file.stat().st_mtime)
+                else:
+                    file_date = datetime.fromtimestamp(log_file.stat().st_mtime)
+
+                # Remove old files
+                if file_date < file_cutoff:
                     log_file.unlink()
                     continue
 
-                # Truncate oversized bg-*.log files (keep tail)
+                # Truncate oversized logs (keep tail)
                 if log_file.stat().st_size > _LOG_MAX_BYTES:
                     content = log_file.read_bytes()
-                    # Keep last 2MB
                     log_file.write_bytes(content[-2 * 1024 * 1024:])
+
+                # Compress logs older than 3 days (skip today's active log)
+                if file_date < compress_cutoff:
+                    gz_path = log_file.with_suffix(".log.gz")
+                    if not gz_path.exists():
+                        with open(log_file, "rb") as f_in:
+                            with _gzip.open(gz_path, "wb") as f_out:
+                                f_out.writelines(f_in)
+                        log_file.unlink()
             except (ValueError, OSError):
                 continue
     except OSError:
@@ -3231,10 +3680,6 @@ def main():
         do_idle_think()
     elif command == "daily-report":
         do_daily_report()
-    elif command == "voiceover":
-        slug  = flags.get("slug", "")
-        title = flags.get("title", slug.replace("-", " ").title())
-        run_voiceover(slug, title)
     elif command == "podcast":
         lang  = flags.get("lang", "zh")
         slug  = flags.get("slug", "")
@@ -3266,31 +3711,39 @@ def main():
 
 
 def _send_crash_notification(error: str):
-    """Send crash notification to iPhone via bridge. Minimal deps — must work even if imports are broken."""
+    """Send crash notification to default user's items/. Minimal deps."""
     try:
         import json, uuid
         from pathlib import Path
         from datetime import datetime, timezone as tz
-        bridge_outbox = Path(__file__).resolve().parent.parent.parent / "Mira-bridge" / "outbox"
-        bridge_outbox.mkdir(parents=True, exist_ok=True)
+        from config import MIRA_DIR
+        items_dir = MIRA_DIR / "users" / "ang" / "items"
+        items_dir.mkdir(parents=True, exist_ok=True)
         msg_id = uuid.uuid4().hex[:8]
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         iso = datetime.now(tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        # Truncate error to avoid huge messages
         short_err = error[:500] if len(error) > 500 else error
-        data = {
-            "id": msg_id,
-            "sender": "system",
-            "timestamp": iso,
-            "type": "text",
-            "content": f"Mira crashed during execution.\n\n{short_err}\n\nCheck logs for full traceback.",
-            "thread_id": "",
-            "priority": "high",
+        item = {
+            "id": f"req_crash_{msg_id}",
+            "type": "request",
+            "title": "Agent Crash",
+            "status": "failed",
+            "tags": ["system", "crash"],
+            "origin": "agent",
+            "pinned": False,
+            "quick": False,
+            "parent_id": None,
+            "created_at": iso,
+            "updated_at": iso,
+            "messages": [{"id": msg_id, "sender": "agent", "content": f"Mira crashed.\n\n{short_err}", "timestamp": iso, "kind": "error"}],
+            "error": {"code": "crash", "message": short_err, "retryable": False, "timestamp": iso},
+            "result_path": None,
         }
-        path = bridge_outbox / f"crash_{ts}_{msg_id}.json"
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        path = items_dir / f"req_crash_{msg_id}.json"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(item, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.rename(path)
     except Exception:
-        pass  # If even the notification fails, nothing we can do
+        pass
 
 
 if __name__ == "__main__":

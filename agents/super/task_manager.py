@@ -20,7 +20,9 @@ _LONG_TIMEOUT_TAGS = {"writing", "write", "novel", "essay", "blog", "research", 
 
 log = logging.getLogger("mira")
 
-TASKS_DIR = MIRA_DIR / "tasks"
+# Task workspaces stored locally (NOT on iCloud bridge)
+from config import MIRA_ROOT
+TASKS_DIR = MIRA_ROOT / "tasks"
 STATUS_FILE = TASKS_DIR / "status.json"
 HISTORY_FILE = TASKS_DIR / "history.jsonl"
 

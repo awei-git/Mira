@@ -60,7 +60,11 @@ def format_soul(soul: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def append_memory(entry: str):
-    """Append a timestamped entry to memory. Enforces MAX_MEMORY_LINES."""
+    """Append a timestamped entry to memory. Enforces MAX_MEMORY_LINES.
+
+    Overflowed lines (trimmed from memory.md) persist in PostgreSQL
+    episodic_memory as 'memory_overflow' and remain searchable via vector search.
+    """
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     line = f"- [{ts}] {entry}\n"
 
@@ -73,16 +77,31 @@ def append_memory(entry: str):
     text += line
 
     # Enforce line limit — trim oldest entries if over MAX_MEMORY_LINES
+    overflow_lines = []
     lines = text.split("\n")
     if len(lines) > MAX_MEMORY_LINES:
         header = lines[:2]
         entries = lines[2:]
+        overflow_lines = entries[:-(MAX_MEMORY_LINES - 2)]
         trimmed = entries[-(MAX_MEMORY_LINES - 2):]
         text = "\n".join(header + trimmed)
         log.info("Memory trimmed to %d lines", MAX_MEMORY_LINES)
 
     MEMORY_FILE.write_text(text, encoding="utf-8")
     log.info("Memory +: %s", entry[:80])
+
+    # Persist to Postgres (non-blocking best-effort)
+    try:
+        from memory_store import get_store
+        store = get_store()
+        store.remember(entry, source_type="memory_entry", importance=0.5)
+        # Persist overflowed lines so they remain searchable
+        if overflow_lines:
+            overflow_text = "\n".join(overflow_lines)
+            store.remember(overflow_text, source_type="memory_overflow",
+                           importance=0.3)
+    except Exception as e:
+        log.debug("Postgres memory persist skipped: %s", e)
 
 
 def update_memory(new_content: str):
@@ -517,20 +536,20 @@ def search_memory(query: str, top_k: int = 5) -> str:
     """Search across all soul files using vector + keyword hybrid search.
 
     Returns formatted results for injection into prompts.
-    Falls back gracefully if the index hasn't been built yet.
+    Uses PostgreSQL + pgvector via memory_store, falls back to SQLite memory_index.
     """
     try:
-        from memory_index import search_formatted
+        from memory_store import search_formatted
         return search_formatted(query, top_k=top_k)
     except Exception as e:
-        log.warning("Memory search failed (index may not exist yet): %s", e)
+        log.warning("Memory search failed: %s", e)
         return ""
 
 
 def rebuild_memory_index(force: bool = False) -> int:
     """Rebuild the semantic memory index. Call after major memory changes."""
     try:
-        from memory_index import rebuild_index
+        from memory_store import rebuild_index
         return rebuild_index(force=force)
     except Exception as e:
         log.warning("Memory index rebuild failed: %s", e)
@@ -608,8 +627,25 @@ def save_episode(task_id: str, title: str, messages: list[dict],
     slug = re.sub(r"[^\w\s-]", "", title.lower())[:40].strip().replace(" ", "-")
     filename = f"{today}_{ts}_{slug or task_id}.md"
     path = EPISODES_DIR / filename
-    path.write_text("\n".join(lines), encoding="utf-8")
+    episode_text = "\n".join(lines)
+    path.write_text(episode_text, encoding="utf-8")
     log.info("Episode saved: %s (%d messages)", filename, len(messages))
+
+    # Persist to Postgres for vector search (best-effort)
+    try:
+        from memory_store import get_store
+        store = get_store()
+        # Store a summary (first 2000 chars) as an episodic memory entry
+        store.remember(
+            episode_text[:2000],
+            source_type="episode",
+            source_id=task_id,
+            title=title,
+            importance=0.6,
+            tags=tags,
+        )
+    except Exception as e:
+        log.debug("Postgres episode persist skipped: %s", e)
     return path
 
 

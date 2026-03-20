@@ -32,7 +32,10 @@ from writing_workflow import run_full_pipeline
 
 log = logging.getLogger("task_worker")
 
-TASKS_DIR = MIRA_DIR / "tasks"
+# Items on iCloud bridge (per-user, default to ang)
+ITEMS_DIR = MIRA_DIR / "users" / "ang" / "items"
+# Task workspaces stored locally
+TASKS_DIR = MIRA_ROOT / "tasks"
 
 # ---------------------------------------------------------------------------
 # Super-agent skill loader
@@ -66,35 +69,38 @@ def _utc_iso() -> str:
 
 
 def _emit_status(task_id: str, text: str, icon: str = "gear"):
-    """Emit a status card to a task's message stream.
+    """Emit a status card to an item's message stream.
 
-    Status cards appear as compact inline cards in the iOS app
-    instead of regular chat bubbles. Used for progress updates
-    like "Fetching feeds...", "Writing outline...", etc.
+    Status cards appear as compact inline cards in the iOS app.
+    Writes directly to items/ with atomic write.
     """
+    import uuid as _uuid
     status_content = json.dumps(
         {"type": "status", "text": text, "icon": icon},
         ensure_ascii=False,
     )
     msg = {
+        "id": _uuid.uuid4().hex[:8],
         "sender": "agent",
         "content": status_content,
         "timestamp": _utc_iso(),
+        "kind": "status_card",
     }
-    # Write to reply sidecar (most reliable path to iOS)
-    reply_file = TASKS_DIR / f"{task_id}.reply.json"
-    replies = []
-    if reply_file.exists():
+    # Write to items/ (new protocol)
+    item_file = ITEMS_DIR / f"{task_id}.json"
+    if item_file.exists():
         try:
-            replies = json.loads(reply_file.read_text(encoding="utf-8"))
+            item = json.loads(item_file.read_text(encoding="utf-8"))
+            item["messages"].append(msg)
+            item["updated_at"] = _utc_iso()
+            tmp = item_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(item, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+            tmp.rename(item_file)
+            return
         except (json.JSONDecodeError, OSError):
             pass
-    replies.append(msg)
-    reply_file.write_text(
-        json.dumps(replies, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    # Also update main task JSON
+    # Fallback: try legacy tasks/ dir
     task_file = TASKS_DIR / f"{task_id}.json"
     if task_file.exists():
         try:
@@ -207,30 +213,37 @@ def _get_round_num(workspace: Path) -> int:
 
 
 def load_task_conversation(task_id: str) -> str:
-    """Load conversation history from task JSON + reply sidecar.
+    """Load conversation history from an item (or legacy task) JSON.
 
-    Merges user messages (from task JSON) with agent replies (from .reply.json),
-    deduplicates by content hash, returns chronological conversation.
+    With the new protocol, all messages are in a single items/<id>.json file.
+    Falls back to legacy tasks/ + .reply.json sidecar if item not found.
     """
-    tasks_dir = MIRA_DIR / "tasks"
     all_msgs = []
 
-    # 1. Task JSON (user messages + possibly stale agent messages)
-    task_file = tasks_dir / f"{task_id}.json"
-    if task_file.exists():
+    # Try new items/ first (single source of truth)
+    item_file = ITEMS_DIR / f"{task_id}.json"
+    if item_file.exists():
         try:
-            task = json.loads(task_file.read_text(encoding="utf-8"))
-            all_msgs.extend(task.get("messages", []))
+            item = json.loads(item_file.read_text(encoding="utf-8"))
+            all_msgs.extend(item.get("messages", []))
         except (json.JSONDecodeError, OSError):
             pass
-
-    # 2. Reply sidecar (authoritative source for agent replies)
-    reply_file = tasks_dir / f"{task_id}.reply.json"
-    if reply_file.exists():
-        try:
-            all_msgs.extend(json.loads(reply_file.read_text(encoding="utf-8")))
-        except (json.JSONDecodeError, OSError):
-            pass
+    else:
+        # Fallback to legacy tasks/ + reply sidecar
+        tasks_dir = MIRA_DIR / "tasks"
+        task_file = tasks_dir / f"{task_id}.json"
+        if task_file.exists():
+            try:
+                task = json.loads(task_file.read_text(encoding="utf-8"))
+                all_msgs.extend(task.get("messages", []))
+            except (json.JSONDecodeError, OSError):
+                pass
+        reply_file = tasks_dir / f"{task_id}.reply.json"
+        if reply_file.exists():
+            try:
+                all_msgs.extend(json.loads(reply_file.read_text(encoding="utf-8")))
+            except (json.JSONDecodeError, OSError):
+                pass
 
     if len(all_msgs) <= 1:
         return ""
@@ -470,28 +483,6 @@ def _execute_pending_publish(pending_pub_file: Path, workspace: Path,
             workspace=proj_path,
         )
         log.info("Publish complete: %s", pub_result[:120])
-
-        # For auto-written articles, also generate audio narration
-        if source == "auto":
-            try:
-                podcast_dir = str(_AGENTS_DIR / "podcast")
-                if podcast_dir not in sys.path:
-                    sys.path.insert(0, podcast_dir)
-                from handler import generate_audio_for_article
-                audio_path = generate_audio_for_article(article_text, pub_title)
-                if audio_path:
-                    pub_json = proj_path / "published.json"
-                    if pub_json.exists():
-                        pub_info = json.loads(pub_json.read_text(encoding="utf-8"))
-                        post_id = pub_info.get("draft_id")
-                        if post_id:
-                            from substack import upload_audio_to_post
-                            if upload_audio_to_post(audio_path, post_id, label=pub_title):
-                                log.info("Audio uploaded to post %s", post_id)
-                            else:
-                                log.warning("Audio upload failed for post %s", post_id)
-            except Exception as e:
-                log.error("Audio generation error for '%s': %s", pub_title, e)
 
         (workspace / "output.md").write_text(pub_result, encoding="utf-8")
         _write_result(workspace, task_id, "done", pub_result, tags=["publish"])
@@ -899,10 +890,13 @@ def main():
 
     # --- Load full task data for thread context ---
     task_data = msg_data  # Contains messages array if available
+    # Try items/ first, fallback to legacy tasks/
+    item_file = ITEMS_DIR / f"{args.task_id}.json"
     task_file = MIRA_DIR / "tasks" / f"{args.task_id}.json"
-    if task_file.exists():
+    src_file = item_file if item_file.exists() else task_file
+    if src_file.exists():
         try:
-            task_data = json.loads(task_file.read_text(encoding="utf-8"))
+            task_data = json.loads(src_file.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -1634,47 +1628,50 @@ def _handle_article_comment(workspace: Path, task_id: str, thread_id: str,
 
 
 def _write_comment_reply_sidecar(thread_id: str, reply: str):
-    """Write reply sidecar to the iOS comment task file.
+    """Write comment reply to the item file (new protocol).
 
-    iOS task files live in Mira-bridge/tasks/{thread_id}.json.
-    We write {thread_id}.reply.json so iOS loadTasks() can merge the reply.
-    Also update {thread_id}.status.json.
+    With the unified item protocol, we just append the message and
+    update status in a single atomic write. No more sidecars.
     """
-    tasks_dir = MIRA_DIR / "tasks"
+    import uuid as _uuid
     now = _utc_iso()
+    msg = {
+        "id": _uuid.uuid4().hex[:8],
+        "sender": "agent",
+        "content": reply,
+        "timestamp": now,
+        "kind": "text",
+    }
 
-    # Write reply sidecar
-    reply_file = tasks_dir / f"{thread_id}.reply.json"
-    reply_msg = {"sender": "agent", "content": reply, "timestamp": now}
-    existing = []
-    if reply_file.exists():
+    # Write to items/ (new protocol)
+    item_file = ITEMS_DIR / f"{thread_id}.json"
+    if item_file.exists():
         try:
-            existing = json.loads(reply_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
-    existing.append(reply_msg)
-    reply_file.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+            item = json.loads(item_file.read_text(encoding="utf-8"))
+            item["messages"].append(msg)
+            item["status"] = "done"
+            item["updated_at"] = now
+            tmp = item_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(item, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+            tmp.rename(item_file)
+            return
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("Could not update item file: %s", e)
 
-    # Write status sidecar
-    status_file = tasks_dir / f"{thread_id}.status.json"
-    status_file.write_text(
-        json.dumps({"status": "done", "updated_at": now}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-    # Update task status only (don't append message — core.py does that
-    # when collecting results, which would cause duplicate replies)
+    # Fallback: legacy tasks/ dir
+    tasks_dir = MIRA_DIR / "tasks"
     task_file = tasks_dir / f"{thread_id}.json"
     if task_file.exists():
         try:
             task = json.loads(task_file.read_text(encoding="utf-8"))
+            task["messages"].append({"sender": "agent", "content": reply, "timestamp": now})
             task["status"] = "done"
             task["updated_at"] = now
-            task_file.write_text(
-                json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            task_file.write_text(json.dumps(task, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
         except (json.JSONDecodeError, OSError) as e:
-            log.warning("Could not update comment task file: %s", e)
+            log.warning("Could not update legacy task file: %s", e)
 
 
 def _handle_math(workspace: Path, task_id: str, content: str,
@@ -1813,9 +1810,12 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
     # --- Archive conversation as episode for long-term recall ---
     if status in ("done", "completed", "error", "failed"):
         try:
+            # Try items/ first, fallback to legacy tasks/
+            item_file = ITEMS_DIR / f"{task_id}.json"
             task_file = TASKS_DIR / f"{task_id}.json"
-            if task_file.exists():
-                task_data = json.loads(task_file.read_text(encoding="utf-8"))
+            src = item_file if item_file.exists() else task_file
+            if src.exists():
+                task_data = json.loads(src.read_text(encoding="utf-8"))
                 messages = task_data.get("messages", [])
                 title = task_data.get("title", task_id)
                 if len(messages) >= 2:  # Only archive meaningful conversations

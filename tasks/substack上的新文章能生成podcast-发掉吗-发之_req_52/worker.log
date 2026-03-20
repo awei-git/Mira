@@ -1,0 +1,31 @@
+2026-03-20 15:58:53,265 [INFO] Worker started: task=req_52919583 thread=req_52919583
+2026-03-20 15:58:53,393 [INFO] Proactive recall found relevant context (1004 chars)
+2026-03-20 15:58:57,644 [INFO] Plan: [{'agent': 'podcast', 'instruction': '检查Substack上最新发布的文章，为还没有podcast音频的新文章生成音频。生成后先让用户试听，确认后再发布到podcast RSS feed。要求跟之前一样（相同的声音、风格、参数）。'}]
+2026-03-20 15:58:57,645 [INFO] Step 1/1: agent=podcast instruction=检查Substack上最新发布的文章，为还没有podcast音频的新文章生成音频。生成后先让用户试听，确认后再发布到podcast RSS feed。要求跟之前
+2026-03-20 15:58:57,648 [INFO] Running podcast pipeline for task req_52919583
+2026-03-20 15:58:57,651 [INFO] Episode saved: 2026-03-20_1558_substack上的新文章能生成podcast-发掉吗.md (4 messages)
+2026-03-20 15:59:02,429 [INFO] Failure lesson not worth extracting: 音频生成返回空结果
+2026-03-20 15:59:02,430 [ERROR] Podcast task req_52919583 failed: empty response
+2026-03-20 15:59:02,431 [ERROR] Step 1/1 failed, aborting plan: 音频生成返回空结果
+2026-03-20 15:59:02,431 [INFO] Worker exiting
+2026-03-20 16:02:27,915 [INFO] Worker started: task=req_52919583 thread=req_52919583
+2026-03-20 16:02:28,048 [INFO] Proactive recall found relevant context (641 chars)
+2026-03-20 16:02:32,132 [INFO] Plan: [{'agent': 'podcast', 'instruction': '从Substack获取最新文章，生成播客音频，发布前先让用户试听。要求跟原来一样（同样的声音、格式、风格）。上次音频生成返回空结果，请检查并重试。'}]
+2026-03-20 16:02:32,132 [INFO] Step 1/1: agent=podcast instruction=从Substack获取最新文章，生成播客音频，发布前先让用户试听。要求跟原来一样（同样的声音、格式、风格）。上次音频生成返回空结果，请检查并重试。
+2026-03-20 16:02:32,146 [INFO] Running podcast pipeline for task req_52919583
+2026-03-20 16:02:32,147 [INFO] Voiceover: 'output' [en]
+2026-03-20 16:02:36,356 [INFO] Script saved: output_script.txt (294 chars)
+2026-03-20 16:02:36,356 [INFO] Voiceover TTS: 1 chunks, 294 chars [provider=auto]
+2026-03-20 16:02:36,357 [INFO]   chunk 1/1 (294 chars)...
+2026-03-20 16:02:53,583 [ERROR] Gemini TTS: no content (finishReason=OTHER)
+2026-03-20 16:02:53,586 [WARNING] Gemini TTS failed — falling back to MiniMax for this turn
+2026-03-20 16:02:57,360 [INFO] Audio saved: chunk_000.mp3 (294 KB)
+2026-03-20 16:02:57,360 [INFO] Audio saved: output.mp3 (294 KB)
+2026-03-20 16:02:57,364 [INFO] Replaced existing episode for task req_52919583
+2026-03-20 16:02:57,364 [INFO] Episode saved: 2026-03-20_1602_substack上的新文章能生成podcast-发掉吗.md (8 messages)
+2026-03-20 16:02:57,429 [INFO] Auto-flush saved to flush_2026-03-20_1602.md
+2026-03-20 16:03:22,541 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error
+2026-03-20 16:03:22,724 [INFO] Rebuilt semantic memory: 797 chunks embedded
+2026-03-20 16:03:22,725 [INFO] Podcast task req_52919583 completed
+2026-03-20 16:03:22,731 [INFO] Plan execution complete (1 steps)
+2026-03-20 16:03:22,732 [INFO] Worker exiting

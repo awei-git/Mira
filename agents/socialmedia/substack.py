@@ -202,7 +202,7 @@ def _pick_personal_cover() -> str | None:
     import tempfile
 
     _photos_dirs = [
-        Path(__file__).resolve().parent.parent.parent.parent / "photos",  # MtJoy/photos/
+        Path(__file__).resolve().parent.parent.parent.parent / "Assets" / "photos",  # MtJoy/Assets/photos/
         Path.home() / "Library" / "Mobile Documents"
         / "com~apple~CloudDocs" / "photos" / "lred",
     ]
@@ -401,6 +401,24 @@ def publish_to_substack(title: str, subtitle: str,
             return msg
     except ImportError:
         pass
+
+    # Guard: enforce 1 post per 3 days cooldown
+    PUBLISH_COOLDOWN_DAYS = 3
+    try:
+        from soul_manager import catalog_list
+        pubs = [e for e in catalog_list() if e.get("status") == "published" and e.get("date")]
+        if pubs:
+            from datetime import datetime as _dt
+            latest = max(e["date"] for e in pubs)
+            pub_date = _dt.strptime(latest[:10], "%Y-%m-%d").date()
+            days_since = (_dt.now().date() - pub_date).days
+            if days_since < PUBLISH_COOLDOWN_DAYS:
+                msg = (f"发布被拦截：距上次发布仅 {days_since} 天，"
+                       f"冷却期为 {PUBLISH_COOLDOWN_DAYS} 天。请等待后再发布。")
+                log.warning(msg)
+                return msg
+    except Exception as e:
+        log.warning("Publish cooldown check failed (proceeding): %s", e)
 
     cfg = _get_substack_config()
     subdomain = cfg.get("subdomain", "")

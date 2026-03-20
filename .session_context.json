@@ -1,189 +1,200 @@
 [
  {
-  "ts": "2026-03-19T17:40:44.258753",
+  "ts": "2026-03-20T13:54:10.716119",
   "action": "explore",
   "detail": "noah_smith_stratechery"
  },
  {
-  "ts": "2026-03-19T17:41:15.054000",
+  "ts": "2026-03-20T13:54:41.363136",
   "action": "explore",
   "detail": "noah_smith_stratechery"
  },
  {
-  "ts": "2026-03-19T17:41:45.887292",
+  "ts": "2026-03-20T13:54:56.421752",
   "action": "explore",
   "detail": "noah_smith_stratechery"
  },
  {
-  "ts": "2026-03-19T18:02:51.184033",
+  "ts": "2026-03-20T13:55:27.081051",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T13:55:57.753941",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T13:56:28.422808",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T13:56:59.067653",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T13:57:29.724291",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T13:58:00.368526",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T13:58:31.114401",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T13:59:01.803891",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T13:59:32.458890",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T14:00:03.111309",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T14:00:18.723994",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T14:00:49.404466",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T14:01:20.039070",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T14:01:50.690494",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T14:02:21.353329",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-20T14:19:59.684292",
   "action": "growth_cycle"
  },
  {
-  "ts": "2026-03-19T18:03:22.094379",
-  "action": "growth_cycle"
- },
- {
-  "ts": "2026-03-19T18:03:52.907304",
-  "action": "growth_cycle"
- },
- {
-  "ts": "2026-03-19T18:04:08.179733",
-  "action": "growth_cycle"
- },
- {
-  "ts": "2026-03-19T18:04:38.991436",
-  "action": "growth_cycle"
- },
- {
-  "ts": "2026-03-19T18:05:09.817071",
-  "action": "growth_cycle"
- },
- {
-  "ts": "2026-03-19T18:05:40.635218",
-  "action": "growth_cycle"
- },
- {
-  "ts": "2026-03-19T18:06:11.418484",
-  "action": "growth_cycle"
- },
- {
-  "ts": "2026-03-19T18:06:42.226172",
-  "action": "growth_cycle"
- },
- {
-  "ts": "2026-03-19T18:07:13.073279",
-  "action": "growth_cycle"
- },
- {
-  "ts": "2026-03-19T18:07:43.904422",
-  "action": "growth_cycle"
- },
- {
-  "ts": "2026-03-19T18:08:14.743630",
-  "action": "growth_cycle"
- },
- {
-  "ts": "2026-03-19T18:16:13.820797",
-  "action": "autowrite_triggered",
-  "detail": "The Exponential Exemption",
-  "topic": "The Exponential Exemption"
- },
- {
-  "ts": "2026-03-19T18:27:06.272894",
+  "ts": "2026-03-20T14:47:51.056499",
   "action": "explore",
   "detail": "substack_culture_study_substack_garbage_day"
  },
  {
-  "ts": "2026-03-19T18:27:37.092546",
+  "ts": "2026-03-20T14:48:21.699506",
   "action": "explore",
   "detail": "substack_culture_study_substack_garbage_day"
  },
  {
-  "ts": "2026-03-19T18:28:07.918461",
+  "ts": "2026-03-20T14:48:36.883722",
   "action": "explore",
   "detail": "substack_culture_study_substack_garbage_day"
  },
  {
-  "ts": "2026-03-19T18:28:38.751750",
+  "ts": "2026-03-20T14:49:07.531838",
   "action": "explore",
   "detail": "substack_culture_study_substack_garbage_day"
  },
  {
-  "ts": "2026-03-19T18:29:09.552103",
+  "ts": "2026-03-20T14:49:38.192434",
   "action": "explore",
   "detail": "substack_culture_study_substack_garbage_day"
  },
  {
-  "ts": "2026-03-19T18:29:40.372190",
+  "ts": "2026-03-20T14:50:08.837440",
   "action": "explore",
   "detail": "substack_culture_study_substack_garbage_day"
  },
  {
-  "ts": "2026-03-19T18:29:59.650579",
+  "ts": "2026-03-20T14:50:39.494823",
   "action": "explore",
   "detail": "substack_culture_study_substack_garbage_day"
  },
  {
-  "ts": "2026-03-19T18:30:15.058709",
-  "action": "explore",
-  "detail": "substack_culture_study_substack_garbage_day"
- },
- {
-  "ts": "2026-03-19T19:15:29.917984",
+  "ts": "2026-03-20T15:36:39.046816",
   "action": "explore",
   "detail": "substack_construction_physics_substack_experimental_history"
  },
  {
-  "ts": "2026-03-19T19:16:00.808103",
+  "ts": "2026-03-20T15:36:54.279936",
   "action": "explore",
   "detail": "substack_construction_physics_substack_experimental_history"
  },
  {
-  "ts": "2026-03-19T19:16:31.698530",
+  "ts": "2026-03-20T15:37:24.933240",
   "action": "explore",
   "detail": "substack_construction_physics_substack_experimental_history"
  },
  {
-  "ts": "2026-03-19T19:17:02.778554",
+  "ts": "2026-03-20T15:37:55.605665",
   "action": "explore",
   "detail": "substack_construction_physics_substack_experimental_history"
  },
  {
-  "ts": "2026-03-19T19:17:33.637170",
+  "ts": "2026-03-20T15:38:26.255141",
   "action": "explore",
   "detail": "substack_construction_physics_substack_experimental_history"
  },
  {
-  "ts": "2026-03-19T19:18:04.501166",
+  "ts": "2026-03-20T15:38:56.907633",
   "action": "explore",
   "detail": "substack_construction_physics_substack_experimental_history"
  },
  {
-  "ts": "2026-03-19T19:18:35.483748",
-  "action": "explore",
-  "detail": "substack_construction_physics_substack_experimental_history"
+  "ts": "2026-03-20T16:20:21.840475",
+  "action": "growth_cycle"
  },
  {
-  "ts": "2026-03-19T19:18:50.924526",
-  "action": "explore",
-  "detail": "substack_construction_physics_substack_experimental_history"
- },
- {
-  "ts": "2026-03-19T20:04:40.405365",
+  "ts": "2026-03-20T16:24:27.021681",
   "action": "explore",
   "detail": "devto_techcrunch"
  },
  {
-  "ts": "2026-03-19T20:05:11.207950",
+  "ts": "2026-03-20T16:24:57.662402",
   "action": "explore",
   "detail": "devto_techcrunch"
  },
  {
-  "ts": "2026-03-19T20:05:42.012337",
+  "ts": "2026-03-20T16:25:12.893625",
   "action": "explore",
   "detail": "devto_techcrunch"
  },
  {
-  "ts": "2026-03-19T20:06:12.822926",
+  "ts": "2026-03-20T16:25:43.521762",
   "action": "explore",
   "detail": "devto_techcrunch"
  },
  {
-  "ts": "2026-03-19T20:06:43.643081",
+  "ts": "2026-03-20T16:26:14.185427",
   "action": "explore",
   "detail": "devto_techcrunch"
  },
  {
-  "ts": "2026-03-19T20:07:14.476469",
+  "ts": "2026-03-20T16:26:44.831236",
   "action": "explore",
   "detail": "devto_techcrunch"
  },
  {
-  "ts": "2026-03-19T20:08:31.515218",
-  "action": "growth_cycle"
- },
- {
-  "ts": "2026-03-19T22:08:40.758810",
-  "action": "growth_cycle"
+  "ts": "2026-03-20T16:27:15.484025",
+  "action": "explore",
+  "detail": "devto_techcrunch"
  }
 ]

@@ -56,21 +56,21 @@ struct AppStage: Codable {
 // MARK: - Library View
 
 struct LibraryView: View {
-    var bridge: BridgeService
+    @Environment(BridgeConfig.self) private var config
 
     var body: some View {
         NavigationStack {
             List(appRegistry) { app in
                 NavigationLink {
                     if app.id == "mira" {
-                        MiraLibraryView(bridge: bridge)
+                        MiraLibraryView()
                             .navigationTitle(app.name)
                     } else {
-                        AppOutputView(app: app, mtjoyURL: bridge.mtjoyURL)
+                        AppOutputView(app: app, mtjoyURL: config.rootURL)
                             .navigationTitle(app.name)
                     }
                 } label: {
-                    AppRow(app: app, mtjoyURL: bridge.mtjoyURL)
+                    AppRow(app: app, mtjoyURL: config.rootURL)
                 }
             }
             .listStyle(.insetGrouped)
@@ -362,7 +362,7 @@ struct DeepDiveView: View {
 // MARK: - Mira sub-library (artifacts browser)
 
 struct MiraLibraryView: View {
-    var bridge: BridgeService
+    @Environment(BridgeConfig.self) private var config
 
     private let sections: [(title: String, folder: String, icon: String)] = [
         ("Briefings", "briefings", "newspaper"),
@@ -370,21 +370,42 @@ struct MiraLibraryView: View {
         ("Research", "research", "magnifyingglass.circle"),
     ]
 
+    private var sharedArtifactsURL: URL? {
+        config.rootURL?.appending(path: "Mira-Artifacts/shared")
+    }
+
     var body: some View {
-        if let artifactsURL = bridge.artifactsURL {
-            List(sections, id: \.folder) { section in
-                let dir = artifactsURL.appendingPathComponent(section.folder)
-                NavigationLink {
-                    LibraryFolderView(folderURL: dir)
-                        .navigationTitle(section.title)
-                } label: {
-                    Label(section.title, systemImage: section.icon)
+        if let artifactsURL = config.artifactsURL {
+            List {
+                Section("My Artifacts") {
+                    ForEach(sections, id: \.folder) { section in
+                        let dir = artifactsURL.appendingPathComponent(section.folder)
+                        NavigationLink {
+                            LibraryFolderView(folderURL: dir)
+                                .navigationTitle(section.title)
+                        } label: {
+                            Label(section.title, systemImage: section.icon)
+                        }
+                    }
+                }
+                if let sharedURL = sharedArtifactsURL {
+                    Section("Shared") {
+                        ForEach(sections, id: \.folder) { section in
+                            let dir = sharedURL.appendingPathComponent(section.folder)
+                            NavigationLink {
+                                LibraryFolderView(folderURL: dir)
+                                    .navigationTitle("Shared \(section.title)")
+                            } label: {
+                                Label(section.title, systemImage: section.icon)
+                            }
+                        }
+                    }
                 }
             }
             .listStyle(.insetGrouped)
             .navigationBarTitleDisplayMode(.inline)
         } else {
-            ContentUnavailableView("未设置文件夹", systemImage: "folder.badge.questionmark")
+            ContentUnavailableView("No folder set", systemImage: "folder.badge.questionmark")
         }
     }
 }

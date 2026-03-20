@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mira</title>
+<style>
+  :root {
+    --bg: #111B21; --sidebar-bg: #0B141A; --card: #1F2C34; --card-hover: #263842;
+    --text: #E9EDEF; --text2: #8696A0; --text3: #667781;
+    --accent: #00A884; --accent2: #005C4B; --badge: #25D366;
+    --orange: #F59E0B; --red: #EF4444; --blue: #53BDEB;
+    --bubble-out: #005C4B; --bubble-in: #202C33;
+    --border: #1a2730; --radius: 10px;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, 'SF Pro', system-ui, sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+
+  /* ===== Profile Picker ===== */
+  .profiles { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; gap:24px; background: var(--sidebar-bg); }
+  .profiles h2 { color: var(--text2); font-size:20px; }
+  .profile-btn { display:flex; align-items:center; gap:14px; padding:14px 20px; background:var(--card); border:none; border-radius:var(--radius); cursor:pointer; width:280px; color:var(--text); font-size:17px; transition: background .15s; }
+  .profile-btn:hover { background:var(--card-hover); }
+  .profile-btn .avatar { width:40px; height:40px; border-radius:50%; background:var(--accent2); display:flex; align-items:center; justify-content:center; font-size:20px; }
+  .profile-btn .name { font-weight:600; }
+  .profile-btn .agent { font-size:13px; color:var(--text2); }
+
+  /* ===== Three-Column Layout ===== */
+  .layout { display:grid; grid-template-columns: 240px 1fr 1fr; height:100vh; }
+  @media (max-width: 1000px) { .layout { grid-template-columns: 200px 1fr; } .detail-panel { display:none !important; } }
+  @media (max-width: 700px) { .layout { grid-template-columns: 1fr; } .sidebar { display:none !important; } .detail-panel { display:none !important; } }
+
+  /* Sidebar */
+  .sidebar { background: var(--sidebar-bg); border-right: 1px solid var(--border); display:flex; flex-direction:column; overflow-y:auto; }
+  .sidebar-header { padding:16px; display:flex; align-items:center; justify-content:space-between; border-bottom: 1px solid var(--border); }
+  .sidebar-header h1 { font-size:20px; font-weight:600; }
+  .sidebar-header .status { display:flex; align-items:center; gap:5px; }
+  .dot { width:8px; height:8px; border-radius:50%; }
+  .dot.online { background:var(--accent); }
+  .dot.offline { background:var(--red); }
+  .sidebar-nav { padding:8px; }
+  .nav-item { display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:8px; cursor:pointer; font-size:16px; color:var(--text2); transition: background .1s; }
+  .nav-item:hover { background:var(--card); }
+  .nav-item.active { background:var(--card); color:var(--text); }
+  .nav-item .badge { margin-left:auto; background:var(--orange); color:#fff; font-size:14px; padding:1px 6px; border-radius:8px; }
+  .nav-sep { height:1px; background:var(--border); margin:8px 12px; }
+  .sidebar-footer { margin-top:auto; padding:12px; border-top:1px solid var(--border); }
+  .sidebar-footer button { width:100%; padding:8px; background:none; border:1px solid var(--border); border-radius:8px; color:var(--text2); cursor:pointer; font-size:14px; }
+  .sidebar-footer button:hover { background:var(--card); }
+
+  /* Middle panel — list */
+  .list-panel { border-right:1px solid var(--border); display:flex; flex-direction:column; overflow:hidden; }
+  .list-header { padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; }
+  .list-header h2 { font-size:17px; font-weight:600; flex:1; }
+  .search-box { width:100%; padding:7px 12px; border-radius:8px; border:none; background:var(--card); color:var(--text); font-size:17px; outline:none; }
+  .search-box::placeholder { color:var(--text3); }
+  .list-content { flex:1; overflow-y:auto; }
+  .section-label { padding:10px 16px 4px; font-size:13px; font-weight:600; color:var(--text3); text-transform:uppercase; letter-spacing:.5px; display:flex; align-items:center; gap:5px; }
+  .section-label .cnt { background:var(--accent); color:#fff; font-size:11px; padding:1px 5px; border-radius:8px; }
+  .section-label.warn .cnt { background:var(--orange); }
+
+  .row { display:flex; align-items:center; gap:10px; padding:10px 16px; cursor:pointer; border-bottom:1px solid var(--border); transition:background .1s; }
+  .row:hover { background:var(--card); }
+  .row.selected { background:var(--card-hover); border-left:3px solid var(--accent); }
+  .row-icon { width:36px; height:36px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:17px; flex-shrink:0; }
+  .row-icon.req { background:rgba(0,168,132,.12); color:var(--accent); }
+  .row-icon.disc { background:rgba(168,85,247,.12); color:#A855F7; }
+  .row-icon.feed { background:rgba(83,189,235,.12); color:var(--blue); }
+  .row-icon.fail { background:rgba(239,68,68,.12); color:var(--red); }
+  .row-info { flex:1; min-width:0; }
+  .row-title { font-size:17px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row-sub { font-size:13px; color:var(--text2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
+  .row-meta { text-align:right; flex-shrink:0; }
+  .row-time { font-size:14px; color:var(--text3); }
+  .row-badge { display:inline-block; font-size:11px; background:var(--orange); color:#fff; padding:1px 5px; border-radius:6px; margin-top:3px; }
+  .row-status { font-size:14px; color:var(--blue); }
+  .row-pin { font-size:11px; color:var(--text3); }
+  .tags { display:flex; gap:3px; margin-top:3px; }
+  .tag { font-size:11px; padding:1px 5px; background:rgba(0,168,132,.08); color:var(--accent); border-radius:4px; }
+
+  .new-input { display:flex; gap:8px; padding:10px 16px; border-top:1px solid var(--border); }
+  .new-input input { flex:1; padding:8px 14px; border-radius:18px; border:none; background:var(--card); color:var(--text); font-size:17px; outline:none; }
+  .new-input button { background:var(--accent); color:#fff; border:none; border-radius:50%; width:34px; height:34px; cursor:pointer; font-size:16px; }
+
+  /* Right panel — detail / artifact */
+  .detail-panel { display:flex; flex-direction:column; overflow:hidden; background:var(--bg); }
+  .detail-header { padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px; }
+  .detail-header h3 { font-size:16px; font-weight:500; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .detail-header button { background:none; border:none; color:var(--text2); cursor:pointer; font-size:17px; padding:4px; }
+  .detail-header button:hover { color:var(--text); }
+  .messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:6px; background:var(--sidebar-bg); }
+  .msg { max-width:80%; padding:8px 12px; border-radius:10px; font-size:17px; line-height:1.5; white-space:pre-wrap; word-wrap:break-word; }
+  .msg.user { align-self:flex-end; background:var(--bubble-out); }
+  .msg.agent { align-self:flex-start; background:var(--bubble-in); }
+  .msg.error { align-self:center; background:rgba(239,68,68,.12); color:var(--red); font-size:14px; }
+  .msg.status_card { align-self:center; color:var(--text3); font-size:13px; background:none; }
+  .msg-time { font-size:11px; color:var(--text3); margin-top:3px; }
+  .reply-bar { display:flex; gap:8px; padding:10px 16px; border-top:1px solid var(--border); }
+  .reply-bar input { flex:1; padding:8px 14px; border-radius:18px; border:none; background:var(--card); color:var(--text); font-size:17px; outline:none; }
+  .reply-bar button { background:var(--accent); color:#fff; border:none; border-radius:50%; width:34px; height:34px; cursor:pointer; }
+
+  /* Artifact viewer */
+  .artifact-content { flex:1; overflow-y:auto; padding:20px; font-size:16px; line-height:1.7; white-space:pre-wrap; color:var(--text); }
+  .artifact-list { list-style:none; }
+  .artifact-list li { padding:8px 16px; border-bottom:1px solid var(--border); cursor:pointer; display:flex; align-items:center; gap:10px; font-size:17px; }
+  .artifact-list li:hover { background:var(--card); }
+  .artifact-list .size { color:var(--text3); font-size:13px; margin-left:auto; }
+
+  .empty { text-align:center; padding:60px 20px; color:var(--text3); font-size:17px; }
+</style>
+</head>
+<body>
+
+<!-- Profile Picker -->
+<div class="profiles" id="profilePicker">
+  <div style="font-size:44px">💬</div>
+  <h2>Mira</h2>
+  <div id="profileList"></div>
+</div>
+
+<!-- Main Layout -->
+<div class="layout" id="mainLayout" style="display:none">
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <div>
+        <h1 id="userName"></h1>
+        <div class="status"><div class="dot" id="statusDot"></div><span id="statusText" style="font-size:13px"></span></div>
+      </div>
+    </div>
+    <div class="sidebar-nav" id="sidebarNav"></div>
+    <div class="sidebar-footer">
+      <button onclick="switchProfile()">Switch Profile</button>
+    </div>
+  </div>
+
+  <!-- List Panel -->
+  <div class="list-panel">
+    <div class="list-header">
+      <h2 id="listTitle">Home</h2>
+    </div>
+    <div style="padding:6px 16px"><input class="search-box" placeholder="Search..." id="searchInput" oninput="renderList()"></div>
+    <div class="list-content" id="listContent"></div>
+    <div class="new-input">
+      <input placeholder="New request..." id="newInput" onkeydown="if(event.key==='Enter'&&!event.isComposing)sendNew()">
+      <button onclick="sendNew()">↑</button>
+    </div>
+  </div>
+
+  <!-- Detail Panel -->
+  <div class="detail-panel" id="detailPanel">
+    <div class="detail-header">
+      <h3 id="detailTitle">Select an item</h3>
+      <button onclick="pinCurrent()" title="Pin">📌</button>
+      <button onclick="shareCurrent()" title="Share">↗️</button>
+      <button onclick="archiveCurrent()" title="Archive">🗃️</button>
+    </div>
+    <div class="messages" id="detailMessages">
+      <div class="empty">Select a conversation to view</div>
+    </div>
+    <div class="reply-bar" id="replyBar" style="display:none">
+      <input placeholder="Reply..." id="replyInput" onkeydown="if(event.key==='Enter'&&!event.isComposing)sendReply()">
+      <button onclick="sendReply()">↑</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentUser = null, currentTab = 'home', currentItemId = null, items = [], currentSection = null, pollTimer = null;
+
+// ===== Profiles =====
+async function loadProfiles() {
+  const res = await fetch('/api/profiles');
+  const data = await res.json();
+  document.getElementById('profileList').innerHTML = data.profiles.map(p => `
+    <button class="profile-btn" onclick="selectProfile('${p.id}','${p.display_name}')">
+      <div class="avatar">👤</div>
+      <div><div class="name">${p.display_name}</div><div class="agent">Agent: ${p.agent_name}</div></div>
+    </button>`).join('');
+}
+function selectProfile(id, name) {
+  currentUser = id;
+  document.getElementById('profilePicker').style.display = 'none';
+  document.getElementById('mainLayout').style.display = 'grid';
+  document.getElementById('userName').textContent = name;
+  localStorage.setItem('mira_profile', id);
+  localStorage.setItem('mira_name', name);
+  buildSidebar();
+  refresh();
+  pollTimer = setInterval(refresh, 15000);
+}
+function switchProfile() {
+  clearInterval(pollTimer);
+  currentUser = null; currentItemId = null;
+  localStorage.removeItem('mira_profile');
+  document.getElementById('profilePicker').style.display = 'flex';
+  document.getElementById('mainLayout').style.display = 'none';
+}
+
+// ===== Sidebar =====
+function buildSidebar() {
+  const nav = document.getElementById('sidebarNav');
+  nav.innerHTML = `
+    <div class="nav-item active" data-nav="home" onclick="navTo('home')">🏠 Home <span class="badge" id="badgeNeedsInput" style="display:none"></span></div>
+    <div class="nav-item" data-nav="todos" onclick="navToTodos()">☑️ Todo List</div>
+    <div class="nav-sep"></div>
+    <div class="nav-item" data-nav="timeline" onclick="navTo('timeline')">💬 Timeline</div>
+    <div class="nav-item" data-nav="requests" onclick="navTo('requests')">↑ Requests</div>
+    <div class="nav-item" data-nav="pinned" onclick="navTo('pinned')">📌 Pinned</div>
+    <div class="nav-item" data-nav="failed" onclick="navTo('failed')">⚠️ Failed</div>
+    <div class="nav-sep"></div>
+    <div class="nav-item" data-nav="briefings" onclick="navToArtifact('briefings')">📰 Briefings</div>
+    <div class="nav-item" data-nav="writings" onclick="navToArtifact('writings')">✍️ Writings</div>
+    <div class="nav-item" data-nav="research" onclick="navToArtifact('research')">🔬 Research</div>
+    <div class="nav-item" data-nav="shared/briefings" onclick="navToArtifact('shared/briefings')">👨‍👩‍👦 Shared</div>
+  `;
+}
+function navTo(tab) {
+  currentTab = tab; currentSection = null;
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.nav === tab));
+  document.getElementById('listTitle').textContent = {home:'Home',timeline:'Timeline',requests:'Requests',pinned:'Pinned',failed:'Failed'}[tab] || tab;
+  renderList();
+  // Show messages panel
+  document.getElementById('detailMessages').parentElement.querySelector('.messages').style.display = '';
+  document.getElementById('replyBar').style.display = currentItemId ? '' : 'none';
+}
+function navToArtifact(section) {
+  currentTab = 'artifacts'; currentSection = section;
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.nav === section));
+  document.getElementById('listTitle').textContent = section.replace('shared/','Shared ').replace(/^\w/,c=>c.toUpperCase());
+  loadArtifactList(section);
+}
+
+// ===== Data =====
+async function refresh() {
+  if (!currentUser) return;
+  try {
+    const [hb, its] = await Promise.all([
+      fetch('/api/heartbeat').then(r=>r.json()),
+      fetch(`/api/${currentUser}/items`).then(r=>r.json()),
+    ]);
+    const dot = document.getElementById('statusDot');
+    const txt = document.getElementById('statusText');
+    const age = (Date.now()-new Date(hb.timestamp).getTime())/1000;
+    dot.className = age<180 ? 'dot online' : 'dot offline';
+    txt.textContent = age<180 ? (hb.busy ? `${hb.active_count||0} running` : 'Online') : 'Offline';
+    items = its;
+    // Update badge
+    const ni = items.filter(i=>i.status==='needs-input').length;
+    const badge = document.getElementById('badgeNeedsInput');
+    if (ni > 0) { badge.style.display=''; badge.textContent=ni; } else { badge.style.display='none'; }
+    if (currentTab !== 'artifacts') renderList();
+    if (currentItemId) renderDetail(currentItemId);
+  } catch(e) { console.error(e); }
+}
+
+// ===== List Rendering =====
+function renderList() {
+  const q = document.getElementById('searchInput').value.toLowerCase();
+  let f = items.filter(i => i.status !== 'archived');
+  if (q) f = f.filter(i => i.title.toLowerCase().includes(q) || (i.tags||[]).some(t=>t.includes(q)));
+
+  const html = [];
+  if (currentTab === 'home') {
+    const ni = f.filter(i=>i.status==='needs-input');
+    const wk = f.filter(i=>['working','queued'].includes(i.status));
+    const fd = f.filter(i=>i.type==='feed');
+    const dn = f.filter(i=>i.status==='done'&&i.type!=='feed').slice(0,10);
+    if(ni.length) { html.push(sec('Reply Needed',ni.length,'warn')); ni.forEach(i=>html.push(row(i))); }
+    if(wk.length) { html.push(sec('In Progress',wk.length)); wk.forEach(i=>html.push(row(i))); }
+    if(fd.length) { html.push(sec('Today from Mira')); fd.forEach(i=>html.push(row(i))); }
+    if(dn.length) { html.push(sec('Recent')); dn.forEach(i=>html.push(row(i))); }
+  } else if (currentTab==='timeline') {
+    // Merge feeds + discussions, group by date
+    // Discussions with parentId inherit the parent feed's date
+    const timeline = f.filter(i => i.type==='feed' || i.type==='discussion');
+    const feedDates = {};
+    // Map feed dates first
+    timeline.filter(i=>i.type==='feed').forEach(i => { feedDates[i.id] = i.created_at || i.updated_at; });
+    // For discussions with parentId, use parent's date for grouping
+    const withDates = timeline.map(i => {
+      if (i.type==='discussion' && i.parent_id && feedDates[i.parent_id]) {
+        return {...i, _groupDate: feedDates[i.parent_id]};
+      }
+      return {...i, _groupDate: i.created_at || i.updated_at};
+    });
+    groupByDate(withDates, '_groupDate').forEach(g => {
+      html.push(sec(g.label)); g.items.forEach(i=>html.push(row(i)));
+    });
+  } else if (currentTab==='requests') {
+    groupByDate(f.filter(i=>i.type==='request')).forEach(g => {
+      html.push(sec(g.label)); g.items.forEach(i=>html.push(row(i)));
+    });
+  } else if (currentTab==='pinned') {
+    f.filter(i=>i.pinned).forEach(i=>html.push(row(i)));
+  } else if (currentTab==='failed') {
+    f.filter(i=>i.status==='failed').forEach(i=>html.push(row(i)));
+  }
+  if(!html.length) html.push('<div class="empty">No items</div>');
+  document.getElementById('listContent').innerHTML = html.join('');
+}
+function sec(t,c,cls) { return `<div class="section-label ${cls||''}">${t}${c?`<span class="cnt">${c}</span>`:''}</div>`; }
+function row(item) {
+  const iconCls = item.status==='failed'?'fail':item.type==='discussion'?'disc':item.type==='feed'?'feed':'req';
+  const icon = item.type==='discussion'?'💬':item.type==='feed'?'📋':item.status==='done'?'✓':item.status==='failed'?'✗':'↑';
+  const preview = lastPreview(item);
+  const time = relTime(item.updated_at);
+  const sel = item.id===currentItemId ? ' selected':'';
+  let badges = '';
+  if(item.pinned) badges+='<span class="row-pin">📌</span> ';
+  if(item.status==='needs-input') badges+='<span class="row-badge">!</span>';
+  if(item.status==='working') badges+='<span class="row-status">⏳</span>';
+  const tags = (item.tags||[]).slice(0,2).map(t=>`<span class="tag">${t}</span>`).join('');
+  return `<div class="row${sel}" onclick="openDetail('${item.id}')">
+    <div class="row-icon ${iconCls}">${icon}</div>
+    <div class="row-info"><div class="row-title">${esc(item.title)}</div><div class="row-sub">${esc(preview)}</div>${tags?`<div class="tags">${tags}</div>`:''}</div>
+    <div class="row-meta"><div class="row-time">${time}</div>${badges}</div></div>`;
+}
+function lastPreview(item) {
+  if(!item.messages||!item.messages.length) return '';
+  const m=item.messages[item.messages.length-1];
+  if(m.kind==='status_card'){try{return JSON.parse(m.content).text}catch(e){return ''}}
+  return (m.sender!==currentUser?'Mira: ':'')+m.content.substring(0,80);
+}
+function relTime(iso) {
+  if(!iso) return '';
+  const s=(Date.now()-new Date(iso).getTime())/1000;
+  if(s<60)return 'now';if(s<3600)return Math.floor(s/60)+'m';if(s<86400)return Math.floor(s/3600)+'h';return Math.floor(s/86400)+'d';
+}
+function esc(s) { const d=document.createElement('div');d.textContent=s;return d.innerHTML; }
+
+function groupByDate(items, dateField) {
+  const groups = {};
+  const today = new Date().toDateString();
+  const yesterday = new Date(Date.now()-86400000).toDateString();
+  for (const item of items) {
+    const raw = dateField ? item[dateField] : (item.created_at || item.updated_at);
+    const d = new Date(raw);
+    const ds = d.toDateString();
+    const label = ds===today ? 'Today' : ds===yesterday ? 'Yesterday' : d.toLocaleDateString(undefined,{month:'short',day:'numeric'});
+    if (!groups[label]) groups[label] = {label, items:[], date:d};
+    groups[label].items.push(item);
+  }
+  return Object.values(groups).sort((a,b) => b.date - a.date);
+}
+
+// ===== Detail =====
+function openDetail(id) {
+  currentItemId = id;
+  renderDetail(id);
+  renderList(); // update selection highlight
+}
+function renderDetail(id) {
+  const item = items.find(i=>i.id===id);
+  if(!item) return;
+  document.getElementById('detailTitle').textContent = item.title;
+  document.getElementById('replyBar').style.display = item.status!=='archived' ? '' : 'none';
+  const el = document.getElementById('detailMessages');
+  el.innerHTML = (item.messages||[]).map(m => {
+    const cls = m.kind==='error'?'error':m.kind==='status_card'?'status_card':m.sender===currentUser?'user':'agent';
+    let c = m.content;
+    if(m.kind==='status_card'){try{c='⚙️ '+JSON.parse(c).text}catch(e){}}
+    const t = m.timestamp ? new Date(m.timestamp).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '';
+    return `<div class="msg ${cls}">${esc(c)}<div class="msg-time">${t}</div></div>`;
+  }).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+// ===== Artifacts =====
+async function loadArtifactList(section) {
+  const res = await fetch(`/api/${currentUser}/artifacts/${section}`);
+  const files = await res.json();
+  const el = document.getElementById('listContent');
+  if(!files.length) { el.innerHTML='<div class="empty">No files</div>'; return; }
+  el.innerHTML = '<ul class="artifact-list">' + files.map(f => {
+    const sz = f.size > 1024 ? Math.round(f.size/1024)+'KB' : f.size+'B';
+    const icon = f.name.endsWith('/')? '📁' : f.name.endsWith('.md')?'📄':'📎';
+    return `<li onclick="openArtifact('${section}','${f.name}')">${icon} ${esc(f.name)}<span class="size">${f.name.endsWith('/')?'':sz}</span></li>`;
+  }).join('') + '</ul>';
+  // Clear detail
+  document.getElementById('detailTitle').textContent = section;
+  document.getElementById('detailMessages').innerHTML = '<div class="empty">Select a file to view</div>';
+  document.getElementById('replyBar').style.display = 'none';
+}
+async function openArtifact(section, filename) {
+  if(filename.endsWith('/')) { navToArtifact(section+'/'+filename.slice(0,-1)); return; }
+  document.getElementById('detailTitle').textContent = filename;
+  document.getElementById('replyBar').style.display = 'none';
+  const el = document.getElementById('detailMessages');
+  try {
+    const res = await fetch(`/api/${currentUser}/artifacts/${section}/${filename}`);
+    const text = await res.text();
+    el.innerHTML = `<div class="artifact-content">${esc(text)}</div>`;
+  } catch(e) { el.innerHTML = '<div class="empty">Cannot load file</div>'; }
+}
+
+// ===== Actions =====
+async function sendNew() {
+  const inp=document.getElementById('newInput'); const t=inp.value.trim(); if(!t||!currentUser)return; inp.value='';
+  await fetch(`/api/${currentUser}/request`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t.substring(0,50),content:t})});
+  refresh();
+}
+async function sendReply() {
+  const inp=document.getElementById('replyInput'); const t=inp.value.trim(); if(!t||!currentUser||!currentItemId)return; inp.value='';
+  await fetch(`/api/${currentUser}/items/${currentItemId}/reply`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:t})});
+  refresh();
+}
+async function pinCurrent() { if(!currentUser||!currentItemId)return; await fetch(`/api/${currentUser}/items/${currentItemId}/pin`,{method:'POST'}); refresh(); }
+async function shareCurrent() { if(!currentUser||!currentItemId)return; await fetch(`/api/${currentUser}/items/${currentItemId}/share`,{method:'POST'}); alert('Shared!'); }
+async function archiveCurrent() { if(!currentUser||!currentItemId)return; await fetch(`/api/${currentUser}/items/${currentItemId}/archive`,{method:'POST'}); currentItemId=null; refresh(); }
+
+// ===== Todos =====
+let todos = [];
+async function navToTodos() {
+  currentTab = 'todos'; currentSection = null;
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.nav === 'todos'));
+  document.getElementById('listTitle').textContent = 'Todo List';
+  await loadTodos();
+}
+async function loadTodos() {
+  const res = await fetch(`/api/${currentUser}/todos`);
+  todos = await res.json();
+  renderTodos();
+}
+function renderTodos() {
+  const el = document.getElementById('listContent');
+  const pending = todos.filter(t=>t.status==='pending');
+  const working = todos.filter(t=>t.status==='working');
+  const done = todos.filter(t=>t.status==='done');
+  const prioIcon = {high:'🔴',medium:'🟡',low:'🟢'};
+  const html = [];
+  if(pending.length) { html.push(sec('Pending',pending.length)); pending.forEach(t=>html.push(todoRow(t,prioIcon))); }
+  if(working.length) { html.push(sec('Working',working.length)); working.forEach(t=>html.push(todoRow(t,prioIcon))); }
+  if(done.length) { html.push(sec('Done')); done.forEach(t=>html.push(todoRow(t,prioIcon))); }
+  if(!html.length) html.push('<div class="empty">No todos. Add one below.</div>');
+  el.innerHTML = html.join('');
+
+  // Show todo detail panel
+  document.getElementById('detailTitle').textContent = 'Todo List';
+  document.getElementById('detailMessages').innerHTML = '<div class="empty">Select a todo to see details</div>';
+  document.getElementById('replyBar').style.display = 'none';
+}
+function todoRow(t, pi) {
+  const icon = t.status==='done'?'✅':(pi[t.priority]||'🟡');
+  const cls = t.status==='done'?' style="opacity:0.5"':'';
+  return `<div class="row"${cls} onclick="openTodoDetail('${t.id}')">
+    <div style="font-size:16px">${icon}</div>
+    <div class="row-info"><div class="row-title">${esc(t.title)}</div>
+    <div class="row-sub">${t.priority} · ${relTime(t.updated_at)}</div></div>
+    <div class="row-meta">
+      ${t.status==='pending'?`<button onclick="event.stopPropagation();completeTodo('${t.id}')" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:3px 8px;font-size:13px;cursor:pointer">Done</button>`:''}
+      <button onclick="event.stopPropagation();deleteTodo('${t.id}')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:13px">✕</button>
+    </div></div>`;
+}
+function openTodoDetail(id) {
+  const t = todos.find(x=>x.id===id);
+  if(!t) return;
+  document.getElementById('detailTitle').textContent = t.title;
+  let html = `<div style="padding:20px;font-size:16px;line-height:1.6">
+    <div><strong>Priority:</strong> ${t.priority}</div>
+    <div><strong>Status:</strong> ${t.status}</div>
+    <div><strong>Created:</strong> ${new Date(t.created_at).toLocaleString()}</div>`;
+  if(t.response) html += `<div style="margin-top:16px;padding:12px;background:var(--bubble-in);border-radius:10px"><strong>Agent response:</strong><br>${esc(t.response)}</div>`;
+  html += '</div>';
+  document.getElementById('detailMessages').innerHTML = html;
+}
+async function completeTodo(id) { await fetch(`/api/${currentUser}/todos/${id}/done`,{method:'POST'}); loadTodos(); }
+async function deleteTodo(id) { await fetch(`/api/${currentUser}/todos/${id}`,{method:'DELETE'}); loadTodos(); }
+
+// Override new input for todo tab
+const origSendNew = sendNew;
+async function sendNew() {
+  if(currentTab==='todos') {
+    const inp=document.getElementById('newInput'); const t=inp.value.trim(); if(!t||!currentUser)return; inp.value='';
+    // Parse priority: "high: do something" or just "do something"
+    let priority='medium', title=t;
+    const m=t.match(/^(high|medium|low)[:\s]+(.+)/i);
+    if(m){priority=m[1].toLowerCase();title=m[2];}
+    await fetch(`/api/${currentUser}/todos`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,priority})});
+    loadTodos();
+  } else {
+    const inp=document.getElementById('newInput'); const t=inp.value.trim(); if(!t||!currentUser)return; inp.value='';
+    await fetch(`/api/${currentUser}/request`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t.substring(0,50),content:t})});
+    refresh();
+  }
+}
+
+// ===== Init =====
+window.onload = () => {
+  loadProfiles();
+  const id=localStorage.getItem('mira_profile'), name=localStorage.getItem('mira_name');
+  if(id&&name) selectProfile(id,name);
+};
+</script>
+</body>
+</html>

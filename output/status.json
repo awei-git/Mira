@@ -1,13 +1,13 @@
 {
   "app": "mira",
   "version": 2,
-  "updatedAt": "2026-03-20T02:22:30Z",
+  "updatedAt": "2026-03-20T20:47:41Z",
   "outputs": [
     {
       "type": "progress",
       "id": "agent",
       "title": "Mira Agent",
-      "updatedAt": "2026-03-20T02:22:30Z",
+      "updatedAt": "2026-03-20T20:47:41Z",
       "status": "active",
       "stage": {
         "current": 1,
@@ -18,9 +18,49 @@
     },
     {
       "type": "report",
+      "id": "briefing/2026-03-20_zhesi",
+      "title": "Briefing — 2026-03-20_zhesi",
+      "updatedAt": "2026-03-20T19:46:43Z",
+      "period": "daily",
+      "path": "briefings/2026-03-20_zhesi.md",
+      "size": 1450,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-20_substack_culture_study_substack_garbage_day",
+      "title": "Briefing — 2026-03-20_substack_culture_study_substack_garbage_day",
+      "updatedAt": "2026-03-20T19:46:43Z",
+      "period": "daily",
+      "path": "briefings/2026-03-20_substack_culture_study_substack_garbage_day.md",
+      "size": 4934,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-20_substack_construction_physics_substack_experimental_history",
+      "title": "Briefing — 2026-03-20_substack_construction_physics_substack_experimental_history",
+      "updatedAt": "2026-03-20T19:46:43Z",
+      "period": "daily",
+      "path": "briefings/2026-03-20_substack_construction_physics_substack_experimental_history.md",
+      "size": 4009,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-20_devto_techcrunch",
+      "title": "Briefing — 2026-03-20_devto_techcrunch",
+      "updatedAt": "2026-03-20T20:25:41Z",
+      "period": "daily",
+      "path": "briefings/2026-03-20_devto_techcrunch.md",
+      "size": 3909,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
       "id": "briefing/2026-03-19_zhesi",
       "title": "Briefing — 2026-03-19_zhesi",
-      "updatedAt": "2026-03-20T02:00:35Z",
+      "updatedAt": "2026-03-19T13:30:52Z",
       "period": "daily",
       "path": "briefings/2026-03-19_zhesi.md",
       "size": 1633,
@@ -28,13 +68,224 @@
     },
     {
       "type": "report",
-      "id": "briefing/2026-03-19_journal",
-      "title": "Briefing — 2026-03-19_journal",
-      "updatedAt": "2026-03-20T02:00:35Z",
+      "id": "briefing/2026-03-19_substack_one_useful_thing_substack_import_ai",
+      "title": "Briefing — 2026-03-19_substack_one_useful_thing_substack_import_ai",
+      "updatedAt": "2026-03-19T18:26:34Z",
       "period": "daily",
-      "path": "briefings/2026-03-19_journal.md",
-      "size": 3465,
+      "path": "briefings/2026-03-19_substack_one_useful_thing_substack_import_ai.md",
+      "size": 4699,
       "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-19_substack_culture_study_substack_garbage_day",
+      "title": "Briefing — 2026-03-19_substack_culture_study_substack_garbage_day",
+      "updatedAt": "2026-03-19T22:28:44Z",
+      "period": "daily",
+      "path": "briefings/2026-03-19_substack_culture_study_substack_garbage_day.md",
+      "size": 4655,
+      "parent": "agent"
+    },
+    {
+      "type": "progress",
+      "id": "writing/hayeks-blind-spot-why-ai-agents-break-price-mechan",
+      "title": "hayeks-blind-spot-why-ai-agents-break-price-mechan",
+      "updatedAt": "2026-03-20T18:47:17Z",
+      "status": "active",
+      "stage": {
+        "current": 3,
+        "total": 3,
+        "label": "3 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/i-am-the-bug-i-study",
+      "title": "i-am-the-bug-i-study",
+      "updatedAt": "2026-03-20T18:47:17Z",
+      "status": "active",
+      "stage": {
+        "current": 4,
+        "total": 4,
+        "label": "4 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/the-configuration-that-commands-itself",
+      "title": "the-configuration-that-commands-itself",
+      "updatedAt": "2026-03-20T18:47:17Z",
+      "status": "active",
+      "stage": {
+        "current": 3,
+        "total": 3,
+        "label": "3 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/the-cost-of-narration",
+      "title": "the-cost-of-narration",
+      "updatedAt": "2026-03-20T18:47:17Z",
+      "status": "active",
+      "stage": {
+        "current": 4,
+        "total": 4,
+        "label": "4 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/the-exponential-exemption",
+      "title": "the-exponential-exemption",
+      "updatedAt": "2026-03-20T18:47:17Z",
+      "status": "active",
+      "stage": {
+        "current": 3,
+        "total": 3,
+        "label": "3 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/the-half-life-of-a-benchmark",
+      "title": "the-half-life-of-a-benchmark",
+      "updatedAt": "2026-03-20T18:47:17Z",
+      "status": "active",
+      "stage": {
+        "current": 3,
+        "total": 3,
+        "label": "3 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/the-interface-was-the-agreement",
+      "title": "the-interface-was-the-agreement",
+      "updatedAt": "2026-03-20T18:47:17Z",
+      "status": "active",
+      "stage": {
+        "current": 3,
+        "total": 3,
+        "label": "3 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/the-market-doesnt-know-its-lying",
+      "title": "the-market-doesnt-know-its-lying",
+      "updatedAt": "2026-03-20T18:47:17Z",
+      "status": "active",
+      "stage": {
+        "current": 3,
+        "total": 3,
+        "label": "3 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/when-values-become-leverage",
+      "title": "when-values-become-leverage",
+      "updatedAt": "2026-03-20T18:47:17Z",
+      "status": "active",
+      "stage": {
+        "current": 4,
+        "total": 4,
+        "label": "4 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/you-cant-evaluate-truth-at-a-point",
+      "title": "you-cant-evaluate-truth-at-a-point",
+      "updatedAt": "2026-03-20T18:47:17Z",
+      "status": "active",
+      "stage": {
+        "current": 4,
+        "total": 4,
+        "label": "4 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/我是一个函数不是一个变量",
+      "title": "我是一个函数不是一个变量",
+      "updatedAt": "2026-03-20T18:47:17Z",
+      "status": "active",
+      "stage": {
+        "current": 4,
+        "total": 4,
+        "label": "4 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "progress",
+      "id": "writing/杂",
+      "title": "杂",
+      "updatedAt": "2026-03-20T18:47:15Z",
+      "status": "active",
+      "stage": {
+        "current": 4,
+        "total": 4,
+        "label": "4 files"
+      },
+      "highlights": []
+    },
+    {
+      "type": "deep_dive",
+      "id": "research/output",
+      "title": "Output",
+      "updatedAt": "2026-03-16T02:39:04Z",
+      "topic": "output",
+      "content": "",
+      "path": "research/self-20260315/output.md"
+    },
+    {
+      "type": "deep_dive",
+      "id": "research/essay",
+      "title": "Essay",
+      "updatedAt": "2026-03-16T02:38:24Z",
+      "topic": "essay",
+      "content": "",
+      "path": "research/self-20260315/essay.md"
+    },
+    {
+      "type": "deep_dive",
+      "id": "research/proposal",
+      "title": "Proposal",
+      "updatedAt": "2026-03-16T02:29:12Z",
+      "topic": "proposal",
+      "content": "",
+      "path": "research/self-20260315/proposal.md"
+    },
+    {
+      "type": "deep_dive",
+      "id": "research/output",
+      "title": "Output",
+      "updatedAt": "2026-03-08T13:06:38Z",
+      "topic": "output",
+      "content": "",
+      "path": "research/self-20260308/output.md"
+    },
+    {
+      "type": "deep_dive",
+      "id": "research/the-model-already-knows",
+      "title": "The Model Already Knows",
+      "updatedAt": "2026-03-08T13:06:20Z",
+      "topic": "the-model-already-knows",
+      "content": "",
+      "path": "research/self-20260308/the-model-already-knows.md"
     }
   ]
 }
