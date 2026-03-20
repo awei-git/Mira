@@ -430,8 +430,13 @@ def publish_all_existing(lang: str = "zh") -> None:
         log.error("No audio dir: %s", audio_dir)
         return
 
-    for mp3_path in sorted(audio_dir.glob("*.mp3")):
-        slug = mp3_path.stem
+    for ep_dir in sorted(audio_dir.iterdir()):
+        if not ep_dir.is_dir():
+            continue
+        mp3_path = ep_dir / "episode.mp3"
+        if not mp3_path.exists():
+            continue
+        slug = ep_dir.name
         meta = EPISODE_META.get(slug, {}).get(lang)
         if not meta:
             log.warning("No metadata for slug '%s', skipping", slug)

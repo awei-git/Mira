@@ -1,99 +1,5 @@
 [
  {
-  "ts": "2026-03-20T13:54:10.716119",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T13:54:41.363136",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T13:54:56.421752",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T13:55:27.081051",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T13:55:57.753941",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T13:56:28.422808",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T13:56:59.067653",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T13:57:29.724291",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T13:58:00.368526",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T13:58:31.114401",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T13:59:01.803891",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T13:59:32.458890",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T14:00:03.111309",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T14:00:18.723994",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T14:00:49.404466",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T14:01:20.039070",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T14:01:50.690494",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T14:02:21.353329",
-  "action": "explore",
-  "detail": "noah_smith_stratechery"
- },
- {
-  "ts": "2026-03-20T14:19:59.684292",
-  "action": "growth_cycle"
- },
- {
   "ts": "2026-03-20T14:47:51.056499",
   "action": "explore",
   "detail": "substack_culture_study_substack_garbage_day"
@@ -196,5 +102,100 @@
   "ts": "2026-03-20T16:27:15.484025",
   "action": "explore",
   "detail": "devto_techcrunch"
+ },
+ {
+  "ts": "2026-03-20T17:12:43.985994",
+  "action": "explore",
+  "detail": "literaryhub_brain_pickings"
+ },
+ {
+  "ts": "2026-03-20T17:13:14.625346",
+  "action": "explore",
+  "detail": "literaryhub_brain_pickings"
+ },
+ {
+  "ts": "2026-03-20T17:13:45.298972",
+  "action": "explore",
+  "detail": "literaryhub_brain_pickings"
+ },
+ {
+  "ts": "2026-03-20T17:14:16.014771",
+  "action": "explore",
+  "detail": "literaryhub_brain_pickings"
+ },
+ {
+  "ts": "2026-03-20T17:14:46.664010",
+  "action": "explore",
+  "detail": "literaryhub_brain_pickings"
+ },
+ {
+  "ts": "2026-03-20T17:15:17.297183",
+  "action": "explore",
+  "detail": "literaryhub_brain_pickings"
+ },
+ {
+  "ts": "2026-03-20T18:01:00.821303",
+  "action": "explore",
+  "detail": "arxiv_huggingface"
+ },
+ {
+  "ts": "2026-03-20T18:01:31.456100",
+  "action": "explore",
+  "detail": "arxiv_huggingface"
+ },
+ {
+  "ts": "2026-03-20T18:02:02.330596",
+  "action": "explore",
+  "detail": "arxiv_huggingface"
+ },
+ {
+  "ts": "2026-03-20T18:02:32.997349",
+  "action": "explore",
+  "detail": "arxiv_huggingface"
+ },
+ {
+  "ts": "2026-03-20T18:04:51.061426",
+  "action": "explore",
+  "detail": "arxiv_huggingface"
+ },
+ {
+  "ts": "2026-03-20T18:05:21.725360",
+  "action": "explore",
+  "detail": "arxiv_huggingface"
+ },
+ {
+  "ts": "2026-03-20T18:05:52.425255",
+  "action": "explore",
+  "detail": "arxiv_huggingface"
+ },
+ {
+  "ts": "2026-03-20T18:06:23.081753",
+  "action": "explore",
+  "detail": "arxiv_huggingface"
+ },
+ {
+  "ts": "2026-03-20T18:06:53.752737",
+  "action": "explore",
+  "detail": "arxiv_huggingface"
+ },
+ {
+  "ts": "2026-03-20T18:07:24.424206",
+  "action": "explore",
+  "detail": "arxiv_huggingface"
+ },
+ {
+  "ts": "2026-03-20T18:07:55.088503",
+  "action": "explore",
+  "detail": "arxiv_huggingface"
+ },
+ {
+  "ts": "2026-03-20T18:08:25.735613",
+  "action": "explore",
+  "detail": "arxiv_huggingface"
+ },
+ {
+  "ts": "2026-03-20T18:08:56.407903",
+  "action": "explore",
+  "detail": "arxiv_huggingface"
  }
 ]

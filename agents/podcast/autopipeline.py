@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import ARTIFACTS_DIR, STATE_FILE
+from mira import Mira
 
 log = logging.getLogger("podcast.autopipeline")
 
@@ -94,7 +95,7 @@ def should_podcast() -> tuple[str, str, str] | None:
         title = _extract_title(md_file, slug)
 
         for lang in ("zh",):  # EN disabled for now
-            episode_path = audio_dir / lang / f"{slug}.mp3"
+            episode_path = audio_dir / lang / slug / "episode.mp3"
             if episode_path.exists():
                 continue
             if _recent_failure(state, lang, slug):
@@ -142,16 +143,37 @@ def run_podcast_episode(lang: str, slug: str, title: str) -> Path | None:
         _save_state(state)
         log.info("Podcast: episode done → %s", result_path)
 
+        feed_url = None
         try:
             article_url = _extract_article_url(article_text)
-            description = f"原文：{article_url}" if lang == "zh" else f"Full article: {article_url}"
-            if not article_url:
-                description = ""
+            # Read generated description, append article link
+            desc_path = result_path.parent / "description.txt"
+            if desc_path.exists():
+                description = desc_path.read_text(encoding="utf-8").strip()
+                if article_url:
+                    description += f"\n\n原文：{article_url}" if lang == "zh" else f"\n\nFull article: {article_url}"
+            else:
+                description = f"原文：{article_url}" if lang == "zh" else f"Full article: {article_url}"
             feed_url = publish_episode(result_path, title, description)
             if feed_url:
                 log.info("Podcast: published to RSS → %s", feed_url)
         except Exception as e:
             log.warning("Podcast RSS publish failed (non-fatal): %s", e)
+
+        # Notify user
+        try:
+            bridge = Mira()
+            size_mb = result_path.stat().st_size / 1024 / 1024
+            summary = f"Podcast 已生成：「{title}」\n大小：{size_mb:.1f} MB\n路径：{result_path}"
+            if feed_url:
+                summary += f"\nRSS：{feed_url}"
+            bridge.create_task(
+                f"podcast-done-{slug}", f"Podcast: {title}",
+                summary, sender="agent", tags=["podcast", "done"], origin="agent",
+            )
+        except Exception as e:
+            log.warning("Podcast notification failed: %s", e)
+
         return result_path
 
     reason = "generation_failed"

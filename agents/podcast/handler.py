@@ -1099,6 +1099,53 @@ def _generate_outro_tts(lang: str, output_path: Path) -> bool:
     return _pcm_to_mp3(data, output_path)
 
 
+def _generate_description(article_text: str, title: str,
+                          lang: str = "en") -> str | None:
+    """Generate a compelling podcast episode description from the article."""
+    import sys as _sys
+    _shared = str(Path(__file__).resolve().parent.parent / "shared")
+    if _shared not in _sys.path:
+        _sys.path.insert(0, _shared)
+    from sub_agent import claude_think
+
+    if lang == "zh":
+        prompt = f"""为播客节目写一段 episode description（节目简介）。
+
+要求：
+- 3-5句话，150-250字
+- 用口语化的中文，像在跟朋友安利这期节目
+- 要有悬念和吸引力，让人想点进来听
+- 提到这一集聊了什么核心话题，但不要剧透结论
+- 不要用"本期节目"、"欢迎收听"这种套话
+- 只返回description文本，不要任何标记或格式
+
+文章标题：{title}
+
+文章全文：
+{article_text[:3000]}"""
+    else:
+        prompt = f"""Write a podcast episode description.
+
+Requirements:
+- 3-5 sentences, 80-150 words
+- Conversational tone, like pitching this episode to a friend
+- Create intrigue — mention the core topic but don't spoil the conclusion
+- No "in this episode" or "welcome to" boilerplate
+- Return ONLY the description text, no formatting
+
+Article title: {title}
+
+Article text:
+{article_text[:3000]}"""
+
+    try:
+        result = claude_think(prompt, timeout=60, tier="light")
+        return result.strip() if result else None
+    except Exception as e:
+        log.warning("Description generation failed: %s", e)
+        return None
+
+
 def generate_conversation_for_article(article_text: str, title: str,
                                        output_dir: Path | None = None,
                                        lang: str = "en") -> Path | None:
@@ -1132,15 +1179,16 @@ def generate_conversation_for_article(article_text: str, title: str,
 
     if output_dir is None:
         output_dir = ARTIFACTS_DIR / "audio" / "podcast" / lang
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     slug       = _slug(title)
-    final_path = output_dir / f"{slug}.mp3"
+    episode_dir = output_dir / slug
+    episode_dir.mkdir(parents=True, exist_ok=True)
+    final_path = episode_dir / "episode.mp3"
 
     log.info("Conversation: '%s' [%s]", title, lang)
 
     # Step 1: Generate dialogue script (resume if already saved)
-    script_path = output_dir / f"{slug}_script.txt"
+    script_path = episode_dir / "script.txt"
     if script_path.exists():
         script = script_path.read_text(encoding="utf-8")
         log.info("Script: resuming from %s", script_path.name)
@@ -1153,8 +1201,16 @@ def generate_conversation_for_article(article_text: str, title: str,
     word_count = sum(len(t.split()) for _, t in turns)
     log.info("Script: %s (%d turns, ~%d words)", script_path.name, len(turns), word_count)
 
+    # Step 1b: Generate episode description (resume if already saved)
+    desc_path = episode_dir / "description.txt"
+    if not desc_path.exists():
+        desc = _generate_description(article_text, title, lang=lang)
+        if desc:
+            desc_path.write_text(desc, encoding="utf-8")
+            log.info("Description saved: %d chars", len(desc))
+
     # Step 2: Multi-speaker TTS → conversation.mp3 (resume if already done)
-    conv_path = output_dir / f"{slug}_conversation.mp3"
+    conv_path = episode_dir / "conversation.mp3"
     if conv_path.exists():
         log.info("Step 2: Conversation TTS already done, skipping")
     elif not generate_tts_conversation(script, conv_path, lang=lang):
@@ -1166,8 +1222,8 @@ def generate_conversation_for_article(article_text: str, title: str,
 
     # Step 3: Host intro + outro TTS (separate files)
     log.info("Step 3: Generating intro/outro TTS...")
-    intro_tts_path = output_dir / f"{slug}_intro_tts.mp3"
-    outro_tts_path = output_dir / f"{slug}_outro_tts.mp3"
+    intro_tts_path = episode_dir / "intro_tts.mp3"
+    outro_tts_path = episode_dir / "outro_tts.mp3"
     if not _generate_intro_tts(lang, title, intro_tts_path):
         log.warning("Intro TTS failed — assembling without music bumpers")
         return conv_path
@@ -1177,13 +1233,13 @@ def generate_conversation_for_article(article_text: str, title: str,
 
     # Step 4 & 5: Build intro and outro bumpers
     log.info("Step 4: Building intro bumper...")
-    intro_path = output_dir / f"{slug}_intro.mp3"
+    intro_path = episode_dir / "intro.mp3"
     if not build_intro_bumper(intro_tts_path, intro_music, intro_path):
         log.warning("Intro bumper failed — returning conversation only")
         return conv_path
 
     log.info("Step 5: Building outro bumper...")
-    outro_path = output_dir / f"{slug}_outro.mp3"
+    outro_path = episode_dir / "outro.mp3"
     if not build_outro_bumper(outro_tts_path, outro_music, outro_path):
         log.warning("Outro bumper failed — returning conversation only")
         return conv_path
@@ -1193,10 +1249,6 @@ def generate_conversation_for_article(article_text: str, title: str,
     if not assemble_episode(intro_path, conv_path, outro_path, final_path):
         log.warning("Assembly failed — returning conversation only")
         return conv_path
-
-    # Clean up intermediate files
-    for p in [conv_path, intro_tts_path, outro_tts_path, intro_path, outro_path]:
-        p.unlink(missing_ok=True)
 
     return final_path
 
