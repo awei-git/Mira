@@ -72,9 +72,15 @@ final class CommandWriter {
     }
 
     func reply(to itemId: String, content: String) {
+        let id = cmdId()
+        let ts = now()
         write(MiraCommand(
-            id: cmdId(), type: "reply", timestamp: now(), sender: senderID,
+            id: id, type: "reply", timestamp: ts, sender: senderID,
             content: content, itemId: itemId
+        ))
+        // Optimistic: show reply immediately in local UI
+        store?.appendMessage(to: itemId, message: ItemMessage(
+            id: id, sender: senderID, content: content, timestamp: ts, kind: .text
         ))
     }
 
@@ -111,6 +117,12 @@ final class CommandWriter {
             id: cmdId(), type: "tag", timestamp: now(), sender: senderID,
             itemId: itemId, tags: tags
         ))
+    }
+
+    // MARK: - Delivery Confirmation
+
+    func confirmDelivery(_ confirmedIds: Set<String>) {
+        pendingIds.subtract(confirmedIds)
     }
 
     // MARK: - Internal

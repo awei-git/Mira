@@ -6,6 +6,7 @@ import Observation
 final class SyncEngine {
     let config: BridgeConfig
     let store: ItemStore
+    weak var commands: CommandWriter?
 
     var heartbeat: MiraHeartbeat?
     var agentOnline: Bool { heartbeat?.isRecent ?? false }
@@ -47,10 +48,14 @@ final class SyncEngine {
             guard let self else { return }
             let hb = self._loadHeartbeatBG()
             let changes = self._loadManifestAndDiffBG()
+            let confirmedIds = self._loadLedgerBG()
 
             DispatchQueue.main.async {
                 if let hb { self.heartbeat = hb }
                 for item in changes { self.store.upsert(item) }
+                if !confirmedIds.isEmpty {
+                    self.commands?.confirmDelivery(confirmedIds)
+                }
                 self.syncing = false
 
                 let desiredInterval: TimeInterval = self.store.hasActiveItems ? 20 : 60
@@ -107,6 +112,14 @@ final class SyncEngine {
         }
 
         return changed
+    }
+
+    private func _loadLedgerBG() -> Set<String> {
+        guard let url = config.ledgerURL else { return [] }
+        try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+        guard let data = try? Data(contentsOf: url),
+              let ledger = try? decoder.decode(CommandLedger.self, from: data) else { return [] }
+        return Set(ledger.processed.keys)
     }
 
     var debugLog: String = ""

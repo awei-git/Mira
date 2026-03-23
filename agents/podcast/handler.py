@@ -233,6 +233,13 @@ def _call_gemini_tts_text(text: str, voice_name: str, lang: str,
 
     voice_name: one of VOICE_MIRA_EN_GEMINI, VOICE_MIRA_ZH_GEMINI, VOICE_HOST_GEMINI
     """
+    # Gemini TTS rejects very short text (finishReason=OTHER).
+    # Pad short inputs so the API has enough to work with.
+    if len(text.strip()) < 8:
+        if lang == "zh":
+            text = text.strip().rstrip("。") + "。好的。"
+        else:
+            text = text.strip().rstrip(".") + ". Alright."
     if lang == "zh":
         instruction = "用自然清晰的语速朗读以下文本，语气亲切，表达直接。\n\n"
     else:
@@ -859,11 +866,14 @@ def _tts_call_with_fallback(text: str, speaker: str,
     Returns (None, '') on total failure.
 
     Fallback logic for 'auto':
-    - Try Gemini first.
-    - If Gemini raises RuntimeError("quota exhausted"), switch to MiniMax.
-    - MiniMax failure is terminal (returns (None, '')).
+    - Try Gemini up to 5 times with 5-minute intervals.
+    - If all Gemini attempts fail, try MiniMax once.
+    - If both fail, notify user via bridge and return (None, '').
     """
-    def _try_gemini() -> tuple[bytes | None, str]:
+    GEMINI_RETRIES = 5
+    GEMINI_RETRY_WAIT = 300  # 5 minutes
+
+    def _try_gemini_once() -> tuple[bytes | None, str]:
         api_key = _get_gemini_key()
         if not api_key:
             log.error("No Gemini API key — set gemini key in secrets.yml")
@@ -878,6 +888,23 @@ def _tts_call_with_fallback(text: str, speaker: str,
             log.error("Gemini TTS unexpected error: %s", e)
             return None, ''
 
+    def _try_gemini_with_retries() -> tuple[bytes | None, str]:
+        for attempt in range(GEMINI_RETRIES):
+            data, fmt = _try_gemini_once()
+            if data is not None:
+                if attempt > 0:
+                    log.info("Gemini TTS succeeded on attempt %d/%d", attempt + 1, GEMINI_RETRIES)
+                return data, fmt
+            if fmt == 'quota':
+                log.warning("Gemini TTS quota exhausted — skipping remaining retries")
+                return None, 'quota'
+            if attempt < GEMINI_RETRIES - 1:
+                log.warning("Gemini TTS failed (attempt %d/%d) — retrying in %ds",
+                            attempt + 1, GEMINI_RETRIES, GEMINI_RETRY_WAIT)
+                time.sleep(GEMINI_RETRY_WAIT)
+        log.error("Gemini TTS failed after %d attempts", GEMINI_RETRIES)
+        return None, ''
+
     def _try_minimax() -> tuple[bytes | None, str]:
         api_key = _get_minimax_key()
         if not api_key:
@@ -887,18 +914,43 @@ def _tts_call_with_fallback(text: str, speaker: str,
         mp3 = _call_minimax_tts(text, voice_id, api_key, lang=lang)
         return (mp3, 'mp3') if mp3 is not None else (None, '')
 
+    def _notify_tts_failure():
+        try:
+            from mira import Mira
+            bridge = Mira()
+            bridge.create_item(
+                item_id=f"tts_failure_{int(time.time())}",
+                item_type="alert",
+                title="Podcast TTS 全部失败",
+                first_message="Gemini 重试 5 次后失败，MiniMax 也失败。Podcast 生成已中断，需要检查 API 状态。",
+                sender="agent",
+                tags=["podcast", "error"],
+                origin="agent",
+            )
+        except Exception as e:
+            log.error("Failed to notify user about TTS failure: %s", e)
+
     if TTS_PROVIDER == 'minimax':
-        return _try_minimax()
+        data, fmt = _try_minimax()
+        if data is None:
+            _notify_tts_failure()
+        return data, fmt
     elif TTS_PROVIDER == 'gemini':
-        data, fmt = _try_gemini()
-        return (data, fmt) if fmt not in ('', 'quota') else (None, '')
-    else:  # 'auto': gemini first, fallback to minimax on any failure
-        data, fmt = _try_gemini()
-        if fmt in ('', 'quota'):
-            reason = "quota exhausted" if fmt == 'quota' else "failed"
-            log.warning("Gemini TTS %s — falling back to MiniMax for this turn", reason)
-            return _try_minimax()
-        return (data, fmt)
+        data, fmt = _try_gemini_with_retries()
+        if data is None:
+            _notify_tts_failure()
+        return data, fmt
+    else:  # 'auto': gemini first (5 retries), then minimax, then notify
+        data, fmt = _try_gemini_with_retries()
+        if data is not None:
+            return data, fmt
+        reason = "quota exhausted" if fmt == 'quota' else "failed after 5 retries"
+        log.warning("Gemini TTS %s — falling back to MiniMax", reason)
+        data, fmt = _try_minimax()
+        if data is not None:
+            return data, fmt
+        _notify_tts_failure()
+        return None, ''
 
 
 def _tts_conversation_chunk(turns: list[tuple[str, str]], api_key: str,

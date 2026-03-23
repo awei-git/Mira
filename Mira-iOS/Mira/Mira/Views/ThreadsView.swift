@@ -6,6 +6,7 @@ struct ThreadsView: View {
     @State private var filter: ThreadFilter = .all
     @State private var searchText = ""
     @State private var showNewItem = false
+    @State private var expandedSections: Set<String> = ["Today", "Yesterday"]
 
     enum ThreadFilter: String, CaseIterable {
         case all = "All"
@@ -33,26 +34,38 @@ struct ThreadsView: View {
                 // Item list
                 List {
                     ForEach(groupedItems, id: \.key) { group in
-                        Section(group.key) {
-                            ForEach(group.items) { item in
-                                NavigationLink(value: item.id) {
-                                    ThreadRow(item: item)
+                        let isRecent = group.key == "Today" || group.key == "Yesterday"
+
+                        if isRecent {
+                            Section(group.key) {
+                                threadItems(group.items)
+                            }
+                        } else {
+                            // Older sections: collapsed by default
+                            Section {
+                                if expandedSections.contains(group.key) {
+                                    threadItems(group.items)
                                 }
-                                .swipeActions(edge: .trailing) {
-                                    Button(role: .destructive) {
-                                        // Archive handled via command
-                                    } label: {
-                                        Label("Archive", systemImage: "archivebox")
+                            } header: {
+                                Button {
+                                    withAnimation {
+                                        if expandedSections.contains(group.key) {
+                                            expandedSections.remove(group.key)
+                                        } else {
+                                            expandedSections.insert(group.key)
+                                        }
                                     }
-                                }
-                                .swipeActions(edge: .leading) {
-                                    Button {
-                                        // Pin toggle handled via command
-                                    } label: {
-                                        Label(item.pinned ? "Unpin" : "Pin",
-                                              systemImage: item.pinned ? "pin.slash" : "pin")
+                                } label: {
+                                    HStack {
+                                        Text(group.key)
+                                        Text("(\(group.items.count))")
+                                            .foregroundStyle(.secondary)
+                                        Spacer()
+                                        Image(systemName: expandedSections.contains(group.key)
+                                              ? "chevron.down" : "chevron.right")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
                                     }
-                                    .tint(.yellow)
                                 }
                             }
                         }
@@ -79,25 +92,56 @@ struct ThreadsView: View {
         }
     }
 
+    private var isSearching: Bool { !searchText.isEmpty }
+
     private var filteredItems: [MiraItem] {
         var result: [MiraItem]
 
-        if !searchText.isEmpty {
+        if isSearching {
+            // Search has no time limit — can find anything
             result = store.search(searchText)
         } else {
+            // Normal browsing: hide items older than 10 days
+            let tenDaysAgo = Calendar.current.date(byAdding: .day, value: -10,
+                                                    to: Calendar.current.startOfDay(for: Date()))!
+            let base: [MiraItem]
             switch filter {
             case .all:
-                result = store.allVisible
+                base = store.allVisible
             case .timeline:
-                result = store.allVisible.filter { $0.type == .feed || $0.type == .discussion }
+                base = store.allVisible.filter { $0.type == .feed || $0.type == .discussion }
             case .requests:
-                result = store.filtered(type: .request)
+                base = store.filtered(type: .request)
             case .pinned:
-                result = store.pinnedItems
+                base = store.pinnedItems
             }
+            result = base.filter { $0.createdDate >= tenDaysAgo }
         }
 
         return result
+    }
+
+    @ViewBuilder
+    private func threadItems(_ items: [MiraItem]) -> some View {
+        ForEach(items) { item in
+            NavigationLink(value: item.id) {
+                ThreadRow(item: item)
+            }
+            .swipeActions(edge: .trailing) {
+                Button(role: .destructive) {
+                } label: {
+                    Label("Archive", systemImage: "archivebox")
+                }
+            }
+            .swipeActions(edge: .leading) {
+                Button {
+                } label: {
+                    Label(item.pinned ? "Unpin" : "Pin",
+                          systemImage: item.pinned ? "pin.slash" : "pin")
+                }
+                .tint(.yellow)
+            }
+        }
     }
 
     /// Map of feed ID → created date, for binding discussions to their source feed's day

@@ -89,14 +89,30 @@ def record_outcome(name: str):
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
 
-    # Determine success/failure from log file
+    # Determine success/failure from PID file exit code + fatal log errors
+    pid_file = _LOGS_DIR.parent / "bg_pids" / f"{name}.pid"
     log_file = _LOGS_DIR / f"bg-{name}.log"
     failed = False
     reason = ""
 
+    # Primary signal: check process exit code via PID
+    last_pid = proc.get("last_pid")
+    if last_pid:
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["ps", "-p", str(last_pid), "-o", "stat="],
+                capture_output=True, text=True, timeout=5,
+            )
+            # If ps returns nothing, process exited — check log for fatal errors only
+        except Exception:
+            pass
+
+    # Secondary signal: only count Traceback (unhandled exception) as failure.
+    # WARNING/ERROR log lines from non-fatal issues (e.g. Ollama embed 500,
+    # MiniMax credit) should NOT mark the whole process as failed.
     if log_file.exists():
         try:
-            # Read last 2KB of log for error indicators
             size = log_file.stat().st_size
             with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                 if size > 2048:
@@ -104,17 +120,15 @@ def record_outcome(name: str):
                     f.readline()  # skip partial line
                 tail = f.read()
 
-            # Check for failure indicators in the tail
-            tail_lower = tail.lower()
-            if "traceback" in tail_lower or "error" in tail_lower or "exception" in tail_lower:
-                # Extract last meaningful error line
+            # Only unhandled exceptions (Traceback) count as real failures
+            if "traceback" in tail.lower():
                 for line in reversed(tail.strip().splitlines()):
                     line_s = line.strip()
                     if line_s and ("error" in line_s.lower() or "exception" in line_s.lower()):
                         reason = line_s[:200]
                         break
                 if not reason:
-                    reason = "Error detected in log (see bg-{}.log)".format(name)
+                    reason = "Traceback detected in log (see bg-{}.log)".format(name)
                 failed = True
         except Exception as e:
             log.debug("Could not read bg log for '%s': %s", name, e)

@@ -12,6 +12,14 @@ let waTextPri   = Color(hex: 0xE9EDEF) // primary text (light)
 let waTextSec   = Color(hex: 0x8696A0) // secondary text (gray)
 let waLink      = Color(hex: 0x53BDEB) // in-chat links (brighter blue)
 
+// Feed type colors
+let colorExplore   = Color(hex: 0x4A9EFF) // blue
+let colorMira      = Color(hex: 0xE8A838) // warm gold
+let colorZhesi     = Color(hex: 0xD97706) // amber
+let colorTetra     = Color(hex: 0x22C55E) // green
+let colorRequest   = Color(hex: 0x818CF8) // indigo
+let colorDiscuss   = Color(hex: 0xA78BFA) // purple
+
 // Convenience
 private let accentGreen = waAccent
 private let warmBg = waListBg
@@ -36,6 +44,8 @@ struct HomeView: View {
     @State private var showNewItem = false
     @State private var showRecall = false
     @State private var recallQuery = ""
+    @State private var searchText = ""
+    @State private var expandedSections: Set<String> = ["Today", "Yesterday"]
 
     var body: some View {
         NavigationStack {
@@ -44,21 +54,17 @@ struct HomeView: View {
 
                 ScrollView {
                     VStack(spacing: 0) {
-                        // Search / Recall bar
-                        Button { showRecall = true } label: {
-                            HStack {
-                                Image(systemName: "magnifyingglass")
-                                    .foregroundStyle(.secondary)
-                                Text("Search conversations...")
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                            }
-                            .font(.subheadline)
-                            .padding(10)
-                            .background(cardBg)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        // Search bar
+                        HStack {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundStyle(.secondary)
+                            TextField("Search conversations...", text: $searchText)
+                                .font(.body)
+                                .foregroundStyle(waTextPri)
                         }
-                        .buttonStyle(.plain)
+                        .padding(12)
+                        .background(cardBg)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                         .background(warmBg)
@@ -76,45 +82,38 @@ struct HomeView: View {
                             .padding(.bottom, 8)
                         }
 
-                        // Main list
-                        VStack(spacing: 0) {
-                            // Active items first
-                            ForEach(store.activeRequests) { item in
-                                NavigationLink(value: item.id) {
-                                    ChatListRow(item: item)
+                        // Date-grouped items
+                        ForEach(groupedItems, id: \.key) { group in
+                            let isRecent = group.key == "Today" || group.key == "Yesterday"
+
+                            // Date separator
+                            dateSeparator(group.key, count: group.items.count, expanded: isRecent || expandedSections.contains(group.key)) {
+                                if !isRecent {
+                                    withAnimation {
+                                        if expandedSections.contains(group.key) {
+                                            expandedSections.remove(group.key)
+                                        } else {
+                                            expandedSections.insert(group.key)
+                                        }
+                                    }
                                 }
-                                .buttonStyle(.plain)
-                                divider
                             }
 
-                            // Discussions
-                            ForEach(store.discussions) { item in
-                                NavigationLink(value: item.id) {
-                                    ChatListRow(item: item)
+                            if isRecent || expandedSections.contains(group.key) {
+                                VStack(spacing: 1) {
+                                    ForEach(group.items) { item in
+                                        NavigationLink(value: item.id) {
+                                            ChatListRow(item: item)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
                                 }
-                                .buttonStyle(.plain)
-                                divider
-                            }
-
-                            // Feeds
-                            ForEach(store.todayFeeds) { item in
-                                NavigationLink(value: item.id) {
-                                    ChatListRow(item: item)
-                                }
-                                .buttonStyle(.plain)
-                                divider
-                            }
-
-                            // Done
-                            ForEach(store.doneItems.prefix(10)) { item in
-                                NavigationLink(value: item.id) {
-                                    ChatListRow(item: item)
-                                }
-                                .buttonStyle(.plain)
-                                divider
+                                .background(cardBg)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .padding(.horizontal, 12)
+                                .padding(.bottom, 8)
                             }
                         }
-                        .background(cardBg)
 
                         Spacer(minLength: 80)
                     }
@@ -145,18 +144,80 @@ struct HomeView: View {
             .sheet(isPresented: $showNewItem) {
                 NewItemSheet()
             }
-            .alert("Recall", isPresented: $showRecall) {
-                TextField("What do you want to recall?", text: $recallQuery)
-                Button("Search") {
-                    if !recallQuery.isEmpty {
-                        commands.recall(query: recallQuery)
-                        recallQuery = ""
-                    }
-                }
-                Button("Cancel", role: .cancel) { }
-            }
             .refreshable { sync.refresh() }
         }
+    }
+
+    // MARK: - Date Separator
+
+    private func dateSeparator(_ label: String, count: Int, expanded: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(label)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(waTextPri)
+                Text("\(count)")
+                    .font(.caption)
+                    .foregroundStyle(waTextSec)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(waCardBg)
+                    .clipShape(Capsule())
+                Spacer()
+                if label != "Today" && label != "Yesterday" {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(waTextSec)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Grouping
+
+    private var filteredItems: [MiraItem] {
+        if searchText.isEmpty {
+            let tenDaysAgo = Calendar.current.date(byAdding: .day, value: -10,
+                                                    to: Calendar.current.startOfDay(for: Date()))!
+            return store.allVisible.filter { $0.createdDate >= tenDaysAgo }
+        } else {
+            return store.search(searchText)
+        }
+    }
+
+    private var groupedItems: [(key: String, items: [MiraItem])] {
+        let cal = Calendar.current
+        var groups: [String: [MiraItem]] = [:]
+
+        for item in filteredItems {
+            let key: String
+            if cal.isDateInToday(item.createdDate) {
+                key = "Today"
+            } else if cal.isDateInYesterday(item.createdDate) {
+                key = "Yesterday"
+            } else {
+                let df = DateFormatter()
+                df.dateFormat = "MMM d"
+                key = df.string(from: item.createdDate)
+            }
+            groups[key, default: []].append(item)
+        }
+
+        // Sort: today first, then yesterday, then by date descending
+        let order = ["Today", "Yesterday"]
+        return groups
+            .sorted { a, b in
+                let ai = order.firstIndex(of: a.key) ?? 99
+                let bi = order.firstIndex(of: b.key) ?? 99
+                if ai != bi { return ai < bi }
+                let ad = a.value.first?.date ?? .distantPast
+                let bd = b.value.first?.date ?? .distantPast
+                return ad > bd
+            }
+            .map { (key: $0.key, items: $0.value.sorted { $0.date > $1.date }) }
     }
 
     private var statusPill: some View {
@@ -171,13 +232,9 @@ struct HomeView: View {
             }
         }
     }
-
-    private var divider: some View {
-        Divider().padding(.leading, 76)
-    }
 }
 
-// MARK: - Attention Banner (like WeChat pinned/unread highlight)
+// MARK: - Attention Banner
 
 struct AttentionBanner: View {
     let item: MiraItem
@@ -212,36 +269,36 @@ struct AttentionBanner: View {
     }
 }
 
-// MARK: - Chat List Row (WeChat style)
+// MARK: - Chat List Row
 
 struct ChatListRow: View {
     let item: MiraItem
 
     var body: some View {
         HStack(spacing: 12) {
-            // Avatar
+            // Avatar with type-specific color
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(avatarColor.opacity(0.15))
+                    .fill(itemColor.opacity(0.15))
                     .frame(width: 48, height: 48)
                 Image(systemName: avatarIcon)
                     .font(.system(size: 20))
-                    .foregroundStyle(avatarColor)
+                    .foregroundStyle(itemColor)
             }
 
             // Content
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(item.title)
-                        .font(.system(size: 16, weight: .regular))
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(waTextPri)
                         .lineLimit(1)
                     Spacer()
                     Text(timeString)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .font(.caption)
+                        .foregroundStyle(waTextSec)
                 }
                 HStack {
-                    // Status indicator for active items
                     if item.status == .working {
                         HStack(spacing: 3) {
                             ProgressView()
@@ -258,12 +315,13 @@ struct ChatListRow: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 12)
+        .background(itemColor.opacity(0.03))
     }
 
     private var previewText: some View {
         Group {
-            if let last = item.messages.last {
+            if let last = item.messages.last(where: { $0.kind != .statusCard }) {
                 if last.isAgent {
                     Text("Mira: \(cleanPreview(last))")
                 } else {
@@ -271,8 +329,8 @@ struct ChatListRow: View {
                 }
             }
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
+        .font(.subheadline)
+        .foregroundStyle(waTextSec)
         .lineLimit(1)
     }
 
@@ -285,7 +343,7 @@ struct ChatListRow: View {
                 Text("Working...")
             }
         }
-        .font(.caption)
+        .font(.subheadline)
         .foregroundStyle(.blue)
         .lineLimit(1)
     }
@@ -316,7 +374,18 @@ struct ChatListRow: View {
 
     private func cleanPreview(_ msg: ItemMessage) -> String {
         if msg.kind == .statusCard { return "" }
-        return String(msg.content.prefix(80))
+        return String(msg.content.prefix(100))
+    }
+
+    // Type-specific color for the left accent
+    private var itemColor: Color {
+        if item.id.contains("explore") { return colorExplore }
+        if item.id.contains("mira") { return colorMira }
+        if item.id.contains("zhesi") { return colorZhesi }
+        if item.id.contains("tetra") { return colorTetra }
+        if item.type == .request { return colorRequest }
+        if item.type == .discussion { return colorDiscuss }
+        return waTextSec
     }
 
     private var avatarIcon: String {
@@ -327,25 +396,12 @@ struct ChatListRow: View {
             return "arrow.up.circle"
         case .discussion: return "bubble.left.and.bubble.right"
         case .feed:
-            if item.tags.contains("briefing") { return "newspaper" }
-            if item.tags.contains("reflection") || item.tags.contains("philosophy") { return "sparkles" }
-            if item.tags.contains("journal") { return "book" }
-            if item.tags.contains("market") { return "chart.line.uptrend.xyaxis" }
+            if item.id.contains("explore") { return "globe" }
+            if item.id.contains("zhesi") { return "sparkles" }
+            if item.id.contains("tetra") { return "chart.line.uptrend.xyaxis" }
+            if item.id.contains("mira") { return "brain.head.profile" }
+            if item.id.contains("reflect") || item.id.contains("eval") { return "gauge.with.dots.needle.bottom.50percent" }
             return "doc.text"
-        }
-    }
-
-    private var avatarColor: Color {
-        switch item.type {
-        case .request:
-            if item.status == .done { return accentGreen }
-            if item.status == .failed { return .red }
-            return .blue
-        case .discussion: return .purple
-        case .feed:
-            if item.tags.contains("briefing") { return .blue }
-            if item.tags.contains("reflection") || item.tags.contains("philosophy") { return .orange }
-            return .secondary
         }
     }
 
@@ -355,7 +411,7 @@ struct ChatListRow: View {
         if s < 3600 { return "\(Int(s / 60))m ago" }
         if s < 86400 {
             let f = DateFormatter()
-            f.dateFormat = "h:mm a"
+            f.dateFormat = "HH:mm"
             return f.string(from: item.date)
         }
         if s < 172800 { return "Yesterday" }
@@ -365,7 +421,7 @@ struct ChatListRow: View {
     }
 }
 
-// MARK: - Shared Item Row (used in ThreadsView)
+// MARK: - Shared Item Row (used elsewhere)
 
 struct ItemRow: View {
     let item: MiraItem

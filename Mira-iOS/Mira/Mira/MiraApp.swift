@@ -4,6 +4,7 @@ import SwiftUI
 struct MiraApp: App {
     @State private var config = BridgeConfig()
     @State private var store = ItemStore()
+    @State private var todoStore: TodoStore?
     @State private var syncEngine: SyncEngine?
     @State private var commands: CommandWriter?
     @State private var notifications = NotificationManager()
@@ -24,10 +25,11 @@ struct MiraApp: App {
                         .onChange(of: config.isProfileSelected) { _, selected in
                             if selected && config.isSetup { startServices() }
                         }
-                } else if let engine = syncEngine, let cmds = commands {
+                } else if let engine = syncEngine, let cmds = commands, let todos = todoStore {
                     MainTabView()
                         .environment(config)
                         .environment(store)
+                        .environment(todos)
                         .environment(notifications)
                         .environment(engine)
                         .environment(cmds)
@@ -55,9 +57,13 @@ struct MiraApp: App {
         store.loadFromCache()
         let cmd = CommandWriter(config: config, store: store)
         let engine = SyncEngine(config: config, store: store)
+        let todos = TodoStore(config: config)
+        engine.commands = cmd
         commands = cmd
+        todoStore = todos
         syncEngine = engine
         engine.startPolling()
+        todos.refresh()
     }
 }
 
@@ -75,9 +81,9 @@ struct MainTabView: View {
                 }
                 .badge(store.needsAttention.count)
 
-            ThreadsView()
+            TodoView()
                 .tabItem {
-                    Label("Threads", systemImage: "bubble.left.and.text.bubble.right")
+                    Label("Todo", systemImage: "checklist")
                 }
 
             LibraryView()

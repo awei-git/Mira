@@ -220,7 +220,12 @@ Return a JSON object with this structure:
       "highlights": "what makes this shot interesting or worth keeping",
       "editing_notes": "suggested use — opening, b-roll, climax, transition point, etc",
       "action_intensity": "low/medium/high",
-      "audio_notes": "ambient sound, speech, music, silence, wind, etc"
+      "audio_notes": "ambient sound, speech, music, silence, wind, etc",
+      "lighting_type": "golden_hour/blue_hour/overcast/harsh_midday/indoor_warm/indoor_cool/night/underwater/mixed",
+      "color_temperature_est": "warm/neutral/cool",
+      "dominant_colors": ["top color 1", "top color 2", "top color 3"],
+      "usability_score": 4,
+      "best_segment": {"start": "MM:SS", "end": "MM:SS"}
     }
   ],
   "overall": {
@@ -232,6 +237,9 @@ Return a JSON object with this structure:
 }
 
 Quality: 1=unusable (blurry/dark/shaky), 3=ok, 5=stunning.
+usability_score: 1=unusable, 2=poor (shaky/out-of-focus), 3=ok, 4=good (sharp, stable, well-composed), 5=excellent.
+best_segment: the single best continuous segment within this shot for editing. If the whole shot is good, use the full start/end times.
+lighting_type: classify the dominant lighting condition.
 Be precise with timestamps. Identify EVERY distinct shot/scene change.
 Return ONLY the JSON, no other text."""
 
@@ -819,8 +827,519 @@ def analyze_all(input_dir: Path, work_dir: Path,
 
 
 # ---------------------------------------------------------------------------
+# V2: Supercut analysis (single Gemini call for all footage)
+# ---------------------------------------------------------------------------
+
+def build_proxy_supercut(clips: list[dict], work_dir: Path,
+                         scale: int = 720) -> Path | None:
+    """Build a 720p proxy supercut from triaged clips with burned-in labels.
+
+    Each clip gets its filename + index overlaid so Gemini can reference them.
+    Only includes clips that passed triage (not rejected).
+
+    Args:
+        clips: list of triage clip dicts (must have 'path' and 'file' keys)
+        work_dir: output directory
+        scale: target height (720 for analysis, saves upload time)
+
+    Returns:
+        Path to proxy supercut, or None on failure.
+    """
+    kept = [c for c in clips if not c.get("reject", False)]
+    if not kept:
+        log.warning("No clips to build supercut from")
+        return None
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    proxy_dir = work_dir / "proxy_clips"
+    proxy_dir.mkdir(exist_ok=True)
+
+    # Render each clip as a short proxy with label overlay
+    proxy_paths = []
+    clip_index = []  # track offset for timestamp mapping
+
+    for i, clip in enumerate(kept):
+        src = Path(clip["path"])
+        if not src.exists():
+            continue
+
+        out = proxy_dir / f"proxy_{i:04d}.mp4"
+        label = f"{clip['file']} [{i}]"
+        # Escape special chars for ffmpeg drawtext
+        label_safe = label.replace("'", "\\'").replace(":", "\\:")
+
+        dur = clip.get("info", {}).get("duration", 30)
+        # Cap each clip at 30s for the proxy (enough for Gemini to analyze)
+        max_dur = min(dur, 30)
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(src),
+            "-t", str(max_dur),
+            "-vf", (
+                f"scale=-2:{scale},"
+                f"drawtext=text='{label_safe}'"
+                f":fontcolor=white:fontsize=24:x=10:y=10"
+                f":borderw=2:bordercolor=black"
+                f":font=Helvetica"
+            ),
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-c:a", "aac", "-b:a", "64k", "-ac", "1",
+            "-r", "30", "-pix_fmt", "yuv420p",
+            str(out),
+        ]
+
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=60)
+            if out.exists() and out.stat().st_size > 1000:
+                proxy_paths.append(out)
+                clip_index.append({
+                    "idx": i,
+                    "file": clip["file"],
+                    "proxy_clip": out.name,
+                    "original_duration": dur,
+                    "proxy_duration": max_dur,
+                })
+        except Exception as e:
+            log.warning("Proxy render failed for %s: %s", clip["file"], e)
+
+    if not proxy_paths:
+        log.error("No proxy clips rendered")
+        return None
+
+    # Concat all proxies
+    concat_path = work_dir / "proxy_concat.txt"
+    with open(concat_path, "w") as f:
+        for p in proxy_paths:
+            f.write(f"file '{p}'\n")
+
+    supercut_path = work_dir / "proxy_supercut.mp4"
+    cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(concat_path),
+        "-c", "copy",
+        str(supercut_path),
+    ]
+
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=300)
+    except Exception as e:
+        log.error("Supercut concat failed: %s", e)
+        return None
+
+    if not supercut_path.exists():
+        return None
+
+    # Save clip index for timestamp mapping
+    index_path = work_dir / "proxy_clip_index.json"
+    # Compute running offsets
+    offset = 0.0
+    for entry in clip_index:
+        entry["supercut_offset"] = round(offset, 2)
+        offset += entry["proxy_duration"]
+
+    index_path.write_text(json.dumps(clip_index, indent=2, ensure_ascii=False))
+
+    size_mb = supercut_path.stat().st_size / (1024 * 1024)
+    log.info("Proxy supercut: %s (%.0f MB, %d clips, %.0fs)",
+             supercut_path, size_mb, len(proxy_paths), offset)
+
+    return supercut_path
+
+
+_SUPERCUT_ANALYSIS_PROMPT = """You are an expert video editor analyzing raw footage for editing.
+
+This is a supercut of multiple video clips concatenated together. Each clip has its filename and index burned in at the top-left corner (e.g. "DJI_20250819_082128_0060_D.MP4 [5]").
+
+Analyze ALL clips in this supercut. For each distinct clip (identified by the burned-in label), provide:
+
+Return a JSON object:
+{
+  "clips": [
+    {
+      "clip_idx": 0,
+      "source_file": "exact filename from label",
+      "description": "what's happening — people, actions, setting",
+      "location_type": "beach/park/indoor/street/restaurant/playground/etc",
+      "subjects": "people/child/family/landscape/food/etc",
+      "mood": "peaceful/exciting/contemplative/joyful/dramatic/playful/etc",
+      "quality": 4,
+      "usability_score": 4,
+      "camera_motion": "static/pan_left/pan_right/tilt_up/tilt_down/tracking/handheld",
+      "action_intensity": "low/medium/high",
+      "lighting_type": "golden_hour/overcast/indoor_warm/indoor_cool/night/harsh_midday",
+      "color_temperature_est": "warm/neutral/cool",
+      "highlights": "what makes this clip interesting or worth keeping",
+      "editing_notes": "suggested use — opening, b-roll, climax, emotional moment, etc",
+      "audio_notes": "speech, ambient, music, wind, silence, child laughing, etc",
+      "best_segment": {"start_pct": 0, "end_pct": 100}
+    }
+  ],
+  "overall": {
+    "dominant_mood": "the overall feel of this footage collection",
+    "content_type": "family/travel/event/nature/urban/etc",
+    "suggested_narrative": "how these clips could be assembled into a story (2-3 sentences)",
+    "best_clips": [0, 5, 12],
+    "groupings": [
+      {"name": "group name", "clip_indices": [0, 1, 2], "reason": "why they belong together"}
+    ]
+  }
+}
+
+Quality: 1=unusable, 2=poor, 3=ok, 4=good, 5=excellent.
+usability_score: 1=unusable (shaky/OOF), 2=poor, 3=ok, 4=good (sharp, stable), 5=excellent.
+best_segment: percentage range of the clip that's best for editing (0-100).
+
+Be thorough — analyze EVERY clip you can see. Return ONLY the JSON."""
+
+
+def analyze_supercut(supercut_path: Path, clip_index: list[dict],
+                     api_key: str, work_dir: Path) -> dict:
+    """Analyze a proxy supercut with a single Gemini Pro call.
+
+    Args:
+        supercut_path: path to the proxy supercut video
+        clip_index: list of clip metadata (from build_proxy_supercut)
+        api_key: Gemini API key
+        work_dir: where to save scene_log.json
+
+    Returns:
+        scene_log dict compatible with existing pipeline.
+    """
+    if not supercut_path.exists():
+        log.error("Supercut not found: %s", supercut_path)
+        return {"videos": [], "scenes": []}
+
+    # Upload supercut
+    file_uri = _upload_to_file_api(supercut_path, api_key)
+    if not file_uri:
+        log.error("Supercut upload failed")
+        return {"videos": [], "scenes": []}
+
+    # Single analysis call
+    endpoint = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_VIDEO_MODEL}:generateContent?key={api_key}"
+    )
+
+    payload = {
+        "contents": [{
+            "role": "user",
+            "parts": [
+                {
+                    "file_data": {
+                        "file_uri": file_uri,
+                        "mime_type": "video/mp4",
+                    }
+                },
+                {"text": _SUPERCUT_ANALYSIS_PROMPT},
+            ],
+        }],
+        "generationConfig": {
+            "maxOutputTokens": 16384,
+            "temperature": 0.2,
+        },
+    }
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint, data=body,
+        headers={"Content-Type": "application/json"},
+    )
+
+    analysis = {}
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+            usage = data.get("usageMetadata", {})
+            in_tok = usage.get("promptTokenCount", 0)
+            out_tok = usage.get("candidatesTokenCount", 0)
+            cost = in_tok * 1.25 / 1_000_000 + out_tok * 10.0 / 1_000_000
+            log.info("Supercut analysis: %d in / %d out tokens ($%.4f)",
+                     in_tok, out_tok, cost)
+
+            candidates = data.get("candidates", [])
+            if not candidates:
+                log.error("Gemini returned no candidates (possible safety block or empty response)")
+            else:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if not parts:
+                    log.error("Gemini returned empty parts (output may have been truncated)")
+                else:
+                    text = parts[0].get("text", "")
+                    if text:
+                        analysis = _parse_json_robust(text)
+                        if not analysis:
+                            log.error("Could not parse supercut analysis JSON")
+                    else:
+                        log.error("Gemini returned empty text")
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace")[:500]
+        log.error("Gemini supercut HTTP %d: %s", e.code, error_body)
+    except Exception as e:
+        log.error("Gemini supercut analysis failed: %s", e)
+
+    # Cleanup remote file
+    try:
+        parts = file_uri.rstrip("/").split("/")
+        if "files" in parts:
+            idx = parts.index("files")
+            file_name = "/".join(parts[idx:])
+            _delete_file(file_name, api_key)
+    except Exception:
+        pass
+
+    # Convert analysis to scene_log format
+    return _supercut_to_scene_log(analysis, clip_index, work_dir)
+
+
+def _supercut_to_scene_log(analysis: dict, clip_index: list[dict],
+                           work_dir: Path) -> dict:
+    """Convert supercut analysis JSON to standard scene_log format."""
+    all_videos = []
+    all_scenes = []
+
+    # Build lookup from clip_index
+    idx_lookup = {entry["idx"]: entry for entry in clip_index}
+
+    for clip_data in analysis.get("clips", []):
+        cidx = clip_data.get("clip_idx", -1)
+        src_file = clip_data.get("source_file", "")
+
+        # Find matching clip_index entry
+        index_entry = idx_lookup.get(cidx, {})
+        if not index_entry and src_file:
+            # Try matching by filename
+            for entry in clip_index:
+                if entry["file"] == src_file:
+                    index_entry = entry
+                    break
+
+        original_dur = index_entry.get("original_duration", 30)
+
+        # Convert best_segment percentages to timestamps
+        best_seg = clip_data.get("best_segment", {})
+        start_pct = best_seg.get("start_pct", 0) / 100
+        end_pct = best_seg.get("end_pct", 100) / 100
+        best_start = original_dur * start_pct
+        best_end = original_dur * end_pct
+
+        scene = {
+            "file": src_file or index_entry.get("file", f"clip_{cidx}"),
+            "clip_idx": cidx,
+            "timestamp": best_start,
+            "end_timestamp": best_end,
+            "timestamp_str": _format_ts(best_start),
+            "end_timestamp_str": _format_ts(best_end),
+            "description": clip_data.get("description", ""),
+            "location_type": clip_data.get("location_type", ""),
+            "subjects": clip_data.get("subjects", ""),
+            "mood": clip_data.get("mood", ""),
+            "quality": clip_data.get("quality", 3),
+            "usability_score": clip_data.get("usability_score", 3),
+            "camera_motion": clip_data.get("camera_motion", ""),
+            "action_intensity": clip_data.get("action_intensity", ""),
+            "lighting_type": clip_data.get("lighting_type", "mixed"),
+            "color_temperature_est": clip_data.get("color_temperature_est", "neutral"),
+            "highlights": clip_data.get("highlights", ""),
+            "notes": clip_data.get("editing_notes", ""),
+            "audio_notes": clip_data.get("audio_notes", ""),
+            "best_segment": {
+                "start": _format_ts(best_start),
+                "end": _format_ts(best_end),
+            },
+            "type": "supercut_native",
+        }
+        all_scenes.append(scene)
+
+        all_videos.append({
+            "file": scene["file"],
+            "path": index_entry.get("path", ""),
+            "duration": original_dur,
+            "analysis_mode": "supercut",
+        })
+
+    # Add overall analysis
+    overall = analysis.get("overall", {})
+    if overall:
+        all_scenes.append({
+            "file": "_overall",
+            "timestamp": -1,
+            "type": "overall_analysis",
+            "description": overall.get("suggested_narrative", ""),
+            "highlights": str(overall.get("best_clips", [])),
+            "notes": str(overall.get("groupings", [])),
+            "mood": overall.get("dominant_mood", ""),
+            "quality": 0,
+        })
+
+    # Sort by clip_idx
+    all_scenes.sort(key=lambda s: (s.get("clip_idx", 999), s.get("timestamp", 0)))
+
+    scene_log = {
+        "input_dir": "",
+        "video_count": len(all_videos),
+        "total_duration": sum(v.get("duration", 0) for v in all_videos),
+        "analysis_mode": "supercut",
+        "videos": all_videos,
+        "scenes": all_scenes,
+    }
+
+    # Save
+    log_path = work_dir / "scene_log.json"
+    log_path.write_text(json.dumps(scene_log, ensure_ascii=False, indent=2))
+    log.info("Scene log (supercut): %d clips analyzed", len(all_scenes) - 1)
+
+    return scene_log
+
+
+def analyze_all_v2(triage_result: dict, work_dir: Path,
+                   gemini_key: str) -> dict:
+    """V2 entry point: build supercut from triaged clips, analyze in batched calls.
+
+    Splits clips into batches of ~20 to keep each supercut under 5 minutes,
+    preventing Gemini from choking on very long videos.
+
+    Args:
+        triage_result: dict from triage.triage_all()
+        work_dir: working directory
+        gemini_key: Gemini API key
+
+    Returns:
+        scene_log dict compatible with existing pipeline.
+    """
+    kept_clips = [c for c in triage_result.get("clips", [])
+                  if not c.get("reject", False)]
+
+    if not kept_clips:
+        log.error("No clips passed triage")
+        return {"videos": [], "scenes": []}
+
+    log.info("=== Phase 1 (v2): Supercut analysis of %d clips ===", len(kept_clips))
+
+    # Check for cached scene_log
+    scene_log_path = work_dir / "scene_log.json"
+    if scene_log_path.exists():
+        log.info("Using cached scene_log")
+        return json.loads(scene_log_path.read_text())
+
+    # Split into batches of ~20 clips (each batch ~5 min of proxy)
+    _BATCH_SIZE = 20
+    batches = [kept_clips[i:i + _BATCH_SIZE]
+               for i in range(0, len(kept_clips), _BATCH_SIZE)]
+
+    all_videos = []
+    all_scenes = []
+
+    for batch_idx, batch in enumerate(batches):
+        log.info("Supercut batch %d/%d (%d clips)", batch_idx + 1, len(batches), len(batch))
+
+        batch_dir = work_dir / f"batch_{batch_idx}"
+        batch_dir.mkdir(exist_ok=True)
+
+        # Build proxy supercut for this batch
+        supercut_path = batch_dir / "proxy_supercut.mp4"
+        clip_index_path = batch_dir / "proxy_clip_index.json"
+
+        if supercut_path.exists() and clip_index_path.exists():
+            log.info("Using cached batch %d proxy", batch_idx)
+            clip_index = json.loads(clip_index_path.read_text())
+        else:
+            supercut_path = build_proxy_supercut(batch, batch_dir)
+            if not supercut_path:
+                log.warning("Batch %d supercut build failed, skipping", batch_idx)
+                continue
+            clip_index = json.loads(clip_index_path.read_text())
+
+        # Analyze this batch
+        batch_log = analyze_supercut(supercut_path, clip_index, gemini_key, batch_dir)
+
+        # Merge into combined result
+        for v in batch_log.get("videos", []):
+            all_videos.append(v)
+        for s in batch_log.get("scenes", []):
+            all_scenes.append(s)
+
+    # Sort scenes by clip_idx
+    all_scenes.sort(key=lambda s: (s.get("clip_idx", 999), s.get("timestamp", 0)))
+
+    scene_log = {
+        "input_dir": triage_result.get("input_dir", ""),
+        "video_count": len(all_videos),
+        "total_duration": sum(v.get("duration", 0) for v in all_videos),
+        "analysis_mode": "supercut_batched",
+        "videos": all_videos,
+        "scenes": all_scenes,
+    }
+
+    # Save combined scene_log
+    scene_log_path.write_text(json.dumps(scene_log, ensure_ascii=False, indent=2))
+    log.info("Scene log (batched supercut): %d clips analyzed in %d batches",
+             len([s for s in all_scenes if s.get("type") != "overall_analysis"]),
+             len(batches))
+
+    return scene_log
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _parse_json_robust(text: str) -> dict:
+    """Parse JSON from LLM output, handling common formatting issues."""
+    # Strip markdown fences
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1]
+    if text.endswith("```"):
+        text = text.rsplit("```", 1)[0]
+    text = text.strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Extract JSON object
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start >= 0 and end > start:
+        json_str = text[start:end]
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            pass
+
+        # Common fixes: trailing commas, unescaped newlines in strings
+        # Remove trailing commas before ] or }
+        import re as _re
+        fixed = _re.sub(r',\s*([}\]])', r'\1', json_str)
+        try:
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+
+        # Try line-by-line repair: skip lines that cause parse errors
+        # by finding the problematic line and removing it
+        lines = fixed.split("\n")
+        for attempt in range(5):
+            try:
+                return json.loads("\n".join(lines))
+            except json.JSONDecodeError as e:
+                if hasattr(e, 'lineno') and e.lineno <= len(lines):
+                    bad_line = e.lineno - 1
+                    log.warning("JSON repair: removing line %d: %s",
+                                bad_line, lines[bad_line][:80])
+                    lines.pop(bad_line)
+                else:
+                    break
+
+        log.error("JSON parse failed after repair attempts")
+    return {}
+
 
 def _format_ts(seconds: float) -> str:
     """Format seconds as HH:MM:SS or MM:SS."""

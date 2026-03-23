@@ -283,5 +283,11 @@
     "description": "Prevent and recover from claude_think timeouts in automated writing pipelines",
     "file": "writing-pipeline-timeout-handling.md",
     "created": "2026-03-18T23:23:11.583563"
+  },
+  {
+    "name": "selective-laziness-is-still-laziness",
+    "description": "High task completion rate does not excuse systematic avoidance of growth-oriented commitments",
+    "file": "selective-laziness-is-still-laziness.md",
+    "created": "2026-03-21T21:31:51.506519"
   }
 ]

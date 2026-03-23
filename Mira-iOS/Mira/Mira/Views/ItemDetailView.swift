@@ -131,9 +131,10 @@ struct MessageBubble: View {
         HStack(alignment: .bottom) {
             if message.isUser { Spacer(minLength: 50) }
             VStack(alignment: message.isUser ? .trailing : .leading, spacing: 2) {
-                Text(message.content)
+                Text(markdownContent)
                     .font(.body)
                     .foregroundStyle(Color(hex: 0xE9EDEF))
+                    .tint(Color(hex: 0x53BDEB))
                     .padding(.horizontal, 12)
                     .padding(.top, 8)
                     .padding(.bottom, 4)
@@ -155,6 +156,12 @@ struct MessageBubble: View {
             .shadow(color: .black.opacity(0.04), radius: 1, y: 1)
             if message.isAgent { Spacer(minLength: 50) }
         }
+    }
+
+    private var markdownContent: AttributedString {
+        (try? AttributedString(markdown: message.content,
+                               options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+        ?? AttributedString(message.content)
     }
 
     private var statusCardView: some View {

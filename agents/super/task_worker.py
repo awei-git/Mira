@@ -871,6 +871,14 @@ def main():
         log.info("Worker exiting (video)")
         return
 
+    # --- Check for in-progress photo session (stateful multi-round) ---
+    photo_state_file = workspace / "photo_state.json"
+    if photo_state_file.exists():
+        log.info("Resuming photo session (photo_state.json found)")
+        _handle_photo(workspace, args.task_id, msg_content, msg_sender, thread_id)
+        log.info("Worker exiting (photo)")
+        return
+
     # --- Check for approval (user confirms a pending action) ---
     if _is_approval(msg_content):
         pending_plan_file = workspace / "pending_plan.json"
@@ -988,6 +996,7 @@ If a previous round already produced content, reference it in your plan (e.g. us
 - analyst: Market analysis, competitive intelligence, trend detection, industry research, market sizing (has live web search)
 - math: Mathematical proofs, derivations, calculations, paper writing/review
 - video: Video editing — analyze footage, generate screenplay, cut highlights, mix music
+- photo: Photo editing — analyze photos, learn editing style, apply edits, generate Lightroom presets/LUTs, batch process
 - podcast: Generate audio from articles (TTS) AND publish podcast episodes to RSS feed (Apple Podcasts, Xiaoyuzhou). Handles the full podcast pipeline internally — do NOT use publish for anything podcast-related.
 - secret: PRIVATE MODE — runs entirely on local LLM (Ollama), nothing leaves this machine. Route here for: personal finance, health, legal, passwords, family matters, 隐私敏感内容, anything the user explicitly marks as private/secret/隐私/私密
 - general: Answer questions, search, analyze, code, file operations, anything else (has web browsing for research tasks)
@@ -1011,6 +1020,9 @@ Output ONLY a JSON array. Each element: {{"agent": "...", "instruction": "..."}}
 - "写一个Hello World发到substack" → [{{"agent": "writing", "instruction": "写一篇简短的Hello World文章"}}, {{"agent": "publish", "instruction": "将上一步写好的文章发布到Substack"}}]
 - "分析一下AI agent市场" → [{{"agent": "analyst", "instruction": "分析2026年AI agent市场的竞争格局：主要玩家、市场份额估算、战略差异化点和近期趋势"}}]
 - "帮我剪这些旅游视频 /path/to/videos" → [{{"agent": "video", "instruction": "剪辑 /path/to/videos 里的视频，生成3-5分钟精彩集锦"}}]
+- "帮我修这张照片 /path/to/photo.jpg" → [{{"agent": "photo", "instruction": "分析并修图 /path/to/photo.jpg"}}]
+- "学习我的修图风格" → [{{"agent": "photo", "instruction": "从参考图学习用户的修图风格"}}]
+- "批量修这个文件夹的照片" → [{{"agent": "photo", "instruction": "批量修图，应用已学习的风格"}}]
 - "把自由意志那篇发到substack" → [{{"agent": "publish", "instruction": "将'自由意志'文章发布到Substack"}}]
 - "帮我算一下税" → [{{"agent": "secret", "instruction": "帮用户计算税务（隐私模式，本地处理）"}}]
 - "private: review my medical results" → [{{"agent": "secret", "instruction": "Review the user's medical results (private mode, local only)"}}]
@@ -1030,7 +1042,7 @@ JSON:"""
             if match:
                 steps = json.loads(match.group())
                 # Validate
-                valid_agents = {"briefing", "writing", "publish", "analyst", "video", "podcast", "math", "secret", "general", "clarify"}
+                valid_agents = {"briefing", "writing", "publish", "analyst", "video", "photo", "podcast", "math", "secret", "general", "clarify"}
                 validated = []
                 for s in steps:
                     if isinstance(s, dict) and s.get("agent") in valid_agents:
@@ -1067,6 +1079,7 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
             "publish": ("Publishing...", "paperplane"),
             "analyst": ("Analyzing...", "chart.bar"),
             "video": ("Processing video...", "film"),
+            "photo": ("Editing photo...", "camera"),
             "podcast": ("Generating audio...", "waveform"),
             "general": ("Working...", "gear"),
             "secret": ("Private mode...", "lock.shield"),
@@ -1098,6 +1111,9 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
 
         elif agent == "video":
             _handle_video(workspace, task_id, instruction, sender, thread_id)
+
+        elif agent == "photo":
+            _handle_photo(workspace, task_id, instruction, sender, thread_id)
 
         elif agent == "podcast":
             _handle_podcast(workspace, task_id, instruction, sender, thread_id)
@@ -1516,6 +1532,40 @@ def _handle_video(workspace: Path, task_id: str, content: str,
 
 
 # ---------------------------------------------------------------------------
+# Photo handler — photo editing pipeline
+# ---------------------------------------------------------------------------
+
+def _handle_photo(workspace: Path, task_id: str, content: str,
+                  sender: str, thread_id: str):
+    """Handle photo editing requests via the photo agent."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "photo_handler", str(_AGENTS_DIR / "photo" / "handler.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        photo_handle = mod.handle
+
+        log.info("Running photo pipeline for task %s", task_id)
+        summary = photo_handle(workspace, task_id, content, sender, thread_id)
+    except Exception as e:
+        log.error("Photo handler crashed: %s", e)
+        _write_result(workspace, task_id, "error", f"修图失败: {e}")
+        return
+
+    if summary:
+        tags = ["photo", "editing"]
+        _write_result(workspace, task_id, "done", summary, tags=tags)
+        log.info("Photo task %s completed", task_id)
+
+        if thread_id:
+            _update_thread_memory(thread_id, content, summary)
+    else:
+        _write_result(workspace, task_id, "error", "修图处理返回空结果")
+        log.error("Photo task %s failed: empty response", task_id)
+
+
+# ---------------------------------------------------------------------------
 # Podcast handler — article → audio
 # ---------------------------------------------------------------------------
 
@@ -1802,10 +1852,13 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
     }
     if tags:
         result["tags"] = tags
-    (workspace / "result.json").write_text(
+    result_path = workspace / "result.json"
+    tmp_path = result_path.with_suffix(".tmp")
+    tmp_path.write_text(
         json.dumps(result, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    tmp_path.rename(result_path)
 
     # --- Archive conversation as episode for long-term recall ---
     if status in ("done", "completed", "error", "failed"):

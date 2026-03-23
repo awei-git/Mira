@@ -236,37 +236,6 @@ extension MiraItem {
     }
 }
 
-// MARK: - Todo
-
-struct MiraTodo: Codable, Identifiable, Equatable {
-    let id: String
-    var title: String
-    var priority: TodoPriority
-    var status: TodoStatus
-    var createdAt: String
-    var updatedAt: String
-    var response: String?       // agent's response when done
-
-    enum CodingKeys: String, CodingKey {
-        case id, title, priority, status
-        case createdAt = "created_at"
-        case updatedAt = "updated_at"
-        case response
-    }
-
-    var date: Date {
-        ISO8601DateFormatter.shared.date(from: updatedAt) ?? .distantPast
-    }
-}
-
-enum TodoPriority: String, Codable, CaseIterable {
-    case high, medium, low
-}
-
-enum TodoStatus: String, Codable {
-    case pending, working, done
-}
-
 // MARK: - Profile
 
 struct MiraProfile: Codable, Identifiable, Hashable {
@@ -285,6 +254,79 @@ struct MiraProfile: Codable, Identifiable, Hashable {
 
 struct MiraProfiles: Codable {
     let profiles: [MiraProfile]
+}
+
+// MARK: - Todo
+
+struct MiraTodo: Codable, Identifiable, Equatable {
+    let id: String
+    var title: String
+    var priority: String   // high, medium, low
+    var status: String     // pending, working, done
+    var tags: [String]
+    var createdAt: String
+    var updatedAt: String
+    var followups: [TodoFollowup]
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, priority, status, tags
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case followups
+    }
+
+    init(id: String, title: String, priority: String = "medium", status: String = "pending",
+         tags: [String] = [], createdAt: String = "", updatedAt: String = "", followups: [TodoFollowup] = []) {
+        self.id = id; self.title = title; self.priority = priority; self.status = status
+        self.tags = tags; self.createdAt = createdAt; self.updatedAt = updatedAt; self.followups = followups
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        priority = try c.decodeIfPresent(String.self, forKey: .priority) ?? "medium"
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? "pending"
+        tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+        updatedAt = try c.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
+        followups = try c.decodeIfPresent([TodoFollowup].self, forKey: .followups) ?? []
+    }
+
+    var date: Date {
+        ISO8601DateFormatter.shared.date(from: updatedAt) ?? .distantPast
+    }
+
+    var priorityOrder: Int {
+        switch priority {
+        case "high": return 0
+        case "medium": return 1
+        case "low": return 2
+        default: return 1
+        }
+    }
+}
+
+struct TodoFollowup: Codable, Equatable {
+    let content: String
+    let source: String    // "agent" or "user"
+    let timestamp: String
+
+    var date: Date {
+        ISO8601DateFormatter.shared.date(from: timestamp) ?? .distantPast
+    }
+}
+
+// MARK: - Command Ledger (agent → app delivery confirmation)
+
+struct CommandLedger: Codable {
+    let processed: [String: String]  // command_id → processed_timestamp
+    let updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case processed
+        case updatedAt = "updated_at"
+    }
 }
 
 // MARK: - ISO8601 Shared Formatter

@@ -1,124 +1,124 @@
 {
   "processes": {
     "writing-pipeline": {
-      "last_exit": "2026-03-20T18:19:40.394640",
+      "last_exit": "2026-03-23T08:37:24.088875",
       "consecutive_failures": 0,
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T18:17:37.592879",
-          "ok": true,
-          "duration_s": 168
-        },
-        {
-          "ts": "2026-03-20T18:17:37.608569",
-          "ok": true,
-          "duration_s": 168
-        },
-        {
-          "ts": "2026-03-20T18:18:08.283845",
-          "ok": true,
-          "duration_s": 199
-        },
-        {
-          "ts": "2026-03-20T18:18:08.299746",
-          "ok": true,
-          "duration_s": 199
-        },
-        {
-          "ts": "2026-03-20T18:18:38.942905",
+          "ts": "2026-03-23T08:35:36.620996",
           "ok": true,
           "duration_s": 229
         },
         {
-          "ts": "2026-03-20T18:18:38.961105",
+          "ts": "2026-03-23T08:35:36.634546",
           "ok": true,
           "duration_s": 229
         },
         {
-          "ts": "2026-03-20T18:19:09.682564",
+          "ts": "2026-03-23T08:36:07.288318",
           "ok": true,
           "duration_s": 260
         },
         {
-          "ts": "2026-03-20T18:19:09.692850",
+          "ts": "2026-03-23T08:36:07.305782",
           "ok": true,
           "duration_s": 260
         },
         {
-          "ts": "2026-03-20T18:19:40.381909",
+          "ts": "2026-03-23T08:36:37.957727",
           "ok": true,
           "duration_s": 291
         },
         {
-          "ts": "2026-03-20T18:19:40.394640",
+          "ts": "2026-03-23T08:36:37.975576",
           "ok": true,
           "duration_s": 291
+        },
+        {
+          "ts": "2026-03-23T08:37:08.644309",
+          "ok": true,
+          "duration_s": 321
+        },
+        {
+          "ts": "2026-03-23T08:37:08.662954",
+          "ok": true,
+          "duration_s": 321
+        },
+        {
+          "ts": "2026-03-23T08:37:24.071337",
+          "ok": true,
+          "duration_s": 15
+        },
+        {
+          "ts": "2026-03-23T08:37:24.088875",
+          "ok": true,
+          "duration_s": 15
         }
       ],
-      "last_dispatch": "2026-03-20T18:14:49.198970",
-      "last_pid": 50060,
-      "last_success": "2026-03-20T18:19:40.394640"
+      "last_dispatch": "2026-03-23T08:37:08.668776",
+      "last_pid": 63763,
+      "last_success": "2026-03-23T08:37:24.088875"
     },
     "skill-study-video": {
-      "last_exit": "2026-03-20T18:19:40.397709",
+      "last_exit": "2026-03-23T00:26:30.517443",
       "consecutive_failures": 0,
-      "last_success": "2026-03-20T18:19:40.397709",
+      "last_success": "2026-03-23T00:26:30.517443",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T18:17:37.599937",
+          "ts": "2026-03-23T00:22:09.520201",
           "ok": true,
-          "duration_s": 122
+          "duration_s": 5100
         },
         {
-          "ts": "2026-03-20T18:17:37.612505",
+          "ts": "2026-03-23T00:22:40.175398",
           "ok": true,
-          "duration_s": 122
+          "duration_s": 5131
         },
         {
-          "ts": "2026-03-20T18:18:08.290506",
+          "ts": "2026-03-23T00:23:10.844715",
           "ok": true,
-          "duration_s": 153
+          "duration_s": 5162
         },
         {
-          "ts": "2026-03-20T18:18:08.303566",
+          "ts": "2026-03-23T00:23:26.505906",
           "ok": true,
-          "duration_s": 153
+          "duration_s": 5177
         },
         {
-          "ts": "2026-03-20T18:18:38.950607",
+          "ts": "2026-03-23T00:23:57.156690",
           "ok": true,
-          "duration_s": 184
+          "duration_s": 5208
         },
         {
-          "ts": "2026-03-20T18:18:38.965295",
+          "ts": "2026-03-23T00:24:27.816908",
           "ok": true,
-          "duration_s": 184
+          "duration_s": 5239
         },
         {
-          "ts": "2026-03-20T18:19:09.685893",
+          "ts": "2026-03-23T00:24:58.493639",
           "ok": true,
-          "duration_s": 214
+          "duration_s": 5269
         },
         {
-          "ts": "2026-03-20T18:19:09.696084",
+          "ts": "2026-03-23T00:25:29.147337",
           "ok": true,
-          "duration_s": 214
+          "duration_s": 5300
         },
         {
-          "ts": "2026-03-20T18:19:40.386465",
+          "ts": "2026-03-23T00:25:59.806645",
           "ok": true,
-          "duration_s": 245
+          "duration_s": 5331
         },
         {
-          "ts": "2026-03-20T18:19:40.397709",
+          "ts": "2026-03-23T00:26:30.517443",
           "ok": true,
-          "duration_s": 245
+          "duration_s": 5361
         }
       ],
-      "last_dispatch": "2026-03-20T18:15:34.886133",
-      "last_pid": 50887
+      "last_dispatch": "2026-03-22T22:57:08.638825",
+      "last_pid": 59501
     },
     "explore": {
       "last_exit": "2026-03-19T23:16:17.568724",
@@ -179,314 +179,304 @@
       ]
     },
     "analyst-1800": {
-      "last_exit": "2026-03-20T18:19:40.380351",
+      "last_exit": "2026-03-20T19:18:41.769228",
       "consecutive_failures": 0,
-      "last_success": "2026-03-20T18:19:40.380351",
+      "last_success": "2026-03-20T19:18:41.769228",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T18:15:04.208401",
+          "ts": "2026-03-20T19:14:05.887761",
           "ok": true,
-          "duration_s": 874
+          "duration_s": 4415
         },
         {
-          "ts": "2026-03-20T18:15:34.862776",
+          "ts": "2026-03-20T19:14:36.523786",
           "ok": true,
-          "duration_s": 904
+          "duration_s": 4446
         },
         {
-          "ts": "2026-03-20T18:16:05.530596",
+          "ts": "2026-03-20T19:15:07.194637",
           "ok": true,
-          "duration_s": 935
+          "duration_s": 4477
         },
         {
-          "ts": "2026-03-20T18:16:36.211553",
+          "ts": "2026-03-20T19:15:37.821727",
           "ok": true,
-          "duration_s": 966
+          "duration_s": 4507
         },
         {
-          "ts": "2026-03-20T18:17:06.893832",
+          "ts": "2026-03-20T19:16:08.502058",
           "ok": true,
-          "duration_s": 996
+          "duration_s": 4538
         },
         {
-          "ts": "2026-03-20T18:17:37.590343",
+          "ts": "2026-03-20T19:16:39.137174",
           "ok": true,
-          "duration_s": 1027
+          "duration_s": 4568
         },
         {
-          "ts": "2026-03-20T18:18:08.280555",
+          "ts": "2026-03-20T19:17:09.806456",
           "ok": true,
-          "duration_s": 1058
+          "duration_s": 4599
         },
         {
-          "ts": "2026-03-20T18:18:38.938602",
+          "ts": "2026-03-20T19:17:40.465790",
           "ok": true,
-          "duration_s": 1088
+          "duration_s": 4630
         },
         {
-          "ts": "2026-03-20T18:19:09.680694",
+          "ts": "2026-03-20T19:18:11.130234",
           "ok": true,
-          "duration_s": 1119
+          "duration_s": 4660
         },
         {
-          "ts": "2026-03-20T18:19:40.380351",
+          "ts": "2026-03-20T19:18:41.769228",
           "ok": true,
-          "duration_s": 1150
+          "duration_s": 4691
         }
       ],
       "last_dispatch": "2026-03-20T18:00:30.171343",
       "last_pid": 34223
     },
     "substack-notes": {
-      "last_exit": "2026-03-20T18:18:38.941503",
+      "last_exit": "2026-03-22T22:25:54.232947",
       "consecutive_failures": 0,
-      "last_success": "2026-03-20T18:18:38.941503",
+      "last_success": "2026-03-22T22:25:54.232947",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T18:14:18.489799",
+          "ts": "2026-03-22T22:21:33.262766",
           "ok": true,
-          "duration_s": 4399
+          "duration_s": 4832
         },
         {
-          "ts": "2026-03-20T18:14:49.177405",
+          "ts": "2026-03-22T22:22:04.193236",
           "ok": true,
-          "duration_s": 4430
+          "duration_s": 4863
         },
         {
-          "ts": "2026-03-20T18:15:04.209772",
+          "ts": "2026-03-22T22:22:34.835193",
           "ok": true,
-          "duration_s": 4445
+          "duration_s": 4894
         },
         {
-          "ts": "2026-03-20T18:15:34.864148",
+          "ts": "2026-03-22T22:23:05.500748",
           "ok": true,
-          "duration_s": 4476
+          "duration_s": 4925
         },
         {
-          "ts": "2026-03-20T18:16:05.531862",
+          "ts": "2026-03-22T22:23:36.144605",
           "ok": true,
-          "duration_s": 4506
+          "duration_s": 4955
         },
         {
-          "ts": "2026-03-20T18:16:36.212937",
+          "ts": "2026-03-22T22:24:06.778983",
           "ok": true,
-          "duration_s": 4537
+          "duration_s": 4986
         },
         {
-          "ts": "2026-03-20T18:17:06.895278",
+          "ts": "2026-03-22T22:24:37.648622",
           "ok": true,
-          "duration_s": 4568
+          "duration_s": 5017
         },
         {
-          "ts": "2026-03-20T18:17:37.591683",
+          "ts": "2026-03-22T22:25:08.581954",
           "ok": true,
-          "duration_s": 4598
+          "duration_s": 5048
         },
         {
-          "ts": "2026-03-20T18:18:08.282268",
+          "ts": "2026-03-22T22:25:23.614133",
           "ok": true,
-          "duration_s": 4629
+          "duration_s": 5063
         },
         {
-          "ts": "2026-03-20T18:18:38.941503",
+          "ts": "2026-03-22T22:25:54.232947",
           "ok": true,
-          "duration_s": 4660
+          "duration_s": 5093
         }
       ],
-      "last_dispatch": "2026-03-20T17:00:58.836759",
-      "last_pid": 70155
+      "last_dispatch": "2026-03-22T21:01:00.467098",
+      "last_pid": 42978
     },
     "analyst-0700": {
-      "last_exit": "2026-03-20T08:46:35.174724",
+      "last_exit": "2026-03-23T08:27:41.262828",
       "consecutive_failures": 0,
-      "last_success": "2026-03-20T08:46:35.174724",
+      "last_success": "2026-03-23T08:27:41.262828",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T08:42:14.936843",
+          "ts": "2026-03-23T08:23:20.435607",
           "ok": true,
-          "duration_s": 3345
+          "duration_s": 4971
         },
         {
-          "ts": "2026-03-20T08:42:45.550627",
+          "ts": "2026-03-23T08:23:51.097094",
           "ok": true,
-          "duration_s": 3375
+          "duration_s": 5002
         },
         {
-          "ts": "2026-03-20T08:43:16.191743",
+          "ts": "2026-03-23T08:24:21.765398",
           "ok": true,
-          "duration_s": 3406
+          "duration_s": 5033
         },
         {
-          "ts": "2026-03-20T08:43:46.821397",
+          "ts": "2026-03-23T08:24:52.449925",
           "ok": true,
-          "duration_s": 3436
+          "duration_s": 5063
         },
         {
-          "ts": "2026-03-20T08:44:17.461315",
+          "ts": "2026-03-23T08:25:23.119193",
           "ok": true,
-          "duration_s": 3467
+          "duration_s": 5094
         },
         {
-          "ts": "2026-03-20T08:44:48.095618",
+          "ts": "2026-03-23T08:25:53.787540",
           "ok": true,
-          "duration_s": 3498
+          "duration_s": 5125
         },
         {
-          "ts": "2026-03-20T08:45:18.713757",
+          "ts": "2026-03-23T08:26:24.457150",
           "ok": true,
-          "duration_s": 3528
+          "duration_s": 5155
         },
         {
-          "ts": "2026-03-20T08:45:33.912517",
+          "ts": "2026-03-23T08:26:39.933446",
           "ok": true,
-          "duration_s": 3544
+          "duration_s": 5171
         },
         {
-          "ts": "2026-03-20T08:46:04.542268",
+          "ts": "2026-03-23T08:27:10.592753",
           "ok": true,
-          "duration_s": 3574
+          "duration_s": 5201
         },
         {
-          "ts": "2026-03-20T08:46:35.174724",
+          "ts": "2026-03-23T08:27:41.262828",
           "ok": true,
-          "duration_s": 3605
+          "duration_s": 5232
         }
       ],
-      "last_dispatch": "2026-03-20T07:46:29.851363",
-      "last_pid": 2030
+      "last_dispatch": "2026-03-23T07:00:28.674365",
+      "last_pid": 62238
     },
     "explore-substack_construction_physics_substack_experimental_history": {
-      "last_exit": "2026-03-20T17:18:36.626938",
+      "last_exit": "2026-03-22T17:24:53.317868",
       "consecutive_failures": 0,
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T17:14:16.005839",
+          "ts": "2026-03-22T17:20:32.149075",
           "ok": true,
-          "duration_s": 5856
+          "duration_s": 4783
         },
         {
-          "ts": "2026-03-20T17:14:46.655101",
+          "ts": "2026-03-22T17:21:02.857108",
           "ok": true,
-          "duration_s": 5887
+          "duration_s": 4814
         },
         {
-          "ts": "2026-03-20T17:15:17.288631",
+          "ts": "2026-03-22T17:21:33.591200",
           "ok": true,
-          "duration_s": 5918
+          "duration_s": 4845
         },
         {
-          "ts": "2026-03-20T17:15:47.973312",
+          "ts": "2026-03-22T17:22:04.260912",
           "ok": true,
-          "duration_s": 5948
+          "duration_s": 4875
         },
         {
-          "ts": "2026-03-20T17:16:03.324077",
+          "ts": "2026-03-22T17:22:34.885560",
           "ok": true,
-          "duration_s": 5964
+          "duration_s": 4906
         },
         {
-          "ts": "2026-03-20T17:16:33.973499",
+          "ts": "2026-03-22T17:23:05.528491",
           "ok": true,
-          "duration_s": 5994
+          "duration_s": 4937
         },
         {
-          "ts": "2026-03-20T17:17:04.641658",
+          "ts": "2026-03-22T17:23:36.186242",
           "ok": true,
-          "duration_s": 6025
+          "duration_s": 4967
         },
         {
-          "ts": "2026-03-20T17:17:35.297735",
+          "ts": "2026-03-22T17:24:06.800090",
           "ok": true,
-          "duration_s": 6056
+          "duration_s": 4998
         },
         {
-          "ts": "2026-03-20T17:18:05.964192",
+          "ts": "2026-03-22T17:24:37.447315",
           "ok": true,
-          "duration_s": 6086
+          "duration_s": 5028
         },
         {
-          "ts": "2026-03-20T17:18:36.626938",
+          "ts": "2026-03-22T17:24:53.317868",
           "ok": true,
-          "duration_s": 6117
+          "duration_s": 5044
         }
       ],
-      "last_dispatch": "2026-03-20T15:36:39.045776",
-      "last_pid": 82756,
-      "last_success": "2026-03-20T17:18:36.626938"
+      "last_dispatch": "2026-03-22T16:00:48.501669",
+      "last_pid": 44132,
+      "last_success": "2026-03-22T17:24:53.317868"
     },
     "substack-comments": {
-      "last_exit": "2026-03-20T18:19:40.383463",
-      "consecutive_failures": 491,
-      "last_failure_reason": "2026-03-20 18:19:09,947 [ERROR] Comment check failed: [Errno 2] No such file or directory: '/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Bridge/tasks/substack_posts.json'",
+      "last_exit": "2026-03-23T08:37:24.075601",
+      "consecutive_failures": 0,
+      "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T18:14:49.180980",
-          "ok": false,
-          "duration_s": 6943,
-          "reason": "2026-03-20 16:19:05,673 [ERROR] Comment check failed: [Errno 2] No such file or directory: '/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Bridge/tasks/substack_posts.json'"
+          "ts": "2026-03-23T08:33:03.259500",
+          "ok": true,
+          "duration_s": 1963
         },
         {
-          "ts": "2026-03-20T18:15:04.213328",
-          "ok": false,
-          "duration_s": 6958,
-          "reason": "2026-03-20 16:19:05,673 [ERROR] Comment check failed: [Errno 2] No such file or directory: '/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Bridge/tasks/substack_posts.json'"
+          "ts": "2026-03-23T08:33:33.951523",
+          "ok": true,
+          "duration_s": 1994
         },
         {
-          "ts": "2026-03-20T18:15:34.867639",
-          "ok": false,
-          "duration_s": 6989,
-          "reason": "2026-03-20 16:19:05,673 [ERROR] Comment check failed: [Errno 2] No such file or directory: '/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Bridge/tasks/substack_posts.json'"
+          "ts": "2026-03-23T08:34:04.632015",
+          "ok": true,
+          "duration_s": 2025
         },
         {
-          "ts": "2026-03-20T18:16:05.535433",
-          "ok": false,
-          "duration_s": 7020,
-          "reason": "2026-03-20 16:19:05,673 [ERROR] Comment check failed: [Errno 2] No such file or directory: '/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Bridge/tasks/substack_posts.json'"
+          "ts": "2026-03-23T08:34:35.288142",
+          "ok": true,
+          "duration_s": 2056
         },
         {
-          "ts": "2026-03-20T18:16:36.216924",
-          "ok": false,
-          "duration_s": 7050,
-          "reason": "2026-03-20 16:19:05,673 [ERROR] Comment check failed: [Errno 2] No such file or directory: '/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Bridge/tasks/substack_posts.json'"
+          "ts": "2026-03-23T08:35:05.957407",
+          "ok": true,
+          "duration_s": 2086
         },
         {
-          "ts": "2026-03-20T18:17:06.899798",
-          "ok": false,
-          "duration_s": 7081,
-          "reason": "2026-03-20 16:19:05,673 [ERROR] Comment check failed: [Errno 2] No such file or directory: '/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Bridge/tasks/substack_posts.json'"
+          "ts": "2026-03-23T08:35:36.625387",
+          "ok": true,
+          "duration_s": 2117
         },
         {
-          "ts": "2026-03-20T18:17:37.595795",
-          "ok": false,
-          "duration_s": 7112,
-          "reason": "2026-03-20 16:19:05,673 [ERROR] Comment check failed: [Errno 2] No such file or directory: '/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Bridge/tasks/substack_posts.json'"
+          "ts": "2026-03-23T08:36:07.292444",
+          "ok": true,
+          "duration_s": 2148
         },
         {
-          "ts": "2026-03-20T18:18:08.286560",
-          "ok": false,
-          "duration_s": 7142,
-          "reason": "2026-03-20 16:19:05,673 [ERROR] Comment check failed: [Errno 2] No such file or directory: '/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Bridge/tasks/substack_posts.json'"
+          "ts": "2026-03-23T08:36:37.961969",
+          "ok": true,
+          "duration_s": 2178
         },
         {
-          "ts": "2026-03-20T18:18:38.946784",
-          "ok": false,
-          "duration_s": 7173,
-          "reason": "2026-03-20 16:19:05,673 [ERROR] Comment check failed: [Errno 2] No such file or directory: '/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Bridge/tasks/substack_posts.json'"
+          "ts": "2026-03-23T08:37:08.649074",
+          "ok": true,
+          "duration_s": 2209
         },
         {
-          "ts": "2026-03-20T18:19:40.383463",
-          "ok": false,
-          "duration_s": 30,
-          "reason": "2026-03-20 18:19:09,947 [ERROR] Comment check failed: [Errno 2] No such file or directory: '/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Bridge/tasks/substack_posts.json'"
+          "ts": "2026-03-23T08:37:24.075601",
+          "ok": true,
+          "duration_s": 2224
         }
       ],
-      "last_dispatch": "2026-03-20T18:19:09.699786",
-      "last_pid": 54662,
-      "last_success": "2026-03-20T14:18:27.602336"
+      "last_dispatch": "2026-03-23T08:00:19.284058",
+      "last_pid": 25084,
+      "last_success": "2026-03-23T08:37:24.075601"
     },
     "podcast-en-the-half-life-of-a-benchmark": {
       "last_exit": "2026-03-19T23:16:17.599089",
@@ -605,124 +595,124 @@
       ]
     },
     "idle-think": {
-      "last_exit": "2026-03-20T18:19:40.401133",
+      "last_exit": "2026-03-23T08:37:24.097803",
       "consecutive_failures": 0,
-      "last_success": "2026-03-20T18:19:40.401133",
+      "last_success": "2026-03-23T08:37:24.097803",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T18:17:06.902812",
+          "ts": "2026-03-23T08:34:35.292354",
           "ok": true,
-          "duration_s": 61
+          "duration_s": 321
         },
         {
-          "ts": "2026-03-20T18:17:06.919933",
+          "ts": "2026-03-23T08:34:35.310594",
           "ok": true,
-          "duration_s": 61
+          "duration_s": 321
         },
         {
-          "ts": "2026-03-20T18:17:37.598513",
+          "ts": "2026-03-23T08:36:07.296649",
           "ok": true,
-          "duration_s": 92
+          "duration_s": 91
         },
         {
-          "ts": "2026-03-20T18:18:08.289282",
+          "ts": "2026-03-23T08:36:07.315734",
+          "ok": true,
+          "duration_s": 91
+        },
+        {
+          "ts": "2026-03-23T08:36:37.966110",
           "ok": true,
           "duration_s": 122
         },
         {
-          "ts": "2026-03-20T18:18:38.949207",
+          "ts": "2026-03-23T08:36:37.984576",
+          "ok": true,
+          "duration_s": 122
+        },
+        {
+          "ts": "2026-03-23T08:37:08.653613",
           "ok": true,
           "duration_s": 153
         },
         {
-          "ts": "2026-03-20T18:18:38.969711",
+          "ts": "2026-03-23T08:37:08.675302",
           "ok": true,
           "duration_s": 153
         },
         {
-          "ts": "2026-03-20T18:19:09.684168",
+          "ts": "2026-03-23T08:37:24.079756",
           "ok": true,
-          "duration_s": 184
+          "duration_s": 168
         },
         {
-          "ts": "2026-03-20T18:19:09.704642",
+          "ts": "2026-03-23T08:37:24.097803",
           "ok": true,
-          "duration_s": 184
-        },
-        {
-          "ts": "2026-03-20T18:19:40.384780",
-          "ok": true,
-          "duration_s": 214
-        },
-        {
-          "ts": "2026-03-20T18:19:40.401133",
-          "ok": true,
-          "duration_s": 214
+          "duration_s": 168
         }
       ],
-      "last_dispatch": "2026-03-20T18:16:05.557658",
-      "last_pid": 51383
+      "last_dispatch": "2026-03-23T08:34:35.316130",
+      "last_pid": 61131
     },
     "zhesi": {
-      "last_exit": "2026-03-20T10:46:41.602716",
+      "last_exit": "2026-03-22T11:23:47.395918",
       "consecutive_failures": 0,
-      "last_success": "2026-03-20T10:46:41.602716",
+      "last_success": "2026-03-22T11:23:47.395918",
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T10:42:21.308345",
+          "ts": "2026-03-22T11:19:25.616892",
           "ok": true,
-          "duration_s": 4339
+          "duration_s": 6563
         },
         {
-          "ts": "2026-03-20T10:42:51.945444",
+          "ts": "2026-03-22T11:19:40.938225",
           "ok": true,
-          "duration_s": 4369
+          "duration_s": 6579
         },
         {
-          "ts": "2026-03-20T10:43:22.599046",
+          "ts": "2026-03-22T11:20:11.594569",
           "ok": true,
-          "duration_s": 4400
+          "duration_s": 6609
         },
         {
-          "ts": "2026-03-20T10:43:37.765577",
+          "ts": "2026-03-22T11:20:42.239752",
           "ok": true,
-          "duration_s": 4415
+          "duration_s": 6640
         },
         {
-          "ts": "2026-03-20T10:44:08.408904",
+          "ts": "2026-03-22T11:21:12.907169",
           "ok": true,
-          "duration_s": 4446
+          "duration_s": 6671
         },
         {
-          "ts": "2026-03-20T10:44:39.053849",
+          "ts": "2026-03-22T11:21:43.557497",
           "ok": true,
-          "duration_s": 4476
+          "duration_s": 6701
         },
         {
-          "ts": "2026-03-20T10:45:09.702916",
+          "ts": "2026-03-22T11:22:14.255908",
           "ok": true,
-          "duration_s": 4507
+          "duration_s": 6732
         },
         {
-          "ts": "2026-03-20T10:45:40.340063",
+          "ts": "2026-03-22T11:22:44.962681",
           "ok": true,
-          "duration_s": 4538
+          "duration_s": 6763
         },
         {
-          "ts": "2026-03-20T10:46:10.976005",
+          "ts": "2026-03-22T11:23:16.738522",
           "ok": true,
-          "duration_s": 4568
+          "duration_s": 6795
         },
         {
-          "ts": "2026-03-20T10:46:41.602716",
+          "ts": "2026-03-22T11:23:47.395918",
           "ok": true,
-          "duration_s": 4599
+          "duration_s": 6825
         }
       ],
-      "last_dispatch": "2026-03-20T09:30:02.280773",
-      "last_pid": 8832
+      "last_dispatch": "2026-03-22T09:30:01.655061",
+      "last_pid": 33250
     },
     "autowrite-2026-03-07": {
       "last_exit": "2026-03-19T23:16:17.617587",
@@ -901,72 +891,62 @@
       "last_success": "2026-03-19T23:16:17.619542"
     },
     "daily-report": {
-      "last_dispatch": "2026-03-19T22:01:06.499944",
-      "last_pid": 15335,
-      "last_exit": "2026-03-19T23:16:17.604163",
-      "consecutive_failures": 154,
-      "last_success": "2026-03-19T22:01:06.496288",
-      "last_failure_reason": "2026-03-19 22:01:06,583 [ERROR] Substack not configured — cannot fetch stats",
+      "last_dispatch": "2026-03-22T22:00:27.204452",
+      "last_pid": 1063,
+      "last_exit": "2026-03-22T23:26:21.240355",
+      "consecutive_failures": 0,
+      "last_success": "2026-03-22T23:26:21.240355",
+      "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-19T23:11:56.352343",
-          "ok": false,
-          "duration_s": 4249,
-          "reason": "2026-03-19 22:01:06,583 [ERROR] Substack not configured — cannot fetch stats"
+          "ts": "2026-03-22T23:22:00.156409",
+          "ok": true,
+          "duration_s": 4892
         },
         {
-          "ts": "2026-03-19T23:12:27.017774",
-          "ok": false,
-          "duration_s": 4280,
-          "reason": "2026-03-19 22:01:06,583 [ERROR] Substack not configured — cannot fetch stats"
+          "ts": "2026-03-22T23:22:30.873538",
+          "ok": true,
+          "duration_s": 4923
         },
         {
-          "ts": "2026-03-19T23:12:57.713157",
-          "ok": false,
-          "duration_s": 4311,
-          "reason": "2026-03-19 22:01:06,583 [ERROR] Substack not configured — cannot fetch stats"
+          "ts": "2026-03-22T23:23:01.561319",
+          "ok": true,
+          "duration_s": 4954
         },
         {
-          "ts": "2026-03-19T23:13:28.385909",
-          "ok": false,
-          "duration_s": 4341,
-          "reason": "2026-03-19 22:01:06,583 [ERROR] Substack not configured — cannot fetch stats"
+          "ts": "2026-03-22T23:23:32.255732",
+          "ok": true,
+          "duration_s": 4985
         },
         {
-          "ts": "2026-03-19T23:13:59.072939",
-          "ok": false,
-          "duration_s": 4372,
-          "reason": "2026-03-19 22:01:06,583 [ERROR] Substack not configured — cannot fetch stats"
+          "ts": "2026-03-22T23:24:02.967117",
+          "ok": true,
+          "duration_s": 5015
         },
         {
-          "ts": "2026-03-19T23:14:29.759058",
-          "ok": false,
-          "duration_s": 4403,
-          "reason": "2026-03-19 22:01:06,583 [ERROR] Substack not configured — cannot fetch stats"
+          "ts": "2026-03-22T23:24:18.433626",
+          "ok": true,
+          "duration_s": 5031
         },
         {
-          "ts": "2026-03-19T23:15:00.426415",
-          "ok": false,
-          "duration_s": 4433,
-          "reason": "2026-03-19 22:01:06,583 [ERROR] Substack not configured — cannot fetch stats"
+          "ts": "2026-03-22T23:24:49.136316",
+          "ok": true,
+          "duration_s": 5061
         },
         {
-          "ts": "2026-03-19T23:15:16.240911",
-          "ok": false,
-          "duration_s": 4449,
-          "reason": "2026-03-19 22:01:06,583 [ERROR] Substack not configured — cannot fetch stats"
+          "ts": "2026-03-22T23:25:19.839952",
+          "ok": true,
+          "duration_s": 5092
         },
         {
-          "ts": "2026-03-19T23:15:46.914024",
-          "ok": false,
-          "duration_s": 4480,
-          "reason": "2026-03-19 22:01:06,583 [ERROR] Substack not configured — cannot fetch stats"
+          "ts": "2026-03-22T23:25:50.549473",
+          "ok": true,
+          "duration_s": 5123
         },
         {
-          "ts": "2026-03-19T23:16:17.604163",
-          "ok": false,
-          "duration_s": 4511,
-          "reason": "2026-03-19 22:01:06,583 [ERROR] Substack not configured — cannot fetch stats"
+          "ts": "2026-03-22T23:26:21.240355",
+          "ok": true,
+          "duration_s": 5154
         }
       ]
     },
@@ -1029,124 +1009,124 @@
       ]
     },
     "explore-literaryhub_brain_pickings": {
-      "last_exit": "2026-03-20T18:18:38.945481",
+      "last_exit": "2026-03-22T19:24:59.277284",
       "consecutive_failures": 0,
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T18:14:18.492456",
+          "ts": "2026-03-22T19:20:38.197712",
           "ok": true,
-          "duration_s": 3694
+          "duration_s": 6086
         },
         {
-          "ts": "2026-03-20T18:14:49.179801",
+          "ts": "2026-03-22T19:21:08.844901",
           "ok": true,
-          "duration_s": 3725
+          "duration_s": 6117
         },
         {
-          "ts": "2026-03-20T18:15:04.212129",
+          "ts": "2026-03-22T19:21:39.470150",
           "ok": true,
-          "duration_s": 3740
+          "duration_s": 6147
         },
         {
-          "ts": "2026-03-20T18:15:34.866480",
+          "ts": "2026-03-22T19:22:10.102591",
           "ok": true,
-          "duration_s": 3770
+          "duration_s": 6178
         },
         {
-          "ts": "2026-03-20T18:16:05.534224",
+          "ts": "2026-03-22T19:22:40.728590",
           "ok": true,
-          "duration_s": 3801
+          "duration_s": 6209
         },
         {
-          "ts": "2026-03-20T18:16:36.215579",
+          "ts": "2026-03-22T19:22:56.686431",
           "ok": true,
-          "duration_s": 3832
+          "duration_s": 6225
         },
         {
-          "ts": "2026-03-20T18:17:06.898107",
+          "ts": "2026-03-22T19:23:27.308382",
           "ok": true,
-          "duration_s": 3862
+          "duration_s": 6255
         },
         {
-          "ts": "2026-03-20T18:17:37.594211",
+          "ts": "2026-03-22T19:23:57.938895",
           "ok": true,
-          "duration_s": 3893
+          "duration_s": 6286
         },
         {
-          "ts": "2026-03-20T18:18:08.285158",
+          "ts": "2026-03-22T19:24:28.583349",
           "ok": true,
-          "duration_s": 3924
+          "duration_s": 6316
         },
         {
-          "ts": "2026-03-20T18:18:38.945481",
+          "ts": "2026-03-22T19:24:59.277284",
           "ok": true,
-          "duration_s": 3954
+          "duration_s": 6347
         }
       ],
-      "last_dispatch": "2026-03-20T17:12:43.985077",
-      "last_pid": 82201,
-      "last_success": "2026-03-20T18:18:38.945481"
+      "last_dispatch": "2026-03-22T17:39:11.639020",
+      "last_pid": 36393,
+      "last_success": "2026-03-22T19:24:59.277284"
     },
     "substack-growth": {
-      "last_exit": "2026-03-20T18:18:38.955506",
+      "last_exit": "2026-03-23T08:37:24.083738",
       "consecutive_failures": 0,
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T18:14:18.503645",
+          "ts": "2026-03-23T08:33:03.268613",
           "ok": true,
-          "duration_s": 6836
+          "duration_s": 1933
         },
         {
-          "ts": "2026-03-20T18:14:49.191130",
+          "ts": "2026-03-23T08:33:33.961787",
           "ok": true,
-          "duration_s": 6867
+          "duration_s": 1963
         },
         {
-          "ts": "2026-03-20T18:15:04.221229",
+          "ts": "2026-03-23T08:34:04.639889",
           "ok": true,
-          "duration_s": 6882
+          "duration_s": 1994
         },
         {
-          "ts": "2026-03-20T18:15:34.875788",
+          "ts": "2026-03-23T08:34:35.296468",
           "ok": true,
-          "duration_s": 6913
+          "duration_s": 2025
         },
         {
-          "ts": "2026-03-20T18:16:05.543744",
+          "ts": "2026-03-23T08:35:05.962584",
           "ok": true,
-          "duration_s": 6943
+          "duration_s": 2055
         },
         {
-          "ts": "2026-03-20T18:16:36.225353",
+          "ts": "2026-03-23T08:35:36.629595",
           "ok": true,
-          "duration_s": 6974
+          "duration_s": 2086
         },
         {
-          "ts": "2026-03-20T18:17:06.909388",
+          "ts": "2026-03-23T08:36:07.300824",
           "ok": true,
-          "duration_s": 7005
+          "duration_s": 2117
         },
         {
-          "ts": "2026-03-20T18:17:37.604943",
+          "ts": "2026-03-23T08:36:37.970154",
           "ok": true,
-          "duration_s": 7035
+          "duration_s": 2147
         },
         {
-          "ts": "2026-03-20T18:18:08.295378",
+          "ts": "2026-03-23T08:37:08.657792",
           "ok": true,
-          "duration_s": 7066
+          "duration_s": 2178
         },
         {
-          "ts": "2026-03-20T18:18:38.955506",
+          "ts": "2026-03-23T08:37:24.083738",
           "ok": true,
-          "duration_s": 7097
+          "duration_s": 2194
         }
       ],
-      "last_dispatch": "2026-03-20T16:20:21.838715",
-      "last_pid": 28295,
-      "last_success": "2026-03-20T18:18:38.955506"
+      "last_dispatch": "2026-03-23T08:00:50.060009",
+      "last_pid": 25682,
+      "last_success": "2026-03-23T08:37:24.083738"
     },
     "autowrite-2026-03-18": {
       "last_dispatch": "2026-03-18T21:35:35.378136",
@@ -1209,73 +1189,64 @@
       ]
     },
     "explore-quanta_magazine_aeon_essays": {
-      "last_exit": "2026-03-20T12:18:08.814059",
-      "consecutive_failures": 2640,
-      "last_failure_reason": "2026-03-20 11:16:05,312 [ERROR] Comment on https://chinatalk.substack.com/p/chinas-technology-long-game failed (HTTP 404): <!DOCTYPE html>",
+      "last_exit": "2026-03-23T08:37:24.066198",
+      "consecutive_failures": 0,
+      "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T11:32:26.103706",
-          "ok": false,
-          "duration_s": 1165,
-          "reason": "2026-03-20 11:16:05,312 [ERROR] Comment on https://chinatalk.substack.com/p/chinas-technology-long-game failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-23T08:33:03.248512",
+          "ok": true,
+          "duration_s": 1963
         },
         {
-          "ts": "2026-03-20T11:32:56.761869",
-          "ok": false,
-          "duration_s": 1196,
-          "reason": "2026-03-20 11:16:05,312 [ERROR] Comment on https://chinatalk.substack.com/p/chinas-technology-long-game failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-23T08:33:33.941985",
+          "ok": true,
+          "duration_s": 1994
         },
         {
-          "ts": "2026-03-20T11:33:27.403147",
-          "ok": false,
-          "duration_s": 1227,
-          "reason": "2026-03-20 11:16:05,312 [ERROR] Comment on https://chinatalk.substack.com/p/chinas-technology-long-game failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-23T08:34:04.623717",
+          "ok": true,
+          "duration_s": 2025
         },
         {
-          "ts": "2026-03-20T11:33:58.093662",
-          "ok": false,
-          "duration_s": 1257,
-          "reason": "2026-03-20 11:16:05,312 [ERROR] Comment on https://chinatalk.substack.com/p/chinas-technology-long-game failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-23T08:34:35.278903",
+          "ok": true,
+          "duration_s": 2055
         },
         {
-          "ts": "2026-03-20T11:34:28.765114",
-          "ok": false,
-          "duration_s": 1288,
-          "reason": "2026-03-20 11:16:05,312 [ERROR] Comment on https://chinatalk.substack.com/p/chinas-technology-long-game failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-23T08:35:05.945061",
+          "ok": true,
+          "duration_s": 2086
         },
         {
-          "ts": "2026-03-20T11:34:59.436182",
-          "ok": false,
-          "duration_s": 1319,
-          "reason": "2026-03-20 11:16:05,312 [ERROR] Comment on https://chinatalk.substack.com/p/chinas-technology-long-game failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-23T08:35:36.615711",
+          "ok": true,
+          "duration_s": 2117
         },
         {
-          "ts": "2026-03-20T11:35:30.099754",
-          "ok": false,
-          "duration_s": 1349,
-          "reason": "2026-03-20 11:16:05,312 [ERROR] Comment on https://chinatalk.substack.com/p/chinas-technology-long-game failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-23T08:36:07.283031",
+          "ok": true,
+          "duration_s": 2148
         },
         {
-          "ts": "2026-03-20T11:36:00.774334",
-          "ok": false,
-          "duration_s": 1380,
-          "reason": "2026-03-20 11:16:05,312 [ERROR] Comment on https://chinatalk.substack.com/p/chinas-technology-long-game failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-23T08:36:37.952561",
+          "ok": true,
+          "duration_s": 2178
         },
         {
-          "ts": "2026-03-20T11:36:31.475009",
-          "ok": false,
-          "duration_s": 1411,
-          "reason": "2026-03-20 11:16:05,312 [ERROR] Comment on https://chinatalk.substack.com/p/chinas-technology-long-game failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-23T08:37:08.638668",
+          "ok": true,
+          "duration_s": 2209
         },
         {
-          "ts": "2026-03-20T12:18:08.814059",
-          "ok": false,
-          "duration_s": 3908,
-          "reason": "2026-03-20 11:16:05,312 [ERROR] Comment on https://chinatalk.substack.com/p/chinas-technology-long-game failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-23T08:37:24.066198",
+          "ok": true,
+          "duration_s": 2224
         }
       ],
-      "last_dispatch": "2026-03-20T11:13:00.385279",
-      "last_pid": 13459
+      "last_dispatch": "2026-03-23T08:00:19.280493",
+      "last_pid": 25083,
+      "last_success": "2026-03-23T08:37:24.066198"
     },
     "voiceover-the-pain-already-happened": {
       "last_exit": "2026-03-19T23:16:17.578991",
@@ -1521,312 +1492,314 @@
       "last_success": "2026-03-19T23:16:17.583236"
     },
     "explore-ieee_spectrum_simon_willison": {
-      "last_exit": "2026-03-20T10:46:41.595612",
-      "consecutive_failures": 140,
-      "last_failure_reason": "2026-03-20 09:38:02,626 [ERROR] Comment on https://aisupremacy.substack.com/p/ambient-computing-via-voice-ai-agents-future-2026 failed (HTTP 404): <!DOCTYPE html>",
+      "last_exit": "2026-03-22T20:25:28.178728",
+      "consecutive_failures": 0,
+      "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T10:42:21.300472",
-          "ok": false,
-          "duration_s": 4017,
-          "reason": "2026-03-20 09:38:02,626 [ERROR] Comment on https://aisupremacy.substack.com/p/ambient-computing-via-voice-ai-agents-future-2026 failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:21:07.210383",
+          "ok": true,
+          "duration_s": 3920
         },
         {
-          "ts": "2026-03-20T10:42:51.937401",
-          "ok": false,
-          "duration_s": 4047,
-          "reason": "2026-03-20 09:38:02,626 [ERROR] Comment on https://aisupremacy.substack.com/p/ambient-computing-via-voice-ai-agents-future-2026 failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:21:37.850559",
+          "ok": true,
+          "duration_s": 3950
         },
         {
-          "ts": "2026-03-20T10:43:22.590315",
-          "ok": false,
-          "duration_s": 4078,
-          "reason": "2026-03-20 09:38:02,626 [ERROR] Comment on https://aisupremacy.substack.com/p/ambient-computing-via-voice-ai-agents-future-2026 failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:21:53.465943",
+          "ok": true,
+          "duration_s": 3966
         },
         {
-          "ts": "2026-03-20T10:43:37.758004",
-          "ok": false,
-          "duration_s": 4093,
-          "reason": "2026-03-20 09:38:02,626 [ERROR] Comment on https://aisupremacy.substack.com/p/ambient-computing-via-voice-ai-agents-future-2026 failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:22:24.124651",
+          "ok": true,
+          "duration_s": 3997
         },
         {
-          "ts": "2026-03-20T10:44:08.399669",
-          "ok": false,
-          "duration_s": 4124,
-          "reason": "2026-03-20 09:38:02,626 [ERROR] Comment on https://aisupremacy.substack.com/p/ambient-computing-via-voice-ai-agents-future-2026 failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:22:54.780640",
+          "ok": true,
+          "duration_s": 4027
         },
         {
-          "ts": "2026-03-20T10:44:39.045808",
-          "ok": false,
-          "duration_s": 4154,
-          "reason": "2026-03-20 09:38:02,626 [ERROR] Comment on https://aisupremacy.substack.com/p/ambient-computing-via-voice-ai-agents-future-2026 failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:23:25.433658",
+          "ok": true,
+          "duration_s": 4058
         },
         {
-          "ts": "2026-03-20T10:45:09.695784",
-          "ok": false,
-          "duration_s": 4185,
-          "reason": "2026-03-20 09:38:02,626 [ERROR] Comment on https://aisupremacy.substack.com/p/ambient-computing-via-voice-ai-agents-future-2026 failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:23:56.069634",
+          "ok": true,
+          "duration_s": 4089
         },
         {
-          "ts": "2026-03-20T10:45:40.331908",
-          "ok": false,
-          "duration_s": 4216,
-          "reason": "2026-03-20 09:38:02,626 [ERROR] Comment on https://aisupremacy.substack.com/p/ambient-computing-via-voice-ai-agents-future-2026 failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:24:26.843623",
+          "ok": true,
+          "duration_s": 4119
         },
         {
-          "ts": "2026-03-20T10:46:10.967826",
-          "ok": false,
-          "duration_s": 4246,
-          "reason": "2026-03-20 09:38:02,626 [ERROR] Comment on https://aisupremacy.substack.com/p/ambient-computing-via-voice-ai-agents-future-2026 failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:24:57.541684",
+          "ok": true,
+          "duration_s": 4150
         },
         {
-          "ts": "2026-03-20T10:46:41.595612",
-          "ok": false,
-          "duration_s": 4277,
-          "reason": "2026-03-20 09:38:02,626 [ERROR] Comment on https://aisupremacy.substack.com/p/ambient-computing-via-voice-ai-agents-future-2026 failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:25:28.178728",
+          "ok": true,
+          "duration_s": 4181
         }
       ],
-      "last_dispatch": "2026-03-20T09:35:24.094795",
-      "last_pid": 14377,
-      "last_success": "2026-03-19T23:16:17.584193"
+      "last_dispatch": "2026-03-22T19:15:46.929911",
+      "last_pid": 36301,
+      "last_success": "2026-03-22T20:25:28.178728"
     },
     "explore-substack_one_useful_thing_substack_import_ai": {
-      "last_exit": "2026-03-20T12:18:08.817900",
+      "last_exit": "2026-03-22T21:25:45.656341",
       "consecutive_failures": 0,
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T11:32:26.105404",
+          "ts": "2026-03-22T21:21:09.678608",
           "ok": true,
-          "duration_s": 4124
+          "duration_s": 4631
         },
         {
-          "ts": "2026-03-20T11:32:56.765406",
+          "ts": "2026-03-22T21:21:40.313734",
           "ok": true,
-          "duration_s": 4154
+          "duration_s": 4661
         },
         {
-          "ts": "2026-03-20T11:33:27.404504",
+          "ts": "2026-03-22T21:22:10.984941",
           "ok": true,
-          "duration_s": 4185
+          "duration_s": 4692
         },
         {
-          "ts": "2026-03-20T11:33:58.097162",
+          "ts": "2026-03-22T21:22:41.659020",
           "ok": true,
-          "duration_s": 4216
+          "duration_s": 4723
         },
         {
-          "ts": "2026-03-20T11:34:28.767846",
+          "ts": "2026-03-22T21:23:12.341166",
           "ok": true,
-          "duration_s": 4246
+          "duration_s": 4753
         },
         {
-          "ts": "2026-03-20T11:34:59.439045",
+          "ts": "2026-03-22T21:23:43.012481",
           "ok": true,
-          "duration_s": 4277
+          "duration_s": 4784
         },
         {
-          "ts": "2026-03-20T11:35:30.101437",
+          "ts": "2026-03-22T21:24:13.672646",
           "ok": true,
-          "duration_s": 4308
+          "duration_s": 4815
         },
         {
-          "ts": "2026-03-20T11:36:00.779935",
+          "ts": "2026-03-22T21:24:44.342087",
           "ok": true,
-          "duration_s": 4338
+          "duration_s": 4845
         },
         {
-          "ts": "2026-03-20T11:36:31.477587",
+          "ts": "2026-03-22T21:25:14.979760",
           "ok": true,
-          "duration_s": 4369
+          "duration_s": 4876
         },
         {
-          "ts": "2026-03-20T12:18:08.817900",
+          "ts": "2026-03-22T21:25:45.656341",
           "ok": true,
-          "duration_s": 6866
+          "duration_s": 4907
         }
       ],
-      "last_dispatch": "2026-03-20T10:23:41.977806",
-      "last_pid": 63197,
-      "last_success": "2026-03-20T12:18:08.817900"
+      "last_dispatch": "2026-03-22T20:03:58.644435",
+      "last_pid": 84742,
+      "last_success": "2026-03-22T21:25:45.656341"
     },
     "reflect": {
-      "last_exit": "2026-03-19T23:16:17.587702",
-      "consecutive_failures": 0,
-      "last_failure_reason": "",
+      "last_exit": "2026-03-21T10:20:27.190934",
+      "consecutive_failures": 153,
+      "last_failure_reason": "2026-03-21 09:05:46,954 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error",
       "history": [
         {
-          "ts": "2026-03-19T23:11:56.334808",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-21T10:15:51.323993",
+          "ok": false,
+          "duration_s": 4541,
+          "reason": "2026-03-21 09:05:46,954 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error"
         },
         {
-          "ts": "2026-03-19T23:12:27.000417",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-21T10:16:21.969990",
+          "ok": false,
+          "duration_s": 4571,
+          "reason": "2026-03-21 09:05:46,954 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error"
         },
         {
-          "ts": "2026-03-19T23:12:57.695292",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-21T10:16:52.634452",
+          "ok": false,
+          "duration_s": 4602,
+          "reason": "2026-03-21 09:05:46,954 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error"
         },
         {
-          "ts": "2026-03-19T23:13:28.367044",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-21T10:17:23.289183",
+          "ok": false,
+          "duration_s": 4632,
+          "reason": "2026-03-21 09:05:46,954 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error"
         },
         {
-          "ts": "2026-03-19T23:13:59.055372",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-21T10:17:53.946163",
+          "ok": false,
+          "duration_s": 4663,
+          "reason": "2026-03-21 09:05:46,954 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error"
         },
         {
-          "ts": "2026-03-19T23:14:29.740529",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-21T10:18:24.591009",
+          "ok": false,
+          "duration_s": 4694,
+          "reason": "2026-03-21 09:05:46,954 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error"
         },
         {
-          "ts": "2026-03-19T23:15:00.406303",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-21T10:18:55.230169",
+          "ok": false,
+          "duration_s": 4724,
+          "reason": "2026-03-21 09:05:46,954 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error"
         },
         {
-          "ts": "2026-03-19T23:15:16.224548",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-21T10:19:25.890328",
+          "ok": false,
+          "duration_s": 4755,
+          "reason": "2026-03-21 09:05:46,954 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error"
         },
         {
-          "ts": "2026-03-19T23:15:46.897608",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-21T10:19:56.539345",
+          "ok": false,
+          "duration_s": 4786,
+          "reason": "2026-03-21 09:05:46,954 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error"
         },
         {
-          "ts": "2026-03-19T23:16:17.587702",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-21T10:20:27.190934",
+          "ok": false,
+          "duration_s": 4816,
+          "reason": "2026-03-21 09:05:46,954 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error"
         }
       ],
-      "last_success": "2026-03-19T23:16:17.587702"
+      "last_success": "2026-03-19T23:16:17.587702",
+      "last_dispatch": "2026-03-21T09:00:10.303458",
+      "last_pid": 90284
     },
     "explore-noah_smith_stratechery": {
-      "last_exit": "2026-03-20T15:18:30.911184",
+      "last_exit": "2026-03-22T15:24:38.526317",
       "consecutive_failures": 0,
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T15:14:10.118490",
+          "ts": "2026-03-22T15:20:17.520490",
           "ok": true,
-          "duration_s": 4508
+          "duration_s": 3376
         },
         {
-          "ts": "2026-03-20T15:14:40.766265",
+          "ts": "2026-03-22T15:20:48.175016",
           "ok": true,
-          "duration_s": 4538
+          "duration_s": 3407
         },
         {
-          "ts": "2026-03-20T15:15:11.403813",
+          "ts": "2026-03-22T15:21:18.855903",
           "ok": true,
-          "duration_s": 4569
+          "duration_s": 3438
         },
         {
-          "ts": "2026-03-20T15:15:27.029984",
+          "ts": "2026-03-22T15:21:34.614670",
           "ok": true,
-          "duration_s": 4585
+          "duration_s": 3453
         },
         {
-          "ts": "2026-03-20T15:15:57.692000",
+          "ts": "2026-03-22T15:22:05.264097",
           "ok": true,
-          "duration_s": 4615
+          "duration_s": 3484
         },
         {
-          "ts": "2026-03-20T15:16:28.352701",
+          "ts": "2026-03-22T15:22:35.933659",
           "ok": true,
-          "duration_s": 4646
+          "duration_s": 3515
         },
         {
-          "ts": "2026-03-20T15:16:58.989547",
+          "ts": "2026-03-22T15:23:06.588663",
           "ok": true,
-          "duration_s": 4677
+          "duration_s": 3545
         },
         {
-          "ts": "2026-03-20T15:17:29.631048",
+          "ts": "2026-03-22T15:23:37.237078",
           "ok": true,
-          "duration_s": 4707
+          "duration_s": 3576
         },
         {
-          "ts": "2026-03-20T15:18:00.268197",
+          "ts": "2026-03-22T15:24:07.880159",
           "ok": true,
-          "duration_s": 4738
+          "duration_s": 3607
         },
         {
-          "ts": "2026-03-20T15:18:30.911184",
+          "ts": "2026-03-22T15:24:38.526317",
           "ok": true,
-          "duration_s": 4769
+          "duration_s": 3637
         }
       ],
-      "last_dispatch": "2026-03-20T13:59:01.802938",
-      "last_pid": 81683,
-      "last_success": "2026-03-20T15:18:30.911184"
+      "last_dispatch": "2026-03-22T14:24:00.683004",
+      "last_pid": 43123,
+      "last_success": "2026-03-22T15:24:38.526317"
     },
     "explore-github_trending_hackernews": {
-      "last_exit": "2026-03-20T14:18:27.600752",
+      "last_exit": "2026-03-22T15:24:38.527537",
       "consecutive_failures": 0,
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T14:14:06.217936",
+          "ts": "2026-03-22T15:20:17.521630",
           "ok": true,
-          "duration_s": 4092
+          "duration_s": 6257
         },
         {
-          "ts": "2026-03-20T14:14:36.850121",
+          "ts": "2026-03-22T15:20:48.176399",
           "ok": true,
-          "duration_s": 4122
+          "duration_s": 6288
         },
         {
-          "ts": "2026-03-20T14:15:07.506358",
+          "ts": "2026-03-22T15:21:18.857131",
           "ok": true,
-          "duration_s": 4153
+          "duration_s": 6319
         },
         {
-          "ts": "2026-03-20T14:15:38.195948",
+          "ts": "2026-03-22T15:21:34.616022",
           "ok": true,
-          "duration_s": 4184
+          "duration_s": 6334
         },
         {
-          "ts": "2026-03-20T14:16:08.902121",
+          "ts": "2026-03-22T15:22:05.265315",
           "ok": true,
-          "duration_s": 4214
+          "duration_s": 6365
         },
         {
-          "ts": "2026-03-20T14:16:24.824973",
+          "ts": "2026-03-22T15:22:35.934857",
           "ok": true,
-          "duration_s": 4230
+          "duration_s": 6396
         },
         {
-          "ts": "2026-03-20T14:16:55.507763",
+          "ts": "2026-03-22T15:23:06.589846",
           "ok": true,
-          "duration_s": 4261
+          "duration_s": 6426
         },
         {
-          "ts": "2026-03-20T14:17:26.182971",
+          "ts": "2026-03-22T15:23:37.238246",
           "ok": true,
-          "duration_s": 4292
+          "duration_s": 6457
         },
         {
-          "ts": "2026-03-20T14:17:56.882467",
+          "ts": "2026-03-22T15:24:07.881346",
           "ok": true,
-          "duration_s": 4322
+          "duration_s": 6488
         },
         {
-          "ts": "2026-03-20T14:18:27.600752",
+          "ts": "2026-03-22T15:24:38.527537",
           "ok": true,
-          "duration_s": 4353
+          "duration_s": 6518
         }
       ],
-      "last_dispatch": "2026-03-20T13:05:54.039968",
-      "last_pid": 27687,
-      "last_success": "2026-03-20T14:18:27.600752"
+      "last_dispatch": "2026-03-22T13:35:59.663660",
+      "last_pid": 92334,
+      "last_success": "2026-03-22T15:24:38.527537"
     },
     "podcast-en-i-am-the-bug-i-study": {
       "last_exit": "2026-03-19T23:16:17.595930",
@@ -1945,253 +1918,254 @@
       "last_success": "2026-03-19T23:16:17.597077"
     },
     "explore-substack_culture_study_substack_garbage_day": {
-      "last_exit": "2026-03-20T16:18:34.685654",
+      "last_exit": "2026-03-22T16:24:52.337034",
       "consecutive_failures": 0,
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T16:14:13.804147",
+          "ts": "2026-03-22T16:20:16.233751",
           "ok": true,
-          "duration_s": 5182
+          "duration_s": 4105
         },
         {
-          "ts": "2026-03-20T16:14:29.350753",
+          "ts": "2026-03-22T16:20:47.038922",
           "ok": true,
-          "duration_s": 5198
+          "duration_s": 4135
         },
         {
-          "ts": "2026-03-20T16:15:00.027281",
+          "ts": "2026-03-22T16:21:17.703398",
           "ok": true,
-          "duration_s": 5228
+          "duration_s": 4166
         },
         {
-          "ts": "2026-03-20T16:15:30.685247",
+          "ts": "2026-03-22T16:21:48.366127",
           "ok": true,
-          "duration_s": 5259
+          "duration_s": 4197
         },
         {
-          "ts": "2026-03-20T16:16:01.356466",
+          "ts": "2026-03-22T16:22:19.011626",
           "ok": true,
-          "duration_s": 5290
+          "duration_s": 4227
         },
         {
-          "ts": "2026-03-20T16:16:32.015099",
+          "ts": "2026-03-22T16:22:49.684584",
           "ok": true,
-          "duration_s": 5320
+          "duration_s": 4258
         },
         {
-          "ts": "2026-03-20T16:17:02.663712",
+          "ts": "2026-03-22T16:23:20.338577",
           "ok": true,
-          "duration_s": 5351
+          "duration_s": 4289
         },
         {
-          "ts": "2026-03-20T16:17:33.336754",
+          "ts": "2026-03-22T16:23:51.029556",
           "ok": true,
-          "duration_s": 5382
+          "duration_s": 4319
         },
         {
-          "ts": "2026-03-20T16:18:04.029806",
+          "ts": "2026-03-22T16:24:21.695448",
           "ok": true,
-          "duration_s": 5412
+          "duration_s": 4350
         },
         {
-          "ts": "2026-03-20T16:18:34.685654",
+          "ts": "2026-03-22T16:24:52.337034",
           "ok": true,
-          "duration_s": 5443
+          "duration_s": 4381
         }
       ],
-      "last_dispatch": "2026-03-20T14:47:51.055566",
-      "last_pid": 32691,
-      "last_success": "2026-03-20T16:18:34.685654"
+      "last_dispatch": "2026-03-22T15:11:51.047229",
+      "last_pid": 92421,
+      "last_success": "2026-03-22T16:24:52.337034"
     },
     "journal": {
-      "last_exit": "2026-03-20T00:16:19.906461",
+      "last_exit": "2026-03-22T23:26:21.235978",
       "consecutive_failures": 0,
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T00:11:59.183369",
+          "ts": "2026-03-22T23:22:00.149039",
           "ok": true,
-          "duration_s": 6322
+          "duration_s": 6713
         },
         {
-          "ts": "2026-03-20T00:12:29.797255",
+          "ts": "2026-03-22T23:22:30.869065",
           "ok": true,
-          "duration_s": 6353
+          "duration_s": 6744
         },
         {
-          "ts": "2026-03-20T00:13:00.416094",
+          "ts": "2026-03-22T23:23:01.556259",
           "ok": true,
-          "duration_s": 6383
+          "duration_s": 6774
         },
         {
-          "ts": "2026-03-20T00:13:31.035689",
+          "ts": "2026-03-22T23:23:32.251503",
           "ok": true,
-          "duration_s": 6414
+          "duration_s": 6805
         },
         {
-          "ts": "2026-03-20T00:14:01.647382",
+          "ts": "2026-03-22T23:24:02.962851",
           "ok": true,
-          "duration_s": 6445
+          "duration_s": 6836
         },
         {
-          "ts": "2026-03-20T00:14:17.469233",
-          "ok": true,
-          "duration_s": 6461
-        },
-        {
-          "ts": "2026-03-20T00:14:48.078691",
-          "ok": true,
-          "duration_s": 6491
-        },
-        {
-          "ts": "2026-03-20T00:15:18.697275",
-          "ok": true,
-          "duration_s": 6522
-        },
-        {
-          "ts": "2026-03-20T00:15:49.318476",
-          "ok": true,
-          "duration_s": 6552
-        },
-        {
-          "ts": "2026-03-20T00:16:19.906461",
-          "ok": true,
-          "duration_s": 6583
-        }
-      ],
-      "last_dispatch": "2026-03-19T22:26:36.468764",
-      "last_pid": 41828,
-      "last_success": "2026-03-20T00:16:19.906461"
-    },
-    "podcast-zh-the-pain-already-happened": {
-      "last_exit": "2026-03-19T23:16:17.605171",
-      "consecutive_failures": 2616,
-      "last_failure_reason": "2026-03-19 00:05:35,339 [ERROR] Episode too short (0 sec < 5 min) — refusing to publish. File may be corrupted or TTS failed.",
-      "history": [
-        {
-          "ts": "2026-03-19T23:11:56.353402",
-          "ok": false,
-          "duration_s": 83189,
-          "reason": "2026-03-19 00:05:35,339 [ERROR] Episode too short (0 sec < 5 min) — refusing to publish. File may be corrupted or TTS failed."
-        },
-        {
-          "ts": "2026-03-19T23:12:27.018869",
-          "ok": false,
-          "duration_s": 83219,
-          "reason": "2026-03-19 00:05:35,339 [ERROR] Episode too short (0 sec < 5 min) — refusing to publish. File may be corrupted or TTS failed."
-        },
-        {
-          "ts": "2026-03-19T23:12:57.714495",
-          "ok": false,
-          "duration_s": 83250,
-          "reason": "2026-03-19 00:05:35,339 [ERROR] Episode too short (0 sec < 5 min) — refusing to publish. File may be corrupted or TTS failed."
-        },
-        {
-          "ts": "2026-03-19T23:13:28.387479",
-          "ok": false,
-          "duration_s": 83281,
-          "reason": "2026-03-19 00:05:35,339 [ERROR] Episode too short (0 sec < 5 min) — refusing to publish. File may be corrupted or TTS failed."
-        },
-        {
-          "ts": "2026-03-19T23:13:59.074085",
-          "ok": false,
-          "duration_s": 83311,
-          "reason": "2026-03-19 00:05:35,339 [ERROR] Episode too short (0 sec < 5 min) — refusing to publish. File may be corrupted or TTS failed."
-        },
-        {
-          "ts": "2026-03-19T23:14:29.760132",
-          "ok": false,
-          "duration_s": 83342,
-          "reason": "2026-03-19 00:05:35,339 [ERROR] Episode too short (0 sec < 5 min) — refusing to publish. File may be corrupted or TTS failed."
-        },
-        {
-          "ts": "2026-03-19T23:15:00.427613",
-          "ok": false,
-          "duration_s": 83373,
-          "reason": "2026-03-19 00:05:35,339 [ERROR] Episode too short (0 sec < 5 min) — refusing to publish. File may be corrupted or TTS failed."
-        },
-        {
-          "ts": "2026-03-19T23:15:16.242007",
-          "ok": false,
-          "duration_s": 83389,
-          "reason": "2026-03-19 00:05:35,339 [ERROR] Episode too short (0 sec < 5 min) — refusing to publish. File may be corrupted or TTS failed."
-        },
-        {
-          "ts": "2026-03-19T23:15:46.915028",
-          "ok": false,
-          "duration_s": 83419,
-          "reason": "2026-03-19 00:05:35,339 [ERROR] Episode too short (0 sec < 5 min) — refusing to publish. File may be corrupted or TTS failed."
-        },
-        {
-          "ts": "2026-03-19T23:16:17.605171",
-          "ok": false,
-          "duration_s": 83450,
-          "reason": "2026-03-19 00:05:35,339 [ERROR] Episode too short (0 sec < 5 min) — refusing to publish. File may be corrupted or TTS failed."
-        }
-      ],
-      "last_dispatch": "2026-03-19T00:05:27.182396",
-      "last_pid": 89699
-    },
-    "explore-devto_techcrunch": {
-      "last_exit": "2026-03-20T18:18:38.948012",
-      "consecutive_failures": 0,
-      "last_failure_reason": "",
-      "history": [
-        {
-          "ts": "2026-03-20T18:14:18.494877",
-          "ok": true,
-          "duration_s": 6591
-        },
-        {
-          "ts": "2026-03-20T18:14:49.182099",
-          "ok": true,
-          "duration_s": 6622
-        },
-        {
-          "ts": "2026-03-20T18:15:04.214457",
-          "ok": true,
-          "duration_s": 6637
-        },
-        {
-          "ts": "2026-03-20T18:15:34.868750",
-          "ok": true,
-          "duration_s": 6667
-        },
-        {
-          "ts": "2026-03-20T18:16:05.536594",
-          "ok": true,
-          "duration_s": 6698
-        },
-        {
-          "ts": "2026-03-20T18:16:36.218176",
-          "ok": true,
-          "duration_s": 6729
-        },
-        {
-          "ts": "2026-03-20T18:17:06.901509",
-          "ok": true,
-          "duration_s": 6759
-        },
-        {
-          "ts": "2026-03-20T18:17:37.597000",
-          "ok": true,
-          "duration_s": 6790
-        },
-        {
-          "ts": "2026-03-20T18:18:08.288096",
-          "ok": true,
-          "duration_s": 6821
-        },
-        {
-          "ts": "2026-03-20T18:18:38.948012",
+          "ts": "2026-03-22T23:24:18.429317",
           "ok": true,
           "duration_s": 6851
+        },
+        {
+          "ts": "2026-03-22T23:24:49.131427",
+          "ok": true,
+          "duration_s": 6882
+        },
+        {
+          "ts": "2026-03-22T23:25:19.835582",
+          "ok": true,
+          "duration_s": 6913
+        },
+        {
+          "ts": "2026-03-22T23:25:50.545459",
+          "ok": true,
+          "duration_s": 6943
+        },
+        {
+          "ts": "2026-03-22T23:26:21.235978",
+          "ok": true,
+          "duration_s": 6974
         }
       ],
-      "last_dispatch": "2026-03-20T16:24:27.020759",
-      "last_pid": 32476,
-      "last_success": "2026-03-20T18:18:38.948012"
+      "last_dispatch": "2026-03-22T21:30:06.647224",
+      "last_pid": 71661,
+      "last_success": "2026-03-22T23:26:21.235978"
+    },
+    "podcast-zh-the-pain-already-happened": {
+      "last_exit": "2026-03-23T05:27:10.401612",
+      "consecutive_failures": 0,
+      "last_failure_reason": "",
+      "history": [
+        {
+          "ts": "2026-03-23T05:22:49.999219",
+          "ok": true,
+          "duration_s": 4603
+        },
+        {
+          "ts": "2026-03-23T05:23:20.660261",
+          "ok": true,
+          "duration_s": 4634
+        },
+        {
+          "ts": "2026-03-23T05:23:51.323635",
+          "ok": true,
+          "duration_s": 4665
+        },
+        {
+          "ts": "2026-03-23T05:24:06.448101",
+          "ok": true,
+          "duration_s": 4680
+        },
+        {
+          "ts": "2026-03-23T05:24:37.107469",
+          "ok": true,
+          "duration_s": 4710
+        },
+        {
+          "ts": "2026-03-23T05:25:07.753120",
+          "ok": true,
+          "duration_s": 4741
+        },
+        {
+          "ts": "2026-03-23T05:25:38.420193",
+          "ok": true,
+          "duration_s": 4772
+        },
+        {
+          "ts": "2026-03-23T05:26:09.091906",
+          "ok": true,
+          "duration_s": 4802
+        },
+        {
+          "ts": "2026-03-23T05:26:39.726683",
+          "ok": true,
+          "duration_s": 4833
+        },
+        {
+          "ts": "2026-03-23T05:27:10.401612",
+          "ok": true,
+          "duration_s": 4864
+        }
+      ],
+      "last_dispatch": "2026-03-23T04:06:06.134737",
+      "last_pid": 80104,
+      "last_success": "2026-03-23T05:27:10.401612"
+    },
+    "explore-devto_techcrunch": {
+      "last_exit": "2026-03-22T18:24:56.347796",
+      "consecutive_failures": 180,
+      "last_failure_reason": "2026-03-22 16:53:18,138 [ERROR] Ollama qwen2.5:32b-instruct-q4_K_M failed: timed out",
+      "history": [
+        {
+          "ts": "2026-03-22T18:20:35.506421",
+          "ok": false,
+          "duration_s": 5512,
+          "reason": "2026-03-22 16:53:18,138 [ERROR] Ollama qwen2.5:32b-instruct-q4_K_M failed: timed out"
+        },
+        {
+          "ts": "2026-03-22T18:21:06.149335",
+          "ok": false,
+          "duration_s": 5543,
+          "reason": "2026-03-22 16:53:18,138 [ERROR] Ollama qwen2.5:32b-instruct-q4_K_M failed: timed out"
+        },
+        {
+          "ts": "2026-03-22T18:21:36.798187",
+          "ok": false,
+          "duration_s": 5573,
+          "reason": "2026-03-22 16:53:18,138 [ERROR] Ollama qwen2.5:32b-instruct-q4_K_M failed: timed out"
+        },
+        {
+          "ts": "2026-03-22T18:22:07.435049",
+          "ok": false,
+          "duration_s": 5604,
+          "reason": "2026-03-22 16:53:18,138 [ERROR] Ollama qwen2.5:32b-instruct-q4_K_M failed: timed out"
+        },
+        {
+          "ts": "2026-03-22T18:22:38.075883",
+          "ok": false,
+          "duration_s": 5635,
+          "reason": "2026-03-22 16:53:18,138 [ERROR] Ollama qwen2.5:32b-instruct-q4_K_M failed: timed out"
+        },
+        {
+          "ts": "2026-03-22T18:23:08.709943",
+          "ok": false,
+          "duration_s": 5665,
+          "reason": "2026-03-22 16:53:18,138 [ERROR] Ollama qwen2.5:32b-instruct-q4_K_M failed: timed out"
+        },
+        {
+          "ts": "2026-03-22T18:23:39.346584",
+          "ok": false,
+          "duration_s": 5696,
+          "reason": "2026-03-22 16:53:18,138 [ERROR] Ollama qwen2.5:32b-instruct-q4_K_M failed: timed out"
+        },
+        {
+          "ts": "2026-03-22T18:23:55.071719",
+          "ok": false,
+          "duration_s": 5712,
+          "reason": "2026-03-22 16:53:18,138 [ERROR] Ollama qwen2.5:32b-instruct-q4_K_M failed: timed out"
+        },
+        {
+          "ts": "2026-03-22T18:24:25.695691",
+          "ok": false,
+          "duration_s": 5742,
+          "reason": "2026-03-22 16:53:18,138 [ERROR] Ollama qwen2.5:32b-instruct-q4_K_M failed: timed out"
+        },
+        {
+          "ts": "2026-03-22T18:24:56.347796",
+          "ok": false,
+          "duration_s": 5773,
+          "reason": "2026-03-22 16:53:18,138 [ERROR] Ollama qwen2.5:32b-instruct-q4_K_M failed: timed out"
+        }
+      ],
+      "last_dispatch": "2026-03-22T16:48:42.879880",
+      "last_pid": 89015,
+      "last_success": "2026-03-22T09:23:37.980702"
     },
     "podcast-en-the-market-doesnt-know-its-lying": {
       "last_exit": "2026-03-19T23:16:17.607328",
@@ -2319,62 +2293,74 @@
       ]
     },
     "podcast-zh-the-half-life-of-a-benchmark": {
-      "last_exit": "2026-03-19T23:16:17.609341",
+      "last_exit": "2026-03-22T01:22:30.629336",
       "consecutive_failures": 0,
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-19T23:11:56.357829",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-22T01:17:54.806067",
+          "ok": false,
+          "duration_s": 4385,
+          "reason": "2026-03-22 00:15:40,083 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:12:27.023096",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-22T01:18:25.436725",
+          "ok": false,
+          "duration_s": 4416,
+          "reason": "2026-03-22 00:15:40,083 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:12:57.718896",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-22T01:18:56.086350",
+          "ok": false,
+          "duration_s": 4446,
+          "reason": "2026-03-22 00:15:40,083 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:13:28.391993",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-22T01:19:26.731455",
+          "ok": false,
+          "duration_s": 4477,
+          "reason": "2026-03-22 00:15:40,083 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:13:59.078357",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-22T01:19:57.395964",
+          "ok": false,
+          "duration_s": 4508,
+          "reason": "2026-03-22 00:15:40,083 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:14:29.764251",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-22T01:20:28.041825",
+          "ok": false,
+          "duration_s": 4538,
+          "reason": "2026-03-22 00:15:40,083 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:15:00.431713",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-22T01:20:58.709929",
+          "ok": false,
+          "duration_s": 4569,
+          "reason": "2026-03-22 00:15:40,083 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:15:16.246024",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-22T01:21:29.348945",
+          "ok": false,
+          "duration_s": 4600,
+          "reason": "2026-03-22 00:15:40,083 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:15:46.919085",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-22T01:21:59.993489",
+          "ok": false,
+          "duration_s": 4630,
+          "reason": "2026-03-22 00:15:40,083 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:16:17.609341",
-          "ok": true,
-          "duration_s": 0
+          "ts": "2026-03-22T01:22:30.629336",
+          "ok": false,
+          "duration_s": 4661,
+          "reason": "2026-03-22 00:15:40,083 [ERROR] Podcast: generation failed for [zh] 'The Half-Life of a Benchmark' (generation_failed)"
         }
       ],
-      "last_success": "2026-03-19T23:16:17.609341"
+      "last_success": "2026-03-19T23:16:17.609341",
+      "last_dispatch": "2026-03-22T00:04:49.333253",
+      "last_pid": 45951
     },
     "podcast-zh-when-your-agent-lies-to-you": {
       "last_exit": "2026-03-19T23:16:17.610339",
@@ -2435,71 +2421,73 @@
       "last_success": "2026-03-19T23:16:17.610339"
     },
     "podcast-zh-the-market-doesnt-know-its-lying": {
-      "last_exit": "2026-03-19T23:16:17.611412",
-      "consecutive_failures": 2604,
-      "last_failure_reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)",
+      "last_exit": "2026-03-22T01:22:30.630787",
+      "consecutive_failures": 0,
+      "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-19T23:11:56.359786",
+          "ts": "2026-03-22T01:17:54.807245",
           "ok": false,
-          "duration_s": 0,
-          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 4646,
+          "reason": "2026-03-22 00:04:22,585 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:12:27.025118",
+          "ts": "2026-03-22T01:18:25.437898",
           "ok": false,
-          "duration_s": 0,
-          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 4676,
+          "reason": "2026-03-22 00:04:22,585 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:12:57.720896",
+          "ts": "2026-03-22T01:18:56.087514",
           "ok": false,
-          "duration_s": 0,
-          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 4707,
+          "reason": "2026-03-22 00:04:22,585 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:13:28.393979",
+          "ts": "2026-03-22T01:19:26.732642",
           "ok": false,
-          "duration_s": 0,
-          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 4738,
+          "reason": "2026-03-22 00:04:22,585 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:13:59.080373",
+          "ts": "2026-03-22T01:19:57.397144",
           "ok": false,
-          "duration_s": 0,
-          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 4768,
+          "reason": "2026-03-22 00:04:22,585 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:14:29.766166",
+          "ts": "2026-03-22T01:20:28.043039",
           "ok": false,
-          "duration_s": 0,
-          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 4799,
+          "reason": "2026-03-22 00:04:22,585 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:15:00.433613",
+          "ts": "2026-03-22T01:20:58.711198",
           "ok": false,
-          "duration_s": 0,
-          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 4830,
+          "reason": "2026-03-22 00:04:22,585 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:15:16.248418",
+          "ts": "2026-03-22T01:21:29.350145",
           "ok": false,
-          "duration_s": 0,
-          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 4860,
+          "reason": "2026-03-22 00:04:22,585 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:15:46.921578",
+          "ts": "2026-03-22T01:21:59.994743",
           "ok": false,
-          "duration_s": 0,
-          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 4891,
+          "reason": "2026-03-22 00:04:22,585 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         },
         {
-          "ts": "2026-03-19T23:16:17.611412",
+          "ts": "2026-03-22T01:22:30.630787",
           "ok": false,
-          "duration_s": 0,
-          "reason": "2026-03-16 23:24:46,641 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
+          "duration_s": 4922,
+          "reason": "2026-03-22 00:04:22,585 [ERROR] Podcast: generation failed for [zh] 'The Market Doesn't Know It's Lying' (generation_failed)"
         }
-      ]
+      ],
+      "last_dispatch": "2026-03-22T00:00:28.549274",
+      "last_pid": 39830
     },
     "podcast-zh-you-cant-evaluate-truth-at-a-point": {
       "last_exit": "2026-03-19T23:16:17.615575",
@@ -2743,64 +2731,64 @@
       "last_success": "2026-03-19T23:16:17.621515"
     },
     "autowrite-check": {
-      "last_exit": "2026-03-20T18:19:40.396295",
+      "last_exit": "2026-03-22T19:24:59.281534",
       "consecutive_failures": 0,
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T18:17:37.601084",
+          "ts": "2026-03-22T19:20:38.202547",
           "ok": true,
-          "duration_s": 168
+          "duration_s": 4660
         },
         {
-          "ts": "2026-03-20T18:17:37.610637",
+          "ts": "2026-03-22T19:21:08.849392",
           "ok": true,
-          "duration_s": 168
+          "duration_s": 4691
         },
         {
-          "ts": "2026-03-20T18:18:08.291650",
+          "ts": "2026-03-22T19:21:39.474700",
           "ok": true,
-          "duration_s": 199
+          "duration_s": 4722
         },
         {
-          "ts": "2026-03-20T18:18:08.301754",
+          "ts": "2026-03-22T19:22:10.107745",
           "ok": true,
-          "duration_s": 199
+          "duration_s": 4752
         },
         {
-          "ts": "2026-03-20T18:18:38.951853",
+          "ts": "2026-03-22T19:22:40.734404",
           "ok": true,
-          "duration_s": 229
+          "duration_s": 4783
         },
         {
-          "ts": "2026-03-20T18:18:38.963743",
+          "ts": "2026-03-22T19:22:56.691005",
           "ok": true,
-          "duration_s": 229
+          "duration_s": 4799
         },
         {
-          "ts": "2026-03-20T18:19:09.687469",
+          "ts": "2026-03-22T19:23:27.312932",
           "ok": true,
-          "duration_s": 260
+          "duration_s": 4830
         },
         {
-          "ts": "2026-03-20T18:19:09.694547",
+          "ts": "2026-03-22T19:23:57.943528",
           "ok": true,
-          "duration_s": 260
+          "duration_s": 4860
         },
         {
-          "ts": "2026-03-20T18:19:40.388338",
+          "ts": "2026-03-22T19:24:28.586792",
           "ok": true,
-          "duration_s": 291
+          "duration_s": 4891
         },
         {
-          "ts": "2026-03-20T18:19:40.396295",
+          "ts": "2026-03-22T19:24:59.281534",
           "ok": true,
-          "duration_s": 291
+          "duration_s": 4922
         }
       ],
-      "last_dispatch": "2026-03-20T18:14:49.205213",
-      "last_pid": 50061,
-      "last_success": "2026-03-20T18:19:40.396295"
+      "last_dispatch": "2026-03-22T18:02:57.277984",
+      "last_pid": 60924,
+      "last_success": "2026-03-22T19:24:59.281534"
     },
     "voiceover-the-market-doesnt-know-its-lying": {
       "last_exit": "2026-03-19T23:16:17.623469",
@@ -2919,74 +2907,64 @@
       "last_success": "2026-03-19T23:16:17.624454"
     },
     "explore-arxiv_huggingface": {
-      "last_exit": "2026-03-20T18:19:40.390403",
-      "consecutive_failures": 22,
-      "last_failure_reason": "2026-03-20 18:09:06,130 [ERROR] Comment on https://slow-boring.substack.com/p/in-defense-of-having-a-dumb-thing failed (HTTP 404): <!DOCTYPE html>",
+      "last_exit": "2026-03-22T20:25:28.185889",
+      "consecutive_failures": 0,
+      "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T18:15:04.220046",
-          "ok": false,
-          "duration_s": 521,
-          "reason": "2026-03-20 18:09:06,130 [ERROR] Comment on https://slow-boring.substack.com/p/in-defense-of-having-a-dumb-thing failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:21:07.217667",
+          "ok": true,
+          "duration_s": 6787
         },
         {
-          "ts": "2026-03-20T18:15:34.874633",
-          "ok": false,
-          "duration_s": 551,
-          "reason": "2026-03-20 18:09:06,130 [ERROR] Comment on https://slow-boring.substack.com/p/in-defense-of-having-a-dumb-thing failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:21:37.857618",
+          "ok": true,
+          "duration_s": 6817
         },
         {
-          "ts": "2026-03-20T18:16:05.542553",
-          "ok": false,
-          "duration_s": 582,
-          "reason": "2026-03-20 18:09:06,130 [ERROR] Comment on https://slow-boring.substack.com/p/in-defense-of-having-a-dumb-thing failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:21:53.473062",
+          "ok": true,
+          "duration_s": 6833
         },
         {
-          "ts": "2026-03-20T18:16:36.224211",
-          "ok": false,
-          "duration_s": 613,
-          "reason": "2026-03-20 18:09:06,130 [ERROR] Comment on https://slow-boring.substack.com/p/in-defense-of-having-a-dumb-thing failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:22:24.133720",
+          "ok": true,
+          "duration_s": 6863
         },
         {
-          "ts": "2026-03-20T18:17:06.908029",
-          "ok": false,
-          "duration_s": 643,
-          "reason": "2026-03-20 18:09:06,130 [ERROR] Comment on https://slow-boring.substack.com/p/in-defense-of-having-a-dumb-thing failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:22:54.788505",
+          "ok": true,
+          "duration_s": 6894
         },
         {
-          "ts": "2026-03-20T18:17:37.603735",
-          "ok": false,
-          "duration_s": 674,
-          "reason": "2026-03-20 18:09:06,130 [ERROR] Comment on https://slow-boring.substack.com/p/in-defense-of-having-a-dumb-thing failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:23:25.440311",
+          "ok": true,
+          "duration_s": 6925
         },
         {
-          "ts": "2026-03-20T18:18:08.293896",
-          "ok": false,
-          "duration_s": 705,
-          "reason": "2026-03-20 18:09:06,130 [ERROR] Comment on https://slow-boring.substack.com/p/in-defense-of-having-a-dumb-thing failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:23:56.076986",
+          "ok": true,
+          "duration_s": 6955
         },
         {
-          "ts": "2026-03-20T18:18:38.954297",
-          "ok": false,
-          "duration_s": 735,
-          "reason": "2026-03-20 18:09:06,130 [ERROR] Comment on https://slow-boring.substack.com/p/in-defense-of-having-a-dumb-thing failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:24:26.851751",
+          "ok": true,
+          "duration_s": 6986
         },
         {
-          "ts": "2026-03-20T18:19:09.688932",
-          "ok": false,
-          "duration_s": 766,
-          "reason": "2026-03-20 18:09:06,130 [ERROR] Comment on https://slow-boring.substack.com/p/in-defense-of-having-a-dumb-thing failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:24:57.551098",
+          "ok": true,
+          "duration_s": 7017
         },
         {
-          "ts": "2026-03-20T18:19:40.390403",
-          "ok": false,
-          "duration_s": 797,
-          "reason": "2026-03-20 18:09:06,130 [ERROR] Comment on https://slow-boring.substack.com/p/in-defense-of-having-a-dumb-thing failed (HTTP 404): <!DOCTYPE html>"
+          "ts": "2026-03-22T20:25:28.185889",
+          "ok": true,
+          "duration_s": 7048
         }
       ],
-      "last_dispatch": "2026-03-20T18:06:23.080823",
-      "last_pid": 40485,
-      "last_success": "2026-03-20T18:06:23.077331"
+      "last_dispatch": "2026-03-22T18:28:00.148254",
+      "last_pid": 86619,
+      "last_success": "2026-03-22T20:25:28.185889"
     },
     "podcast-en-when-your-agent-lies-to-you": {
       "last_exit": "2026-03-19T23:16:17.627749",
@@ -3047,64 +3025,64 @@
       "last_success": "2026-03-19T23:16:17.627749"
     },
     "explore-reddit_ai_news": {
-      "last_exit": "2026-03-20T13:18:24.799086",
+      "last_exit": "2026-03-22T14:24:31.350728",
       "consecutive_failures": 0,
       "last_failure_reason": "",
       "history": [
         {
-          "ts": "2026-03-20T13:14:04.453680",
+          "ts": "2026-03-22T14:20:10.874782",
           "ok": true,
-          "duration_s": 3355
+          "duration_s": 5550
         },
         {
-          "ts": "2026-03-20T13:14:35.086644",
+          "ts": "2026-03-22T14:20:41.582271",
           "ok": true,
-          "duration_s": 3386
+          "duration_s": 5581
         },
         {
-          "ts": "2026-03-20T13:15:05.726357",
+          "ts": "2026-03-22T14:21:12.264817",
           "ok": true,
-          "duration_s": 3416
+          "duration_s": 5612
         },
         {
-          "ts": "2026-03-20T13:15:36.372016",
+          "ts": "2026-03-22T14:21:42.965478",
           "ok": true,
-          "duration_s": 3447
+          "duration_s": 5643
         },
         {
-          "ts": "2026-03-20T13:16:07.010814",
+          "ts": "2026-03-22T14:22:13.668703",
           "ok": true,
-          "duration_s": 3478
+          "duration_s": 5673
         },
         {
-          "ts": "2026-03-20T13:16:37.619563",
+          "ts": "2026-03-22T14:22:28.684237",
           "ok": true,
-          "duration_s": 3508
+          "duration_s": 5688
         },
         {
-          "ts": "2026-03-20T13:17:08.262177",
+          "ts": "2026-03-22T14:22:59.343735",
           "ok": true,
-          "duration_s": 3539
+          "duration_s": 5719
         },
         {
-          "ts": "2026-03-20T13:17:23.519572",
+          "ts": "2026-03-22T14:23:29.999618",
           "ok": true,
-          "duration_s": 3554
+          "duration_s": 5750
         },
         {
-          "ts": "2026-03-20T13:17:54.165317",
+          "ts": "2026-03-22T14:24:00.675479",
           "ok": true,
-          "duration_s": 3585
+          "duration_s": 5780
         },
         {
-          "ts": "2026-03-20T13:18:24.799086",
+          "ts": "2026-03-22T14:24:31.350728",
           "ok": true,
-          "duration_s": 3615
+          "duration_s": 5811
         }
       ],
-      "last_dispatch": "2026-03-20T12:18:08.838123",
-      "last_pid": 78546,
-      "last_success": "2026-03-20T13:18:24.799086"
+      "last_dispatch": "2026-03-22T12:47:39.879558",
+      "last_pid": 43333,
+      "last_success": "2026-03-22T14:24:31.350728"
     },
     "autowrite-2026-03-16": {
       "last_exit": "2026-03-19T23:16:17.629863",
@@ -3296,68 +3274,68 @@
     "podcast-zh-the-exponential-exemption": {
       "last_dispatch": "2026-03-20T17:23:58.447236",
       "last_pid": 94368,
-      "last_exit": "2026-03-20T18:19:40.392126",
-      "consecutive_failures": 278,
+      "last_exit": "2026-03-20T19:18:41.780120",
+      "consecutive_failures": 399,
       "last_failure_reason": "2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today",
       "history": [
         {
-          "ts": "2026-03-20T18:15:04.222380",
+          "ts": "2026-03-20T19:14:05.898375",
           "ok": false,
-          "duration_s": 3065,
+          "duration_s": 6607,
           "reason": "2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today"
         },
         {
-          "ts": "2026-03-20T18:15:34.877010",
+          "ts": "2026-03-20T19:14:36.534488",
           "ok": false,
-          "duration_s": 3096,
+          "duration_s": 6638,
           "reason": "2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today"
         },
         {
-          "ts": "2026-03-20T18:16:05.544885",
+          "ts": "2026-03-20T19:15:07.208387",
           "ok": false,
-          "duration_s": 3127,
+          "duration_s": 6668,
           "reason": "2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today"
         },
         {
-          "ts": "2026-03-20T18:16:36.226708",
+          "ts": "2026-03-20T19:15:37.832265",
           "ok": false,
-          "duration_s": 3157,
+          "duration_s": 6699,
           "reason": "2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today"
         },
         {
-          "ts": "2026-03-20T18:17:06.910642",
+          "ts": "2026-03-20T19:16:08.513401",
           "ok": false,
-          "duration_s": 3188,
+          "duration_s": 6730,
           "reason": "2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today"
         },
         {
-          "ts": "2026-03-20T18:17:37.606114",
+          "ts": "2026-03-20T19:16:39.147882",
           "ok": false,
-          "duration_s": 3219,
+          "duration_s": 6760,
           "reason": "2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today"
         },
         {
-          "ts": "2026-03-20T18:18:08.297025",
+          "ts": "2026-03-20T19:17:09.818469",
           "ok": false,
-          "duration_s": 3249,
+          "duration_s": 6791,
           "reason": "2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today"
         },
         {
-          "ts": "2026-03-20T18:18:38.956696",
+          "ts": "2026-03-20T19:17:40.482662",
           "ok": false,
-          "duration_s": 3280,
+          "duration_s": 6822,
           "reason": "2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today"
         },
         {
-          "ts": "2026-03-20T18:19:09.690570",
+          "ts": "2026-03-20T19:18:11.143476",
           "ok": false,
-          "duration_s": 3311,
+          "duration_s": 6852,
           "reason": "2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today"
         },
         {
-          "ts": "2026-03-20T18:19:40.392126",
+          "ts": "2026-03-20T19:18:41.780120",
           "ok": false,
-          "duration_s": 3341,
+          "duration_s": 6883,
           "reason": "2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today"
         }
       ]
@@ -3421,6 +3399,66 @@
           "duration_s": 6302
         }
       ]
+    },
+    "autowrite-2026-03-22": {
+      "last_dispatch": "2026-03-22T14:02:51.110174",
+      "last_pid": 21001,
+      "last_exit": "2026-03-22T15:24:38.523877",
+      "consecutive_failures": 0,
+      "last_success": "2026-03-22T15:24:38.523877",
+      "last_failure_reason": "",
+      "history": [
+        {
+          "ts": "2026-03-22T15:20:17.517966",
+          "ok": true,
+          "duration_s": 4646
+        },
+        {
+          "ts": "2026-03-22T15:20:48.171914",
+          "ok": true,
+          "duration_s": 4677
+        },
+        {
+          "ts": "2026-03-22T15:21:18.852995",
+          "ok": true,
+          "duration_s": 4707
+        },
+        {
+          "ts": "2026-03-22T15:21:34.610321",
+          "ok": true,
+          "duration_s": 4723
+        },
+        {
+          "ts": "2026-03-22T15:22:05.261648",
+          "ok": true,
+          "duration_s": 4754
+        },
+        {
+          "ts": "2026-03-22T15:22:35.931268",
+          "ok": true,
+          "duration_s": 4784
+        },
+        {
+          "ts": "2026-03-22T15:23:06.585095",
+          "ok": true,
+          "duration_s": 4815
+        },
+        {
+          "ts": "2026-03-22T15:23:37.234682",
+          "ok": true,
+          "duration_s": 4846
+        },
+        {
+          "ts": "2026-03-22T15:24:07.877797",
+          "ok": true,
+          "duration_s": 4876
+        },
+        {
+          "ts": "2026-03-22T15:24:38.523877",
+          "ok": true,
+          "duration_s": 4907
+        }
+      ]
     }
   },
   "daily_stats": {
@@ -3455,47 +3493,36 @@
       "dispatched": 386
     },
     "2026-03-20": {
-      "succeeded": 12454,
-      "dispatched": 430,
-      "failed": 1927,
-      "alerts_sent": 3
+      "succeeded": 18249,
+      "dispatched": 657,
+      "failed": 3649,
+      "alerts_sent": 4
+    },
+    "2026-03-21": {
+      "succeeded": 20839,
+      "failed": 2339,
+      "alerts_sent": 5,
+      "dispatched": 815
+    },
+    "2026-03-22": {
+      "succeeded": 18321,
+      "dispatched": 681,
+      "failed": 2405,
+      "alerts_sent": 5
+    },
+    "2026-03-23": {
+      "succeeded": 4433,
+      "dispatched": 199,
+      "failed": 174,
+      "alerts_sent": 1
     }
   },
   "alert_dedup": {
-    "reflect": "2026-03-19T21:42:28.045372",
-    "journal": "2026-03-19T09:42:25.835798",
-    "explore-quanta_magazine_aeon_essays": "2026-03-19T09:42:25.807256",
-    "voiceover-the-pain-already-happened": "2026-03-18T21:42:14.121025",
-    "podcast-en-the-cost-of-narration": "2026-03-18T21:42:14.121027",
-    "podcast-en-the-pain-already-happened": "2026-03-18T21:42:14.121028",
-    "autowrite-2026-03-08": "2026-03-18T21:42:14.121029",
-    "explore-ieee_spectrum_simon_willison": "2026-03-20T09:39:44.601334",
-    "explore-substack_one_useful_thing_substack_import_ai": "2026-03-18T21:42:14.121032",
-    "explore-noah_smith_stratechery": "2026-03-18T21:42:14.121034",
-    "explore-github_trending_hackernews": "2026-03-18T21:42:14.121036",
-    "podcast-en-i-am-the-bug-i-study": "2026-03-18T21:42:14.121037",
-    "podcast-zh-the-cost-of-narration": "2026-03-18T21:42:14.121039",
-    "explore-substack_culture_study_substack_garbage_day": "2026-03-18T21:42:14.121040",
-    "podcast-zh-the-pain-already-happened": "2026-03-18T21:42:14.121043",
-    "explore-devto_techcrunch": "2026-03-18T21:42:14.121044",
-    "podcast-en-the-market-doesnt-know-its-lying": "2026-03-18T21:42:14.121045",
-    "spark-check": "2026-03-18T21:42:14.121046",
-    "podcast-zh-the-half-life-of-a-benchmark": "2026-03-18T21:42:14.121048",
-    "podcast-zh-when-your-agent-lies-to-you": "2026-03-18T21:42:14.121049",
-    "podcast-zh-the-market-doesnt-know-its-lying": "2026-03-18T21:42:14.121050",
-    "podcast-zh-you-cant-evaluate-truth-at-a-point": "2026-03-18T21:42:14.121052",
-    "autowrite-2026-03-13": "2026-03-18T21:42:14.121053",
-    "podcast-en-you-cant-evaluate-truth-at-a-point": "2026-03-18T21:42:14.121054",
-    "voiceover-the-half-life-of-a-benchmark": "2026-03-18T21:42:14.121055",
-    "autowrite-check": "2026-03-20T10:00:40.549258",
-    "voiceover-the-market-doesnt-know-its-lying": "2026-03-18T21:42:14.121057",
-    "autowrite-2026-03-10": "2026-03-18T21:42:14.121058",
-    "explore-arxiv_huggingface": "2026-03-18T21:42:14.121059",
-    "podcast-en-when-your-agent-lies-to-you": "2026-03-18T21:42:14.121060",
-    "explore-reddit_ai_news": "2026-03-18T21:42:14.121061",
-    "autowrite-2026-03-16": "2026-03-18T21:42:14.121062",
-    "substack-comments": "2026-03-19T00:00:03.735212",
-    "substack-growth": "2026-03-20T08:01:55.340320"
+    "journal": "2026-03-22T21:32:56.036258",
+    "podcast-zh-the-market-doesnt-know-its-lying": "2026-03-22T00:04:49.322407",
+    "podcast-zh-the-half-life-of-a-benchmark": "2026-03-22T00:16:03.771355",
+    "idle-think": "2026-03-23T00:11:24.643032",
+    "writing-pipeline": "2026-03-22T16:47:20.490429"
   },
-  "last_anomaly_check": "2026-03-20T18:18:38.957838"
+  "last_anomaly_check": "2026-03-23T08:27:41.284039"
 }

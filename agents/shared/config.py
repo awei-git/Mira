@@ -199,6 +199,13 @@ _db_cfg = _cfg.get("database", {})
 DATABASE_URL = _db_cfg.get("url", "postgresql://ai_admin:ai_admin@127.0.0.1:5432/ai_system")
 
 # ---------------------------------------------------------------------------
+# Services (ports — single source of truth)
+# ---------------------------------------------------------------------------
+_svc_cfg = _cfg.get("services", {})
+WEBGUI_PORT = _svc_cfg.get("webgui_port", 8384)
+TETRA_API_PORT = _svc_cfg.get("tetra_api_port", 8000)
+
+# ---------------------------------------------------------------------------
 # Model registry
 # ---------------------------------------------------------------------------
 MODELS = {

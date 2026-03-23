@@ -130,6 +130,12 @@ final class ItemStore {
         return items[idx]
     }
 
+    func appendMessage(to itemId: String, message: ItemMessage) {
+        guard let idx = itemsById[itemId] else { return }
+        items[idx].messages.append(message)
+        items[idx].updatedAt = message.timestamp
+    }
+
     private func rebuildIndex() {
         itemsById = [:]
         for (i, item) in items.enumerated() {

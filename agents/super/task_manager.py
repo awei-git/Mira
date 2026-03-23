@@ -207,8 +207,13 @@ class TaskManager:
 
     def _collect_result(self, rec: TaskRecord) -> bool:
         """Read result from a completed task's workspace."""
+        import time as _time
         ws = Path(rec.workspace)
         result_file = ws / "result.json"
+
+        # Grace period: filesystem may not have flushed yet
+        if not result_file.exists():
+            _time.sleep(0.5)
 
         if result_file.exists():
             try:

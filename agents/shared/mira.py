@@ -123,15 +123,14 @@ class Mira:
         self.archive_dir = self.user_dir / "archive"
         self.manifest_file = self.user_dir / "manifest.json"
         self.user_config_file = self.user_dir / "config.json"
-        self.processed_dir = self.user_dir / ".processed"
+        self.ledger_file = self.user_dir / "command_ledger.json"
 
         # Global paths (only heartbeat + profiles at root)
         self.heartbeat_file = bridge_dir / "heartbeat.json"
         self.profiles_file = bridge_dir / "profiles.json"
 
         # Ensure directories exist (only per-user, nothing at root)
-        for d in [self.items_dir, self.commands_dir, self.archive_dir,
-                  self.processed_dir]:
+        for d in [self.items_dir, self.commands_dir, self.archive_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
         self._last_heartbeat_data: str = ""
@@ -263,6 +262,10 @@ class Mira:
             return
         item["status"] = status
         item["updated_at"] = _utc_iso()
+        # Clean up status cards on terminal state
+        if status in ("done", "failed", "needs-input"):
+            item["messages"] = [m for m in item["messages"]
+                               if m.get("kind") != "status_card"]
         if agent_message:
             item["messages"].append({
                 "id": _msg_id(), "sender": "agent",
@@ -390,30 +393,59 @@ class Mira:
     def save_todos(self, todos: list[dict]):
         _atomic_write(self.todos_file, todos)
 
-    def add_todo(self, title: str, priority: str = "medium") -> dict:
+    def add_todo(self, title: str, priority: str = "medium",
+                 tags: list[str] | None = None) -> dict:
         todos = self.load_todos()
         todo = {
             "id": f"todo_{uuid.uuid4().hex[:8]}",
             "title": title,
             "priority": priority,
             "status": "pending",
+            "tags": tags or [],
             "created_at": _utc_iso(),
             "updated_at": _utc_iso(),
-            "response": None,
+            "followups": [],
         }
         todos.append(todo)
         self.save_todos(todos)
         return todo
 
+    def add_followup(self, todo_id: str, content: str,
+                     source: str = "agent") -> dict | None:
+        """Append a followup to a todo (progress, result, related finding)."""
+        todos = self.load_todos()
+        for t in todos:
+            if t["id"] == todo_id:
+                # Migrate legacy 'response' field
+                if "followups" not in t:
+                    t["followups"] = []
+                    if t.get("response"):
+                        t["followups"].append({
+                            "content": t["response"],
+                            "source": "agent",
+                            "timestamp": t.get("updated_at", _utc_iso()),
+                        })
+                t["followups"].append({
+                    "content": content,
+                    "source": source,
+                    "timestamp": _utc_iso(),
+                })
+                t["updated_at"] = _utc_iso()
+                self.save_todos(todos)
+                return t
+        return None
+
     def update_todo(self, todo_id: str, status: str = "",
-                    response: str = "") -> dict | None:
+                    priority: str = "", title: str = "") -> dict | None:
         todos = self.load_todos()
         for t in todos:
             if t["id"] == todo_id:
                 if status:
                     t["status"] = status
-                if response:
-                    t["response"] = response
+                if priority:
+                    t["priority"] = priority
+                if title:
+                    t["title"] = title
                 t["updated_at"] = _utc_iso()
                 self.save_todos(todos)
                 return t
@@ -462,11 +494,47 @@ class Mira:
     # Command polling (iOS → agent)
     # ==================================================================
 
-    def poll_commands(self) -> list[dict]:
-        """Read and consume command files from iOS.
+    # ------------------------------------------------------------------
+    # Command ledger — reliable delivery tracking
+    # ------------------------------------------------------------------
 
-        iCloud can hold locks on files (Resource deadlock avoided / EAGAIN).
-        Strategy: copy to temp, read from temp, mark as processed.
+    def _load_ledger(self) -> dict:
+        if self.ledger_file.exists():
+            try:
+                return json.loads(self.ledger_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {"processed": {}}
+
+    def _save_ledger(self, ledger: dict):
+        ledger["updated_at"] = _utc_iso()
+        _atomic_write(self.ledger_file, ledger)
+
+    def _prune_ledger(self, ledger: dict, max_age_days: int = 7):
+        """Remove ledger entries older than max_age_days."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        processed = ledger.get("processed", {})
+        pruned = {}
+        for cmd_id, ts in processed.items():
+            try:
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                if dt > cutoff:
+                    pruned[cmd_id] = ts
+            except (ValueError, TypeError):
+                pruned[cmd_id] = ts  # keep unparseable entries
+        ledger["processed"] = pruned
+
+    # ------------------------------------------------------------------
+    # Command polling — ledger-based, never lose commands
+    # ------------------------------------------------------------------
+
+    def poll_commands(self) -> list[dict]:
+        """Read command files from iOS with reliable delivery via ledger.
+
+        Rules:
+        1. Never delete a command we can't read — leave for next cycle.
+        2. Ledger is the "processed" signal, not file deletion.
+        3. Write ledger before deleting command file.
         """
         import shutil, tempfile
 
@@ -476,36 +544,99 @@ class Mira:
         except Exception:
             pass
 
+        ledger = self._load_ledger()
+        processed = ledger.get("processed", {})
         commands = []
+        files_to_delete = []
+
+        # Pass 1: Read all commands, decide what's new vs already processed
         for path in sorted(self.commands_dir.glob("*.json")):
-            if path.suffix == ".tmp":
+            if path.name.endswith(".tmp"):
                 continue
-            # Skip already-processed commands
-            marker = self.processed_dir / f"cmd_{path.stem}"
-            if marker.exists():
-                try:
-                    path.unlink()
-                    marker.unlink()
-                except OSError:
-                    pass
+
+            parts = path.stem.split("_")
+            file_id = parts[-1] if len(parts) >= 4 else path.stem
+
+            if file_id in processed:
+                files_to_delete.append(path)
                 continue
+
+            data = self._try_read_command(path)
+            if data is None:
+                continue  # leave for next cycle
+
+            cmd_id = data.get("id", file_id)
+            if cmd_id in processed:
+                files_to_delete.append(path)
+                continue
+
+            commands.append(data)
+            processed[cmd_id] = _utc_iso()
+            files_to_delete.append(path)
+
+        # Pass 2: Save ledger FIRST (crash-safe: worst case = re-process)
+        if commands:
+            ledger["processed"] = processed
+            self._prune_ledger(ledger)
+            self._save_ledger(ledger)
+
+        # Pass 3: Delete files (best-effort, idempotent)
+        for path in files_to_delete:
             try:
-                # Copy to temp to avoid iCloud lock
-                tmp = Path(tempfile.mktemp(suffix=".json"))
-                shutil.copy2(str(path), str(tmp))
-                data = json.loads(tmp.read_text(encoding="utf-8"))
-                tmp.unlink()
-                commands.append(data)
-                # Mark as processed
-                marker.write_text(_utc_iso(), encoding="utf-8")
-                try:
-                    path.unlink()
-                    marker.unlink()
-                except OSError:
-                    pass
-            except (json.JSONDecodeError, OSError, shutil.Error) as e:
-                log.warning("poll_commands: retry next cycle %s: %s", path.name, e)
+                path.unlink()
+            except OSError:
+                pass
+
+        # Migrate: clean up legacy .processed/ directory if it exists
+        legacy_dir = self.user_dir / ".processed"
+        if legacy_dir.exists():
+            try:
+                import shutil as _sh
+                _sh.rmtree(str(legacy_dir), ignore_errors=True)
+            except Exception:
+                pass
+
         return commands
+
+    def requeue_command(self, cmd: dict):
+        """Re-queue a command for next cycle (when agent was busy)."""
+        cmd_id = cmd.get("id", uuid.uuid4().hex[:8])
+        fname = f"cmd_requeue_{cmd_id}.json"
+        path = self.commands_dir / fname
+        # Remove from ledger so it will be picked up again
+        ledger = self._load_ledger()
+        processed = ledger.get("processed", {})
+        processed.pop(cmd_id, None)
+        self._save_ledger(ledger)
+        # Write command file back (atomic)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cmd, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.rename(path)
+        log.info("Requeued command %s for next cycle", cmd_id)
+
+    def _try_read_command(self, path: Path) -> dict | None:
+        """Try to read a command file. Returns None if unreadable."""
+        import shutil, tempfile
+        # Attempt 1: copy to tmp to avoid iCloud lock
+        try:
+            tmp = Path(tempfile.mktemp(suffix=".json"))
+            shutil.copy2(str(path), str(tmp))
+            data = json.loads(tmp.read_text(encoding="utf-8"))
+            tmp.unlink()
+            return data
+        except (OSError, shutil.Error, json.JSONDecodeError):
+            pass
+        # Attempt 2: force download specific file, then direct read
+        try:
+            subprocess.run(["brctl", "download", str(path)],
+                           capture_output=True, timeout=10)
+            import time as _t
+            _t.sleep(1)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data
+        except (OSError, json.JSONDecodeError):
+            log.debug("poll_commands: unreadable (iCloud placeholder?): %s", path.name)
+            return None
 
     # ==================================================================
     # Legacy stubs (no-op, prevent old code from creating root folders)
@@ -525,7 +656,9 @@ class Mira:
 
     def reply(self, msg_id: str, recipient: str, content: str,
               thread_id: str = "") -> str:
-        """Legacy: no-op. Agent replies go through update_task_status()."""
+        """Append agent reply to item. msg_id is the item_id."""
+        item_id = thread_id or msg_id
+        self.append_message(item_id, "agent", content)
         return _msg_id()
 
     def post(self, content: str, sender: str = "agent",

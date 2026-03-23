@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 # Add agents to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "agents" / "shared"))
-from config import MIRA_DIR
+from config import MIRA_DIR, WEBGUI_PORT
 
 BRIDGE = MIRA_DIR
 USERS_DIR = BRIDGE / "users"
@@ -69,11 +69,30 @@ def get_heartbeat():
 class NewTodo(BaseModel):
     title: str
     priority: str = "medium"
+    tags: list[str] = []
+
+class UpdateTodo(BaseModel):
+    status: str = ""
+    priority: str = ""
+    title: str = ""
+
+class Followup(BaseModel):
+    content: str
+    source: str = "user"
 
 @app.get("/api/{user_id}/todos")
 def get_todos(user_id: str):
     path = _user_dir(user_id) / "todos.json"
-    return _read_json(path) or []
+    todos = _read_json(path) or []
+    # Migrate legacy 'response' → 'followups'
+    for t in todos:
+        if "followups" not in t:
+            t["followups"] = []
+            if t.get("response"):
+                t["followups"].append({"content": t["response"], "source": "agent", "timestamp": t.get("updated_at", "")})
+        if "tags" not in t:
+            t["tags"] = []
+    return todos
 
 @app.post("/api/{user_id}/todos")
 def add_todo(user_id: str, todo: NewTodo):
@@ -84,13 +103,41 @@ def add_todo(user_id: str, todo: NewTodo):
         "title": todo.title,
         "priority": todo.priority,
         "status": "pending",
+        "tags": todo.tags,
         "created_at": _utc_iso(),
         "updated_at": _utc_iso(),
-        "response": None,
+        "followups": [],
     }
     todos.append(new)
     _atomic_write(path, todos)
     return new
+
+@app.patch("/api/{user_id}/todos/{todo_id}")
+def update_todo(user_id: str, todo_id: str, update: UpdateTodo):
+    path = _user_dir(user_id) / "todos.json"
+    todos = _read_json(path) or []
+    for t in todos:
+        if t["id"] == todo_id:
+            if update.status: t["status"] = update.status
+            if update.priority: t["priority"] = update.priority
+            if update.title: t["title"] = update.title
+            t["updated_at"] = _utc_iso()
+            _atomic_write(path, todos)
+            return t
+    raise HTTPException(404)
+
+@app.post("/api/{user_id}/todos/{todo_id}/followup")
+def add_followup(user_id: str, todo_id: str, fu: Followup):
+    path = _user_dir(user_id) / "todos.json"
+    todos = _read_json(path) or []
+    for t in todos:
+        if t["id"] == todo_id:
+            if "followups" not in t: t["followups"] = []
+            t["followups"].append({"content": fu.content, "source": fu.source, "timestamp": _utc_iso()})
+            t["updated_at"] = _utc_iso()
+            _atomic_write(path, todos)
+            return t
+    raise HTTPException(404)
 
 @app.post("/api/{user_id}/todos/{todo_id}/done")
 def complete_todo(user_id: str, todo_id: str):
@@ -370,4 +417,4 @@ def index():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8384)
+    uvicorn.run(app, host="0.0.0.0", port=WEBGUI_PORT)

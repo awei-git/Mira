@@ -167,61 +167,39 @@ def post_note(text: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def subscribe_to_publication(subdomain: str) -> bool:
-    """Subscribe to a Substack publication (free tier).
+    """Track a Substack publication for proactive commenting.
 
-    Uses POST /api/v1/free on the publication's subdomain.
+    Adds the subdomain to the local subscriptions list so proactive
+    commenting and likes will include it. The old /api/v1/free subscribe
+    endpoint no longer returns JSON (Substack API change ~March 2026),
+    so we just track locally instead of making an API call.
     """
-    from substack import _get_substack_config
-    import urllib.request
-    import urllib.error
+    state = _load_state()
+    subs = state.get("subscriptions", [])
+    if subdomain in subs:
+        return True  # already tracked
 
-    cfg = _get_substack_config()
-    cookie = cfg.get("cookie", "")
-    if not cookie:
-        return False
-
+    # Verify the publication exists and has accessible posts
     try:
-        payload = json.dumps({
-            "email": "",
-            "first_url": f"https://{subdomain}.substack.com/",
-            "current_url": f"https://{subdomain}.substack.com/",
-        }).encode("utf-8")
-
-        req = urllib.request.Request(
-            f"https://{subdomain}.substack.com/api/v1/free",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Cookie": f"substack.sid={cookie}; connect.sid={cookie}",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-                "Origin": f"https://{subdomain}.substack.com",
-                "Accept": "application/json",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            ct = resp.headers.get("Content-Type", "")
-            raw = resp.read().decode("utf-8")
-
-        if "application/json" not in ct:
-            log.warning("Subscribe to %s: non-JSON response", subdomain)
+        import requests as _req
+        r = _req.get(f"https://{subdomain}.substack.com/api/v1/posts?limit=1", timeout=10)
+        if r.status_code != 200:
+            log.warning("Subscribe to %s: publication not accessible (HTTP %d)", subdomain, r.status_code)
+            return False
+        posts = r.json() if 'json' in r.headers.get('Content-Type', '') else []
+        if not posts:
+            log.warning("Subscribe to %s: no posts found, skipping", subdomain)
             return False
 
-        result = json.loads(raw)
-        sub_id = result.get("subscription_id")
-        log.info("Subscribed to %s (sub_id=%s)", subdomain, sub_id)
-
-        # Record
-        state = _load_state()
-        subs = state.get("subscriptions", [])
-        if subdomain not in subs:
-            subs.append(subdomain)
-        state["subscriptions"] = subs
-        _save_state(state)
-        return True
     except Exception as e:
-        log.error("Failed to subscribe to %s: %s", subdomain, e)
+        log.warning("Subscribe to %s: could not verify (%s), skipping", subdomain, e)
         return False
+
+    subs.append(subdomain)
+    state["subscriptions"] = subs
+    _save_state(state)
+    log.info("Added %s to subscriptions list", subdomain)
+    return True
 
 
 def get_current_subscriptions() -> list[str]:

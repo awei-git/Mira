@@ -46,5 +46,11 @@
     "description": "Manage the full color-managed pipeline from calibrated display to final print — soft proof, ICC profiles, output sharpening.",
     "file": "print-output-pipeline.md",
     "tags": ["photo", "editing", "print", "color-management", "ICC", "output"]
+  },
+  {
+    "name": "WA Photography Style",
+    "description": "Learned style profile from 1162 photos — cinematic warm-cool separation, light-chasing, depth layering, selection rules, scoring gaps. The definitive reference for WA's aesthetic.",
+    "file": "wa-photography-style.md",
+    "tags": ["photo", "style", "personal", "editing", "composition", "selection"]
   }
 ]

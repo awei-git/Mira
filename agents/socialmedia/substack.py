@@ -52,7 +52,7 @@ def _md_to_html(markdown_text: str) -> str:
 - Output ONLY the HTML, no explanation
 
 Markdown:
-{markdown_text[:8000]}"""
+{markdown_text}"""
 
     html = claude_think(prompt, timeout=120)
     if html:
@@ -222,28 +222,27 @@ def _pick_personal_cover() -> str | None:
     if not photos:
         return None
 
-    # Track recently used photos to avoid repeats
+    # Track ALL used photos to guarantee no repeats until library exhausted
     from config import MIRA_ROOT
     history_file = MIRA_ROOT / ".cover_history.json"
-    recent: list[str] = []
+    used: set[str] = set()
     try:
         if history_file.exists():
-            recent = json.loads(history_file.read_text("utf-8"))
+            used = set(json.loads(history_file.read_text("utf-8")))
     except Exception:
         pass
 
-    # Exclude recently used (keep last 10)
-    available = [p for p in photos if p.name not in recent]
+    available = [p for p in photos if p.name not in used]
     if not available:
-        available = photos  # all used, reset
+        used.clear()  # all used, reset
+        available = photos
 
     pick = random.choice(available)
 
-    # Update history
-    recent.append(pick.name)
-    recent = recent[-10:]  # keep last 10
+    # Update history (full list)
+    used.add(pick.name)
     try:
-        history_file.write_text(json.dumps(recent), "utf-8")
+        history_file.write_text(json.dumps(sorted(used)), "utf-8")
     except Exception:
         pass
 
@@ -984,6 +983,7 @@ def sync_posts_for_ios() -> int:
     # MIRA_DIR is already Mira-bridge/ — don't double it
     from config import MIRA_DIR
     posts_file = MIRA_DIR / "tasks" / "substack_posts.json"
+    posts_file.parent.mkdir(parents=True, exist_ok=True)
     posts_file.write_text(
         json.dumps(posts, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -1205,7 +1205,10 @@ def comment_on_post(post_url: str, comment_text: str) -> dict | None:
         return result
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8", errors="replace")[:300]
-        log.error("Comment on %s failed (HTTP %d): %s", post_url, e.code, error_body)
+        if e.code in (404, 403):
+            log.warning("Comment on %s skipped (HTTP %d): post may be paywalled, deleted, or comments disabled", post_url, e.code)
+        else:
+            log.error("Comment on %s failed (HTTP %d): %s", post_url, e.code, error_body)
         return None
     except Exception as e:
         log.error("Comment on %s failed: %s", post_url, e)

@@ -1,0 +1,61 @@
+[
+  {
+    "raw": "/Volumes/aw_footage/photo/2024-10-Mohonk/_DSC9516.ARW",
+    "output": "/Users/angwei/Sandbox/Mira/artifacts/photos/_DSC9516_v2_colormatched.png",
+    "score": 6.8,
+    "params": {
+      "analysis": {
+        "scene_type": "landscape",
+        "light_condition": "blue_hour",
+        "mood_target": "Hidden pavilion in autumn dusk \u2014 golden foliage glows warmly against cool blue-hour forest shadows, mysterious and intimate",
+        "key_issues": [
+          "severely underexposed \u2014 2+ stops dark across entire frame",
+          "foreground water detail completely lost to black",
+          "tree shadow texture fully crushed \u2014 no depth visible",
+          "warm golden foliage needs to pop against cool surroundings"
+        ]
+      },
+      "exposure": {
+        "ev": 1.8,
+        "black": -0.01
+      },
+      "filmic": {
+        "white_ev": 3.5,
+        "black_ev": -6.0,
+        "contrast": 1.2,
+        "latitude": 0.2,
+        "saturation": 0.1
+      },
+      "colorbalance": {
+        "contrast": 0.1,
+        "vibrance": 0.18,
+        "saturation_global": 0.05,
+        "chroma_global": 0.08,
+        "chroma_shadows": 0.1,
+        "chroma_highlights": 0.12,
+        "brilliance_global": 0.0,
+        "brilliance_shadows": -0.05,
+        "brilliance_highlights": 0.05,
+        "shadows_Y": -0.05,
+        "shadows_C": 0.08,
+        "shadows_H": -2.0,
+        "midtones_Y": 0.0,
+        "midtones_C": 0.05,
+        "midtones_H": 0.3,
+        "highlights_Y": 0.05,
+        "highlights_C": 0.12,
+        "highlights_H": 0.8
+      },
+      "tone_eq": {
+        "blacks": 0.3,
+        "shadows": 0.4,
+        "midtones": 0.1,
+        "highlights": 0.0,
+        "whites": -0.2,
+        "speculars": -0.3
+      }
+    },
+    "date": "2026-03-22T21:01:47.461912",
+    "status": "completed"
+  }
+]

@@ -1,0 +1,11 @@
+{
+  "clip_model": "ViT-L-14",
+  "pretrained": "datacomp_xl_s13b_b90k",
+  "samples": 1161,
+  "cv_spearman": 0.691,
+  "cv_pearson": 0.719,
+  "cv_mae": 0.433,
+  "cv_rmse": 0.551,
+  "score_mean": 6.29,
+  "score_std": 0.78
+}

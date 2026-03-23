@@ -1,0 +1,139 @@
+{
+  "overall_mood": "cinematic warmth with edge",
+  "color_tendency": "Teal-and-orange cinematic grade. Warm highlights, desaturated reds/purples, boosted orange/yellow/green. Muted cool shadows with amber undertone.",
+  "tone_curve": "Wide dynamic range — aggressively recovered highlights (-100), moderate shadow lift (+18 to +75), raised whites (+53 to +65). Not flat — still has punch from clarity and dehaze.",
+
+  "common_adjustments": {
+    "exposure_bias": 0.0,
+    "contrast": 10,
+    "highlights": -80,
+    "shadows": 30,
+    "whites": 55,
+    "blacks": 0,
+    "clarity": 25,
+    "dehaze": 18,
+    "texture": 0,
+    "vibrance": 25,
+    "saturation": 10,
+    "temperature_shift": 10,
+    "tint_shift": 8,
+    "sharpness": 78,
+    "noise_reduction": 0,
+    "vignette": 0
+  },
+
+  "hsl_adjustments": {
+    "hue": {
+      "red": 0, "orange": -22, "yellow": -30, "green": -14,
+      "aqua": 0, "blue": 0, "purple": -100, "magenta": 0
+    },
+    "saturation": {
+      "red": -73, "orange": 43, "yellow": 41, "green": 37,
+      "aqua": 13, "blue": -7, "purple": -100, "magenta": -62
+    },
+    "luminance": {
+      "red": -100, "orange": 56, "yellow": 36, "green": 0,
+      "aqua": 0, "blue": -48, "purple": -15, "magenta": -37
+    }
+  },
+
+  "parametric_tone_curve": {
+    "shadows": -18,
+    "darks": 20,
+    "lights": -13,
+    "highlights": -40
+  },
+
+  "split_toning": {
+    "shadow_hue": 44,
+    "shadow_saturation": 1,
+    "highlight_hue": 31,
+    "highlight_saturation": 14,
+    "balance": 0
+  },
+
+  "sharpening": {
+    "amount": 78,
+    "radius": 0.8,
+    "detail": 33,
+    "edge_masking": 30
+  },
+
+  "shadow_color_cast": "amber",
+  "highlight_color_cast": "warm",
+  "black_point_style": "true_black",
+  "grain_preference": "none",
+
+  "color_palette": ["teal", "amber-orange", "muted green", "deep blue"],
+  "subjects": ["street photography", "landscape", "travel", "pets", "astrophotography", "architectural"],
+  "signature_traits": [
+    "Aggressive highlight recovery with raised whites — wide DR without going flat",
+    "Orange/yellow saturation boost with red/purple kill — cinematic color separation",
+    "Selective desaturation and B&W for specific moods — knows when to drop color",
+    "High clarity/dehaze for texture and atmosphere",
+    "Split tone: amber shadows + gold highlights — subtle warmth signature",
+    "Motion blur for street energy (long exposure street shots)"
+  ],
+
+  "lightroom_preset_base": {
+    "WhiteBalance": "Custom",
+    "Temperature": 5400,
+    "Tint": 12,
+    "Exposure2012": 0.00,
+    "Contrast2012": 10,
+    "Highlights2012": -80,
+    "Shadows2012": 30,
+    "Whites2012": 55,
+    "Blacks2012": 0,
+    "Clarity2012": 25,
+    "Dehaze": 18,
+    "Texture": 0,
+    "Vibrance": 25,
+    "Saturation": 10,
+    "Sharpness": 78,
+    "SharpenRadius": 0.8,
+    "SharpenDetail": 33,
+    "SharpenEdgeMasking": 30,
+    "LuminanceSmoothing": 0,
+    "ColorNoiseReduction": 25,
+    "PostCropVignetteAmount": 0,
+    "GrainAmount": 0,
+    "HueAdjustmentRed": 0,
+    "HueAdjustmentOrange": -22,
+    "HueAdjustmentYellow": -30,
+    "HueAdjustmentGreen": -14,
+    "HueAdjustmentAqua": 0,
+    "HueAdjustmentBlue": 0,
+    "HueAdjustmentPurple": -100,
+    "HueAdjustmentMagenta": 0,
+    "SaturationAdjustmentRed": -73,
+    "SaturationAdjustmentOrange": 43,
+    "SaturationAdjustmentYellow": 41,
+    "SaturationAdjustmentGreen": 37,
+    "SaturationAdjustmentAqua": 13,
+    "SaturationAdjustmentBlue": -7,
+    "SaturationAdjustmentPurple": -100,
+    "SaturationAdjustmentMagenta": -62,
+    "LuminanceAdjustmentRed": -100,
+    "LuminanceAdjustmentOrange": 56,
+    "LuminanceAdjustmentYellow": 36,
+    "LuminanceAdjustmentGreen": 0,
+    "LuminanceAdjustmentAqua": 0,
+    "LuminanceAdjustmentBlue": -48,
+    "LuminanceAdjustmentPurple": -15,
+    "LuminanceAdjustmentMagenta": -37,
+    "SplitToningShadowHue": 44,
+    "SplitToningShadowSaturation": 1,
+    "SplitToningHighlightHue": 31,
+    "SplitToningHighlightSaturation": 14,
+    "SplitToningBalance": 0,
+    "ParametricShadows": -18,
+    "ParametricDarks": 20,
+    "ParametricLights": -13,
+    "ParametricHighlights": -40
+  },
+
+  "editing_philosophy": "Cinematic but not overdone. Push color separation (teal/orange axis) hard in HSL but keep global saturation moderate. Recover all highlights, lift shadows selectively. Favor texture and clarity over smoothness. Know when a shot needs B&W or selective color instead of the standard grade.",
+
+  "source": "Analyzed from 16 reference photos + 3 custom XMP presets (fluffy cat, colorful autumn, cold plain) from user's LRed collection. 2026-03-21."
+}

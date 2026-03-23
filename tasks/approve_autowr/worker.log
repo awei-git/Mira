@@ -1,0 +1,8 @@
+2026-03-22 11:23:16,550 [INFO] Worker started: task=autowrite_2026-03-22 thread=autowrite_2026-03-22
+2026-03-22 11:23:16,550 [INFO] Discussion mode detected for task autowrite_2026-03-22
+2026-03-22 11:23:43,925 [INFO] Episode saved: 2026-03-22_1123_mira-writes-invisible-instructions.md (5 messages)
+2026-03-22 11:23:44,005 [INFO] Auto-flush saved to flush_2026-03-22_1123.md
+2026-03-22 11:24:40,086 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error
+2026-03-22 11:24:40,203 [INFO] Rebuilt semantic memory: 1435 chunks embedded
+2026-03-22 11:24:40,205 [INFO] Discussion response (4 chars): 已发出。
+2026-03-22 11:24:40,205 [INFO] Worker exiting (discussion)

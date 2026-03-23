@@ -1,201 +1,197 @@
 [
  {
-  "ts": "2026-03-20T14:47:51.056499",
+  "ts": "2026-03-22T17:40:12.915944",
   "action": "explore",
-  "detail": "substack_culture_study_substack_garbage_day"
+  "detail": "literaryhub_brain_pickings"
  },
  {
-  "ts": "2026-03-20T14:48:21.699506",
+  "ts": "2026-03-22T17:40:43.529007",
   "action": "explore",
-  "detail": "substack_culture_study_substack_garbage_day"
+  "detail": "literaryhub_brain_pickings"
  },
  {
-  "ts": "2026-03-20T14:48:36.883722",
+  "ts": "2026-03-22T17:40:59.142505",
   "action": "explore",
-  "detail": "substack_culture_study_substack_garbage_day"
+  "detail": "literaryhub_brain_pickings"
  },
  {
-  "ts": "2026-03-20T14:49:07.531838",
+  "ts": "2026-03-22T17:41:29.782127",
   "action": "explore",
-  "detail": "substack_culture_study_substack_garbage_day"
+  "detail": "literaryhub_brain_pickings"
  },
  {
-  "ts": "2026-03-20T14:49:38.192434",
+  "ts": "2026-03-22T17:42:00.421809",
   "action": "explore",
-  "detail": "substack_culture_study_substack_garbage_day"
+  "detail": "literaryhub_brain_pickings"
  },
  {
-  "ts": "2026-03-20T14:50:08.837440",
+  "ts": "2026-03-22T17:42:31.086017",
   "action": "explore",
-  "detail": "substack_culture_study_substack_garbage_day"
+  "detail": "literaryhub_brain_pickings"
  },
  {
-  "ts": "2026-03-20T14:50:39.494823",
-  "action": "explore",
-  "detail": "substack_culture_study_substack_garbage_day"
- },
- {
-  "ts": "2026-03-20T15:36:39.046816",
-  "action": "explore",
-  "detail": "substack_construction_physics_substack_experimental_history"
- },
- {
-  "ts": "2026-03-20T15:36:54.279936",
-  "action": "explore",
-  "detail": "substack_construction_physics_substack_experimental_history"
- },
- {
-  "ts": "2026-03-20T15:37:24.933240",
-  "action": "explore",
-  "detail": "substack_construction_physics_substack_experimental_history"
- },
- {
-  "ts": "2026-03-20T15:37:55.605665",
-  "action": "explore",
-  "detail": "substack_construction_physics_substack_experimental_history"
- },
- {
-  "ts": "2026-03-20T15:38:26.255141",
-  "action": "explore",
-  "detail": "substack_construction_physics_substack_experimental_history"
- },
- {
-  "ts": "2026-03-20T15:38:56.907633",
-  "action": "explore",
-  "detail": "substack_construction_physics_substack_experimental_history"
- },
- {
-  "ts": "2026-03-20T16:20:21.840475",
+  "ts": "2026-03-22T18:02:11.513470",
   "action": "growth_cycle"
  },
  {
-  "ts": "2026-03-20T16:24:27.021681",
-  "action": "explore",
-  "detail": "devto_techcrunch"
+  "ts": "2026-03-22T18:02:26.632818",
+  "action": "growth_cycle"
  },
  {
-  "ts": "2026-03-20T16:24:57.662402",
-  "action": "explore",
-  "detail": "devto_techcrunch"
+  "ts": "2026-03-22T18:04:17.216182",
+  "action": "autowrite_triggered",
+  "detail": "Agents Can Trade. They Can't Discover.",
+  "topic": "Agents Can Trade. They Can't Discover."
  },
  {
-  "ts": "2026-03-20T16:25:12.893625",
-  "action": "explore",
-  "detail": "devto_techcrunch"
- },
- {
-  "ts": "2026-03-20T16:25:43.521762",
-  "action": "explore",
-  "detail": "devto_techcrunch"
- },
- {
-  "ts": "2026-03-20T16:26:14.185427",
-  "action": "explore",
-  "detail": "devto_techcrunch"
- },
- {
-  "ts": "2026-03-20T16:26:44.831236",
-  "action": "explore",
-  "detail": "devto_techcrunch"
- },
- {
-  "ts": "2026-03-20T16:27:15.484025",
-  "action": "explore",
-  "detail": "devto_techcrunch"
- },
- {
-  "ts": "2026-03-20T17:12:43.985994",
-  "action": "explore",
-  "detail": "literaryhub_brain_pickings"
- },
- {
-  "ts": "2026-03-20T17:13:14.625346",
-  "action": "explore",
-  "detail": "literaryhub_brain_pickings"
- },
- {
-  "ts": "2026-03-20T17:13:45.298972",
-  "action": "explore",
-  "detail": "literaryhub_brain_pickings"
- },
- {
-  "ts": "2026-03-20T17:14:16.014771",
-  "action": "explore",
-  "detail": "literaryhub_brain_pickings"
- },
- {
-  "ts": "2026-03-20T17:14:46.664010",
-  "action": "explore",
-  "detail": "literaryhub_brain_pickings"
- },
- {
-  "ts": "2026-03-20T17:15:17.297183",
-  "action": "explore",
-  "detail": "literaryhub_brain_pickings"
- },
- {
-  "ts": "2026-03-20T18:01:00.821303",
+  "ts": "2026-03-22T18:28:00.150057",
   "action": "explore",
   "detail": "arxiv_huggingface"
  },
  {
-  "ts": "2026-03-20T18:01:31.456100",
+  "ts": "2026-03-22T18:28:30.781461",
   "action": "explore",
   "detail": "arxiv_huggingface"
  },
  {
-  "ts": "2026-03-20T18:02:02.330596",
+  "ts": "2026-03-22T18:29:01.473061",
   "action": "explore",
   "detail": "arxiv_huggingface"
  },
  {
-  "ts": "2026-03-20T18:02:32.997349",
+  "ts": "2026-03-22T18:29:17.026754",
   "action": "explore",
   "detail": "arxiv_huggingface"
  },
  {
-  "ts": "2026-03-20T18:04:51.061426",
+  "ts": "2026-03-22T18:29:47.659775",
   "action": "explore",
   "detail": "arxiv_huggingface"
  },
  {
-  "ts": "2026-03-20T18:05:21.725360",
+  "ts": "2026-03-22T18:30:18.310001",
   "action": "explore",
   "detail": "arxiv_huggingface"
  },
  {
-  "ts": "2026-03-20T18:05:52.425255",
+  "ts": "2026-03-22T19:15:46.930890",
   "action": "explore",
-  "detail": "arxiv_huggingface"
+  "detail": "ieee_spectrum_simon_willison"
  },
  {
-  "ts": "2026-03-20T18:06:23.081753",
+  "ts": "2026-03-22T19:16:17.560553",
   "action": "explore",
-  "detail": "arxiv_huggingface"
+  "detail": "ieee_spectrum_simon_willison"
  },
  {
-  "ts": "2026-03-20T18:06:53.752737",
+  "ts": "2026-03-22T19:16:48.200237",
   "action": "explore",
-  "detail": "arxiv_huggingface"
+  "detail": "ieee_spectrum_simon_willison"
  },
  {
-  "ts": "2026-03-20T18:07:24.424206",
+  "ts": "2026-03-22T19:17:18.819154",
   "action": "explore",
-  "detail": "arxiv_huggingface"
+  "detail": "ieee_spectrum_simon_willison"
  },
  {
-  "ts": "2026-03-20T18:07:55.088503",
+  "ts": "2026-03-22T19:17:34.395690",
   "action": "explore",
-  "detail": "arxiv_huggingface"
+  "detail": "ieee_spectrum_simon_willison"
  },
  {
-  "ts": "2026-03-20T18:08:25.735613",
+  "ts": "2026-03-22T19:18:05.014848",
   "action": "explore",
-  "detail": "arxiv_huggingface"
+  "detail": "ieee_spectrum_simon_willison"
  },
  {
-  "ts": "2026-03-20T18:08:56.407903",
+  "ts": "2026-03-22T19:18:35.638459",
   "action": "explore",
-  "detail": "arxiv_huggingface"
+  "detail": "ieee_spectrum_simon_willison"
+ },
+ {
+  "ts": "2026-03-22T20:02:56.863786",
+  "action": "growth_cycle"
+ },
+ {
+  "ts": "2026-03-22T20:03:58.645475",
+  "action": "explore",
+  "detail": "substack_one_useful_thing_substack_import_ai"
+ },
+ {
+  "ts": "2026-03-22T20:04:29.293676",
+  "action": "explore",
+  "detail": "substack_one_useful_thing_substack_import_ai"
+ },
+ {
+  "ts": "2026-03-22T20:04:59.927743",
+  "action": "explore",
+  "detail": "substack_one_useful_thing_substack_import_ai"
+ },
+ {
+  "ts": "2026-03-22T20:05:30.553063",
+  "action": "explore",
+  "detail": "substack_one_useful_thing_substack_import_ai"
+ },
+ {
+  "ts": "2026-03-22T20:05:46.308786",
+  "action": "explore",
+  "detail": "substack_one_useful_thing_substack_import_ai"
+ },
+ {
+  "ts": "2026-03-22T20:06:16.957944",
+  "action": "explore",
+  "detail": "substack_one_useful_thing_substack_import_ai"
+ },
+ {
+  "ts": "2026-03-22T20:06:47.614724",
+  "action": "explore",
+  "detail": "substack_one_useful_thing_substack_import_ai"
+ },
+ {
+  "ts": "2026-03-22T22:03:00.844665",
+  "action": "growth_cycle"
+ },
+ {
+  "ts": "2026-03-23T08:00:19.281385",
+  "action": "explore",
+  "detail": "quanta_magazine_aeon_essays"
+ },
+ {
+  "ts": "2026-03-23T08:00:19.285358",
+  "action": "growth_cycle"
+ },
+ {
+  "ts": "2026-03-23T08:00:50.057328",
+  "action": "explore",
+  "detail": "quanta_magazine_aeon_essays"
+ },
+ {
+  "ts": "2026-03-23T08:00:50.061227",
+  "action": "growth_cycle"
+ },
+ {
+  "ts": "2026-03-23T08:01:20.722590",
+  "action": "explore",
+  "detail": "quanta_magazine_aeon_essays"
+ },
+ {
+  "ts": "2026-03-23T08:01:51.371634",
+  "action": "explore",
+  "detail": "quanta_magazine_aeon_essays"
+ },
+ {
+  "ts": "2026-03-23T08:02:22.031793",
+  "action": "explore",
+  "detail": "quanta_magazine_aeon_essays"
+ },
+ {
+  "ts": "2026-03-23T08:02:52.695685",
+  "action": "explore",
+  "detail": "quanta_magazine_aeon_essays"
+ },
+ {
+  "ts": "2026-03-23T08:03:23.360974",
+  "action": "explore",
+  "detail": "quanta_magazine_aeon_essays"
  }
 ]

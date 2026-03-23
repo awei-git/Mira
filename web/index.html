@@ -205,7 +205,7 @@ function buildSidebar() {
     <div class="nav-item active" data-nav="home" onclick="navTo('home')">🏠 Home <span class="badge" id="badgeNeedsInput" style="display:none"></span></div>
     <div class="nav-item" data-nav="todos" onclick="navToTodos()">☑️ Todo List</div>
     <div class="nav-sep"></div>
-    <div class="nav-item" data-nav="timeline" onclick="navTo('timeline')">💬 Timeline</div>
+    <!-- Timeline merged into Home -->
     <div class="nav-item" data-nav="requests" onclick="navTo('requests')">↑ Requests</div>
     <div class="nav-item" data-nav="pinned" onclick="navTo('pinned')">📌 Pinned</div>
     <div class="nav-item" data-nav="failed" onclick="navTo('failed')">⚠️ Failed</div>
@@ -262,31 +262,22 @@ function renderList() {
   if (q) f = f.filter(i => i.title.toLowerCase().includes(q) || (i.tags||[]).some(t=>t.includes(q)));
 
   const html = [];
-  if (currentTab === 'home') {
-    const ni = f.filter(i=>i.status==='needs-input');
-    const wk = f.filter(i=>['working','queued'].includes(i.status));
-    const fd = f.filter(i=>i.type==='feed');
-    const dn = f.filter(i=>i.status==='done'&&i.type!=='feed').slice(0,10);
+  if (currentTab === 'home' || currentTab === 'timeline') {
+    const tenDaysAgo = new Date(new Date().setHours(0,0,0,0) - 10*86400000);
+    const visible = q ? f : f.filter(i => new Date(i.created_at||i.updated_at) >= tenDaysAgo);
+    // Needs-attention banner first
+    const ni = visible.filter(i=>i.status==='needs-input');
     if(ni.length) { html.push(sec('Reply Needed',ni.length,'warn')); ni.forEach(i=>html.push(row(i))); }
-    if(wk.length) { html.push(sec('In Progress',wk.length)); wk.forEach(i=>html.push(row(i))); }
-    if(fd.length) { html.push(sec('Today from Mira')); fd.forEach(i=>html.push(row(i))); }
-    if(dn.length) { html.push(sec('Recent')); dn.forEach(i=>html.push(row(i))); }
-  } else if (currentTab==='timeline') {
-    // Merge feeds + discussions, group by date
-    // Discussions with parentId inherit the parent feed's date
-    const timeline = f.filter(i => i.type==='feed' || i.type==='discussion');
-    const feedDates = {};
-    // Map feed dates first
-    timeline.filter(i=>i.type==='feed').forEach(i => { feedDates[i.id] = i.created_at || i.updated_at; });
-    // For discussions with parentId, use parent's date for grouping
-    const withDates = timeline.map(i => {
-      if (i.type==='discussion' && i.parent_id && feedDates[i.parent_id]) {
-        return {...i, _groupDate: feedDates[i.parent_id]};
+    // Date-grouped items
+    groupByDate(visible.filter(i=>i.status!=='needs-input')).forEach(g => {
+      const isRecent = g.label==='Today'||g.label==='Yesterday';
+      if (isRecent) {
+        html.push(sec(g.label, g.items.length)); g.items.forEach(i=>html.push(row(i)));
+      } else {
+        html.push(`<div class="section-label" style="cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none'">${g.label} (${g.items.length}) ▸</div><div style="display:none">`);
+        g.items.forEach(i=>html.push(row(i)));
+        html.push('</div>');
       }
-      return {...i, _groupDate: i.created_at || i.updated_at};
-    });
-    groupByDate(withDates, '_groupDate').forEach(g => {
-      html.push(sec(g.label)); g.items.forEach(i=>html.push(row(i)));
     });
   } else if (currentTab==='requests') {
     groupByDate(f.filter(i=>i.type==='request')).forEach(g => {
@@ -301,9 +292,29 @@ function renderList() {
   document.getElementById('listContent').innerHTML = html.join('');
 }
 function sec(t,c,cls) { return `<div class="section-label ${cls||''}">${t}${c?`<span class="cnt">${c}</span>`:''}</div>`; }
+function itemTypeColor(item) {
+  if(item.id.includes('explore')) return '#4A9EFF';
+  if(item.id.includes('mira')) return '#E8A838';
+  if(item.id.includes('zhesi')) return '#D97706';
+  if(item.id.includes('tetra')) return '#22C55E';
+  if(item.type==='request') return '#818CF8';
+  if(item.type==='discussion') return '#A78BFA';
+  return '#8696A0';
+}
+function itemIcon(item) {
+  if(item.id.includes('explore')) return '🌐';
+  if(item.id.includes('zhesi')) return '✨';
+  if(item.id.includes('tetra')) return '📈';
+  if(item.id.includes('mira')) return '🧠';
+  if(item.id.includes('reflect')||item.id.includes('eval')) return '📊';
+  if(item.type==='discussion') return '💬';
+  if(item.status==='done') return '✓';
+  if(item.status==='failed') return '✗';
+  return '↑';
+}
 function row(item) {
-  const iconCls = item.status==='failed'?'fail':item.type==='discussion'?'disc':item.type==='feed'?'feed':'req';
-  const icon = item.type==='discussion'?'💬':item.type==='feed'?'📋':item.status==='done'?'✓':item.status==='failed'?'✗':'↑';
+  const color = itemTypeColor(item);
+  const icon = itemIcon(item);
   const preview = lastPreview(item);
   const time = relTime(item.updated_at);
   const sel = item.id===currentItemId ? ' selected':'';
@@ -312,9 +323,9 @@ function row(item) {
   if(item.status==='needs-input') badges+='<span class="row-badge">!</span>';
   if(item.status==='working') badges+='<span class="row-status">⏳</span>';
   const tags = (item.tags||[]).slice(0,2).map(t=>`<span class="tag">${t}</span>`).join('');
-  return `<div class="row${sel}" onclick="openDetail('${item.id}')">
-    <div class="row-icon ${iconCls}">${icon}</div>
-    <div class="row-info"><div class="row-title">${esc(item.title)}</div><div class="row-sub">${esc(preview)}</div>${tags?`<div class="tags">${tags}</div>`:''}</div>
+  return `<div class="row${sel}" onclick="openDetail('${item.id}')" style="border-left:3px solid ${color}; background: ${color}08">
+    <div class="row-icon" style="background:${color}22;color:${color}">${icon}</div>
+    <div class="row-info"><div class="row-title" style="font-size:15px">${esc(item.title)}</div><div class="row-sub" style="font-size:13px">${esc(preview)}</div>${tags?`<div class="tags">${tags}</div>`:''}</div>
     <div class="row-meta"><div class="row-time">${time}</div>${badges}</div></div>`;
 }
 function lastPreview(item) {
@@ -329,6 +340,17 @@ function relTime(iso) {
   if(s<60)return 'now';if(s<3600)return Math.floor(s/60)+'m';if(s<86400)return Math.floor(s/3600)+'h';return Math.floor(s/86400)+'d';
 }
 function esc(s) { const d=document.createElement('div');d.textContent=s;return d.innerHTML; }
+function renderMd(s) {
+  // Lightweight markdown: links, bold, italic, headers, line breaks
+  let h = esc(s);
+  h = h.replace(/^## (.+)$/gm, '<h3 style="margin:8px 0 4px;font-size:15px">$1</h3>');
+  h = h.replace(/^# (.+)$/gm, '<h2 style="margin:8px 0 4px;font-size:17px">$1</h2>');
+  h = h.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  h = h.replace(/\*(.+?)\*/g, '<i>$1</i>');
+  h = h.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:var(--blue)">$1</a>');
+  h = h.replace(/\n/g, '<br>');
+  return h;
+}
 
 function groupByDate(items, dateField) {
   const groups = {};
@@ -348,23 +370,31 @@ function groupByDate(items, dateField) {
 // ===== Detail =====
 function openDetail(id) {
   currentItemId = id;
-  renderDetail(id);
+  renderDetail(id, true);
   renderList(); // update selection highlight
 }
-function renderDetail(id) {
+function renderDetail(id, scrollToBottom) {
   const item = items.find(i=>i.id===id);
   if(!item) return;
   document.getElementById('detailTitle').textContent = item.title;
   document.getElementById('replyBar').style.display = item.status!=='archived' ? '' : 'none';
   const el = document.getElementById('detailMessages');
+  const prevCount = el.children.length;
+  const prevScroll = el.scrollTop;
   el.innerHTML = (item.messages||[]).map(m => {
     const cls = m.kind==='error'?'error':m.kind==='status_card'?'status_card':m.sender===currentUser?'user':'agent';
     let c = m.content;
     if(m.kind==='status_card'){try{c='⚙️ '+JSON.parse(c).text}catch(e){}}
     const t = m.timestamp ? new Date(m.timestamp).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '';
-    return `<div class="msg ${cls}">${esc(c)}<div class="msg-time">${t}</div></div>`;
+    return `<div class="msg ${cls}">${renderMd(c)}<div class="msg-time">${t}</div></div>`;
   }).join('');
-  el.scrollTop = el.scrollHeight;
+  // Only auto-scroll if: explicitly requested, first render, or new messages arrived
+  const newCount = el.children.length;
+  if (scrollToBottom || prevCount === 0 || newCount > prevCount) {
+    el.scrollTop = el.scrollHeight;
+  } else {
+    el.scrollTop = prevScroll;
+  }
 }
 
 // ===== Artifacts =====
@@ -402,7 +432,21 @@ async function sendNew() {
   refresh();
 }
 async function sendReply() {
-  const inp=document.getElementById('replyInput'); const t=inp.value.trim(); if(!t||!currentUser||!currentItemId)return; inp.value='';
+  const inp=document.getElementById('replyInput'); const t=inp.value.trim(); if(!t||!currentUser)return; inp.value='';
+  // Todo followup
+  if (currentTab==='todos' && currentTodoId) {
+    await fetch(`/api/${currentUser}/todos/${currentTodoId}/followup`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:t,source:'user'})});
+    loadTodos();
+    return;
+  }
+  // Regular item reply
+  if(!currentItemId) return;
+  const item = items.find(i=>i.id===currentItemId);
+  if(item) {
+    const now = new Date().toISOString();
+    item.messages.push({id:Math.random().toString(36).slice(2,10), sender:currentUser, content:t, timestamp:now, kind:'text'});
+    renderDetail(currentItemId);
+  }
   await fetch(`/api/${currentUser}/items/${currentItemId}/reply`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:t})});
   refresh();
 }
@@ -411,9 +455,9 @@ async function shareCurrent() { if(!currentUser||!currentItemId)return; await fe
 async function archiveCurrent() { if(!currentUser||!currentItemId)return; await fetch(`/api/${currentUser}/items/${currentItemId}/archive`,{method:'POST'}); currentItemId=null; refresh(); }
 
 // ===== Todos =====
-let todos = [];
+let todos = [], currentTodoId = null;
 async function navToTodos() {
-  currentTab = 'todos'; currentSection = null;
+  currentTab = 'todos'; currentSection = null; currentItemId = null;
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.nav === 'todos'));
   document.getElementById('listTitle').textContent = 'Todo List';
   await loadTodos();
@@ -422,51 +466,82 @@ async function loadTodos() {
   const res = await fetch(`/api/${currentUser}/todos`);
   todos = await res.json();
   renderTodos();
+  if (currentTodoId) openTodoDetail(currentTodoId);
 }
 function renderTodos() {
   const el = document.getElementById('listContent');
-  const pending = todos.filter(t=>t.status==='pending');
-  const working = todos.filter(t=>t.status==='working');
-  const done = todos.filter(t=>t.status==='done');
+  const prioOrder = {high:0,medium:1,low:2};
+  const sortByPrio = (a,b) => (prioOrder[a.priority]||1) - (prioOrder[b.priority]||1);
+  const pending = todos.filter(t=>t.status==='pending').sort(sortByPrio);
+  const working = todos.filter(t=>t.status==='working').sort(sortByPrio);
+  const done = todos.filter(t=>t.status==='done').slice(0,10);
   const prioIcon = {high:'🔴',medium:'🟡',low:'🟢'};
   const html = [];
   if(pending.length) { html.push(sec('Pending',pending.length)); pending.forEach(t=>html.push(todoRow(t,prioIcon))); }
   if(working.length) { html.push(sec('Working',working.length)); working.forEach(t=>html.push(todoRow(t,prioIcon))); }
   if(done.length) { html.push(sec('Done')); done.forEach(t=>html.push(todoRow(t,prioIcon))); }
-  if(!html.length) html.push('<div class="empty">No todos. Add one below.</div>');
+  if(!html.length) html.push('<div class="empty">No todos yet.<br>Type below: "high: your idea" or just "your idea"</div>');
   el.innerHTML = html.join('');
 
-  // Show todo detail panel
-  document.getElementById('detailTitle').textContent = 'Todo List';
-  document.getElementById('detailMessages').innerHTML = '<div class="empty">Select a todo to see details</div>';
-  document.getElementById('replyBar').style.display = 'none';
+  if (!currentTodoId) {
+    document.getElementById('detailTitle').textContent = 'Todo List';
+    document.getElementById('detailMessages').innerHTML = '<div class="empty">Select a todo to see details</div>';
+    document.getElementById('replyBar').style.display = 'none';
+  }
 }
 function todoRow(t, pi) {
   const icon = t.status==='done'?'✅':(pi[t.priority]||'🟡');
   const cls = t.status==='done'?' style="opacity:0.5"':'';
-  return `<div class="row"${cls} onclick="openTodoDetail('${t.id}')">
+  const sel = t.id===currentTodoId ? ' selected':'';
+  const fuCount = (t.followups||[]).length;
+  const fuBadge = fuCount ? `<span style="font-size:11px;color:var(--text3)">${fuCount} 💬</span>` : '';
+  const tags = (t.tags||[]).map(x=>`<span class="tag">${x}</span>`).join('');
+  return `<div class="row${sel}"${cls} onclick="openTodoDetail('${t.id}')">
     <div style="font-size:16px">${icon}</div>
-    <div class="row-info"><div class="row-title">${esc(t.title)}</div>
-    <div class="row-sub">${t.priority} · ${relTime(t.updated_at)}</div></div>
-    <div class="row-meta">
-      ${t.status==='pending'?`<button onclick="event.stopPropagation();completeTodo('${t.id}')" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:3px 8px;font-size:13px;cursor:pointer">Done</button>`:''}
-      <button onclick="event.stopPropagation();deleteTodo('${t.id}')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:13px">✕</button>
+    <div class="row-info">
+      <div class="row-title">${esc(t.title)}</div>
+      <div class="row-sub">${t.priority} · ${relTime(t.updated_at)} ${fuBadge}</div>
+      ${tags?`<div class="tags">${tags}</div>`:''}
+    </div>
+    <div class="row-meta" style="display:flex;gap:4px;align-items:center">
+      ${t.status!=='done'?`<select onclick="event.stopPropagation()" onchange="event.stopPropagation();updateTodoPrio('${t.id}',this.value)" style="background:var(--card);color:var(--text2);border:1px solid var(--border);border-radius:4px;font-size:11px;padding:1px 2px">
+        <option value="high"${t.priority==='high'?' selected':''}>🔴</option>
+        <option value="medium"${t.priority==='medium'?' selected':''}>🟡</option>
+        <option value="low"${t.priority==='low'?' selected':''}>🟢</option>
+      </select>`:''}
+      ${t.status==='pending'?`<button onclick="event.stopPropagation();completeTodo('${t.id}')" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer">✓</button>`:''}
+      <button onclick="event.stopPropagation();deleteTodo('${t.id}')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:12px">✕</button>
     </div></div>`;
 }
 function openTodoDetail(id) {
+  currentTodoId = id;
   const t = todos.find(x=>x.id===id);
   if(!t) return;
   document.getElementById('detailTitle').textContent = t.title;
-  let html = `<div style="padding:20px;font-size:16px;line-height:1.6">
-    <div><strong>Priority:</strong> ${t.priority}</div>
-    <div><strong>Status:</strong> ${t.status}</div>
-    <div><strong>Created:</strong> ${new Date(t.created_at).toLocaleString()}</div>`;
-  if(t.response) html += `<div style="margin-top:16px;padding:12px;background:var(--bubble-in);border-radius:10px"><strong>Agent response:</strong><br>${esc(t.response)}</div>`;
+  const fus = t.followups || [];
+  let html = '<div style="display:flex;flex-direction:column;gap:6px;padding:16px">';
+  // Info header
+  html += `<div style="padding:8px 12px;background:var(--card);border-radius:8px;font-size:14px;color:var(--text2)">
+    <b>Priority:</b> ${t.priority} · <b>Status:</b> ${t.status} · <b>Created:</b> ${new Date(t.created_at).toLocaleDateString()}</div>`;
+  // Original content as first message
+  html += `<div class="msg user" style="align-self:flex-end">${esc(t.title)}<div class="msg-time">${new Date(t.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</div></div>`;
+  // Followups as chat messages
+  for (const fu of fus) {
+    const cls = fu.source === 'agent' ? 'agent' : 'user';
+    const align = fu.source === 'agent' ? 'flex-start' : 'flex-end';
+    const time = fu.timestamp ? new Date(fu.timestamp).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '';
+    html += `<div class="msg ${cls}" style="align-self:${align}">${renderMd(fu.content)}<div class="msg-time">${fu.source==='agent'?'Mira · ':''}${time}</div></div>`;
+  }
   html += '</div>';
   document.getElementById('detailMessages').innerHTML = html;
+  document.getElementById('detailMessages').scrollTop = document.getElementById('detailMessages').scrollHeight;
+  // Show reply bar for adding followups
+  document.getElementById('replyBar').style.display = '';
+  renderTodos(); // refresh selection highlight
 }
 async function completeTodo(id) { await fetch(`/api/${currentUser}/todos/${id}/done`,{method:'POST'}); loadTodos(); }
-async function deleteTodo(id) { await fetch(`/api/${currentUser}/todos/${id}`,{method:'DELETE'}); loadTodos(); }
+async function deleteTodo(id) { if(currentTodoId===id) currentTodoId=null; await fetch(`/api/${currentUser}/todos/${id}`,{method:'DELETE'}); loadTodos(); }
+async function updateTodoPrio(id, prio) { await fetch(`/api/${currentUser}/todos/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({priority:prio})}); loadTodos(); }
 
 // Override new input for todo tab
 const origSendNew = sendNew;

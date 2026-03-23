@@ -1,18 +1,20 @@
 """Video agent handler — orchestrates the full editing pipeline.
 
+Enhanced 6-phase pipeline with see-think-do-review:
+    Phase 0: PREPARE  — music beat analysis + content mode detection
+    Phase 1: SEE      — per-clip vision analysis (Gemini native video)
+    Phase 2: THINK    — taste profile + beat map → edit plan (Claude)
+    Phase 3: DO       — per-clip rendering with adaptive color grading (ffmpeg)
+    Phase 4: MIX      — music mixing with speech ducking
+    Phase 5: REVIEW   — score rough cut, propose fixes, iterate
+
 Interactive workflow (via Mira app):
-    1. User sends video path → agent runs Phase 1+2, returns screenplay
+    1. User sends video path → agent runs Phase 0+1+2, returns screenplay
     2. User discusses / adjusts → agent revises screenplay
-    3. User approves ("ok", "开始剪") → agent runs Phase 3+4, returns final video
+    3. User approves → agent runs Phase 3+4+5, auto-iterates if needed
 
 Standalone:
-    python handler.py --input /path/to/videos [--music /path/to/music.mp3] [--output /path/to/output.mp4]
-
-Pipeline phases:
-    1. Scene analysis (ffmpeg + Gemini Vision + Whisper)
-    2. Screenplay generation (Claude)
-    3. Automated editing (ffmpeg)
-    4. Music mixing (ffmpeg)
+    python handler.py --input /path/to/videos [--music /path/to/music.mp3]
 """
 import argparse
 import json
@@ -26,141 +28,365 @@ _AGENTS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
 from sub_agent import claude_think, _get_api_key
-from scene_analyzer import analyze_all
-from screenplay import generate_screenplay
-from editor import generate_edit_command, execute_edit
+from scene_analyzer import analyze_all, analyze_all_v2
+from triage import triage_all
+from screenplay import generate_screenplay, generate_edit_plan
+from editor import (
+    execute_edit_plan, re_render_clips, assemble_rough_cut, mix_with_music,
+    check_color_continuity,
+)
 from music_mixer import mix_music, find_music, auto_select_music, get_duration
+from beat_analyzer import analyze_beats, summarize_beat_map
+from clip_grader import grade_clip, detect_content_mode
+from video_reviewer import (
+    review_rough_cut, should_iterate, format_review_summary,
+)
 
 log = logging.getLogger("video.handler")
 
-# Signals that user approves the screenplay and wants to proceed to cutting
+# Signals that user approves the screenplay
 _APPROVE_PATTERNS = re.compile(
     r'\b(ok|好的?|可以|开始[剪切]|go|cut|proceed|执行|没问题|就这样|lgtm|开剪)\b',
     re.IGNORECASE,
 )
 
-# State file tracking pipeline progress
 _STATE_FILE = "video_state.json"
+_TASTE_PROFILE_PATH = Path(__file__).parent / "editing_taste_profile.md"
+_MAX_REVIEW_ITERATIONS = 2
+_REVIEW_THRESHOLD = 7.0
 
 
 def handle(workspace: Path, task_id: str, instruction: str,
            sender: str, thread_id: str, **kwargs) -> str:
-    """Handle a video editing task from Mira's task_worker.
-
-    Detects conversation phase from workspace state:
-    - No state → initial request, run Phase 1+2, return screenplay
-    - State = "screenplay_review" + approval signal → run Phase 3+4
-    - State = "screenplay_review" + adjustment → revise screenplay
-    - State = "done" → already finished
-    """
+    """Handle a video editing task from Mira's task_worker."""
     workspace.mkdir(parents=True, exist_ok=True)
     state = _load_state(workspace)
-
     phase = state.get("phase", "")
 
     if phase == "done":
         return f"视频已经剪辑完成: {state.get('output', '')}"
 
     if phase == "screenplay_review":
-        # User is responding to the screenplay
         if _is_approval(instruction):
-            return _run_cut(workspace, state)
+            return _run_render_and_review(workspace, state)
         else:
             return _revise_screenplay(workspace, state, instruction)
 
     # Initial request — need video path
     input_dir = _extract_path(instruction)
-
-    # Also check @file: references (from iOS file picker)
     if not input_dir:
         input_dir = _extract_file_ref(instruction)
 
     if not input_dir or not input_dir.exists():
-        return f"找不到视频目录: {input_dir or '(未指定路径)'}\n\n用法: 发送视频文件夹路径，或用 @@ 选择文件夹"
+        return f"找不到视频目录: {input_dir or '(未指定路径)'}"
 
     music_path = _extract_music_path(instruction)
-    transcribe = _wants_transcription(instruction)
     output_dir = workspace / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save config to state
     state.update({
         "input_dir": str(input_dir),
         "output_dir": str(output_dir),
         "music_path": str(music_path) if music_path else None,
         "target_minutes": 4.0,
-        "transcribe": True,  # always transcribe — detect dialogue for ducking
+        "transcribe": True,
     })
     _save_state(workspace, state)
 
     try:
-        return _run_analyze_and_screenplay(workspace, state)
+        return _run_prepare_see_think(workspace, state)
     except Exception as e:
         log.error("Video pipeline failed: %s", e, exc_info=True)
         return f"视频处理失败: {e}"
 
 
-def _run_analyze_and_screenplay(workspace: Path, state: dict) -> str:
-    """Phase 1+2: Analyze footage and generate screenplay, then pause for review."""
+# ---------------------------------------------------------------------------
+# Phase 0+1+2: PREPARE + SEE + THINK
+# ---------------------------------------------------------------------------
+
+def _run_prepare_see_think(workspace: Path, state: dict) -> str:
+    """Phase 0+1+2: Beat analysis, scene analysis, edit plan generation."""
     input_dir = Path(state["input_dir"])
+    music_path = Path(state["music_path"]) if state.get("music_path") else None
     target_minutes = state.get("target_minutes", 4.0)
-    transcribe = state.get("transcribe", False)
 
     gemini_key = _get_api_key("gemini")
-    openai_key = _get_api_key("openai")
-
     if not gemini_key:
-        return "需要 Gemini API key 才能分析视频画面 (secrets.yml → api_keys → gemini)"
+        return "需要 Gemini API key (secrets.yml → api_keys → gemini)"
 
-    # ── Phase 1: Scene Analysis ──
-    log.info("=== Phase 1: Scene Analysis ===%s", " (with transcription)" if transcribe else "")
+    # ── Phase 0: PREPARE (beat analysis) ──
+    beat_map = None
+    if music_path and music_path.exists():
+        log.info("=== Phase 0: Beat Analysis ===")
+        beat_map_path = workspace / "beat_map.json"
+        if beat_map_path.exists():
+            beat_map = json.loads(beat_map_path.read_text())
+        else:
+            try:
+                beat_map = analyze_beats(music_path, workspace)
+                log.info("Beat analysis: %.0f BPM, %d phrases",
+                         beat_map["tempo"], len(beat_map["phrases"]))
+            except Exception as e:
+                log.warning("Beat analysis failed: %s", e)
+
+    # ── Phase 0.5: TRIAGE (local pre-filter) ──
+    log.info("=== Phase 0.5: Triage ===")
+    triage_path = workspace / "triage.json"
+    if triage_path.exists():
+        triage_result = json.loads(triage_path.read_text())
+    else:
+        triage_result = triage_all(input_dir, workspace)
+
+    kept = triage_result.get("kept", 0)
+    rejected = triage_result.get("rejected", 0)
+    log.info("Triage: %d kept, %d rejected out of %d",
+             kept, rejected, triage_result.get("total", 0))
+
+    # ── Phase 1: SEE (supercut analysis — single Gemini call) ──
+    log.info("=== Phase 1: Scene Analysis (v2 supercut) ===")
     scene_log_path = workspace / "scene_log.json"
 
     if scene_log_path.exists():
-        log.info("Using existing scene log")
-        scene_log = json.loads(scene_log_path.read_text(encoding="utf-8"))
+        scene_log = json.loads(scene_log_path.read_text())
     else:
-        scene_log = analyze_all(input_dir, workspace, gemini_key, openai_key,
-                                transcribe=transcribe)
+        scene_log = analyze_all_v2(triage_result, workspace, gemini_key)
         if not scene_log.get("scenes"):
-            return "视频分析没有找到有效场景，请检查视频文件"
+            # Fallback to per-clip analysis if supercut fails
+            log.warning("Supercut analysis failed, falling back to per-clip")
+            openai_key = _get_api_key("openai")
+            scene_log = analyze_all(input_dir, workspace, gemini_key, openai_key,
+                                    transcribe=state.get("transcribe", False))
+        if not scene_log.get("scenes"):
+            return "视频分析没有找到有效场景"
 
     total_dur = scene_log.get("total_duration", 0)
     n_scenes = len(scene_log.get("scenes", []))
-    log.info("Phase 1 complete: %d scenes from %.0fs footage", n_scenes, total_dur)
+    log.info("Phase 1: %d scenes from %.0fs footage", n_scenes, total_dur)
 
-    # ── Phase 2: Screenplay ──
-    log.info("=== Phase 2: Screenplay ===")
-    sp_path = workspace / "screenplay.md"
+    # Detect content mode from scene analysis
+    visual_scenes = [s for s in scene_log.get("scenes", [])
+                     if s.get("type") != "transcript"]
+    content_mode = detect_content_mode(visual_scenes)
+    state["content_mode"] = content_mode
+    log.info("Content mode: %s", content_mode)
 
-    if sp_path.exists():
-        log.info("Using existing screenplay")
-        screenplay = sp_path.read_text(encoding="utf-8")
+    # ── Phase 2: THINK (edit plan) ──
+    log.info("=== Phase 2: Edit Plan ===")
+    taste_profile = _load_taste_profile()
+
+    if beat_map:
+        # Enhanced path: use beat-aware edit plan
+        screenplay, edit_plan = generate_edit_plan(
+            scene_log, beat_map, taste_profile, workspace,
+            content_mode=content_mode,
+            claude_think_fn=claude_think,
+        )
+        state["has_edit_plan"] = True
     else:
+        # Fallback: traditional screenplay (no music yet)
         screenplay = generate_screenplay(
             scene_log, workspace,
             target_minutes=target_minutes,
             claude_think_fn=claude_think,
         )
-        if not screenplay:
-            return "Screenplay 生成失败"
+        edit_plan = {}
+        state["has_edit_plan"] = False
 
-    log.info("Phase 2 complete: screenplay ready for review")
+    if not screenplay:
+        return "Screenplay 生成失败"
 
-    # Update state — pause here for user review
+    # Pause for user review
     state["phase"] = "screenplay_review"
     state["screenplay_version"] = 1
     _save_state(workspace, state)
 
+    beat_info = ""
+    if beat_map:
+        beat_info = f"\n- 配乐: {beat_map['tempo']:.0f} BPM, {len(beat_map['phrases'])} 个 phrase"
+
+    plan_info = ""
+    if edit_plan and edit_plan.get("clips"):
+        plan_info = f"\n- Edit plan: {len(edit_plan['clips'])} 个 clip"
+
     return (
         f"分析了 {scene_log.get('video_count', 0)} 个视频 "
-        f"({total_dur / 60:.1f} 分钟素材, {n_scenes} 个场景)\n\n"
-        f"--- Screenplay ---\n\n"
-        f"{screenplay}\n\n"
-        f"---\n\n"
+        f"({total_dur / 60:.1f} 分钟素材, {n_scenes} 个场景)\n"
+        f"- 模式: {content_mode}"
+        f"{beat_info}{plan_info}\n\n"
+        f"--- Screenplay ---\n\n{screenplay}\n\n---\n\n"
         f"觉得怎么样？可以直接告诉我要调整的地方，或者说「ok」开始剪辑。"
     )
 
+
+# ---------------------------------------------------------------------------
+# Phase 3+4+5: DO + MIX + REVIEW
+# ---------------------------------------------------------------------------
+
+def _run_render_and_review(workspace: Path, state: dict) -> str:
+    """Phase 3+4+5: Render, mix music, review, and iterate."""
+    input_dir = Path(state["input_dir"])
+    output_dir = Path(state["output_dir"])
+    music_path = Path(state["music_path"]) if state.get("music_path") else None
+    content_mode = state.get("content_mode", "family")
+
+    gemini_key = _get_api_key("gemini")
+
+    # Load edit plan if available
+    edit_plan_path = workspace / "edit_plan.json"
+    edit_plan = {}
+    if state.get("has_edit_plan") and edit_plan_path.exists():
+        edit_plan = json.loads(edit_plan_path.read_text())
+
+    # ── Phase 3: DO (render) ──
+    log.info("=== Phase 3: Render ===")
+    final_path = output_dir / "final.mp4"
+
+    if edit_plan and edit_plan.get("clips"):
+        # New path: use edit_plan.json with per-clip adaptive grading
+        result = execute_edit_plan(
+            edit_plan, input_dir, output_dir,
+            music_path=music_path or Path(""),
+            clip_grader_fn=grade_clip,
+        )
+        if result:
+            final_path = result
+        else:
+            return "剪辑渲染失败"
+    else:
+        # Fallback: old pipeline
+        return _run_cut_legacy(workspace, state)
+
+    # Check color continuity
+    clips_dir = output_dir / "clips"
+    if clips_dir.exists():
+        continuity_issues = check_color_continuity(clips_dir)
+        if continuity_issues:
+            log.warning("Color continuity: %d issues", len(continuity_issues))
+            state["color_continuity_issues"] = len(continuity_issues)
+
+    log.info("Phase 3+4 complete: %s", final_path)
+
+    # ── Phase 5: REVIEW ──
+    if gemini_key and final_path.exists():
+        log.info("=== Phase 5: Review ===")
+        taste_profile = _load_taste_profile()
+
+        review = review_rough_cut(
+            final_path, edit_plan, taste_profile,
+            gemini_key, output_dir,
+        )
+
+        review_summary = format_review_summary(review)
+        log.info("Review: overall %.1f/10", review.get("overall", 0))
+
+        # Iterate if needed
+        iteration = 0
+        while (should_iterate(review, _REVIEW_THRESHOLD)
+               and iteration < _MAX_REVIEW_ITERATIONS):
+            iteration += 1
+            log.info("=== Review iteration %d ===", iteration)
+
+            fixes = review.get("fix_proposals", [])
+            if not fixes:
+                break
+
+            clips_dir = output_dir / "clips"
+            re_rendered = re_render_clips(
+                fixes, edit_plan, clips_dir, input_dir,
+                clip_grader_fn=grade_clip,
+            )
+
+            if re_rendered:
+                # Re-assemble with updated clips
+                clip_paths = sorted(clips_dir.glob("*.mp4"))
+                rough = output_dir / "rough_cut.mp4"
+                if assemble_rough_cut(clip_paths, rough):
+                    if music_path and music_path.exists():
+                        beat_map_path = workspace / "beat_map.json"
+                        song_dur = 180
+                        if beat_map_path.exists():
+                            bm = json.loads(beat_map_path.read_text())
+                            song_dur = bm.get("duration", 180)
+                        new_final = output_dir / f"final_v{iteration + 1}.mp4"
+                        mix_with_music(rough, music_path, new_final, song_dur)
+                        if new_final.exists():
+                            final_path = new_final
+                    else:
+                        final_path = rough
+
+                # Re-review
+                review = review_rough_cut(
+                    final_path, edit_plan, taste_profile,
+                    gemini_key, output_dir,
+                )
+                review_summary = format_review_summary(review)
+                log.info("Iteration %d: overall %.1f/10",
+                         iteration, review.get("overall", 0))
+            else:
+                break
+
+        state["review"] = review
+        state["review_iterations"] = iteration
+    else:
+        review_summary = "(review skipped — no Gemini key)"
+
+    # ── Done ──
+    state["phase"] = "done"
+    state["output"] = str(final_path)
+    _save_state(workspace, state)
+
+    summary = (
+        f"视频剪辑完成！\n\n"
+        f"- 模式: {content_mode}\n"
+        f"- 输出: {final_path}\n"
+        f"- 时长: {get_duration(final_path):.0f}s\n\n"
+        f"## Review\n{review_summary}\n"
+    )
+
+    (workspace / "summary.md").write_text(summary)
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Legacy cut (fallback when no edit_plan.json)
+# ---------------------------------------------------------------------------
+
+def _run_cut_legacy(workspace: Path, state: dict) -> str:
+    """Phase 3+4 legacy path: LLM-generated ffmpeg script."""
+    from editor import parse_screenplay_clips
+    input_dir = Path(state["input_dir"])
+    output_dir = Path(state["output_dir"])
+    music_path = Path(state["music_path"]) if state.get("music_path") else None
+
+    sp_path = workspace / "screenplay.md"
+    if not sp_path.exists():
+        return "找不到 screenplay"
+
+    screenplay = sp_path.read_text()
+
+    # Use old editor path
+    from editor import render_clip, create_title_card, assemble_rough_cut as assemble
+    rough_cut = output_dir / "rough_cut.mp4"
+    final_output = output_dir / "final.mp4"
+
+    # Try music mixing with old pipeline
+    if music_path and music_path.exists():
+        success = mix_music(rough_cut, music_path, final_output)
+        if success:
+            state["phase"] = "done"
+            state["output"] = str(final_output)
+            _save_state(workspace, state)
+            return f"视频剪辑完成: {final_output}"
+
+    state["phase"] = "done"
+    state["output"] = str(rough_cut)
+    _save_state(workspace, state)
+    return f"视频剪辑完成 (无音乐): {rough_cut}"
+
+
+# ---------------------------------------------------------------------------
+# Screenplay revision
+# ---------------------------------------------------------------------------
 
 def _revise_screenplay(workspace: Path, state: dict, feedback: str) -> str:
     """Revise the screenplay based on user feedback."""
@@ -170,224 +396,39 @@ def _revise_screenplay(workspace: Path, state: dict, feedback: str) -> str:
     if not sp_path.exists():
         return "找不到 screenplay，需要重新生成"
 
-    current_sp = sp_path.read_text(encoding="utf-8")
+    current_sp = sp_path.read_text()
     scene_log = {}
     if scene_log_path.exists():
-        scene_log = json.loads(scene_log_path.read_text(encoding="utf-8"))
+        scene_log = json.loads(scene_log_path.read_text())
 
-    # Use Claude to revise
     prompt = f"""你是一个视频剪辑助手。用户对 screenplay 有修改意见，请根据反馈修改。
 
 ## 当前 Screenplay
 {current_sp}
 
-## 可用素材（场景列表）
+## 可用素材
 {_format_scenes_brief(scene_log)}
 
 ## 用户反馈
 {feedback}
 
-## 要求
-- 根据用户的具体反馈修改 screenplay
-- 保持相同的格式（Markdown，每个片段标注源文件和时间戳）
-- 如果用户想加/减内容，调整片段选择
-- 输出完整的修改后 screenplay，不要解释"""
+根据反馈修改 screenplay，保持相同格式，输出完整修改版。"""
 
     revised = claude_think(prompt, timeout=120, tier="light")
     if not revised:
-        return "修改失败，请再说一次你想怎么调整"
+        return "修改失败，请再试"
 
-    # Save revised version (keep backup)
     version = state.get("screenplay_version", 1) + 1
     backup = workspace / f"screenplay_v{version - 1}.md"
     sp_path.rename(backup)
-    sp_path.write_text(revised, encoding="utf-8")
+    sp_path.write_text(revised)
 
     state["screenplay_version"] = version
     _save_state(workspace, state)
 
     return (
-        f"Screenplay 已更新 (v{version}):\n\n"
-        f"--- Screenplay ---\n\n"
-        f"{revised}\n\n"
-        f"---\n\n"
-        f"继续调整，或者说「ok」开始剪辑。"
-    )
-
-
-def _run_cut(workspace: Path, state: dict) -> str:
-    """Phase 3+4: Execute the cut and mix music."""
-    input_dir = Path(state["input_dir"])
-    output_dir = Path(state["output_dir"])
-    music_path = Path(state["music_path"]) if state.get("music_path") else None
-
-    sp_path = workspace / "screenplay.md"
-    if not sp_path.exists():
-        return "找不到 screenplay，无法剪辑"
-
-    screenplay = sp_path.read_text(encoding="utf-8")
-    scene_log_path = workspace / "scene_log.json"
-
-    # ── Phase 3: Edit ──
-    log.info("=== Phase 3: Automated Edit ===")
-    rough_cut = output_dir / "rough_cut.mp4"
-
-    if rough_cut.exists():
-        log.info("Using existing rough cut")
-    else:
-        command = generate_edit_command(
-            screenplay, input_dir, workspace, rough_cut,
-            claude_think_fn=claude_think,
-        )
-        if not command:
-            return "ffmpeg 命令生成失败"
-
-        success = execute_edit(command, input_dir, workspace)
-        if not success:
-            return (
-                f"剪辑执行失败，但 screenplay 已确认。\n"
-                f"Screenplay: {sp_path}\n"
-                f"Edit command: {workspace / 'edit_command.sh'}\n"
-                f"可以手动检查 edit_command.sh 并修复后重新执行。"
-            )
-
-    log.info("Phase 3 complete: rough cut ready")
-
-    # ── Extract speech segments for ducking ──
-    speech_segments = []
-    if scene_log_path.exists():
-        scene_log = json.loads(scene_log_path.read_text(encoding="utf-8"))
-        for s in scene_log.get("scenes", []):
-            if s.get("type") == "transcript":
-                # Extract timestamp from transcript scenes
-                speech_segments.append({
-                    "start": s.get("timestamp", 0),
-                    "end": s.get("timestamp", 0) + 3,  # estimate 3s per segment
-                    "text": s.get("description", "").replace("[AUDIO] ", ""),
-                })
-    if speech_segments:
-        log.info("Found %d speech segments for audio ducking", len(speech_segments))
-
-    # Track music source for credits
-    music_credit = ""
-
-    # ── Phase 4: Music ──
-    final_output = output_dir / "final.mp4"
-
-    if music_path and music_path.exists():
-        log.info("=== Phase 4: Music Mix ===")
-        success = mix_music(rough_cut, music_path, final_output,
-                           speech_segments=speech_segments)
-        if not success:
-            log.warning("Music mix failed, using rough cut as final")
-            final_output = rough_cut
-    else:
-        # Check for music in a music/ subdir of input
-        music_dir = input_dir / "music"
-        available = find_music(music_dir) if music_dir.exists() else []
-        if available:
-            log.info("=== Phase 4: Music Mix (local: %s) ===", available[0].name)
-            success = mix_music(rough_cut, available[0], final_output,
-                               speech_segments=speech_segments)
-            if not success:
-                final_output = rough_cut
-        else:
-            # Auto-download royalty-free music from Incompetech
-            log.info("=== Phase 4: Auto Music Selection ===")
-            # Determine mood from screenplay
-            sp_text = screenplay.lower()
-            if any(w in sp_text for w in ["epic", "adventure", "exciting", "energetic"]):
-                mood = "adventure"
-            elif any(w in sp_text for w in ["cinematic", "dramatic", "intense"]):
-                mood = "cinematic"
-            elif any(w in sp_text for w in ["playful", "fun", "humorous", "bouncy"]):
-                mood = "playful"
-            elif any(w in sp_text for w in ["calm", "peaceful", "contemplative", "serene"]):
-                mood = "contemplative"
-            elif any(w in sp_text for w in ["warm", "tender", "intimate", "gentle"]):
-                mood = "warm"
-            else:
-                mood = "joyful"
-
-            video_dur = get_duration(rough_cut) if rough_cut.exists() else 180
-            music_file = auto_select_music(mood, video_dur, workspace / "music")
-
-            if music_file:
-                log.info("Auto music: %s (mood: %s)", music_file.name, mood)
-                # Find the track title for credits
-                from music_mixer import _fetch_catalog
-                catalog = _fetch_catalog()
-                for t in catalog:
-                    if t.get("filename") == music_file.name:
-                        music_credit = (
-                            f"Music: \"{t.get('title', '').strip()}\" "
-                            f"by Kevin MacLeod (incompetech.com), "
-                            f"Licensed under CC BY 3.0"
-                        )
-                        break
-
-                success = mix_music(rough_cut, music_file, final_output,
-                                   speech_segments=speech_segments)
-                if not success:
-                    final_output = rough_cut
-            else:
-                log.info("No music found, using rough cut as final")
-                final_output = rough_cut
-
-    # ── Done ──
-    state["phase"] = "done"
-    state["output"] = str(final_output)
-    _save_state(workspace, state)
-
-    scene_log = {}
-    if scene_log_path.exists():
-        scene_log = json.loads(scene_log_path.read_text(encoding="utf-8"))
-
-    total_dur = scene_log.get("total_duration", 0)
-    n_scenes = len(scene_log.get("scenes", []))
-
-    summary = (
-        f"视频剪辑完成！\n\n"
-        f"- 输入: {scene_log.get('video_count', 0)} 个视频, "
-        f"总计 {total_dur / 60:.1f} 分钟素材\n"
-        f"- 分析: {n_scenes} 个场景\n"
-        f"- Screenplay: v{state.get('screenplay_version', 1)}\n"
-        f"- 输出: {final_output}\n"
-    )
-    if speech_segments:
-        summary += f"- 对话保留: {len(speech_segments)} 段 (自动 ducking)\n"
-    if music_credit:
-        summary += f"\n**Credits**\n{music_credit}\n"
-
-    # Save credits file alongside output
-    if music_credit:
-        credits_path = output_dir / "CREDITS.txt"
-        credits_path.write_text(music_credit + "\n", encoding="utf-8")
-
-    (workspace / "summary.md").write_text(summary, encoding="utf-8")
-    log.info("Pipeline complete: %s", final_output)
-
-    return summary
-
-
-# ---------------------------------------------------------------------------
-# State management
-# ---------------------------------------------------------------------------
-
-def _load_state(workspace: Path) -> dict:
-    state_path = workspace / _STATE_FILE
-    if state_path.exists():
-        try:
-            return json.loads(state_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
-    return {}
-
-
-def _save_state(workspace: Path, state: dict):
-    state_path = workspace / _STATE_FILE
-    state_path.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+        f"Screenplay v{version}:\n\n{revised}\n\n---\n\n"
+        f"继续调整，或说「ok」开始剪辑。"
     )
 
 
@@ -395,49 +436,50 @@ def _save_state(workspace: Path, state: dict):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _load_taste_profile() -> str:
+    """Load the editing taste profile."""
+    if _TASTE_PROFILE_PATH.exists():
+        return _TASTE_PROFILE_PATH.read_text()
+    return ""
+
+
+def _load_state(workspace: Path) -> dict:
+    state_path = workspace / _STATE_FILE
+    if state_path.exists():
+        try:
+            return json.loads(state_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_state(workspace: Path, state: dict):
+    (workspace / _STATE_FILE).write_text(
+        json.dumps(state, ensure_ascii=False, indent=2))
+
+
 def _is_approval(text: str) -> bool:
-    """Check if the user's message is approving the screenplay."""
     return bool(_APPROVE_PATTERNS.search(text))
 
 
 def _format_scenes_brief(scene_log: dict) -> str:
-    """Format scene log as a brief summary for the revision prompt."""
     scenes = scene_log.get("scenes", [])
     if not scenes:
         return "(无场景数据)"
     lines = []
-    for s in scenes[:50]:  # cap at 50
+    for s in scenes[:50]:
         if s.get("type") == "overall_analysis":
             continue
         ts = s.get("timestamp_str", "?")
         end_ts = s.get("end_timestamp_str", "")
         ts_range = f"{ts}-{end_ts}" if end_ts else ts
         desc = s.get("description", "")[:80]
-        cam = s.get("camera_motion", "")
-        cam_str = f" [{cam}]" if cam else ""
-        lines.append(f"- [{s.get('file', '?')} @ {ts_range}]{cam_str} {desc}")
-    if len(scenes) > 50:
-        lines.append(f"  ... 还有 {len(scenes) - 50} 个场景")
+        lines.append(f"- [{s.get('file', '?')} @ {ts_range}] {desc}")
     return "\n".join(lines)
 
 
-def _wants_transcription(instruction: str) -> bool:
-    """Check if user wants audio transcription (off by default, costs extra)."""
-    return bool(re.search(
-        r'对话|对白|台词|说话|语音|transcri|dialogue|speech|audio|保留.*声音|保留.*对话',
-        instruction, re.IGNORECASE,
-    ))
-
-
 def _extract_path(instruction: str) -> Path | None:
-    """Extract a file/directory path from the instruction text."""
-    patterns = [
-        r'"([^"]+)"',
-        r"'([^']+)'",
-        r'(/\S+)',
-        r'(~/\S+)',
-    ]
-    for p in patterns:
+    for p in [r'"([^"]+)"', r"'([^']+)'", r'(/\S+)', r'(~/\S+)']:
         m = re.search(p, instruction)
         if m:
             path = Path(m.group(1)).expanduser()
@@ -447,21 +489,16 @@ def _extract_path(instruction: str) -> Path | None:
 
 
 def _extract_file_ref(instruction: str) -> Path | None:
-    """Extract @file: references from iOS file picker attachments."""
-    matches = re.findall(r'@file:(\S+)', instruction)
-    for ref in matches:
+    for ref in re.findall(r'@file:(\S+)', instruction):
         path = Path(ref).expanduser()
         if path.exists():
-            # If it's a file, use its parent directory
-            if path.is_file():
-                return path.parent
-            return path
+            return path.parent if path.is_file() else path
     return None
 
 
 def _extract_music_path(instruction: str) -> Path | None:
-    """Extract music file path from instruction."""
-    m = re.search(r'(?:music|音乐|配乐)[:\s]+["\']?(\S+)["\']?', instruction, re.IGNORECASE)
+    m = re.search(r'(?:music|音乐|配乐)[:\s]+["\']?(\S+)["\']?',
+                  instruction, re.IGNORECASE)
     if m:
         path = Path(m.group(1)).expanduser()
         if path.exists():
@@ -470,48 +507,43 @@ def _extract_music_path(instruction: str) -> Path | None:
 
 
 # ---------------------------------------------------------------------------
-# Standalone CLI (runs all phases without interactive pause)
+# Standalone CLI
 # ---------------------------------------------------------------------------
 
 def run_pipeline_full(input_dir: Path, work_dir: Path, output_dir: Path,
                       music_path: Path = None,
                       target_minutes: float = 4.0) -> str:
-    """Run the full pipeline non-interactively (for CLI use)."""
+    """Run the full pipeline non-interactively."""
     state = {
         "input_dir": str(input_dir),
         "output_dir": str(output_dir),
         "music_path": str(music_path) if music_path else None,
         "target_minutes": target_minutes,
+        "transcribe": True,
     }
     _save_state(work_dir, state)
 
-    result = _run_analyze_and_screenplay(work_dir, state)
+    result = _run_prepare_see_think(work_dir, state)
     print(result)
 
-    # In CLI mode, proceed directly to cutting
     state = _load_state(work_dir)
     if state.get("phase") == "screenplay_review":
-        print("\n>>> Proceeding to cut...\n")
-        result = _run_cut(work_dir, state)
+        print("\n>>> Proceeding to render...\n")
+        result = _run_render_and_review(work_dir, state)
 
     return result
 
 
 def main():
-    """Standalone CLI entry point."""
-    parser = argparse.ArgumentParser(description="Video editing pipeline")
+    parser = argparse.ArgumentParser(description="Video editing pipeline (enhanced)")
     parser.add_argument("--input", required=True, help="Directory with video files")
-    parser.add_argument("--output", help="Output directory (default: input/output)")
+    parser.add_argument("--output", help="Output directory")
     parser.add_argument("--music", help="Background music file")
-    parser.add_argument("--target-minutes", type=float, default=4.0,
-                        help="Target output length in minutes")
-    parser.add_argument("--work-dir", help="Working directory for intermediate files")
+    parser.add_argument("--target-minutes", type=float, default=4.0)
+    parser.add_argument("--work-dir", help="Working directory")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 
     input_dir = Path(args.input).expanduser().resolve()
     if not input_dir.exists():
@@ -522,13 +554,8 @@ def main():
     work_dir = Path(args.work_dir).expanduser() if args.work_dir else input_dir / ".video_work"
     music_path = Path(args.music).expanduser() if args.music else None
 
-    result = run_pipeline_full(
-        input_dir=input_dir,
-        work_dir=work_dir,
-        output_dir=output_dir,
-        music_path=music_path,
-        target_minutes=args.target_minutes,
-    )
+    result = run_pipeline_full(input_dir, work_dir, output_dir,
+                               music_path, args.target_minutes)
     print(result)
 
 

@@ -24,6 +24,8 @@ final class BridgeConfig {
     var manifestURL: URL? { userDir?.appending(path: "manifest.json") }
     var itemsDir: URL? { userDir?.appending(path: "items") }
     var commandsDir: URL? { userDir?.appending(path: "commands") }
+    var ledgerURL: URL? { userDir?.appending(path: "command_ledger.json") }
+    var todosURL: URL? { userDir?.appending(path: "todos.json") }
     var artifactsURL: URL? {
         guard let root = rootURL, let p = profile else { return nil }
         return root.appending(path: "Mira-Artifacts/\(p.id)")

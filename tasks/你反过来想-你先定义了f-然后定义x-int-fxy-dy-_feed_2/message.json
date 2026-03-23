@@ -1,0 +1,10 @@
+{
+  "id": "feed_2026-03-20_zhesi",
+  "sender": "ang",
+  "timestamp": "2026-03-20T22:36:31Z",
+  "content": "你反过来想, 你先定义了f, 然后定义x = int f(x,y) dy. 先有关系, 再用关系来定义本体",
+  "thread_id": "feed_2026-03-20_zhesi",
+  "priority": "normal",
+  "metadata": {},
+  "type": "text"
+}

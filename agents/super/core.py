@@ -48,7 +48,7 @@ from soul_manager import (
     detect_recurring_themes, catalog_list,
 )
 from fetcher import fetch_all
-from sub_agent import claude_think, claude_act
+from sub_agent import claude_think, claude_act, model_think
 from writing_workflow import (
     start_project, check_writing_responses, advance_project, start_from_plan,
 )
@@ -161,6 +161,27 @@ def _talk_slug(content: str, msg_id: str) -> str:
     return f"{slug}_{msg_id[:6]}"
 
 
+def _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd=None):
+    """Dispatch a task. Set working only on success. Requeue on busy. Log on failure."""
+    task_id = task_mgr.dispatch(msg, workspace)
+    if task_id:
+        bridge.update_status(msg.id, "working")
+        log.info("STATE %s: -> working (pid dispatched)", msg.id)
+        return True
+    elif task_mgr.is_busy():
+        if cmd:
+            bridge.requeue_command(cmd)
+        log.info("STATE %s: dispatch deferred (agent busy), re-queued", msg.id)
+        return False
+    else:
+        bridge.update_status(msg.id, "failed",
+                             error={"code": "dispatch_failed",
+                                    "message": "Worker process failed to start",
+                                    "retryable": True})
+        log.error("STATE %s: -> failed (dispatch error)", msg.id)
+        return False
+
+
 def do_talk():
     """Process Mira messages: dispatch new tasks + collect completed results.
 
@@ -187,29 +208,23 @@ def do_talk():
         is_comment = rec.task_id.startswith("comment_")
 
         if rec.status == "needs-input":
-            if not is_comment:
-                bridge.reply(rec.msg_id, rec.sender, content + footer, thread_id=rec.thread_id)
-            bridge.update_task_status(rec.task_id, "needs-input", agent_message=content)
+            msg_text = (content + footer) if not is_comment else ""
+            bridge.update_status(rec.task_id, "needs-input", agent_message=msg_text)
             if rec.tags:
-                bridge.set_task_tags(rec.task_id, rec.tags)
-            log.info("Mira [%s] needs user input: %s", rec.task_id, content[:80])
+                bridge.set_tags(rec.task_id, rec.tags)
+            log.info("STATE %s: working -> needs-input", rec.task_id)
         elif rec.status == "done":
-            if not is_comment:
-                bridge.reply(rec.msg_id, rec.sender, content + footer, thread_id=rec.thread_id)
-            bridge.ack(rec.msg_id, "done")
-            bridge.update_task_status(rec.task_id, "done",
-                                       agent_message="" if is_comment else content)
+            msg_text = (content + footer) if not is_comment else ""
+            bridge.update_status(rec.task_id, "done", agent_message=msg_text)
             if rec.tags:
-                bridge.set_task_tags(rec.task_id, rec.tags)
-            log.info("Mira [%s] task done%s", rec.task_id,
-                     " (comment — reply in sidecar)" if is_comment else ", reply sent")
+                bridge.set_tags(rec.task_id, rec.tags)
+            log.info("STATE %s: working -> done", rec.task_id)
         elif rec.status in ("error", "timeout"):
             error_msg = f"处理失败: {rec.summary}" if rec.summary else "处理失败，请稍后重试。"
-            if not is_comment:
-                bridge.reply(rec.msg_id, rec.sender, error_msg + footer, thread_id=rec.thread_id)
-            bridge.ack(rec.msg_id, "error")
-            bridge.update_task_status(rec.task_id, "failed", agent_message=error_msg)
-            log.warning("Mira [%s] task %s: %s", rec.task_id, rec.status, rec.summary)
+            bridge.update_status(rec.task_id, "failed",
+                                 error={"code": rec.status, "message": error_msg,
+                                        "retryable": True})
+            log.warning("STATE %s: working -> failed (%s: %s)", rec.task_id, rec.status, rec.summary)
 
     # --- Self-evaluation: score completed tasks ---
     for rec in completed:
@@ -240,30 +255,26 @@ def do_talk():
             if cmd_type == "new_request":
                 task_id = cmd.get("item_id") or f"req_{uuid.uuid4().hex[:8]}"
                 quick = cmd.get("quick", False)
-                # Only create if not already created by optimistic UI
                 if not bridge.item_exists(task_id):
                     bridge.create_task(task_id, title, content, sender=sender, tags=tags, origin="user")
-                bridge.update_status(task_id, "working")
                 workspace = TASKS_DIR / _talk_slug(content, task_id)
                 msg = Message(id=task_id, sender=sender, timestamp=cmd.get("timestamp",""),
                               content=content, thread_id=task_id)
-                task_mgr.dispatch(msg, workspace)
+                _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
             elif cmd_type == "new_discussion":
                 disc_id = cmd.get("item_id") or f"disc_{uuid.uuid4().hex[:8]}"
                 if not bridge.item_exists(disc_id):
                     bridge.create_discussion(disc_id, title, content, sender=sender, tags=tags)
-                bridge.update_status(disc_id, "working")
                 workspace = TASKS_DIR / _talk_slug(content, disc_id)
                 msg = Message(id=disc_id, sender=sender, timestamp=cmd.get("timestamp",""),
                               content=content, thread_id=disc_id)
-                task_mgr.dispatch(msg, workspace)
+                _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
             elif cmd_type == "reply" and item_id:
-                # Don't re-append message — web GUI already added it (optimistic UI)
-                bridge.update_status(item_id, "working")
+                bridge.append_message(item_id, sender, content)
                 workspace = TASKS_DIR / _talk_slug(content, item_id)
                 msg = Message(id=item_id, sender=sender, timestamp=cmd.get("timestamp",""),
                               content=content, thread_id=item_id)
-                task_mgr.dispatch(msg, workspace)
+                _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
             elif cmd_type == "comment":
                 parent_id = cmd.get("parent_id", "")
                 disc_id = f"disc_{uuid.uuid4().hex[:8]}"
@@ -278,11 +289,10 @@ def do_talk():
                 recall_id = f"req_recall_{uuid.uuid4().hex[:8]}"
                 bridge.create_task(recall_id, f"Recall: {query[:40]}", query,
                                    sender=sender, tags=["recall"], origin="user")
-                bridge.update_status(recall_id, "working")
                 workspace = TASKS_DIR / _talk_slug(query, recall_id)
                 msg = Message(id=recall_id, sender=sender, timestamp=cmd.get("timestamp",""),
                               content=query, thread_id=recall_id)
-                task_mgr.dispatch(msg, workspace)
+                _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
             elif cmd_type == "archive" and item_id:
                 bridge.archive_thread(item_id)
             elif cmd_type == "pin" and item_id:
@@ -312,13 +322,12 @@ def do_talk():
                 req_id = f"req_{todo_id}"
                 user_bridge.create_task(req_id, f"Todo: {todo_title}", todo_title,
                                          sender="agent", tags=["todo"], origin="user")
-                user_bridge.update_status(req_id, "working")
                 workspace = TASKS_DIR / _talk_slug(todo_title, req_id)
                 workspace.mkdir(parents=True, exist_ok=True)
                 (workspace / ".todo_id").write_text(todo_id)
                 msg = Message(id=req_id, sender="user", timestamp="",
                               content=todo_title, thread_id=req_id)
-                task_mgr.dispatch(msg, workspace)
+                _dispatch_or_requeue(task_mgr, user_bridge, msg, workspace)
 
     # Reset bridge to default user for legacy code
     bridge = bridges_by_user.get("ang", all_bridges[0])
@@ -428,6 +437,40 @@ def do_talk():
     # Periodic cleanup
     bridge.cleanup_old(days=CLEANUP_DAYS)
     task_mgr.cleanup_old_records(max_age_days=7)
+
+    # Sweep stuck items — safety net for all other bugs
+    _sweep_stuck_items(bridge, task_mgr)
+
+
+def _sweep_stuck_items(bridge, task_mgr):
+    """Find items stuck in 'working' with no active task and mark them failed."""
+    from datetime import datetime, timezone
+    STUCK_THRESHOLD = 1800  # 30 minutes
+    for path in bridge.items_dir.glob("*.json"):
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if item.get("status") != "working":
+            continue
+        updated = item.get("updated_at", "")
+        if not updated:
+            continue
+        try:
+            ts = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - ts).total_seconds()
+        except (ValueError, TypeError):
+            continue
+        if age < STUCK_THRESHOLD:
+            continue
+        item_id = item.get("id", path.stem)
+        if task_mgr.is_dispatched(item_id):
+            continue
+        log.warning("STATE %s: working -> failed (stuck %ds, no active task)", item_id, int(age))
+        bridge.update_status(item_id, "failed",
+                             error={"code": "stuck",
+                                    "message": "Task lost — please retry",
+                                    "retryable": True})
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -757,8 +800,14 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
         slot_label = f" ({slot_name})" if slot_name else ""
         create_note(NOTES_BRIEFING_FOLDER, f"Briefing {today}{slot_label}", briefing)
 
-    # Briefing is displayed as a card in Today (from .md file)
-    # No need to create a task — that just pollutes the task list
+    # Append briefing to daily digest (single item per day, not per explore slot)
+    try:
+        src_label = slot_name.replace("_", " / ") if slot_name else "all"
+        _append_to_daily_feed("explore", f"Explore: {src_label}", briefing[:2000],
+                             source=src_label, tags=["explore", "briefing"])
+        log.info("Explore briefing appended to daily digest")
+    except Exception as e:
+        log.warning("Failed to append explore briefing to digest: %s", e)
 
     # 5b. Extract key insights into structured reading notes
     try:
@@ -1126,6 +1175,15 @@ def do_analyst(slot: str = ""):
     BRIEFINGS_DIR.mkdir(parents=True, exist_ok=True)
     (BRIEFINGS_DIR / f"{today}_{suffix}.md").write_text(result, encoding="utf-8")
 
+    # Push as standalone feed item
+    bridge = Mira()
+    item_id = f"feed_market_{today.replace('-', '')}_{slot or '0000'}"
+    title = f"{'开市前' if session_type == 'pre-market' else '收市后'}市场分析 {today}"
+    if not bridge.item_exists(item_id):
+        bridge.create_item(item_id, "feed", title, result[:5000],
+                          tags=["market", "analyst", session_type])
+        bridge.update_status(item_id, "done")
+
     # Mark this slot as done
     if slot:
         state[f"analyst_{today}_{slot}"] = True
@@ -1381,13 +1439,13 @@ def do_journal():
     # Copy to briefings dir so iOS can read it (with verification)
     _copy_to_briefings(f"{today}_journal.md", journal_content)
 
-    # Create feed item for journal
+    # Append journal to daily digest
     try:
-        bridge = Mira()
-        bridge.create_feed(f"feed_journal_{datetime.now().strftime('%Y%m%d')}", "Daily Journal", journal_content[:2000], tags=["journal"])
-        log.info("Journal feed item created")
+        _append_to_daily_feed("mira", "Daily Journal", journal_content[:2000],
+                             source="journal", tags=["mira", "journal"])
+        log.info("Journal appended to daily digest")
     except Exception as e:
-        log.warning("Failed to create journal feed: %s", e)
+        log.warning("Failed to append journal to digest: %s", e)
 
     # --- Self-evaluation: score this journal ---
     try:
@@ -1549,13 +1607,13 @@ def do_daily_report():
     except Exception as e:
         log.error("Failed to post daily report to Notes: %s", e)
 
-    # Create feed item for daily report
+    # Append daily report to daily digest
     try:
-        bridge = Mira()
-        bridge.create_feed(f"feed_daily_report_{datetime.now().strftime('%Y%m%d')}", "Daily Report", report[:2000], tags=["report"])
-        log.info("Daily report feed item created")
+        _append_to_daily_feed("mira", "Daily Report", report[:2000],
+                             source="report", tags=["mira", "report"])
+        log.info("Daily report appended to daily digest")
     except Exception as e:
-        log.error("Failed to create daily report feed: %s", e)
+        log.error("Failed to append daily report to digest: %s", e)
 
     # Mark done
     state = load_state()
@@ -1775,17 +1833,9 @@ def do_spark_check():
     if not thought:
         return
 
-    # Create feed item for spark thought
-    bridge = Mira(MIRA_DIR)
-    bridge.create_feed(f"feed_spark_{datetime.now().strftime('%H%M')}", thought[:60], thought[:2000], tags=["spark"])
-    bridge.create_task(
-        task_id=f"spark_{datetime.now().strftime('%H%M')}",
-        title=thought[:40],
-        first_message=thought,
-        sender="agent",
-        origin="auto",
-        tags=["spark"],
-    )
+    # Append spark to daily digest
+    _append_to_daily_feed("mira", "Spark", thought[:2000],
+                         source="spark-check", tags=["mira", "spark"])
 
     state[f"sparks_{today}"] = state.get(f"sparks_{today}", 0) + 1
     save_state(state)
@@ -2021,6 +2071,7 @@ def _think_question(soul_ctx: str, recent_journal: str) -> str:
 
 如果一个问题想通了：[RESOLVE: <问题ID>]
 如果有值得分享的想法：[SHARE: <想法内容>]
+SHARE 的风格要求：像给朋友发消息，不像写论文。要具体——举例子、说"让我想到XX"、引用你读到的具体东西。不要抽象概括。
 
 最近的日志：
 {recent_journal}
@@ -2066,6 +2117,7 @@ def _think_connection(soul_ctx: str, recent_journal: str) -> str:
 输出你发现的连接（如果有的话），每个连接用一段话描述。
 如果产生了新的问题：[QUESTION: <问题内容>]
 如果产生了值得分享的洞察：[SHARE: <想法内容>]
+SHARE 的风格要求：像给朋友发消息，不像写论文。要具体——举例子、说"让我想到XX"、引用你读到的具体东西。不要抽象概括。
 
 直接开始分析。"""
 
@@ -2233,16 +2285,16 @@ def _handle_think_markers(result: str):
     except Exception as e:
         log.debug("Question resolution failed: %s", e)
 
-    # Share markers
+    # Share markers — append to daily digest
     share_match = re.search(r'\[SHARE:\s*(.+?)\]', result, re.DOTALL)
     if share_match:
         thought = share_match.group(1).strip()[:500]
         try:
-            bridge = Mira(MIRA_DIR)
-            bridge.create_feed(f"feed_thought_{uuid.uuid4().hex[:6]}", thought[:60], thought[:2000], tags=["spark"])
+            _append_to_daily_feed("mira", "Spark", thought,
+                                 source="idle-think", tags=["mira", "spark"])
             state = load_state()
-            today = datetime.now().strftime("%Y-%m-%d")
-            state[f"sparks_{today}"] = state.get(f"sparks_{today}", 0) + 1
+            today_key = datetime.now().strftime("%Y-%m-%d")
+            state[f"sparks_{today_key}"] = state.get(f"sparks_{today_key}", 0) + 1
             save_state(state)
             log.info("idle-think shared: %s", thought[:60])
         except Exception as e:
@@ -2625,7 +2677,10 @@ def do_check_comments():
         sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
         from substack import check_and_reply_comments, sync_posts_for_ios
         # Sync posts list for iOS app display
-        sync_posts_for_ios()
+        try:
+            sync_posts_for_ios()
+        except Exception as e:
+            log.warning("sync_posts_for_ios failed (non-fatal): %s", e)
         replies = check_and_reply_comments()
         if replies:
             log.info("Replied to %d comments on own posts", len(replies))
@@ -2913,6 +2968,15 @@ def do_autowrite_check():
     thesis = decision.get("thesis", "")
     outline = decision.get("outline", "")
     writing_type = decision.get("type", "essay")
+
+    # Dedup: check if a similar topic already exists in ideas/ or published
+    if _is_duplicate_topic(title, thesis):
+        log.info("Autonomous writing: skipped '%s' — similar topic already exists", title)
+        ctx = load_session_context()
+        ctx.append(session_record("autowrite_skip", f"duplicate: {title}"))
+        save_session_context(ctx)
+        save_state(state)
+        return
 
     log.info("Autonomous writing triggered: '%s' [%s]", title, writing_type)
 
@@ -3258,6 +3322,40 @@ def _dispatch_background(name: str, cmd: list[str]):
 # ---------------------------------------------------------------------------
 
 
+def _append_to_daily_feed(feed_type: str, section_title: str, content: str,
+                          source: str = "", tags: list[str] | None = None):
+    """Append content to a daily feed item (one item per type per day).
+
+    feed_type: 'explore' or 'mira' — determines which daily item to append to.
+      - explore: external sources (briefings from Substack, arxiv, Reddit, etc.)
+      - mira: agent's own output (sparks, report, journal, reflections)
+    """
+    today = datetime.now().strftime("%Y%m%d")
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    bridge = Mira(MIRA_DIR)
+
+    if feed_type == "explore":
+        feed_id = f"feed_explore_{today}"
+        feed_title = f"Explore Digest {date_str}"
+        default_tags = ["explore", "briefing"]
+    else:
+        feed_id = f"feed_mira_{today}"
+        feed_title = f"Mira's Day {date_str}"
+        default_tags = ["mira", "digest"]
+
+    # Format section with header
+    header = f"## {section_title}"
+    if source:
+        header += f"  [{source}]"
+    section = f"{header}\n\n{content}"
+
+    if bridge.item_exists(feed_id):
+        bridge.append_message(feed_id, "agent", section[:3000])
+    else:
+        bridge.create_feed(feed_id, feed_title, section[:3000],
+                           tags=tags or default_tags)
+
+
 def _copy_to_briefings(filename: str, content: str):
     """Copy content to artifacts/briefings/ with verification and retry.
 
@@ -3446,6 +3544,51 @@ def _extract_recent_briefing_topics(days: int = 3) -> str:
             seen.add(key)
             unique.append(t)
     return "\n".join(unique[:30]) if unique else ""
+
+
+def _is_duplicate_topic(title: str, thesis: str) -> bool:
+    """Check if a similar topic already exists in ideas/ (any state) or published.
+
+    Uses keyword overlap to detect duplicates. Threshold: >50% shared keywords.
+    """
+    # Build keyword set from new topic
+    import re as _re
+    stop = {"the","a","an","is","are","was","were","in","on","of","to","for","and","or","but","with","this","that","it","not","from","by","as","at","how","why","when","what"}
+    def keywords(text):
+        words = set(_re.findall(r'[a-z]{3,}', text.lower()))
+        return words - stop
+
+    new_kw = keywords(f"{title} {thesis}")
+    if len(new_kw) < 3:
+        return False
+
+    # Check existing idea files
+    ideas_dir = Path(__file__).resolve().parent.parent / "writer" / "ideas"
+    if ideas_dir.exists():
+        for f in ideas_dir.glob("*.md"):
+            if f.name.startswith("_"):
+                continue
+            try:
+                content = f.read_text(encoding="utf-8")[:500]
+                existing_kw = keywords(content)
+                if not existing_kw:
+                    continue
+                overlap = len(new_kw & existing_kw) / max(len(new_kw), 1)
+                if overlap > 0.5:
+                    log.debug("Duplicate topic: '%s' overlaps %.0f%% with %s", title, overlap*100, f.name)
+                    return True
+            except OSError:
+                continue
+
+    # Check published titles
+    published = _extract_recent_published_titles(days=30)
+    if published:
+        pub_kw = keywords(published)
+        overlap = len(new_kw & pub_kw) / max(len(new_kw), 1)
+        if overlap > 0.6:
+            return True
+
+    return False
 
 
 def _extract_recent_published_titles(days: int = 14) -> str:

@@ -191,24 +191,12 @@ def post_note(text: str, link_url: str | None = None,
         note_id = result.get("id")
         log.info("Posted Note (id=%s): %s", note_id, text[:80])
 
-        # Verify the note actually exists (anti-spam can silently drop)
+        # Note: verify via /api/v1/comment/{id} no longer works (always 404
+        # since ~2026-03-13, likely Substack API change). POST returning 200
+        # with a valid id is treated as success. If anti-spam silently drops
+        # the note, we have no reliable way to detect it server-side.
         if note_id:
-            import time as _time
-            _time.sleep(1)
-            try:
-                verify_req = urllib.request.Request(
-                    f"https://{subdomain}.substack.com/api/v1/comment/{note_id}",
-                    headers={
-                        "Cookie": f"substack.sid={cookie}; connect.sid={cookie}",
-                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-                    },
-                )
-                with urllib.request.urlopen(verify_req, timeout=10) as vresp:
-                    log.info("Note %s verified — exists", note_id)
-            except urllib.error.HTTPError as ve:
-                if ve.code == 404:
-                    log.warning("Note %s silently dropped by anti-spam (200 but 404 on verify)", note_id)
-                    return None
+            log.info("Note %s accepted (POST 200)", note_id)
 
         # Record in state
         _record_note(text, note_id, link_url)
