@@ -104,8 +104,8 @@ def _copy_mp3_to_repo(mp3_path: Path) -> str:
     dest_dir = REPO_DIR / "audios"
     dest_dir.mkdir(exist_ok=True)
     dest = dest_dir / mp3_path.name
-    if not dest.exists():
-        shutil.copy2(mp3_path, dest)
+    # Always overwrite — episode may have been regenerated with new TTS/script
+    shutil.copy2(mp3_path, dest)
     return f"{GITHUB_PAGES_URL}/audios/{mp3_path.name}"
 
 
@@ -213,15 +213,18 @@ def _load_or_create_feed(feed_path: Path) -> ET.Element:
     return rss
 
 
-def _episode_already_in_feed(rss: ET.Element, episode_slug: str) -> bool:
+def _remove_episode_from_feed(rss: ET.Element, episode_slug: str) -> bool:
+    """Remove existing episode by slug so it can be re-added with updated metadata."""
     channel = rss.find("channel")
     if channel is None:
         return False
+    removed = False
     for item in channel.findall("item"):
         guid = item.findtext("guid", "")
         if episode_slug in guid:
-            return True
-    return False
+            channel.remove(item)
+            removed = True
+    return removed
 
 
 def _add_episode_to_feed(
@@ -339,9 +342,9 @@ def publish_episode(
     feed_path = REPO_DIR / "feed.xml"
     rss = _load_or_create_feed(feed_path)
 
-    if _episode_already_in_feed(rss, slug):
-        log.info("Episode already in feed, skipping.")
-        return FEED_URL
+    # Remove existing entry if present (allows title/description updates)
+    if _remove_episode_from_feed(rss, slug):
+        log.info("Replacing existing episode in feed: %s", slug)
 
     # 2. Copy MP3 + transcript into repo
     mp3_url = _copy_mp3_to_repo(mp3_path)

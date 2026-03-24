@@ -1,4 +1,4 @@
-# Skills (41 learned)
+# Skills (44 learned)
 
 ## Experience Self-Distillation
 *Convert raw task trajectories into reusable strategic principles, then retrieve and apply them to new tasks.*  
@@ -1195,5 +1195,103 @@ When a task involves browser automation (web scraping, UI testing, form filling,
 
 ### Root cause here:
 The code attempted `import browser` — a non-standard module name — without verifying it exists. The fix is either installing the correct package or using the correct import for the intended library.
+
+---
+
+## report-delivery-mobile-first
+*Reports delivered to users must be accessible on mobile; local file paths are useless outside the local machine*  
+Learned: 2026-03-23  
+
+# report-delivery-mobile-first
+
+Reports delivered to users must be accessible on mobile; local file paths are useless outside the local machine
+
+**Source**: Extracted from task failure (2026-03-23)
+**Tags**: reporting, llm-routing, mobile, fallback, delivery
+
+---
+
+## Rule: Report Delivery Must Be Mobile-Accessible
+
+When generating reports or any output intended for a user who may be on a different device (phone, remote machine), **never deliver only a local file path**. Local paths like `/Users/angwei/Sandbox/...` are inaccessible from any other device.
+
+### What to do instead
+- Embed the key content inline in the message (summary, tables, warnings)
+- If a full document is needed, upload to a shareable location (cloud storage, email, messaging service)
+- For PDF specifically: either inline the critical data as text/markdown, or push to iCloud/Dropbox/similar and share a public link
+
+### LLM Routing Rule
+If the primary synthesis LLM (claude CLI) times out or fails:
+1. Fall back to a local model first (faster, no network dependency)
+2. Fall back to Gemini API as secondary
+3. Do NOT deliver a partial report that only says "synthesis failed" — deliver what data you have in degraded mode
+
+### Timeout Handling
+- 300s timeout on claude CLI is too long for a report pipeline; set a tighter timeout (60-90s) with faster fallback
+- A synthesis failure should trigger fallback, not report failure as the final state
+
+**Never**: `Full report: /local/path/to/file.pdf` as the only delivery mechanism
+**Always**: Inline the critical content; paths are supplementary, not primary
+
+---
+
+## geopolitical-ultimatum-discount-rule
+*Apply steep discount to pre-market directional calls anchored on geopolitical ultimatums — these reverse more often than they execute*  
+Learned: 2026-03-23  
+
+# geopolitical-ultimatum-discount-rule
+
+Apply steep discount to pre-market directional calls anchored on geopolitical ultimatums — these reverse more often than they execute
+
+**Source**: Extracted from task failure (2026-03-23)
+**Tags**: pre-market-analysis, geopolitical-risk, prediction-calibration, market-analysis
+
+---
+
+## Rule: Geopolitical Ultimatum Discount
+
+**When a pre-market analysis is anchored on an active political ultimatum (e.g. 'X hours or we strike'), apply a structural reversal discount before making directional calls.**
+
+### Why ultimatums mislead analysis:
+- Markets price the *announcement* of an ultimatum immediately. The residual risk premium is for *execution*, which historical base rate is low.
+- A 48-hour ultimatum creates narrative urgency that pulls analysis toward the high-drama scenario. The boring outcome (negotiated walk-back, ambiguous non-compliance, quiet extension) is underweighted.
+- Asymmetry framing ('if escalation: +20%, if resolution: -10-15%') looks rational but ignores that resolution probability is systematically underestimated in the heat of the moment.
+
+### Operational checklist before making the directional call:
+1. **What is the historical execution rate for this class of ultimatum?** (Military strikes following public deadlines are rare; track record matters.)
+2. **Who benefits from a walk-back on each side?** If both parties have a visible off-ramp, weight resolution higher.
+3. **Is the analysis making a probability claim or a magnitude claim?** Distinguish them explicitly. A high-magnitude scenario can be correct while still being the lower-probability path.
+4. **Separate the signal from the narrative.** The actual price action (oil, VIX, gold behavior) is the signal. The ultimatum framing is the story layered on top — keep them in separate buckets.
+
+### Application:
+Any pre-market note leading with an active geopolitical ultimatum should include an explicit reversal probability estimate before stating directional bias.
+
+---
+
+## verify-browser-automation-before-web-tasks
+*Check that browser automation dependencies are installed before attempting web scraping tasks*  
+Learned: 2026-03-23  
+
+# verify-browser-automation-before-web-tasks
+
+Check that browser automation dependencies are installed before attempting web scraping tasks
+
+**Source**: Extracted from task failure (2026-03-23)
+**Tags**: browser-automation, error-recovery, dependency-check, web-tasks
+
+---
+
+Before executing any task that requires browser automation or web scraping, verify that the required modules/dependencies are available in the environment.
+
+**Rule:** When a task requires visiting a website to retrieve dynamic content, first check if the necessary browser automation tools (`browser`, `playwright`, `selenium`, `puppeteer`, etc.) are installed and importable. Do not assume they are available.
+
+**Fallback chain when browser automation is unavailable:**
+1. Use `WebFetch` or `WebSearch` tools if the content is accessible via HTTP GET (static pages, public APIs).
+2. Use `WebSearch` to find deal aggregators, cached pages, or relevant listings.
+3. Clearly inform the user that browser automation is unavailable and offer alternatives (manual URL, different tool, install instructions).
+
+**Anti-pattern:** Attempting to `import browser` or similar without checking availability, failing silently, then waiting for the user to ask for a fix instead of proactively diagnosing and recovering.
+
+**What should have happened:** Upon receiving `No module named 'browser'`, the agent should have immediately (a) recognized this as a missing dependency, (b) attempted fallback via WebFetch/WebSearch to browse bhphotovideo.com deals, and (c) reported what it could and could not do — rather than surfacing a raw error and stalling until the user pushed multiple times.
 
 ---

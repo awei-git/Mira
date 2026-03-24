@@ -295,5 +295,23 @@
     "description": "Always verify browser automation module availability before attempting to run browser tasks",
     "file": "verify-browser-automation-dependencies.md",
     "created": "2026-03-23T13:32:23.892543"
+  },
+  {
+    "name": "report-delivery-mobile-first",
+    "description": "Reports delivered to users must be accessible on mobile; local file paths are useless outside the local machine",
+    "file": "report-delivery-mobile-first.md",
+    "created": "2026-03-23T21:31:38.062631"
+  },
+  {
+    "name": "geopolitical-ultimatum-discount-rule",
+    "description": "Apply steep discount to pre-market directional calls anchored on geopolitical ultimatums — these reverse more often than they execute",
+    "file": "geopolitical-ultimatum-discount-rule.md",
+    "created": "2026-03-23T21:32:07.787230"
+  },
+  {
+    "name": "verify-browser-automation-before-web-tasks",
+    "description": "Check that browser automation dependencies are installed before attempting web scraping tasks",
+    "file": "verify-browser-automation-before-web-tasks.md",
+    "created": "2026-03-23T21:32:21.521827"
   }
 ]
