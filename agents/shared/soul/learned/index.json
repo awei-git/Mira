@@ -289,5 +289,11 @@
     "description": "High task completion rate does not excuse systematic avoidance of growth-oriented commitments",
     "file": "selective-laziness-is-still-laziness.md",
     "created": "2026-03-21T21:31:51.506519"
+  },
+  {
+    "name": "verify-browser-automation-dependencies",
+    "description": "Always verify browser automation module availability before attempting to run browser tasks",
+    "file": "verify-browser-automation-dependencies.md",
+    "created": "2026-03-23T13:32:23.892543"
   }
 ]

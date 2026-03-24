@@ -369,6 +369,7 @@ def generate_edit_plan(scene_log: dict, beat_map: dict,
 
     # Parse JSON from result
     edit_plan = _parse_edit_plan(result)
+    _normalize_clip_keys(edit_plan)
 
     # Also generate human-readable screenplay using original function
     screenplay = generate_screenplay(
@@ -494,7 +495,11 @@ def _self_review_plan(edit_plan: dict, taste_profile: str,
         return edit_plan
 
     revised = _parse_edit_plan(result)
-    if revised.get("clips"):
+    if isinstance(revised, list):
+        # Gemini sometimes returns just the clips array
+        revised = {"clips": revised}
+    _normalize_clip_keys(revised)
+    if isinstance(revised, dict) and revised.get("clips"):
         log.info("Self-review: %d clips (was %d)", len(revised["clips"]), len(clips))
         # Preserve metadata from original
         revised.setdefault("title", edit_plan.get("title", ""))
@@ -505,6 +510,41 @@ def _self_review_plan(edit_plan: dict, taste_profile: str,
 
     log.warning("Self-review parse failed, keeping original plan")
     return edit_plan
+
+
+def _normalize_clip_keys(plan: dict):
+    """Normalize clip field names from various LLM output formats."""
+    if not isinstance(plan, dict):
+        return
+    for c in plan.get("clips", []):
+        if "source" in c and "source_file" not in c:
+            c["source_file"] = c.pop("source")
+        if "clip" in c and "source_file" not in c:
+            c["source_file"] = c.pop("clip")
+        if "file" in c and "source_file" not in c:
+            c["source_file"] = c.pop("file")
+        if "filename" in c and "source_file" not in c:
+            c["source_file"] = c.pop("filename")
+        if "start" in c and "start_time" not in c:
+            c["start_time"] = c.pop("start")
+        if "end" in c and "end_time" not in c:
+            c["end_time"] = c.pop("end")
+        if "role" in c and "narrative_role" not in c:
+            c["narrative_role"] = c.pop("role")
+        if "transition" in c and "transition_in" not in c:
+            c["transition_in"] = c.pop("transition")
+        # Compute duration if missing
+        if "duration" not in c and c.get("start_time") and c.get("end_time"):
+            from scene_analyzer import _parse_ts
+            st = str(c["start_time"])
+            et = str(c["end_time"])
+            c["start_time"] = st
+            c["end_time"] = et
+            c["duration"] = _parse_ts(et) - _parse_ts(st)
+        c.setdefault("duration", 4.0)
+        c.setdefault("speed", 1.0)
+        c.setdefault("grade_type", "mixed")
+        c.setdefault("source_file", "")
 
 
 def _parse_edit_plan(text: str) -> dict:

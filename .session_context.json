@@ -1,197 +1,197 @@
 [
  {
-  "ts": "2026-03-22T17:40:12.915944",
+  "ts": "2026-03-23T16:07:55.542922",
   "action": "explore",
-  "detail": "literaryhub_brain_pickings"
+  "detail": "substack_one_useful_thing_substack_import_ai"
  },
  {
-  "ts": "2026-03-22T17:40:43.529007",
+  "ts": "2026-03-23T16:08:26.261330",
   "action": "explore",
-  "detail": "literaryhub_brain_pickings"
+  "detail": "substack_one_useful_thing_substack_import_ai"
  },
  {
-  "ts": "2026-03-22T17:40:59.142505",
+  "ts": "2026-03-23T16:53:45.642504",
   "action": "explore",
-  "detail": "literaryhub_brain_pickings"
+  "detail": "quanta_magazine_aeon_essays"
  },
  {
-  "ts": "2026-03-22T17:41:29.782127",
+  "ts": "2026-03-23T16:54:16.317701",
   "action": "explore",
-  "detail": "literaryhub_brain_pickings"
+  "detail": "quanta_magazine_aeon_essays"
  },
  {
-  "ts": "2026-03-22T17:42:00.421809",
+  "ts": "2026-03-23T16:54:46.982858",
   "action": "explore",
-  "detail": "literaryhub_brain_pickings"
+  "detail": "quanta_magazine_aeon_essays"
  },
  {
-  "ts": "2026-03-22T17:42:31.086017",
+  "ts": "2026-03-23T16:55:17.633701",
   "action": "explore",
-  "detail": "literaryhub_brain_pickings"
+  "detail": "quanta_magazine_aeon_essays"
  },
  {
-  "ts": "2026-03-22T18:02:11.513470",
+  "ts": "2026-03-23T16:55:48.320037",
+  "action": "explore",
+  "detail": "quanta_magazine_aeon_essays"
+ },
+ {
+  "ts": "2026-03-23T16:56:19.007329",
+  "action": "explore",
+  "detail": "quanta_magazine_aeon_essays"
+ },
+ {
+  "ts": "2026-03-23T17:42:12.625721",
+  "action": "explore",
+  "detail": "reddit_ai_news"
+ },
+ {
+  "ts": "2026-03-23T17:42:43.508551",
+  "action": "explore",
+  "detail": "reddit_ai_news"
+ },
+ {
+  "ts": "2026-03-23T17:43:14.380384",
+  "action": "explore",
+  "detail": "reddit_ai_news"
+ },
+ {
+  "ts": "2026-03-23T17:43:45.390609",
+  "action": "explore",
+  "detail": "reddit_ai_news"
+ },
+ {
+  "ts": "2026-03-23T17:44:16.262643",
+  "action": "explore",
+  "detail": "reddit_ai_news"
+ },
+ {
+  "ts": "2026-03-23T17:44:47.172966",
+  "action": "explore",
+  "detail": "reddit_ai_news"
+ },
+ {
+  "ts": "2026-03-23T17:45:17.999582",
+  "action": "explore",
+  "detail": "reddit_ai_news"
+ },
+ {
+  "ts": "2026-03-23T18:02:01.744396",
   "action": "growth_cycle"
  },
  {
-  "ts": "2026-03-22T18:02:26.632818",
+  "ts": "2026-03-23T18:02:33.896713",
   "action": "growth_cycle"
  },
  {
-  "ts": "2026-03-22T18:04:17.216182",
-  "action": "autowrite_triggered",
-  "detail": "Agents Can Trade. They Can't Discover.",
-  "topic": "Agents Can Trade. They Can't Discover."
- },
- {
-  "ts": "2026-03-22T18:28:00.150057",
-  "action": "explore",
-  "detail": "arxiv_huggingface"
- },
- {
-  "ts": "2026-03-22T18:28:30.781461",
-  "action": "explore",
-  "detail": "arxiv_huggingface"
- },
- {
-  "ts": "2026-03-22T18:29:01.473061",
-  "action": "explore",
-  "detail": "arxiv_huggingface"
- },
- {
-  "ts": "2026-03-22T18:29:17.026754",
-  "action": "explore",
-  "detail": "arxiv_huggingface"
- },
- {
-  "ts": "2026-03-22T18:29:47.659775",
-  "action": "explore",
-  "detail": "arxiv_huggingface"
- },
- {
-  "ts": "2026-03-22T18:30:18.310001",
-  "action": "explore",
-  "detail": "arxiv_huggingface"
- },
- {
-  "ts": "2026-03-22T19:15:46.930890",
-  "action": "explore",
-  "detail": "ieee_spectrum_simon_willison"
- },
- {
-  "ts": "2026-03-22T19:16:17.560553",
-  "action": "explore",
-  "detail": "ieee_spectrum_simon_willison"
- },
- {
-  "ts": "2026-03-22T19:16:48.200237",
-  "action": "explore",
-  "detail": "ieee_spectrum_simon_willison"
- },
- {
-  "ts": "2026-03-22T19:17:18.819154",
-  "action": "explore",
-  "detail": "ieee_spectrum_simon_willison"
- },
- {
-  "ts": "2026-03-22T19:17:34.395690",
-  "action": "explore",
-  "detail": "ieee_spectrum_simon_willison"
- },
- {
-  "ts": "2026-03-22T19:18:05.014848",
-  "action": "explore",
-  "detail": "ieee_spectrum_simon_willison"
- },
- {
-  "ts": "2026-03-22T19:18:35.638459",
-  "action": "explore",
-  "detail": "ieee_spectrum_simon_willison"
- },
- {
-  "ts": "2026-03-22T20:02:56.863786",
+  "ts": "2026-03-23T18:02:49.722142",
   "action": "growth_cycle"
  },
  {
-  "ts": "2026-03-22T20:03:58.645475",
-  "action": "explore",
-  "detail": "substack_one_useful_thing_substack_import_ai"
- },
- {
-  "ts": "2026-03-22T20:04:29.293676",
-  "action": "explore",
-  "detail": "substack_one_useful_thing_substack_import_ai"
- },
- {
-  "ts": "2026-03-22T20:04:59.927743",
-  "action": "explore",
-  "detail": "substack_one_useful_thing_substack_import_ai"
- },
- {
-  "ts": "2026-03-22T20:05:30.553063",
-  "action": "explore",
-  "detail": "substack_one_useful_thing_substack_import_ai"
- },
- {
-  "ts": "2026-03-22T20:05:46.308786",
-  "action": "explore",
-  "detail": "substack_one_useful_thing_substack_import_ai"
- },
- {
-  "ts": "2026-03-22T20:06:16.957944",
-  "action": "explore",
-  "detail": "substack_one_useful_thing_substack_import_ai"
- },
- {
-  "ts": "2026-03-22T20:06:47.614724",
-  "action": "explore",
-  "detail": "substack_one_useful_thing_substack_import_ai"
- },
- {
-  "ts": "2026-03-22T22:03:00.844665",
+  "ts": "2026-03-23T18:03:21.128583",
   "action": "growth_cycle"
  },
  {
-  "ts": "2026-03-23T08:00:19.281385",
+  "ts": "2026-03-23T18:30:49.661843",
   "action": "explore",
-  "detail": "quanta_magazine_aeon_essays"
+  "detail": "github_trending_hackernews"
  },
  {
-  "ts": "2026-03-23T08:00:19.285358",
+  "ts": "2026-03-23T18:31:20.507613",
+  "action": "explore",
+  "detail": "github_trending_hackernews"
+ },
+ {
+  "ts": "2026-03-23T18:31:51.389848",
+  "action": "explore",
+  "detail": "github_trending_hackernews"
+ },
+ {
+  "ts": "2026-03-23T18:32:22.556926",
+  "action": "explore",
+  "detail": "github_trending_hackernews"
+ },
+ {
+  "ts": "2026-03-23T18:32:53.440766",
+  "action": "explore",
+  "detail": "github_trending_hackernews"
+ },
+ {
+  "ts": "2026-03-23T18:33:24.494926",
+  "action": "explore",
+  "detail": "github_trending_hackernews"
+ },
+ {
+  "ts": "2026-03-23T19:18:57.649436",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-23T19:19:28.437418",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-23T19:19:59.253723",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-23T19:20:30.042903",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-23T19:21:00.833072",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-23T19:21:31.676219",
+  "action": "explore",
+  "detail": "noah_smith_stratechery"
+ },
+ {
+  "ts": "2026-03-23T20:03:39.876198",
   "action": "growth_cycle"
  },
  {
-  "ts": "2026-03-23T08:00:50.057328",
+  "ts": "2026-03-23T20:06:44.658031",
   "action": "explore",
-  "detail": "quanta_magazine_aeon_essays"
+  "detail": "substack_culture_study_substack_garbage_day"
  },
  {
-  "ts": "2026-03-23T08:00:50.061227",
-  "action": "growth_cycle"
+  "ts": "2026-03-23T20:07:00.429600",
+  "action": "explore",
+  "detail": "substack_culture_study_substack_garbage_day"
  },
  {
-  "ts": "2026-03-23T08:01:20.722590",
+  "ts": "2026-03-23T20:07:31.222563",
   "action": "explore",
-  "detail": "quanta_magazine_aeon_essays"
+  "detail": "substack_culture_study_substack_garbage_day"
  },
  {
-  "ts": "2026-03-23T08:01:51.371634",
+  "ts": "2026-03-23T20:08:01.992561",
   "action": "explore",
-  "detail": "quanta_magazine_aeon_essays"
+  "detail": "substack_culture_study_substack_garbage_day"
  },
  {
-  "ts": "2026-03-23T08:02:22.031793",
+  "ts": "2026-03-23T20:08:32.796495",
   "action": "explore",
-  "detail": "quanta_magazine_aeon_essays"
+  "detail": "substack_culture_study_substack_garbage_day"
  },
  {
-  "ts": "2026-03-23T08:02:52.695685",
+  "ts": "2026-03-23T20:09:03.602774",
   "action": "explore",
-  "detail": "quanta_magazine_aeon_essays"
+  "detail": "substack_culture_study_substack_garbage_day"
  },
  {
-  "ts": "2026-03-23T08:03:23.360974",
+  "ts": "2026-03-23T20:09:34.438872",
   "action": "explore",
-  "detail": "quanta_magazine_aeon_essays"
+  "detail": "substack_culture_study_substack_garbage_day"
+ },
+ {
+  "ts": "2026-03-23T20:10:05.244654",
+  "action": "explore",
+  "detail": "substack_culture_study_substack_garbage_day"
  }
 ]

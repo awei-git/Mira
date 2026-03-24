@@ -25,6 +25,10 @@ _LUT_DIR = Path(__file__).parent / "luts"
 _SLOG3_LUT = _LUT_DIR / "SLog3_SGamut3Cine_to_Rec709.cube"
 _DLOGM_LUT = _LUT_DIR / "DLogM_to_Rec709.cube"
 
+# Normalize: convert 10-bit to 8-bit and auto-stretch histogram
+# This fixes the "grey fog" from 10-bit XAVC footage
+_NORMALIZE = "format=yuv420p,normalize=blackpt=black:whitept=white:smoothing=50"
+
 # Base filter: always applied (scale + pad to 1080p)
 _BASE = (
     "scale=1920:1080:force_original_aspect_ratio=decrease,"
@@ -46,8 +50,8 @@ GRADE_PRESETS = {
         "vignette=PI/5"
     ),
     ("golden_hour", "family"): (
-        "eq=brightness=0.02:contrast=1.10:saturation=1.05,"
-        "colorbalance=rs=0.06:gs=0.02:bs=-0.03:rh=0.02:gh=0.01:bh=-0.02,"
+        "eq=saturation=1.10,"
+        "colorbalance=rs=0.05:gs=0.02:bs=-0.03:rh=0.02:gh=0.01:bh=-0.02,"
         "unsharp=3:3:0.2,"
         "vignette=PI/6"
     ),
@@ -74,7 +78,7 @@ GRADE_PRESETS = {
         "vignette=PI/5"
     ),
     ("overcast", "family"): (
-        "eq=brightness=0.03:contrast=1.05:saturation=0.90,"
+        "eq=saturation=1.05,"
         "colorbalance=rs=0.03:gs=0.01:bs=-0.01,"
         "unsharp=3:3:0.2"
     ),
@@ -100,8 +104,8 @@ GRADE_PRESETS = {
         "unsharp=3:3:0.2"
     ),
     ("indoor_warm", "family"): (
-        "eq=brightness=0.02:contrast=1.05:saturation=0.95,"
-        "colorbalance=rs=0.03:gs=0.01:bs=-0.02,"
+        "eq=saturation=1.10,"
+        "colorbalance=rs=0.04:gs=0.01:bs=-0.02,"
         "unsharp=3:3:0.2"
     ),
 
@@ -112,8 +116,8 @@ GRADE_PRESETS = {
         "unsharp=3:3:0.2"
     ),
     ("indoor_cool", "family"): (
-        "eq=brightness=0.03:contrast=1.05:saturation=0.90,"
-        "colorbalance=rs=0.03:gs=0.0:bs=-0.01,"
+        "eq=saturation=1.05,"
+        "colorbalance=rs=0.04:gs=0.01:bs=-0.01,"
         "unsharp=3:3:0.2"
     ),
 
@@ -139,8 +143,8 @@ GRADE_PRESETS = {
         "vignette=PI/5"
     ),
     ("mixed", "family"): (
-        "eq=brightness=0.0:contrast=1.08:saturation=0.95,"
-        "colorbalance=rs=0.03:gs=0.01:bs=-0.02,"
+        "eq=saturation=1.12,"
+        "colorbalance=rs=0.04:gs=0.01:bs=-0.03,"
         "unsharp=3:3:0.2"
     ),
 
@@ -161,8 +165,8 @@ GRADE_PRESETS = {
 
 # Default fallback
 _DEFAULT_GRADE = (
-    "eq=brightness=0.0:contrast=1.10:saturation=1.00,"
-    "colorbalance=rs=0.03:gs=0.01:bs=-0.02,"
+    "eq=saturation=1.10,"
+    "colorbalance=rs=0.04:gs=0.01:bs=-0.03,"
     "unsharp=3:3:0.2"
 )
 
@@ -196,9 +200,17 @@ def detect_log_profile(source_path: Path) -> str:
         is_10bit = "10" in pix_fmt  # yuv420p10le, yuv422p10le
         is_xavc = "XAVC" in major_brand
 
-        # Sony XAVC with 10-bit and unspecified transfer = S-Log3
+        # Sony XAVC with 10-bit and unspecified transfer — could be S-Log3 or standard
+        # S-Log3 footage has very low contrast: middle grey at ~40% IRE (brightness ~100)
+        # Standard Rec.709 has middle grey at ~46% IRE (brightness ~118)
+        # Check actual pixel brightness to distinguish
         if is_xavc and is_10bit and color_transfer in ("unknown", "unspecified", ""):
-            return "slog3"
+            avg_bright = _probe_brightness(source_path)
+            if avg_bright < 70:
+                # Very flat/low brightness = S-Log3
+                return "slog3"
+            # Otherwise standard XAVC — no LUT needed
+            return "rec709"
 
         # DJI files (filename starts with DJI_)
         if filename.startswith("DJI_"):
@@ -216,6 +228,33 @@ def detect_log_profile(source_path: Path) -> str:
         log.warning("Log profile detection failed for %s: %s", source_path.name, e)
 
     return "rec709"
+
+
+def _probe_brightness(source_path: Path) -> float:
+    """Quick brightness check — extract one frame at 30% and measure mean."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(source_path)],
+            capture_output=True, text=True, timeout=5,
+        )
+        dur = float(r.stdout.strip())
+        ss = dur * 0.3
+
+        r = subprocess.run(
+            ["ffmpeg", "-ss", str(ss), "-i", str(source_path),
+             "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray",
+             "-vf", "scale=80:-1", "-"],
+            capture_output=True, timeout=10,
+        )
+        if r.stdout:
+            import array
+            pixels = array.array('B', r.stdout)
+            if pixels:
+                return sum(pixels) / len(pixels)
+    except Exception:
+        pass
+    return 100.0  # assume normal
 
 
 def _get_lut_filter(log_profile: str) -> str:
@@ -263,12 +302,28 @@ def grade_clip(clip_analysis: dict, content_mode: str = "family",
     parts = []
 
     # Detect and apply log LUT FIRST (before any other grading)
+    is_10bit = False
     if source_path:
         log_profile = detect_log_profile(source_path)
         lut_filter = _get_lut_filter(log_profile)
         if lut_filter:
             parts.append(lut_filter)
             log.debug("Applying %s LUT for %s", log_profile, source_path.name)
+
+        # Check if 10-bit source (needs normalize to avoid grey fog)
+        try:
+            r = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+                 "-show_entries", "stream=pix_fmt", "-of", "csv=p=0",
+                 str(source_path)],
+                capture_output=True, text=True, timeout=5,
+            )
+            is_10bit = "10" in r.stdout.strip()
+        except Exception:
+            pass
+
+    if is_10bit:
+        parts.append(_NORMALIZE)
 
     parts.append(_BASE)
     if high_fps:

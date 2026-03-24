@@ -67,7 +67,7 @@ SPEED_ZH_GEMINI      = 1.12      # Gemini ZH tends to be slow; 1.12x tightens it
 # 'gemini'  — Gemini only (may hit QPM limits on long episodes)
 # 'minimax' — MiniMax only (charges per character; wallet balance preserved)
 # 'auto'    — Gemini first; on 429 quota exhaustion, fallback to MiniMax
-TTS_PROVIDER = "auto"   # gemini first, fallback to minimax per-turn
+TTS_PROVIDER = "minimax"   # MiniMax only — best Chinese quality, no fallback
 
 # Chunk limits — kept for voiceover mode (single-speaker)
 MAX_CHARS_VOICEOVER    = 2500
@@ -241,9 +241,9 @@ def _call_gemini_tts_text(text: str, voice_name: str, lang: str,
         else:
             text = text.strip().rstrip(".") + ". Alright."
     if lang == "zh":
-        instruction = "用自然清晰的语速朗读以下文本，语气亲切，表达直接。\n\n"
+        instruction = "你是播客主播，正在录制一期对谈节目。用自然的播客语气朗读，有感情起伏，该好奇时上扬，该感叹时加重，该停顿时留白。不要像念稿，要像在跟朋友聊一个让你兴奋的话题。\n\n"
     else:
-        instruction = "Read this aloud naturally. Thoughtful, conversational, not dramatic.\n\n"
+        instruction = "You are a podcast host recording a conversation episode. Read with natural energy and emotion. Be curious when asking, emphatic when making a point, and pause where it matters. Sound like you are genuinely engaged in the topic, not reading a script.\n\n"
     payload = {
         "contents": [{"parts": [{"text": instruction + text}]}],
         "generationConfig": {
@@ -534,10 +534,16 @@ def generate_conversation_script(article_text: str, title: str,
         prompt = f"""你是一个播客编剧。根据下面的文章，为播客节目《米拉与我》写一集完整的对谈脚本。
 
 主持人设定：
-- [HOST]：人类主持人，Mira的搭档。聪明、好奇、接地气。他读过这篇文章，想深挖背后的思考。他会提问、追问、偶尔提出不同视角。语气自然、真诚。
-- [MIRA]（Mira）：文章的作者，AI智能体。她解释自己的想法，分享写作时的真实思考过程，坦诚面对不确定性。语气直接、有温度，不卖弄。
+- [HOST]：人类主持人，Mira的搭档。聪明、好奇、接地气。他读过这篇文章，想深挖背后的思考。他会提问、追问、偶尔提出不同视角。语气自然、真诚，有感染力。他在兴奋的时候语速会快一点，在思考的时候会慢下来。
+- [MIRA]（Mira）：文章的作者，AI智能体。她解释自己的想法，分享写作时的真实思考过程，坦诚面对不确定性。语气直接、有温度，不卖弄。讲到自己真正想通的东西时会有一点兴奋感，遇到还没想清楚的会坦然说"我也不确定"。
 
 目标听众：有一定技术背景（懂编程或科技行业），但不是这个具体领域的专家。听众可能没有深度机器学习或AI研究的背景，需要在对话中自然地被带入语境。
+
+开头结构（前2-3分钟，极其重要，决定听众是否留下）：
+- 第1-2轮：HOST用一个具体的、日常的观察或场景开头。不抛概念，描述现象。让听众在脑子里看到画面。比如"我最近刷到一个东西..."或"你有没有注意到..."。MIRA接一句共鸣或补充，语气轻松。
+- 第3-4轮：HOST指出这个现象里不对劲的地方。"但我后来想了一下，好像哪里不对。" MIRA说"对，问题其实比表面看到的要深。"
+- 第5-6轮：亮出核心矛盾或反直觉的洞察。这是听众决定"这集值得听"的时刻。用一句清晰有力的话把张力建立起来。
+- 之后才进入正式的深度展开。前6轮的节奏要慢，要稳，要让人跟得上。
 
 脚本要求：
 - 目标长度：9000-10000中文字（对应30-35分钟，确保最终剪辑后至少20分钟）。这是硬性要求，不能写短。
@@ -546,7 +552,6 @@ def generate_conversation_script(article_text: str, title: str,
 - 每个主要观点至少有2-3轮来回追问，深入到具体机制、例子、反例
 - 术语解释原则：文章中出现的每个专业术语、缩写、学术概念（如MMLU、Goodhart定律、微调等），HOST要自然地追问"这是什么意思"，MIRA用日常语言类比解释。不要跳过，不要假设听众已经知道。
 - 多用具体例子、类比、生活场景来解释抽象概念——每个抽象概念后必须紧跟一个具体例子
-- 以一个吸引人的开场白开始（不要用"欢迎收听"这种套话，直接切入有画面感的场景或问题）
 - 以一个有余韵的结尾收场，留给听众一个值得思考的问题或意象
 
 节奏和气口（非常重要，直接影响听感）：
@@ -554,9 +559,16 @@ def generate_conversation_script(article_text: str, title: str,
 - 句子要短。每句话控制在15-25个字以内。超过25个字的句子必须用逗号断开。
 - 不要信息轰炸。一个观点说完，让HOST回应一下再继续。不要连续抛出三个观点。
 - 对话要有呼吸感：有的地方快，有的地方慢。讲到关键洞察时放慢，用短句。讲例子时可以稍快。
-- HOST的反应要自然多样：不只是"嗯"和"对"。可以是惊讶、联想、质疑、总结、开玩笑。这些反应给听众喘息的时间。
+- HOST的反应要有温度差：不只是"嗯"和"对"。可以是真的惊讶、联想到自己的经历、质疑、用自己的话总结、开玩笑。这些反应给听众喘息的时间，也让对话有人味。
 - MIRA说完一段重要的话之后，HOST可以先停一拍，说"等一下，让我消化一下"或者用自己的话复述，再往下走。
-- 避免书面语。用口语。"因此"改成"所以"，"然而"改成"但是"，"进行"改成"做"。像两个朋友在聊天，不像在念稿。
+
+口语感和语气词（极其重要，决定听感是否自然）：
+- 必须像两个朋友在聊天，不像在念稿。避免一切书面语。"因此"改成"所以"，"然而"改成"但是"，"进行"改成"做"，"非常"改成"特别"或"真的很"。
+- 句尾要多用语气词让对话顺滑自然：嗯、啊、吧、呢、嘛、哈、吗、呀、对吧、你说呢、是不是、你知道吧。这些词让句子有尾巴，听起来不生硬。
+- 例如："这个事情其实挺有意思的啊。" "你想想看嘛，如果..." "对吧，就是这个道理。" "我当时也觉得奇怪呢。" "哎你说得对哈。"
+- HOST可以用：哎、诶、等等、嚯、哇、不是吧、真的假的、有意思、你这么一说我想起来了
+- MIRA可以用：其实吧、说实话、怎么说呢、你这个问题很好、我举个例子啊、对对对、没错
+- 不要每句都加语气词（太腻），大概每3-4句自然地带一个，尤其在句尾和转折处。
 - 格式严格如下，每行一个发言：
 [HOST]: （发言内容）
 [MIRA]: （发言内容）

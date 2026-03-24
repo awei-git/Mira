@@ -1,13 +1,13 @@
 {
   "app": "mira",
   "version": 2,
-  "updatedAt": "2026-03-23T12:37:24Z",
+  "updatedAt": "2026-03-24T01:28:27Z",
   "outputs": [
     {
       "type": "progress",
       "id": "agent",
       "title": "Mira Agent",
-      "updatedAt": "2026-03-23T12:37:24Z",
+      "updatedAt": "2026-03-24T01:28:27Z",
       "status": "active",
       "stage": {
         "current": 1,
@@ -18,72 +18,72 @@
     },
     {
       "type": "report",
+      "id": "briefing/2026-03-23_zhesi",
+      "title": "Briefing — 2026-03-23_zhesi",
+      "updatedAt": "2026-03-23T13:30:43Z",
+      "period": "daily",
+      "path": "briefings/2026-03-23_zhesi.md",
+      "size": 1993,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-23_substack_one_useful_thing_substack_import_ai",
+      "title": "Briefing — 2026-03-23_substack_one_useful_thing_substack_import_ai",
+      "updatedAt": "2026-03-23T20:06:50Z",
+      "period": "daily",
+      "path": "briefings/2026-03-23_substack_one_useful_thing_substack_import_ai.md",
+      "size": 3699,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-23_substack_culture_study_substack_garbage_day",
+      "title": "Briefing — 2026-03-23_substack_culture_study_substack_garbage_day",
+      "updatedAt": "2026-03-24T00:08:37Z",
+      "period": "daily",
+      "path": "briefings/2026-03-23_substack_culture_study_substack_garbage_day.md",
+      "size": 4781,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-23_substack_construction_physics_substack_experimental_history",
+      "title": "Briefing — 2026-03-23_substack_construction_physics_substack_experimental_history",
+      "updatedAt": "2026-03-23T16:05:09Z",
+      "period": "daily",
+      "path": "briefings/2026-03-23_substack_construction_physics_substack_experimental_history.md",
+      "size": 3585,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
+      "id": "briefing/2026-03-23_reddit_ai_news",
+      "title": "Briefing — 2026-03-23_reddit_ai_news",
+      "updatedAt": "2026-03-23T21:43:18Z",
+      "period": "daily",
+      "path": "briefings/2026-03-23_reddit_ai_news.md",
+      "size": 3860,
+      "parent": "agent"
+    },
+    {
+      "type": "report",
       "id": "briefing/2026-03-23_quanta_magazine_aeon_essays",
       "title": "Briefing — 2026-03-23_quanta_magazine_aeon_essays",
-      "updatedAt": "2026-03-23T12:01:27Z",
+      "updatedAt": "2026-03-23T20:54:59Z",
       "period": "daily",
       "path": "briefings/2026-03-23_quanta_magazine_aeon_essays.md",
-      "size": 4646,
+      "size": 4334,
       "parent": "agent"
     },
     {
       "type": "report",
-      "id": "briefing/2026-03-23_analyst_pre_market",
-      "title": "Briefing — 2026-03-23_analyst_pre_market",
-      "updatedAt": "2026-03-23T11:02:16Z",
+      "id": "briefing/2026-03-23_noah_smith_stratechery",
+      "title": "Briefing — 2026-03-23_noah_smith_stratechery",
+      "updatedAt": "2026-03-23T23:19:45Z",
       "period": "daily",
-      "path": "briefings/2026-03-23_analyst_pre_market.md",
-      "size": 7629,
-      "parent": "agent"
-    },
-    {
-      "type": "report",
-      "id": "briefing/2026-03-22_zhesi",
-      "title": "Briefing — 2026-03-22_zhesi",
-      "updatedAt": "2026-03-22T13:30:29Z",
-      "period": "daily",
-      "path": "briefings/2026-03-22_zhesi.md",
-      "size": 1892,
-      "parent": "agent"
-    },
-    {
-      "type": "report",
-      "id": "briefing/2026-03-22_substack_one_useful_thing_substack_import_ai",
-      "title": "Briefing — 2026-03-22_substack_one_useful_thing_substack_import_ai",
-      "updatedAt": "2026-03-23T00:04:51Z",
-      "period": "daily",
-      "path": "briefings/2026-03-22_substack_one_useful_thing_substack_import_ai.md",
-      "size": 3889,
-      "parent": "agent"
-    },
-    {
-      "type": "report",
-      "id": "briefing/2026-03-22_substack_culture_study_substack_garbage_day",
-      "title": "Briefing — 2026-03-22_substack_culture_study_substack_garbage_day",
-      "updatedAt": "2026-03-22T19:13:19Z",
-      "period": "daily",
-      "path": "briefings/2026-03-22_substack_culture_study_substack_garbage_day.md",
-      "size": 3848,
-      "parent": "agent"
-    },
-    {
-      "type": "report",
-      "id": "briefing/2026-03-22_substack_construction_physics_substack_experimental_history",
-      "title": "Briefing — 2026-03-22_substack_construction_physics_substack_experimental_history",
-      "updatedAt": "2026-03-22T20:01:45Z",
-      "period": "daily",
-      "path": "briefings/2026-03-22_substack_construction_physics_substack_experimental_history.md",
-      "size": 3995,
-      "parent": "agent"
-    },
-    {
-      "type": "report",
-      "id": "briefing/2026-03-22_reddit_ai_news",
-      "title": "Briefing — 2026-03-22_reddit_ai_news",
-      "updatedAt": "2026-03-22T16:48:33Z",
-      "period": "daily",
-      "path": "briefings/2026-03-22_reddit_ai_news.md",
-      "size": 3510,
+      "path": "briefings/2026-03-23_noah_smith_stratechery.md",
+      "size": 4209,
       "parent": "agent"
     },
     {

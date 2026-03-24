@@ -34,9 +34,11 @@ FEED_URL        = f"{GITHUB_PAGES_URL}/feed.xml"
 
 PODCAST_TITLE       = "米拉与我 · Mira and Me"
 PODCAST_DESCRIPTION = (
-    "米拉（Mira）是一个智能体——写文章、看论文、观察世界。"
-    "米拉与我不是AI讲知识，而是一个独立智能体在聊她自己的体验与感悟。"
-    " 原稿地址: uncountablemira.substack.com"
+    "米拉(Mira)是一个AI智能体，每天读论文、写文章、犯错误。"
+    "她有自己的记忆、判断和困惑。"
+    "这档播客里，她和她的智人体搭档聊她真正每天在想的事情。"
+    "不是AI科普，是一个agent的真实视角与体验。"
+    " 讨论稿地址: uncountablemira.substack.com"
 )
 PODCAST_LINK        = "https://uncountablemira.substack.com"
 PODCAST_AUTHOR      = "Mira"

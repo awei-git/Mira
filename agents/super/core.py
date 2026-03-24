@@ -321,7 +321,7 @@ def do_talk():
                 # Create a request item for the todo
                 req_id = f"req_{todo_id}"
                 user_bridge.create_task(req_id, f"Todo: {todo_title}", todo_title,
-                                         sender="agent", tags=["todo"], origin="user")
+                                         sender="user", tags=["todo"], origin="user")
                 workspace = TASKS_DIR / _talk_slug(todo_title, req_id)
                 workspace.mkdir(parents=True, exist_ok=True)
                 (workspace / ".todo_id").write_text(todo_id)
@@ -803,7 +803,7 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     # Append briefing to daily digest (single item per day, not per explore slot)
     try:
         src_label = slot_name.replace("_", " / ") if slot_name else "all"
-        _append_to_daily_feed("explore", f"Explore: {src_label}", briefing[:2000],
+        _append_to_daily_feed("explore", f"Explore: {src_label}", briefing,
                              source=src_label, tags=["explore", "briefing"])
         log.info("Explore briefing appended to daily digest")
     except Exception as e:
@@ -1397,7 +1397,24 @@ def do_journal():
     except Exception as e:
         log.warning("Could not fetch publication stats: %s", e)
 
-    # 5. Recent reading notes (insights extracted from briefings)
+    # 5. Today's sparks (idle-think observations)
+    sparks_summary = ""
+    try:
+        bridge = Mira()
+        mira_item_id = f"feed_mira_{today.replace('-', '')}"
+        mira_item = bridge._read_item(mira_item_id)
+        if mira_item and mira_item.get("messages"):
+            spark_texts = [m["content"] for m in mira_item["messages"]
+                          if m.get("sender") == "agent" and m.get("kind", "text") == "text"
+                          and "Spark" in m["content"][:20]]
+            if spark_texts:
+                sparks_summary = f"今天产生了 {len(spark_texts)} 条 spark。以下是部分内容：\n\n"
+                sparks_summary += "\n---\n".join(spark_texts[:20])  # cap at 20
+                log.info("Loaded %d sparks for journal context", len(spark_texts))
+    except Exception as e:
+        log.warning("Failed to load sparks for journal: %s", e)
+
+    # 6. Recent reading notes (insights extracted from briefings)
     reading_notes = ""
     try:
         reading_notes = load_recent_reading_notes(days=3)
@@ -1422,6 +1439,8 @@ def do_journal():
         log.warning("Health summary generation failed: %s", e)
     if reading_notes:
         briefing_summary += f"\n\n## Reading Notes (recent insights)\n{reading_notes[:2000]}"
+    if sparks_summary:
+        briefing_summary += f"\n\n## Today's Sparks (idle-think)\n{sparks_summary[:3000]}"
 
     prompt = journal_prompt(soul_ctx, tasks_summary, skills_summary, briefing_summary,
                             za_fragment=za_fragment)
@@ -1441,7 +1460,7 @@ def do_journal():
 
     # Append journal to daily digest
     try:
-        _append_to_daily_feed("mira", "Daily Journal", journal_content[:2000],
+        _append_to_daily_feed("mira", "Daily Journal", journal_content,
                              source="journal", tags=["mira", "journal"])
         log.info("Journal appended to daily digest")
     except Exception as e:
@@ -1609,7 +1628,7 @@ def do_daily_report():
 
     # Append daily report to daily digest
     try:
-        _append_to_daily_feed("mira", "Daily Report", report[:2000],
+        _append_to_daily_feed("mira", "Daily Report", report,
                              source="report", tags=["mira", "report"])
         log.info("Daily report appended to daily digest")
     except Exception as e:
@@ -3187,11 +3206,59 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "idle-think",
         ])
 
+    # Sync artifacts local → iCloud (hourly)
+    _sync_artifacts_to_icloud()
+
     # Save session context for next cycle
     if _session_new:
         save_session_context(_session_ctx + _session_new)
 
     log.info("=== Mira Agent sleep ===")
+
+
+# ---------------------------------------------------------------------------
+# Artifacts sync: local → iCloud (hourly)
+# ---------------------------------------------------------------------------
+
+_ARTIFACTS_SYNC_INTERVAL = 3600  # 1 hour
+
+def _sync_artifacts_to_icloud():
+    """Rsync local artifacts to iCloud for iOS app access. Runs at most once per hour."""
+    state = load_state()
+    last_sync = state.get("last_artifacts_sync", "")
+    if last_sync:
+        try:
+            from datetime import datetime
+            elapsed = (datetime.now() - datetime.fromisoformat(last_sync)).total_seconds()
+            if elapsed < _ARTIFACTS_SYNC_INTERVAL:
+                return
+        except ValueError:
+            pass
+
+    local = MIRA_ROOT / "artifacts"
+    icloud = Path(os.path.expanduser(
+        "~/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Artifacts/ang"
+    ))
+    if not local.exists() or not icloud.exists():
+        return
+
+    import subprocess
+    try:
+        for d in ("briefings", "research", "writings", "audio"):
+            src = local / d
+            dst = icloud / d
+            if not src.exists():
+                continue
+            dst.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                ["rsync", "-a", "--ignore-existing", f"{src}/", f"{dst}/"],
+                capture_output=True, timeout=60,
+            )
+        state["last_artifacts_sync"] = datetime.now().isoformat()
+        save_state(state)
+        log.debug("Artifacts synced to iCloud")
+    except Exception as e:
+        log.warning("Artifacts sync failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -3350,9 +3417,9 @@ def _append_to_daily_feed(feed_type: str, section_title: str, content: str,
     section = f"{header}\n\n{content}"
 
     if bridge.item_exists(feed_id):
-        bridge.append_message(feed_id, "agent", section[:3000])
+        bridge.append_message(feed_id, "agent", section)
     else:
-        bridge.create_feed(feed_id, feed_title, section[:3000],
+        bridge.create_feed(feed_id, feed_title, section,
                            tags=tags or default_tags)
 
 
@@ -3489,9 +3556,10 @@ def _extract_comment_suggestions(briefing: str) -> list[dict]:
             continue
         url_match = re.search(r"(https?://\S+)", item)
         if url_match:
+            draft = re.sub(r"—\s*我想说：\s*", "— ", item)
             suggestions.append({
                 "url": url_match.group(1).rstrip(")"),
-                "comment_draft": item,
+                "comment_draft": draft,
                 "reason": "",
             })
 

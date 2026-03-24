@@ -1,0 +1,9 @@
+2026-03-23 13:55:20,637 [INFO] Worker started: task=req_todo_33503cf0 thread=req_todo_33503cf0
+2026-03-23 13:55:20,638 [INFO] Edit-artifact mode detected for task req_todo_33503cf0
+2026-03-23 13:55:27,251 [INFO] Replaced existing episode for task req_todo_33503cf0
+2026-03-23 13:55:27,251 [INFO] Episode saved: 2026-03-23_1355_todo-帮我去bhphotos上看看有什么好deal-适合我的.md (12 messages)
+2026-03-23 13:55:27,370 [INFO] Auto-flush saved to flush_2026-03-23_1355.md
+2026-03-23 13:56:40,829 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error
+2026-03-23 13:56:40,912 [INFO] Rebuilt semantic memory: 1820 chunks embedded
+2026-03-23 13:56:40,915 [INFO] Edit complete (79 chars → 64 chars)
+2026-03-23 13:56:40,915 [INFO] Worker exiting (edit)

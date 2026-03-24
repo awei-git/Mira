@@ -4,17 +4,20 @@ struct TodoView: View {
     @Environment(TodoStore.self) private var store
     @State private var newText = ""
     @State private var selectedId: String?
+    @FocusState private var inputFocused: Bool
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottomTrailing) {
                 Color(hex: 0x111B21).ignoresSafeArea()
+                    .onTapGesture { inputFocused = false }
 
                 VStack(spacing: 0) {
                     // Input bar
                     HStack(spacing: 8) {
                         TextField("Add idea... (high: for urgent)", text: $newText)
                             .textFieldStyle(.plain)
+                            .focused($inputFocused)
                             .padding(10)
                             .background(Color(hex: 0x1F2C34))
                             .clipShape(RoundedRectangle(cornerRadius: 18))
@@ -54,6 +57,7 @@ struct TodoView: View {
                         }
                     }
                     .listStyle(.plain)
+                    .scrollDismissesKeyboard(.interactively)
                 }
             }
             .navigationTitle("Todo")
@@ -65,6 +69,12 @@ struct TodoView: View {
                     TodoDetailSheet(todoId: id)
                 }
             }
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { inputFocused = false }
+                }
+            }
             .refreshable { store.refresh() }
             .onAppear { store.refresh() }
         }
@@ -74,6 +84,7 @@ struct TodoView: View {
         let t = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         newText = ""
+        inputFocused = false
         // Parse priority: "high: do something"
         let prefixes = ["high", "medium", "low"]
         var priority = "medium"

@@ -382,6 +382,45 @@ If no reusable skill can be extracted, just say "No new skill from this task."
         log.info("Extracted skill: %s", name)
 
 
+def _register_runtime_tools_created(workspace: Path) -> None:
+    """Scan workspace for Python tools the agent wrote to runtime_tools/ and register them.
+
+    Called after task completion to auto-index any tools the agent created
+    during execution but didn't formally register via tool_forge.
+    """
+    try:
+        from tool_forge import RUNTIME_TOOLS_DIR, list_tools, forge_tool
+    except ImportError:
+        return
+
+    if not RUNTIME_TOOLS_DIR.exists():
+        return
+
+    indexed = {t["file"] for t in list_tools()}
+    for py_file in RUNTIME_TOOLS_DIR.glob("*.py"):
+        if py_file.name == "__init__.py" or py_file.name in indexed:
+            continue
+        # New unindexed tool — try to extract metadata from docstring
+        code = py_file.read_text(encoding="utf-8")
+        name = py_file.stem.replace("_", " ")
+        desc = ""
+        # Extract first docstring
+        import re
+        doc_match = re.search(r'"""(.+?)"""', code, re.DOTALL)
+        if doc_match:
+            first_line = doc_match.group(1).strip().split("\n")[0]
+            desc = first_line[:200]
+        if not desc:
+            desc = f"Auto-discovered tool: {name}"
+        # Register it (forge_tool handles audit)
+        ok, msg = forge_tool(name, desc, code)
+        if ok:
+            log.info("Auto-registered runtime tool: %s", name)
+            append_memory(f"Created runtime tool: {name}")
+        else:
+            log.warning("Failed to register tool %s: %s", name, msg)
+
+
 # ---------------------------------------------------------------------------
 # Discussion mode — conversational exchange, not task execution
 # ---------------------------------------------------------------------------
@@ -607,60 +646,6 @@ You are editing existing content based on the user's instruction.
     return result
 
 
-# Casual/discussion markers (Chinese and English)
-_DISCUSSION_STARTERS = [
-    "你觉得", "你怎么看", "我在想", "聊聊", "想聊", "你有没有想过",
-    "你认为", "我觉得", "你说", "有没有觉得", "想问问你",
-    "what do you think", "do you think", "i was thinking",
-    "i wonder", "how do you feel", "what's your take",
-    "have you thought about", "let's talk", "curious about",
-]
-
-# Action verbs that signal a task, not a discussion
-_ACTION_VERBS = [
-    "写", "做", "改", "查", "发", "修", "翻译", "分析", "生成", "创建",
-    "编辑", "删除", "搜索", "下载", "上传", "发布", "剪", "总结",
-    "write", "create", "edit", "fix", "find", "search", "publish",
-    "generate", "make", "build", "delete", "fetch", "run", "analyze",
-    "summarize", "translate", "download", "upload",
-]
-
-
-def _is_discussion(content: str, task_data: dict) -> bool:
-    """Detect whether a message is conversational (discussion) vs. a task request.
-
-    Heuristics:
-    1. Starts with a casual/discussion marker phrase → discussion
-    2. Short message (< 200 chars) without action verbs → discussion
-    3. Follow-up in a thread where previous messages were discussion → discussion
-    """
-    stripped = content.strip()
-    lower = stripped.lower()
-
-    # Check for explicit discussion starters
-    for marker in _DISCUSSION_STARTERS:
-        if lower.startswith(marker):
-            return True
-
-    # Short message without action verbs → likely discussion
-    if len(stripped) < 200:
-        has_action = any(verb in lower for verb in _ACTION_VERBS)
-        if not has_action:
-            # But exclude very short ambiguous messages that might be follow-ups to tasks
-            # (e.g., "好的", "收到" are acknowledgments, not discussion)
-            if len(stripped) < 5:
-                return False
-            return True
-
-    # Check if this is a follow-up in a discussion thread
-    messages = task_data.get("messages", [])
-    if len(messages) >= 2:
-        # If prior agent responses were tagged as discussion, continue as discussion
-        for msg in messages[:-1]:
-            if msg.get("meta", {}).get("mode") == "discussion":
-                return True
-
-    return False
 
 
 def _load_recent_journals(n: int = 3) -> str:
@@ -699,7 +684,7 @@ def _load_recent_briefings(n: int = 2) -> str:
 
 
 def handle_discussion(task: dict, workspace: Path, task_id: str,
-                      thread_id: str) -> str:
+                      thread_id: str, tier: str = "light") -> str:
     """Handle a conversational message — respond as a thoughtful discussion partner.
 
     Loads recent journal, briefings, memory, and worldview to ground the response
@@ -774,13 +759,13 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
 - No bullet points. Write in natural paragraphs.
 - Don't start with "That's a great question" or similar filler. Just respond."""
 
+    log.info("Discussion using tier=%s", tier)
     try:
-        response = claude_think(prompt, timeout=90)
+        response = claude_think(prompt, timeout=90, tier=tier)
     except ClaudeTimeoutError:
-        # First timeout — retry once with a longer timeout
-        log.info("Discussion timed out at 45s, retrying with 90s")
+        log.info("Discussion timed out, retrying with 90s")
         try:
-            response = claude_think(prompt, timeout=90)
+            response = claude_think(prompt, timeout=90, tier=tier)
         except ClaudeTimeoutError:
             log.warning("Discussion timed out twice for task %s", task_id)
             response = None
@@ -919,18 +904,6 @@ def main():
             return
         log.warning("Edit handler returned empty, falling through to task planning")
 
-    # --- Check for discussion mode (conversational, not a task) ---
-
-    if _is_discussion(msg_content, task_data):
-        log.info("Discussion mode detected for task %s", args.task_id)
-        _emit_status(args.task_id, "Thinking...", "bubble.left.and.text.bubble.right")
-        response = handle_discussion(task_data, workspace, args.task_id, thread_id)
-        if response:
-            log.info("Worker exiting (discussion)")
-            return
-        # If discussion handler returned empty, fall through to normal planning
-        log.warning("Discussion handler returned empty, falling through to task planning")
-
     # --- Proactive recall: search memory for relevant prior context ---
     prior_context = ""
     try:
@@ -999,7 +972,9 @@ If a previous round already produced content, reference it in your plan (e.g. us
 - photo: Photo editing — analyze photos, learn editing style, apply edits, generate Lightroom presets/LUTs, batch process
 - podcast: Generate audio from articles (TTS) AND publish podcast episodes to RSS feed (Apple Podcasts, Xiaoyuzhou). Handles the full podcast pipeline internally — do NOT use publish for anything podcast-related.
 - secret: PRIVATE MODE — runs entirely on local LLM (Ollama), nothing leaves this machine. Route here for: personal finance, health, legal, passwords, family matters, 隐私敏感内容, anything the user explicitly marks as private/secret/隐私/私密
+- surfer: Browser automation — navigate websites, fill forms, click buttons, extract data from JS-rendered pages, interact with web apps. Use when the task requires INTERACTING with a website (logging in, filling forms, clicking through flows, scraping dynamic content) rather than just reading a static page.
 - general: Answer questions, search, analyze, code, file operations, anything else (has web browsing for research tasks)
+- discussion: The user wants to CHAT, not execute a task. Casual conversation, opinions, reflections, "what do you think", philosophical questions, sharing thoughts. Use this when the message is conversational in nature and doesn't ask for any concrete action.
 - clarify: Ask the user a question ONLY if the request is genuinely ambiguous and cannot be inferred
 
 ## Rules
@@ -1011,24 +986,30 @@ If a previous round already produced content, reference it in your plan (e.g. us
 - CRITICAL ROUTING RULE: "podcast publish", "upload audio", "发布podcast", "podcast episode" → ALWAYS use podcast agent, NEVER publish agent.
 - publish agent is EXCLUSIVELY for Substack text articles. If you're unsure whether to use podcast or publish for audio content — use podcast.
 
+## Model Tier Selection
+Each step must include a "tier" field:
+- "light" (Sonnet, fast) — simple lookups, straightforward tasks, browsing, Q&A, discussion, scheduling, publishing, clarification
+- "heavy" (Opus, best quality) — complex writing (essays, stories), deep analysis, math proofs, multi-step reasoning, creative work, anything requiring nuanced judgment
+
+Default to "light". Only use "heavy" when the task genuinely requires deeper thinking. Most tasks are "light".
+
 ## Output
-Output ONLY a JSON array. Each element: {{"agent": "...", "instruction": "..."}}
+Output ONLY a JSON array. Each element: {{"agent": "...", "instruction": "...", "tier": "light|heavy"}}
 
 ## Examples
-- "今天有什么新闻" → [{{"agent": "briefing", "instruction": "生成今日新闻简报"}}]
-- "写一篇关于AI的文章" → [{{"agent": "writing", "instruction": "写一篇600-800字的Substack文章，探讨AI的某个具体有趣角度，有独特观点"}}]
-- "写一个Hello World发到substack" → [{{"agent": "writing", "instruction": "写一篇简短的Hello World文章"}}, {{"agent": "publish", "instruction": "将上一步写好的文章发布到Substack"}}]
-- "分析一下AI agent市场" → [{{"agent": "analyst", "instruction": "分析2026年AI agent市场的竞争格局：主要玩家、市场份额估算、战略差异化点和近期趋势"}}]
-- "帮我剪这些旅游视频 /path/to/videos" → [{{"agent": "video", "instruction": "剪辑 /path/to/videos 里的视频，生成3-5分钟精彩集锦"}}]
-- "帮我修这张照片 /path/to/photo.jpg" → [{{"agent": "photo", "instruction": "分析并修图 /path/to/photo.jpg"}}]
-- "学习我的修图风格" → [{{"agent": "photo", "instruction": "从参考图学习用户的修图风格"}}]
-- "批量修这个文件夹的照片" → [{{"agent": "photo", "instruction": "批量修图，应用已学习的风格"}}]
-- "把自由意志那篇发到substack" → [{{"agent": "publish", "instruction": "将'自由意志'文章发布到Substack"}}]
-- "帮我算一下税" → [{{"agent": "secret", "instruction": "帮用户计算税务（隐私模式，本地处理）"}}]
-- "private: review my medical results" → [{{"agent": "secret", "instruction": "Review the user's medical results (private mode, local only)"}}]
-- "跑podcast job" → [{{"agent": "podcast", "instruction": "运行播客自动化流水线，为缺少音频的文章生成并发布podcast episode"}}]
-- "发布podcast episode" → [{{"agent": "podcast", "instruction": "将音频发布为podcast episode到RSS feed"}}]
-- "还有几篇文章没有音频" → [{{"agent": "podcast", "instruction": "检查哪些已发布文章缺少对应的podcast音频，为缺少的文章生成音频并发布"}}]
+- "今天有什么新闻" → [{{"agent": "briefing", "instruction": "生成今日新闻简报", "tier": "light"}}]
+- "写一篇关于AI的文章" → [{{"agent": "writing", "instruction": "写一篇600-800字的Substack文章，探讨AI的某个具体有趣角度，有独特观点", "tier": "heavy"}}]
+- "写一个Hello World发到substack" → [{{"agent": "writing", "instruction": "写一篇简短的Hello World文章", "tier": "light"}}, {{"agent": "publish", "instruction": "将上一步写好的文章发布到Substack", "tier": "light"}}]
+- "分析一下AI agent市场" → [{{"agent": "analyst", "instruction": "分析2026年AI agent市场的竞争格局：主要玩家、市场份额估算、战略差异化点和近期趋势", "tier": "heavy"}}]
+- "帮我去bhphotos上看看有什么好deal" → [{{"agent": "surfer", "instruction": "打开bhphotovideo.com的deals页面，提取当前打折商品", "tier": "light"}}]
+- "帮我去这个网站填个表单" → [{{"agent": "surfer", "instruction": "打开指定网站，找到表单并填写", "tier": "light"}}]
+- "每天早上9点给我发briefing" → [{{"agent": "general", "instruction": "用scheduler模块创建一个每天9点运行的定时任务", "tier": "light"}}]
+- "你觉得AI会取代程序员吗" → [{{"agent": "discussion", "instruction": "用户想讨论AI是否会取代程序员", "tier": "heavy"}}]
+- "今天怎么样" → [{{"agent": "discussion", "instruction": "用户在打招呼", "tier": "light"}}]
+- "把自由意志那篇发到substack" → [{{"agent": "publish", "instruction": "将'自由意志'文章发布到Substack", "tier": "light"}}]
+- "帮我算一下税" → [{{"agent": "secret", "instruction": "帮用户计算税务（隐私模式，本地处理）", "tier": "light"}}]
+- "帮我修这张照片" → [{{"agent": "photo", "instruction": "分析并修图", "tier": "light"}}]
+- "证明这个定理" → [{{"agent": "math", "instruction": "证明用户给出的定理", "tier": "heavy"}}]
 
 {conversation_context}
 
@@ -1042,7 +1023,7 @@ JSON:"""
             if match:
                 steps = json.loads(match.group())
                 # Validate
-                valid_agents = {"briefing", "writing", "publish", "analyst", "video", "photo", "podcast", "math", "secret", "general", "clarify"}
+                valid_agents = {"briefing", "writing", "publish", "analyst", "video", "photo", "podcast", "math", "secret", "surfer", "general", "discussion", "clarify"}
                 validated = []
                 for s in steps:
                     if isinstance(s, dict) and s.get("agent") in valid_agents:
@@ -1065,8 +1046,9 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
     for i, step in enumerate(plan):
         agent = step["agent"]
         instruction = step["instruction"]
+        tier = step.get("tier", "light")
         is_last = (i == len(plan) - 1)
-        log.info("Step %d/%d: agent=%s instruction=%s", i+1, len(plan), agent, instruction[:80])
+        log.info("Step %d/%d: agent=%s tier=%s instruction=%s", i+1, len(plan), agent, tier, instruction[:80])
 
         # If previous step produced output, append it as context
         if prev_output and agent != "clarify":
@@ -1081,6 +1063,8 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
             "video": ("Processing video...", "film"),
             "photo": ("Editing photo...", "camera"),
             "podcast": ("Generating audio...", "waveform"),
+            "surfer": ("Browsing...", "globe"),
+            "discussion": ("Thinking...", "bubble.left.and.text.bubble.right"),
             "general": ("Working...", "gear"),
             "secret": ("Private mode...", "lock.shield"),
             "clarify": ("Need your input", "questionmark.bubble"),
@@ -1107,7 +1091,7 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
             _handle_publish(workspace, task_id, instruction, sender, thread_id)
 
         elif agent == "analyst":
-            _handle_analyst(workspace, task_id, instruction, sender, thread_id)
+            _handle_analyst(workspace, task_id, instruction, sender, thread_id, tier=tier)
 
         elif agent == "video":
             _handle_video(workspace, task_id, instruction, sender, thread_id)
@@ -1119,13 +1103,19 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
             _handle_podcast(workspace, task_id, instruction, sender, thread_id)
 
         elif agent == "math":
-            _handle_math(workspace, task_id, instruction, sender, thread_id)
+            _handle_math(workspace, task_id, instruction, sender, thread_id, tier=tier)
 
         elif agent == "secret":
             _handle_secret(workspace, task_id, instruction, sender, thread_id)
 
+        elif agent == "surfer":
+            _handle_surfer(workspace, task_id, instruction, sender, thread_id)
+
+        elif agent == "discussion":
+            _handle_discussion_agent(workspace, task_id, instruction, sender, thread_id, tier=tier)
+
         else:
-            _handle_general(workspace, task_id, instruction, sender, thread_id)
+            _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
 
         # Check if this step failed (result.json says error)
         result_file = workspace / "result.json"
@@ -1168,6 +1158,12 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
         if synthesized:
             (workspace / "output.md").write_text(synthesized, encoding="utf-8")
             prev_output = synthesized
+
+    # Auto-register any runtime tools created during execution
+    try:
+        _register_runtime_tools_created(workspace)
+    except Exception as e:
+        log.warning("Runtime tool registration failed: %s", e)
 
     log.info("Plan execution complete (%d steps)", len(plan))
 
@@ -1447,7 +1443,7 @@ def _handle_publish(workspace: Path, task_id: str, content: str,
 # ---------------------------------------------------------------------------
 
 def _handle_analyst(workspace: Path, task_id: str, content: str,
-                    sender: str, thread_id: str):
+                    sender: str, thread_id: str, tier: str = "light"):
     """Handle market analysis requests via the analyst agent."""
     try:
         analyst_dir = str(_AGENTS_DIR / "analyst")
@@ -1464,10 +1460,11 @@ def _handle_analyst(workspace: Path, task_id: str, content: str,
         thread_history = load_thread_history(thread_id)
         thread_memory = load_thread_memory(thread_id)
 
-        log.info("Running analyst for task %s", task_id)
+        log.info("Running analyst for task %s (tier=%s)", task_id, tier)
         summary = analyst_handle(
             workspace, task_id, content, sender, thread_id,
             thread_history=thread_history, thread_memory=thread_memory,
+            tier=tier,
         )
     except ClaudeTimeoutError:
         _write_result(workspace, task_id, "error",
@@ -1725,7 +1722,7 @@ def _write_comment_reply_sidecar(thread_id: str, reply: str):
 
 
 def _handle_math(workspace: Path, task_id: str, content: str,
-                 sender: str, thread_id: str):
+                 sender: str, thread_id: str, tier: str = "heavy"):
     """Handle math research tasks via the math agent."""
     try:
         import importlib.util
@@ -1802,11 +1799,77 @@ def _handle_secret(workspace: Path, task_id: str, content: str,
 
 
 # ---------------------------------------------------------------------------
+# Discussion handler — conversational response as Mira
+# ---------------------------------------------------------------------------
+
+def _handle_discussion_agent(workspace: Path, task_id: str, content: str,
+                             sender: str, thread_id: str, tier: str = "light"):
+    """Handle conversational messages via discussion mode."""
+    # Load the task data for handle_discussion
+    task_data = {"content": content, "sender": sender}
+    item_file = ITEMS_DIR / f"{task_id}.json"
+    if item_file.exists():
+        try:
+            task_data = json.loads(item_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    response = handle_discussion(task_data, workspace, task_id, thread_id, tier=tier)
+    if response:
+        _write_result(workspace, task_id, "done", response, tags=["discussion"])
+        log.info("Discussion task %s completed (tier=%s)", task_id, tier)
+        if thread_id:
+            _update_thread_memory(thread_id, content, response)
+    else:
+        _write_result(workspace, task_id, "error", "对话返回空结果")
+        log.error("Discussion task %s failed: empty response", task_id)
+
+
+# ---------------------------------------------------------------------------
+# Surfer handler — browser automation
+# ---------------------------------------------------------------------------
+
+def _handle_surfer(workspace: Path, task_id: str, content: str,
+                   sender: str, thread_id: str):
+    """Handle browser automation requests via the surfer agent."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "surfer_handler", str(_AGENTS_DIR / "surfer" / "handler.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        surfer_handle = mod.handle
+
+        log.info("Running surfer pipeline for task %s", task_id)
+        summary = surfer_handle(workspace, task_id, content, sender, thread_id)
+    except Exception as e:
+        log.error("Surfer handler crashed: %s", e)
+        _write_result(workspace, task_id, "error", f"浏览器自动化失败: {e}")
+        return
+
+    if summary:
+        tags = ["surfer", "browser"]
+        _write_result(workspace, task_id, "done", summary, tags=tags)
+        log.info("Surfer task %s completed", task_id)
+
+        if thread_id:
+            _update_thread_memory(thread_id, content, summary)
+
+        try:
+            try_extract_skill(summary, content)
+        except Exception as e:
+            log.warning("Skill extraction failed: %s", e)
+    else:
+        _write_result(workspace, task_id, "error", "浏览器自动化返回空结果")
+        log.error("Surfer task %s failed: empty response", task_id)
+
+
+# ---------------------------------------------------------------------------
 # General handler — catch-all
 # ---------------------------------------------------------------------------
 
 def _handle_general(workspace: Path, task_id: str, content: str,
-                    sender: str, thread_id: str):
+                    sender: str, thread_id: str, tier: str = "light"):
     """Handle non-writing requests via the general agent."""
     from handler import handle as general_handle
 
@@ -1817,6 +1880,7 @@ def _handle_general(workspace: Path, task_id: str, content: str,
         summary = general_handle(
             workspace, task_id, content, sender, thread_id,
             thread_history=thread_history, thread_memory=thread_memory,
+            tier=tier,
         )
     except ClaudeTimeoutError:
         _write_result(workspace, task_id, "error",

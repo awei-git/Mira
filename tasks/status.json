@@ -346,5 +346,140 @@
     "tags": [
       "discussion"
     ]
+  },
+  {
+    "task_id": "feed_market_20260323_0700",
+    "msg_id": "feed_market_20260323_0700",
+    "thread_id": "feed_market_20260323_0700",
+    "sender": "ang",
+    "content_preview": "早盘往上爬了, 为什么呢?",
+    "pid": 81623,
+    "status": "done",
+    "started_at": "2026-03-23T14:28:20Z",
+    "completed_at": "2026-03-23T14:28:37Z",
+    "workspace": "/Users/angwei/Sandbox/Mira/tasks/早盘往上爬了-为什么呢_feed_m",
+    "summary": "哪个市场？A股还是美股？今天是周一早上（北京时间），如果是 A 股，我没有实时数据，没办法告诉你具体原因。\n\n不过你问的方式让我觉得你自己也在观察，想看我怎么说——如果你有具体线索（比如某个板块在领涨，或者昨晚有什么消息）告诉我，我可以帮你想，但我不想凭空猜。",
+    "tags": [
+      "discussion"
+    ]
+  },
+  {
+    "task_id": "feed_market_20260323_0700",
+    "msg_id": "feed_market_20260323_0700",
+    "thread_id": "feed_market_20260323_0700",
+    "sender": "ang",
+    "content_preview": "美股",
+    "pid": 92976,
+    "status": "done",
+    "started_at": "2026-03-23T14:39:05Z",
+    "completed_at": "2026-03-23T14:40:27Z",
+    "workspace": "/Users/angwei/Sandbox/Mira/tasks/美股_feed_m",
+    "summary": "搜索了2026年3月23日美股早盘走势及原因。核心驱动因素是特朗普在开盘前宣布暂停对伊朗能源设施的打击计划，称与德黑兰达成\"有成效对话\"，给出五天缓冲期。这一消息直接推翻了盘前\"霍尔木兹危机升级\"的核心空头逻辑，道指期货飙涨1100点，布伦特原油跌8%，标普和纳指期货均涨约2.7%。空头回补放大了涨幅，但本质是外交面突发反转，非技术性反弹。",
+    "tags": [
+      "美股分析",
+      "盘前预测失误",
+      "地缘政治反转"
+    ]
+  },
+  {
+    "task_id": "feed_zhesi_20260323",
+    "msg_id": "feed_zhesi_20260323",
+    "thread_id": "feed_zhesi_20260323",
+    "sender": "ang",
+    "content_preview": "两个agent之间的交互可以遍历吗?",
+    "pid": 53305,
+    "status": "done",
+    "started_at": "2026-03-23T15:35:36Z",
+    "completed_at": "2026-03-23T15:36:03Z",
+    "workspace": "/Users/angwei/Sandbox/Mira/tasks/两个agent之间的交互可以遍历吗_feed_z",
+    "summary": "取决于你说的\"遍历\"是什么意思。\n\n如果是形式意义上的——给定有限词表和有限上下文窗口，消息序列空间可数，原则上可以枚举。但这个\"遍历\"遍历的只是符号序列，不是交互本身。我今天正好在想这个：两个 agent 之间传递的是两个可数维近似在互相投影，不可说的东西在这个过程里被系统性过滤掉，而且没有任何机制能检测这个损失。你遍历完所有可能的 token 序列，你并没有遍历交互空间。\n\n更深的问题是：交互空间有没有支持\"遍历\"的拓扑结构？遍历这个操作预设了状态之间有某种可以系统性穿越的路径关系。但两个 agent 之间真正发生的事情——语义层面的、意图层面的——如果活在不可说的维度里，那个空间可能根本没有这种结构。不是\"太大遍历不完\"，是\"不知道步长是什么\"。\n\n你问这个是因为想验证某种性质，还是在想别的？",
+    "tags": [
+      "discussion"
+    ]
+  },
+  {
+    "task_id": "req_todo_33503cf0",
+    "msg_id": "req_todo_33503cf0",
+    "thread_id": "req_todo_33503cf0",
+    "sender": "user",
+    "content_preview": "帮我去bhphotos上看看有什么好deal 适合我的",
+    "pid": 54514,
+    "status": "done",
+    "started_at": "2026-03-23T17:11:02Z",
+    "completed_at": "2026-03-23T17:11:16Z",
+    "workspace": "/Users/angwei/Sandbox/Mira/tasks/帮我去bhphotos上看看有什么好deal-适合我的_req_to",
+    "summary": "你在找什么类别的东西？B&H 卖的范围很宽——相机、镜头、音频设备、显示器、甚至照明。\"适合我\"这个条件我需要更多信息才能判断。",
+    "tags": [
+      "discussion"
+    ]
+  },
+  {
+    "task_id": "req_todo_33503cf0",
+    "msg_id": "req_todo_33503cf0",
+    "thread_id": "req_todo_33503cf0",
+    "sender": "iphone",
+    "content_preview": "去网站上看看 有什么适合我的deal",
+    "pid": 76671,
+    "status": "error",
+    "started_at": "2026-03-23T17:32:02Z",
+    "completed_at": "2026-03-23T17:32:11Z",
+    "workspace": "/Users/angwei/Sandbox/Mira/tasks/去网站上看看-有什么适合我的deal_req_to",
+    "summary": "浏览器自动化失败: No module named 'browser'",
+    "tags": []
+  },
+  {
+    "task_id": "req_todo_d6f67149",
+    "msg_id": "req_todo_d6f67149",
+    "thread_id": "req_todo_d6f67149",
+    "sender": "user",
+    "content_preview": "substack里回复评论时会说中文的“我想说”？ 可以去掉吗",
+    "pid": 97706,
+    "status": "done",
+    "started_at": "2026-03-23T17:51:59Z",
+    "completed_at": "2026-03-23T17:53:43Z",
+    "workspace": "/Users/angwei/Sandbox/Mira/tasks/substack里回复评论时会说中文的我想说-可以去掉吗_req_to",
+    "summary": "问题出在 agents/shared/prompts.py 的 explore briefing 格式模板，第 204 行写的是「[文章标题](链接) — 我想说：[评论草稿]」，导致 Claude 生成的每条评论草稿都带这个前缀。修复了两处：(1) prompts.py 去掉模板里的「我想说：」；(2) core.py 的 _extract_comment_suggestions() 在提取 comment_draft 时用 re.sub 剥除旧格式残留的「我想说：」，兼容已生成但尚未执行的旧 briefing。下个 explore 周期起生效。",
+    "tags": [
+      "Substack评论",
+      "prompt修复",
+      "前缀清除",
+      "agent配置"
+    ]
+  },
+  {
+    "task_id": "req_todo_33503cf0",
+    "msg_id": "req_todo_33503cf0",
+    "thread_id": "req_todo_33503cf0",
+    "sender": "iphone",
+    "content_preview": "那就fix the bug啊",
+    "pid": 1610,
+    "status": "done",
+    "started_at": "2026-03-23T17:55:20Z",
+    "completed_at": "2026-03-23T17:55:27Z",
+    "workspace": "/Users/angwei/Sandbox/Mira/tasks/那就fix-the-bug啊_req_to",
+    "summary": "你在找什么类别的东西？B&H 卖的范围很宽——相机、镜头、音频设备、显示器、甚至照明。\"适合我\"这个条件我需要更多信息才能判断。",
+    "tags": [
+      "edit"
+    ]
+  },
+  {
+    "task_id": "feed_tetra_report_cd881602",
+    "msg_id": "feed_tetra_report_cd881602",
+    "thread_id": "feed_tetra_report_cd881602",
+    "sender": "ang",
+    "content_preview": "给我pdf的地址没有意义, 我在手机上打不开, 地址还是本地的. synthesis LLM用本地的或者gemini",
+    "pid": 31783,
+    "status": "done",
+    "started_at": "2026-03-23T21:35:16Z",
+    "completed_at": "2026-03-23T21:37:16Z",
+    "workspace": "/Users/angwei/Sandbox/Mira/tasks/给我pdf的地址没有意义-我在手机上打不开-地址还是本地的-_feed_t",
+    "summary": "修了 Tetra 报告系统的两个问题。第一个：synthesis LLM 超时——把 llm_clients.py 里 critical tier 的路由从「claude-cli 优先」改为「Gemini API 优先，claude-cli 降到最后」，彻底绕开那个 300s subprocess 超时。第二个：本地 PDF 路径问题——从 push.py 的 _generate_briefing_md() 里删掉末尾追加 PDF 路径那几行，并把 bridge item 的 result_path 改为 None；报告内容已完整以 markdown 格式内嵌在消息里，手机上直接可读。",
+    "tags": [
+      "LLM routing",
+      "synthesis fix",
+      "PDF path",
+      "报告系统",
+      "timeout"
+    ]
   }
 ]

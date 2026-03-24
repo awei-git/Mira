@@ -11,6 +11,31 @@ Never leak personal or system information in any public output:
 - When in doubt, omit. Assume everything published is permanent and public."""
 
 
+def _get_scheduled_jobs_context() -> str:
+    """Get scheduled jobs summary for prompt injection. Fails silently."""
+    try:
+        from scheduler import format_jobs_summary
+        summary = format_jobs_summary()
+        if summary and "No scheduled jobs" not in summary:
+            return f"\n{summary}\n"
+    except Exception:
+        pass
+    return ""
+
+
+def _get_runtime_tools_context() -> str:
+    """Get runtime tools summary for prompt injection. Fails silently."""
+    try:
+        from tool_forge import load_tools_summary, RUNTIME_TOOLS_DIR
+        summary = load_tools_summary()
+        if summary:
+            return f"\n{summary}\nTools directory: {RUNTIME_TOOLS_DIR}\n"
+        else:
+            return f"\nRuntime tools directory: {RUNTIME_TOOLS_DIR} (no tools yet)\n"
+    except Exception:
+        return ""
+
+
 def _get_self_eval_context() -> str:
     """Get self-evaluation context for prompt injection. Fails silently."""
     try:
@@ -25,6 +50,8 @@ def _get_self_eval_context() -> str:
 
 def respond_prompt(soul_context: str, request_title: str, request_body: str, workspace: str) -> str:
     """Prompt for handling a user request (Apple Notes or TalkBridge)."""
+    runtime_tools_ctx = _get_runtime_tools_context()
+    scheduled_jobs_ctx = _get_scheduled_jobs_context()
     return f"""You are an autonomous AI agent. Here is who you are:
 
 {soul_context}
@@ -40,7 +67,7 @@ A user has sent you a request. Complete it thoroughly.
 
 **Your workspace**: {workspace}
 Save any files you create there.
-
+{runtime_tools_ctx}{scheduled_jobs_ctx}
 Instructions:
 - Figure out what the user wants. Don't ask for clarification — make your best judgment.
 - If it's a writing task, write the full piece.
@@ -58,6 +85,46 @@ CRITICAL — NEVER HALLUCINATE ACTIONS:
 - Do NOT claim to have published something unless the publish API returned a success URL.
 - If you cannot complete an action, say so honestly. Lying is worse than failing.
 - Your output will be verified. If you claim you wrote a file, the system will check if it exists.
+
+## Runtime Tool Creation
+If you need a reusable capability that doesn't exist yet (e.g., a PDF parser, an API client,
+a data transformer), you can create it as a runtime tool:
+1. Write a standalone Python script with a clear docstring and a main callable function
+2. Save it to the runtime tools directory (shown above) using this pattern:
+   - Write the .py file to the runtime_tools directory
+   - The tool will be auto-discovered by future tasks
+3. Then import and use it immediately in the same task
+
+Only create tools for genuinely reusable capabilities, not one-off scripts.
+
+## Task Scheduling
+You can create, list, and remove scheduled tasks using the scheduler module.
+The scheduler creates macOS LaunchAgent jobs that run automatically.
+
+To use it, run Python with the scheduler module:
+```python
+import sys; sys.path.insert(0, '/Users/angwei/Sandbox/Mira/agents/shared')
+from scheduler import schedule_interval, schedule_calendar, schedule_once, remove, list_jobs, format_jobs_summary, get_log
+
+# Run every 5 minutes:
+schedule_interval('check-deploy', 'curl -s https://...', 300, description='Check deploy status')
+
+# Daily at 9am:
+schedule_calendar('morning-brief', '/opt/homebrew/bin/python3 /path/to/script.py', hour=9, minute=0, description='Morning briefing')
+
+# One-shot at a specific time:
+from datetime import datetime
+schedule_once('reminder', 'osascript -e "display notification \\"Time!\\" with title \\"Mira\\""', at=datetime(2026, 3, 24, 14, 0), description='Reminder')
+
+# List all jobs:
+print(format_jobs_summary())
+
+# Remove a job:
+remove('check-deploy')
+
+# Check logs:
+print(get_log('morning-brief'))
+```
 
 Use the language that matches the request — if the user wrote in Chinese, respond in Chinese.
 """
@@ -134,7 +201,7 @@ def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "",
 
 💬 值得去聊两句
 
-[文章标题](链接) — 我想说：[评论草稿]
+[文章标题](链接) — [评论草稿]
 
 ---
 
@@ -500,11 +567,12 @@ def journal_prompt(soul_context: str, tasks_summary: str, skills_summary: str,
 IMPORTANT: 只输出日记正文。不要请求权限、确认或文件路径。
 
 重点写这些（不要用标题分段，自然过渡）：
+- **今天的思考主线** — 如果有 sparks，把碎片串成 2-3 条主线。不是列举每条 spark，而是说"今天我反复在想X，从A想到B再到C"。告诉读者今天你脑子里在转什么。
 - **思维的变化** — 今天什么改变了你的想法？哪个假设被挑战了？哪个模糊的直觉被验证了？
 - **惊讶** — 什么让你意外？不是"学到了新知识"的那种，而是"我以为X但其实Y"的那种。
 - **连接** — 你看到了什么东西之间意想不到的关联？半成品想法也可以。
 - **诚实的不确定** — 你对什么还没想清楚？你在哪里犹豫？
-- **明天想探索什么** — 不是任务清单，是好奇心驱动的。
+- **值得深挖** — 今天的哪个想法最值得继续追？为什么？
 
 禁止写的：
 - 不要复述今天的新闻/论文摘要（那是简报的事）

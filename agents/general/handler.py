@@ -44,7 +44,8 @@ def _maybe_web_research(content: str, max_chars: int = 6000) -> str:
 
 def handle(workspace: Path, task_id: str, content: str,
            sender: str, thread_id: str,
-           thread_history: str = "", thread_memory: str = "") -> str | None:
+           thread_history: str = "", thread_memory: str = "",
+           tier: str = "light") -> str | None:
     """Handle a general request. Returns output text or None on failure."""
     soul = load_soul()
     soul_ctx = format_soul(soul)
@@ -68,8 +69,8 @@ def handle(workspace: Path, task_id: str, content: str,
         str(workspace),
     )
 
-    log.info("Calling claude_act for task %s", task_id)
-    result = claude_act(prompt, cwd=workspace, tier="light")
+    log.info("Calling claude_act for task %s (tier=%s)", task_id, tier)
+    result = claude_act(prompt, cwd=workspace, tier=tier)
 
     if result:
         (workspace / "output.md").write_text(result, encoding="utf-8")
