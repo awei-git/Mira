@@ -141,9 +141,6 @@ class Mira:
         for d in [self.items_dir, self.commands_dir, self.archive_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
-        self._last_heartbeat_data: str = ""
-        self._last_heartbeat_time: float = 0
-
         # Load user config (agent name etc.)
         self._user_config = self._load_user_config()
 
@@ -488,7 +485,14 @@ class Mira:
     # ==================================================================
 
     def heartbeat(self, agent_status: dict | None = None):
-        """Write heartbeat so phone knows agent is alive. Throttled."""
+        """Write heartbeat so phone knows agent is alive.
+
+        Always updates timestamp (phone uses recency to determine online
+        status). Throttle only suppresses redundant iCloud syncs when
+        status fields haven't changed AND last write was <25s ago.
+        The 25s limit ensures the 180s isRecent window on iOS is never
+        exceeded even with iCloud sync delays.
+        """
         data = {
             "timestamp": _utc_iso(),
             "status": "online",
@@ -497,16 +501,7 @@ class Mira:
             data["busy"] = agent_status.get("busy", False)
             data["active_count"] = agent_status.get("active_count", 0)
 
-        status_key = json.dumps({k: v for k, v in data.items()
-                                  if k != "timestamp"}, sort_keys=True)
-        now = time.time()
-        if (status_key == self._last_heartbeat_data
-                and now - self._last_heartbeat_time < 60):
-            return
-
         _atomic_write(self.heartbeat_file, data)
-        self._last_heartbeat_data = status_key
-        self._last_heartbeat_time = now
 
     # ==================================================================
     # Command polling (iOS → agent)

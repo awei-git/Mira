@@ -59,7 +59,7 @@ struct ItemMessage: Codable, Identifiable, Equatable {
     var kind: MessageKind
 
     var date: Date {
-        ISO8601DateFormatter.shared.date(from: timestamp) ?? .distantPast
+        ISO8601DateFormatter.flexibleDate(from: timestamp) ?? .distantPast
     }
 
     var isAgent: Bool { sender == "agent" }
@@ -116,7 +116,7 @@ struct MiraHeartbeat: Codable {
     }
 
     var date: Date {
-        ISO8601DateFormatter.shared.date(from: timestamp) ?? .distantPast
+        ISO8601DateFormatter.flexibleDate(from: timestamp) ?? .distantPast
     }
 
     var isRecent: Bool {
@@ -178,11 +178,11 @@ struct MiraCommand: Codable {
 
 extension MiraItem {
     var date: Date {
-        ISO8601DateFormatter.shared.date(from: updatedAt) ?? .distantPast
+        ISO8601DateFormatter.flexibleDate(from: updatedAt) ?? .distantPast
     }
 
     var createdDate: Date {
-        ISO8601DateFormatter.shared.date(from: createdAt) ?? .distantPast
+        ISO8601DateFormatter.flexibleDate(from: createdAt) ?? .distantPast
     }
 
     var isActive: Bool {
@@ -294,7 +294,7 @@ struct MiraTodo: Codable, Identifiable, Equatable {
     }
 
     var date: Date {
-        ISO8601DateFormatter.shared.date(from: updatedAt) ?? .distantPast
+        ISO8601DateFormatter.flexibleDate(from: updatedAt) ?? .distantPast
     }
 
     var priorityOrder: Int {
@@ -313,7 +313,7 @@ struct TodoFollowup: Codable, Equatable {
     let timestamp: String
 
     var date: Date {
-        ISO8601DateFormatter.shared.date(from: timestamp) ?? .distantPast
+        ISO8601DateFormatter.flexibleDate(from: timestamp) ?? .distantPast
     }
 }
 
@@ -334,7 +334,19 @@ struct CommandLedger: Codable {
 extension ISO8601DateFormatter {
     static let shared: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    /// Fallback without fractional seconds for older timestamps
+    static let noFraction: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
         return f
     }()
+
+    /// Parse ISO8601 with or without fractional seconds
+    static func flexibleDate(from string: String) -> Date? {
+        shared.date(from: string) ?? noFraction.date(from: string)
+    }
 }
