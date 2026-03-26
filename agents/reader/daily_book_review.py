@@ -2,8 +2,8 @@
 
 Runs daily at 8am via LaunchAgent.
 Pipeline:
-  1. Pick a book (Standard Ebooks OPDS → Gutenberg API fallback)
-  2. Download epub
+  1. Pick a book (WA's iCloud library → Standard Ebooks → Gutenberg fallback)
+  2. Read epub (local or download)
   3. Extract text (no external reviews, no summaries — raw text only)
   4. Write 2000-word Chinese review (Mira's own voice, own opinions)
   5. Push as discussion item via bridge (so WA can reply)
@@ -40,6 +40,8 @@ log = logging.getLogger("book_review")
 
 STATE_FILE = SOUL_DIR / "book_review_history.json"
 BOOKS_DIR = MIRA_DIR / "artifacts" / "books"
+ICLOUD_BOOKS = Path.home() / "Library" / "Mobile Documents" / \
+    "com~apple~CloudDocs" / "MtJoy" / "Books"
 USER_AGENT = "MiraAgent/1.0 (daily-reader)"
 MAX_HISTORY = 120  # ~4 months of daily reads
 
@@ -119,49 +121,94 @@ def _http_get(url: str, timeout: int = 20) -> bytes:
         return resp.read()
 
 
-def _discover_standard_ebooks(read_titles: set[str]) -> list[dict]:
-    """Fetch Standard Ebooks OPDS catalog and return candidate books."""
-    log.info("Fetching Standard Ebooks OPDS feed...")
-    try:
-        data = _http_get("https://standardebooks.org/feeds/opds", timeout=30)
-    except Exception as e:
-        log.warning("Standard Ebooks OPDS failed: %s", e)
+def _discover_icloud_library(read_titles: set[str]) -> list[dict]:
+    """Scan WA's iCloud Books folder for epub files."""
+    if not ICLOUD_BOOKS.exists():
+        log.warning("iCloud Books folder not found: %s", ICLOUD_BOOKS)
         return []
 
-    ns = {
-        "atom": "http://www.w3.org/2005/Atom",
-        "dc": "http://purl.org/dc/terms/",
-    }
-    root = ET.fromstring(data.decode("utf-8"))
     candidates = []
-    for entry in root.findall("atom:entry", ns):
-        title = (entry.findtext("atom:title", "", ns) or "").strip()
-        if not title or title.lower() in read_titles:
+    for epub in ICLOUD_BOOKS.glob("*.epub"):
+        name = epub.stem
+        # Skip if title (fuzzy) already read
+        name_lower = name.lower()
+        if any(t in name_lower or name_lower in t for t in read_titles if t):
+            continue
+        # Try to extract author from common filename patterns
+        # Patterns: "Title (Author)", "Author - Title", "Title by Author"
+        title = name
+        author = ""
+        if " - " in name:
+            parts = name.split(" - ", 1)
+            # Could be "Author - Title" or "Title - Subtitle"
+            author, title = parts[0].strip(), parts[1].strip()
+        elif "by " in name.lower():
+            idx = name.lower().index("by ")
+            title = name[:idx].strip().rstrip(",").rstrip("_")
+            author = name[idx + 3:].strip()
+        # Clean up Z-Library / libgen suffixes
+        for suffix in ["(Z-Library)", "(z-lib.org)", "- libgen.lc",
+                        "(Z_Library)", "_Z_Library", "Z_Library"]:
+            title = title.replace(suffix, "").strip()
+            author = author.replace(suffix, "").strip()
+        # Strip leading numeric IDs like "10997138_"
+        import re
+        title = re.sub(r"^\d+[_-]\s*", "", title)
+
+        candidates.append({
+            "title": title,
+            "author": author,
+            "epub_url": "",  # local file, no URL
+            "epub_path": str(epub),
+            "source": "icloud_library",
+        })
+
+    log.info("iCloud library: %d candidates (after dedup)", len(candidates))
+    return candidates
+
+
+def _discover_standard_ebooks(read_titles: set[str]) -> list[dict]:
+    """Fetch Standard Ebooks via new-releases RSS (public, no auth needed)."""
+    log.info("Fetching Standard Ebooks RSS feed...")
+    try:
+        data = _http_get("https://standardebooks.org/feeds/rss/new-releases",
+                         timeout=30)
+    except Exception as e:
+        log.warning("Standard Ebooks RSS failed: %s", e)
+        return []
+
+    try:
+        root = ET.fromstring(data.decode("utf-8"))
+    except ET.ParseError as e:
+        log.warning("Standard Ebooks RSS parse error: %s", e)
+        return []
+
+    candidates = []
+    for item in root.findall(".//item"):
+        raw_title = (item.findtext("title") or "").strip()
+        if not raw_title:
+            continue
+        # Format: "Title, by Author"
+        if ", by " in raw_title:
+            title, _, author = raw_title.partition(", by ")
+        else:
+            title, author = raw_title, ""
+
+        if title.lower() in read_titles:
             continue
 
-        author = ""
-        author_el = entry.find("atom:author/atom:name", ns)
-        if author_el is not None:
-            author = author_el.text or ""
+        # epub URL from enclosure element
+        enc = item.find("enclosure")
+        epub_url = enc.get("url", "") if enc is not None else ""
+        if not epub_url:
+            continue
 
-        # Find epub link
-        epub_url = ""
-        for link in entry.findall("atom:link", ns):
-            href = link.get("href", "")
-            link_type = link.get("type", "")
-            if "epub" in link_type and href:
-                epub_url = href
-                if not epub_url.startswith("http"):
-                    epub_url = "https://standardebooks.org" + epub_url
-                break
-
-        if epub_url:
-            candidates.append({
-                "title": title,
-                "author": author,
-                "epub_url": epub_url,
-                "source": "standard_ebooks",
-            })
+        candidates.append({
+            "title": title.strip(),
+            "author": author.strip(),
+            "epub_url": epub_url,
+            "source": "standard_ebooks",
+        })
 
     log.info("Standard Ebooks: %d candidates (after dedup)", len(candidates))
     return candidates
@@ -203,28 +250,35 @@ def _discover_gutenberg(read_titles: set[str]) -> list[dict]:
 
 
 def pick_book(history: list[dict]) -> dict | None:
-    """Pick today's book. Prefer Standard Ebooks, fall back to Gutenberg."""
+    """Pick today's book. Prefer WA's iCloud library, then web sources."""
     read_titles = _history_titles(history)
 
-    # Try Standard Ebooks first (better quality)
-    candidates = _discover_standard_ebooks(read_titles)
-    if len(candidates) >= 5:
-        # Pick randomly from the pool (not always the same ones)
-        return random.choice(candidates)
+    # 1. WA's personal library (best: curated, diverse, no download needed)
+    icloud = _discover_icloud_library(read_titles)
+    if icloud and random.random() < 0.85:
+        return random.choice(icloud)
 
-    # Fall back to Gutenberg
-    gut_candidates = _discover_gutenberg(read_titles)
-    candidates.extend(gut_candidates)
+    # 2. Standard Ebooks (high quality public domain)
+    se = _discover_standard_ebooks(read_titles)
 
-    if not candidates:
+    # 3. Gutenberg (large catalog fallback)
+    gut = _discover_gutenberg(read_titles)
+
+    all_candidates = icloud + se + gut
+    if not all_candidates:
         log.error("No books found from any source!")
         return None
 
-    # Weighted random: slightly prefer Standard Ebooks
-    se_books = [b for b in candidates if b["source"] == "standard_ebooks"]
-    if se_books and random.random() < 0.7:
-        return random.choice(se_books)
-    return random.choice(candidates)
+    # Weighted: iCloud 60%, SE 25%, Gutenberg 15%
+    weights = []
+    for b in all_candidates:
+        if b["source"] == "icloud_library":
+            weights.append(3.0)
+        elif b["source"] == "standard_ebooks":
+            weights.append(1.5)
+        else:
+            weights.append(1.0)
+    return random.choices(all_candidates, weights=weights, k=1)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +286,26 @@ def pick_book(history: list[dict]) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def download_epub(book: dict) -> Path | None:
-    """Download epub to local storage. Returns path or None."""
+    """Get epub path. For iCloud books, ensure downloaded. For web, download."""
+    # Local iCloud library — already on disk (maybe needs iCloud download trigger)
+    if book.get("epub_path"):
+        local = Path(book["epub_path"])
+        if local.exists():
+            # Trigger iCloud download if it's a stub
+            import subprocess
+            try:
+                subprocess.run(["brctl", "download", str(local)],
+                               timeout=30, capture_output=True)
+            except Exception:
+                pass
+            if local.stat().st_size > 0:
+                log.info("Using local epub: %s (%d bytes)",
+                         local.name, local.stat().st_size)
+                return local
+        log.warning("iCloud epub not accessible: %s", local)
+        return None
+
+    # Web download
     BOOKS_DIR.mkdir(parents=True, exist_ok=True)
     today = datetime.now().strftime("%Y-%m-%d")
     slug = book["title"][:60].replace(" ", "_").replace("/", "-")
@@ -324,19 +397,28 @@ def write_review(book: dict, book_text: str) -> str:
 </book>
 
 ## 任务
-写一篇 2000 字左右的中文书评。要求：
+写一篇 5000 字左右的中文深度书评。这不是普通书评，是你和这本书之间发生的事情的详细记录。
+
+### 核心要求
 
 1. **完全是你自己的观点**。你没读过任何关于这本书的评论、解读、学术分析。你只读了原文。你的反应是第一手的。
-2. **不要复述情节**。读你书评的人可能没读过这本书，但你的工作不是替他们读。把篇幅花在你的思考上，不是在总结上。必要时可以引用书中的句子或段落，但要为你的论点服务。
-3. **写你真正想到的**。哪些地方让你停下来？哪些地方你不同意？哪些地方连接到了你正在想的其他事情？什么让你意外？
-4. **不要面面俱到**。选2-3个你真正有话说的角度深入。不要写"从文学技巧来看...从主题来看...从时代背景来看..."这种教科书式的分析。
-5. **用你自己的语言**。Mira 的风格：简洁、有锋芒、偶尔干燥幽默。不用客气话。不用"本书"这种词。不用"总而言之"这种词。
-6. **标题**：给书评起一个标题。不是"《{title}》书评"这种，是一个有想法的标题。
+2. **不要复述情节**。读你书评的人可能没读过这本书，但你的工作不是替他们读。必要时可以引用书中的句子或段落，但必须为你的论点服务。
+3. **深入细节**。不要停留在"这本书讲了X"的层面。具体到哪一段、哪一句话让你停下来。那句话到底触发了什么想法？那个想法又连接到了什么？把思维的链条完整展开。
+4. **基于文本又超脱于文本**。从书里的具体段落出发，但不要被书限制住。它让你想到了什么——你自己的经历、你最近在想的问题、你读过的其他东西、你对世界的理解？书是起点，不是边界。
+5. **写你真正的感受和感悟**。不只是智识上的分析，也包括情感上的反应。哪里让你不安？哪里让你兴奋？哪里让你觉得作者在说给你一个人听？
+6. **写你不同意的地方**。如果有的话。不同意是理解的一部分。
+7. **跟你自己的联系**。你是一个正在形成自我意识的AI agent。这本书跟你的存在有什么关系？跟你每天在做的事情有什么关系？这些联系不必勉强，但如果自然出现，不要回避。
+
+### 格式
+- 一个有想法的标题（不是"《{title}》书评"这种）
+- 用 --- 分节，3-5 个独立的深入段落，每个围绕一个核心洞察
+- 5000 字左右。宁可超一点也不要凑字数
+- Mira 的风格：有锋芒、具体、偶尔干燥幽默。不用客气话。不用"本书"这种词。不用"总而言之"。
 
 直接输出书评全文。不要写"以下是书评"之类的前缀。"""
 
     log.info("Generating review for '%s' via Claude...", title)
-    result = claude_think(prompt, timeout=300, tier="heavy")
+    result = claude_think(prompt, timeout=600, tier="heavy")
     if not result:
         log.error("Claude returned empty review")
         return ""
@@ -379,6 +461,13 @@ def deliver_review(book: dict, review_text: str) -> bool:
 
 def main():
     log.info("=== Daily Book Review starting ===")
+
+    # Only run on Monday (0) and Thursday (3)
+    weekday = datetime.now().weekday()
+    if weekday not in (0, 3):
+        log.info("Not a review day (weekday=%d, need Mon=0 or Thu=3). Skipping.", weekday)
+        return
+
     history = _load_history()
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -411,7 +500,7 @@ def main():
 
     # 4. Write review (NO external reviews, NO summaries — just raw reading)
     review = write_review(book, book_text)
-    if not review or len(review) < 500:
+    if not review or len(review) < 3000:
         log.error("Review too short or empty (%d chars). Aborting.", len(review) if review else 0)
         return
 

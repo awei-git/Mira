@@ -179,13 +179,16 @@ struct HomeView: View {
     // MARK: - Grouping
 
     private var filteredItems: [MiraItem] {
+        let base: [MiraItem]
         if searchText.isEmpty {
             let tenDaysAgo = Calendar.current.date(byAdding: .day, value: -10,
                                                     to: Calendar.current.startOfDay(for: Date()))!
-            return store.allVisible.filter { $0.createdDate >= tenDaysAgo }
+            base = store.allVisible.filter { $0.createdDate >= tenDaysAgo }
         } else {
-            return store.search(searchText)
+            base = store.search(searchText)
         }
+        // Exclude request (todo/task) items — they're shown in the todo card
+        return base.filter { $0.type != .request }
     }
 
     private var groupedItems: [(key: String, items: [MiraItem])] {

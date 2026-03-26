@@ -1299,7 +1299,20 @@ def generate_conversation_for_article(article_text: str, title: str,
     script_path = episode_dir / "script.txt"
     if script_path.exists():
         script = script_path.read_text(encoding="utf-8")
-        log.info("Script: resuming from %s", script_path.name)
+        # Validate saved script meets minimum length
+        import re as _re_check
+        _saved_count = (len(_re_check.findall(r'[\u4e00-\u9fff]', script))
+                        if lang == "zh" else len(script.split()))
+        _min_chars = 9000 if lang == "zh" else 5500
+        if _saved_count < _min_chars * 0.8:
+            log.warning("Saved script too short (%d vs %d minimum) — regenerating",
+                        _saved_count, _min_chars)
+            script = generate_conversation_script(article_text, title, lang=lang)
+            if not script:
+                return None
+            script_path.write_text(script, encoding="utf-8")
+        else:
+            log.info("Script: resuming from %s", script_path.name)
     else:
         script = generate_conversation_script(article_text, title, lang=lang)
         if not script:
@@ -1354,7 +1367,7 @@ def generate_conversation_for_article(article_text: str, title: str,
 
     # Step 6: Assemble final episode
     log.info("Step 6: Assembling final episode...")
-    if not assemble_episode(intro_path, conv_path, outro_path, final_path):
+    if not assemble_episode(intro_path, conv_path, outro_path, final_path, lang=lang):
         log.warning("Assembly failed — returning conversation only")
         return conv_path
 

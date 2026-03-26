@@ -136,6 +136,17 @@ def add_followup(user_id: str, todo_id: str, fu: Followup):
             t["followups"].append({"content": fu.content, "source": fu.source, "timestamp": _utc_iso()})
             t["updated_at"] = _utc_iso()
             _atomic_write(path, todos)
+            # Send command so Mira processes the followup
+            if fu.source == "user":
+                cmd_id = uuid.uuid4().hex[:8]
+                cmd = {
+                    "id": cmd_id, "type": "todo_followup", "timestamp": _utc_iso(),
+                    "sender": user_id, "todo_id": todo_id, "content": fu.content,
+                }
+                cmd_dir = _user_dir(user_id) / "commands"
+                cmd_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                _atomic_write(cmd_dir / f"cmd_{ts}_{cmd_id}.json", cmd)
             return t
     raise HTTPException(404)
 

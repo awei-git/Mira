@@ -348,22 +348,28 @@ def build_outro_bumper(title_tts_path: Path, music_wav_path: Path,
 
 
 def assemble_episode(intro_path: Path, conversation_path: Path,
-                     outro_path: Path, output_path: Path) -> bool:
+                     outro_path: Path, output_path: Path,
+                     lang: str = "en") -> bool:
     """Concatenate intro + conversation + outro into final episode MP3.
 
     Re-encodes to 44100 Hz / 192 kbps to normalise sample rates across
     bumpers (22050 Hz from WAV mixing) and TTS (24000 Hz from Gemini).
+    For Chinese (lang="zh"), boosts conversation volume by +5 dB.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Use filter_complex to mix all three inputs sequentially — handles
     # different sample rates without -c copy artefacts.
+    # Chinese audio gets +5 dB boost on the conversation track.
+    if lang == "zh":
+        filt = "[1:a]volume=5dB[conv];[0:a][conv][2:a]concat=n=3:v=0:a=1[out]"
+    else:
+        filt = "[0:a][1:a][2:a]concat=n=3:v=0:a=1[out]"
     ok = _run_ffmpeg([
         "-i", str(intro_path),
         "-i", str(conversation_path),
         "-i", str(outro_path),
-        "-filter_complex",
-        "[0:a][1:a][2:a]concat=n=3:v=0:a=1[out]",
+        "-filter_complex", filt,
         "-map", "[out]",
         "-codec:a", "libmp3lame", "-b:a", "192k", "-ar", "44100",
         str(output_path),

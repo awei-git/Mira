@@ -84,6 +84,13 @@ final class CommandWriter {
         ))
     }
 
+    func todoFollowup(todoId: String, content: String) {
+        write(MiraCommand(
+            id: cmdId(), type: "todo_followup", timestamp: now(), sender: senderID,
+            content: content, itemId: todoId
+        ))
+    }
+
     func cancel(itemId: String) {
         write(MiraCommand(
             id: cmdId(), type: "cancel", timestamp: now(), sender: senderID,

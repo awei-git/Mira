@@ -220,6 +220,15 @@ def do_talk():
             bridge.update_status(rec.task_id, "done", agent_message=msg_text)
             if rec.tags:
                 bridge.set_tags(rec.task_id, rec.tags)
+            # Write result back to todo followups if this task originated from a todo
+            ws = Path(rec.workspace) if rec.workspace else None
+            todo_marker = ws / ".todo_id" if ws else None
+            if todo_marker and todo_marker.exists():
+                _todo_id = todo_marker.read_text().strip()
+                if _todo_id and content:
+                    bridge.add_followup(_todo_id, content, source="agent")
+                    bridge.update_todo(_todo_id, status="pending")  # back to pending for further interaction
+                    log.info("Todo %s: agent reply written to followups", _todo_id)
             log.info("STATE %s: working -> done", rec.task_id)
         elif rec.status in ("error", "timeout"):
             error_msg = f"处理失败: {rec.summary}" if rec.summary else "处理失败，请稍后重试。"
@@ -326,6 +335,36 @@ def do_talk():
                 prio = cmd.get("priority", "medium")
                 bridge.add_todo(title, priority=prio)
                 log.info("Todo added for %s: %s (%s)", user_bridge.user_id, title, prio)
+            elif cmd_type == "todo_followup":
+                todo_id = cmd.get("todo_id", "") or cmd.get("item_id", "")
+                if todo_id and content:
+                    # Save user followup to todo
+                    bridge.add_followup(todo_id, content, source="user")
+                    bridge.update_todo(todo_id, status="working")
+                    # Dispatch to worker — build context from all previous followups
+                    todo = next((t for t in bridge.load_todos() if t["id"] == todo_id), None)
+                    if todo:
+                        history = "\n".join(
+                            f"[{fu.get('source','?')}] {fu.get('content','')}"
+                            for fu in todo.get("followups", [])
+                        )
+                        full_content = f"Todo: {todo['title']}\n\nConversation so far:\n{history}\n\nUser's latest message:\n{content}"
+                        req_id = f"req_{todo_id}"
+                        if not bridge.item_exists(req_id):
+                            bridge.create_task(req_id, f"Todo: {todo['title']}", full_content,
+                                               sender=sender, tags=["todo"], origin="user")
+                        else:
+                            bridge.append_message(req_id, sender, content)
+                            bridge.update_status(req_id, "working")
+                        workspace = TASKS_DIR / _talk_slug(content, req_id)
+                        workspace.mkdir(parents=True, exist_ok=True)
+                        (workspace / ".todo_id").write_text(todo_id)
+                        msg = Message(id=req_id, sender=sender, timestamp=cmd.get("timestamp", ""),
+                                      content=full_content, thread_id=req_id)
+                        result = _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
+                        if result == "busy":
+                            break
+                    log.info("Todo followup for %s/%s dispatched", user_bridge.user_id, todo_id)
 
         # Process pending todos if agent is idle
         if task_mgr.get_active_count() == 0:

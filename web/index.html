@@ -238,10 +238,12 @@ function navToArtifact(section) {
 async function refresh() {
   if (!currentUser) return;
   try {
-    const [hb, its] = await Promise.all([
+    const [hb, its, tds] = await Promise.all([
       fetch('/api/heartbeat').then(r=>r.json()),
       fetch(`/api/${currentUser}/items`).then(r=>r.json()),
+      fetch(`/api/${currentUser}/todos`).then(r=>r.json()).catch(()=>[]),
     ]);
+    todos = tds;
     const dot = document.getElementById('statusDot');
     const txt = document.getElementById('statusText');
     const age = (Date.now()-new Date(hb.timestamp).getTime())/1000;
@@ -266,7 +268,7 @@ function renderList() {
   const html = [];
   if (currentTab === 'home' || currentTab === 'timeline') {
     const tenDaysAgo = new Date(new Date().setHours(0,0,0,0) - 10*86400000);
-    const visible = q ? f : f.filter(i => new Date(i.created_at||i.updated_at) >= tenDaysAgo);
+    const visible = (q ? f : f.filter(i => new Date(i.created_at||i.updated_at) >= tenDaysAgo)).filter(i=>i.type!=='request');
     // Needs-attention banner first
     const ni = visible.filter(i=>i.status==='needs-input');
     if(ni.length) { html.push(sec('Reply Needed',ni.length,'warn')); ni.forEach(i=>html.push(row(i))); }
@@ -435,7 +437,7 @@ async function sendNew() {
 }
 async function sendReply() {
   const inp=document.getElementById('replyInput'); const t=inp.value.trim(); if(!t||!currentUser)return; inp.value='';
-  // Todo followup
+  // Todo followup — server writes both followup + command for Mira to respond
   if (currentTab==='todos' && currentTodoId) {
     await fetch(`/api/${currentUser}/todos/${currentTodoId}/followup`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:t,source:'user'})});
     loadTodos();

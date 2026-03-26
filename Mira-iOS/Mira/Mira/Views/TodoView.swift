@@ -197,6 +197,7 @@ struct TodoRow: View {
 struct TodoDetailSheet: View {
     let todoId: String
     @Environment(TodoStore.self) private var store
+    @Environment(CommandWriter.self) private var commands
     @Environment(\.dismiss) private var dismiss
     @State private var replyText = ""
 
@@ -288,6 +289,7 @@ struct TodoDetailSheet: View {
                                 let text = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
                                 guard !text.isEmpty else { return }
                                 store.addFollowup(todoId, content: text)
+                                commands.todoFollowup(todoId: todoId, content: text)
                                 replyText = ""
                             } label: {
                                 Image(systemName: "arrow.up.circle.fill")
