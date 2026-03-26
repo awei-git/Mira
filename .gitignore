@@ -62,3 +62,17 @@ logs/*.log
 .agent_state.json
 autoresearch_runs/
 comparison/
+# Photo agent outputs and models
+agents/photo/output/
+agents/photo/models/*.pth
+*.npy
+
+# SQLite databases
+*.sqlite
+*.sqlite.bak
+
+# Lock files
+*.lock
+
+# Secrets (should never be tracked)
+secrets.yml

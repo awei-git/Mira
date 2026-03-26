@@ -1,13 +1,13 @@
 {
   "app": "mira",
   "version": 2,
-  "updatedAt": "2026-03-25T20:48:05-0400",
+  "updatedAt": "2026-03-25T20:50:08-0400",
   "outputs": [
     {
       "type": "progress",
       "id": "agent",
       "title": "Mira Agent",
-      "updatedAt": "2026-03-25T20:48:05-0400",
+      "updatedAt": "2026-03-25T20:50:08-0400",
       "status": "active",
       "stage": {
         "current": 1,
