@@ -76,3 +76,8 @@ agents/photo/models/*.pth
 
 # Secrets (should never be tracked)
 secrets.yml
+agents/socialmedia/*_state.json
+agents/socialmedia/publication_stats.json
+agents/socialmedia/reply_tracking.json
+agents/shared/soul/emptiness.json
+agents/shared/soul/scores.json

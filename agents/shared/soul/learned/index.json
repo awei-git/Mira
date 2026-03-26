@@ -355,5 +355,23 @@
     "description": "Break complex tasks into sub-tasks under 2 minutes each before starting execution",
     "file": "decompose-before-executing.md",
     "created": "2026-03-25T14:10:26.757139"
+  },
+  {
+    "name": "operational-tasks-skip-output-pipeline",
+    "description": "File system operations and other pure side-effect tasks must not be routed through content-generation task pipelines that expect output.md or quality checks",
+    "file": "operational-tasks-skip-output-pipeline.md",
+    "created": "2026-03-25T21:31:51.673504"
+  },
+  {
+    "name": "retry-requires-diagnosis-not-repetition",
+    "description": "A /retry after wrong output type must first identify the mismatch cause before re-executing",
+    "file": "retry-requires-diagnosis-not-repetition.md",
+    "created": "2026-03-25T21:32:29.526884"
+  },
+  {
+    "name": "personalized-soul-question-from-memory",
+    "description": "Soul questions must be derived from known user context, not generic philosophical prompts",
+    "file": "personalized-soul-question-from-memory.md",
+    "created": "2026-03-25T21:32:52.284123"
   }
 ]
