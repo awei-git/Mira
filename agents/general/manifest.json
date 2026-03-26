@@ -1,0 +1,10 @@
+{
+  "name": "general",
+  "description": "General-purpose task handler. Q&A, file operations, code changes, search, analysis. Default agent when no specialist matches.",
+  "keywords": ["help", "question", "查", "找", "改", "fix", "search", "analyze"],
+  "handles": ["general questions", "file operations", "code changes", "search tasks", "analysis"],
+  "tier": "light",
+  "timeout_category": "short",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": true
+}

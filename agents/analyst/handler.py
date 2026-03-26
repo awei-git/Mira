@@ -13,7 +13,8 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import ARTIFACTS_DIR
+from config import ARTIFACTS_DIR, LOCAL_TZ
+from soul_manager import load_skills_for_task
 from sub_agent import claude_think
 
 log = logging.getLogger("analyst_agent")
@@ -29,7 +30,7 @@ def _find_latest_briefing() -> Path | None:
     if not _BRIEFINGS_DIR.exists():
         return None
     # Today first, then fall back to most recent
-    today = datetime.now(tz=timezone.utc).date()
+    today = datetime.now(tz=LOCAL_TZ).date()
     target = _BRIEFINGS_DIR / f"{today.isoformat()}_market.md"
     if target.exists():
         return target
@@ -106,8 +107,12 @@ def handle(workspace: Path, task_id: str, content: str,
         web_section = f"""=== LIVE WEB RESEARCH ===
 {web_data}"""
 
+    skills_ctx = load_skills_for_task(content, agent_type="analyst")
+    skills_section = f"\n\n## Analysis Skills\n{skills_ctx}" if skills_ctx else ""
+
     prompt = f"""Based on the following market intelligence, answer the user's question.
 Use specific data from the sources. Be concise and direct.
+{skills_section}
 
 {tetra_section}
 

@@ -1,0 +1,11 @@
+{
+  "name": "explorer",
+  "description": "Fetch feeds (arxiv, reddit, HF, substacks), write briefings, extract insights. Scheduled background task.",
+  "keywords": ["explore", "briefing", "feed", "arxiv", "news"],
+  "handles": ["feed fetching", "briefing generation", "external research"],
+  "tier": "light",
+  "timeout_category": "short",
+  "entry_point": "agentic_digest.py:generate_digest",
+  "requires_workspace": false,
+  "scheduler_only": true
+}

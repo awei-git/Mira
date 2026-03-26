@@ -117,9 +117,9 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
                     return [[] for _ in texts]
             return embeddings
         except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < max_retries - 1:
+            if e.code in (429, 500, 502, 503) and attempt < max_retries - 1:
                 wait = 2 ** (attempt + 1)
-                log.warning("Embedding API rate limited, retrying in %ds...", wait)
+                log.warning("Embedding API HTTP %d, retrying in %ds...", e.code, wait)
                 time.sleep(wait)
                 continue
             log.error("Embedding API HTTP %d: %s", e.code,

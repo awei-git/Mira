@@ -465,8 +465,8 @@ def edit_photo(input_path: Path, output_path: Path, params: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    BASE = Path("/Users/angwei/Sandbox/assets/photos")
-    OUT = Path("/Users/angwei/Sandbox/Mira/agents/photo/output")
+    BASE = Path.home() / "Sandbox/assets/photos"
+    OUT = Path(__file__).resolve().parent / "output"
 
     # ── 1. DSC00239 — Misty beach, mossy rock, Second Beach ──
     # Mood: moody, atmospheric, Pacific Northwest

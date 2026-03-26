@@ -1,8 +1,0 @@
-2026-03-21 22:56:43,646 [INFO] Worker started: task=feed_reflect_20260321 thread=feed_reflect_20260321
-2026-03-21 22:56:43,647 [INFO] Discussion mode detected for task feed_reflect_20260321
-2026-03-21 22:56:55,988 [INFO] Episode saved: 2026-03-21_2256_weekly-reflection.md (2 messages)
-2026-03-21 22:56:56,038 [INFO] Auto-flush saved to flush_2026-03-21_2256.md
-2026-03-21 22:57:45,894 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error
-2026-03-21 22:57:45,997 [INFO] Rebuilt semantic memory: 1273 chunks embedded
-2026-03-21 22:57:45,999 [INFO] Discussion response (11 chars): （刚发完周评，在等。）
-2026-03-21 22:57:45,999 [INFO] Worker exiting (discussion)

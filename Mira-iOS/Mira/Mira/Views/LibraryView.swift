@@ -1,447 +1,174 @@
 import SwiftUI
 import QuickLook
 
-// MARK: - App Registry
+// MARK: - Artifact Categories
 
-struct RegisteredApp: Identifiable {
-    let id: String          // e.g. "mira", "masterminds", "tetra"
+private struct ArtifactCategory: Identifiable {
+    let id: String
     let name: String
     let icon: String
     let color: Color
-    let rootPath: String    // relative to MtJoy/
-    let statusPath: String  // relative to app root, where status.json lives
 }
 
-private let appRegistry: [RegisteredApp] = [
-    RegisteredApp(id: "mira", name: "Mira", icon: "brain.head.profile", color: .purple,
-                  rootPath: "Mira", statusPath: ""),
-    RegisteredApp(id: "masterminds", name: "神仙会", icon: "person.3", color: .orange,
-                  rootPath: "MasterMinds", statusPath: "data/status.json"),
-    RegisteredApp(id: "tetra", name: "Tetra", icon: "chart.bar.xaxis", color: .blue,
-                  rootPath: "Tetra", statusPath: "output/status.json"),
+private let knownCategories: [ArtifactCategory] = [
+    ArtifactCategory(id: "writings", name: "Writings", icon: "doc.richtext", color: .purple),
+    ArtifactCategory(id: "briefings", name: "Briefings", icon: "newspaper", color: .blue),
+    ArtifactCategory(id: "audio", name: "Audio", icon: "waveform", color: .orange),
+    ArtifactCategory(id: "video", name: "Video", icon: "film", color: .red),
+    ArtifactCategory(id: "photos", name: "Photos", icon: "photo.on.rectangle", color: .green),
+    ArtifactCategory(id: "research", name: "Research", icon: "magnifyingglass.circle", color: .cyan),
 ]
 
-// MARK: - Status Protocol v2
+// MARK: - Artifacts View (tab root)
 
-struct AppStatus: Codable {
-    let app: String
-    let version: Int
-    let updatedAt: String
-    let outputs: [AppOutput]
-}
-
-struct AppOutput: Codable, Identifiable {
-    let type: String        // progress, report, deep_dive, alert
-    let id: String
-    let title: String
-    let updatedAt: String
-    var status: String?
-    var stage: AppStage?
-    var highlights: [String]?
-    var path: String?
-    var content: String?
-    var severity: String?
-    var message: String?
-    var topic: String?
-    var period: String?
-    var parent: String?
-}
-
-struct AppStage: Codable {
-    let current: Int
-    let total: Int
-    let label: String
-}
-
-// MARK: - Library View
-
-struct LibraryView: View {
+struct ArtifactsView: View {
     @Environment(BridgeConfig.self) private var config
 
     var body: some View {
         NavigationStack {
-            List(appRegistry) { app in
-                NavigationLink {
-                    if app.id == "mira" {
-                        MiraLibraryView()
-                            .navigationTitle(app.name)
-                    } else {
-                        AppOutputView(app: app, mtjoyURL: config.rootURL)
-                            .navigationTitle(app.name)
-                    }
-                } label: {
-                    AppRow(app: app, mtjoyURL: config.rootURL)
-                }
-            }
-            .listStyle(.insetGrouped)
-            .navigationTitle("Library")
-        }
-    }
-}
-
-// MARK: - App Row
-
-struct AppRow: View {
-    let app: RegisteredApp
-    let mtjoyURL: URL?
-
-    private var subtitle: String? {
-        guard let mtjoy = mtjoyURL else { return nil }
-        let statusFile = mtjoy
-            .appendingPathComponent(app.rootPath)
-            .appendingPathComponent(app.statusPath)
-        guard let data = try? Data(contentsOf: statusFile),
-              let status = try? JSONDecoder().decode(AppStatus.self, from: data)
-        else { return nil }
-        // Show first progress output's stage label
-        if let progress = status.outputs.first(where: { $0.type == "progress" }),
-           let stage = progress.stage {
-            return "\(stage.label) (\(stage.current)/\(stage.total))"
-        }
-        return nil
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: app.icon)
-                .font(.title2)
-                .foregroundStyle(app.color)
-                .frame(width: 36, height: 36)
-                .background(app.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(app.name)
-                    .font(.body.weight(.medium))
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-// MARK: - App Output View (reads status.json)
-
-struct AppOutputView: View {
-    let app: RegisteredApp
-    let mtjoyURL: URL?
-    @State private var status: AppStatus?
-    @State private var previewURL: URL?
-
-    private var appRootURL: URL? {
-        mtjoyURL?.appendingPathComponent(app.rootPath)
-    }
-
-    var body: some View {
-        Group {
-            if let status, !status.outputs.isEmpty {
-                List {
-                    // Progress items
-                    let progresses = status.outputs.filter { $0.type == "progress" }
-                    if !progresses.isEmpty {
-                        Section("状态") {
-                            ForEach(progresses) { output in
-                                ProgressRow(output: output)
-                            }
-                        }
-                    }
-
-                    // Reports
-                    let reports = status.outputs.filter { $0.type == "report" }
-                    if !reports.isEmpty {
-                        Section("报告") {
-                            ForEach(reports) { output in
-                                Button {
-                                    openReport(output)
-                                } label: {
-                                    OutputRow(output: output, icon: "doc.text")
-                                }
-                            }
-                        }
-                    }
-
-                    // Deep dives
-                    let dives = status.outputs.filter { $0.type == "deep_dive" }
-                    if !dives.isEmpty {
-                        Section("深度分析") {
-                            ForEach(dives) { output in
-                                NavigationLink {
-                                    DeepDiveView(output: output)
-                                } label: {
-                                    OutputRow(output: output, icon: "magnifyingglass")
-                                }
-                            }
-                        }
-                    }
-
-                    // Alerts
-                    let alerts = status.outputs.filter { $0.type == "alert" }
-                    if !alerts.isEmpty {
-                        Section("提醒") {
-                            ForEach(alerts) { output in
-                                AlertRow(output: output)
-                            }
-                        }
-                    }
-                }
-                .listStyle(.insetGrouped)
+            if let artifactsURL = config.artifactsURL {
+                ArtifactsRootView(artifactsURL: artifactsURL)
+                    .navigationTitle("Artifacts")
             } else {
                 ContentUnavailableView(
-                    "暂无输出",
-                    systemImage: "tray",
-                    description: Text("\(app.name) 还没有生成输出")
+                    "No folder set",
+                    systemImage: "folder.badge.questionmark",
+                    description: Text("Select Mira-Bridge folder in Settings")
                 )
-            }
-        }
-        .navigationBarTitleDisplayMode(.inline)
-        .onAppear { loadStatus() }
-        .refreshable { loadStatus() }
-        .quickLookPreview($previewURL)
-    }
-
-    private func loadStatus() {
-        guard let mtjoy = mtjoyURL, !app.statusPath.isEmpty else { return }
-        let statusFile = mtjoy
-            .appendingPathComponent(app.rootPath)
-            .appendingPathComponent(app.statusPath)
-        let fm = FileManager.default
-        if !fm.isReadableFile(atPath: statusFile.path) {
-            try? fm.startDownloadingUbiquitousItem(at: statusFile)
-            return
-        }
-        guard let data = try? Data(contentsOf: statusFile) else { return }
-        status = try? JSONDecoder().decode(AppStatus.self, from: data)
-    }
-
-    private func openReport(_ output: AppOutput) {
-        guard let path = output.path else { return }
-        let fm = FileManager.default
-
-        // Handle absolute paths (e.g. PDF reports with full path)
-        let fileURL: URL
-        if path.hasPrefix("/") {
-            fileURL = URL(fileURLWithPath: path)
-        } else if let root = appRootURL {
-            fileURL = root.appendingPathComponent(path)
-        } else {
-            return
-        }
-
-        if fm.isReadableFile(atPath: fileURL.path) {
-            previewURL = fileURL
-        } else {
-            try? fm.startDownloadingUbiquitousItem(at: fileURL)
-            // Retry after a short delay to allow download to start
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                if fm.isReadableFile(atPath: fileURL.path) {
-                    previewURL = fileURL
-                }
+                .navigationTitle("Artifacts")
             }
         }
     }
 }
 
-// MARK: - Output Row Views
-
-struct ProgressRow: View {
-    let output: AppOutput
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(output.title)
-                    .font(.subheadline.weight(.medium))
-                Spacer()
-                if let stage = output.stage {
-                    Text("\(stage.label)")
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(.blue.opacity(0.1), in: Capsule())
-                }
-            }
-            if let stage = output.stage {
-                ProgressView(value: Double(stage.current), total: Double(stage.total))
-                    .tint(.blue)
-            }
-            if let highlights = output.highlights, !highlights.isEmpty {
-                ForEach(highlights, id: \.self) { h in
-                    Text("· \(h)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-struct OutputRow: View {
-    let output: AppOutput
-    let icon: String
+struct ArtifactsRootView: View {
+    let artifactsURL: URL
+    @State private var folders: [ArtifactFolder] = []
 
     var body: some View {
-        HStack {
-            Image(systemName: icon)
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(output.title)
-                    .font(.subheadline)
-                    .lineLimit(2)
-                Text(formatDate(output.updatedAt))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-    }
-
-    private func formatDate(_ iso: String) -> String {
-        String(iso.prefix(10))
-    }
-}
-
-struct AlertRow: View {
-    let output: AppOutput
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: output.severity == "critical" ? "exclamationmark.triangle.fill" : "exclamationmark.triangle")
-                .foregroundStyle(output.severity == "critical" ? .red : .orange)
-            Text(output.message ?? output.title)
-                .font(.subheadline)
-        }
-    }
-}
-
-struct DeepDiveView: View {
-    let output: AppOutput
-    @State private var rendered: AttributedString?
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(output.title)
-                    .font(.title2.bold())
-                if let topic = output.topic {
-                    Text(topic)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Divider()
-                if let content = output.content {
-                    if let rendered {
-                        Text(rendered)
-                            .font(.body)
-                            .lineSpacing(6)
-                            .textSelection(.enabled)
+        List(folders) { folder in
+            NavigationLink {
+                ArtifactFolderBrowser(folderURL: folder.url)
+                    .navigationTitle(folder.category?.name ?? folder.name)
+            } label: {
+                HStack(spacing: 12) {
+                    if let cat = folder.category {
+                        Image(systemName: cat.icon)
+                            .font(.title3)
+                            .foregroundStyle(cat.color)
+                            .frame(width: 32, height: 32)
+                            .background(cat.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
                     } else {
-                        Text(content)
-                            .font(.body)
-                            .lineSpacing(6)
-                            .textSelection(.enabled)
+                        Image(systemName: "folder")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32, height: 32)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(folder.category?.name ?? folder.name)
+                            .font(.body.weight(.medium))
+                        if folder.itemCount > 0 {
+                            Text("\(folder.itemCount) items")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
+                .padding(.vertical, 4)
             }
-            .padding()
         }
-        .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            if rendered == nil, let content = output.content {
-                rendered = try? AttributedString(
-                    markdown: content,
-                    options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-                )
+        .listStyle(.insetGrouped)
+        .onAppear { loadFolders() }
+        .refreshable { loadFolders() }
+    }
+
+    private func loadFolders() {
+        let fm = FileManager.default
+        // Trigger iCloud download for the artifacts root and known subdirs
+        try? fm.startDownloadingUbiquitousItem(at: artifactsURL)
+        for cat in knownCategories {
+            try? fm.startDownloadingUbiquitousItem(at: artifactsURL.appendingPathComponent(cat.id))
+        }
+
+        guard fm.fileExists(atPath: artifactsURL.path) else {
+            folders = []
+            return
+        }
+        do {
+            let contents = try fm.contentsOfDirectory(
+                at: artifactsURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+            let dirs = contents.filter { url in
+                (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
             }
+
+            // Known categories first (in defined order), then unknown folders
+            let knownIds = Set(knownCategories.map(\.id))
+            var result: [ArtifactFolder] = []
+
+            for cat in knownCategories {
+                if let url = dirs.first(where: { $0.lastPathComponent == cat.id }) {
+                    let count = (try? fm.contentsOfDirectory(atPath: url.path).filter { !$0.hasPrefix(".") && !$0.hasPrefix("_") }.count) ?? 0
+                    result.append(ArtifactFolder(name: cat.id, url: url, category: cat, itemCount: count))
+                }
+            }
+
+            for url in dirs where !knownIds.contains(url.lastPathComponent) && !url.lastPathComponent.hasPrefix("_") {
+                let name = url.lastPathComponent
+                let count = (try? fm.contentsOfDirectory(atPath: url.path).filter { !$0.hasPrefix(".") }.count) ?? 0
+                result.append(ArtifactFolder(name: name, url: url, category: nil, itemCount: count))
+            }
+
+            folders = result
+        } catch {
+            folders = []
         }
     }
 }
 
-// MARK: - Mira sub-library (artifacts browser)
-
-struct MiraLibraryView: View {
-    @Environment(BridgeConfig.self) private var config
-
-    private let sections: [(title: String, folder: String, icon: String)] = [
-        ("Briefings", "briefings", "newspaper"),
-        ("Writings", "writings", "doc.richtext"),
-        ("Research", "research", "magnifyingglass.circle"),
-    ]
-
-    private var sharedArtifactsURL: URL? {
-        config.rootURL?.appending(path: "Mira-Artifacts/shared")
-    }
-
-    var body: some View {
-        if let artifactsURL = config.artifactsURL {
-            List {
-                Section("My Artifacts") {
-                    ForEach(sections, id: \.folder) { section in
-                        let dir = artifactsURL.appendingPathComponent(section.folder)
-                        NavigationLink {
-                            LibraryFolderView(folderURL: dir)
-                                .navigationTitle(section.title)
-                        } label: {
-                            Label(section.title, systemImage: section.icon)
-                        }
-                    }
-                }
-                if let sharedURL = sharedArtifactsURL {
-                    Section("Shared") {
-                        ForEach(sections, id: \.folder) { section in
-                            let dir = sharedURL.appendingPathComponent(section.folder)
-                            NavigationLink {
-                                LibraryFolderView(folderURL: dir)
-                                    .navigationTitle("Shared \(section.title)")
-                            } label: {
-                                Label(section.title, systemImage: section.icon)
-                            }
-                        }
-                    }
-                }
-            }
-            .listStyle(.insetGrouped)
-            .navigationBarTitleDisplayMode(.inline)
-        } else {
-            ContentUnavailableView("No folder set", systemImage: "folder.badge.questionmark")
-        }
-    }
+private struct ArtifactFolder: Identifiable {
+    let name: String
+    let url: URL
+    let category: ArtifactCategory?
+    let itemCount: Int
+    var id: String { url.path }
 }
 
-// MARK: - Generic folder browser
+// MARK: - Folder Browser (Files-like)
 
-struct LibraryFolderView: View {
+struct ArtifactFolderBrowser: View {
     let folderURL: URL
-    @State private var items: [LibraryItem] = []
+    @State private var items: [ArtifactItem] = []
     @State private var previewURL: URL?
 
     var body: some View {
         Group {
             if items.isEmpty {
-                ContentUnavailableView("暂无内容", systemImage: "doc.text")
+                ContentUnavailableView("Empty", systemImage: "tray")
             } else {
                 List(items) { item in
                     if item.isDirectory {
                         NavigationLink {
-                            LibraryFolderView(folderURL: item.url)
+                            ArtifactFolderBrowser(folderURL: item.url)
                                 .navigationTitle(item.name)
                         } label: {
-                            LibraryItemRow(item: item)
+                            ArtifactItemRow(item: item)
                         }
                     } else {
                         Button {
                             triggerDownload(item.url)
                             previewURL = item.url
                         } label: {
-                            LibraryItemRow(item: item)
+                            ArtifactItemRow(item: item)
                         }
                     }
                 }
                 .listStyle(.plain)
             }
         }
+        .navigationBarTitleDisplayMode(.inline)
         .onAppear { loadItems() }
         .refreshable { loadItems() }
         .quickLookPreview($previewURL)
@@ -449,6 +176,7 @@ struct LibraryFolderView: View {
 
     private func loadItems() {
         let fm = FileManager.default
+        try? fm.startDownloadingUbiquitousItem(at: folderURL)
         guard fm.fileExists(atPath: folderURL.path) else {
             items = []
             return
@@ -456,18 +184,21 @@ struct LibraryFolderView: View {
         do {
             let contents = try fm.contentsOfDirectory(
                 at: folderURL,
-                includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+                includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey, .fileSizeKey],
                 options: [.skipsHiddenFiles]
             )
             items = contents.compactMap { url in
-                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
+                let name = url.lastPathComponent
+                if name.hasPrefix("_") || name.hasPrefix(".") { return nil }
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey, .fileSizeKey])
                 let isDir = values?.isDirectory ?? false
-                return LibraryItem(
-                    name: url.lastPathComponent,
+                return ArtifactItem(
+                    name: name,
                     url: url,
                     date: values?.contentModificationDate ?? .distantPast,
+                    size: Int64(values?.fileSize ?? 0),
                     isDirectory: isDir,
-                    childCount: isDir ? (try? fm.contentsOfDirectory(atPath: url.path).filter { !$0.hasPrefix(".") }.count) ?? 0 : 0
+                    childCount: isDir ? (try? fm.contentsOfDirectory(atPath: url.path).filter { !$0.hasPrefix(".") && !$0.hasPrefix("_") }.count) ?? 0 : 0
                 )
             }
             .sorted { lhs, rhs in
@@ -487,41 +218,56 @@ struct LibraryFolderView: View {
     }
 }
 
-struct LibraryItem: Identifiable {
+// MARK: - Item Model
+
+struct ArtifactItem: Identifiable {
     let name: String
     let url: URL
     let date: Date
+    let size: Int64
     let isDirectory: Bool
     let childCount: Int
 
     var id: String { url.path }
 }
 
-struct LibraryItemRow: View {
-    let item: LibraryItem
+// MARK: - Item Row
+
+struct ArtifactItemRow: View {
+    let item: ArtifactItem
 
     var body: some View {
-        HStack {
-            Image(systemName: item.isDirectory ? "folder" : fileIcon(item.name))
-                .foregroundStyle(item.isDirectory ? .blue : .secondary)
+        HStack(spacing: 10) {
+            Image(systemName: item.isDirectory ? "folder.fill" : fileIcon(item.name))
+                .foregroundStyle(item.isDirectory ? .blue : iconColor(item.name))
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.name)
+                Text(displayName(item.name))
                     .font(.body)
-                    .lineLimit(1)
-                Text(formatDate(item.date))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
+                HStack(spacing: 8) {
+                    Text(formatDate(item.date))
+                    if !item.isDirectory && item.size > 0 {
+                        Text(formatSize(item.size))
+                    }
+                    if item.isDirectory && item.childCount > 0 {
+                        Text("\(item.childCount) items")
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
             }
-            Spacer()
-            if item.isDirectory && item.childCount > 0 {
-                Text("\(item.childCount)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.quaternary, in: Capsule())
-            }
+        }
+    }
+
+    private func displayName(_ name: String) -> String {
+        // Strip extension for common document types, keep for media
+        let ext = (name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "md", "txt", "json":
+            return (name as NSString).deletingPathExtension
+        default:
+            return name
         }
     }
 
@@ -533,19 +279,41 @@ struct LibraryItemRow: View {
         case "pdf": return "doc.richtext"
         case "jpg", "jpeg", "png", "heic", "gif", "webp": return "photo"
         case "mp4", "mov", "m4v", "avi": return "film"
-        case "mp3", "m4a", "wav", "aac": return "waveform"
+        case "mp3", "m4a", "wav", "aac", "flac": return "waveform"
         case "swift", "py", "js", "ts": return "chevron.left.forwardslash.chevron.right"
+        case "epub": return "book"
         default: return "doc"
+        }
+    }
+
+    private func iconColor(_ name: String) -> Color {
+        let ext = (name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "md", "txt": return .secondary
+        case "pdf": return .red
+        case "jpg", "jpeg", "png", "heic", "gif", "webp": return .green
+        case "mp4", "mov", "m4v", "avi": return .red
+        case "mp3", "m4a", "wav", "aac", "flac": return .orange
+        case "swift", "py", "js", "ts": return .blue
+        default: return .secondary
         }
     }
 
     private func formatDate(_ date: Date) -> String {
         let f = DateFormatter()
         if Calendar.current.isDateInToday(date) {
-            f.dateFormat = "'Today' HH:mm"
+            f.dateFormat = "HH:mm"
+        } else if Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year) {
+            f.dateFormat = "M/d"
         } else {
-            f.dateFormat = "MM/dd HH:mm"
+            f.dateFormat = "yyyy/M/d"
         }
         return f.string(from: date)
+    }
+
+    private func formatSize(_ bytes: Int64) -> String {
+        if bytes < 1024 { return "\(bytes) B" }
+        if bytes < 1024 * 1024 { return "\(bytes / 1024) KB" }
+        return String(format: "%.1f MB", Double(bytes) / 1_048_576)
     }
 }

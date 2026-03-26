@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 from config import MIRA_DIR
-from soul_manager import load_soul, format_soul
+from soul_manager import load_soul, format_soul, load_skills_for_task
 from sub_agent import claude_act
 from prompts import respond_prompt
 
@@ -55,6 +55,12 @@ def handle(workspace: Path, task_id: str, content: str,
         extra_context += f"\n\n{thread_history}"
     if thread_memory:
         extra_context += f"\n\n## Thread Memory\n{thread_memory}"
+
+    # Inject relevant skills for this task
+    skills_ctx = load_skills_for_task(content, agent_type="general")
+    if skills_ctx:
+        extra_context += f"\n\n## Relevant Skills\n{skills_ctx}"
+        log.info("Injected %d chars of relevant skills", len(skills_ctx))
 
     # Auto web research for tasks that look like they need it
     web_ctx = _maybe_web_research(content)

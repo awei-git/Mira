@@ -1,0 +1,10 @@
+{
+  "name": "writer",
+  "description": "Write articles, essays, fiction. Full writing pipeline: plan, draft, review, revise, finalize. Also handles rewriting and editing existing drafts.",
+  "keywords": ["写", "文章", "essay", "blog", "write", "novel", "rewrite", "改写", "重写", "稿", "draft"],
+  "handles": ["writing requests", "article drafts", "creative writing", "essay editing", "rewrite tasks"],
+  "tier": "heavy",
+  "timeout_category": "long",
+  "entry_point": "writing_workflow.py:start_project",
+  "requires_workspace": true
+}

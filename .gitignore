@@ -46,3 +46,19 @@ __pycache__/
 
 # Backup files
 *_backup.*
+tasks/
+.bg_health.json
+.session_context.json
+.pending_publish.json
+.cover_history.json
+logs/audits/
+artifacts_old/
+output/
+*.mp4
+*.mp3
+*.wav
+*.m4a
+logs/*.log
+.agent_state.json
+autoresearch_runs/
+comparison/

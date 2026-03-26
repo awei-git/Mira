@@ -1,1 +1,34 @@
-[]
+[
+  {
+    "name": "agentic-digest",
+    "label": "com.mira.sched.agentic-digest",
+    "description": "Daily agentic system best practices digest — fetch latest from Anthropic/blogs/arxiv",
+    "command": "/opt/homebrew/bin/python3 /Users/angwei/Sandbox/Mira/agents/explorer/agentic_digest.py",
+    "schedule_type": "calendar",
+    "interval": null,
+    "calendar": {
+      "Hour": 8,
+      "Minute": 30
+    },
+    "plist": "/Users/angwei/Library/LaunchAgents/com.mira.sched.agentic-digest.plist",
+    "script": "/Users/angwei/Sandbox/bin/scheduled/mira-sched-agentic-digest.sh",
+    "log": "/tmp/mira-sched-agentic-digest.log",
+    "created": "2026-03-24T15:23:09.191411"
+  },
+  {
+    "name": "soul-question",
+    "label": "com.mira.sched.soul-question",
+    "description": "每天早上向WA提出一个灵魂问题（哲学/人生/自我探索）",
+    "command": "/opt/homebrew/bin/python3 /Users/angwei/Sandbox/Mira/agents/shared/soul_question.py",
+    "schedule_type": "calendar",
+    "interval": null,
+    "calendar": {
+      "Hour": 9,
+      "Minute": 3
+    },
+    "plist": "/Users/angwei/Library/LaunchAgents/com.mira.sched.soul-question.plist",
+    "script": "/Users/angwei/Sandbox/bin/scheduled/mira-sched-soul-question.sh",
+    "log": "/tmp/mira-sched-soul-question.log",
+    "created": "2026-03-25T12:26:31.238653"
+  }
+]

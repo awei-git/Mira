@@ -25,12 +25,20 @@ log = logging.getLogger("mira")
 
 
 def _utc_iso() -> str:
-    """UTC timestamp in iOS-compatible ISO8601 format."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """UTC timestamp in iOS-compatible ISO8601 format with milliseconds."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + \
+        f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
 
 
 def _msg_id() -> str:
     return uuid.uuid4().hex[:8]
+
+
+def _normalize_sender(sender: str) -> str:
+    """Normalize sender to 'user' or 'agent'. Consolidates iphone/ang → user."""
+    if sender in ("iphone", "ang", "user"):
+        return "user"
+    return sender  # "agent" stays as-is
 
 
 def _atomic_write(path: Path, data: dict):
@@ -174,6 +182,7 @@ class Mira:
                     quick: bool = False,
                     parent_id: str = "") -> dict:
         """Create a new item (request, discussion, or feed)."""
+        sender = _normalize_sender(sender)
         now = _utc_iso()
         item = {
             "id": item_id,
@@ -195,7 +204,7 @@ class Mira:
             "result_path": None,
         }
         self._write_item(item)
-        self._update_manifest()
+        self._update_manifest(item)
         return item
 
     # --- Convenience creators ---
@@ -214,7 +223,7 @@ class Mira:
                                 sender="agent", tags=tags, origin="agent")
         item["status"] = "done"
         self._write_item(item)
-        self._update_manifest()
+        self._update_manifest(item)
         return item
 
     def create_discussion(self, disc_id: str, title: str, first_message: str,
@@ -227,7 +236,7 @@ class Mira:
         if sender == "agent":
             item["status"] = "needs-input"
         self._write_item(item)
-        self._update_manifest()
+        self._update_manifest(item)
         return item
 
     # --- Item updates ---
@@ -235,10 +244,18 @@ class Mira:
     def append_message(self, item_id: str, sender: str, content: str,
                        kind: str = "text") -> dict | None:
         """Append a message to an item. Returns updated item or None."""
+        sender = _normalize_sender(sender)
         item = self._read_item(item_id)
         if not item:
             log.warning("append_message: item %s not found", item_id)
             return None
+
+        # Dedup: skip if last message from same sender has identical content
+        recent_same = [m for m in item["messages"][-5:] if m["sender"] == sender]
+        if recent_same and recent_same[-1]["content"] == content and kind == "text":
+            log.debug("Skipping duplicate message from %s in %s", sender, item_id)
+            return item
+
         item["messages"].append({
             "id": _msg_id(), "sender": sender,
             "content": content, "timestamp": _utc_iso(), "kind": kind,
@@ -248,7 +265,7 @@ class Mira:
         if sender != "agent" and item["status"] in ("done", "failed"):
             item["status"] = "queued"
         self._write_item(item)
-        self._update_manifest()
+        self._update_manifest(item)
         return item
 
     def update_status(self, item_id: str, status: str,
@@ -287,7 +304,7 @@ class Mira:
         if result_path:
             item["result_path"] = result_path
         self._write_item(item)
-        self._update_manifest()
+        self._update_manifest(item)
 
     def emit_status_card(self, item_id: str, text: str, icon: str = "gear"):
         """Emit a status card message (progress indicator)."""
@@ -306,6 +323,7 @@ class Mira:
         item["tags"] = tags
         item["updated_at"] = _utc_iso()
         self._write_item(item)
+        self._update_manifest(item)
 
     def item_exists(self, item_id: str) -> bool:
         return (self.items_dir / f"{item_id}.json").exists()
@@ -587,6 +605,18 @@ class Mira:
             except OSError:
                 pass
 
+        # Drain pending queue (requeued commands from previous cycles)
+        pending_path = self.user_dir / ".pending_commands.json"
+        if pending_path.exists():
+            try:
+                pending = json.loads(pending_path.read_text(encoding="utf-8"))
+                if pending:
+                    commands = pending + commands
+                    pending_path.unlink()
+                    log.info("Drained %d pending commands from queue", len(pending))
+            except (json.JSONDecodeError, OSError):
+                pass
+
         # Migrate: clean up legacy .processed/ directory if it exists
         legacy_dir = self.user_dir / ".processed"
         if legacy_dir.exists():
@@ -599,20 +629,26 @@ class Mira:
         return commands
 
     def requeue_command(self, cmd: dict):
-        """Re-queue a command for next cycle (when agent was busy)."""
-        cmd_id = cmd.get("id", uuid.uuid4().hex[:8])
-        fname = f"cmd_requeue_{cmd_id}.json"
-        path = self.commands_dir / fname
-        # Remove from ledger so it will be picked up again
-        ledger = self._load_ledger()
-        processed = ledger.get("processed", {})
-        processed.pop(cmd_id, None)
-        self._save_ledger(ledger)
-        # Write command file back (atomic)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(cmd, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.rename(path)
-        log.info("Requeued command %s for next cycle", cmd_id)
+        """Re-queue a command for next cycle (when agent was busy).
+
+        Appends to a local pending queue file (NOT iCloud commands/).
+        poll_commands() checks this file first.
+        """
+        pending_path = self.user_dir / ".pending_commands.json"
+        pending = []
+        if pending_path.exists():
+            try:
+                pending = json.loads(pending_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pending = []
+        # Deduplicate by item_id
+        existing_ids = {c.get("item_id") for c in pending}
+        if cmd.get("item_id") not in existing_ids:
+            pending.append(cmd)
+            tmp = pending_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.rename(pending_path)
+            log.info("Requeued command %s to pending queue (%d total)", cmd.get("id", "?"), len(pending))
 
     def _try_read_command(self, path: Path) -> dict | None:
         """Try to read a command file. Returns None if unreadable."""
@@ -718,8 +754,48 @@ class Mira:
     # Manifest
     # ==================================================================
 
-    def _update_manifest(self):
-        """Rebuild manifest.json from items/ directory."""
+    def _update_manifest(self, changed_item: dict | None = None):
+        """Update manifest.json incrementally. Only full rebuild if manifest missing/corrupt.
+
+        If changed_item is provided, updates only that entry in the manifest.
+        Otherwise does a full rebuild (startup, recovery).
+        """
+        # Try incremental update first
+        if changed_item and self.manifest_file.exists():
+            try:
+                manifest = json.loads(self.manifest_file.read_text(encoding="utf-8"))
+                items = manifest.get("items", [])
+                item_id = changed_item["id"]
+
+                # Find and update existing entry, or append new
+                found = False
+                for i, entry in enumerate(items):
+                    if entry.get("id") == item_id:
+                        items[i] = {
+                            "id": item_id,
+                            "type": changed_item.get("type", "request"),
+                            "status": changed_item.get("status", "queued"),
+                            "updated_at": changed_item.get("updated_at", ""),
+                        }
+                        found = True
+                        break
+                if not found:
+                    items.append({
+                        "id": item_id,
+                        "type": changed_item.get("type", "request"),
+                        "status": changed_item.get("status", "queued"),
+                        "updated_at": changed_item.get("updated_at", ""),
+                    })
+
+                manifest["items"] = items
+                manifest["updated_at"] = _utc_iso()
+                manifest["generation"] = manifest.get("generation", 0) + 1
+                _atomic_write(self.manifest_file, manifest)
+                return
+            except (json.JSONDecodeError, OSError, KeyError):
+                pass  # Fall through to full rebuild
+
+        # Full rebuild (startup, corrupt manifest, no changed_item)
         entries = []
         for path in self.items_dir.glob("*.json"):
             if path.suffix == ".tmp":
@@ -734,8 +810,18 @@ class Mira:
                 })
             except (json.JSONDecodeError, OSError, KeyError):
                 continue
+
+        old_gen = 0
+        if self.manifest_file.exists():
+            try:
+                old = json.loads(self.manifest_file.read_text(encoding="utf-8"))
+                old_gen = old.get("generation", 0)
+            except (json.JSONDecodeError, OSError):
+                pass
+
         manifest = {
             "updated_at": _utc_iso(),
+            "generation": old_gen + 1,
             "items": entries,
         }
         _atomic_write(self.manifest_file, manifest)

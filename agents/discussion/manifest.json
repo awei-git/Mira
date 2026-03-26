@@ -1,0 +1,10 @@
+{
+  "name": "discussion",
+  "description": "Conversational response as Mira. For open-ended questions, opinions, philosophy, casual chat. Not task execution.",
+  "keywords": ["你觉得", "what do you think", "chat", "聊", "讨论", "opinion"],
+  "handles": ["open-ended questions", "opinions", "philosophical discussion", "casual conversation"],
+  "tier": "light",
+  "timeout_category": "short",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": false
+}

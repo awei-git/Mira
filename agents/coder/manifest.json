@@ -1,0 +1,10 @@
+{
+  "name": "coder",
+  "description": "coder agent (auto-generated manifest — needs review)",
+  "keywords": [],
+  "handles": [],
+  "tier": "light",
+  "timeout_category": "short",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": true
+}

@@ -1,0 +1,10 @@
+{
+  "name": "surfer",
+  "description": "Browser automation. Fill forms, extract JS-rendered data, interact with web UIs. Last resort when APIs unavailable.",
+  "keywords": ["browser", "网页", "click", "form", "screenshot", "login"],
+  "handles": ["browser automation", "form filling", "web scraping", "screenshot capture"],
+  "tier": "light",
+  "timeout_category": "long",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": true
+}

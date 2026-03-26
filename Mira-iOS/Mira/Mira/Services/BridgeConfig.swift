@@ -47,18 +47,24 @@ final class BridgeConfig {
 
         let fm = FileManager.default
 
-        // Must select the Mira-Bridge folder directly
-        guard url.lastPathComponent == "Mira-Bridge" else {
-            self.error = "Please select the 'Mira-Bridge' folder, not '\(url.lastPathComponent)'"
-            return
+        // Accept either MtJoy root or Mira-Bridge directly
+        let actualRoot: URL
+        let actualBridge: URL
+        if url.lastPathComponent == "Mira-Bridge" {
+            actualBridge = url
+            actualRoot = url.deletingLastPathComponent()
+        } else {
+            // Assume MtJoy root selected
+            actualRoot = url
+            actualBridge = url.appending(path: "Mira-Bridge")
         }
-        let actualBridge = url
-        let actualRoot: URL? = url.deletingLastPathComponent()
 
         try? fm.startDownloadingUbiquitousItem(at: actualBridge)
         try? fm.startDownloadingUbiquitousItem(at: actualBridge.appending(path: "heartbeat.json"))
         try? fm.startDownloadingUbiquitousItem(at: actualBridge.appending(path: "profiles.json"))
         try? fm.startDownloadingUbiquitousItem(at: actualBridge.appending(path: "users"))
+        // Also trigger artifacts download
+        try? fm.startDownloadingUbiquitousItem(at: actualRoot.appending(path: "Mira-Artifacts"))
 
         do {
             let bookmark = try url.bookmarkData(
@@ -138,8 +144,14 @@ final class BridgeConfig {
                 )
                 UserDefaults.standard.set(newData, forKey: "bridge_bookmark")
             }
-            bridgeURL = url
-            rootURL = url.lastPathComponent == "Mira-Bridge" ? url.deletingLastPathComponent() : nil
+            if url.lastPathComponent == "Mira-Bridge" {
+                bridgeURL = url
+                rootURL = url.deletingLastPathComponent()
+            } else {
+                // Selected MtJoy root
+                rootURL = url
+                bridgeURL = url.appending(path: "Mira-Bridge")
+            }
             // Trigger iCloud downloads
             let fm = FileManager.default
             if let b = bridgeURL {

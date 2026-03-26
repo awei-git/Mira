@@ -23,8 +23,7 @@ import logging
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Optional
-
-from config import FEEDS_DIR
+from config import FEEDS_DIR, LOCAL_TZ
 
 logger = logging.getLogger("mira.app_feeds")
 
@@ -76,7 +75,7 @@ def read_app_feeds(max_age_hours: float = 48) -> list[AppFeed]:
         return []
 
     feeds: list[AppFeed] = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(LOCAL_TZ)
 
     for app_name, entry in apps.items():
         app_root = _resolve_app_root(entry)
@@ -259,8 +258,8 @@ def sync_mira_status() -> None:
     """
     from config import MIRA_ROOT, ARTIFACTS_DIR, BRIEFINGS_DIR, WRITINGS_OUTPUT_DIR, RESEARCH_DIR
 
-    now = datetime.now(timezone.utc)
-    now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(LOCAL_TZ)
+    now_str = now.strftime("%Y-%m-%dT%H:%M:%S%z")
     today = now.strftime("%Y-%m-%d")
 
     outputs: list[dict[str, Any]] = []
@@ -286,7 +285,7 @@ def sync_mira_status() -> None:
                 "type": "report",
                 "id": f"briefing/{b.stem}",
                 "title": f"Briefing — {b.stem}",
-                "updatedAt": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "updatedAt": datetime.fromtimestamp(stat.st_mtime, tz=LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "period": "daily",
                 "path": rel,
                 "size": stat.st_size,
@@ -308,7 +307,7 @@ def sync_mira_status() -> None:
                 "type": "progress",
                 "id": f"writing/{proj_dir.name}",
                 "title": proj_dir.name,
-                "updatedAt": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "updatedAt": datetime.fromtimestamp(stat.st_mtime, tz=LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "status": "active",
                 "stage": {"current": len(files), "total": len(files), "label": f"{len(files)} files"},
                 "highlights": [],
@@ -324,7 +323,7 @@ def sync_mira_status() -> None:
                 "type": "deep_dive",
                 "id": f"research/{r.stem}",
                 "title": r.stem.replace("_", " ").replace("-", " ").title(),
-                "updatedAt": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "updatedAt": datetime.fromtimestamp(stat.st_mtime, tz=LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "topic": r.stem,
                 "content": "",
                 "path": rel,

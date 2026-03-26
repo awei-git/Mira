@@ -340,7 +340,7 @@ def _artifacts_dir(user_id: str) -> Path:
 def list_artifact_sections(user_id: str):
     base = _artifacts_dir(user_id)
     sections = []
-    for name in ["briefings", "writings", "research", "audio", "video"]:
+    for name in ["writings", "briefings", "audio", "video", "photos", "research"]:
         d = base / name
         if d.exists():
             count = len(list(d.glob("*")))

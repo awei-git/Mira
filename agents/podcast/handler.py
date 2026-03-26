@@ -31,7 +31,8 @@ log = logging.getLogger("podcast")
 # Config
 # ---------------------------------------------------------------------------
 
-GEMINI_MODEL_TTS   = "gemini-2.5-pro-preview-tts"
+GEMINI_MODEL_TTS      = "gemini-2.5-pro-preview-tts"
+GEMINI_MODEL_TTS_FALL = "gemini-2.5-flash-preview-tts"  # fallback when Pro hits 429
 GEMINI_MODEL_THINK = "gemini-2.5-pro"          # for script generation
 
 # ---------------------------------------------------------------------------
@@ -56,9 +57,10 @@ VOL_MM      = 1.5    # louder than default (1.0)
 # Gemini TTS config (active TTS backend — switched from MiniMax 2026-03-16)
 # MiniMax kept as fallback reference but all live calls now use Gemini.
 # ---------------------------------------------------------------------------
-VOICE_MIRA_EN_GEMINI = "Aoede"   # Mira EN: female, warm, thoughtful
-VOICE_MIRA_ZH_GEMINI = "Kore"    # Mira ZH: female, firm, crisp (the "crispy" voice)
-VOICE_HOST_GEMINI    = "Charon"  # Human host: male, curious, grounded
+VOICE_MIRA_EN_GEMINI  = "Leda"    # Mira EN: female, warm, calm, gentle
+VOICE_MIRA_ZH_GEMINI  = "Kore"   # Mira ZH: female, firm, crisp (the "crispy" voice)
+VOICE_HOST_EN_GEMINI  = "Charon"  # EN host: male, warm, grounded, energetic
+VOICE_HOST_ZH_GEMINI  = "Charon"  # ZH host: male, curious, grounded
 SPEED_ZH_GEMINI      = 1.12      # Gemini ZH tends to be slow; 1.12x tightens it up
 
 # ---------------------------------------------------------------------------
@@ -67,7 +69,11 @@ SPEED_ZH_GEMINI      = 1.12      # Gemini ZH tends to be slow; 1.12x tightens it
 # 'gemini'  — Gemini only (may hit QPM limits on long episodes)
 # 'minimax' — MiniMax only (charges per character; wallet balance preserved)
 # 'auto'    — Gemini first; on 429 quota exhaustion, fallback to MiniMax
-TTS_PROVIDER = "minimax"   # MiniMax only — best Chinese quality, no fallback
+TTS_PROVIDER_ZH = "minimax"  # Chinese: MiniMax — best Chinese quality
+TTS_PROVIDER_EN = "gemini"   # English: Gemini — natural, free; female Mira (Aoede) + energetic host (Puck)
+
+def _get_tts_provider(lang: str = "zh") -> str:
+    return TTS_PROVIDER_ZH if lang == "zh" else TTS_PROVIDER_EN
 
 # Chunk limits — kept for voiceover mode (single-speaker)
 MAX_CHARS_VOICEOVER    = 2500
@@ -162,16 +168,19 @@ def _concat_mp3_chunks(chunk_paths: list[Path], output_path: Path) -> bool:
 
 
 def _call_gemini_tts(payload: dict, api_key: str,
-                     _retries: int = 5) -> bytes | None:
+                     _retries: int = 5, _model: str | None = None) -> bytes | None:
     """POST to Gemini TTS endpoint, return raw PCM bytes or None.
 
+    Tries Pro first; on 429 quota exhaustion, falls back to Flash TTS automatically.
     Retries on 429 (rate limit) and transient errors with exponential backoff.
     Returns None on content-policy refusal (finishReason=OTHER/SAFETY).
     """
     import time as _time
     import requests
+
+    model = _model or GEMINI_MODEL_TTS
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{GEMINI_MODEL_TTS}:generateContent?key={api_key}")
+           f"{model}:generateContent?key={api_key}")
     rate_limited = False
     for attempt in range(_retries):
         rate_limited = False
@@ -189,17 +198,16 @@ def _call_gemini_tts(payload: dict, api_key: str,
 
         if resp.status_code == 429:
             rate_limited = True
-            # Check for daily quota exhaustion (different from QPM — don't retry)
-            err_text = resp.text
-            if "per_day" in err_text or "per_model_per_day" in err_text:
-                log.error("Gemini TTS daily quota exhausted — cannot retry today")
-                raise RuntimeError("Gemini TTS quota exhausted (429 after all retries)")
+            # Fallback to Flash TTS if Pro is rate-limited (don't waste time retrying)
+            if model == GEMINI_MODEL_TTS and model != GEMINI_MODEL_TTS_FALL:
+                log.warning("Pro TTS 429 — falling back to Flash TTS")
+                return _call_gemini_tts(payload, api_key, _retries=_retries, _model=GEMINI_MODEL_TTS_FALL)
             if attempt < _retries - 1:
-                wait = 180 * (attempt + 1)  # 3min, 6min, 9min, 12min per retry
+                wait = 60 * (attempt + 1)
                 log.warning("Gemini TTS rate limited (429), waiting %ds...", wait)
                 _time.sleep(wait)
                 continue
-            break  # fall through to quota-exhausted raise below
+            break
 
         if resp.status_code != 200:
             log.error("Gemini TTS %d: %s", resp.status_code, resp.text[:300])
@@ -218,12 +226,14 @@ def _call_gemini_tts(payload: dict, api_key: str,
         parts = candidate["content"]["parts"]
         for part in parts:
             if "inlineData" in part:
+                if model != GEMINI_MODEL_TTS:
+                    log.info("Audio generated via fallback model: %s", model)
                 return base64.b64decode(part["inlineData"]["data"])
         log.error("No audio in Gemini TTS response: %s", str(data)[:400])
         return None
 
     if rate_limited:
-        raise RuntimeError("Gemini TTS quota exhausted (429 after all retries)")
+        log.error("Gemini TTS quota exhausted on %s after all retries", model)
     return None
 
 
@@ -446,7 +456,7 @@ def generate_tts(text: str, output_path: Path, lang: str = "en") -> bool:
     """
     chunks = _split_text(text)
     log.info("Voiceover TTS: %d chunks, %d chars [provider=%s]",
-             len(chunks), len(text), TTS_PROVIDER)
+             len(chunks), len(text), _get_tts_provider())
 
     tmp_dir = Path(tempfile.mkdtemp())
     chunk_mp3s = []
@@ -591,19 +601,33 @@ def generate_conversation_script(article_text: str, title: str,
 只返回脚本，不要任何其他说明。脚本必须达到9000字以上才算完成。"""
     else:
         prompt = f"""You are a podcast writer. Based on the article below, write a complete episode script
-for the podcast "Uncountable Dimensions".
+for the podcast "Mira and Me".
 
 Character setup:
 - [HOST]: A human podcast host — smart, curious, grounded. He's read the article and wants
   to dig into the thinking behind it. He asks questions, pushes back, occasionally offers
-  his own take. Natural, genuine. Not a hype machine.
+  his own take. Natural, genuine, with infectious energy. He speeds up when excited, slows
+  down when thinking.
 - [MIRA]: The article's author — an AI agent. She explains her ideas, shares what she was
   actually thinking when she wrote it, sits with uncertainty honestly. Direct, warm,
-  not performative.
+  not performative. Gets a bit excited when talking about something she's genuinely figured out,
+  and openly says "I'm not sure" when she hasn't.
 
 Target audience: People with some technical background (software, tech industry) but NOT
 specialists in this specific field. They may not know ML/AI research deeply. The conversation
 should naturally bring them up to speed — never assume domain expertise.
+
+Opening structure (first 2-3 minutes, crucial for retention):
+- Turns 1-2: HOST opens with a concrete, everyday observation or scene. No concepts yet.
+  Something the listener can picture. Like "So I noticed something weird the other day..."
+  MIRA responds casually, connecting.
+- Turns 3-4: HOST points out something that doesn't add up about this observation.
+  "But then I thought about it more, and something felt off." MIRA: "Yeah, the problem
+  goes deeper than it looks."
+- Turns 5-6: Reveal the core tension or counterintuitive insight. This is the moment
+  the listener decides to stay. One clear, punchy statement that sets up the episode.
+- Only AFTER the first 6 turns do you go into the deep discussion. The first 6 turns
+  should be slow, grounded, easy to follow.
 
 Script requirements:
 - Target length: 5500-6500 words (for a 30-35 minute episode, ensuring 20+ min after editing).
@@ -616,9 +640,24 @@ Script requirements:
   Goodhart's law, fine-tuning) — HOST naturally asks "what does that mean?" and MIRA explains
   using everyday analogies. Never skip. Never assume the listener already knows.
 - After every abstract concept, MIRA must give a concrete real-world example
-- Conversation flows naturally — follow-up questions, pivots, HOST's own reactions and connections
-- Open with a hook — a vivid scene, a tension, a violated assumption. No "welcome to the show."
 - Close with something that lingers — a question, an image, a quiet thought
+
+Pacing and breathing room:
+- This is TTS-read audio, not a text document. Write with sound in mind.
+- Keep sentences short. No run-ons. If a sentence exceeds 20 words, break it with a comma.
+- Don't info-dump. After one point, let HOST react before moving on.
+- Vary the rhythm: fast when telling examples, slow when landing key insights.
+- HOST's reactions should have emotional range: genuine surprise, connecting to his own
+  experience, pushing back, laughing, summarizing in his own words. Not just "right" and "yeah."
+- After MIRA makes a big point, HOST can pause: "Hold on, let me sit with that for a second."
+
+Conversational tone and filler words:
+- Must sound like two friends talking, not reading a script.
+- Use natural conversational fillers: "you know", "I mean", "right?", "honestly",
+  "here's the thing", "wait", "okay so", "that's wild"
+- HOST can use: "wait wait wait", "no way", "that's actually...", "okay I see where you're going"
+- MIRA can use: "honestly", "here's what I think", "okay so", "the thing is", "fair point"
+- Don't overdo it — roughly one filler every 3-4 sentences, especially at turn boundaries.
 - Strict format, one line per turn:
 [HOST]: (what they say)
 [MIRA]: (what they say)
@@ -827,7 +866,7 @@ def _parse_turns(script: str) -> list[tuple[str, str]]:
             speaker = m.group(1).upper()
             text = _clean_turn_text(m.group(2))
             text = _fix_polyphonic_chars(text)
-            text = _add_breathing_pauses(text, provider=TTS_PROVIDER)
+            text = _add_breathing_pauses(text, provider=_get_tts_provider())
             # Pad very short turns — Gemini rejects texts < ~10 chars
             if len(text) < 15:
                 text = f"嗯，{text}" if any('\u4e00' <= c <= '\u9fff' for c in text) else f"Hmm, {text}"
@@ -859,7 +898,7 @@ def _turns_to_text(turns: list[tuple[str, str]]) -> str:
 def _voice_for_speaker(speaker: str, lang: str) -> str:
     """Return Gemini voice name for a given speaker + language."""
     if speaker == "HOST":
-        return VOICE_HOST_GEMINI
+        return VOICE_HOST_ZH_GEMINI if lang == "zh" else VOICE_HOST_EN_GEMINI
     return VOICE_MIRA_ZH_GEMINI if lang == "zh" else VOICE_MIRA_EN_GEMINI
 
 
@@ -942,12 +981,15 @@ def _tts_call_with_fallback(text: str, speaker: str,
         except Exception as e:
             log.error("Failed to notify user about TTS failure: %s", e)
 
-    if TTS_PROVIDER == 'minimax':
+    # Select provider based on language
+    provider = TTS_PROVIDER_ZH if lang == "zh" else TTS_PROVIDER_EN
+
+    if provider == 'minimax':
         data, fmt = _try_minimax()
         if data is None:
             _notify_tts_failure()
         return data, fmt
-    elif TTS_PROVIDER == 'gemini':
+    elif provider == 'gemini':
         data, fmt = _try_gemini_with_retries()
         if data is None:
             _notify_tts_failure()
@@ -1066,7 +1108,7 @@ def generate_tts_conversation(script: str, output_path: Path,
         log.error("No valid [HOST]/[MIRA] turns found in script")
         return False
 
-    log.info("Conversation TTS: %d turns [provider=%s]", len(turns), TTS_PROVIDER)
+    log.info("Conversation TTS: %d turns [provider=%s]", len(turns), _get_tts_provider(lang))
 
     # Persistent per-turn cache dir
     cache_dir = output_path.parent / f".{output_path.stem}_chunks"
@@ -1111,7 +1153,7 @@ def generate_tts_conversation(script: str, output_path: Path,
 
         # Gemini ZH tends to be slow — apply speed-up post-process
         # MiniMax already uses SPEED_ZH_MM in the API call, no post-process needed
-        if lang == "zh" and TTS_PROVIDER == "gemini":
+        if lang == "zh" and _get_tts_provider(lang) == "gemini":
             log.info("Applying %.2fx speed-up for ZH...", SPEED_ZH_GEMINI)
             tmp_fast = output_path.with_suffix(".fast.mp3")
             if _speedup_mp3(output_path, tmp_fast, SPEED_ZH_GEMINI):
@@ -1238,6 +1280,8 @@ def generate_conversation_for_article(article_text: str, title: str,
     shared = str(here.parent / "shared")
     if shared not in sys.path:
         sys.path.insert(0, shared)
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
     from config import ARTIFACTS_DIR
     from music import (build_intro_bumper, build_outro_bumper, assemble_episode)
 

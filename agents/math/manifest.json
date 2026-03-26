@@ -1,0 +1,10 @@
+{
+  "name": "math",
+  "description": "Mathematical proofs, derivations, paper review. Handles formal math and research-level problems.",
+  "keywords": ["math", "数学", "proof", "theorem", "derivation", "证明"],
+  "handles": ["mathematical proofs", "derivations", "paper review", "formal math"],
+  "tier": "heavy",
+  "timeout_category": "long",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": true
+}

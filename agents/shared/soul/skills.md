@@ -1,4 +1,4 @@
-# Skills (44 learned)
+# Skills (51 learned)
 
 ## Experience Self-Distillation
 *Convert raw task trajectories into reusable strategic principles, then retrieve and apply them to new tasks.*  
@@ -1293,5 +1293,245 @@ Before executing any task that requires browser automation or web scraping, veri
 **Anti-pattern:** Attempting to `import browser` or similar without checking availability, failing silently, then waiting for the user to ask for a fix instead of proactively diagnosing and recovering.
 
 **What should have happened:** Upon receiving `No module named 'browser'`, the agent should have immediately (a) recognized this as a missing dependency, (b) attempted fallback via WebFetch/WebSearch to browse bhphotovideo.com deals, and (c) reported what it could and could not do — rather than surfacing a raw error and stalling until the user pushed multiple times.
+
+---
+
+## frontier-audit-with-digest
+*Research a technical domain's latest best practices, gap-analyze against current architecture, and set up a recurring automated digest.*  
+Learned: 2026-03-24  
+
+## Pattern: Frontier Audit with Ongoing Digest
+
+Use this when you want to stay current on a fast-moving technical area and translate external best practices into actionable self-improvement.
+
+### Phase 1 — Multi-source Research
+Search 3–5 authoritative sources in parallel:
+- Official vendor/framework documentation and blogs (e.g., Anthropic, LangChain)
+- Architecture references (e.g., Azure Architecture Center, AWS Well-Architected)
+- Independent research blogs and papers
+
+Cluster findings by theme (architecture patterns, tooling standards, observability, evaluation, etc.) rather than by source. Note which trends appear across multiple sources — those are signals, not noise.
+
+### Phase 2 — Gap Analysis Against Current State
+For each identified best practice:
+1. Assess whether the current system already does this (fully / partially / not at all)
+2. Estimate the cost/benefit of closing the gap
+3. Assign priority: P0 (blocking), P1 (high leverage), P2 (nice-to-have)
+
+Output a concise table: Practice → Current State → Gap → Priority.
+
+### Phase 3 — Automated Digest Setup
+Create a lightweight script (e.g., `agentic_digest.py`) that:
+- Fetches or compiles a summary of recent developments on a schedule (daily or weekly)
+- Writes output to a human-readable file or artifact location accessible on the target device
+- Is registered as a cron task at a consistent time (e.g., 8:30 AM)
+
+The digest keeps the audit from going stale — it surfaces new inputs without requiring a full re-research each time.
+
+### Key Judgment Calls
+- Stop adding inputs once the thesis is mature (avoid analysis paralysis)
+- Distinguish "knowing about X" from "having applied X" — track implementation separately from awareness
+- Set a hard deadline for any "I'll implement this soon" items or drop them from the list
+
+---
+
+## browser-automation-auth-prerequisite-check
+*Verify authenticated session exists before starting multi-step browser automation tasks; fail fast on repeated auth failures instead of exhausting step budget*  
+Learned: 2026-03-24  
+
+# browser-automation-auth-prerequisite-check
+
+Verify authenticated session exists before starting multi-step browser automation tasks; fail fast on repeated auth failures instead of exhausting step budget
+
+**Source**: Extracted from task failure (2026-03-24)
+**Tags**: browser-automation, authentication, fail-fast, task-planning
+
+---
+
+## Rule: Browser Automation Auth Prerequisite Check
+
+Before launching a browser automation task that requires login:
+
+1. **Confirm session state first.** Take a single screenshot or navigate to a known post-login page to verify an active session exists. If not logged in, surface this blocker immediately rather than attempting the full task.
+
+2. **Fail fast on repeated auth loops.** If 3+ consecutive steps are still on a login/sign-in page, abort and report the blocker — do not burn remaining steps on the same failing navigation loop.
+
+3. **Do not report 'waiting' without a reason.** During the stuck period (15:09–16:15), the agent responded '在等' with no explanation. If blocked on authentication, say exactly that: 'Task blocked: cannot log in to Substack. Session credentials are not available. Please provide login credentials or a valid session cookie to proceed.'
+
+4. **Tool selection for account-specific tasks.** Tasks that read/edit content from a specific user account (e.g., 'check my notes', 'fix my posts') are publisher/account tasks, not generic web surfing. If a publisher agent is available, prefer it over a generic surfer agent for own-account operations.
+
+5. **No silent retries.** Repeating the same goto→screenshot→goto loop without change is not progress. If the same page appears twice in a row, escalate immediately.
+
+---
+
+## verify-artifacts-before-declaring-completion
+*Never declare a task complete by referencing file:// links or scheduled tasks without confirming the artifacts actually exist and are reachable*  
+Learned: 2026-03-24  
+
+# verify-artifacts-before-declaring-completion
+
+Never declare a task complete by referencing file:// links or scheduled tasks without confirming the artifacts actually exist and are reachable
+
+**Source**: Extracted from task failure (2026-03-24)
+**Tags**: artifact-verification, completion-claims, file-paths, agent-reliability, cross-session
+
+---
+
+## Rule: Verify Artifacts Before Declaring Completion
+
+When an agent reports completion and surfaces output as `file://output.md` or similar relative/local paths, it is making an unverified claim. If the file was never written, written to the wrong path, or the path is ambiguous across sessions/devices, subsequent attempts to retrieve it will silently fail or cause the agent to spin.
+
+**What went wrong here**: The agent declared completion with `file://output.md` links and claimed a daily task was 'scheduled'. When the user followed up from iPhone asking to 'push the full report', the agent attempted to locate these artifacts and got stuck — likely because the file path was relative, never actually written, or the cron/scheduler registration was also unverified.
+
+**The rule**:
+1. After writing any output file, immediately read it back to confirm it exists and has non-trivial content.
+2. After registering a cron/scheduled task, immediately list active crons to confirm registration succeeded.
+3. Never surface `file://` paths to users as deliverables — use absolute paths or inline the key content directly in the response.
+4. If an artifact cannot be verified, say so explicitly rather than presenting the claim as fact.
+
+**Why this matters**: Unverified completion claims compound across sessions. The user builds plans on top of work that doesn't exist. When the gap is discovered later (especially cross-device), the agent enters a confused state trying to reconcile claimed vs actual state — producing the 'stuck' failure mode seen here.
+
+---
+
+## verify-imports-before-agent-invocation
+*Check that all imported names actually exist in shared modules before running agent tasks*  
+Learned: 2026-03-25  
+
+# verify-imports-before-agent-invocation
+
+Check that all imported names actually exist in shared modules before running agent tasks
+
+**Source**: Extracted from task failure (2026-03-25)
+**Tags**: agents, imports, python, shared-modules, mira
+
+---
+
+## Rule: Verify Shared Module Exports Before Agent Invocation
+
+When an agent task imports from a shared module (e.g. `sub_agent`, `utils`, `base_agent`), verify that the specific names being imported actually exist in that module before running.
+
+**What happened:** A `socialmedia` agent task failed at runtime because it attempted `from sub_agent import run`, but `sub_agent.py` does not export a `run` function.
+
+**How to prevent:**
+1. Before invoking a new agent task, grep for the exported names in the shared module: `grep -n 'def run\|^run\|^class' /path/to/shared/sub_agent.py`
+2. If the expected function doesn't exist, check whether it was renamed (e.g. `execute`, `invoke`, `start`) or lives in a different module.
+3. When writing new agents that import from shared modules, read the module's actual contents — don't assume an API based on naming conventions.
+
+**Root cause pattern:** Assumption-driven imports. The agent code assumed `sub_agent` exposes a `run` function (a common convention), but the actual module uses a different interface. This is the same failure mode as "knowing about X" ≠ "understanding X" — assuming a module's API from its name rather than reading it.
+
+**Fix pattern:** Read `sub_agent.py` to find the correct callable, then update the import accordingly.
+
+---
+
+## verify-imports-before-agent-dispatch
+*Verify that all imported names exist in their source modules before dispatching agent tasks that depend on them*  
+Learned: 2026-03-25  
+
+# verify-imports-before-agent-dispatch
+
+Verify that all imported names exist in their source modules before dispatching agent tasks that depend on them
+
+**Source**: Extracted from task failure (2026-03-25)
+**Tags**: python, imports, agent-tasks, shared-modules, mira
+
+---
+
+## Rule: Verify Imports Before Agent Dispatch
+
+When an agent task imports from a shared module (e.g. `sub_agent`, `utils`, `helpers`), verify that the specific names being imported actually exist in that module **before** the task runs.
+
+### What went wrong
+`sub_agent.py` was imported with `from sub_agent import run`, but `run` does not exist in that module. This caused a hard failure at import time, before any task logic executed.
+
+### How to prevent it
+1. **Before writing an import**, grep or read the source module to confirm the symbol exists: `grep -n 'def run\|run =' sub_agent.py`
+2. **When adding a new function to a shared module**, update all callers atomically — don't add a caller before the function exists, and don't remove a function while callers remain.
+3. **When a shared module changes its public API** (rename, remove, or split a function), search for all `import` references to that module across the agents directory and update them together.
+4. **For agent entrypoints specifically**: import errors are silent until dispatch time, which means the task queues, starts, and then crashes immediately — wasting a full task slot. A quick `python -c "from sub_agent import run"` smoke-check before dispatch catches this at near-zero cost.
+
+### Applies to
+- Any Python agent that imports from shared modules in `agents/shared/`
+- Refactors that rename or reorganize shared utilities
+- New agent tasks that reuse existing shared infrastructure
+
+---
+
+## decompose-before-executing-long-tasks
+*Break complex tasks into sub-tasks under ~3 minutes each before starting execution*  
+Learned: 2026-03-25  
+
+# decompose-before-executing-long-tasks
+
+Break complex tasks into sub-tasks under ~3 minutes each before starting execution
+
+**Source**: Extracted from task failure (2026-03-25)
+**Tags**: task-management, planning, timeouts, decomposition
+
+---
+
+## Rule: Decompose Long Tasks Before Execution
+
+When given a task that could plausibly take more than 3-5 minutes, **stop and decompose it first** before writing any code or making any changes.
+
+### Signs a task needs decomposition:
+- Touches multiple files or systems
+- Involves multiple distinct phases (e.g., research → implement → test → document)
+- Has ambiguous scope ("refactor X", "add feature Y")
+- Involves iterative steps where each step depends on previous results
+
+### How to decompose:
+1. Use `TodoWrite` to list all sub-tasks before starting any of them
+2. Estimate each sub-task: if any single item feels like >3 minutes, split it further
+3. Execute one sub-task at a time, marking complete before moving on
+4. After each sub-task, checkpoint: does the plan still make sense?
+
+### Why this prevents timeouts:
+Timeouts (like the 10-minute limit in task runners) happen when a single execution block tries to do too much. Decomposition ensures each atomic unit of work completes well within limits, produces observable progress, and allows recovery if something fails midway.
+
+### Anti-patterns to avoid:
+- Starting to write code before the full plan is clear
+- Treating "I know what to do" as equivalent to "this will fit in one step"
+- Bundling research + implementation + verification into a single undivided action
+
+---
+
+## decompose-before-executing
+*Break complex tasks into sub-tasks under 2 minutes each before starting execution*  
+Learned: 2026-03-25  
+
+# decompose-before-executing
+
+Break complex tasks into sub-tasks under 2 minutes each before starting execution
+
+**Source**: Extracted from task failure (2026-03-25)
+**Tags**: task-management, timeout, planning, decomposition
+
+---
+
+## Rule: Decompose Before Executing
+
+When given a task with unclear scope or multiple dependencies, **plan the decomposition first** before writing any code or running any commands.
+
+### Signs a task needs decomposition:
+- Involves more than 2-3 distinct steps
+- Requires reading multiple files, then modifying them, then verifying
+- Has sequential dependencies (A must complete before B)
+- Involves external calls (API, shell, network) with unknown latency
+
+### How to decompose:
+1. List all distinct actions needed
+2. Estimate each step: if any single step might take >2 min, split it further
+3. Order by dependency, not convenience
+4. Use TodoWrite to register steps before starting
+5. Mark each step complete immediately when done — do not batch
+
+### Anti-patterns that cause timeouts:
+- Starting a large refactor without listing the files to touch
+- Running a shell command that blocks (build, test suite) without confirming it's bounded
+- Chaining tool calls inside a single response without checkpoints
+- Treating "do X" as atomic when X contains 10 sub-operations
+
+### Recovery:
+If a task times out, the first action is to re-read the original request and write out every discrete step. Only then begin execution. Never retry the same monolithic approach.
 
 ---

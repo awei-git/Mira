@@ -180,7 +180,7 @@ def _load_or_create_feed(feed_path: Path) -> ET.Element:
     rss = ET.Element("rss", {
         "version": "2.0",
         "xmlns:itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd",
-        "xmlns:content": "http://purl.org/rss/modules/content/",
+        "xmlns:content": "http://purl.org/rss/1.0/modules/content/",
         "xmlns:atom": "http://www.w3.org/2005/Atom",
         "xmlns:sy": "http://purl.org/rss/modules/syndication/",
         "xmlns:podcast": "https://podcastindex.org/namespace/1.0",
@@ -258,10 +258,11 @@ def _add_episode_to_feed(
     sub("title",           title)
     sub("description",     description)
     sub("pubDate",         format_datetime(pub_date))
-    sub("guid",            f"{GITHUB_PAGES_URL}/episodes/{slug}", isPermaLink="false")
+    sub("guid",            slug, isPermaLink="false")
     sub("enclosure",       url=mp3_url, length=str(file_size), type="audio/mpeg")
     sub("itunes:title",    title)
     sub("itunes:duration", _format_duration(duration_sec))
+    sub("itunes:episodeType", "full")
     sub("itunes:summary",  description)
     sub("itunes:explicit", "false")
     if transcript_url:

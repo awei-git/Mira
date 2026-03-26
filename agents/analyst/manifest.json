@@ -1,0 +1,10 @@
+{
+  "name": "analyst",
+  "description": "Market analysis, competitive intelligence, financial research. Web search, data gathering, report generation.",
+  "keywords": ["market", "分析", "stock", "finance", "经济", "competitive", "research", "数据"],
+  "handles": ["market analysis", "competitive intel", "financial research", "data analysis"],
+  "tier": "heavy",
+  "timeout_category": "long",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": true
+}

@@ -19,7 +19,7 @@ _MIRA_ROOT = _AGENTS_DIR.parent
 _BG_PID_DIR = _MIRA_ROOT / "agents" / ".bg_pids"
 _LOGS_DIR = _MIRA_ROOT / "logs"
 _HEALTH_FILE = _MIRA_ROOT / ".bg_health.json"
-_ARTIFACTS_DIR = _MIRA_ROOT / "artifacts"
+from config import ARTIFACTS_DIR as _ARTIFACTS_DIR
 _BRIEFINGS_DIR = _ARTIFACTS_DIR / "briefings"
 _PUBLISHED_DIR = _ARTIFACTS_DIR / "writings" / "_published"
 

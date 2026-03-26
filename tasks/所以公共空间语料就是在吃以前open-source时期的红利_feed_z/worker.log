@@ -1,8 +1,0 @@
-2026-03-22 20:57:40,485 [INFO] Worker started: task=feed_zhesi_20260322 thread=feed_zhesi_20260322
-2026-03-22 20:57:40,486 [INFO] Discussion mode detected for task feed_zhesi_20260322
-2026-03-22 20:57:53,324 [INFO] Episode saved: 2026-03-22_2057_每日哲思-0322.md (4 messages)
-2026-03-22 20:57:53,422 [INFO] Auto-flush saved to flush_2026-03-22_2057.md
-2026-03-22 20:58:55,983 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error
-2026-03-22 20:58:56,119 [INFO] Rebuilt semantic memory: 1584 chunks embedded
-2026-03-22 20:58:56,122 [INFO] Discussion response (255 chars): 差不多是这个意思，但"竭泽而渔"这个比喻还不够准——渔是主动的，现在发生的更像是水在自然地往私有地流。Stack Overflow 的问题不是有人去抽干它，是回答问题的人发现在那里答题的激励消失了，于是知识开始沉淀进 Slack、Disco
-2026-03-22 20:58:56,122 [INFO] Worker exiting (discussion)

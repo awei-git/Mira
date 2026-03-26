@@ -13,10 +13,39 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import MIRA_DIR, TASK_TIMEOUT, TASK_TIMEOUT_LONG
+from config import MIRA_DIR, TASK_TIMEOUT, TASK_TIMEOUT_LONG, MAX_CONCURRENT_TASKS
 
-# Tags that get the long timeout (writing pipeline, deep research)
-_LONG_TIMEOUT_TAGS = {"writing", "write", "novel", "essay", "blog", "research", "深度研究", "coding"}
+# Timeout resolution: first check registry manifest, then fall back to tag keywords
+_LONG_TIMEOUT_TAGS = {"writing", "write", "novel", "essay", "blog", "research",
+                      "深度研究", "coding", "podcast", "audio", "tts", "generate"}
+
+# No-timeout agents (background jobs that can run indefinitely)
+_BACKGROUND_TIMEOUT = 86400  # 24 hours — effectively no timeout
+
+
+def _resolve_timeout(tags: list[str]) -> float:
+    """Resolve timeout for a task based on registry manifests + fallback tags.
+
+    Priority:
+    1. If tags include an agent name → check registry manifest timeout_category
+    2. Fall back to keyword-based tag matching
+    """
+    try:
+        from agent_registry import get_registry
+        registry = get_registry()
+        for tag in tags:
+            cat = registry.get_timeout_category(tag)
+            if cat == "background":
+                return _BACKGROUND_TIMEOUT
+            elif cat == "long":
+                return TASK_TIMEOUT_LONG
+    except Exception:
+        pass  # Registry not available, fall back to tags
+
+    task_tags = set(tags or [])
+    if task_tags & _LONG_TIMEOUT_TAGS:
+        return TASK_TIMEOUT_LONG
+    return TASK_TIMEOUT
 
 log = logging.getLogger("mira")
 
@@ -69,14 +98,18 @@ def classify_task(content: str) -> list[str]:
     lower = content.lower()
 
     _WRITING_KW = ["写", "文章", "essay", "blog", "write", "novel", "research",
-                   "深度研究", "rewrite", "改写", "重写", "稿"]
+                   "深度研究", "rewrite", "改写", "重写", "稿", "研究"]
     _CODE_KW = ["修改", "implement", "fix", "code", "refactor", "改进",
-                "framework", "pipeline", "publish", "发布", "podcast", "跑"]
+                "framework", "pipeline", "publish", "发布"]
+    _MEDIA_KW = ["podcast", "音频", "tts", "audio", "generate", "生成",
+                 "transcript", "episode", "跑"]
 
     if any(kw in lower for kw in _WRITING_KW):
         tags.append("writing")
     if any(kw in lower for kw in _CODE_KW):
         tags.append("coding")
+    if any(kw in lower for kw in _MEDIA_KW):
+        tags.append("podcast")
 
     return tags
 
@@ -93,25 +126,32 @@ class TaskManager:
     # ------------------------------------------------------------------
 
     def is_busy(self) -> bool:
-        """Check if a Claude Code instance is already running."""
-        return self.get_active_count() > 0
+        """Check if all concurrent task slots are occupied."""
+        return self.get_active_count() >= MAX_CONCURRENT_TASKS
 
     def dispatch(self, msg, workspace_dir: Path) -> str:
         """Spawn a background worker for a message. Returns task_id.
 
-        Only one task runs at a time (single Claude Code instance).
-        Returns "" if busy — caller should leave the message for next cycle.
+        Supports up to MAX_CONCURRENT_TASKS parallel workers.
+        Returns "" if all slots occupied — caller should leave the message for next cycle.
 
         Args:
             msg: talk_bridge.Message instance
             workspace_dir: directory for task output files
         """
         if self.is_busy():
-            log.info("TaskManager busy, deferring task for msg %s", msg.id)
+            log.info("TaskManager busy (%d/%d slots), deferring task for msg %s",
+                     self.get_active_count(), MAX_CONCURRENT_TASKS, msg.id)
             return ""
 
         task_id = msg.id
         workspace_dir.mkdir(parents=True, exist_ok=True)
+
+        # Clean stale results from previous runs so worker doesn't skip execution
+        for stale in ("result.json", "result.tmp", "output.md", "summary.txt"):
+            f = workspace_dir / stale
+            if f.exists():
+                f.unlink()
 
         # Write message to a temp file for the worker to read
         msg_file = workspace_dir / "message.json"
@@ -187,15 +227,51 @@ class TaskManager:
                 # Check timeout
                 started = datetime.fromisoformat(rec.started_at.replace("Z", "+00:00"))
                 elapsed = (datetime.now(timezone.utc) - started).total_seconds()
-                task_tags = set(rec.tags or [])
-                timeout = TASK_TIMEOUT_LONG if task_tags & _LONG_TIMEOUT_TAGS else TASK_TIMEOUT
+                timeout = _resolve_timeout(rec.tags or [])
                 if elapsed > timeout:
-                    log.warning("Task %s timed out (PID %d, %ds)", rec.task_id, rec.pid, elapsed)
-                    self._kill_task(rec)
-                    rec.status = "timeout"
-                    rec.completed_at = _utc_iso()
-                    rec.summary = "Task timed out"
-                    completed.append(rec)
+                    # Don't kill — pause and ask user
+                    log.warning("Task %s exceeded timeout (PID %d, %ds/%ds) — notifying user",
+                                rec.task_id, rec.pid, int(elapsed), int(timeout))
+                    # Only notify once (check if already notified)
+                    if rec.status != "timeout_pending":
+                        rec.status = "timeout_pending"
+                        try:
+                            from mira import Mira
+                            bridge = Mira(MIRA_DIR)
+                            elapsed_str = f"{int(elapsed//60)}分钟"
+                            bridge.create_item(
+                                f"timeout-{rec.task_id}",
+                                "alert",
+                                f"任务超时: {rec.content_preview}",
+                                f"任务已运行{elapsed_str}，超过预期时间。\n\n"
+                                f"回复 'kill' 终止任务，或 'wait' 继续等待。\n\n"
+                                f"任务ID: {rec.task_id}",
+                                sender="agent",
+                                tags=["timeout", "alert"],
+                                origin="agent",
+                            )
+                        except Exception as e:
+                            log.warning("Failed to send timeout notification: %s", e)
+                    # Check if user replied 'kill' to the timeout alert
+                    try:
+                        from mira import Mira
+                        bridge = Mira(MIRA_DIR)
+                        timeout_item = bridge.get_item(f"timeout-{rec.task_id}")
+                        if timeout_item:
+                            msgs = timeout_item.get("messages", [])
+                            user_replies = [m for m in msgs if m.get("sender") in ("ang", "iphone", "user")]
+                            if user_replies:
+                                last_reply = user_replies[-1].get("content", "").lower().strip()
+                                if "kill" in last_reply or "停" in last_reply or "stop" in last_reply:
+                                    log.info("User requested kill for timed-out task %s", rec.task_id)
+                                    self._kill_task(rec)
+                                    rec.status = "timeout"
+                                    rec.completed_at = _utc_iso()
+                                    rec.summary = "Task killed by user after timeout"
+                                    completed.append(rec)
+                                # If user said 'wait', just let it keep running
+                    except Exception:
+                        pass
                 else:
                     rec.status = "running"
 

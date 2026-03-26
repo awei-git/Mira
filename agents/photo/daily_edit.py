@@ -19,7 +19,7 @@ sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 log = logging.getLogger("photo.daily")
 
 NAS_PHOTO_DIR = Path("/Volumes/aw_footage/photo")
-ARTIFACTS_DIR = Path.home() / "Sandbox/Mira/artifacts/photos"
+from config import ARTIFACTS_DIR; ARTIFACTS_DIR = ARTIFACTS_DIR / "photos"
 HISTORY_FILE = Path(__file__).parent / "output/daily_history.json"
 REFERENCE_DIR = Path.home() / "Sandbox/assets/LRed"
 
@@ -156,7 +156,7 @@ def run_daily_edit() -> dict:
 def notify_result(result: dict):
     """Write notification to Mira bridge for iOS app."""
     try:
-        bridge_dir = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Artifacts/photos"
+        bridge_dir = ARTIFACTS_DIR / "photos"
         bridge_dir.mkdir(parents=True, exist_ok=True)
 
         date_str = datetime.now().strftime("%Y%m%d")

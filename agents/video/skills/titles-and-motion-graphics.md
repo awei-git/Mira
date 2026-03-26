@@ -1,41 +1,66 @@
 # Titles and Motion Graphics
 
-**Tags:** video, editing, motion-graphics, titles, typography, design
+## Title Card Types
+Every card serves exactly one function. If it's doing two, split it.
 
-## Core Principle
-Titles and graphics serve the story — they communicate information at the right moment and disappear. The moment a viewer notices the graphics instead of absorbing the content, the design has failed.
+- **Identification** — name, location, date. Example: `SARAH CHEN / Lead Engineer, Waymo`
+- **Orientation** — context the audience needs before the next segment makes sense. Example: `DETROIT, MI — March 2024` before a factory tour.
+- **Emphasis** — one statistic or phrase pulled out for impact. Example: `3.2 million units recalled` over B-roll.
+- **Transition** — signals a section break or time jump. Example: `TWO WEEKS LATER` or a chapter title card.
 
-## Title Card Functions
-- **Identification**: who is this person, where is this place, what is this date
-- **Orientation**: establish context the audience needs before they can understand what follows
-- **Emphasis**: call attention to a specific word, statistic, or concept
-- **Transition**: signal a section change or time jump
+## When to Use Each Type
+- **Use Identification** when a new speaker appears on screen for the first time
+- **Use Orientation** when location/time context is missing from preceding shots
+- **Use Emphasis** when a key statistic or quote appears in voiceover/narration
+- **Use Transition** when topic changes or time passes between scenes
 
-Each title card should serve exactly one function. Multi-purpose cards are usually confused cards.
+## Typography Specs
+- Typeface: medium-to-bold weight; must be legible at 50% scale on a phone screen
+- Case: sentence case or ALL-CAPS for ≤5 words; never mixed-case for longer strings
+- Color: white text + semi-transparent black drop shadow (30-50% opacity) or backing bar (60-80% opacity)
+- Positioning: all text inside title-safe zone (10% inset from every edge)
 
-## Typography Principles for Screen
-- **Legibility over beauty**: choose typefaces that read clearly at small sizes and low contrast (footage backgrounds are unpredictable)
-- **Weight**: medium to bold weights read better than thin weights on screen
-- **Case**: sentence case or all-caps for short labels; avoid mixed-case for anything longer than 5 words
-- **Color**: white with a semi-transparent drop shadow or backing bar outperforms bare white or bare black on most footage backgrounds
-- **Safe area**: keep all text within the title-safe zone (10% inset from all edges)
+## Technical Notes
+- **Motion Blur:** Apply a 180° shutter angle (or 50% motion blur) to animated text for natural-looking movement.
+- **Mobile Readability:** For text that must be legible on mobile, ensure the primary font size is at least 1/20th of the screen's vertical height (e.g., 90px on a 1920x1080 frame).
 
-## Motion Principles
-- **Purposeful movement**: motion should direct attention or reinforce meaning, not demonstrate software capability
-- **Easing**: all motion should ease in and ease out — linear motion reads as mechanical and cheap
-- **Duration**: lower thirds should animate in over 10–15 frames (not instant, not slow). Hold for read time (roughly: word count × 0.3 seconds minimum). Animate out faster than in.
-- **Hierarchy**: primary information larger and earlier; secondary information smaller and later
+## Lower Third Format
+- **Line 1:** Name — bold, larger (120-140% of line 2)
+- **Line 2:** Title/role — regular weight, smaller, optionally different color (subtle accent)
+- **Trigger:** Within 2–3 seconds of the subject starting to speak
+- **Hold duration:** 4–6 seconds minimum for two lines
+- **Remove trigger:** When subject stops speaking for 3+ seconds or camera cuts away
 
-## Lower Third Protocol
-- Line 1: Name (bold, larger)
-- Line 2: Title/role (regular weight, smaller, possibly a different color)
-- Duration on screen: 4–6 seconds minimum for two lines
-- First appearance: within 2–3 seconds of the subject beginning to speak
+## Motion Checklist
+1. **Easing on everything.** Linear motion looks cheap. Use ease-in-out as default (After Effects: Easy Ease; Premiere: 50% curve).
+2. **Animate in:** 10–15 frames (0.3–0.5s at 24fps). Start animation on first spoken word.
+3. **Hold for read time:** word count × 0.3 seconds, minimum. A 10-word lower third holds at least 3 seconds.
+4. **Animate out faster than in.** If in = 12 frames, out = 8 frames. Trigger out animation when subject's sentence ends.
+5. **Hierarchy through timing:** primary info appears first; secondary info follows 5–10 frames later (0.2–0.4s delay).
+6. **No unmotivated motion.** If an element has no reason to move, it shouldn't. Motion directs attention; decorative animation competes with footage.
 
-## When Graphics Undermine the Edit
-- Gratuitous motion: animating elements that have no reason to move
-- Competing with the footage: bright graphics over emotional or active footage pull focus from the content
-- Overuse: if every statement gets a graphic callout, none of them are emphasized
+## Common Mistakes & Fixes
+- **Mistake:** Text is hard to read over busy backgrounds.
+  **Fix:** Increase backing bar opacity to 80% or use a stronger drop shadow (50% opacity, 8-10px spread).
+- **Mistake:** Lower third appears/disappears too abruptly.
+  **Fix:** Add a 4-frame (0.17s) opacity fade to the beginning and end of all position animations.
+- **Mistake:** Emphasis card distracts from, rather than highlights, the B-roll.
+  **Fix:** Shorten hold time to word count × 0.2 seconds. Animate out 2 seconds after the VO mentions the stat.
+- **Mistake:** Transition cards feel disconnected from the edit.
+  **Fix:** Time the card's animation peak (e.g., scale at 100%) to the exact frame of the cut or audio beat.
 
-## Source
-Braha & Byrne "Creative Motion Graphic Titling for Film, Video, and the Web"; broadcast design standards; motion design best practices
+## Implementation Examples
+**After Effects:**
+- Build templates with Essential Graphics properties for text
+- Use transform keyframes with Easy Ease (F9)
+- Set hold keyframes for duration calculation
+
+**Premiere Pro:**
+- Use Essential Graphics templates
+- Apply "Ease In/Out" to position/opacity keyframes
+- Use markers to time animations to dialogue
+
+**DaVinci Resolve:**
+- Create Fusion templates with text+ nodes
+- Use spline editor for smooth easing curves
+- Time animations to audio waveform peaks

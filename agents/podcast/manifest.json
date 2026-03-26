@@ -1,0 +1,10 @@
+{
+  "name": "podcast",
+  "description": "Generate podcast episodes from articles. Script generation, TTS audio synthesis, music mixing, RSS publishing.",
+  "keywords": ["podcast", "音频", "audio", "tts", "episode", "播客", "transcript"],
+  "handles": ["podcast generation", "audio synthesis", "episode assembly", "RSS publishing"],
+  "tier": "heavy",
+  "timeout_category": "background",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": true
+}

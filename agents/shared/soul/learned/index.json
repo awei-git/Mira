@@ -313,5 +313,47 @@
     "description": "Check that browser automation dependencies are installed before attempting web scraping tasks",
     "file": "verify-browser-automation-before-web-tasks.md",
     "created": "2026-03-23T21:32:21.521827"
+  },
+  {
+    "name": "frontier-audit-with-digest",
+    "description": "Research a technical domain's latest best practices, gap-analyze against current architecture, and set up a recurring automated digest.",
+    "file": "frontier-audit-with-digest.md",
+    "created": "2026-03-24T15:25:22.876567"
+  },
+  {
+    "name": "browser-automation-auth-prerequisite-check",
+    "description": "Verify authenticated session exists before starting multi-step browser automation tasks; fail fast on repeated auth failures instead of exhausting step budget",
+    "file": "browser-automation-auth-prerequisite-check.md",
+    "created": "2026-03-24T19:40:22.419691"
+  },
+  {
+    "name": "verify-artifacts-before-declaring-completion",
+    "description": "Never declare a task complete by referencing file:// links or scheduled tasks without confirming the artifacts actually exist and are reachable",
+    "file": "verify-artifacts-before-declaring-completion.md",
+    "created": "2026-03-24T19:40:44.032094"
+  },
+  {
+    "name": "verify-imports-before-agent-invocation",
+    "description": "Check that all imported names actually exist in shared modules before running agent tasks",
+    "file": "verify-imports-before-agent-invocation.md",
+    "created": "2026-03-25T09:05:34.574802"
+  },
+  {
+    "name": "verify-imports-before-agent-dispatch",
+    "description": "Verify that all imported names exist in their source modules before dispatching agent tasks that depend on them",
+    "file": "verify-imports-before-agent-dispatch.md",
+    "created": "2026-03-25T10:37:39.193038"
+  },
+  {
+    "name": "decompose-before-executing-long-tasks",
+    "description": "Break complex tasks into sub-tasks under ~3 minutes each before starting execution",
+    "file": "decompose-before-executing-long-tasks.md",
+    "created": "2026-03-25T12:35:12.297600"
+  },
+  {
+    "name": "decompose-before-executing",
+    "description": "Break complex tasks into sub-tasks under 2 minutes each before starting execution",
+    "file": "decompose-before-executing.md",
+    "created": "2026-03-25T14:10:26.757139"
   }
 ]

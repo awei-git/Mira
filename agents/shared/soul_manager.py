@@ -242,6 +242,76 @@ def load_skills_summary() -> str:
     return "\n".join(lines)
 
 
+def load_skills_for_task(task_content: str, agent_type: str = "",
+                         max_skills: int = 8) -> str:
+    """Load full skill content filtered by relevance to the task.
+
+    Returns full text of the most relevant skills (not just summaries).
+    Uses tag matching and agent-type affinity to select skills.
+    Falls back to summaries-only if no strong matches.
+    """
+    if not SKILLS_INDEX.exists():
+        return ""
+    try:
+        index = json.loads(SKILLS_INDEX.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ""
+
+    lower = task_content.lower()
+    # Agent-type to tag affinity map
+    _AGENT_TAGS = {
+        "writing": {"writing", "craft", "fiction", "substack"},
+        "analyst": {"analyst", "strategy", "research", "forecasting"},
+        "video": {"video", "editing", "cinematography"},
+        "photo": {"photo", "editing", "color"},
+        "math": {"math", "proof", "probability"},
+        "general": {"coding", "agents", "debugging"},
+        "explorer": {"explorer", "research", "curation"},
+    }
+    affinity_tags = _AGENT_TAGS.get(agent_type, set())
+
+    scored = []
+    for skill in index:
+        tags = set(t.lower() for t in skill.get("tags", []))
+        desc = skill.get("description", "").lower()
+        name = skill.get("name", "").lower()
+        score = 0
+        # Tag overlap with agent type
+        score += len(tags & affinity_tags) * 3
+        # Tag words appearing in task content
+        score += sum(2 for t in tags if t in lower)
+        # Name words in task content
+        score += sum(1 for w in name.split() if len(w) > 3 and w in lower)
+        # Description words in task content
+        desc_words = {w for w in desc.split() if len(w) > 3}
+        content_words = {w for w in lower.split() if len(w) > 3}
+        score += len(desc_words & content_words)
+
+        if score > 0:
+            scored.append((score, skill))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:max_skills]
+
+    if not top:
+        return ""
+
+    sections = []
+    for _, skill in top:
+        slug = skill.get("name", "").lower().replace(" ", "-")
+        path = SKILLS_DIR / f"{slug}.md"
+        if path.exists():
+            try:
+                text = path.read_text(encoding="utf-8").strip()
+                # Truncate very long skills to save tokens
+                if len(text) > 2000:
+                    text = text[:2000] + "\n... (truncated)"
+                sections.append(text)
+            except OSError:
+                pass
+    return "\n\n---\n\n".join(sections)
+
+
 def load_skill(name: str) -> str:
     """Load a specific skill file's full content."""
     # Normalize name to filename

@@ -1,0 +1,10 @@
+{
+  "name": "socialmedia",
+  "description": "Substack publishing, notes, comments, growth. Manage Substack content and engagement.",
+  "keywords": ["substack", "publish", "发布", "comment", "评论", "note", "subscriber", "growth"],
+  "handles": ["Substack publishing", "notes posting", "comment replies", "subscriber growth"],
+  "tier": "light",
+  "timeout_category": "short",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": true
+}

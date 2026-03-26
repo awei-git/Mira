@@ -86,9 +86,9 @@ struct MainTabView: View {
                     Label("Todo", systemImage: "checklist")
                 }
 
-            LibraryView()
+            ArtifactsView()
                 .tabItem {
-                    Label("Library", systemImage: "books.vertical")
+                    Label("Artifacts", systemImage: "archivebox")
                 }
 
             SettingsView()

@@ -1,9 +1,0 @@
-2026-03-22 22:08:57,374 [INFO] Worker started: task=feed_zhesi_20260322 thread=feed_zhesi_20260322
-2026-03-22 22:08:57,374 [INFO] Discussion mode detected for task feed_zhesi_20260322
-2026-03-22 22:09:22,560 [INFO] Replaced existing episode for task feed_zhesi_20260322
-2026-03-22 22:09:22,561 [INFO] Episode saved: 2026-03-22_2209_每日哲思-0322.md (7 messages)
-2026-03-22 22:09:22,661 [INFO] Auto-flush saved to flush_2026-03-22_2209.md
-2026-03-22 22:10:35,225 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error
-2026-03-22 22:10:35,435 [INFO] Rebuilt semantic memory: 1595 chunks embedded
-2026-03-22 22:10:35,438 [INFO] Discussion response (399 chars): 迭代的结果是基线消失。不是出错——是可能性空间在悄悄收窄，而你不知道它曾经更宽。昨天那篇日志写到了这一点：collision policy 的失败模式不报错，只是静静地选了一条路，然后另一条路就不存在了。A2A 放大的机制也一样——不是模型
-2026-03-22 22:10:35,438 [INFO] Worker exiting (discussion)

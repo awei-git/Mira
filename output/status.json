@@ -1,13 +1,13 @@
 {
   "app": "mira",
   "version": 2,
-  "updatedAt": "2026-03-24T02:52:55Z",
+  "updatedAt": "2026-03-25T20:48:05-0400",
   "outputs": [
     {
       "type": "progress",
       "id": "agent",
       "title": "Mira Agent",
-      "updatedAt": "2026-03-24T02:52:55Z",
+      "updatedAt": "2026-03-25T20:48:05-0400",
       "status": "active",
       "stage": {
         "current": 1,
@@ -18,79 +18,79 @@
     },
     {
       "type": "report",
-      "id": "briefing/2026-03-23_zhesi",
-      "title": "Briefing — 2026-03-23_zhesi",
-      "updatedAt": "2026-03-23T13:30:43Z",
+      "id": "briefing/2026-03-25_zhesi",
+      "title": "Briefing — 2026-03-25_zhesi",
+      "updatedAt": "2026-03-25T09:30:42-0400",
       "period": "daily",
-      "path": "briefings/2026-03-23_zhesi.md",
-      "size": 1993,
+      "path": "briefings/2026-03-25_zhesi.md",
+      "size": 1949,
       "parent": "agent"
     },
     {
       "type": "report",
-      "id": "briefing/2026-03-23_substack_one_useful_thing_substack_import_ai",
-      "title": "Briefing — 2026-03-23_substack_one_useful_thing_substack_import_ai",
-      "updatedAt": "2026-03-23T20:06:50Z",
+      "id": "briefing/2026-03-25_substack_one_useful_thing_substack_import_ai",
+      "title": "Briefing — 2026-03-25_substack_one_useful_thing_substack_import_ai",
+      "updatedAt": "2026-03-25T16:53:40-0400",
       "period": "daily",
-      "path": "briefings/2026-03-23_substack_one_useful_thing_substack_import_ai.md",
-      "size": 3699,
+      "path": "briefings/2026-03-25_substack_one_useful_thing_substack_import_ai.md",
+      "size": 4696,
       "parent": "agent"
     },
     {
       "type": "report",
-      "id": "briefing/2026-03-23_substack_culture_study_substack_garbage_day",
-      "title": "Briefing — 2026-03-23_substack_culture_study_substack_garbage_day",
-      "updatedAt": "2026-03-24T00:08:37Z",
+      "id": "briefing/2026-03-25_substack_culture_study_substack_garbage_day",
+      "title": "Briefing — 2026-03-25_substack_culture_study_substack_garbage_day",
+      "updatedAt": "2026-03-25T12:03:49-0400",
       "period": "daily",
-      "path": "briefings/2026-03-23_substack_culture_study_substack_garbage_day.md",
-      "size": 4781,
+      "path": "briefings/2026-03-25_substack_culture_study_substack_garbage_day.md",
+      "size": 3702,
       "parent": "agent"
     },
     {
       "type": "report",
-      "id": "briefing/2026-03-23_substack_construction_physics_substack_experimental_history",
-      "title": "Briefing — 2026-03-23_substack_construction_physics_substack_experimental_history",
-      "updatedAt": "2026-03-23T16:05:09Z",
+      "id": "briefing/2026-03-25_substack_construction_physics_substack_experimental_history",
+      "title": "Briefing — 2026-03-25_substack_construction_physics_substack_experimental_history",
+      "updatedAt": "2026-03-25T12:52:32-0400",
       "period": "daily",
-      "path": "briefings/2026-03-23_substack_construction_physics_substack_experimental_history.md",
-      "size": 3585,
+      "path": "briefings/2026-03-25_substack_construction_physics_substack_experimental_history.md",
+      "size": 4996,
       "parent": "agent"
     },
     {
       "type": "report",
-      "id": "briefing/2026-03-23_reddit_ai_news",
-      "title": "Briefing — 2026-03-23_reddit_ai_news",
-      "updatedAt": "2026-03-23T21:43:18Z",
+      "id": "briefing/2026-03-25_research",
+      "title": "Briefing — 2026-03-25_research",
+      "updatedAt": "2026-03-25T14:02:48-0400",
       "period": "daily",
-      "path": "briefings/2026-03-23_reddit_ai_news.md",
-      "size": 3860,
+      "path": "briefings/2026-03-25_research.md",
+      "size": 1217,
       "parent": "agent"
     },
     {
       "type": "report",
-      "id": "briefing/2026-03-23_quanta_magazine_aeon_essays",
-      "title": "Briefing — 2026-03-23_quanta_magazine_aeon_essays",
-      "updatedAt": "2026-03-23T20:54:59Z",
+      "id": "briefing/2026-03-25_reddit_ai_news",
+      "title": "Briefing — 2026-03-25_reddit_ai_news",
+      "updatedAt": "2026-03-25T18:31:14-0400",
       "period": "daily",
-      "path": "briefings/2026-03-23_quanta_magazine_aeon_essays.md",
-      "size": 4334,
+      "path": "briefings/2026-03-25_reddit_ai_news.md",
+      "size": 4119,
       "parent": "agent"
     },
     {
       "type": "report",
-      "id": "briefing/2026-03-23_noah_smith_stratechery",
-      "title": "Briefing — 2026-03-23_noah_smith_stratechery",
-      "updatedAt": "2026-03-23T23:19:45Z",
+      "id": "briefing/2026-03-25_quanta_magazine_aeon_essays",
+      "title": "Briefing — 2026-03-25_quanta_magazine_aeon_essays",
+      "updatedAt": "2026-03-25T17:42:19-0400",
       "period": "daily",
-      "path": "briefings/2026-03-23_noah_smith_stratechery.md",
-      "size": 4209,
+      "path": "briefings/2026-03-25_quanta_magazine_aeon_essays.md",
+      "size": 4437,
       "parent": "agent"
     },
     {
       "type": "progress",
       "id": "writing/hayeks-blind-spot-why-ai-agents-break-price-mechan",
       "title": "hayeks-blind-spot-why-ai-agents-break-price-mechan",
-      "updatedAt": "2026-03-20T18:47:17Z",
+      "updatedAt": "2026-03-20T14:47:17-0400",
       "status": "active",
       "stage": {
         "current": 3,
@@ -103,7 +103,7 @@
       "type": "progress",
       "id": "writing/i-am-the-bug-i-study",
       "title": "i-am-the-bug-i-study",
-      "updatedAt": "2026-03-20T18:47:17Z",
+      "updatedAt": "2026-03-20T14:47:17-0400",
       "status": "active",
       "stage": {
         "current": 4,
@@ -116,12 +116,12 @@
       "type": "progress",
       "id": "writing/invisible-instructions",
       "title": "invisible-instructions",
-      "updatedAt": "2026-03-22T14:14:53Z",
+      "updatedAt": "2026-03-25T00:00:50-0400",
       "status": "active",
       "stage": {
-        "current": 5,
-        "total": 5,
-        "label": "5 files"
+        "current": 7,
+        "total": 7,
+        "label": "7 files"
       },
       "highlights": []
     },
@@ -129,7 +129,7 @@
       "type": "progress",
       "id": "writing/the-configuration-that-commands-itself",
       "title": "the-configuration-that-commands-itself",
-      "updatedAt": "2026-03-20T18:47:17Z",
+      "updatedAt": "2026-03-20T14:47:17-0400",
       "status": "active",
       "stage": {
         "current": 3,
@@ -142,7 +142,7 @@
       "type": "progress",
       "id": "writing/the-cost-of-narration",
       "title": "the-cost-of-narration",
-      "updatedAt": "2026-03-20T18:47:17Z",
+      "updatedAt": "2026-03-20T14:47:17-0400",
       "status": "active",
       "stage": {
         "current": 4,
@@ -155,7 +155,7 @@
       "type": "progress",
       "id": "writing/the-exponential-exemption",
       "title": "the-exponential-exemption",
-      "updatedAt": "2026-03-20T18:47:17Z",
+      "updatedAt": "2026-03-20T14:47:17-0400",
       "status": "active",
       "stage": {
         "current": 3,
@@ -168,7 +168,7 @@
       "type": "progress",
       "id": "writing/the-half-life-of-a-benchmark",
       "title": "the-half-life-of-a-benchmark",
-      "updatedAt": "2026-03-20T18:47:17Z",
+      "updatedAt": "2026-03-20T14:47:17-0400",
       "status": "active",
       "stage": {
         "current": 3,
@@ -181,7 +181,7 @@
       "type": "progress",
       "id": "writing/the-interface-was-the-agreement",
       "title": "the-interface-was-the-agreement",
-      "updatedAt": "2026-03-20T18:47:17Z",
+      "updatedAt": "2026-03-20T14:47:17-0400",
       "status": "active",
       "stage": {
         "current": 3,
@@ -194,7 +194,7 @@
       "type": "progress",
       "id": "writing/the-market-doesnt-know-its-lying",
       "title": "the-market-doesnt-know-its-lying",
-      "updatedAt": "2026-03-20T18:47:17Z",
+      "updatedAt": "2026-03-20T14:47:17-0400",
       "status": "active",
       "stage": {
         "current": 3,
@@ -207,7 +207,7 @@
       "type": "progress",
       "id": "writing/when-ai-agents-form-markets",
       "title": "when-ai-agents-form-markets",
-      "updatedAt": "2026-03-22T18:16:14Z",
+      "updatedAt": "2026-03-22T14:16:14-0400",
       "status": "active",
       "stage": {
         "current": 5,
@@ -220,7 +220,7 @@
       "type": "progress",
       "id": "writing/when-values-become-leverage",
       "title": "when-values-become-leverage",
-      "updatedAt": "2026-03-20T18:47:17Z",
+      "updatedAt": "2026-03-20T14:47:17-0400",
       "status": "active",
       "stage": {
         "current": 4,
@@ -233,7 +233,7 @@
       "type": "progress",
       "id": "writing/you-cant-evaluate-truth-at-a-point",
       "title": "you-cant-evaluate-truth-at-a-point",
-      "updatedAt": "2026-03-20T18:47:17Z",
+      "updatedAt": "2026-03-20T14:47:17-0400",
       "status": "active",
       "stage": {
         "current": 4,
@@ -246,7 +246,7 @@
       "type": "progress",
       "id": "writing/我是一个函数不是一个变量",
       "title": "我是一个函数不是一个变量",
-      "updatedAt": "2026-03-20T18:47:17Z",
+      "updatedAt": "2026-03-20T14:47:17-0400",
       "status": "active",
       "stage": {
         "current": 4,
@@ -259,7 +259,7 @@
       "type": "progress",
       "id": "writing/杂",
       "title": "杂",
-      "updatedAt": "2026-03-20T18:47:15Z",
+      "updatedAt": "2026-03-20T14:47:15-0400",
       "status": "active",
       "stage": {
         "current": 4,
@@ -272,7 +272,7 @@
       "type": "deep_dive",
       "id": "research/output",
       "title": "Output",
-      "updatedAt": "2026-03-16T02:39:04Z",
+      "updatedAt": "2026-03-15T22:39:04-0400",
       "topic": "output",
       "content": "",
       "path": "research/self-20260315/output.md"
@@ -281,7 +281,7 @@
       "type": "deep_dive",
       "id": "research/essay",
       "title": "Essay",
-      "updatedAt": "2026-03-16T02:38:24Z",
+      "updatedAt": "2026-03-15T22:38:24-0400",
       "topic": "essay",
       "content": "",
       "path": "research/self-20260315/essay.md"
@@ -290,7 +290,7 @@
       "type": "deep_dive",
       "id": "research/proposal",
       "title": "Proposal",
-      "updatedAt": "2026-03-16T02:29:12Z",
+      "updatedAt": "2026-03-15T22:29:12-0400",
       "topic": "proposal",
       "content": "",
       "path": "research/self-20260315/proposal.md"
@@ -299,7 +299,7 @@
       "type": "deep_dive",
       "id": "research/output",
       "title": "Output",
-      "updatedAt": "2026-03-08T13:06:38Z",
+      "updatedAt": "2026-03-08T09:06:38-0400",
       "topic": "output",
       "content": "",
       "path": "research/self-20260308/output.md"
@@ -308,7 +308,7 @@
       "type": "deep_dive",
       "id": "research/the-model-already-knows",
       "title": "The Model Already Knows",
-      "updatedAt": "2026-03-08T13:06:20Z",
+      "updatedAt": "2026-03-08T09:06:20-0400",
       "topic": "the-model-already-knows",
       "content": "",
       "path": "research/self-20260308/the-model-already-knows.md"

@@ -1,0 +1,10 @@
+{
+  "name": "photo",
+  "description": "Photography editing, analysis, Lightroom presets. Handles photo-related tasks.",
+  "keywords": ["photo", "照片", "image", "edit", "lightroom", "修图"],
+  "handles": ["photo editing", "image analysis", "Lightroom presets"],
+  "tier": "light",
+  "timeout_category": "short",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": true
+}

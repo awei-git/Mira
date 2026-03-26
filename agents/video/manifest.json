@@ -1,0 +1,10 @@
+{
+  "name": "video",
+  "description": "Video editing, screenplay writing, footage analysis. Handles video-related creative tasks.",
+  "keywords": ["video", "视频", "edit", "剪辑", "footage", "screenplay"],
+  "handles": ["video editing", "screenplay writing", "footage analysis"],
+  "tier": "light",
+  "timeout_category": "long",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": true
+}

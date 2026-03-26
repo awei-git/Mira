@@ -29,17 +29,16 @@ import health_monitor
 
 from config import (
     MIRA_ROOT, WORKSPACE_DIR, BRIEFINGS_DIR, LOGS_DIR, STATE_FILE,
-    NOTES_INBOX_FOLDER, NOTES_BRIEFING_FOLDER, NOTES_OUTPUT_FOLDER, NOTES_TODAY_FOLDER,
     EXPLORE_SOURCE_GROUPS, EXPLORE_COOLDOWN_MINUTES,
     EXPLORE_ACTIVE_START, EXPLORE_ACTIVE_END, EXPLORE_MAX_PER_DAY,
     REFLECT_DAY, REFLECT_TIME,
     MAX_BRIEFING_ITEMS, MAX_DEEP_DIVES, MIRA_DIR, ARTIFACTS_DIR, CLEANUP_DAYS,
     JOURNAL_DIR, JOURNAL_TIME, SKILLS_INDEX, WRITINGS_OUTPUT_DIR, WRITINGS_DIR,
     ANALYST_TIMES, ANALYST_BUSINESS_DAYS_ONLY, ZHESI_TIME, ZA_FILE,
+    RESEARCH_TIME, RESEARCH_TOPIC,
     SKILL_STUDY_SOURCE_GROUPS, SKILL_STUDY_COOLDOWN_HOURS, SKILL_STUDY_TIME,
     EPISODES_DIR,
 )
-from notes_bridge import check_inbox, create_note
 from mira import Mira, Message
 from task_manager import TaskManager, TASKS_DIR
 from soul_manager import (
@@ -162,24 +161,27 @@ def _talk_slug(content: str, msg_id: str) -> str:
 
 
 def _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd=None):
-    """Dispatch a task. Set working only on success. Requeue on busy. Log on failure."""
+    """Dispatch a task. Set working only on success. Return 'busy' if all slots full.
+
+    Returns: 'ok', 'busy', or 'failed'.
+    Caller should break command loop on 'busy' — command stays in ledger for next cycle.
+    """
+    if task_mgr.is_busy():
+        log.info("STATE %s: dispatch deferred (all %d slots occupied)", msg.id,
+                 task_mgr.get_active_count())
+        return "busy"
     task_id = task_mgr.dispatch(msg, workspace)
     if task_id:
         bridge.update_status(msg.id, "working")
         log.info("STATE %s: -> working (pid dispatched)", msg.id)
-        return True
-    elif task_mgr.is_busy():
-        if cmd:
-            bridge.requeue_command(cmd)
-        log.info("STATE %s: dispatch deferred (agent busy), re-queued", msg.id)
-        return False
+        return "ok"
     else:
         bridge.update_status(msg.id, "failed",
                              error={"code": "dispatch_failed",
                                     "message": "Worker process failed to start",
                                     "retryable": True})
         log.error("STATE %s: -> failed (dispatch error)", msg.id)
-        return False
+        return "failed"
 
 
 def do_talk():
@@ -260,7 +262,9 @@ def do_talk():
                 workspace = TASKS_DIR / _talk_slug(content, task_id)
                 msg = Message(id=task_id, sender=sender, timestamp=cmd.get("timestamp",""),
                               content=content, thread_id=task_id)
-                _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
+                result = _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
+                if result == "busy":
+                    break
             elif cmd_type == "new_discussion":
                 disc_id = cmd.get("item_id") or f"disc_{uuid.uuid4().hex[:8]}"
                 if not bridge.item_exists(disc_id):
@@ -268,13 +272,24 @@ def do_talk():
                 workspace = TASKS_DIR / _talk_slug(content, disc_id)
                 msg = Message(id=disc_id, sender=sender, timestamp=cmd.get("timestamp",""),
                               content=content, thread_id=disc_id)
-                _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
+                result = _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
+                if result == "busy":
+                    break
             elif cmd_type == "reply" and item_id:
                 bridge.append_message(item_id, sender, content)
+                # Photo daily feedback — handle inline, no task dispatch needed
+                if item_id.startswith("photo_daily_"):
+                    try:
+                        handle_photo_feedback(item_id, content)
+                    except Exception as e:
+                        log.error("Photo feedback handler failed: %s", e)
+                    continue
                 workspace = TASKS_DIR / _talk_slug(content, item_id)
                 msg = Message(id=item_id, sender=sender, timestamp=cmd.get("timestamp",""),
                               content=content, thread_id=item_id)
-                _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
+                result = _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
+                if result == "busy":
+                    break
             elif cmd_type == "comment":
                 parent_id = cmd.get("parent_id", "")
                 disc_id = f"disc_{uuid.uuid4().hex[:8]}"
@@ -292,7 +307,9 @@ def do_talk():
                 workspace = TASKS_DIR / _talk_slug(query, recall_id)
                 msg = Message(id=recall_id, sender=sender, timestamp=cmd.get("timestamp",""),
                               content=query, thread_id=recall_id)
-                _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
+                result = _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
+                if result == "busy":
+                    break
             elif cmd_type == "archive" and item_id:
                 bridge.archive_thread(item_id)
             elif cmd_type == "pin" and item_id:
@@ -440,6 +457,70 @@ def do_talk():
 
     # Sweep stuck items — safety net for all other bugs
     _sweep_stuck_items(bridge, task_mgr)
+
+
+def _check_pending_publish():
+    """Auto-publish approved articles when cooldown clears."""
+    state = load_state()
+    pending = state.get("pending_publish")
+    if not pending:
+        return
+
+    try:
+        sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
+        from substack import publish_to_substack
+        from pathlib import Path
+
+        workspace = Path(pending["workspace"])
+        final = workspace / pending.get("final_md", "final.md")
+        if not final.exists():
+            log.warning("Pending publish: final.md not found at %s", final)
+            return
+
+        content = final.read_text(encoding="utf-8")
+        result = publish_to_substack(
+            title=pending["title"],
+            subtitle=pending.get("subtitle", ""),
+            article_text=content,
+            workspace=workspace,
+        )
+
+        if "发布被拦截" in result or "cooldown" in result.lower():
+            return  # still in cooldown, try next cycle
+
+        # Published successfully — clean up
+        log.info("Auto-published '%s': %s", pending["title"], result[:100])
+        del state["pending_publish"]
+        save_state(state)
+
+        # Update item status
+        bridge = Mira()
+        item_id = pending.get("item_id")
+        if item_id:
+            bridge.update_status(item_id, "done",
+                                agent_message=f"已发布到 Substack: {result[:200]}")
+
+        # Queue notes for the new article
+        from notes import queue_notes_for_article
+        post_url = ""
+        for part in result.split():
+            if "substack.com" in part:
+                post_url = part
+                break
+        if post_url:
+            queue_notes_for_article(pending["title"], content[:3000], post_url)
+
+        # Auto-generate podcast if flagged
+        if pending.get("auto_podcast"):
+            log.info("Triggering auto-podcast for '%s'", pending["title"])
+            _dispatch_background("auto-podcast", [
+                sys.executable, str(Path(__file__).resolve()), "podcast",
+                "--title", pending["title"],
+                "--file", str(final),
+            ])
+
+    except Exception as e:
+        log.warning("Pending publish check failed: %s", e)
 
 
 def _sweep_stuck_items(bridge, task_mgr):
@@ -662,66 +743,10 @@ def _find_outline(title: str, body: str) -> tuple[str, str] | None:
             # Multiple outlines — list them in a reply note so user can clarify
             names = [o.parent.name for o in outlines]
             log.info("Multiple outlines found: %s — asking user to clarify", names)
-            reply = "我找到了多个大纲，你想用哪个？\n\n"
-            for o in outlines:
-                reply += f"• {o.parent.name}\n"
-            reply += "\n请在这条笔记里回复项目名。"
-            create_note(NOTES_INBOX_FOLDER, f"请确认: {title}", reply)
+            log.info("Multiple outlines found — cannot auto-select")
             return None
 
     return None
-
-
-def do_respond():
-    """Process new requests from the Mira Notes inbox."""
-    requests = check_inbox()
-    if not requests:
-        log.info("No new requests in inbox")
-        return
-
-    soul = load_soul()
-    soul_ctx = format_soul(soul)
-
-    for req in requests:
-        title = req["title"]
-        body = req["body"]
-        slug = _slugify(title)
-
-        log.info("Processing request: %s → %s", title, slug)
-
-        # Smart detection: does the user want to write from an existing outline?
-        outline_ref = _find_outline(title, body)
-        if outline_ref:
-            plan_path, writing_type = outline_ref
-            log.info("Found outline: %s [%s]", plan_path, writing_type)
-            start_from_plan(title, plan_path, writing_type)
-        elif _is_writing_request(body):
-            # Writing tasks go to artifacts/writings/
-            writing_ws = _WRITINGS_OUTPUT / slug
-            writing_ws.mkdir(parents=True, exist_ok=True)
-            start_project(title, body, writing_ws)
-        else:
-            # Non-writing: Claude with tools handles it directly
-            workspace = WORKSPACE_DIR / slug
-            workspace.mkdir(parents=True, exist_ok=True)
-            prompt = respond_prompt(soul_ctx, title, body, str(workspace))
-            result = claude_act(prompt, cwd=workspace)
-
-            if not result:
-                log.error("Sub-agent returned empty for '%s'", title)
-                continue
-
-            (workspace / "agent_output.md").write_text(result, encoding="utf-8")
-
-            summary_path = workspace / "summary.txt"
-            summary = summary_path.read_text(encoding="utf-8").strip() if summary_path.exists() else result[:500]
-
-            create_note(
-                NOTES_OUTPUT_FOLDER,
-                f"Done: {title}",
-                f"{summary}\n\nFull output in: {workspace}",
-            )
-        log.info("Done: %s", title)
 
 
 # ---------------------------------------------------------------------------
@@ -793,12 +818,6 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     mira_briefings = ARTIFACTS_DIR / "briefings"
     mira_briefings.mkdir(parents=True, exist_ok=True)
     (mira_briefings / f"{today}{suffix}.md").write_text(briefing, encoding="utf-8")
-
-    # 5. Push briefing to Apple Notes (skip if already pushed one today — user doesn't need every one)
-    today_briefing_count = load_state().get(f"explore_count_{today}", 0)
-    if today_briefing_count <= 1:  # only push the first briefing of the day
-        slot_label = f" ({slot_name})" if slot_name else ""
-        create_note(NOTES_BRIEFING_FOLDER, f"Briefing {today}{slot_label}", briefing)
 
     # Append briefing to daily digest (single item per day, not per explore slot)
     try:
@@ -1180,7 +1199,7 @@ def do_analyst(slot: str = ""):
     item_id = f"feed_market_{today.replace('-', '')}_{slot or '0000'}"
     title = f"{'开市前' if session_type == 'pre-market' else '收市后'}市场分析 {today}"
     if not bridge.item_exists(item_id):
-        bridge.create_item(item_id, "feed", title, result[:5000],
+        bridge.create_item(item_id, "feed", title, result,
                           tags=["market", "analyst", session_type])
         bridge.update_status(item_id, "done")
 
@@ -1274,12 +1293,6 @@ def do_reflect():
         if output:
             (project_dir / "output.md").write_text(output, encoding="utf-8")
             log.info("Self-initiated project completed: %s", project_slug)
-            create_note(
-                NOTES_OUTPUT_FOLDER,
-                f"Self: {project_slug}",
-                output[:2000],
-            )
-
     # --- Self-evaluation: score this reflection ---
     try:
         from evaluator import evaluate_reflect, record_event, compute_growth_velocity
@@ -1458,13 +1471,19 @@ def do_journal():
     # Copy to briefings dir so iOS can read it (with verification)
     _copy_to_briefings(f"{today}_journal.md", journal_content)
 
-    # Append journal to daily digest
+    # Push journal as standalone feed item (visible in home)
     try:
-        _append_to_daily_feed("mira", "Daily Journal", journal_content,
-                             source="journal", tags=["mira", "journal"])
-        log.info("Journal appended to daily digest")
+        bridge = Mira()
+        item_id = f"feed_journal_{today.replace('-', '')}"
+        if not bridge.item_exists(item_id):
+            bridge.create_item(item_id, "feed",
+                              f"Mira's Day Summary {today}",
+                              journal_content,
+                              tags=["mira", "journal", "summary"])
+            bridge.update_status(item_id, "done")
+        log.info("Journal pushed as standalone feed item")
     except Exception as e:
-        log.warning("Failed to append journal to digest: %s", e)
+        log.warning("Failed to push journal feed item: %s", e)
 
     # --- Self-evaluation: score this journal ---
     try:
@@ -1520,6 +1539,205 @@ def do_journal():
     state = load_state()
     state[f"journal_{today}"] = datetime.now().isoformat()
     save_state(state)
+
+
+# ---------------------------------------------------------------------------
+# Daily photo edit — pick, edit, push to Home for WA feedback at 07:00
+# ---------------------------------------------------------------------------
+
+DAILY_PHOTO_TIME = time(7, 0)
+
+
+def should_daily_photo() -> bool:
+    """Check if it's time for the daily photo edit (once per day, at 07:00)."""
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), DAILY_PHOTO_TIME)
+    delta = (now - scheduled).total_seconds() / 60
+    if delta < 0 or delta > 60:
+        return False
+    state = load_state()
+    return not state.get(f"daily_photo_{now.strftime('%Y-%m-%d')}")
+
+
+def do_daily_photo():
+    """Pick the best unprocessed RAW, edit it, push to Home feed for feedback."""
+    import subprocess as _sp
+    log.info("Starting daily photo edit")
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_compact = today.replace("-", "")
+
+    # Mark as done early to avoid re-trigger
+    state = load_state()
+    state[f"daily_photo_{today}"] = datetime.now().isoformat()
+    save_state(state)
+
+    # Run daily_edit.py with python3.12 (needs torch for scorer)
+    photo_dir = Path(__file__).resolve().parent.parent / "photo"
+    python312 = "/opt/homebrew/bin/python3.12"
+    try:
+        proc = _sp.run(
+            [python312, str(photo_dir / "daily_edit.py")],
+            capture_output=True, text=True, timeout=300,
+            cwd=str(photo_dir),
+        )
+        if proc.returncode != 0:
+            log.error("daily_edit.py failed: %s", proc.stderr[-500:] if proc.stderr else "no stderr")
+            return
+        result = json.loads(proc.stdout)
+    except _sp.TimeoutExpired:
+        log.error("daily_edit.py timed out (300s)")
+        return
+    except (json.JSONDecodeError, Exception) as e:
+        log.error("Daily photo edit failed: %s", e)
+        return
+
+    if result.get("status") != "completed":
+        log.warning("Daily photo: %s", result.get("message", "no candidates"))
+        return
+
+    # Build feed message
+    output_path = result.get("output", "")
+    raw_name = Path(result.get("raw", "unknown")).stem
+    score = result.get("score", 0)
+    analysis = result.get("params", {}).get("analysis", {})
+
+    scene = analysis.get("scene_type", "")
+    mood = analysis.get("mood_target", "")
+    issues = analysis.get("key_issues", [])
+
+    msg_parts = [f"Today's photo: **{raw_name}**"]
+    if scene:
+        msg_parts.append(f"Scene: {scene}")
+    if mood:
+        msg_parts.append(f"Mood: {mood}")
+    if issues:
+        msg_parts.append("Key adjustments: " + "; ".join(issues[:3]))
+    msg_parts.append(f"\nModel score: {score:.1f}/10")
+    if output_path:
+        msg_parts.append(f"Output: `{Path(output_path).name}`")
+    msg_parts.append(
+        "\n---\n"
+        "Reply with your score (0-10) and any feedback.\n"
+        "e.g. \"6 — too warm, shadows need more detail\""
+    )
+
+    content = "\n".join(msg_parts)
+
+    # Create as discussion item so user can reply
+    bridge = Mira(MIRA_DIR)
+    item_id = f"photo_daily_{today_compact}"
+    bridge.create_item(
+        item_id=item_id,
+        item_type="feed",
+        title=f"Daily Photo: {raw_name}",
+        first_message=content,
+        sender="agent",
+        tags=["photo", "daily", "feedback"],
+        origin="agent",
+    )
+    # Set status to needs-input so it shows in the attention banner
+    bridge.update_status(item_id, "needs-input")
+
+    # Save result reference for feedback handler
+    photo_state_file = photo_dir / "output" / "daily_active.json"
+    photo_state_file.parent.mkdir(parents=True, exist_ok=True)
+    photo_state_file.write_text(json.dumps({
+        "date": today,
+        "item_id": item_id,
+        "raw": str(result.get("raw", "")),
+        "output": str(output_path),
+        "model_score": score,
+        "params": result.get("params", {}),
+        "wa_score": None,
+        "wa_feedback": None,
+        "rounds": 0,
+    }, ensure_ascii=False, indent=2))
+
+    log.info("Daily photo pushed to Home: %s (score=%.1f)", raw_name, score)
+
+
+def handle_photo_feedback(item_id: str, user_message: str):
+    """Handle user's score/feedback on a daily photo edit.
+
+    Saves to calibration database, optionally triggers re-edit.
+    """
+    photo_dir = Path(__file__).resolve().parent.parent / "photo"
+    active_file = photo_dir / "output" / "daily_active.json"
+    calibration_file = photo_dir / "output" / "calibration_wa_scores.json"
+
+    if not active_file.exists():
+        log.warning("No active daily photo to receive feedback for")
+        return
+
+    active = json.loads(active_file.read_text())
+    if active.get("item_id") != item_id:
+        log.warning("Feedback item_id mismatch: %s vs %s", item_id, active.get("item_id"))
+        return
+
+    # Parse score from message (e.g. "6 — too warm" or "7.5 好多了" or just "8")
+    score_match = re.search(r'(\d+(?:\.\d+)?)', user_message)
+    if not score_match:
+        # No score found — treat as text feedback only
+        bridge = Mira(MIRA_DIR)
+        bridge.append_message(item_id, "agent",
+                              "Got your feedback. Can you also give a score (0-10)?")
+        bridge.update_status(item_id, "needs-input")
+        return
+
+    wa_score = float(score_match.group(1))
+    wa_score = min(10.0, max(0.0, wa_score))
+    feedback_text = user_message.strip()
+
+    # Update active state
+    active["wa_score"] = wa_score
+    active["wa_feedback"] = feedback_text
+    active["rounds"] = active.get("rounds", 0) + 1
+    active_file.write_text(json.dumps(active, ensure_ascii=False, indent=2))
+
+    # Append to calibration database
+    calibration = []
+    if calibration_file.exists():
+        try:
+            calibration = json.loads(calibration_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    entry = {
+        "id": len(calibration) + 1,
+        "file": active.get("output", ""),
+        "raw": active.get("raw", ""),
+        "date": active.get("date", ""),
+        "model_score": active.get("model_score", 0),
+        "wa_score": wa_score,
+        "wa_reason": feedback_text,
+        "params": active.get("params", {}),
+        "round": active["rounds"],
+    }
+    calibration.append(entry)
+    calibration_file.write_text(
+        json.dumps(calibration, ensure_ascii=False, indent=2))
+
+    # Respond
+    model_score = active.get("model_score", 0)
+    delta = wa_score - model_score
+    delta_str = f"+{delta:.1f}" if delta >= 0 else f"{delta:.1f}"
+
+    bridge = Mira(MIRA_DIR)
+    reply = (
+        f"Recorded: **{wa_score}/10** (model predicted {model_score:.1f}, delta {delta_str})\n\n"
+        f"Calibration DB now has {len(calibration)} entries.\n\n"
+    )
+    if wa_score < 5:
+        reply += "Not great. Want me to re-edit with different parameters? Just say what to fix."
+    elif wa_score < 7:
+        reply += "Decent. Reply with adjustments if you want a revision, or I'll move on tomorrow."
+    else:
+        reply += "Nice. Feedback saved for model training."
+
+    bridge.append_message(item_id, "agent", reply)
+    bridge.update_status(item_id, "done")
+    log.info("Photo feedback recorded: wa=%.1f model=%.1f delta=%s (DB size=%d)",
+             wa_score, model_score, delta_str, len(calibration))
 
 
 # ---------------------------------------------------------------------------
@@ -1618,13 +1836,6 @@ def do_daily_report():
         sections.append("\n需要你介入:\n无。")
 
     report = "\n".join(sections)
-
-    # --- Post to Apple Notes "today" folder ---
-    try:
-        create_note(NOTES_TODAY_FOLDER, f"日报 {today}", report)
-        log.info("Daily report posted to Notes '%s'", NOTES_TODAY_FOLDER)
-    except Exception as e:
-        log.error("Failed to post daily report to Notes: %s", e)
 
     # Append daily report to daily digest
     try:
@@ -1866,6 +2077,20 @@ def do_spark_check():
 # IDLE-THINK mode — threshold-driven self-awakening
 # ---------------------------------------------------------------------------
 
+def _should_self_audit() -> bool:
+    """Run self-audit once per day, morning hours only."""
+    now = datetime.now()
+    if not (8 <= now.hour <= 10):  # Only between 8-10 AM
+        return False
+    state = load_state()
+    today = now.strftime("%Y-%m-%d")
+    if state.get(f"self_audit_{today}"):
+        return False
+    state[f"self_audit_{today}"] = now.isoformat()
+    save_state(state)
+    return True
+
+
 def should_idle_think() -> bool:
     """Returns True if emptiness has crossed the threshold and agent is idle.
 
@@ -2008,14 +2233,18 @@ def do_idle_think():
 
     result = ""
 
-    if mode == "question":
-        result = _think_question(soul_ctx, recent_journal)
-    elif mode == "connection":
-        result = _think_connection(soul_ctx, recent_journal)
-    elif mode == "auto_question":
-        result = _think_auto_question(soul_ctx)
-    elif mode == "continuation":
-        result = _think_continuation(soul_ctx)
+    try:
+        if mode == "question":
+            result = _think_question(soul_ctx, recent_journal)
+        elif mode == "connection":
+            result = _think_connection(soul_ctx, recent_journal)
+        elif mode == "auto_question":
+            result = _think_auto_question(soul_ctx)
+        elif mode == "continuation":
+            result = _think_continuation(soul_ctx)
+    except Exception as e:
+        log.warning("idle-think [%s] failed: %s", mode, e)
+        return
 
     if not result:
         log.warning("idle-think [%s]: empty result", mode)
@@ -2545,6 +2774,67 @@ def should_journal() -> bool:
     return not state.get(journal_key)
 
 
+def should_research() -> bool:
+    """Check if it's time for the daily research task."""
+    if not RESEARCH_TOPIC:
+        return False
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), RESEARCH_TIME)
+    delta = (now - scheduled).total_seconds() / 60
+    if not (0 <= delta <= 60):
+        return False
+    state = load_state()
+    key = f"research_{now.strftime('%Y-%m-%d')}"
+    return not state.get(key)
+
+
+def do_research():
+    """Run daily research: web search + summarize + push to feed."""
+    log.info("Starting daily research")
+    today = datetime.now().strftime("%Y-%m-%d")
+    state = load_state()
+
+    soul = load_soul()
+    soul_ctx = format_soul(soul)
+
+    prompt = f"""你是 Mira，做每日技术调研。
+
+## 身份
+{soul_ctx[:600]}
+
+## 今日调研主题
+{RESEARCH_TOPIC}
+
+要求：
+- 用 web search 找到最新的文章、博客、论文
+- 每个发现给出：标题、来源链接、核心要点（2-3句）
+- 最后写一段总结：今天最重要的发现是什么，对 Mira 有什么启发
+- 用中文写，技术术语保持英文
+- Markdown 格式，带链接
+"""
+
+    result = claude_think(prompt, timeout=300, tier="heavy")
+    if not result:
+        log.error("Daily research failed: empty response")
+        return
+
+    # Save to briefings
+    BRIEFINGS_DIR.mkdir(parents=True, exist_ok=True)
+    (BRIEFINGS_DIR / f"{today}_research.md").write_text(result, encoding="utf-8")
+
+    # Push as standalone feed item
+    bridge = Mira()
+    item_id = f"feed_research_{today.replace('-', '')}"
+    if not bridge.item_exists(item_id):
+        bridge.create_item(item_id, "feed", f"Daily Research {today}", result,
+                          tags=["research", "agentic", "daily"])
+        bridge.update_status(item_id, "done")
+
+    state[f"research_{today}"] = True
+    save_state(state)
+    log.info("Daily research complete")
+
+
 def should_analyst() -> str | None:
     """Check if it's time for an analyst briefing. Returns slot label or None.
 
@@ -2706,13 +2996,19 @@ def do_check_comments():
             for r in replies:
                 log.info("  %s on '%s': %s",
                          r["comment_name"], r["post_title"], r["reply"][:80])
-            # Notify bridge
-            bridge = Mira()
-            summary = f"回复了 {len(replies)} 条 Substack 评论:\n"
-            for r in replies:
-                summary += f"- {r['comment_name']} on \"{r['post_title']}\": {r['reply'][:60]}\n"
         else:
             log.info("No new comments on own posts")
+
+        # Also check Note replies
+        from notes import check_and_reply_note_comments
+        note_replies = check_and_reply_note_comments()
+        if note_replies:
+            log.info("Replied to %d Note comments", len(note_replies))
+            for r in note_replies:
+                log.info("  %s on note %s: %s",
+                         r["commenter"], r["note_id"], r["reply"][:80])
+        else:
+            log.info("No new Note comments")
     except Exception as e:
         log.error("Comment check failed: %s", e)
 
@@ -3063,9 +3359,6 @@ def cmd_run():
     except Exception as e:
         log.error("Mira failed: %s", e)
 
-    # Apple Notes inbox — lightweight check only — CRITICAL PATH
-    do_respond()
-
     # Timing guard: skip non-critical checks if cycle already > 8s
     _elapsed = _time.monotonic() - _cycle_start
     if _elapsed < 8:
@@ -3098,6 +3391,9 @@ def cmd_run():
 
     # Reap stale PID files (hourly) — prevents stuck tasks
     _reap_stale_pids()
+
+    # --- Auto-publish approved articles when cooldown clears ---
+    _check_pending_publish()
 
     # --- All heavy work below runs in background processes ---
 
@@ -3133,12 +3429,24 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "daily-report",
         ])
 
+    # Daily photo edit — pick, edit, push for WA feedback
+    if should_daily_photo():
+        _dispatch_background("daily-photo", [
+            sys.executable, str(Path(__file__).resolve()), "daily-photo",
+        ])
+
     # Analyst — dual schedule (pre-market + post-market)
     analyst_slot = should_analyst()
     if analyst_slot:
         _dispatch_background(f"analyst-{analyst_slot}", [
             sys.executable, str(Path(__file__).resolve()), "analyst",
             "--slot", analyst_slot,
+        ])
+
+    # Daily research
+    if should_research():
+        _dispatch_background("daily-research", [
+            sys.executable, str(Path(__file__).resolve()), "research",
         ])
 
     # 每日哲思
@@ -3180,19 +3488,19 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "notes-cycle",
         ])
 
-    # Podcast — one episode at a time (TTS APIs are rate-limited)
-    _any_audio_running = any(
-        _is_bg_running(f.stem)
-        for f in _BG_PID_DIR.glob("podcast-*.pid")
-    )
-    if not _any_audio_running:
-        podcast_pick = should_podcast()
-        if podcast_pick:
-            lang, slug, title = podcast_pick
-            _dispatch_background(f"podcast-{lang}-{slug}", [
-                sys.executable, str(Path(__file__).resolve()), "podcast",
-                "--lang", lang, "--slug", slug, "--title", title,
-            ])
+    # Podcast — DISABLED (voice quality check, re-enable after intro-mira regen)
+    # _any_audio_running = any(
+    #     _is_bg_running(f.stem)
+    #     for f in _BG_PID_DIR.glob("podcast-*.pid")
+    # )
+    # if not _any_audio_running:
+    #     podcast_pick = should_podcast()
+    #     if podcast_pick:
+    #         lang, slug, title = podcast_pick
+    #         _dispatch_background(f"podcast-{lang}-{slug}", [
+    #             sys.executable, str(Path(__file__).resolve()), "podcast",
+    #             "--lang", lang, "--slug", slug, "--title", title,
+    #         ])
 
     # Proactive thought sharing — message WA when Mira has something worth discussing
     if should_spark_check():
@@ -3206,8 +3514,11 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "idle-think",
         ])
 
-    # Sync artifacts local → iCloud (hourly)
-    _sync_artifacts_to_icloud()
+    # Daily self-audit — scan own logs, run tests, check codebase
+    if _should_self_audit():
+        _dispatch_background("self-audit", [
+            sys.executable, str(Path(__file__).resolve().parent / "self_audit.py"),
+        ])
 
     # Save session context for next cycle
     if _session_new:
@@ -3216,49 +3527,9 @@ def cmd_run():
     log.info("=== Mira Agent sleep ===")
 
 
-# ---------------------------------------------------------------------------
-# Artifacts sync: local → iCloud (hourly)
-# ---------------------------------------------------------------------------
 
-_ARTIFACTS_SYNC_INTERVAL = 3600  # 1 hour
-
-def _sync_artifacts_to_icloud():
-    """Rsync local artifacts to iCloud for iOS app access. Runs at most once per hour."""
-    state = load_state()
-    last_sync = state.get("last_artifacts_sync", "")
-    if last_sync:
-        try:
-            from datetime import datetime
-            elapsed = (datetime.now() - datetime.fromisoformat(last_sync)).total_seconds()
-            if elapsed < _ARTIFACTS_SYNC_INTERVAL:
-                return
-        except ValueError:
-            pass
-
-    local = MIRA_ROOT / "artifacts"
-    icloud = Path(os.path.expanduser(
-        "~/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Artifacts/ang"
-    ))
-    if not local.exists() or not icloud.exists():
-        return
-
-    import subprocess
-    try:
-        for d in ("briefings", "research", "writings", "audio"):
-            src = local / d
-            dst = icloud / d
-            if not src.exists():
-                continue
-            dst.mkdir(parents=True, exist_ok=True)
-            subprocess.run(
-                ["rsync", "-a", "--ignore-existing", f"{src}/", f"{dst}/"],
-                capture_output=True, timeout=60,
-            )
-        state["last_artifacts_sync"] = datetime.now().isoformat()
-        save_state(state)
-        log.debug("Artifacts synced to iCloud")
-    except Exception as e:
-        log.warning("Artifacts sync failed: %s", e)
+# (Artifacts sync removed — iCloud is now the primary artifacts directory.
+#  ARTIFACTS_DIR in config.py points directly to iCloud. No sync needed.)
 
 
 # ---------------------------------------------------------------------------
@@ -3863,8 +4134,6 @@ def main():
         cmd_run()
     elif command == "talk":
         do_talk()
-    elif command == "respond":
-        do_respond()
     elif command == "explore":
         sources = flags.get("sources", "").split(",") if flags.get("sources") else None
         slot = flags.get("slot", "")
@@ -3875,6 +4144,8 @@ def main():
         do_journal()
     elif command == "analyst":
         do_analyst(slot=flags.get("slot", ""))
+    elif command == "research":
+        do_research()
     elif command == "zhesi":
         do_zhesi()
     elif command == "autowrite-check":
@@ -3896,6 +4167,8 @@ def main():
         slug  = flags.get("slug", "")
         title = flags.get("title", slug.replace("-", " ").title())
         run_podcast_episode(lang, slug, title)
+    elif command == "daily-photo":
+        do_daily_photo()
     elif command == "skill-study":
         group_idx = int(flags.get("group", "0"))
         do_skill_study(group_idx=group_idx)

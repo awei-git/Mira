@@ -331,7 +331,7 @@ def pick_and_edit(footage_dir: Path, output_dir: Path = None,
     from scorer import AestheticScorer
 
     if output_dir is None:
-        output_dir = Path.home() / "Sandbox/Mira/artifacts/photos"
+        from config import ARTIFACTS_DIR; output_dir = ARTIFACTS_DIR / "photos"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     raw_exts = {".arw", ".cr2", ".cr3", ".nef", ".dng", ".raf"}

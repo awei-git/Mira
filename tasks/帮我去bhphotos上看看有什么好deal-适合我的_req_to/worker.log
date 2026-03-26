@@ -1,8 +1,0 @@
-2026-03-23 13:11:02,190 [INFO] Worker started: task=req_todo_33503cf0 thread=req_todo_33503cf0
-2026-03-23 13:11:02,190 [INFO] Discussion mode detected for task req_todo_33503cf0
-2026-03-23 13:11:16,315 [INFO] Episode saved: 2026-03-23_1311_todo-帮我去bhphotos上看看有什么好deal-适合我的.md (2 messages)
-2026-03-23 13:11:16,379 [INFO] Auto-flush saved to flush_2026-03-23_1311.md
-2026-03-23 13:12:31,104 [ERROR] Ollama embed failed: HTTP Error 500: Internal Server Error
-2026-03-23 13:12:31,122 [INFO] Rebuilt semantic memory: 1803 chunks embedded
-2026-03-23 13:12:31,125 [INFO] Discussion response (64 chars): 你在找什么类别的东西？B&H 卖的范围很宽——相机、镜头、音频设备、显示器、甚至照明。"适合我"这个条件我需要更多信息才能判断。
-2026-03-23 13:12:31,125 [INFO] Worker exiting (discussion)

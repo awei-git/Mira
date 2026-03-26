@@ -33,12 +33,11 @@ from datetime import datetime
 from pathlib import Path
 
 from config import (
-    WORKSPACE_DIR, NOTES_INBOX_FOLDER, NOTES_OUTPUT_FOLDER,
+    WORKSPACE_DIR,
     MODELS, WRITING_MODELS, REVIEW_MODELS, WRITING_CRITERIA,
     MIN_REVIEW_ROUNDS, CLAUDE_TIMEOUT_PLAN,
 )
 from sub_agent import model_think, claude_think
-from notes_bridge import create_note, fetch_notes
 from soul_manager import load_soul, format_soul
 from prompts import (
     analyze_writing_prompt, plan_propose_prompt, plan_critique_prompt,
@@ -124,8 +123,8 @@ def start_project(title: str, body: str, workspace: Path):
         f"{merged}\n\n---\n\n"
         f"请审阅并编辑上面的计划。完成后将 Status 改为 done。"
     )
-    create_note(NOTES_INBOX_FOLDER, f"计划: {title}", note_body)
-    log.info("Plan posted for user review: %s", title)
+# REMOVED:     create_note(f"计划: {title}", note_body)
+# REMOVED:     log.info("Plan posted for user review: %s", title)
 
 
 def _analyze(body: str) -> dict:
@@ -250,9 +249,9 @@ def _on_plan_approved(ws: Path, p: dict, plan_text: str) -> str:
         f"请在下方写反馈，完成后将 Status 改为 done。\n"
         f"写 \"完成\" 表示满意，可以定稿。"
     )
-    create_note(NOTES_INBOX_FOLDER, f"初稿: {title}", note_body)
-
-    log.info("Draft posted for feedback: %s (v%d)", title, v)
+# REMOVED:     create_note(f"初稿: {title}", note_body)
+# REMOVED: 
+# REMOVED:     log.info("Draft posted for feedback: %s (v%d)", title, v)
     return "await_feedback"
 
 
@@ -312,9 +311,9 @@ def _on_feedback(ws: Path, p: dict, feedback: str) -> str:
         f"请在下方写反馈，完成后将 Status 改为 done。\n"
         f"写 \"完成\" 表示满意，可以定稿。"
     )
-    create_note(NOTES_INBOX_FOLDER, f"初稿: {title}", note_body)
-
-    log.info("Revised draft posted: %s (v%d)", title, v)
+# REMOVED:     create_note(f"初稿: {title}", note_body)
+# REMOVED: 
+# REMOVED:     log.info("Revised draft posted: %s (v%d)", title, v)
     return "await_feedback"
 
 
@@ -354,11 +353,6 @@ def _finalize(ws: Path, p: dict) -> str:
     p["phase"] = "done"
     _save_project(ws, p)
 
-    create_note(
-        NOTES_OUTPUT_FOLDER,
-        f"完成: {title}",
-        f"'{title}' 已定稿 (v{v})。\n\n{final_text[:3000]}",
-    )
     log.info("Project finalized: %s (v%d)", title, v)
 
     # --- Self-iteration: extract craft skills from finished article ---
@@ -562,7 +556,7 @@ def check_writing_responses() -> list[dict]:
     if not active:
         return []
 
-    notes = fetch_notes(NOTES_INBOX_FOLDER)
+    notes = []  # Apple Notes removed
     if not notes:
         return []
 
@@ -833,9 +827,9 @@ def start_from_plan(title: str, plan_path: str, writing_type: str = "novel"):
         f"请在下方写反馈，完成后将 Status 改为 done。\n"
         f"写 \"完成\" 表示满意，可以定稿。"
     )
-    create_note(NOTES_INBOX_FOLDER, f"初稿: {title}", note_body)
-
-    log.info("Draft posted for feedback: %s", title)
+# REMOVED:     create_note(f"初稿: {title}", note_body)
+# REMOVED: 
+# REMOVED:     log.info("Draft posted for feedback: %s", title)
 
 
 # ---------------------------------------------------------------------------

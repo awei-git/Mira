@@ -11,6 +11,8 @@ import argparse
 import json
 import logging
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -45,16 +47,57 @@ _SUPER_SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 _SUPER_SKILLS_INDEX = _SUPER_SKILLS_DIR / "index.json"
 
 
-def _load_super_skills() -> str:
-    """Load all super-agent orchestration skills as a single context block."""
+def _load_super_skills(task_content: str = "") -> str:
+    """Load super-agent orchestration skills, filtered by relevance to the task.
+
+    If task_content is provided, only loads skills whose tags or description
+    overlap with task keywords. Always loads 'task-routing' and 'intent-inference'
+    as baseline skills. Falls back to loading all skills if no filtering match.
+    """
     if not _SUPER_SKILLS_INDEX.exists():
         return ""
     try:
         index = json.loads(_SUPER_SKILLS_INDEX.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return ""
+
+    # Always-load skills (core orchestration)
+    _ALWAYS_LOAD = {"task-routing-intelligence", "intent-inference"}
+
+    if task_content:
+        lower = task_content.lower()
+        selected = []
+        for entry in index:
+            fname = entry.get("file", "")
+            tags = entry.get("tags", [])
+            desc = entry.get("description", "").lower()
+            # Always-load skills
+            if any(al in fname for al in _ALWAYS_LOAD):
+                selected.append(entry)
+                continue
+            # Check if any tag or description keyword appears in task
+            tag_match = any(t.lower() in lower for t in tags)
+            desc_words = set(desc.split())
+            content_words = set(lower.split())
+            desc_match = len(desc_words & content_words) >= 2
+            # Multi-step detection
+            multi_kw = ["步", "step", "然后", "先", "再", "pipeline", "多步"]
+            multi_match = "multi-step" in fname and any(k in lower for k in multi_kw)
+            # Synthesis detection
+            synth_kw = ["综合", "synthesize", "merge", "combine", "汇总"]
+            synth_match = "synthesis" in fname and any(k in lower for k in synth_kw)
+
+            if tag_match or desc_match or multi_match or synth_match:
+                selected.append(entry)
+
+        # Fallback: if filtering matched nothing beyond always-load, load all
+        if len(selected) <= len(_ALWAYS_LOAD):
+            selected = index
+    else:
+        selected = index
+
     sections = []
-    for entry in index:
+    for entry in selected:
         skill_file = _SUPER_SKILLS_DIR / entry.get("file", "")
         if skill_file.exists():
             try:
@@ -113,6 +156,41 @@ def _emit_status(task_id: str, text: str, icon: str = "gear"):
             )
         except (json.JSONDecodeError, OSError):
             pass
+
+
+class _Heartbeat:
+    """Background heartbeat for long-running tasks — emits status every 60s."""
+
+    def __init__(self, task_id: str, interval: int = 60):
+        self._task_id = task_id
+        self._interval = interval
+        self._start = time.time()
+        self._timer = None
+        self._running = False
+
+    def start(self):
+        self._running = True
+        self._schedule()
+
+    def stop(self):
+        self._running = False
+        if self._timer:
+            self._timer.cancel()
+
+    def _schedule(self):
+        if not self._running:
+            return
+        self._timer = threading.Timer(self._interval, self._tick)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _tick(self):
+        if not self._running:
+            return
+        elapsed = int(time.time() - self._start)
+        mins = elapsed // 60
+        _emit_status(self._task_id, f"Still working... ({mins}m elapsed)", "hourglass")
+        self._schedule()
 
 
 def _load_exec_history(workspace: Path) -> str:
@@ -317,6 +395,77 @@ def load_thread_memory(thread_id: str) -> str:
     if mem_file.exists():
         return mem_file.read_text(encoding="utf-8")
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Conversation compression — reduce token usage for long histories
+# ---------------------------------------------------------------------------
+
+_COMPRESS_THRESHOLD = 3000  # chars above which we compress
+
+def compress_conversation(conversation: str, max_chars: int = 2000) -> str:
+    """Compress a long conversation history to fit within token budget.
+
+    Strategy:
+    1. If short enough, return as-is.
+    2. Keep the first message (original request) and last 3 messages verbatim.
+    3. Summarize the middle messages into a compact block.
+    Uses local LLM (claude_think) for summarization to avoid wasting API tokens.
+    Falls back to truncation if LLM call fails.
+    """
+    if not conversation or len(conversation) <= _COMPRESS_THRESHOLD:
+        return conversation
+
+    lines = conversation.strip().split("\n")
+    # Find message boundaries (lines starting with **[)
+    msg_indices = [i for i, l in enumerate(lines) if l.startswith("**[")]
+
+    if len(msg_indices) <= 4:
+        # Few messages — just truncate long ones
+        return _truncate_messages(conversation, max_chars)
+
+    # Keep first message + last 3 messages verbatim
+    first_end = msg_indices[1] if len(msg_indices) > 1 else len(lines)
+    last_start = msg_indices[-3]
+
+    first_msg = "\n".join(lines[:first_end])
+    middle = "\n".join(lines[first_end:last_start])
+    last_msgs = "\n".join(lines[last_start:])
+
+    if len(middle) < 500:
+        # Middle is short enough, just combine
+        return f"{first_msg}\n{middle}\n{last_msgs}"
+
+    # Try LLM compression of the middle
+    try:
+        summary = claude_think(
+            f"Summarize this conversation excerpt in 3-5 bullet points. "
+            f"Focus on decisions made, key information exchanged, and task progress. "
+            f"Be concise.\n\n{middle[:3000]}",
+            timeout=60
+        )
+        if summary and len(summary) < len(middle):
+            compressed_middle = f"\n*[{len(msg_indices) - 4} earlier messages summarized]*\n{summary}\n"
+            result = f"{first_msg}\n{compressed_middle}\n{last_msgs}"
+            if len(result) <= max_chars * 1.5:
+                return result
+    except Exception as e:
+        log.warning("Conversation compression LLM failed: %s", e)
+
+    # Fallback: hard truncation
+    return _truncate_messages(conversation, max_chars)
+
+
+def _truncate_messages(conversation: str, max_chars: int) -> str:
+    """Simple truncation: keep beginning and end of conversation."""
+    if len(conversation) <= max_chars:
+        return conversation
+    half = max_chars // 2
+    return (
+        conversation[:half]
+        + f"\n\n... ({len(conversation) - max_chars} chars omitted) ...\n\n"
+        + conversation[-half:]
+    )
 
 
 def smart_classify(content: str, summary: str = "") -> list[str]:
@@ -826,6 +975,7 @@ def main():
 
     # Load conversation history and execution history for context
     conversation = load_task_conversation(args.task_id)
+    conversation = compress_conversation(conversation)
     exec_history = _load_exec_history(workspace)
 
     # --- Check for pending plan (resume after user confirmation) ---
@@ -866,6 +1016,12 @@ def main():
 
     # --- Check for approval (user confirms a pending action) ---
     if _is_approval(msg_content):
+        # Check for autowrite approval — schedule publish, don't re-preview
+        if args.task_id.startswith("autowrite_"):
+            _handle_autowrite_approval(workspace, args.task_id)
+            log.info("Worker exiting (autowrite approval → pending publish)")
+            return
+
         pending_plan_file = workspace / "pending_plan.json"
         if pending_plan_file.exists():
             log.info("Approval detected, resuming pending plan")
@@ -904,6 +1060,13 @@ def main():
             return
         log.warning("Edit handler returned empty, falling through to task planning")
 
+    # --- Fixed startup: read progress from prior runs ---
+    progress = ""
+    progress_file = workspace / "progress.md"
+    if progress_file.exists():
+        progress = progress_file.read_text(encoding="utf-8")
+        log.info("Loaded progress.md (%d chars) from prior run", len(progress))
+
     # --- Proactive recall: search memory for relevant prior context ---
     prior_context = ""
     try:
@@ -915,11 +1078,20 @@ def main():
 
     # --- Plan and execute via LLM ---
     _emit_status(args.task_id, "Planning...", "list.bullet.clipboard")
+
+    # Inject progress into context so planner knows what was done before
+    planning_context = prior_context
+    if progress:
+        planning_context = f"## Progress from prior session\n{progress}\n\n{planning_context}"
+
     plan = _plan_task(msg_content, conversation=conversation, exec_history=exec_history,
-                      prior_context=prior_context)
+                      prior_context=planning_context)
     log.info("Plan: %s", plan)
 
     _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id)
+
+    # --- Write progress.md for next session ---
+    _write_progress(workspace, args.task_id, msg_content)
 
     log.info("Worker exiting")
 
@@ -957,7 +1129,7 @@ If a previous round already produced content, reference it in your plan (e.g. us
     else:
         conversation_context = f"User request: {content[:500]}"
 
-    super_skills = _load_super_skills()
+    super_skills = _load_super_skills(content)
     skills_section = f"\n\n## Orchestration Skills\n{super_skills}\n" if super_skills else ""
 
     prompt = f"""You are a task planner and orchestrator. Decompose this user request into ordered execution steps.{skills_section}
@@ -972,7 +1144,8 @@ If a previous round already produced content, reference it in your plan (e.g. us
 - photo: Photo editing — analyze photos, learn editing style, apply edits, generate Lightroom presets/LUTs, batch process
 - podcast: Generate audio from articles (TTS) AND publish podcast episodes to RSS feed (Apple Podcasts, Xiaoyuzhou). Handles the full podcast pipeline internally — do NOT use publish for anything podcast-related.
 - secret: PRIVATE MODE — runs entirely on local LLM (Ollama), nothing leaves this machine. Route here for: personal finance, health, legal, passwords, family matters, 隐私敏感内容, anything the user explicitly marks as private/secret/隐私/私密
-- surfer: Browser automation — navigate websites, fill forms, click buttons, extract data from JS-rendered pages, interact with web apps. Use when the task requires INTERACTING with a website (logging in, filling forms, clicking through flows, scraping dynamic content) rather than just reading a static page.
+- socialmedia: Substack operations — check notes, read/reply to comments, manage followers, post notes, check engagement stats, fix broken links. Has direct API access to Substack.
+- surfer: Browser automation — navigate non-Substack websites, fill forms, click buttons, extract data from JS-rendered pages.
 - general: Answer questions, search, analyze, code, file operations, anything else (has web browsing for research tasks)
 - discussion: The user wants to CHAT, not execute a task. Casual conversation, opinions, reflections, "what do you think", philosophical questions, sharing thoughts. Use this when the message is conversational in nature and doesn't ask for any concrete action.
 - clarify: Ask the user a question ONLY if the request is genuinely ambiguous and cannot be inferred
@@ -983,8 +1156,7 @@ If a previous round already produced content, reference it in your plan (e.g. us
 - Write instructions tailored to each agent — not just a copy of the user's words.
 - Match instruction language to the user's language.
 - NEVER ask for confirmation before starting. AVOID clarify unless truly impossible to infer.
-- CRITICAL ROUTING RULE: "podcast publish", "upload audio", "发布podcast", "podcast episode" → ALWAYS use podcast agent, NEVER publish agent.
-- publish agent is EXCLUSIVELY for Substack text articles. If you're unsure whether to use podcast or publish for audio content — use podcast.
+- Prefer specialized agents over general-purpose ones. surfer (browser) is a last resort — only use it when no other agent can handle the task.
 
 ## Model Tier Selection
 Each step must include a "tier" field:
@@ -1023,7 +1195,8 @@ JSON:"""
             if match:
                 steps = json.loads(match.group())
                 # Validate
-                valid_agents = {"briefing", "writing", "publish", "analyst", "video", "photo", "podcast", "math", "secret", "surfer", "general", "discussion", "clarify"}
+                from agent_registry import get_registry
+                valid_agents = get_registry().get_valid_agents() | {"clarify"}  # clarify is special, not in registry
                 validated = []
                 for s in steps:
                     if isinstance(s, dict) and s.get("agent") in valid_agents:
@@ -1043,6 +1216,19 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
     is_multi = len(plan) > 1
     round_num = _get_round_num(workspace)
 
+    # Start heartbeat for long tasks (emits status every 60s)
+    heartbeat = _Heartbeat(task_id)
+    heartbeat.start()
+    try:
+        _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
+                           prev_output, is_multi, round_num)
+    finally:
+        heartbeat.stop()
+
+
+def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
+                        prev_output, is_multi, round_num):
+    """Inner loop extracted so heartbeat can be stopped in finally block."""
     for i, step in enumerate(plan):
         agent = step["agent"]
         instruction = step["instruction"]
@@ -1063,6 +1249,7 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
             "video": ("Processing video...", "film"),
             "photo": ("Editing photo...", "camera"),
             "podcast": ("Generating audio...", "waveform"),
+            "socialmedia": ("Checking Substack...", "at"),
             "surfer": ("Browsing...", "globe"),
             "discussion": ("Thinking...", "bubble.left.and.text.bubble.right"),
             "general": ("Working...", "gear"),
@@ -1074,6 +1261,7 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
             status_text = f"Step {i+1}/{len(plan)}: {status_text}"
         _emit_status(task_id, status_text, status_icon)
 
+        # Special case: clarify (not a real agent, just asks user)
         if agent == "clarify":
             (workspace / "output.md").write_text(instruction, encoding="utf-8")
             _write_result(workspace, task_id, "needs-input", instruction,
@@ -1081,40 +1269,19 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
             _append_exec_log(workspace, round_num, "clarify", "needs-input", instruction)
             return
 
-        elif agent == "briefing":
-            _handle_briefing(workspace, task_id, instruction, sender, thread_id)
+        # Registry-based dispatch: load handler dynamically from manifest
+        from agent_registry import get_registry
+        registry = get_registry()
 
-        elif agent == "writing":
-            _handle_writing(workspace, task_id, instruction, sender, thread_id)
-
-        elif agent == "publish":
-            _handle_publish(workspace, task_id, instruction, sender, thread_id)
-
-        elif agent == "analyst":
-            _handle_analyst(workspace, task_id, instruction, sender, thread_id, tier=tier)
-
-        elif agent == "video":
-            _handle_video(workspace, task_id, instruction, sender, thread_id)
-
-        elif agent == "photo":
-            _handle_photo(workspace, task_id, instruction, sender, thread_id)
-
-        elif agent == "podcast":
-            _handle_podcast(workspace, task_id, instruction, sender, thread_id)
-
-        elif agent == "math":
-            _handle_math(workspace, task_id, instruction, sender, thread_id, tier=tier)
-
-        elif agent == "secret":
-            _handle_secret(workspace, task_id, instruction, sender, thread_id)
-
-        elif agent == "surfer":
-            _handle_surfer(workspace, task_id, instruction, sender, thread_id)
-
-        elif agent == "discussion":
-            _handle_discussion_agent(workspace, task_id, instruction, sender, thread_id, tier=tier)
-
-        else:
+        try:
+            handler_fn = registry.load_handler(agent)
+            handler_fn(workspace, task_id, instruction, sender, thread_id)
+        except KeyError:
+            # Agent not in registry — fall back to general handler
+            log.warning("Agent '%s' not in registry, falling back to general", agent)
+            _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+        except Exception as e:
+            log.error("Registry handler for '%s' failed: %s — falling back to general", agent, e)
             _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
 
         # Check if this step failed (result.json says error)
@@ -1570,12 +1737,10 @@ def _handle_podcast(workspace: Path, task_id: str, content: str,
                     sender: str, thread_id: str):
     """Handle audio/podcast generation requests via the podcast agent."""
     try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "podcast_handler", str(_AGENTS_DIR / "podcast" / "handler.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        podcast_handle = mod.handle
+        podcast_dir = str(_AGENTS_DIR / "podcast")
+        if podcast_dir not in sys.path:
+            sys.path.insert(0, podcast_dir)
+        from handler import handle as podcast_handle
 
         log.info("Running podcast pipeline for task %s", task_id)
         summary = podcast_handle(workspace, task_id, content, sender, thread_id)
@@ -1635,8 +1800,8 @@ def _handle_article_comment(workspace: Path, task_id: str, thread_id: str,
     soul = load_soul()
     soul_context = format_soul(soul)
 
-    # Load conversation history for this comment thread (deduplicated)
-    conversation = load_task_conversation(task_id)
+    # Load conversation history for this comment thread (deduplicated + compressed)
+    conversation = compress_conversation(load_task_conversation(task_id))
     conv_context = f"\n\n## 过往对话（同一个thread）\n{conversation}" if conversation else ""
 
     prompt = f"""{soul_context}
@@ -1805,6 +1970,27 @@ def _handle_secret(workspace: Path, task_id: str, content: str,
 def _handle_discussion_agent(workspace: Path, task_id: str, content: str,
                              sender: str, thread_id: str, tier: str = "light"):
     """Handle conversational messages via discussion mode."""
+
+    # Soul question: user replied to daily question — record answer, close, don't generate
+    if "soul_question" in task_id:
+        log.info("Soul question reply from user: %s", content[:80])
+        try:
+            from pathlib import Path as _P
+            soul_dir = _P(__file__).resolve().parent.parent / "shared" / "soul"
+            history_file = soul_dir / "soul_questions_history.json"
+            history = json.loads(history_file.read_text()) if history_file.exists() else []
+            history.append({
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "user_answer": content[:500],
+                "task_id": task_id,
+            })
+            history_file.write_text(json.dumps(history, ensure_ascii=False, indent=2))
+        except Exception as e:
+            log.warning("Failed to save soul question answer: %s", e)
+        _write_result(workspace, task_id, "done",
+                      "收到你的回答。已记录。", tags=["discussion", "soul-question"])
+        return
+
     # Load the task data for handle_discussion
     task_data = {"content": content, "sender": sender}
     item_file = ITEMS_DIR / f"{task_id}.json"
@@ -1816,13 +2002,46 @@ def _handle_discussion_agent(workspace: Path, task_id: str, content: str,
 
     response = handle_discussion(task_data, workspace, task_id, thread_id, tier=tier)
     if response:
-        _write_result(workspace, task_id, "done", response, tags=["discussion"])
-        log.info("Discussion task %s completed (tier=%s)", task_id, tier)
-        if thread_id:
-            _update_thread_memory(thread_id, content, response)
+        garbage = _validate_completion(workspace, task_id, response)
+        if garbage:
+            log.warning("Discussion %s failed validation: %s", task_id, garbage)
+            _write_result(workspace, task_id, "error",
+                          f"Output quality check failed: {garbage}")
+        else:
+            _write_result(workspace, task_id, "done", response, tags=["discussion"])
+            log.info("Discussion task %s completed (tier=%s)", task_id, tier)
+            if thread_id:
+                _update_thread_memory(thread_id, content, response)
     else:
         _write_result(workspace, task_id, "error", "对话返回空结果")
         log.error("Discussion task %s failed: empty response", task_id)
+
+
+# ---------------------------------------------------------------------------
+# Social media handler — Substack notes, comments, engagement
+# ---------------------------------------------------------------------------
+
+def _handle_socialmedia(workspace: Path, task_id: str, content: str,
+                        sender: str, thread_id: str):
+    """Handle Substack social media tasks via direct API (no browser)."""
+    try:
+        sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
+        from handler import handle as socialmedia_handle
+
+        log.info("Running socialmedia agent for task %s", task_id)
+        result = socialmedia_handle(workspace, task_id, content, sender, thread_id)
+        summary = result if isinstance(result, str) else str(result)
+    except Exception as e:
+        log.error("Socialmedia handler crashed: %s", e)
+        summary = f"Socialmedia task failed: {e}"
+        _write_result(workspace, task_id, "error", summary)
+        return
+
+    if summary:
+        tags = smart_classify(content, summary)
+        _write_result(workspace, task_id, "done", summary, tags=tags)
+    else:
+        _write_result(workspace, task_id, "error", "Socialmedia agent returned empty result")
 
 
 # ---------------------------------------------------------------------------
@@ -1889,20 +2108,160 @@ def _handle_general(workspace: Path, task_id: str, content: str,
         return
 
     if summary:
-        tags = smart_classify(content, summary)
-        _write_result(workspace, task_id, "done", summary, tags=tags)
-        log.info("Task %s completed successfully", task_id)
+        # Validate output quality before marking done
+        garbage = _validate_completion(workspace, task_id, summary)
+        if garbage:
+            log.warning("Task %s output failed validation: %s", task_id, garbage)
+            _write_result(workspace, task_id, "needs-input",
+                          f"任务完成但输出可能有问题：{garbage}。回复 'ok' 接受，或 'retry' 重试。")
+        else:
+            tags = smart_classify(content, summary)
+            _write_result(workspace, task_id, "done", summary, tags=tags)
+            log.info("Task %s completed successfully", task_id)
 
-        if thread_id:
-            _update_thread_memory(thread_id, content, summary)
+            if thread_id:
+                _update_thread_memory(thread_id, content, summary)
 
-        try:
-            try_extract_skill(summary, content)
-        except Exception as e:
-            log.warning("Skill extraction failed: %s", e)
+            try:
+                try_extract_skill(summary, content)
+            except Exception as e:
+                log.warning("Skill extraction failed: %s", e)
     else:
         _write_result(workspace, task_id, "error", "Claude 返回了空结果")
         log.error("Task %s failed: empty response", task_id)
+
+
+def _handle_autowrite_approval(workspace: Path, task_id: str):
+    """Handle approval for an autowrite article — strip metadata, save to pending_publish."""
+    import re as _re
+
+    # Find final.md in the writing artifacts
+    # task_id is like autowrite_invisible_instructions → slug is invisible-instructions
+    slug = task_id.replace("autowrite_", "").replace("_", "-")
+    artifacts_base = Path(MIRA_DIR).parent / "artifacts" / "writings"
+    # Try exact slug, then glob
+    final = None
+    for candidate in [artifacts_base / slug / "final.md",
+                      workspace / "final.md"]:
+        if candidate.exists():
+            final = candidate
+            break
+    if not final:
+        # Search more broadly
+        for d in artifacts_base.iterdir():
+            if d.is_dir() and slug[:10] in d.name:
+                f = d / "final.md"
+                if f.exists():
+                    final = f
+                    break
+
+    if not final:
+        _write_result(workspace, task_id, "error", f"找不到 final.md (slug={slug})")
+        return
+
+    # Strip revision metadata
+    content = final.read_text(encoding="utf-8")
+    content = _re.sub(r'^#\s*修订稿.*?\n', '', content)
+    content = _re.sub(r'^#\s*初稿.*?\n', '', content)
+    content = _re.sub(r'^日期[：:].*?\n', '', content)
+    content = _re.sub(r'^字数[：:].*?\n', '', content)
+    content = _re.sub(r'^基于[：:].*?\n', '', content)
+    content = _re.sub(r'^---\s*\n', '', content)
+    content = content.lstrip('\n')
+
+    # Write cleaned version back
+    final.write_text(content, encoding="utf-8")
+
+    # Extract title from first heading
+    title_match = _re.search(r'^##?\s*(.+)$', content, _re.MULTILINE)
+    title = title_match.group(1).strip() if title_match else slug.replace("-", " ").title()
+
+    # Save to agent state for auto-publish
+    from config import STATE_FILE
+    state = json.loads(STATE_FILE.read_text(encoding="utf-8")) if STATE_FILE.exists() else {}
+    state["pending_publish"] = {
+        "title": title,
+        "subtitle": "",
+        "workspace": str(final.parent),
+        "final_md": "final.md",
+        "approved_at": _utc_iso(),
+        "item_id": task_id,
+        "auto_podcast": True,
+    }
+    tmp = STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.rename(STATE_FILE)
+
+    _write_result(workspace, task_id, "done",
+                  f"已批准发布 '{title}'。冷却期到了自动发，发完自动生成 podcast。")
+    log.info("Autowrite '%s' approved, saved to pending_publish", title)
+
+
+def _write_progress(workspace: Path, task_id: str, user_request: str):
+    """Write progress.md summarizing what was done this session.
+
+    Next session reads this first to understand prior state.
+    """
+    result_file = workspace / "result.json"
+    output_file = workspace / "output.md"
+
+    status = "unknown"
+    summary = ""
+    if result_file.exists():
+        try:
+            r = json.loads(result_file.read_text(encoding="utf-8"))
+            status = r.get("status", "unknown")
+            summary = r.get("summary", "")[:500]
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    output_preview = ""
+    if output_file.exists():
+        try:
+            output_preview = output_file.read_text(encoding="utf-8")[:500]
+        except OSError:
+            pass
+
+    progress = f"""# Progress — {task_id}
+
+## User request
+{user_request[:300]}
+
+## Status: {status}
+
+## Summary
+{summary}
+
+## Output preview
+{output_preview}
+
+## Workspace files
+{', '.join(f.name for f in workspace.iterdir() if f.is_file() and not f.name.startswith('.'))}
+"""
+    (workspace / "progress.md").write_text(progress, encoding="utf-8")
+
+
+_GARBAGE_PATTERNS = [
+    "还在转", "有什么想说的吗", "这条消息长得像系统状态",
+    "summary.txt 已存在", "不需要重新", "两个文件都已存在",
+    "Agent: 空闲", "无需重新执行",
+]
+
+
+def _validate_completion(workspace: Path, task_id: str, summary: str) -> str | None:
+    """Check if task output is actually useful. Returns error message if garbage.
+
+    Only flags truly empty outputs or known garbage patterns.
+    Short but valid responses (confirmations, simple answers) are NOT garbage.
+    """
+    if not summary or len(summary.strip()) == 0:
+        return "Output is completely empty"
+
+    for pattern in _GARBAGE_PATTERNS:
+        if pattern in summary:
+            return f"Output contains garbage pattern: '{pattern}'"
+
+    return None
 
 
 def _write_result(workspace: Path, task_id: str, status: str, summary: str,

@@ -1,66 +1,78 @@
-# Light and Exposure
+# Expose for Recovery
 
-**Tags:** photo, editing, lighting, exposure
+**Tags:** photo, exposure, histogram, ETTR, dynamic-range, sensor-physics
 
-## One-liner
-Light is the medium of photography — its quality, direction, and quantity determine everything about how an image feels before any editing begins.
+## Trigger
+Activate this skill when you must:
+1. Choose what to clip because the scene's dynamic range exceeds your sensor's.
+2. Decide between underexposure (shadow noise) and overexposure (highlight loss).
+3. Diagnose a RAW file that looks wrong in post to find your actual stop count.
+4. Determine if ETTR (Expose to the Right) is still beneficial at high ISO.
+5. Check for single-channel clipping when the luminance histogram looks clean.
 
-## The Problem
-Underexposed photos lose shadow detail permanently. Overexposed photos blow out highlights beyond recovery. But correct exposure is not just "bright enough" — it is a creative decision. The same scene exposed for shadows versus highlights tells two completely different stories. Understanding light means controlling the emotional register of the image at capture and knowing what can (and cannot) be recovered in post.
+Ignore for: white balance, color grading, composition, or scenes that fit within your camera's dynamic range.
 
-## The Pattern
+## Core Asymmetry
+Shadow recovery costs noise. Highlight recovery is impossible. The exchange rate depends on ISO and sensor architecture.
 
-```
-1. ASSESS    — Read the light: direction, quality (hard/soft), color temperature.
-2. METER     — Check the histogram. Expose for the most important tonal range.
-3. TRIANGLE  — Balance aperture, shutter speed, and ISO for the desired look.
-4. PRESERVE  — Protect highlights in-camera; shadows are more recoverable than blown highlights.
-5. SHAPE     — In post, use the histogram and curves to sculpt the tonal range with intention.
-```
+## Workflow
 
-## Techniques
+### Step 1: ETTR (Expose to the Right)
+Default for RAW in any controlled situation:
+1. Take a test shot at metered exposure.
+2. Check the **per-channel** histogram — not combined luminance. Red clips first in warm light; blue clips first in cool light. The combined histogram hides single-channel clipping, which produces color shifts even when luminance looks fine.
+3. If no channel clips, increase exposure +1/3 EV. Reshoot.
+4. Repeat until any single channel begins to clip, then back off 1/3 EV.
+5. The image will look overexposed on the LCD. Ignore it — you pull down in post.
 
-**1. Light quality: hard vs. soft**
-Hard light (direct sun, bare flash) creates sharp shadows with defined edges. It adds drama, texture, and contrast. Soft light (overcast sky, diffused flash, shade) wraps around subjects with gradual shadow transitions. It flatters skin and reduces texture.
-- Portraits: soft light is forgiving. Hard light is dramatic but exposes every flaw.
-- Landscapes: hard light at golden hour creates long shadows and dimension. Midday hard light is flat and harsh.
-- Product: soft, diffused light is standard. Hard light for deliberate shadow play.
-- The key insight: there is no "good" or "bad" light. There is only appropriate or inappropriate light for your intent.
+**Why this works:** Sensors capture linearly. The brightest stop of a 14-bit file holds ~8,192 of 16,384 total levels. The darkest stop holds ~1 level. Exposing right packs data where you have headroom; pulling down is nearly free.
 
-**2. Light direction**
-Where light comes from relative to the subject changes the image fundamentally:
-- **Front light**: Flat, even, few shadows. Safe but dimensionless.
-- **Side light**: Reveals texture and form. The most sculptural and three-dimensional lighting. One side lit, one side in shadow — the face or object gains volume.
-- **Back light**: Creates silhouettes, rim light, and glow. Dramatic and emotional. Exposes lens flare. Meter for the background to get a silhouette; meter for the subject to get a blown-out background with rim glow.
-- **Top light / bottom light**: Rarely flattering for people (under-eye shadows, horror-movie uplighting). Useful for specific moods.
+### Step 2: Know When ETTR Hurts
+ETTR assumes read noise dominates shot noise — true at base ISO, not at high ISO.
 
-**3. The exposure triangle**
-Three variables control exposure, each with a side effect:
-- **Aperture** (f-stop): Controls depth of field. Wide open (f/1.8) = shallow focus, background blur. Stopped down (f/11) = deep focus, everything sharp.
-- **Shutter speed**: Controls motion. Fast (1/1000s) = frozen action. Slow (1/30s or longer) = motion blur, light trails.
-- **ISO**: Controls sensor sensitivity. Low (100) = clean image. High (3200+) = noise/grain.
-- The creative decision: which side effect do you want? Choose that variable first, then balance the other two.
+| ISO range | ETTR benefit | Why |
+|---|---|---|
+| Base (100-200) | ~2 stops cleaner shadows | Read noise dominates; more photons = less relative noise |
+| Mid (400-1600) | ~0.5-1 stop | Shot noise catches up; diminishing returns |
+| High (3200+) | Near zero or negative | Sensor already amplifying; ETTR risks highlights for negligible shadow gain |
 
-**4. Reading the histogram**
-The histogram is a graph of pixel brightness from black (left) to white (right). It is the single most reliable exposure tool — do not trust the LCD screen.
-- **Clipping left**: Shadows crushed to pure black. Detail lost.
-- **Clipping right**: Highlights blown to pure white. Detail lost (and harder to recover than shadows).
-- **Expose to the right (ETTR)**: Push exposure as bright as possible without clipping highlights. This maximizes data in the file and minimizes shadow noise. Pull exposure down in post.
-- **No "correct" histogram shape**: A low-key image should skew left. A high-key image should skew right. A histogram centered in the middle is "safe" but not always correct.
+**Dual-gain / ISO-invariant sensors** (Sony IMX series, many modern mirrorless): A second analog gain stage kicks in at a specific ISO (often 640 or 800), dropping the read noise floor dramatically. Below that threshold: ETTR matters. Above it: protect highlights only — shadow push is nearly free. Find your sensor's inflection point at photonstophotos.net.
 
-**5. Post-processing exposure corrections**
-- **Highlights and shadows sliders**: Recover detail in the extremes. Pull highlights down, push shadows up — but do this with restraint. Over-recovery creates an HDR look that flattens tonal contrast.
-- **Curves**: The precision tool. An S-curve adds contrast (darken shadows, brighten highlights). A reverse-S reduces contrast. Pin the midtones and adjust extremes independently.
-- **Local adjustments**: Dodge (lighten) and burn (darken) specific areas. The oldest darkroom technique. Use it to direct the eye — brighten the subject, darken the edges.
-- **White and black point**: Set the true white and true black of the image. This establishes the full tonal range. An image without a true black often looks washed out.
+### Step 3: Recovery Triage
 
-## When to Use
-- Every photo. Light is not a variable you sometimes consider — it is the material the photograph is made of.
-- Especially critical in: golden hour / blue hour shooting (fleeting light changes fast), indoor/mixed lighting (white balance conflicts), high-contrast scenes (dynamic range decisions), post-processing (knowing what the histogram tells you vs. what you want it to say).
+| Situation | Recovery | Cost |
+|---|---|---|
+| Underexposed shadows, ISO 100 | +3 to +4 stops | Visible noise in deepest shadows; usable with denoise |
+| Underexposed shadows, ISO 3200 | +1 to +2 stops | Heavy noise, color shifts |
+| Crushed blacks (clipped) | 0 | Data gone — flat gray, not detail |
+| Hot highlights (not clipped) | -1 to -1.5 stops | Nearly free — this is hidden headroom |
+| Blown highlights (any channel clipped) | 0 | Irrecoverable. Clipped channels produce color shifts even if luminance looks intact |
+| One channel clipped, others intact | Luminance yes, color no | Desaturated or hue-shifted zone. Clean B&W conversion possible |
 
-## Common Pitfalls
-- **Trusting the LCD**: Camera screens are small and bright. The histogram never lies. Check it.
-- **Blown highlights in post**: Pulling exposure up on an underexposed image recovers detail but adds noise. Pulling exposure down on an overexposed image cannot recover clipped highlights — they are gone.
-- **Flat light = boring light assumption**: Overcast light is incredibly useful for color accuracy, even skin tones, and no harsh shadows. It is a tool, not a limitation.
-- **Over-HDR**: Pushing shadows up and pulling highlights down until everything is the same brightness destroys the natural tonal hierarchy. Shadows exist for a reason — they give form and depth.
-- **Ignoring color temperature of light**: Light has color. Tungsten is warm (orange). Shade is cool (blue). Fluorescent is green. Mixed light sources in one frame create conflicting white balance that is difficult to fix in post.
+**Cost function:** Pushing +2 stops at ISO 100 ≈ correctly-exposed ISO 400 noise. Pushing +2 stops at ISO 1600 ≈ ISO 6400 noise. Recovery is always cheaper at low ISO.
+
+### Step 4: Find Your Actual Headroom
+The camera's rear LCD and its histogram lie — both are generated from the embedded JPEG, not the RAW data. Your RAW file almost always has more highlight headroom than the camera shows.
+
+**How to find it:**
+1. **In-camera:** Enable highlight blinkies ("blinkies"). If only specular highlights blink, you likely have 0.5-1 stop of hidden headroom in RAW. If diffuse surfaces blink, you're genuinely clipped.
+2. **In post:** Pull the highlights slider to -100 in your RAW converter. If detail appears, you had hidden headroom. If it stays white, the data is gone. This is the ground truth — do it once per camera to calibrate your expectations.
+3. **UniWB method** (advanced): Set a custom white balance where R=G=B multipliers are equal (often a very green-looking preset). Now the in-camera histogram reflects the raw channel with the *least* headroom. Ugly on screen, accurate for exposure. Switch back to normal WB for composition.
+4. **Raw-specific tools:** RawDigger or FastRawViewer show the actual sensor data histogram, not the JPEG-derived one. If you shoot high-dynamic-range scenes regularly, these pay for themselves immediately.
+
+**How much hidden headroom to expect:** Most cameras show JPEG clipping 0.3-1.0 stops before RAW clipping. Canon typically ~0.5 stops. Sony/Nikon often ~1 stop. This varies by white balance — tungsten WB gives more blue-channel headroom; daylight WB gives more red-channel headroom.
+
+### Step 5: Difficult Scenes — Quick Reference
+When dynamic range exceeds sensor and you must choose:
+
+| Situation | Action | Reason |
+|---|---|---|
+| Subject in shadow, background blown | Expose for subject | Blown sky is expected; dark faces are rejected |
+| Subject in light, shadows crushed | Let shadows go | Viewers read the lit subject first |
+| No clear priority (even split) | Bracket -2/0/+2 EV | Faster than agonizing; merge or pick best frame |
+| Specular highlights (sun, chrome, water) | Ignore in histogram | They clip in reality — meter diffuse highlights instead |
+
+## Pitfalls
+- **Over-recovery (HDR look):** Pushing shadows AND pulling highlights compresses everything to mid-gray. Shadows give form. Recover selectively, not globally.
+- **Trusting the LCD in bright sun:** Screen reads 1-1.5 stops brighter than the file. Histogram only — and know that even the histogram lies (see Step 4).
+- **Applying base-ISO logic at high ISO:** ETTR at ISO 6400 risks highlights for almost no shadow benefit. Know your sensor's crossover point.

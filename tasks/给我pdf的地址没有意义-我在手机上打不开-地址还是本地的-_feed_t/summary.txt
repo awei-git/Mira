@@ -1,1 +1,0 @@
-修了 Tetra 报告系统的两个问题。第一个：synthesis LLM 超时——把 llm_clients.py 里 critical tier 的路由从「claude-cli 优先」改为「Gemini API 优先，claude-cli 降到最后」，彻底绕开那个 300s subprocess 超时。第二个：本地 PDF 路径问题——从 push.py 的 _generate_briefing_md() 里删掉末尾追加 PDF 路径那几行，并把 bridge item 的 result_path 改为 None；报告内容已完整以 markdown 格式内嵌在消息里，手机上直接可读。

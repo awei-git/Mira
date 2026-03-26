@@ -5,7 +5,22 @@ Reads from config.yml at the project root. Falls back to defaults.
 import json
 import re
 from pathlib import Path
-from datetime import time
+from datetime import datetime as _datetime, time, timezone as _utc_tz
+
+# ---------------------------------------------------------------------------
+# Local timezone — auto-detected from OS, no external dependencies
+# ---------------------------------------------------------------------------
+LOCAL_TZ = _datetime.now().astimezone().tzinfo
+
+
+def now_local() -> _datetime:
+    """Current time as a timezone-aware datetime in the system's local timezone."""
+    return _datetime.now(_utc_tz.utc).astimezone(LOCAL_TZ)
+
+
+def today_local() -> str:
+    """Today's date string (YYYY-MM-DD) in the system's local timezone."""
+    return now_local().strftime("%Y-%m-%d")
 
 # ---------------------------------------------------------------------------
 # Load config.yml  (stdlib-only parser — no PyYAML dependency)
@@ -100,10 +115,6 @@ SOURCES_FILE = MIRA_ROOT / "sources.json"
 
 # Artifacts — subdirectory definitions deferred until iCloud override is applied (see below)
 
-# Apple Notes inbox/outbox (under super agent)
-INBOX_DIR = _AGENTS_DIR / "super" / "notes_inbox"
-OUTBOX_DIR = _AGENTS_DIR / "super" / "notes_outbox"
-
 # Writing resources (frameworks, templates, ideas — lives under writer agent)
 WRITINGS_DIR = _AGENTS_DIR / "writer"
 
@@ -137,7 +148,6 @@ SCORES_FILE = SOUL_DIR / "scores.json"
 
 # State tracking
 STATE_FILE = MIRA_ROOT / ".agent_state.json"
-NOTES_SYNC_STATE = INBOX_DIR / ".sync.json"
 
 # ---------------------------------------------------------------------------
 # iCloud paths — bridge and artifacts live on iCloud for iOS app access
@@ -158,14 +168,6 @@ WORKSPACE_DIR = RESEARCH_DIR
 MIRA_DIR = MIRA_BRIDGE_DIR
 TALKBRIDGE_DIR = MIRA_BRIDGE_DIR
 
-# ---------------------------------------------------------------------------
-# Apple Notes folders (from config.yml)
-# ---------------------------------------------------------------------------
-_notes_cfg = _cfg.get("notes", {})
-NOTES_INBOX_FOLDER = _notes_cfg.get("inbox_folder", "Mira")
-NOTES_BRIEFING_FOLDER = _notes_cfg.get("briefing_folder", "Mira Briefings")
-NOTES_OUTPUT_FOLDER = _notes_cfg.get("output_folder", "Mira Results")
-NOTES_TODAY_FOLDER = _notes_cfg.get("today_folder", "today")
 
 # ---------------------------------------------------------------------------
 # Claude CLI
@@ -178,6 +180,7 @@ CLAUDE_TIMEOUT_ACT = 600     # seconds for complex calls (write, code, research)
 _limits = _cfg.get("limits", {})
 TASK_TIMEOUT = _limits.get("task_timeout", 900)  # Must exceed CLAUDE_TIMEOUT_ACT (600s) + startup overhead
 TASK_TIMEOUT_LONG = _limits.get("task_timeout_long", 3600)  # writing pipeline, research
+MAX_CONCURRENT_TASKS = _limits.get("max_concurrent_tasks", 2)  # parallel sub-agent workers
 CLEANUP_DAYS = _limits.get("cleanup_days", 3)
 
 # Secrets file (API keys — always gitignored)
@@ -397,6 +400,10 @@ ANALYST_BUSINESS_DAYS_ONLY = _sched.get("analyst_business_days_only", True)
 
 # Daily philosophical thought
 ZHESI_TIME = _parse_times([_sched.get("zhesi_time", "09:30")])[0]
+
+# Daily research
+RESEARCH_TIME = _parse_times([_sched.get("research_time", "14:00")])[0]
+RESEARCH_TOPIC = _sched.get("research_topic", "")
 
 # 杂.md — philosophical fragments for mining
 ZA_FILE = WRITINGS_DIR / "ideas" / "_杂.md"
