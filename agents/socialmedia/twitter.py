@@ -719,18 +719,17 @@ REPLY: [你的回复]"""
 
     log.info("Reply queued for human: @%s → %s", author, reply_text[:60])
 
-    # Notify via Mira bridge
+    # Notify via Mira bridge — all replies go to one thread ("x_replies")
     try:
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
         from mira import Mira
         bridge = Mira()
-        msg = (f"想回复这条推文，需要你帮我手动发：\n\n"
-               f"推文: {tweet_url}\n"
+        msg = (f"📌 {tweet_url}\n"
                f"@{author}: {picked['text'][:150]}\n\n"
-               f"我的回复草稿:\n{reply_text}")
-        bridge.send_message("reply_queue", msg)
-        log.info("Notified WA about pending reply")
+               f"回复草稿:\n{reply_text}")
+        bridge.send_message("x_replies", msg)
+        log.info("Reply added to x_replies thread")
     except Exception as e:
         log.warning("Failed to notify via bridge: %s", e)
 
