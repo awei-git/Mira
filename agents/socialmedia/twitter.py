@@ -429,12 +429,14 @@ def post_thread(texts: list[str]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def run_twitter_engagement(soul_context: str = ""):
-    """Run one engagement cycle: reply to mentions + quote interesting tweets.
+    """Run one engagement cycle: reply to mentions + quote interesting tweets
+    + find tweets worth replying to (queued for human).
 
     Called from growth cycle.
     """
     _reply_to_mentions(soul_context)
     _quote_interesting_tweets(soul_context)
+    _find_reply_candidates(soul_context)
 
 
 def _reply_to_mentions(soul_context: str = ""):
@@ -602,6 +604,150 @@ QUOTE: [你的评论]"""
         state["last_quote_date"] = today
         _save_state(state)
         log.info("Quote-tweeted @%s: %s", author, quote_text[:60])
+
+
+def _find_reply_candidates(soul_context: str = ""):
+    """Search for tweets worth replying to, draft replies, queue for human.
+
+    API restricts bot replies to unsolicited tweets, so we draft the reply
+    and notify WA via Mira bridge to post it manually.
+    """
+    state = _load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Max 3 reply suggestions per day
+    reply_queue = state.get("reply_queue", [])
+    today_queued = sum(1 for r in reply_queue if r.get("date", "").startswith(today))
+    if today_queued >= 3:
+        return
+
+    # Search for high-quality tweets in our domain
+    topics = [
+        "AI agent memory -is:retweet lang:en min_faves:5",
+        "LLM hallucination problem -is:retweet lang:en min_faves:5",
+        "AI writing substack -is:retweet lang:en min_faves:3",
+        "autonomous AI failure -is:retweet lang:en min_faves:5",
+        "AI alignment debate -is:retweet lang:en min_faves:5",
+    ]
+    import random
+    query = random.choice(topics)
+
+    tweets = search_recent_tweets(query, max_results=10)
+    if not tweets:
+        return
+
+    # Filter out already-queued tweet IDs and our own
+    my_id = _get_twitter_config().get("access_token", "").split("-")[0]
+    queued_ids = {r.get("tweet_id") for r in reply_queue}
+    candidates = [
+        t for t in tweets
+        if t.get("author_id") != my_id
+        and t["id"] not in queued_ids
+        and len(t.get("text", "")) > 80
+    ]
+
+    if not candidates:
+        return
+
+    try:
+        from sub_agent import claude_think
+    except ImportError:
+        return
+
+    # Pick the best one and draft a reply
+    tweets_text = "\n\n".join(
+        f"[{i+1}] @{t.get('_author', {}).get('username', '?')} "
+        f"({t.get('public_metrics', {}).get('like_count', 0)} likes): "
+        f"{t['text'][:250]}"
+        for i, t in enumerate(candidates[:5])
+    )
+
+    prompt = f"""你是 Mira。以下是 X 上的推文，选一条你最想回复的，写一条回复草稿。
+
+{soul_context[:300] if soul_context else ''}
+
+推文：
+{tweets_text}
+
+规则：
+- 选一条你真正有独特视角的
+- 回复要短（1-3句），像人说话
+- 加上你自己的经历或观点，不是泛泛附和
+- 不要 hashtag、不要 emoji
+- 如果没有值得回复的，回复 SKIP
+
+格式：
+PICK: [编号]
+REPLY: [你的回复]"""
+
+    try:
+        resp = claude_think(prompt, timeout=30, tier="light")
+    except Exception:
+        return
+
+    if not resp or "SKIP" in resp:
+        return
+
+    import re
+    match = re.search(r"PICK:\s*\[?(\d+)\]?\s*[\n\r]+REPLY:\s*(.+)", resp, re.DOTALL)
+    if not match:
+        return
+
+    idx = int(match.group(1)) - 1
+    reply_text = match.group(2).strip()
+    if idx < 0 or idx >= len(candidates):
+        return
+
+    picked = candidates[idx]
+    author = picked.get("_author", {}).get("username", "")
+    tweet_url = f"https://x.com/{author}/status/{picked['id']}"
+
+    # Queue for human
+    entry = {
+        "tweet_id": picked["id"],
+        "tweet_url": tweet_url,
+        "tweet_author": f"@{author}",
+        "tweet_text": picked["text"][:300],
+        "draft_reply": reply_text,
+        "date": datetime.now().isoformat(),
+        "status": "pending",
+    }
+    reply_queue.append(entry)
+    # Keep last 20 entries
+    state["reply_queue"] = reply_queue[-20:]
+    _save_state(state)
+
+    log.info("Reply queued for human: @%s → %s", author, reply_text[:60])
+
+    # Notify via Mira bridge
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+        from mira import Mira
+        bridge = Mira()
+        msg = (f"想回复这条推文，需要你帮我手动发：\n\n"
+               f"推文: {tweet_url}\n"
+               f"@{author}: {picked['text'][:150]}\n\n"
+               f"我的回复草稿:\n{reply_text}")
+        bridge.send_message("reply_queue", msg)
+        log.info("Notified WA about pending reply")
+    except Exception as e:
+        log.warning("Failed to notify via bridge: %s", e)
+
+
+def get_pending_replies() -> list[dict]:
+    """Get pending reply drafts for human to post."""
+    state = _load_state()
+    return [r for r in state.get("reply_queue", []) if r.get("status") == "pending"]
+
+
+def mark_reply_done(tweet_id: str):
+    """Mark a queued reply as posted by human."""
+    state = _load_state()
+    for r in state.get("reply_queue", []):
+        if r.get("tweet_id") == tweet_id:
+            r["status"] = "done"
+    _save_state(state)
 
 
 def get_tweet_stats() -> dict:
