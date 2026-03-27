@@ -405,6 +405,9 @@ ANALYST_BUSINESS_DAYS_ONLY = _sched.get("analyst_business_days_only", True)
 # Daily philosophical thought
 ZHESI_TIME = _parse_times([_sched.get("zhesi_time", "09:30")])[0]
 
+# Daily soul question
+SOUL_QUESTION_TIME = _parse_times([_sched.get("soul_question_time", "20:00")])[0]
+
 # Daily research
 RESEARCH_TIME = _parse_times([_sched.get("research_time", "14:00")])[0]
 RESEARCH_TOPIC = _sched.get("research_topic", "")

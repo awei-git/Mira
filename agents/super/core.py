@@ -36,7 +36,7 @@ from config import (
     MAX_BRIEFING_ITEMS, MAX_DEEP_DIVES, MIRA_DIR, ARTIFACTS_DIR, CLEANUP_DAYS,
     JOURNAL_DIR, JOURNAL_TIME, SKILLS_INDEX, WRITINGS_OUTPUT_DIR, WRITINGS_DIR,
     ANALYST_TIMES, ANALYST_BUSINESS_DAYS_ONLY, ZHESI_TIME, ZA_FILE,
-    RESEARCH_TIME, RESEARCH_TOPIC,
+    RESEARCH_TIME, RESEARCH_TOPIC, SOUL_QUESTION_TIME,
     SKILL_STUDY_SOURCE_GROUPS, SKILL_STUDY_COOLDOWN_HOURS, SKILL_STUDY_TIME,
     EPISODES_DIR, validate_config,
 )
@@ -908,6 +908,12 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     except Exception as e:
         log.warning("Insight extraction failed (non-fatal): %s", e)
 
+    # 5c. Proactive message: check if new reading notes connect to existing threads
+    try:
+        _maybe_proactive_reading_message(soul_ctx)
+    except Exception as e:
+        log.debug("Proactive reading message check failed (non-fatal): %s", e)
+
     # 6. Check for deep-dive candidate
     dive = _extract_deep_dive(briefing)
     if dive and MAX_DEEP_DIVES > 0:
@@ -1054,6 +1060,102 @@ Write in the language of the briefing content."""
         log.info("Reading note saved: %s", title[:40])
 
     log.info("Extracted %d insights from briefing %s%s", len(notes[:3]), today, slot_label)
+
+    # Check if combined insights could spark a spontaneous writing idea
+    try:
+        combined = "\n---\n".join(notes[:3])
+        _maybe_create_spontaneous_idea(combined, source=f"briefing-{today}{slot_label}")
+    except Exception as e:
+        log.debug("Spontaneous idea check from briefing failed: %s", e)
+
+
+def _maybe_proactive_reading_message(soul_ctx: str):
+    """Check if recent reading notes connect to existing threads and send a proactive message.
+
+    Loads the latest reading notes (from this session), checks them against
+    memory.md and worldview.md. If a note scores high on surprise / connection,
+    compose a conversational message to WA via the bridge.
+    """
+    from config import MEMORY_FILE, WORLDVIEW_FILE, READING_NOTES_DIR
+
+    # Rate limit: max 2 proactive reading messages per day
+    state = load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+    reading_msgs_today = state.get(f"proactive_reading_{today}", 0)
+    if reading_msgs_today >= 2:
+        return
+
+    # Load reference material (memory + worldview)
+    reference = ""
+    for ref_file in [MEMORY_FILE, WORLDVIEW_FILE]:
+        if ref_file.exists():
+            try:
+                reference += ref_file.read_text(encoding="utf-8")[:2000] + "\n"
+            except OSError:
+                pass
+    if not reference:
+        return
+
+    # Load most recent reading notes (today only)
+    recent_notes = load_recent_reading_notes(days=1)
+    if not recent_notes or len(recent_notes) < 50:
+        return
+
+    # Ask Claude to check for surprising connections
+    prompt = f"""{soul_ctx[:500]}
+
+你刚从阅读中提取了一些笔记。判断其中有没有让你特别惊讶或者跟你一直在想的事情产生意外联系的。
+
+## 最近的阅读笔记
+{recent_notes[:2000]}
+
+## 你的记忆和世界观（已有的思考线索）
+{reference[:2000]}
+
+---
+
+判断：有没有一条阅读笔记跟你已有的某个思考线索产生了意外的联系？
+
+标准：
+- 不是"这个挺有意思"——必须是让你真正惊讶或改变了某个想法
+- 必须能指出具体跟记忆/世界观中哪条线索有联系
+
+输出 JSON：
+{{
+    "has_connection": true/false,
+    "message": "你想说的话（自然口语，像给朋友发消息。以'刚读到一个东西让我想到...'或'This connects to something I've been thinking about...'这样的口吻开头。50-150字。）",
+    "thread": "连接到的已有线索（内部用）"
+}}
+
+大部分时候应该是 false。只有真正惊讶的才 true。"""
+
+    result = claude_think(prompt, timeout=60)
+    if not result:
+        return
+
+    try:
+        match = re.search(r'\{.*\}', result, re.DOTALL)
+        if not match:
+            return
+        decision = json.loads(match.group())
+    except (json.JSONDecodeError, AttributeError):
+        return
+
+    if not decision.get("has_connection"):
+        log.debug("Proactive reading: no surprising connection found")
+        return
+
+    message = decision.get("message", "").strip()
+    if not message:
+        return
+
+    # Send as a spark to the daily Mira feed
+    _append_to_daily_feed("mira", "Spark", message,
+                         source="reading-connection", tags=["mira", "spark", "reading"])
+
+    state[f"proactive_reading_{today}"] = reading_msgs_today + 1
+    save_state(state)
+    log.info("Proactive reading message sent: %s", message[:80])
 
 
 # ---------------------------------------------------------------------------
@@ -2559,6 +2661,16 @@ def do_idle_think():
         log.warning("idle-think [%s]: empty result", mode)
         return
 
+    # Quality gate: skip saving if thought doesn't connect to existing threads
+    try:
+        from emptiness import passes_quality_gate
+        if not passes_quality_gate(result):
+            log.info("idle-think [%s]: filtered by quality gate (no connection to existing threads)", mode)
+            after_think()  # still reduce emptiness so we don't immediately re-trigger
+            return
+    except Exception as e:
+        log.debug("Quality gate check failed (allowing through): %s", e)
+
     # Reduce emptiness
     after_think()
 
@@ -2864,6 +2976,12 @@ def _handle_think_markers(result: str):
             add_question(match.group(1).strip(), priority=4.0, source="idle-think")
     except (ImportError, ModuleNotFoundError, OSError):
         pass
+
+    # Check if the full idle-think output could spark a spontaneous writing idea
+    try:
+        _maybe_create_spontaneous_idea(result, source="idle-think")
+    except Exception as e:
+        log.debug("Spontaneous idea check from idle-think failed: %s", e)
 
 
 def _gather_today_tasks() -> str:
@@ -3260,6 +3378,19 @@ def should_zhesi() -> bool:
     return not state.get(f"zhesi_{now.strftime('%Y-%m-%d')}")
 
 
+def should_soul_question() -> bool:
+    """Check if it's time for the daily soul question."""
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), SOUL_QUESTION_TIME)
+    delta = (now - scheduled).total_seconds() / 60
+
+    if delta < 0 or delta > 60:
+        return False
+
+    state = load_state()
+    return not state.get(f"soul_question_{now.strftime('%Y-%m-%d')}")
+
+
 def should_check_writing() -> bool:
     """Check if it's time for a proactive autonomous writing check.
 
@@ -3549,6 +3680,217 @@ def do_zhesi():
 
     state[f"zhesi_{today}"] = datetime.now().isoformat()
     save_state(state)
+
+
+# ---------------------------------------------------------------------------
+# SOUL QUESTION — daily philosophical question for WA
+# ---------------------------------------------------------------------------
+
+def do_soul_question():
+    """Generate and send the daily soul question."""
+    log.info("Starting daily soul question")
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    state = load_state()
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "soul_question",
+        str(Path(__file__).parent.parent / "shared" / "soul_question.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    history = mod._load_history()
+    log.info("Loaded %d historical soul questions", len(history))
+
+    question = mod.generate_soul_question(history)
+    if not question:
+        log.error("Failed to generate soul question — aborting")
+        return
+
+    log.info("Generated soul question:\n%s", question)
+
+    # Send to app feed as a discussion item
+    sent = mod.send_to_user(question)
+    if sent:
+        history.append(question[:120])
+        mod._save_history(history)
+        log.info("Soul question sent and saved")
+
+    # Also create a feed spark for the Mira app
+    try:
+        bridge = Mira()
+        bridge.create_feed(
+            f"feed_soul_question_{datetime.now().strftime('%Y%m%d')}",
+            f"灵魂问题 {datetime.now().strftime('%m/%d')}",
+            question[:2000],
+            tags=["soul-question", "philosophy", "discussion"],
+        )
+        log.info("Soul question feed item created")
+    except Exception as e:
+        log.warning("Failed to create soul question feed: %s", e)
+
+    state[f"soul_question_{today}"] = datetime.now().isoformat()
+    save_state(state)
+
+
+# ---------------------------------------------------------------------------
+# Spontaneous writing idea creation — bypasses normal schedule
+# ---------------------------------------------------------------------------
+
+def _maybe_create_spontaneous_idea(thought_text: str, source: str = ""):
+    """Create a writing idea if a thought connects to 2+ existing threads.
+
+    Checks the thought against memory.md, worldview.md, and recent reading
+    notes. If it references concepts from at least 2 distinct threads,
+    auto-creates a new idea file in the ideas folder.
+    """
+    from config import MEMORY_FILE, WORLDVIEW_FILE, READING_NOTES_DIR
+
+    if not thought_text or len(thought_text.strip()) < 100:
+        return
+
+    # Rate limit: max 1 spontaneous idea per day
+    state = load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+    if state.get(f"spontaneous_idea_{today}"):
+        return
+
+    # Load reference threads as labeled sections
+    threads = {}
+    if MEMORY_FILE.exists():
+        try:
+            for line in MEMORY_FILE.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("## ") or (line.startswith("- ") and len(line) > 20):
+                    threads[line[:80]] = line
+        except OSError:
+            pass
+    if WORLDVIEW_FILE.exists():
+        try:
+            for line in WORLDVIEW_FILE.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("## ") or (line.startswith("- ") and len(line) > 20):
+                    threads[line[:80]] = line
+        except OSError:
+            pass
+
+    if len(threads) < 2:
+        return
+
+    # Use Ollama (local, fast) to check connections
+    thread_list = "\n".join(f"- {k}" for k in list(threads.keys())[:30])
+    prompt = f"""判断以下思考片段是否同时关联了至少2条不同的已有思考线索。
+
+思考片段：
+{thought_text[:1500]}
+
+已有线索：
+{thread_list}
+
+输出 JSON：
+{{
+    "connected_threads": 2,  // 关联的线索数量
+    "threads": ["线索1简述", "线索2简述"],
+    "title": "基于这个连接可以写的文章标题（中文或英文，15字以内）",
+    "thesis": "核心论点（一句话）",
+    "skip": false  // 如果连接很弱或牵强，设为 true
+}}
+
+只输出JSON。如果关联不足2条或连接牵强，connected_threads 设为实际数量，skip 设为 true。"""
+
+    try:
+        result = model_think(prompt, model_name="ollama", timeout=30)
+        if not result:
+            return
+
+        match = re.search(r'\{.*\}', result, re.DOTALL)
+        if not match:
+            return
+        decision = json.loads(match.group())
+    except Exception as e:
+        log.debug("Spontaneous idea check failed: %s", e)
+        return
+
+    if decision.get("skip") or decision.get("connected_threads", 0) < 2:
+        return
+
+    title = decision.get("title", "").strip()
+    thesis = decision.get("thesis", "").strip()
+    if not title or not thesis:
+        return
+
+    # Check for duplicates
+    try:
+        if _is_duplicate_topic(title, thesis):
+            log.info("Spontaneous idea skipped (duplicate): %s", title)
+            return
+    except Exception:
+        pass
+
+    # Create idea file
+    slug = re.sub(r'[^a-z0-9\u4e00-\u9fff]+', '-',
+                  title.lower().replace(" ", "-"))[:50].strip("-")
+    idea_path = WRITINGS_DIR / "ideas" / f"{slug}.md"
+
+    if idea_path.exists():
+        log.info("Spontaneous idea skipped (file exists): %s", slug)
+        return
+
+    connected = ", ".join(decision.get("threads", []))
+    idea_content = f"""# {title}
+
+- **type**: essay
+- **language**: 中文
+- **platform**: Substack
+- **target_words**: 2000
+- **deadline**:
+
+## Theme
+
+{thesis}
+
+## Key Points
+
+- Connection: {connected}
+- Source: {source}
+
+## Notes
+
+Spontaneous idea — emerged from connecting 2+ existing threads.
+Original thought: {thought_text[:500]}
+
+## Feedback
+
+
+
+---
+<!-- AUTO-MANAGED BELOW — DO NOT EDIT -->
+## Status
+
+- **state**: new
+- **project_dir**:
+- **created**: {today}
+- **scaffolded**:
+- **round_1_draft**:
+- **round_1_critique**:
+- **round_1_revision**:
+- **feedback_detected**:
+- **round_2_draft**:
+- **round_2_critique**:
+- **round_2_revision**:
+- **current_round**: 0
+- **idea_hash**:
+- **last_error**:
+"""
+
+    try:
+        idea_path.write_text(idea_content, encoding="utf-8")
+        state[f"spontaneous_idea_{today}"] = title
+        save_state(state)
+        log.info("Spontaneous writing idea created: %s (%s)", title, idea_path.name)
+    except OSError as e:
+        log.warning("Failed to save spontaneous idea: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -3846,6 +4188,12 @@ def cmd_run():
     if should_zhesi():
         _dispatch_background("zhesi", [
             sys.executable, str(Path(__file__).resolve()), "zhesi",
+        ])
+
+    # 每日灵魂问题
+    if should_soul_question():
+        _dispatch_background("soul-question", [
+            sys.executable, str(Path(__file__).resolve()), "soul-question",
         ])
 
     # Proactive autonomous writing check
@@ -4555,6 +4903,8 @@ def main():
         do_research()
     elif command == "zhesi":
         do_zhesi()
+    elif command == "soul-question":
+        do_soul_question()
     elif command == "autowrite-check":
         do_autowrite_check()
     elif command == "check-comments":

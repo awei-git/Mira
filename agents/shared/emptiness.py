@@ -21,11 +21,11 @@ _SOUL_DIR = Path(__file__).resolve().parent / "soul"
 EMPTINESS_FILE = _SOUL_DIR / "emptiness.json"
 
 # Default tuning constants
-DEFAULT_THRESHOLD = 100.0        # emptiness units to trigger question-mode self-awakening
-CONNECTION_THRESHOLD = 50.0      # lower threshold for connection-mode thinking
+DEFAULT_THRESHOLD = 150.0        # emptiness units to trigger question-mode self-awakening (raised from 100)
+CONNECTION_THRESHOLD = 80.0      # lower threshold for connection-mode thinking (raised from 50)
 DEFAULT_BASE_RATE = 0.8          # units per minute when idle, no pending questions
 DEFAULT_QUESTION_RATE = 0.4      # additional units per minute per pending question
-DEFAULT_DECAY_AFTER_THINK = 70.0 # emptiness reduction after one think session
+DEFAULT_DECAY_AFTER_THINK = 140.0 # emptiness reduction after one think session (doubled from 70)
 MAX_EMPTINESS = 500.0            # cap so it doesn't explode if agent is offline for days
 MAX_CONTINUATION = 5             # max rounds of continuing same thought chain
 
@@ -295,6 +295,61 @@ def get_continuation() -> dict | None:
     if cont and cont.get("continuation_count", 0) >= MAX_CONTINUATION:
         end_continuation()
     return None
+
+
+def passes_quality_gate(thought_text: str) -> bool:
+    """Check if an idle-think output connects to at least one existing thread.
+
+    Reads memory.md, worldview.md, and recent reading notes, then checks
+    whether the thought references any concept or term found in those files.
+    Standalone thoughts with no connection are filtered out to reduce noise.
+    """
+    from pathlib import Path
+    _soul = Path(__file__).resolve().parent / "soul"
+    reference_text = ""
+
+    # Load memory.md
+    mem_file = _soul / "memory.md"
+    if mem_file.exists():
+        try:
+            reference_text += mem_file.read_text(encoding="utf-8")[:3000]
+        except OSError:
+            pass
+
+    # Load worldview.md
+    wv_file = _soul / "worldview.md"
+    if wv_file.exists():
+        try:
+            reference_text += "\n" + wv_file.read_text(encoding="utf-8")[:2000]
+        except OSError:
+            pass
+
+    # Load recent reading notes (last 7 days)
+    rn_dir = _soul / "reading_notes"
+    if rn_dir.exists():
+        from datetime import timedelta
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        for p in sorted(rn_dir.glob("*.md"), reverse=True)[:10]:
+            try:
+                reference_text += "\n" + p.read_text(encoding="utf-8")[:500]
+            except OSError:
+                pass
+
+    if not reference_text:
+        # No reference material — can't filter, let it through
+        return True
+
+    # Extract meaningful terms from the thought (words 4+ chars, lowercased)
+    import re
+    thought_words = set(w.lower() for w in re.findall(r'[a-zA-Z\u4e00-\u9fff]{4,}', thought_text))
+    ref_lower = reference_text.lower()
+
+    # Check if at least one meaningful term from the thought appears in reference material
+    matches = sum(1 for w in thought_words if w in ref_lower)
+    connected = matches >= 2  # at least 2 overlapping terms
+    if not connected:
+        log.info("Quality gate: thought filtered (only %d term overlaps with memory/worldview)", matches)
+    return connected
 
 
 def get_status_str() -> str:
