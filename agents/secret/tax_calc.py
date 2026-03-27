@@ -30,16 +30,118 @@ def extract_pdf_text(path: Path, max_chars: int = 6000) -> str:
     return ""
 
 
+def _extract_w2_regex(text: str) -> dict:
+    """Extract W-2 data using regex patterns. More reliable than LLM for forms."""
+    import re
+    data = {}
+
+    # Common W-2 patterns: "Box N" followed by amount, or labeled fields
+    # Wages (Box 1)
+    for pattern in [
+        r'(?:box\s*1|wages.*tips.*other\s*comp)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
+        r'(?:1\s+wages)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
+        r'wages[,\s]*tips[,\s]*(?:other\s+)?comp[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
+    ]:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            data['wages'] = float(m.group(1).replace(',', ''))
+            break
+
+    # Federal tax withheld (Box 2)
+    for pattern in [
+        r'(?:box\s*2|federal\s+income\s+tax\s+withheld)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
+        r'(?:2\s+federal\s+income\s+tax)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
+        r'federal\s+(?:income\s+)?tax\s+w(?:ith)?held[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
+    ]:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            data['fed_withheld'] = float(m.group(1).replace(',', ''))
+            break
+
+    # State tax withheld (Box 17)
+    for pattern in [
+        r'(?:box\s*17|state\s+income\s+tax)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
+        r'(?:17\s+state\s+income\s+tax)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
+    ]:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            data['state_withheld'] = float(m.group(1).replace(',', ''))
+            break
+
+    # State code (Box 15)
+    m = re.search(r'(?:box\s*15|state\b)[^\w]*([A-Z]{2})\b', text)
+    if m:
+        data['state'] = m.group(1)
+
+    # Social security wages (Box 3)
+    for pattern in [
+        r'(?:box\s*3|social\s+security\s+wages)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
+    ]:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            data['ss_wages'] = float(m.group(1).replace(',', ''))
+            break
+
+    return data
+
+
+def _extract_1099_regex(text: str) -> dict:
+    """Extract 1099 data using regex patterns."""
+    import re
+    data = {}
+
+    # Interest (1099-INT)
+    m = re.search(r'(?:interest\s+income|box\s*1.*interest)[^\d$]*[\$]?\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
+    if m:
+        data['interest'] = float(m.group(1).replace(',', ''))
+
+    # Dividends (1099-DIV)
+    m = re.search(r'(?:ordinary\s+dividends|total\s+ordinary\s+dividends)[^\d$]*[\$]?\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
+    if m:
+        data['dividends'] = float(m.group(1).replace(',', ''))
+
+    # Capital gains
+    for pattern in [
+        r'(?:net\s+(?:short|long)[- ]term\s+(?:capital\s+)?gain)[^\d$-]*[\$]?\s*(-?[\d,]+\.?\d*)',
+        r'(?:total\s+(?:capital\s+)?gain)[^\d$-]*[\$]?\s*(-?[\d,]+\.?\d*)',
+        r'(?:proceeds|net\s+gain)[^\d$-]*[\$]?\s*(-?[\d,]+\.?\d*)',
+    ]:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            data['capital_gains'] = float(m.group(1).replace(',', ''))
+            break
+
+    return data
+
+
 def extract_tax_data(pdf_texts: dict[str, str], ollama_model: str) -> dict:
-    """Use local LLM to extract structured tax data from PDF text.
+    """Extract structured tax data from PDF text.
 
-    Args:
-        pdf_texts: {filename: extracted_text}
-        ollama_model: Ollama model name
-
-    Returns: dict with taxcalc-compatible fields
+    Strategy: regex first (reliable for standard forms), LLM fallback for edge cases.
     """
     from sub_agent import _ollama_call
+
+    # Step 1: Try regex extraction first — much more reliable than LLM
+    regex_data = {}
+    for name, text in pdf_texts.items():
+        name_lower = name.lower()
+        if "w2" in name_lower or "w-2" in name_lower:
+            w2 = _extract_w2_regex(text)
+            if w2.get("wages"):
+                regex_data["wages_primary"] = w2["wages"]
+            if w2.get("fed_withheld"):
+                regex_data["federal_withheld_primary"] = w2["fed_withheld"]
+            if w2.get("state_withheld"):
+                regex_data["state_withheld_primary"] = w2["state_withheld"]
+            if w2.get("state"):
+                regex_data["state"] = w2["state"]
+            log.info("W-2 regex extracted: %s", w2)
+        elif "1099" in name_lower:
+            f1099 = _extract_1099_regex(text)
+            regex_data["interest_income"] = regex_data.get("interest_income", 0) + f1099.get("interest", 0)
+            regex_data["dividend_income"] = regex_data.get("dividend_income", 0) + f1099.get("dividends", 0)
+            regex_data["capital_gains"] = regex_data.get("capital_gains", 0) + f1099.get("capital_gains", 0)
+            log.info("1099 regex extracted from %s: %s", name, f1099)
 
     combined = "\n\n---\n\n".join(
         f"### {name}\n{text}" for name, text in pdf_texts.items()
@@ -79,20 +181,28 @@ IMPORTANT:
 - For capital gains, use NET (gains minus losses).
 - JSON only, no explanation."""
 
+    # Step 2: LLM extraction as supplement (for things regex missed)
+    llm_data = {}
     result = _ollama_call(ollama_model, prompt,
                          system="Extract structured data from tax documents. JSON only.",
                          timeout=120)
-    if not result:
-        return {}
+    if result:
+        try:
+            clean = result.strip().strip("```json").strip("```").strip()
+            llm_data = json.loads(clean)
+            log.info("LLM extracted: %s", {k: v for k, v in llm_data.items() if v})
+        except (json.JSONDecodeError, ValueError) as e:
+            log.warning("LLM extraction parse failed: %s", e)
 
-    try:
-        clean = result.strip().strip("```json").strip("```").strip()
-        data = json.loads(clean)
-        log.info("Tax data extracted: %s", {k: v for k, v in data.items() if v})
-        return data
-    except (json.JSONDecodeError, ValueError) as e:
-        log.warning("Tax extraction JSON parse failed: %s", e)
-        return {}
+    # Step 3: Merge — regex wins for numeric fields (more reliable), LLM fills gaps
+    merged = {}
+    merged.update(llm_data)   # LLM as base
+    for k, v in regex_data.items():
+        if v and v != 0:      # Regex overwrites LLM if regex found something
+            merged[k] = v
+
+    log.info("Final merged tax data: %s", {k: v for k, v in merged.items() if v})
+    return merged
 
 
 def compute_federal_tax(data: dict) -> dict:
