@@ -839,11 +839,17 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None,
         except Exception as e:
             log.error("Proactive comment failed: %s", e)
 
-    # X/Twitter — tweet about new articles and podcast episodes
+    # X/Twitter — tweet about new articles + engage (mentions, quotes)
     try:
         _twitter_promotion(soul_context)
     except Exception as e:
         log.error("Twitter promotion failed: %s", e)
+
+    try:
+        from twitter import run_twitter_engagement
+        run_twitter_engagement(soul_context)
+    except Exception as e:
+        log.error("Twitter engagement failed: %s", e)
 
 
 def _twitter_promotion(soul_context: str = ""):

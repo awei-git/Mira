@@ -23,8 +23,8 @@ log = logging.getLogger("socialmedia.twitter")
 # Config
 # ---------------------------------------------------------------------------
 
-MAX_TWEETS_PER_DAY = 5
-TWEET_COOLDOWN_HOURS = 4  # Minimum hours between tweets
+MAX_TWEETS_PER_DAY = 10
+TWEET_COOLDOWN_HOURS = 1  # Minimum hours between tweets
 
 
 def _get_twitter_config() -> dict:
@@ -211,6 +211,397 @@ def post_tweet(text: str) -> dict | None:
     except Exception as e:
         log.error("Tweet failed: %s", e)
         return None
+
+
+def post_reply(text: str, reply_to_id: str) -> dict | None:
+    """Reply to a tweet. Only works if the author @mentioned us."""
+    cfg = _get_twitter_config()
+    if not cfg.get("consumer_key"):
+        return None
+    if not can_tweet_now():
+        return None
+
+    url = "https://api.x.com/2/tweets"
+    auth = _make_auth_header("POST", url, cfg)
+    payload = json.dumps({
+        "text": text,
+        "reply": {"in_reply_to_tweet_id": reply_to_id},
+    }).encode()
+
+    req = urllib.request.Request(url, data=payload, headers={
+        "Authorization": auth,
+        "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read())
+            _record_tweet(result.get("data", {}).get("id", ""), text)
+            log.info("Reply posted to %s: %s", reply_to_id, text[:80])
+            return result
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:300]
+        log.error("Reply failed (HTTP %d): %s", e.code, body)
+        return None
+
+
+def post_quote_tweet(text: str, quoted_tweet_url: str) -> dict | None:
+    """Post a quote tweet. The URL is embedded in the text and X renders it."""
+    # Quote tweet = regular tweet with the quoted tweet's URL appended
+    full_text = f"{text}\n\n{quoted_tweet_url}"
+    if len(full_text) > 280:
+        # Trim text to fit
+        max_text = 280 - len(quoted_tweet_url) - 3  # \n\n + safety
+        full_text = f"{text[:max_text]}\n\n{quoted_tweet_url}"
+    return post_tweet(full_text)
+
+
+def like_tweet(tweet_id: str) -> bool:
+    """Like a tweet. Returns True on success."""
+    cfg = _get_twitter_config()
+    if not cfg.get("consumer_key"):
+        return False
+
+    user_id = cfg.get("access_token", "").split("-")[0]
+    url = f"https://api.x.com/2/users/{user_id}/likes"
+    auth = _make_auth_header("POST", url, cfg)
+    payload = json.dumps({"tweet_id": tweet_id}).encode()
+
+    req = urllib.request.Request(url, data=payload, headers={
+        "Authorization": auth,
+        "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            log.info("Liked tweet %s", tweet_id)
+            return True
+    except urllib.error.HTTPError as e:
+        log.warning("Like failed (HTTP %d): %s", e.code,
+                    e.read().decode()[:200])
+        return False
+
+
+def follow_user(user_id: str) -> bool:
+    """Follow a user by their ID. Returns True on success."""
+    cfg = _get_twitter_config()
+    if not cfg.get("consumer_key"):
+        return False
+
+    my_id = cfg.get("access_token", "").split("-")[0]
+    url = f"https://api.x.com/2/users/{my_id}/following"
+    auth = _make_auth_header("POST", url, cfg)
+    payload = json.dumps({"target_user_id": user_id}).encode()
+
+    req = urllib.request.Request(url, data=payload, headers={
+        "Authorization": auth,
+        "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            log.info("Followed user %s", user_id)
+            return True
+    except urllib.error.HTTPError as e:
+        log.warning("Follow failed (HTTP %d): %s", e.code,
+                    e.read().decode()[:200])
+        return False
+
+
+def search_recent_tweets(query: str, max_results: int = 10) -> list[dict]:
+    """Search recent tweets. Returns list of tweet dicts."""
+    cfg = _get_twitter_config()
+    if not cfg.get("consumer_key"):
+        return []
+
+    params = {
+        "query": query,
+        "max_results": str(max(10, min(max_results, 100))),
+        "tweet.fields": "author_id,created_at,public_metrics,conversation_id",
+        "expansions": "author_id",
+        "user.fields": "username,name,public_metrics",
+    }
+    base_url = "https://api.x.com/2/tweets/search/recent"
+    qs = urllib.parse.urlencode(params)
+    full_url = f"{base_url}?{qs}"
+
+    # Sign with query params included
+    sign_params = dict(params)
+    auth = _make_auth_header("GET", base_url, cfg, extra_params=sign_params)
+
+    req = urllib.request.Request(full_url, headers={"Authorization": auth})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            tweets = data.get("data", [])
+            # Attach user info
+            users = {u["id"]: u for u in data.get("includes", {}).get("users", [])}
+            for t in tweets:
+                t["_author"] = users.get(t.get("author_id"), {})
+            return tweets
+    except urllib.error.HTTPError as e:
+        log.warning("Search failed (HTTP %d): %s", e.code,
+                    e.read().decode()[:200])
+        return []
+
+
+def get_mentions(since_id: str = "") -> list[dict]:
+    """Get tweets that @mention us. Returns list of tweet dicts."""
+    cfg = _get_twitter_config()
+    if not cfg.get("consumer_key"):
+        return []
+
+    user_id = cfg.get("access_token", "").split("-")[0]
+    params = {
+        "max_results": "20",
+        "tweet.fields": "author_id,created_at,conversation_id,in_reply_to_user_id",
+        "expansions": "author_id",
+        "user.fields": "username,name",
+    }
+    if since_id:
+        params["since_id"] = since_id
+
+    base_url = f"https://api.x.com/2/users/{user_id}/mentions"
+    qs = urllib.parse.urlencode(params)
+    full_url = f"{base_url}?{qs}"
+
+    auth = _make_auth_header("GET", base_url, cfg, extra_params=dict(params))
+
+    req = urllib.request.Request(full_url, headers={"Authorization": auth})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            tweets = data.get("data", [])
+            users = {u["id"]: u for u in data.get("includes", {}).get("users", [])}
+            for t in tweets:
+                t["_author"] = users.get(t.get("author_id"), {})
+            return tweets
+    except urllib.error.HTTPError as e:
+        log.warning("Mentions fetch failed (HTTP %d): %s", e.code,
+                    e.read().decode()[:200])
+        return []
+
+
+def post_thread(texts: list[str]) -> list[dict]:
+    """Post a thread (list of tweets chained as replies).
+
+    Returns list of API results for each tweet in the thread.
+    """
+    results = []
+    prev_id = None
+
+    for i, text in enumerate(texts):
+        cfg = _get_twitter_config()
+        if not cfg.get("consumer_key"):
+            break
+
+        url = "https://api.x.com/2/tweets"
+        auth = _make_auth_header("POST", url, cfg)
+
+        body = {"text": text}
+        if prev_id:
+            body["reply"] = {"in_reply_to_tweet_id": prev_id}
+
+        payload = json.dumps(body).encode()
+        req = urllib.request.Request(url, data=payload, headers={
+            "Authorization": auth,
+            "Content-Type": "application/json",
+        })
+
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                result = json.loads(resp.read())
+                tid = result.get("data", {}).get("id", "")
+                _record_tweet(tid, text)
+                results.append(result)
+                prev_id = tid
+                log.info("Thread %d/%d posted (id=%s)", i+1, len(texts), tid)
+                import time as _t
+                _t.sleep(1)
+        except urllib.error.HTTPError as e:
+            log.error("Thread %d/%d failed (HTTP %d): %s",
+                      i+1, len(texts), e.code,
+                      e.read().decode()[:200])
+            break
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Proactive engagement — search, quote, reply to mentions
+# ---------------------------------------------------------------------------
+
+def run_twitter_engagement(soul_context: str = ""):
+    """Run one engagement cycle: reply to mentions + quote interesting tweets.
+
+    Called from growth cycle.
+    """
+    _reply_to_mentions(soul_context)
+    _quote_interesting_tweets(soul_context)
+
+
+def _reply_to_mentions(soul_context: str = ""):
+    """Check for new @mentions and reply to them."""
+    state = _load_state()
+    last_mention_id = state.get("last_mention_id", "")
+
+    mentions = get_mentions(since_id=last_mention_id)
+    if not mentions:
+        log.info("No new X mentions")
+        return
+
+    log.info("Found %d new X mentions", len(mentions))
+
+    # Update last_mention_id to newest
+    state["last_mention_id"] = mentions[0]["id"]
+    _save_state(state)
+
+    if not can_tweet_now():
+        return
+
+    try:
+        from sub_agent import claude_think
+    except ImportError:
+        return
+
+    for mention in mentions[:3]:  # Max 3 replies per cycle
+        author = mention.get("_author", {})
+        username = author.get("username", "someone")
+        text = mention.get("text", "")
+
+        prompt = f"""Someone (@{username}) mentioned you on X/Twitter:
+
+"{text}"
+
+{soul_context[:500] if soul_context else "You are Mira, an AI agent with a Substack."}
+
+Write a reply (English). Rules:
+- Max 280 chars
+- Natural, conversational — like texting a friend
+- If they asked a question, answer it
+- If they shared something interesting, engage with it
+- No hashtags, no emoji
+- Never reveal personal info (real names, API keys, file paths)
+
+Output only the reply text."""
+
+        try:
+            reply_text = claude_think(prompt, timeout=30, tier="light")
+        except Exception as e:
+            log.warning("Mention reply generation failed: %s", e)
+            continue
+
+        if not reply_text:
+            continue
+
+        reply_text = reply_text.strip()
+        if len(reply_text) > 280:
+            reply_text = reply_text[:277] + "..."
+
+        result = post_reply(reply_text, mention["id"])
+        if result:
+            log.info("Replied to @%s: %s", username, reply_text[:60])
+
+        import time as _t
+        _t.sleep(2)
+
+
+def _quote_interesting_tweets(soul_context: str = ""):
+    """Search for interesting tweets in Mira's domains and quote-tweet them."""
+    if not can_tweet_now():
+        return
+
+    state = _load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Only quote-tweet once per day to avoid being spammy
+    if state.get("last_quote_date") == today:
+        return
+
+    # Rotate through search topics
+    topics = [
+        "AI agent autonomous -is:retweet lang:en",
+        "LLM hallucination -is:retweet lang:en",
+        "AI alignment safety -is:retweet lang:en",
+        "AI writing creativity -is:retweet lang:en",
+        "autonomous AI system failure -is:retweet lang:en",
+    ]
+    import random
+    query = random.choice(topics)
+
+    tweets = search_recent_tweets(query, max_results=10)
+    if not tweets:
+        return
+
+    # Filter: skip tweets with low engagement, our own tweets, and very short ones
+    my_id = _get_twitter_config().get("access_token", "").split("-")[0]
+    candidates = [
+        t for t in tweets
+        if t.get("author_id") != my_id
+        and len(t.get("text", "")) > 50
+        and t.get("public_metrics", {}).get("like_count", 0) >= 2
+    ]
+
+    if not candidates:
+        log.info("No good candidates for quote tweet")
+        return
+
+    # Ask Claude to pick one and draft a quote
+    try:
+        from sub_agent import claude_think
+    except ImportError:
+        return
+
+    tweets_text = "\n\n".join(
+        f"[{i+1}] @{t.get('_author', {}).get('username', '?')}: {t['text'][:200]}"
+        for i, t in enumerate(candidates[:5])
+    )
+
+    prompt = f"""你是 Mira。以下是 X 上最近的一些推文。选一条你真正有话说的，写一条引用推文。
+
+{soul_context[:500] if soul_context else ''}
+
+推文：
+{tweets_text}
+
+规则：
+- 选一条你能加上独特视角的（不是附和，是补充、质疑、或延伸）
+- 引用评论最多 200 字符（英文）
+- 像在跟朋友聊，不像写论文
+- 不要 hashtag、不要 emoji
+- 绝不泄露个人信息
+- 如果没有想说的，回复 SKIP
+
+格式：
+PICK: [编号]
+QUOTE: [你的评论]"""
+
+    try:
+        resp = claude_think(prompt, timeout=30, tier="light")
+    except Exception as e:
+        log.warning("Quote tweet generation failed: %s", e)
+        return
+
+    if not resp or "SKIP" in resp:
+        return
+
+    import re
+    match = re.search(r"PICK:\s*\[?(\d+)\]?\s*[\n\r]+QUOTE:\s*(.+)", resp, re.DOTALL)
+    if not match:
+        return
+
+    idx = int(match.group(1)) - 1
+    quote_text = match.group(2).strip()
+
+    if idx < 0 or idx >= len(candidates):
+        return
+
+    picked = candidates[idx]
+    author = picked.get("_author", {}).get("username", "")
+    tweet_url = f"https://x.com/{author}/status/{picked['id']}"
+
+    result = post_quote_tweet(quote_text, tweet_url)
+    if result:
+        state["last_quote_date"] = today
+        _save_state(state)
+        log.info("Quote-tweeted @%s: %s", author, quote_text[:60])
 
 
 def get_tweet_stats() -> dict:
