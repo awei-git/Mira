@@ -513,8 +513,9 @@ def _quote_interesting_tweets(soul_context: str = ""):
     state = _load_state()
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Only quote-tweet once per day (saves API cost: each search = $0.05)
-    if state.get("last_quote_date") == today:
+    # Max 3 quote-tweets per day
+    qt_today = state.get(f"quotes_{today}", 0)
+    if qt_today >= 3:
         return
 
     # Rotate through search topics
@@ -601,7 +602,7 @@ QUOTE: [你的评论]"""
 
     result = post_quote_tweet(quote_text, tweet_url)
     if result:
-        state["last_quote_date"] = today
+        state[f"quotes_{today}"] = qt_today + 1
         _save_state(state)
         log.info("Quote-tweeted @%s: %s", author, quote_text[:60])
 
@@ -615,10 +616,10 @@ def _find_reply_candidates(soul_context: str = ""):
     state = _load_state()
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Max 3 reply suggestions per day
+    # Max 5 reply suggestions per day
     reply_queue = state.get("reply_queue", [])
     today_queued = sum(1 for r in reply_queue if r.get("date", "").startswith(today))
-    if today_queued >= 3:
+    if today_queued >= 5:
         return
 
     # Search for high-quality tweets in our domain
