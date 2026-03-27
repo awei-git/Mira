@@ -80,13 +80,37 @@ MAX_CHARS_VOICEOVER    = 2500
 MAX_CHARS_CONVERSATION = 1200   # unused in per-turn mode, kept for reference
 
 
-def _get_gemini_key() -> str:
+_gemini_key_index = 0  # rotate between keys on RPD exhaustion
+
+def _get_gemini_keys() -> list[str]:
+    """Get all available Gemini API keys."""
     import sys
     shared = str(Path(__file__).resolve().parent.parent / "shared")
     if shared not in sys.path:
         sys.path.insert(0, shared)
-    from sub_agent import _get_api_key
-    return _get_api_key("gemini")
+    from sub_agent import _load_secrets
+    secrets = _load_secrets()
+    val = secrets.get("api_keys", {}).get("gemini", "")
+    if isinstance(val, dict):
+        return [v for k, v in sorted(val.items()) if v]
+    return [val] if val else []
+
+def _get_gemini_key() -> str:
+    """Get current Gemini API key (supports rotation)."""
+    keys = _get_gemini_keys()
+    if not keys:
+        return ""
+    return keys[_gemini_key_index % len(keys)]
+
+def _rotate_gemini_key() -> bool:
+    """Switch to next Gemini API key. Returns True if rotated, False if no more keys."""
+    global _gemini_key_index
+    keys = _get_gemini_keys()
+    if _gemini_key_index + 1 < len(keys):
+        _gemini_key_index += 1
+        log.info("Rotated to Gemini API key %d/%d", _gemini_key_index + 1, len(keys))
+        return True
+    return False
 
 
 def _get_minimax_key() -> str:
@@ -198,18 +222,32 @@ def _call_gemini_tts(payload: dict, api_key: str,
 
         if resp.status_code == 429:
             rate_limited = True
-            # Parse retry delay from response — each 429 counts toward RPM,
-            # so we MUST wait the full suggested delay before retrying.
             try:
                 err_msg = resp.json().get("error", {}).get("message", "")
-                import re as _re429
-                m = _re429.search(r"retry in ([\d.]+)s", err_msg)
-                retry_secs = float(m.group(1)) if m else 65.0
             except Exception:
-                retry_secs = 65.0
+                err_msg = ""
+
+            # RPD exhaustion — try rotating to next API key
+            if "per_day" in err_msg or "per_model_per_day" in err_msg:
+                log.warning("Gemini TTS daily quota (RPD) exhausted for current key")
+                if _rotate_gemini_key():
+                    api_key = _get_gemini_key()
+                    log.info("Switched to new API key, retrying...")
+                    # Rebuild payload URL is handled by caller passing api_key
+                    # Re-enter the loop with new key
+                    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                           f"{model}:generateContent?key={api_key}")
+                    continue
+                log.error("All Gemini API keys exhausted for today")
+                break
+
+            # RPM limit — wait the suggested delay
+            import re as _re429
+            m = _re429.search(r"retry in ([\d.]+)s", err_msg)
+            retry_secs = float(m.group(1)) if m else 15.0
             if attempt < _retries - 1:
-                wait = retry_secs + 5  # full API delay + 5s buffer
-                log.warning("Gemini TTS 429 — waiting %.0fs (attempt %d/%d)",
+                wait = retry_secs + 5
+                log.warning("Gemini TTS 429 (RPM) — waiting %.0fs (attempt %d/%d)",
                             wait, attempt + 1, _retries)
                 _time.sleep(wait)
                 continue

@@ -1,10 +1,10 @@
 {
   "name": "coder",
-  "description": "coder agent (auto-generated manifest — needs review)",
-  "keywords": [],
-  "handles": [],
+  "description": "Debug, code review, and quick fixes — finds bugs, reviews code for problems, makes targeted repairs. NOT for large features.",
+  "keywords": ["debug", "bug", "fix", "review", "code review", "error", "crash", "broken", "不工作", "报错", "修bug", "检查代码", "script", "refactor", "test"],
+  "handles": ["Debug and fix bugs", "Code review and problem detection", "Quick fixes and small changes", "Script writing", "Error investigation", "Refactoring"],
   "tier": "light",
-  "timeout_category": "short",
+  "timeout_category": "long",
   "entry_point": "handler.py:handle",
   "requires_workspace": true
 }

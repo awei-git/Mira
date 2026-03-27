@@ -1318,7 +1318,7 @@ The "prediction" block is REQUIRED on every step. It captures your expectation b
 - "把自由意志那篇发到substack" → [{{"agent": "publish", "instruction": "将'自由意志'文章发布到Substack", "tier": "light"}}]
 - "帮我算一下税" → [{{"agent": "secret", "instruction": "帮用户计算税务（隐私模式，本地处理）", "tier": "light"}}]
 - "帮我修这张照片" → [{{"agent": "photo", "instruction": "分析并修图", "tier": "light"}}]
-- "证明这个定理" → [{{"agent": "math", "instruction": "证明用户给出的定理", "tier": "heavy"}}]
+- "证明这个定理" → [{{"agent": "researcher", "instruction": "证明用户给出的定理", "tier": "heavy"}}]
 
 {conversation_context}
 
@@ -2052,36 +2052,36 @@ def _write_comment_reply_sidecar(thread_id: str, reply: str):
 
 def _handle_math(workspace: Path, task_id: str, content: str,
                  sender: str, thread_id: str, tier: str = "heavy"):
-    """Handle math research tasks via the math agent."""
+    """Handle research tasks via the researcher agent (formerly math)."""
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            "math_handler", str(_AGENTS_DIR / "math" / "handler.py"))
+            "researcher_handler", str(_AGENTS_DIR / "researcher" / "handler.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
 
         thread_history = load_thread_history(thread_id)
         thread_memory = load_thread_memory(thread_id)
 
-        log.info("Running math agent for task %s", task_id)
+        log.info("Running researcher agent for task %s", task_id)
         summary = mod.handle(
             workspace, task_id, content, sender, thread_id,
             thread_history=thread_history, thread_memory=thread_memory,
         )
     except ClaudeTimeoutError:
-        _write_result(workspace, task_id, "error", "数学任务超时，请缩小范围重试。")
-        log.error("Math task %s timed out", task_id)
+        _write_result(workspace, task_id, "error", "研究任务超时，请缩小范围重试。")
+        log.error("Research task %s timed out", task_id)
         return
     except Exception as e:
-        log.error("Math handler crashed: %s", e)
-        _write_result(workspace, task_id, "error", f"数学任务失败: {e}")
+        log.error("Researcher handler crashed: %s", e)
+        _write_result(workspace, task_id, "error", f"研究任务失败: {e}")
         return
 
     if summary:
         tags = smart_classify(content, summary)
-        tags.append("math")
+        tags.append("research")
         _write_result(workspace, task_id, "done", summary, tags=tags)
-        log.info("Math task %s completed", task_id)
+        log.info("Research task %s completed", task_id)
 
         if thread_id:
             _update_thread_memory(thread_id, content, summary)

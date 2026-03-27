@@ -3,9 +3,13 @@
 Reads from config.yml at the project root. Falls back to defaults.
 """
 import json
+import logging
 import re
+import sys
 from pathlib import Path
 from datetime import datetime as _datetime, time, timezone as _utc_tz
+
+_log = logging.getLogger("mira.config")
 
 # ---------------------------------------------------------------------------
 # Local timezone — auto-detected from OS, no external dependencies
@@ -413,3 +417,44 @@ MAX_FEED_ITEMS = _limits.get("max_feed_items", 50)
 MAX_BRIEFING_ITEMS = _limits.get("max_briefing_items", 7)
 MAX_DEEP_DIVES = _limits.get("max_deep_dives", 1)
 MAX_MEMORY_LINES = _limits.get("max_memory_lines", 200)
+
+
+# ---------------------------------------------------------------------------
+# Startup validation — fail fast on broken config
+# ---------------------------------------------------------------------------
+
+def validate_config():
+    """Check that critical paths and config exist. Call from agent entry point."""
+    errors = []
+
+    # Critical directories that must exist
+    for name, path in [
+        ("MIRA_ROOT", MIRA_ROOT),
+        ("SOUL_DIR", SOUL_DIR),
+        ("LOGS_DIR", LOGS_DIR),
+    ]:
+        if not path.exists():
+            errors.append(f"{name} does not exist: {path}")
+
+    # Critical files
+    if not _CONFIG_FILE.exists():
+        errors.append(f"config.yml not found: {_CONFIG_FILE}")
+
+    if not SECRETS_FILE.exists():
+        errors.append(f"secrets.yml not found: {SECRETS_FILE}")
+
+    # iCloud bridge must be reachable
+    if not MIRA_BRIDGE_DIR.exists():
+        errors.append(f"Bridge directory not found: {MIRA_BRIDGE_DIR}")
+
+    # Artifacts dir (create if missing — iCloud may be slow to sync)
+    for d in [BRIEFINGS_DIR, WRITINGS_OUTPUT_DIR, RESEARCH_DIR, JOURNAL_DIR]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    if errors:
+        for e in errors:
+            _log.error("CONFIG VALIDATION FAILED: %s", e)
+        # Don't crash — log errors and let the agent try to recover
+        # But return False so caller can decide
+        return False
+    return True

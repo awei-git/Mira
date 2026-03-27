@@ -46,5 +46,65 @@
     "description": "Review in layered order — tests, architecture, correctness, security, performance, style — at 200–400 lines per hour.",
     "file": "checklist-driven-code-review.md",
     "tags": ["coding", "code-review", "quality", "collaboration"]
+  },
+  {
+    "name": "Read Before Write",
+    "description": "Read the full function/class, check callers and tests before modifying existing code — the #1 defense against AI-generated bugs.",
+    "file": "read-before-write.md",
+    "tags": ["coding", "safety", "workflow"]
+  },
+  {
+    "name": "Error Handling Patterns",
+    "description": "When to catch vs propagate, specific vs broad exceptions, logging on catch — never swallow errors silently.",
+    "file": "error-handling-patterns.md",
+    "tags": ["coding", "error-handling", "reliability"]
+  },
+  {
+    "name": "Git Workflow for Agents",
+    "description": "Commit discipline, branch strategy, and safety rules for an AI agent writing code in git-tracked repos.",
+    "file": "git-workflow-for-agents.md",
+    "tags": ["coding", "git", "workflow", "safety"]
+  },
+  {
+    "name": "Codebase Navigation",
+    "description": "Efficiently map an unfamiliar codebase — find entry points, trace call chains, grep strategies, read tests first.",
+    "file": "codebase-navigation.md",
+    "tags": ["coding", "exploration", "understanding"]
+  },
+  {
+    "name": "Safe Refactoring",
+    "description": "Extract, rename, move with a test safety net — never refactor and change behavior in the same commit.",
+    "file": "safe-refactoring.md",
+    "tags": ["coding", "refactoring", "safety"]
+  },
+  {
+    "name": "Dependency Management",
+    "description": "When to add a dep vs write it yourself, pin versions, audit for vulnerabilities, upgrade safely.",
+    "file": "dependency-management.md",
+    "tags": ["coding", "dependencies", "security"]
+  },
+  {
+    "name": "Logging and Observability",
+    "description": "What to log (boundaries, decisions, errors), structured logging, log levels, and never log secrets.",
+    "file": "logging-and-observability.md",
+    "tags": ["coding", "logging", "observability", "debugging"]
+  },
+  {
+    "name": "AI Code Generation Quality",
+    "description": "Self-check for hallucinated APIs, outdated patterns, missing edge cases, and over-engineering in AI-generated code.",
+    "file": "ai-code-quality.md",
+    "tags": ["coding", "ai", "quality", "self-check"]
+  },
+  {
+    "name": "Bug Pattern Detection",
+    "description": "Scan code for common bug patterns: concurrency issues, error handling gaps, resource leaks, logic errors, security holes.",
+    "file": "bug-pattern-detection.md",
+    "tags": ["coding", "debugging", "review", "patterns"]
+  },
+  {
+    "name": "Root Cause Analysis",
+    "description": "Five Whys method for finding the real cause of bugs — not just what broke, but why, and how to prevent recurrence.",
+    "file": "root-cause-analysis.md",
+    "tags": ["coding", "debugging", "analysis", "workflow"]
   }
 ]

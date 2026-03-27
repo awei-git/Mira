@@ -1,7 +1,10 @@
 """Manage the agent's soul: identity, memory, interests, skills."""
+import fcntl
 import json
 import logging
+import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -13,6 +16,69 @@ from config import (
 )
 
 log = logging.getLogger("mira")
+
+
+# ---------------------------------------------------------------------------
+# Safe file write utilities — prevent data loss from concurrent writes
+# ---------------------------------------------------------------------------
+
+def _atomic_write(path: Path, content: str):
+    """Write file atomically via tmp + fsync + rename.
+
+    Prevents partial writes if process is killed mid-write.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=path.parent, suffix=".tmp", prefix=f".{path.stem}_"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _locked_write(path: Path, content: str):
+    """Atomic write with exclusive file lock.
+
+    Use for files shared across concurrent processes (memory.md,
+    worldview.md, interests.md, scores.json, catalog.jsonl, etc.).
+    Blocks until lock is acquired (up to 10s timeout).
+    """
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)  # blocking
+        try:
+            _atomic_write(path, content)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def _locked_read_modify_write(path: Path, modify_fn):
+    """Read file, apply modify_fn, write back — all under lock.
+
+    modify_fn(current_text: str) -> new_text: str
+    If file doesn't exist, modify_fn receives empty string.
+    """
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            current = path.read_text(encoding="utf-8") if path.exists() else ""
+            new_content = modify_fn(current)
+            _atomic_write(path, new_content)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
 
 
 def load_soul() -> dict:
@@ -49,7 +115,7 @@ def format_soul(soul: dict) -> str:
         if card:
             parts.append("\n\n# My Self-Evaluation Scores\n")
             parts.append(card)
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError) as e:
         log.debug("Scorecard loading skipped: %s", e)
 
     return "".join(parts)
@@ -67,27 +133,24 @@ def append_memory(entry: str):
     """
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     line = f"- [{ts}] {entry}\n"
-
-    MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if MEMORY_FILE.exists():
-        text = MEMORY_FILE.read_text(encoding="utf-8")
-    else:
-        text = "# Memory\n\n"
-
-    text += line
-
-    # Enforce line limit — trim oldest entries if over MAX_MEMORY_LINES
     overflow_lines = []
-    lines = text.split("\n")
-    if len(lines) > MAX_MEMORY_LINES:
-        header = lines[:2]
-        entries = lines[2:]
-        overflow_lines = entries[:-(MAX_MEMORY_LINES - 2)]
-        trimmed = entries[-(MAX_MEMORY_LINES - 2):]
-        text = "\n".join(header + trimmed)
-        log.info("Memory trimmed to %d lines", MAX_MEMORY_LINES)
 
-    MEMORY_FILE.write_text(text, encoding="utf-8")
+    def _modify(text):
+        nonlocal overflow_lines
+        if not text:
+            text = "# Memory\n\n"
+        text += line
+        lines = text.split("\n")
+        if len(lines) > MAX_MEMORY_LINES:
+            header = lines[:2]
+            entries = lines[2:]
+            overflow_lines = entries[:-(MAX_MEMORY_LINES - 2)]
+            trimmed = entries[-(MAX_MEMORY_LINES - 2):]
+            text = "\n".join(header + trimmed)
+            log.info("Memory trimmed to %d lines", MAX_MEMORY_LINES)
+        return text
+
+    _locked_read_modify_write(MEMORY_FILE, _modify)
     log.info("Memory +: %s", entry[:80])
 
     # Persist to Postgres (non-blocking best-effort)
@@ -100,14 +163,13 @@ def append_memory(entry: str):
             overflow_text = "\n".join(overflow_lines)
             store.remember(overflow_text, source_type="memory_overflow",
                            importance=0.3)
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError, ConnectionError, OSError) as e:
         log.debug("Postgres memory persist skipped: %s", e)
 
 
 def update_memory(new_content: str):
     """Replace memory file with new content (used by reflect mode)."""
-    MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    MEMORY_FILE.write_text(new_content, encoding="utf-8")
+    _locked_write(MEMORY_FILE, new_content)
     log.info("Memory updated (%d lines)", new_content.count("\n"))
 
 
@@ -124,8 +186,7 @@ def get_memory_size() -> int:
 
 def update_interests(new_content: str):
     """Replace interests file."""
-    INTERESTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    INTERESTS_FILE.write_text(new_content, encoding="utf-8")
+    _locked_write(INTERESTS_FILE, new_content)
     log.info("Interests updated")
 
 
@@ -135,8 +196,7 @@ def update_interests(new_content: str):
 
 def update_worldview(new_content: str):
     """Replace worldview file (used by reflect)."""
-    WORLDVIEW_FILE.parent.mkdir(parents=True, exist_ok=True)
-    WORLDVIEW_FILE.write_text(new_content, encoding="utf-8")
+    _locked_write(WORLDVIEW_FILE, new_content)
     log.info("Worldview updated (%d lines)", new_content.count("\n"))
 
 
@@ -151,10 +211,7 @@ def save_reading_note(title: str, reflection: str):
     slug = title.lower().replace(" ", "-")[:40]
     slug = "".join(c for c in slug if c.isalnum() or c == "-")
     path = READING_NOTES_DIR / f"{today}_{slug}.md"
-    path.write_text(
-        f"# Reading Note: {title}\n\n*{today}*\n\n{reflection}",
-        encoding="utf-8",
-    )
+    _atomic_write(path, f"# Reading Note: {title}\n\n*{today}*\n\n{reflection}")
     log.info("Reading note saved: %s", path.name)
     return path
 
@@ -264,7 +321,7 @@ def load_skills_for_task(task_content: str, agent_type: str = "",
         "analyst": {"analyst", "strategy", "research", "forecasting"},
         "video": {"video", "editing", "cinematography"},
         "photo": {"photo", "editing", "color"},
-        "math": {"math", "proof", "probability"},
+        "researcher": {"math", "proof", "probability", "research", "paper"},
         "general": {"coding", "agents", "debugging"},
         "explorer": {"explorer", "research", "curation"},
     }
@@ -430,28 +487,26 @@ def save_skill(name: str, description: str, content: str):
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     slug = name.lower().replace(" ", "-")
     path = SKILLS_DIR / f"{slug}.md"
-    path.write_text(content, encoding="utf-8")
+    _atomic_write(path, content)
 
-    # Update index
-    index = []
-    if SKILLS_INDEX.exists():
-        try:
-            index = json.loads(SKILLS_INDEX.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
+    # Update index (locked — shared across processes)
+    def _update_index(text):
+        index = []
+        if text:
+            try:
+                index = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        index = [s for s in index if s["name"] != name]
+        index.append({
+            "name": name,
+            "description": description,
+            "file": f"{slug}.md",
+            "created": datetime.now().isoformat(),
+        })
+        return json.dumps(index, indent=2, ensure_ascii=False)
 
-    # Remove old entry with same name if exists
-    index = [s for s in index if s["name"] != name]
-    index.append({
-        "name": name,
-        "description": description,
-        "file": f"{slug}.md",
-        "created": datetime.now().isoformat(),
-    })
-
-    SKILLS_INDEX.write_text(
-        json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    _locked_read_modify_write(SKILLS_INDEX, _update_index)
     log.info("Saved skill: %s", name)
 
     # Keep skills.md in sync
@@ -487,7 +542,7 @@ def rebuild_skills_md():
             lines.append(content)
         lines.append("\n---\n")
 
-    SKILLS_FILE.write_text("\n".join(lines), encoding="utf-8")
+    _locked_write(SKILLS_FILE, "\n".join(lines))
     log.info("Rebuilt skills.md (%d skills)", len(index))
 
 
@@ -507,7 +562,7 @@ _CLAUDE_MD = MIRA_ROOT.parent / "CLAUDE.md"
 
 _AGENT_SKILL_INDEXES = [
     # Per-agent skill index files (relative to agents dir)
-    Path(__file__).parent.parent / "math" / "skills" / "index.json",
+    Path(__file__).parent.parent / "researcher" / "skills" / "index.json",
     Path(__file__).parent.parent / "coder" / "skills" / "index.json",
     Path(__file__).parent.parent / "general" / "skills" / "index.json",
     Path(__file__).parent.parent / "analyst" / "skills" / "index.json",
@@ -594,7 +649,7 @@ def _sync_skills_to_claude_md():
         else:
             new_content = f"{MARKER_START}\n{skills_block}\n{MARKER_END}\n"
 
-    _CLAUDE_MD.write_text(new_content, encoding="utf-8")
+    _locked_write(_CLAUDE_MD, new_content)
     log.info("Synced %d actionable skills to CLAUDE.md", len(actionable))
 
 
@@ -611,7 +666,7 @@ def search_memory(query: str, top_k: int = 5) -> str:
     try:
         from memory_store import search_formatted
         return search_formatted(query, top_k=top_k)
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError, ConnectionError, OSError) as e:
         log.warning("Memory search failed: %s", e)
         return ""
 
@@ -621,7 +676,7 @@ def rebuild_memory_index(force: bool = False) -> int:
     try:
         from memory_store import rebuild_index
         return rebuild_index(force=force)
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError, ConnectionError, OSError) as e:
         log.warning("Memory index rebuild failed: %s", e)
         return 0
 
@@ -639,16 +694,13 @@ def auto_flush(context_summary: str):
     CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H%M")
     path = CONVERSATIONS_DIR / f"flush_{ts}.md"
-    path.write_text(
-        f"# Context Flush ({ts})\n\n{context_summary[:2000]}\n",
-        encoding="utf-8",
-    )
+    _atomic_write(path, f"# Context Flush ({ts})\n\n{context_summary[:2000]}\n")
     log.info("Auto-flush saved to %s", path.name)
 
     # Trigger async index rebuild (non-blocking)
     try:
         rebuild_memory_index()
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError, ConnectionError, RuntimeError) as e:
         log.warning("Auto-flush index rebuild failed: %s", e)
 
 
@@ -698,7 +750,7 @@ def save_episode(task_id: str, title: str, messages: list[dict],
     filename = f"{today}_{ts}_{slug or task_id}.md"
     path = EPISODES_DIR / filename
     episode_text = "\n".join(lines)
-    path.write_text(episode_text, encoding="utf-8")
+    _atomic_write(path, episode_text)
     log.info("Episode saved: %s (%d messages)", filename, len(messages))
 
     # Persist to Postgres for vector search (best-effort)
@@ -714,7 +766,7 @@ def save_episode(task_id: str, title: str, messages: list[dict],
             importance=0.6,
             tags=tags,
         )
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError, ConnectionError, OSError) as e:
         log.debug("Postgres episode persist skipped: %s", e)
     return path
 
@@ -730,31 +782,28 @@ def catalog_add(entry: dict):
     Optional: substack_id, description, source_task.
     Deduplicates by (type, title) — updates existing entry if found.
     """
-    CATALOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    # Load existing entries
-    entries = []
-    if CATALOG_FILE.exists():
-        for line in CATALOG_FILE.read_text(encoding="utf-8").strip().splitlines():
-            if line.strip():
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-
     # Ensure required fields
     entry.setdefault("date", datetime.now().strftime("%Y-%m-%d"))
     entry.setdefault("topics", [])
     entry.setdefault("status", "draft")
-
-    # Deduplicate by (type, title)
     key = (entry.get("type", ""), entry.get("title", ""))
-    entries = [e for e in entries if (e.get("type", ""), e.get("title", "")) != key]
-    entries.append(entry)
 
-    # Write back
-    lines = [json.dumps(e, ensure_ascii=False) for e in entries]
-    CATALOG_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    def _modify(text):
+        entries = []
+        if text:
+            for line in text.strip().splitlines():
+                if line.strip():
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        entries = [e for e in entries
+                   if (e.get("type", ""), e.get("title", "")) != key]
+        entries.append(entry)
+        return "\n".join(json.dumps(e, ensure_ascii=False)
+                         for e in entries) + "\n"
+
+    _locked_read_modify_write(CATALOG_FILE, _modify)
     log.info("Catalog +: [%s] %s", entry.get("type"), entry.get("title", "")[:60])
 
 

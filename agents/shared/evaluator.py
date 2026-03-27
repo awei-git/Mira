@@ -7,10 +7,13 @@ Scoring philosophy: automated metrics where possible, LLM self-reflection
 where judgment matters. Never mechanical — the LLM evaluations ask Mira to
 *think* about her work, not count keywords.
 """
+import fcntl
 import json
 import logging
 import math
+import os
 import re
+import tempfile
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
@@ -137,11 +140,28 @@ def load_scores() -> dict:
 
 
 def save_scores(scores: dict):
-    """Atomic write scores.json."""
+    """Atomic write scores.json with file lock."""
     SCORES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = SCORES_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(scores, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(SCORES_FILE)
+    lock_path = SCORES_FILE.with_suffix(".json.lock")
+    with open(lock_path, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=SCORES_FILE.parent, suffix=".tmp", prefix=".scores_"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(scores, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, SCORES_FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
 
 
 def record_event(event_type: str, scores: dict[str, float],

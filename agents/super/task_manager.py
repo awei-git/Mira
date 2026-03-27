@@ -3,12 +3,14 @@
 The super agent dispatches tasks here; sub-agents run as separate processes.
 Each launchd cycle: dispatch new tasks + collect completed results.
 """
+import fcntl
 import json
 import logging
 import os
 import signal
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,7 +41,7 @@ def _resolve_timeout(tags: list[str]) -> float:
                 return _BACKGROUND_TIMEOUT
             elif cat == "long":
                 return TASK_TIMEOUT_LONG
-    except Exception:
+    except (ImportError, ModuleNotFoundError, AttributeError):
         pass  # Registry not available, fall back to tags
 
     task_tags = set(tags or [])
@@ -445,18 +447,43 @@ class TaskManager:
             return []
 
     def _save_status(self):
+        """Save task records atomically with file lock."""
         data = [asdict(r) for r in self._records]
-        STATUS_FILE.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        lock_path = STATUS_FILE.with_suffix(".lock")
+        with open(lock_path, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                fd, tmp = tempfile.mkstemp(
+                    dir=STATUS_FILE.parent, suffix=".tmp", prefix=".tasks_"
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, STATUS_FILE)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
 
     def _append_history(self, records: list[TaskRecord]):
-        """Append completed task records to history.jsonl."""
-        with open(HISTORY_FILE, "a", encoding="utf-8") as f:
-            for rec in records:
-                line = json.dumps(asdict(rec), ensure_ascii=False)
-                f.write(line + "\n")
+        """Append completed task records to history.jsonl with lock."""
+        lock_path = HISTORY_FILE.with_suffix(".lock")
+        with open(lock_path, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+                    for rec in records:
+                        line = json.dumps(asdict(rec), ensure_ascii=False)
+                        f.write(line + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
 
     def cleanup_old_records(self, max_age_days: int = 7):
         """Remove completed task records older than max_age_days."""

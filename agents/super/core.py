@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -37,7 +38,7 @@ from config import (
     ANALYST_TIMES, ANALYST_BUSINESS_DAYS_ONLY, ZHESI_TIME, ZA_FILE,
     RESEARCH_TIME, RESEARCH_TOPIC,
     SKILL_STUDY_SOURCE_GROUPS, SKILL_STUDY_COOLDOWN_HOURS, SKILL_STUDY_TIME,
-    EPISODES_DIR,
+    EPISODES_DIR, validate_config,
 )
 from mira import Mira, Message
 from task_manager import TaskManager, TASKS_DIR
@@ -45,6 +46,7 @@ from soul_manager import (
     load_soul, format_soul, append_memory, update_memory, update_interests,
     update_worldview, save_skill, save_reading_note, load_recent_reading_notes,
     detect_recurring_themes, catalog_list,
+    _atomic_write as atomic_write,
 )
 from fetcher import fetch_all
 from sub_agent import claude_think, claude_act, model_think
@@ -58,6 +60,27 @@ from prompts import (
 )
 
 log = logging.getLogger("mira")
+
+
+# ---------------------------------------------------------------------------
+# Graceful shutdown — SIGTERM sets flag, current operation finishes cleanly
+# ---------------------------------------------------------------------------
+_shutdown_requested = False
+
+
+def _handle_sigterm(signum, frame):
+    global _shutdown_requested
+    _shutdown_requested = True
+    log.info("SIGTERM received — will shut down after current operation")
+
+
+signal.signal(signal.SIGTERM, _handle_sigterm)
+signal.signal(signal.SIGINT, _handle_sigterm)
+
+
+def should_shutdown() -> bool:
+    """Check if shutdown was requested. Call between operations."""
+    return _shutdown_requested
 
 
 # ---------------------------------------------------------------------------
@@ -1371,7 +1394,7 @@ def _prune_worldview_by_decay():
 
     # Persist updated metadata
     try:
-        meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write(meta_file, json.dumps(meta, ensure_ascii=False, indent=2))
     except OSError as e:
         log.warning("Could not save worldview decay metadata: %s", e)
 
@@ -1630,7 +1653,7 @@ def do_journal():
 
     # Save journal
     journal_content = f"# Journal {today}\n\n{journal_text}"
-    journal_path.write_text(journal_content, encoding="utf-8")
+    atomic_write(journal_path, journal_content)
     log.info("Journal saved: %s", journal_path.name)
 
     # Copy to briefings dir so iOS can read it (with verification)
@@ -2032,7 +2055,7 @@ def _days_since_last_publish() -> float:
         from datetime import date as _date
         pub_date = datetime.strptime(latest[:10], "%Y-%m-%d").date()
         return (datetime.now().date() - pub_date).days
-    except Exception:
+    except (json.JSONDecodeError, OSError, KeyError, ValueError):
         return 999.0
 
 
@@ -2355,7 +2378,7 @@ type 可以是:
                 try:
                     from emptiness import add_question
                     add_question(content, priority=3.0, source=f"harvest:{source[:50]}")
-                except Exception:
+                except (ImportError, ModuleNotFoundError, OSError):
                     pass
 
         if stored:
@@ -2475,7 +2498,7 @@ def _think_question(soul_ctx: str, recent_journal: str) -> str:
             related_thoughts = "\n\n过去相关的思考碎片：\n" + "\n".join(
                 f"- [{t['thought_type']}] {t['content']}" for t in thoughts
             )
-    except Exception:
+    except (ImportError, ModuleNotFoundError, ConnectionError, IndexError, KeyError):
         pass
 
     prompt = f"""{soul_ctx}
@@ -2508,7 +2531,7 @@ def _think_connection(soul_ctx: str, recent_journal: str) -> str:
     try:
         from memory_store import get_store
         store = get_store()
-    except Exception:
+    except (ImportError, ModuleNotFoundError, ConnectionError):
         return ""
 
     # Get recent low-maturity thoughts
@@ -2561,7 +2584,7 @@ SHARE 的风格要求：像给朋友发消息，不像写论文。要具体—�
             try:
                 from emptiness import add_question
                 add_question(match.group(1).strip(), priority=4.0, source="connection-mode")
-            except Exception:
+            except (ImportError, ModuleNotFoundError, OSError):
                 pass
 
     return result
@@ -2572,7 +2595,7 @@ def _think_auto_question(soul_ctx: str) -> str:
     try:
         from memory_store import get_store
         store = get_store()
-    except Exception:
+    except (ImportError, ModuleNotFoundError, ConnectionError):
         return ""
 
     recent = store.recall_thoughts("", top_k=7, min_maturity=0.0)
@@ -2624,7 +2647,7 @@ def _think_continuation(soul_ctx: str) -> str:
         from memory_store import get_store
         store = get_store()
         chain = store.get_thought_chain(cont["active_thread_id"])
-    except Exception:
+    except (ImportError, ModuleNotFoundError, ConnectionError, KeyError):
         end_continuation()
         return ""
 
@@ -2724,7 +2747,7 @@ def _handle_think_markers(result: str):
         from emptiness import add_question
         for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
             add_question(match.group(1).strip(), priority=4.0, source="idle-think")
-    except Exception:
+    except (ImportError, ModuleNotFoundError, OSError):
         pass
 
 
@@ -3014,50 +3037,53 @@ def should_research() -> bool:
 
 
 def do_research():
-    """Run daily research: web search + summarize + push to feed."""
+    """Run daily research via the researcher agent (iterative deep-dive)."""
     log.info("Starting daily research")
     today = datetime.now().strftime("%Y-%m-%d")
     state = load_state()
 
-    soul = load_soul()
-    soul_ctx = format_soul(soul)
+    if not RESEARCH_TOPIC:
+        log.info("No research topic configured, skipping")
+        return
 
-    prompt = f"""你是 Mira，做每日技术调研。
+    # Use the researcher agent's iterative pipeline
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "researcher_handler",
+        str(Path(__file__).parent.parent / "researcher" / "handler.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
 
-## 身份
-{soul_ctx[:600]}
+    workspace = WORKSPACE_DIR / f"research_{today}"
+    workspace.mkdir(parents=True, exist_ok=True)
 
-## 今日调研主题
-{RESEARCH_TOPIC}
+    result = mod.handle(
+        workspace=workspace,
+        task_id=f"daily_research_{today}",
+        content=RESEARCH_TOPIC,
+        sender="scheduler",
+        thread_id="",
+    )
 
-要求：
-- 用 web search 找到最新的文章、博客、论文
-- 每个发现给出：标题、来源链接、核心要点（2-3句）
-- 最后写一段总结：今天最重要的发现是什么，对 Mira 有什么启发
-- 用中文写，技术术语保持英文
-- Markdown 格式，带链接
-"""
-
-    result = claude_think(prompt, timeout=300, tier="heavy")
     if not result:
         log.error("Daily research failed: empty response")
         return
 
     # Save to briefings
     BRIEFINGS_DIR.mkdir(parents=True, exist_ok=True)
-    (BRIEFINGS_DIR / f"{today}_research.md").write_text(result, encoding="utf-8")
+    atomic_write(BRIEFINGS_DIR / f"{today}_research.md", result)
 
     # Push as standalone feed item
     bridge = Mira()
     item_id = f"feed_research_{today.replace('-', '')}"
     if not bridge.item_exists(item_id):
         bridge.create_item(item_id, "feed", f"Daily Research {today}", result,
-                          tags=["research", "agentic", "daily"])
+                          tags=["research", "daily"])
         bridge.update_status(item_id, "done")
 
     state[f"research_{today}"] = True
     save_state(state)
-    log.info("Daily research complete")
+    log.info("Daily research complete (workspace: %s)", workspace)
 
 
 def should_analyst() -> str | None:
@@ -3392,7 +3418,7 @@ def do_zhesi():
     JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
     zhesi_path = JOURNAL_DIR / f"{today}_zhesi.md"
     content = f"# 每日哲思 {today}\n\n> {fragment}\n\n{result}"
-    zhesi_path.write_text(content, encoding="utf-8")
+    atomic_write(zhesi_path, content)
     log.info("哲思 saved: %s", zhesi_path.name)
 
     # Copy to artifacts for iOS (with verification)
@@ -3583,6 +3609,10 @@ def cmd_run():
         do_talk()
     except Exception as e:
         log.error("Mira failed: %s", e)
+
+    if should_shutdown():
+        log.info("Shutdown requested — exiting after talk phase")
+        return
 
     # Timing guard: skip non-critical checks if cycle already > 8s
     _elapsed = _time.monotonic() - _cycle_start
@@ -4341,6 +4371,10 @@ def main():
 
     # Prune old log files (keep 14 days)
     _prune_old_logs(LOGS_DIR)
+
+    # Validate configuration — log errors but don't crash
+    if not validate_config():
+        log.warning("Config validation failed — some features may not work")
 
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
 

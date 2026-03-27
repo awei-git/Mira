@@ -1,10 +1,10 @@
 {
   "name": "researcher",
-  "description": "researcher agent (auto-generated manifest — needs review)",
-  "keywords": [],
-  "handles": [],
-  "tier": "light",
-  "timeout_category": "short",
+  "description": "Research agent — math proofs, paper review, deep technical research, daily auto-research topics.",
+  "keywords": ["math", "数学", "proof", "theorem", "research", "研究", "论文", "paper", "derivation", "证明", "调研"],
+  "handles": ["mathematical proofs", "derivations", "paper review", "formal math", "technical research", "literature review"],
+  "tier": "heavy",
+  "timeout_category": "long",
   "entry_point": "handler.py:handle",
   "requires_workspace": true
 }

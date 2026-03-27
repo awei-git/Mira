@@ -78,13 +78,40 @@ def _get_usage_agent() -> str:
     return getattr(_caller_agent, "name", "unknown")
 
 
+# Cost per 1M tokens (USD) — update when prices change
+_COST_PER_1M = {
+    # provider/model prefix → (input_cost, output_cost)
+    "anthropic/claude-sonnet": (3.00, 15.00),
+    "anthropic/claude-opus": (15.00, 75.00),
+    "anthropic/claude-haiku": (0.80, 4.00),
+    "openai/gpt-5": (2.00, 8.00),
+    "openai/gpt-4": (2.50, 10.00),
+    "deepseek/deepseek-chat": (0.27, 1.10),
+    "deepseek/deepseek-reasoner": (0.55, 2.19),
+    "gemini/gemini-3": (0.10, 0.40),
+    "gemini/gemini-2": (0.075, 0.30),
+    "ollama/": (0.0, 0.0),  # local, free
+}
+
+
+def _estimate_cost(provider: str, model: str,
+                   prompt_tokens: int, completion_tokens: int) -> float:
+    """Estimate USD cost for a single API call."""
+    key = f"{provider}/{model}"
+    for prefix, (inp_cost, out_cost) in _COST_PER_1M.items():
+        if key.startswith(prefix):
+            return (prompt_tokens * inp_cost + completion_tokens * out_cost) / 1_000_000
+    return 0.0
+
+
 def _log_usage(provider: str, model: str, prompt_tokens: int,
                completion_tokens: int, estimated: bool = False):
-    """Append one usage record to the daily JSONL log."""
+    """Append one usage record to the daily JSONL log with cost estimate."""
     try:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         today = datetime.now().strftime("%Y-%m-%d")
         path = LOGS_DIR / f"usage_{today}.jsonl"
+        cost = _estimate_cost(provider, model, prompt_tokens, completion_tokens)
         record = {
             "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "agent": _get_usage_agent(),
@@ -93,12 +120,70 @@ def _log_usage(provider: str, model: str, prompt_tokens: int,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
+            "cost_usd": round(cost, 6),
             "estimated": estimated,
         }
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:
+    except (OSError, ValueError):
         pass  # Never break the call for logging
+
+
+def usage_summary(date: str = "") -> dict:
+    """Summarize API usage for a given date (default: today).
+
+    Returns: {total_cost_usd, total_tokens, by_provider: {name: {cost, tokens, calls}},
+              by_agent: {name: {cost, tokens, calls}}}
+    """
+    if not date:
+        date = datetime.now().strftime("%Y-%m-%d")
+    path = LOGS_DIR / f"usage_{date}.jsonl"
+    if not path.exists():
+        return {"date": date, "total_cost_usd": 0, "total_tokens": 0,
+                "calls": 0, "by_provider": {}, "by_agent": {}}
+
+    by_provider: dict[str, dict] = {}
+    by_agent: dict[str, dict] = {}
+    total_cost = 0.0
+    total_tokens = 0
+    total_calls = 0
+
+    for line in path.read_text(encoding="utf-8").strip().splitlines():
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        cost = r.get("cost_usd", 0.0)
+        tokens = r.get("total_tokens", 0)
+        provider = r.get("provider", "unknown")
+        agent = r.get("agent", "unknown")
+
+        total_cost += cost
+        total_tokens += tokens
+        total_calls += 1
+
+        for bucket, key in [(by_provider, provider), (by_agent, agent)]:
+            if key not in bucket:
+                bucket[key] = {"cost_usd": 0.0, "tokens": 0, "calls": 0}
+            bucket[key]["cost_usd"] += cost
+            bucket[key]["tokens"] += tokens
+            bucket[key]["calls"] += 1
+
+    # Round costs
+    for bucket in [by_provider, by_agent]:
+        for v in bucket.values():
+            v["cost_usd"] = round(v["cost_usd"], 4)
+
+    return {
+        "date": date,
+        "total_cost_usd": round(total_cost, 4),
+        "total_tokens": total_tokens,
+        "calls": total_calls,
+        "by_provider": by_provider,
+        "by_agent": by_agent,
+    }
 
 
 def _estimate_tokens(text: str) -> int:
@@ -107,7 +192,7 @@ def _estimate_tokens(text: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Secrets loader (lazy, cached)
+# Secrets loader (lazy, cached) — reads from .config/secrets.yml (not in git)
 # ---------------------------------------------------------------------------
 
 _secrets_cache = None
@@ -175,7 +260,14 @@ def _get_api_key(provider: str) -> str:
     elif provider == "deepseek":
         return keys.get("deepseek", "")
     elif provider == "gemini":
-        return keys.get("gemini", "")
+        val = keys.get("gemini", "")
+        if isinstance(val, dict):
+            # Multiple keys — return first one (api_key_1)
+            for k in sorted(val.keys()):
+                if val[k]:
+                    return val[k]
+            return ""
+        return val
     elif provider == "minimax":
         return keys.get("minimax", "")
     return ""
@@ -382,27 +474,44 @@ def _ollama_call(model_id: str, prompt: str,
         return ""
 
 
-def ollama_embed(text: str, model: str = "nomic-embed-text") -> list[float]:
-    """Get embedding from local Ollama. Returns empty list on failure."""
+def ollama_embed(text: str, model: str = "nomic-embed-text",
+                 retries: int = 2) -> list[float]:
+    """Get embedding from local Ollama. Retries on transient failures."""
+    if not text or not text.strip():
+        return []
     from config import OLLAMA_HOST, OLLAMA_PORT
     endpoint = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/embeddings"
 
     payload = {"model": model, "prompt": text}
     body = json.dumps(payload).encode("utf-8")
 
-    req = urllib.request.Request(
-        endpoint,
-        data=body,
-        headers={"Content-Type": "application/json"},
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data["embedding"]
-    except Exception as e:
-        log.error("Ollama embed failed: %s", str(e))
-        return []
+    for attempt in range(1 + retries):
+        req = urllib.request.Request(
+            endpoint,
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data["embedding"]
+        except urllib.error.HTTPError as e:
+            if e.code == 500 and attempt < retries:
+                import time as _time
+                wait = 2 ** attempt
+                log.warning("Ollama embed 500, retry %d/%d in %ds", attempt + 1, retries, wait)
+                _time.sleep(wait)
+                continue
+            log.error("Ollama embed failed (HTTP %d): %s", e.code, str(e))
+            return []
+        except (urllib.error.URLError, OSError) as e:
+            if attempt < retries:
+                import time as _time
+                _time.sleep(2)
+                continue
+            log.error("Ollama embed failed: %s", str(e))
+            return []
+    return []
 
 
 def _gemini_call(model_id: str, prompt: str,

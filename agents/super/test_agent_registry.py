@@ -25,7 +25,7 @@ def test_required_agents_present():
     """Core agents must be in the registry."""
     r = AgentRegistry()
     required = {"writer", "general", "socialmedia", "podcast", "analyst",
-                "explorer", "discussion", "photo", "video", "math", "secret", "surfer"}
+                "explorer", "discussion", "photo", "video", "researcher", "secret", "surfer"}
     missing = required - r.get_valid_agents()
     assert not missing, f"Missing required agents: {missing}"
     print(f"  OK: all {len(required)} required agents present")
