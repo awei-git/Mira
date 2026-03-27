@@ -186,6 +186,46 @@ def usage_summary(date: str = "") -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Output confidence estimation (heuristic, no extra LLM call)
+# ---------------------------------------------------------------------------
+
+_LOW_CONFIDENCE_SIGNALS = re.compile(
+    r"i(?:'m| am) not (?:sure|certain)|i (?:think|believe|guess)|可能|也许|不确定|"
+    r"might be|could be|not entirely|roughly|approximately|据我所知|"
+    r"i don't (?:know|have|remember)|我不太清楚|不太确定",
+    re.IGNORECASE,
+)
+
+_HIGH_CONFIDENCE_SIGNALS = re.compile(
+    r"definitely|certainly|verified|confirmed|已验证|确认|"
+    r"the (?:answer|result|output) is|结果是|答案是",
+    re.IGNORECASE,
+)
+
+
+def estimate_confidence(text: str) -> str:
+    """Estimate confidence of LLM output from hedging language.
+
+    Returns: "high", "medium", or "low".
+    No LLM call — pure heuristic.
+    """
+    if not text:
+        return "low"
+
+    low_count = len(_LOW_CONFIDENCE_SIGNALS.findall(text[:2000]))
+    high_count = len(_HIGH_CONFIDENCE_SIGNALS.findall(text[:2000]))
+
+    if low_count >= 3 and high_count == 0:
+        return "low"
+    elif high_count >= 2 and low_count == 0:
+        return "high"
+    elif low_count > high_count:
+        return "low"
+    else:
+        return "medium"
+
+
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate: ~4 chars per token for mixed CJK/English."""
     return max(1, len(text) // 3)
@@ -429,6 +469,66 @@ _API_ENDPOINTS = {
     # Ollama uses a different URL pattern — handled in _ollama_call
 }
 
+# Endpoint drift detection — probe once per session
+_probed_providers: dict[str, bool] = {}  # provider → True if healthy
+
+
+def _probe_endpoint(provider: str) -> bool:
+    """Send minimal request to verify API is reachable and schema unchanged.
+
+    Runs once per provider per session. Caches result.
+    Cost: ~$0.001 per probe.
+    """
+    if provider in _probed_providers:
+        return _probed_providers[provider]
+
+    api_key = _get_api_key(provider)
+    if not api_key:
+        _probed_providers[provider] = False
+        return False
+
+    endpoint = _API_ENDPOINTS.get(provider, "")
+    if not endpoint:
+        _probed_providers[provider] = True  # non-standard providers skip probe
+        return True
+
+    payload = {
+        "model": "gpt-5.4" if provider == "openai" else "deepseek-chat",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 1,
+    }
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint, data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            # Verify expected schema
+            if "choices" in data and isinstance(data["choices"], list):
+                _probed_providers[provider] = True
+                log.debug("Endpoint probe OK: %s", provider)
+                return True
+            else:
+                log.warning("Endpoint schema drift: %s — missing 'choices' key. Keys: %s",
+                           provider, list(data.keys()))
+                _probed_providers[provider] = False
+                return False
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            # Rate limited = endpoint is alive, schema OK
+            _probed_providers[provider] = True
+            return True
+        log.warning("Endpoint probe failed: %s HTTP %d", provider, e.code)
+        _probed_providers[provider] = False
+        return False
+    except (urllib.error.URLError, OSError) as e:
+        log.warning("Endpoint unreachable: %s — %s", provider, e)
+        _probed_providers[provider] = False
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Ollama (local LLM — no network, privacy-safe)
@@ -574,6 +674,11 @@ def _api_call(provider: str, model_id: str, prompt: str,
     """Call OpenAI-compatible chat completion API (OpenAI, DeepSeek, Ollama)."""
     if provider == "gemini":
         return _gemini_call(model_id, prompt, system, timeout)
+
+    # Probe endpoint on first use (detect drift before wasting a real call)
+    if provider in _API_ENDPOINTS and not _probe_endpoint(provider):
+        log.error("API endpoint probe failed for %s — skipping call", provider)
+        return ""
     if provider == "ollama":
         return _ollama_call(model_id, prompt, system, timeout)
 

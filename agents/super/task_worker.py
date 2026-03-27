@@ -347,17 +347,84 @@ def _load_exec_history(workspace: Path) -> str:
 
 def _append_exec_log(workspace: Path, round_num: int, agent: str,
                      status: str, output_preview: str):
-    """Append an entry to the execution log."""
+    """Append an entry to the execution log with output health metrics."""
+    # Compute lightweight output health (no LLM calls)
+    health = {}
+    if output_preview:
+        health["length"] = len(output_preview)
+        health["has_content"] = len(output_preview.strip()) > 50
+
     log_file = workspace / "exec_log.jsonl"
     entry = {
         "round": round_num,
         "agent": agent,
         "status": status,
         "output_preview": output_preview[:300],
+        "health": health,
         "timestamp": _utc_iso(),
     }
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    # Track output quality trends in a global file
+    _track_output_quality(agent, status, health)
+
+
+# Global output quality tracker
+_QUALITY_LOG = Path(__file__).resolve().parent.parent / ".output_quality.jsonl"
+
+
+def _track_output_quality(agent: str, status: str, health: dict):
+    """Append to global quality log for trend detection."""
+    try:
+        entry = {
+            "agent": agent,
+            "status": status,
+            "length": health.get("length", 0),
+            "has_content": health.get("has_content", False),
+            "ts": _utc_iso(),
+        }
+        with open(_QUALITY_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
+
+
+def detect_quality_regression(agent: str, window: int = 10) -> str | None:
+    """Check if an agent's output quality is declining.
+
+    Looks at last `window` outputs. Returns warning string if regression detected.
+    """
+    if not _QUALITY_LOG.exists():
+        return None
+
+    records = []
+    for line in _QUALITY_LOG.read_text(encoding="utf-8").strip().splitlines()[-200:]:
+        try:
+            r = json.loads(line)
+            if r.get("agent") == agent:
+                records.append(r)
+        except json.JSONDecodeError:
+            continue
+
+    recent = records[-window:]
+    if len(recent) < 5:
+        return None
+
+    # Check: are recent outputs getting shorter?
+    lengths = [r.get("length", 0) for r in recent]
+    if len(lengths) >= 5:
+        first_half = sum(lengths[:len(lengths)//2]) / (len(lengths)//2)
+        second_half = sum(lengths[len(lengths)//2:]) / (len(lengths) - len(lengths)//2)
+        if first_half > 0 and second_half / first_half < 0.5:
+            return f"{agent}: output length dropped {second_half/first_half:.0%} vs earlier"
+
+    # Check: are errors increasing?
+    errors = [1 for r in recent if r.get("status") == "error"]
+    if len(errors) >= 3 and len(errors) / len(recent) > 0.4:
+        return f"{agent}: {len(errors)}/{len(recent)} recent outputs failed"
+
+    return None
 
 
 def _verify_output(output: str, workspace: Path) -> str:

@@ -1,9 +1,11 @@
 """Manage the agent's soul: identity, memory, interests, skills."""
 import fcntl
+import hashlib
 import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -81,8 +83,113 @@ def _locked_read_modify_write(path: Path, modify_fn):
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
+# ---------------------------------------------------------------------------
+# Soul integrity — hash verification + backup rotation
+# ---------------------------------------------------------------------------
+
+_HASH_FILE = IDENTITY_FILE.parent / ".soul_hashes.json"
+_BACKUP_DIR = IDENTITY_FILE.parent / ".backups"
+_MAX_BACKUPS = 3
+
+# Files that define who Mira is — integrity-protected
+_PROTECTED_FILES = {
+    "identity": IDENTITY_FILE,
+    "worldview": WORLDVIEW_FILE,
+}
+
+
+def _compute_hash(path: Path) -> str:
+    """SHA-256 of file content."""
+    if not path.exists():
+        return ""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _save_hashes():
+    """Recompute and save hashes for all protected files."""
+    hashes = {}
+    for name, path in _PROTECTED_FILES.items():
+        hashes[name] = _compute_hash(path)
+    hashes["updated_at"] = datetime.now().isoformat()
+    _atomic_write(_HASH_FILE, json.dumps(hashes, indent=2))
+
+
+def _load_hashes() -> dict:
+    """Load stored hashes."""
+    if not _HASH_FILE.exists():
+        return {}
+    try:
+        return json.loads(_HASH_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _rotate_backup(path: Path):
+    """Keep last N backups of a soul file."""
+    _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup = _BACKUP_DIR / f"{path.stem}_{ts}{path.suffix}"
+    if path.exists():
+        shutil.copy2(path, backup)
+    # Prune old backups
+    backups = sorted(_BACKUP_DIR.glob(f"{path.stem}_*{path.suffix}"), reverse=True)
+    for old in backups[_MAX_BACKUPS:]:
+        old.unlink()
+
+
+def verify_soul_integrity() -> list[str]:
+    """Check protected soul files against stored hashes.
+
+    Returns list of integrity violations (empty = all good).
+    On violation: logs CRITICAL, restores from backup if available.
+    """
+    stored = _load_hashes()
+    if not stored:
+        # First run — save current hashes as baseline
+        _save_hashes()
+        return []
+
+    violations = []
+    for name, path in _PROTECTED_FILES.items():
+        expected = stored.get(name, "")
+        if not expected:
+            continue  # No stored hash yet
+        actual = _compute_hash(path)
+        if actual != expected:
+            violations.append(name)
+            log.critical(
+                "SOUL INTEGRITY VIOLATION: %s has been modified outside authorized writes! "
+                "Expected hash %s, got %s", name, expected[:12], actual[:12])
+
+            # Try to restore from backup
+            backups = sorted(_BACKUP_DIR.glob(f"{path.stem}_*{path.suffix}"), reverse=True)
+            if backups:
+                latest_backup = backups[0]
+                backup_hash = hashlib.sha256(latest_backup.read_bytes()).hexdigest()
+                if backup_hash == expected:
+                    shutil.copy2(latest_backup, path)
+                    log.critical("Restored %s from backup %s", name, latest_backup.name)
+                else:
+                    log.critical("Backup hash also differs — manual review needed for %s", name)
+            else:
+                log.critical("No backups available for %s — manual review needed", name)
+
+    return violations
+
+
+def _protected_write(path: Path, content: str):
+    """Write a protected soul file: backup → write → update hash."""
+    _rotate_backup(path)
+    _locked_write(path, content)
+    _save_hashes()
+
+
 def load_soul() -> dict:
-    """Load the full soul context."""
+    """Load the full soul context. Verifies integrity of protected files."""
+    violations = verify_soul_integrity()
+    if violations:
+        log.critical("Soul integrity check failed: %s", violations)
+
     return {
         "identity": _read_or_default(IDENTITY_FILE, "No identity defined yet."),
         "memory": _read_or_default(MEMORY_FILE, "No memories yet."),
@@ -205,8 +312,8 @@ def update_interests(new_content: str):
 # ---------------------------------------------------------------------------
 
 def update_worldview(new_content: str):
-    """Replace worldview file (used by reflect)."""
-    _locked_write(WORLDVIEW_FILE, new_content)
+    """Replace worldview file (used by reflect). Integrity-protected."""
+    _protected_write(WORLDVIEW_FILE, new_content)
     log.info("Worldview updated (%d lines)", new_content.count("\n"))
 
 

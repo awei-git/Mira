@@ -189,6 +189,22 @@ class MemoryStore:
             log.error("remember() failed: %s", e)
             return None
 
+    def verify_memory(self, memory_id: int, table: str = "episodic"):
+        """Mark a memory as verified — resets decay by updating created_at to now.
+
+        Call during reflect when a memory is confirmed still relevant.
+        This gives verified memories a fresh decay window.
+        """
+        tbl = "episodic_memory" if table == "episodic" else "thought_stream"
+        try:
+            self._execute(
+                f"UPDATE {tbl} SET created_at = NOW(), importance = LEAST(importance + 0.1, 1.0) WHERE id = %s",
+                (memory_id,),
+            )
+            log.debug("Memory %d verified (decay reset)", memory_id)
+        except Exception as e:
+            log.warning("verify_memory failed: %s", e)
+
     # ------------------------------------------------------------------
     # RECALL (hybrid vector + keyword search)
     # ------------------------------------------------------------------
