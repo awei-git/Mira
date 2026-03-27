@@ -226,6 +226,21 @@ def handle(workspace: Path, task_id: str, content: str,
     then reads files locally and includes content in the prompt.
     All data stays on localhost.
     """
+    # Detect tax-related requests → use deterministic pipeline
+    _TAX_KEYWORDS = re.compile(r"税|tax|报税|退税|补税|1099|w-?2|联邦税|州税|refund|deduction", re.IGNORECASE)
+    if _TAX_KEYWORDS.search(content):
+        files = _find_files(content)
+        pdf_files = [f for f in files if f.suffix.lower() == ".pdf"]
+        if pdf_files:
+            log.info("Tax request detected with %d PDFs — using taxcalc pipeline", len(pdf_files))
+            try:
+                from tax_calc import run_tax_pipeline
+                result = run_tax_pipeline(pdf_files, OLLAMA_DEFAULT_MODEL)
+                if result:
+                    return result
+            except (ImportError, OSError) as e:
+                log.warning("Tax pipeline failed, falling back to general: %s", e)
+
     extra = ""
     if thread_history:
         extra += f"\n\nPrevious conversation:\n{thread_history}"
