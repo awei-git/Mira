@@ -513,7 +513,7 @@ def _quote_interesting_tweets(soul_context: str = ""):
     state = _load_state()
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Only quote-tweet once per day to avoid being spammy
+    # Only quote-tweet once per day (saves API cost: each search = $0.05)
     if state.get("last_quote_date") == today:
         return
 
@@ -615,7 +615,10 @@ def _find_reply_candidates(soul_context: str = ""):
     state = _load_state()
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Max 3 reply suggestions per day
+    # Only search once per day (each search costs $0.05)
+    if state.get("last_reply_search_date") == today:
+        return
+
     reply_queue = state.get("reply_queue", [])
     today_queued = sum(1 for r in reply_queue if r.get("date", "").startswith(today))
     if today_queued >= 3:
@@ -715,6 +718,7 @@ REPLY: [你的回复]"""
     reply_queue.append(entry)
     # Keep last 20 entries
     state["reply_queue"] = reply_queue[-20:]
+    state["last_reply_search_date"] = today
     _save_state(state)
 
     log.info("Reply queued for human: @%s → %s", author, reply_text[:60])
