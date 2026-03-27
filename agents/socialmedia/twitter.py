@@ -640,7 +640,7 @@ def tweet_for_article(title: str, subtitle: str, url: str,
 - 最多 250 字符（给链接留空间）
 - 像一个有想法的人随手发的，不像营销文案
 - 可以是文章里的一个有趣观点、一个问题、一个反直觉的发现
-- 不要 hashtag
+- 加 1-2 个相关 hashtag（放在推文中间或结尾，不要放开头）
 - 不要 "check out my new article" 这种套话
 - 不要 emoji
 - 结尾放链接，用空行隔开
@@ -727,7 +727,8 @@ def tweet_spark(thought: str, soul_context: str = "") -> str | None:
 - 最多 280 字符
 - 保留核心洞察，但用口语化的方式说
 - 像在自言自语或者跟关注者聊天
-- 不要 hashtag、不要 emoji、不要链接
+- 加 1-2 个相关 hashtag（放中间或结尾，不要放开头）
+- 不要 emoji、不要链接
 - 可以用 "..." 或问句结尾
 - 绝不泄露个人信息（真名、API key、文件路径）
 

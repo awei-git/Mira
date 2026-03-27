@@ -385,5 +385,19 @@
     "description": "Always confirm Ollama (or any local model server) is running before attempting inference",
     "file": "verify-local-model-service-before-inference.md",
     "created": "2026-03-27T11:59:49.894538"
+  },
+  {
+    "name": "x-twitter-growth",
+    "description": "X/Twitter growth strategy: algorithm priorities, content mix, hashtag rules, quote tweet strategy, thread structure, timing",
+    "file": "x-twitter-growth.md",
+    "tags": [
+      "socialmedia",
+      "x",
+      "twitter",
+      "growth",
+      "engagement",
+      "strategy"
+    ],
+    "created": "2026-03-27T16:37:59.401437"
   }
 ]

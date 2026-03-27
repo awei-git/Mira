@@ -853,7 +853,14 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None,
 
 
 def _twitter_promotion(soul_context: str = ""):
-    """Check if there are new articles or EN podcast episodes to tweet about."""
+    """Tweet about new articles + post sparks from idle thinking.
+
+    Strategy (based on 2026 X algorithm research):
+    - 3-5 tweets per day: mix of article promos, sparks, and threads
+    - 1-2 hashtags per tweet (mid-tweet placement)
+    - Threads for deeper ideas (3x engagement vs single tweets)
+    - Text-only outperforms video by 30% on X
+    """
     from twitter import can_tweet_now as _can_tweet
 
     if not _can_tweet():
@@ -862,8 +869,8 @@ def _twitter_promotion(soul_context: str = ""):
     state = _load_state()
     tweeted_slugs = set(state.get("tweeted_slugs", []))
 
-    # Check for untweeted published articles
-    from substack import _get_substack_config, list_published_posts
+    # 1. Check for untweeted published articles (highest priority)
+    from substack import list_published_posts
     try:
         posts = list_published_posts(limit=5)
     except Exception:
@@ -885,7 +892,48 @@ def _twitter_promotion(soul_context: str = ""):
             state["tweeted_slugs"] = list(tweeted_slugs)
             _save_state(state)
             log.info("Tweeted about article: %s", title)
-            break  # One tweet per cycle
+            return  # One promo per cycle, save quota for sparks
+
+    # 2. Post an idle-think spark as a tweet (organic engagement)
+    if not _can_tweet():
+        return
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    sparks_tweeted_today = state.get(f"sparks_tweeted_{today}", 0)
+    if sparks_tweeted_today >= 2:  # Max 2 spark tweets per day
+        return
+
+    try:
+        import re
+        from pathlib import Path
+        journal_dir = Path(__file__).resolve().parent.parent / "shared" / "soul" / "journal"
+        spark_files = sorted(journal_dir.glob(f"{today}_idle_question_*.md"), reverse=True)
+
+        # Collect recent [SHARE] sparks
+        already_tweeted = set(state.get("tweeted_spark_files", []))
+        for sf in spark_files[:20]:
+            if sf.name in already_tweeted:
+                continue
+            content = sf.read_text(encoding="utf-8")
+            share_match = re.search(r'\[SHARE:\s*(.+?)\]', content, re.DOTALL)
+            if not share_match:
+                continue
+
+            thought = share_match.group(1).strip()
+            if len(thought) < 50:  # Skip trivial sparks
+                continue
+
+            from twitter import tweet_spark
+            result = tweet_spark(thought, soul_context)
+            if result:
+                already_tweeted.add(sf.name)
+                state["tweeted_spark_files"] = list(already_tweeted)[-50:]
+                state[f"sparks_tweeted_{today}"] = sparks_tweeted_today + 1
+                _save_state(state)
+                log.info("Tweeted spark from %s", sf.name)
+                return  # One spark per cycle
+    except Exception as e:
+        log.warning("Spark tweet failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
