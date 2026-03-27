@@ -100,29 +100,45 @@ def _find_files(query: str) -> list[Path]:
     file_patterns = intent.get("file_patterns", [])
     year = intent.get("year", "")
 
-    log.info("File intent: dirs=%s patterns=%s year=%s", dir_hints, file_patterns, year)
+    # Split multi-word hints into individual words for hierarchical navigation
+    # e.g. "important tax" → ["important", "tax"]
+    split_hints = []
+    for h in dir_hints:
+        split_hints.extend(h.lower().split())
+    # Add year as a directory hint too (e.g. Documents/important/Tax/2025/)
+    if year and year not in split_hints:
+        split_hints.append(year)
+    # Deduplicate while preserving order
+    seen = set()
+    dir_hints_clean = []
+    for h in split_hints:
+        if h not in seen and h not in ("files", "folder", "directory", "文件", "文件夹"):
+            seen.add(h)
+            dir_hints_clean.append(h)
 
-    # Step 3: Navigate filesystem using parsed hints
+    log.info("File intent: dirs=%s patterns=%s year=%s", dir_hints_clean, file_patterns, year)
+
+    # Step 3: Navigate filesystem using parsed hints — drill down one level at a time
     for base in _SEARCH_DIRS:
         if not base.exists():
             continue
 
-        # Navigate to described directory
+        # Navigate: for each hint, find matching subdirectories
         candidates = [base]
-        for hint in dir_hints:
-            hint_lower = hint.lower()
+        for hint in dir_hints_clean:
             new_candidates = []
             for cand in candidates:
                 if not cand.is_dir():
                     continue
                 try:
                     for sub in cand.iterdir():
-                        if sub.is_dir() and hint_lower in sub.name.lower():
+                        if sub.is_dir() and hint in sub.name.lower():
                             new_candidates.append(sub)
                 except PermissionError:
                     continue
             if new_candidates:
                 candidates = new_candidates
+            # If no match for this hint, keep current candidates (don't reset)
 
         # Search in candidate dirs
         for cand in candidates:
