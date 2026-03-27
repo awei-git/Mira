@@ -538,9 +538,14 @@ def _quote_interesting_tweets(soul_context: str = ""):
     # Filter: skip spam, low-engagement, our own tweets
     spam_keywords = {"airdrop", "whitelist", "presale", "token launch", "join now",
                      "free mint", "giveaway", "dm me", "limited spots"}
+    # Skip org/brand/bot accounts — only engage with real people
+    org_accounts = {"grok", "openai", "anthropic", "google", "googledeepmind",
+                    "microsoft", "meta", "nvidia", "huggingface", "github",
+                    "xai", "chatgpt", "copilot", "gemini", "perplexity_ai"}
     candidates = []
     for t in tweets:
         text_lower = t.get("text", "").lower()
+        author_username = t.get("_author", {}).get("username", "").lower()
         if t.get("author_id") == my_id:
             continue
         if len(t.get("text", "")) < 80:
@@ -549,11 +554,14 @@ def _quote_interesting_tweets(soul_context: str = ""):
             continue
         if any(kw in text_lower for kw in spam_keywords):
             continue
-        # Skip accounts with suspicious follower ratios (bots)
+        # Skip org/brand accounts — only quote real humans
+        if author_username in org_accounts:
+            continue
         author_metrics = t.get("_author", {}).get("public_metrics", {})
         if author_metrics:
             followers = author_metrics.get("followers_count", 0)
-            if followers < 50:
+            # Skip bots (<50) and mega-accounts (>1M, they won't notice us)
+            if followers < 50 or followers > 1_000_000:
                 continue
         candidates.append(t)
 
