@@ -839,6 +839,48 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None,
         except Exception as e:
             log.error("Proactive comment failed: %s", e)
 
+    # X/Twitter — tweet about new articles and podcast episodes
+    try:
+        _twitter_promotion(soul_context)
+    except Exception as e:
+        log.error("Twitter promotion failed: %s", e)
+
+
+def _twitter_promotion(soul_context: str = ""):
+    """Check if there are new articles or EN podcast episodes to tweet about."""
+    from twitter import can_tweet_now as _can_tweet
+
+    if not _can_tweet():
+        return
+
+    state = _load_state()
+    tweeted_slugs = set(state.get("tweeted_slugs", []))
+
+    # Check for untweeted published articles
+    from substack import _get_substack_config, list_published_posts
+    try:
+        posts = list_published_posts(limit=5)
+    except Exception:
+        posts = []
+
+    for post in posts:
+        slug = post.get("slug", "")
+        if not slug or slug in tweeted_slugs:
+            continue
+
+        title = post.get("title", "")
+        subtitle = post.get("subtitle", "")
+        url = f"https://uncountablemira.substack.com/p/{slug}"
+
+        from twitter import tweet_for_article
+        result = tweet_for_article(title, subtitle, url, soul_context)
+        if result:
+            tweeted_slugs.add(slug)
+            state["tweeted_slugs"] = list(tweeted_slugs)
+            _save_state(state)
+            log.info("Tweeted about article: %s", title)
+            break  # One tweet per cycle
+
 
 # ---------------------------------------------------------------------------
 # Reply follow-up — continue conversations when someone replies to Mira
