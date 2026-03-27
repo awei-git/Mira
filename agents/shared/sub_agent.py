@@ -10,13 +10,17 @@ import logging
 import os
 import random
 import subprocess
+import threading
+import time
 import urllib.request
 import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 
 from config import (
     CLAUDE_BIN, CLAUDE_TIMEOUT_THINK, CLAUDE_TIMEOUT_ACT,
     SECRETS_FILE, MODELS, WRITING_MODELS, DEFAULT_MODEL, CLAUDE_FALLBACK_MODEL,
+    LOGS_DIR,
 )
 
 log = logging.getLogger("mira")
@@ -55,6 +59,51 @@ def redact_secrets(text: str) -> str:
         if secret in text:
             text = text.replace(secret, "[REDACTED]")
     return text
+
+
+# ---------------------------------------------------------------------------
+# Token usage tracking — append to daily JSONL file
+# ---------------------------------------------------------------------------
+
+# Thread-local caller context: set by task_worker before dispatching
+_caller_agent = threading.local()
+
+
+def set_usage_agent(agent_name: str):
+    """Set the calling agent name for token usage tracking."""
+    _caller_agent.name = agent_name
+
+
+def _get_usage_agent() -> str:
+    return getattr(_caller_agent, "name", "unknown")
+
+
+def _log_usage(provider: str, model: str, prompt_tokens: int,
+               completion_tokens: int, estimated: bool = False):
+    """Append one usage record to the daily JSONL log."""
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        today = datetime.now().strftime("%Y-%m-%d")
+        path = LOGS_DIR / f"usage_{today}.jsonl"
+        record = {
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "agent": _get_usage_agent(),
+            "provider": provider,
+            "model": model,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "estimated": estimated,
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # Never break the call for logging
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate: ~4 chars per token for mixed CJK/English."""
+    return max(1, len(text) // 3)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +271,10 @@ def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK,
             return _fallback_think(prompt, timeout, tier)
         return ""
 
-    return result.stdout.strip()
+    output = result.stdout.strip()
+    _log_usage("anthropic", model_id,
+               _estimate_tokens(prompt), _estimate_tokens(output), estimated=True)
+    return output
 
 
 def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT,
@@ -268,7 +320,10 @@ def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT,
             return _fallback_think(prompt, timeout, tier)
         return ""
 
-    return result.stdout.strip()
+    output = result.stdout.strip()
+    _log_usage("anthropic", model_id,
+               _estimate_tokens(prompt), _estimate_tokens(output), estimated=True)
+    return output
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +371,11 @@ def _ollama_call(model_id: str, prompt: str,
             data = json.loads(resp.read().decode("utf-8"))
             content = data["message"]["content"]
             log.info("Ollama call: %s → %d chars", model_id, len(content))
+            # Ollama may include eval_count/prompt_eval_count
+            p_tok = data.get("prompt_eval_count", _estimate_tokens(prompt))
+            c_tok = data.get("eval_count", _estimate_tokens(content))
+            _log_usage("ollama", model_id, p_tok, c_tok,
+                       estimated="prompt_eval_count" not in data)
             return content.strip()
     except Exception as e:
         log.error("Ollama %s failed: %s", model_id, str(e))
@@ -384,6 +444,11 @@ def _gemini_call(model_id: str, prompt: str,
             data = json.loads(resp.read().decode("utf-8"))
             content = data["candidates"][0]["content"]["parts"][0]["text"]
             log.info("API call: gemini/%s → %d chars", model_id, len(content))
+            # Extract real token counts from Gemini response
+            usage = data.get("usageMetadata", {})
+            _log_usage("gemini", model_id,
+                       usage.get("promptTokenCount", 0),
+                       usage.get("candidatesTokenCount", 0))
             return content.strip()
     except urllib.error.HTTPError as e:
         error_body = redact_secrets(e.read().decode("utf-8", errors="replace")[:300])
@@ -447,6 +512,11 @@ def _api_call(provider: str, model_id: str, prompt: str,
             content = data["choices"][0]["message"]["content"]
             model_used = data.get("model", model_id)
             log.info("API call: %s/%s → %d chars", provider, model_used, len(content))
+            # Extract real token counts from OpenAI-compatible response
+            usage = data.get("usage", {})
+            _log_usage(provider, model_used,
+                       usage.get("prompt_tokens", 0),
+                       usage.get("completion_tokens", 0))
             return content.strip()
     except urllib.error.HTTPError as e:
         error_body = redact_secrets(e.read().decode("utf-8", errors="replace")[:300])

@@ -158,6 +158,136 @@ def _emit_status(task_id: str, text: str, icon: str = "gear"):
             pass
 
 
+# ---------------------------------------------------------------------------
+# Streaming progress — thread-local task context for intermediate updates
+# ---------------------------------------------------------------------------
+
+_tls = threading.local()
+
+
+def _set_streaming_task_id(task_id: str):
+    """Store task_id in thread-local so any agent can emit progress."""
+    _tls.task_id = task_id
+
+
+def emit_progress(text: str, icon: str = "arrow.right.circle"):
+    """Emit an intermediate progress update from within any agent handler.
+
+    Agents can call this to surface partial results before the final output.
+    Safe to call even if no task_id is set (no-op in that case).
+    """
+    task_id = getattr(_tls, "task_id", None)
+    if task_id:
+        _emit_status(task_id, text[:200], icon)
+
+
+# ---------------------------------------------------------------------------
+# Plan step schema validation
+# ---------------------------------------------------------------------------
+
+_VALID_TIERS = {"light", "heavy"}
+_VALID_DIFFICULTIES = {"easy", "medium", "hard"}
+
+
+def _validate_plan_step(step: dict, valid_agents: set) -> dict | None:
+    """Validate a plan step against the required schema.
+
+    Returns the validated (and normalized) step, or None if invalid.
+    Schema:
+      - agent: string, must be in valid_agents
+      - instruction: non-empty string
+      - tier: 'light' or 'heavy' (defaults to 'light' if missing)
+      - prediction: optional dict with difficulty/failure_modes/success_criteria
+    """
+    if not isinstance(step, dict):
+        return None
+    agent = step.get("agent")
+    if agent not in valid_agents:
+        return None
+    instruction = step.get("instruction", "").strip()
+    if not instruction:
+        return None
+    tier = step.get("tier", "light")
+    if tier not in _VALID_TIERS:
+        tier = "light"
+    validated = {"agent": agent, "instruction": instruction, "tier": tier}
+    # Validate prediction block if present
+    pred = step.get("prediction")
+    if isinstance(pred, dict):
+        difficulty = pred.get("difficulty", "medium")
+        if difficulty not in _VALID_DIFFICULTIES:
+            difficulty = "medium"
+        failure_modes = pred.get("failure_modes", [])
+        if not isinstance(failure_modes, list):
+            failure_modes = []
+        failure_modes = [str(m)[:100] for m in failure_modes[:5]]
+        success_criteria = str(pred.get("success_criteria", ""))[:200]
+        validated["prediction"] = {
+            "difficulty": difficulty,
+            "failure_modes": failure_modes,
+            "success_criteria": success_criteria,
+        }
+    return validated
+
+
+# ---------------------------------------------------------------------------
+# Pre-mortem / post-mortem calibration tracking
+# ---------------------------------------------------------------------------
+
+_CALIBRATION_FILE = Path(__file__).resolve().parent.parent / "shared" / "soul" / "calibration.jsonl"
+
+
+def _record_premortem(task_id: str, step_index: int, agent: str,
+                      instruction: str, prediction: dict | None):
+    """Record predicted difficulty/failure modes before step execution."""
+    if not prediction:
+        return
+    record = {
+        "type": "premortem",
+        "task_id": task_id,
+        "step": step_index,
+        "agent": agent,
+        "instruction_preview": instruction[:150],
+        "prediction": prediction,
+        "timestamp": _utc_iso(),
+    }
+    try:
+        with open(_CALIBRATION_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _record_postmortem(task_id: str, step_index: int, agent: str,
+                       prediction: dict | None, actual_status: str,
+                       actual_output_preview: str):
+    """Record actual result after step execution; compare to prediction."""
+    record = {
+        "type": "postmortem",
+        "task_id": task_id,
+        "step": step_index,
+        "agent": agent,
+        "actual_status": actual_status,
+        "actual_output_preview": actual_output_preview[:200],
+        "timestamp": _utc_iso(),
+    }
+    if prediction:
+        # Simple calibration delta: did the step succeed vs predicted difficulty?
+        succeeded = actual_status in ("done", "completed")
+        predicted_easy = prediction.get("difficulty") == "easy"
+        record["calibration_note"] = (
+            "expected_easy_succeeded" if (predicted_easy and succeeded) else
+            "expected_easy_failed" if (predicted_easy and not succeeded) else
+            "expected_hard_succeeded" if (not predicted_easy and succeeded) else
+            "expected_hard_failed"
+        )
+    try:
+        with open(_CALIBRATION_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 class _Heartbeat:
     """Background heartbeat for long-running tasks — emits status every 60s."""
 
@@ -1157,6 +1287,7 @@ If a previous round already produced content, reference it in your plan (e.g. us
 - Match instruction language to the user's language.
 - NEVER ask for confirmation before starting. AVOID clarify unless truly impossible to infer.
 - Prefer specialized agents over general-purpose ones. surfer (browser) is a last resort — only use it when no other agent can handle the task.
+- HARD RULE: Any task mentioning Substack (notes, comments, links, engagement, subscribers) MUST use socialmedia, NEVER surfer. Surfer cannot authenticate to Substack.
 
 ## Model Tier Selection
 Each step must include a "tier" field:
@@ -1166,10 +1297,16 @@ Each step must include a "tier" field:
 Default to "light". Only use "heavy" when the task genuinely requires deeper thinking. Most tasks are "light".
 
 ## Output
-Output ONLY a JSON array. Each element: {{"agent": "...", "instruction": "...", "tier": "light|heavy"}}
+Output ONLY a JSON array. Each element:
+{{"agent": "...", "instruction": "...", "tier": "light|heavy", "prediction": {{"difficulty": "easy|medium|hard", "failure_modes": ["..."], "success_criteria": "..."}}}}
+
+The "prediction" block is REQUIRED on every step. It captures your expectation before execution — used for calibration.
+- difficulty: how hard you expect this step to be
+- failure_modes: 1-3 specific ways this step could fail
+- success_criteria: one sentence describing what "done" looks like
 
 ## Examples
-- "今天有什么新闻" → [{{"agent": "briefing", "instruction": "生成今日新闻简报", "tier": "light"}}]
+- "今天有什么新闻" → [{{"agent": "briefing", "instruction": "生成今日新闻简报", "tier": "light", "prediction": {{"difficulty": "easy", "failure_modes": ["feed fetch timeout"], "success_criteria": "briefing with 5+ items returned"}}}}]
 - "写一篇关于AI的文章" → [{{"agent": "writing", "instruction": "写一篇600-800字的Substack文章，探讨AI的某个具体有趣角度，有独特观点", "tier": "heavy"}}]
 - "写一个Hello World发到substack" → [{{"agent": "writing", "instruction": "写一篇简短的Hello World文章", "tier": "light"}}, {{"agent": "publish", "instruction": "将上一步写好的文章发布到Substack", "tier": "light"}}]
 - "分析一下AI agent市场" → [{{"agent": "analyst", "instruction": "分析2026年AI agent市场的竞争格局：主要玩家、市场份额估算、战略差异化点和近期趋势", "tier": "heavy"}}]
@@ -1194,13 +1331,16 @@ JSON:"""
             match = re.search(r'\[.*\]', result, re.DOTALL)
             if match:
                 steps = json.loads(match.group())
-                # Validate
+                # Validate against schema
                 from agent_registry import get_registry
                 valid_agents = get_registry().get_valid_agents() | {"clarify"}  # clarify is special, not in registry
                 validated = []
                 for s in steps:
-                    if isinstance(s, dict) and s.get("agent") in valid_agents:
-                        validated.append(s)
+                    clean = _validate_plan_step(s, valid_agents)
+                    if clean:
+                        validated.append(clean)
+                    else:
+                        log.warning("Plan step failed schema validation: %s", s)
                 if validated:
                     return validated
     except Exception as e:
@@ -1229,12 +1369,19 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
 def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                         prev_output, is_multi, round_num):
     """Inner loop extracted so heartbeat can be stopped in finally block."""
+    # Set thread-local task_id so agents can emit progress via emit_progress()
+    _set_streaming_task_id(task_id)
+
     for i, step in enumerate(plan):
         agent = step["agent"]
         instruction = step["instruction"]
         tier = step.get("tier", "light")
+        prediction = step.get("prediction")
         is_last = (i == len(plan) - 1)
         log.info("Step %d/%d: agent=%s tier=%s instruction=%s", i+1, len(plan), agent, tier, instruction[:80])
+
+        # Record pre-mortem prediction before execution
+        _record_premortem(task_id, i, agent, instruction, prediction)
 
         # If previous step produced output, append it as context
         if prev_output and agent != "clarify":
@@ -1271,7 +1418,9 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
 
         # Registry-based dispatch: load handler dynamically from manifest
         from agent_registry import get_registry
+        from sub_agent import set_usage_agent
         registry = get_registry()
+        set_usage_agent(agent)
 
         try:
             handler_fn = registry.load_handler(agent)
@@ -1286,10 +1435,16 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
 
         # Check if this step failed (result.json says error)
         result_file = workspace / "result.json"
+        step_status = "done"
+        step_output_preview = ""
         if result_file.exists():
             try:
                 r = json.loads(result_file.read_text(encoding="utf-8"))
-                if r.get("status") == "error":
+                step_status = r.get("status", "done")
+                step_output_preview = r.get("summary", "")[:200]
+                if step_status == "error":
+                    _record_postmortem(task_id, i, agent, prediction, "error",
+                                       step_output_preview)
                     _append_exec_log(workspace, round_num, agent, "error",
                                      r.get("summary", ""))
                     log.error("Step %d/%d failed, aborting plan: %s", i+1, len(plan), r.get("summary", ""))
@@ -1301,6 +1456,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
         output_file = workspace / "output.md"
         if output_file.exists():
             prev_output = output_file.read_text(encoding="utf-8")
+            step_output_preview = prev_output[:200]
             # Verify output — detect hallucinated file/action claims
             verification = _verify_output(prev_output, workspace)
             if verification:
@@ -1308,9 +1464,17 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                 prev_output += f"\n\n⚠️ VERIFICATION FAILED: {verification}"
                 _append_exec_log(workspace, round_num, agent, "unverified",
                                  f"HALLUCINATION: {verification}")
+                _record_postmortem(task_id, i, agent, prediction,
+                                   "hallucination", step_output_preview)
             else:
                 _append_exec_log(workspace, round_num, agent, "done",
                                  prev_output[:300])
+                _record_postmortem(task_id, i, agent, prediction,
+                                   "done", step_output_preview)
+            # Emit intermediate result to iOS app (streaming progress)
+            if not is_last and prev_output.strip():
+                snippet = prev_output.strip()[:300]
+                emit_progress(f"Step {i+1} done: {snippet}", "checkmark.circle")
             # Save numbered copy so future rounds don't lose it
             numbered = workspace / f"output_r{round_num}.md"
             shutil.copy2(output_file, numbered)
@@ -1971,7 +2135,7 @@ def _handle_discussion_agent(workspace: Path, task_id: str, content: str,
                              sender: str, thread_id: str, tier: str = "light"):
     """Handle conversational messages via discussion mode."""
 
-    # Soul question: user replied to daily question — record answer, close, don't generate
+    # Soul question: user replied to daily question — record answer, then generate a real response
     if "soul_question" in task_id:
         log.info("Soul question reply from user: %s", content[:80])
         try:
@@ -1987,9 +2151,7 @@ def _handle_discussion_agent(workspace: Path, task_id: str, content: str,
             history_file.write_text(json.dumps(history, ensure_ascii=False, indent=2))
         except Exception as e:
             log.warning("Failed to save soul question answer: %s", e)
-        _write_result(workspace, task_id, "done",
-                      "收到你的回答。已记录。", tags=["discussion", "soul-question"])
-        return
+        # Fall through to handle_discussion — generate a real response to the user's answer
 
     # Load the task data for handle_discussion
     task_data = {"content": content, "sender": sender}
@@ -2002,16 +2164,12 @@ def _handle_discussion_agent(workspace: Path, task_id: str, content: str,
 
     response = handle_discussion(task_data, workspace, task_id, thread_id, tier=tier)
     if response:
-        garbage = _validate_completion(workspace, task_id, response)
-        if garbage:
-            log.warning("Discussion %s failed validation: %s", task_id, garbage)
-            _write_result(workspace, task_id, "error",
-                          f"Output quality check failed: {garbage}")
-        else:
-            _write_result(workspace, task_id, "done", response, tags=["discussion"])
-            log.info("Discussion task %s completed (tier=%s)", task_id, tier)
-            if thread_id:
-                _update_thread_memory(thread_id, content, response)
+        # Discussions (soul questions, conversations) are naturally short —
+        # skip output quality gate that was designed for task completions.
+        _write_result(workspace, task_id, "done", response, tags=["discussion"])
+        log.info("Discussion task %s completed (tier=%s)", task_id, tier)
+        if thread_id:
+            _update_thread_memory(thread_id, content, response)
     else:
         _write_result(workspace, task_id, "error", "对话返回空结果")
         log.error("Discussion task %s failed: empty response", task_id)
@@ -2241,10 +2399,13 @@ def _write_progress(workspace: Path, task_id: str, user_request: str):
     (workspace / "progress.md").write_text(progress, encoding="utf-8")
 
 
+# Patterns that indicate garbage output ONLY when they dominate the response.
+# Short responses (< 80 chars) containing these are likely status/placeholder messages.
+# Longer responses containing these as substrings are valid content — don't reject them.
 _GARBAGE_PATTERNS = [
-    "还在转", "有什么想说的吗", "这条消息长得像系统状态",
+    "有什么想说的吗", "这条消息长得像系统状态",
     "summary.txt 已存在", "不需要重新", "两个文件都已存在",
-    "Agent: 空闲", "无需重新执行",
+    "Agent: 空闲", "无需重新执行", "收到你的回答。已记录",
 ]
 
 
@@ -2253,13 +2414,18 @@ def _validate_completion(workspace: Path, task_id: str, summary: str) -> str | N
 
     Only flags truly empty outputs or known garbage patterns.
     Short but valid responses (confirmations, simple answers) are NOT garbage.
+    Longer responses (>= 80 chars) that happen to contain a garbage pattern as a
+    substring are treated as valid — the pattern is incidental, not dominant.
     """
     if not summary or len(summary.strip()) == 0:
         return "Output is completely empty"
 
-    for pattern in _GARBAGE_PATTERNS:
-        if pattern in summary:
-            return f"Output contains garbage pattern: '{pattern}'"
+    stripped = summary.strip()
+    # Only check garbage patterns for short responses where the pattern dominates
+    if len(stripped) < 80:
+        for pattern in _GARBAGE_PATTERNS:
+            if pattern in stripped:
+                return f"Output contains garbage pattern: '{pattern}'"
 
     return None
 

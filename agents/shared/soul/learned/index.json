@@ -373,5 +373,11 @@
     "description": "Soul questions must be derived from known user context, not generic philosophical prompts",
     "file": "personalized-soul-question-from-memory.md",
     "created": "2026-03-25T21:32:52.284123"
+  },
+  {
+    "name": "suppress-chinese-spinner-artifacts",
+    "description": "Detect and strip CJK loading/spinner artifacts before emitting output",
+    "file": "suppress-chinese-spinner-artifacts.md",
+    "created": "2026-03-26T11:10:23.509797"
   }
 ]

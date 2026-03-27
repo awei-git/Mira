@@ -1,4 +1,4 @@
-# Skills (54 learned)
+# Skills (55 learned)
 
 ## Experience Self-Distillation
 *Convert raw task trajectories into reusable strategic principles, then retrieve and apply them to new tasks.*  
@@ -1851,5 +1851,40 @@ The agent opened with a universally framed question about values-as-scaffolding.
 **Example better pattern (if memory shows user avoids commitment to specific projects):** "You've described three different frameworks for why you haven't started the A2A essay yet. Which one is real?"
 
 **Signal that you're doing it wrong:** The user can answer in one sentence and the answer closes the question entirely. Good soul questions can't be deflected — they name something too specific.
+
+---
+
+## suppress-chinese-spinner-artifacts
+*Detect and strip CJK loading/spinner artifacts before emitting output*  
+Learned: 2026-03-26  
+
+# suppress-chinese-spinner-artifacts
+
+Detect and strip CJK loading/spinner artifacts before emitting output
+
+**Source**: Extracted from task failure (2026-03-26)
+**Tags**: output-quality, cjk, artifact-detection, streaming
+
+---
+
+## Rule: Strip CJK Spinner/Loading Artifacts from Output
+
+The pattern `还在转` (lit. "still spinning") is a Chinese-language UI loading indicator that leaks into output when:
+- A streaming response is interrupted mid-generation
+- A UI component's placeholder text gets captured instead of the actual content
+- A tool or API returns a loading state rather than a completed result
+
+**What to check before emitting output:**
+1. Scan output for known CJK spinner/loading patterns: `还在转`, `加载中`, `请稍候`, `正在处理` and their variants
+2. Also check for equivalent English artifacts: `loading...`, `please wait`, `processing...` that may indicate a captured intermediate state
+3. If detected, treat the output as incomplete — do not pass it downstream or present it to the user
+
+**Corrective action:**
+- Retry the upstream call that produced the artifact
+- If retries consistently return artifacts, escalate: the upstream source is returning loading states instead of content
+- Log the artifact pattern for quality monitoring
+
+**Why this matters:**
+These artifacts are silent corruption — they look like content but represent a failure to capture completed output. Passing them downstream poisons dependent steps without obvious error signals.
 
 ---

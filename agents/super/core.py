@@ -563,13 +563,21 @@ def _check_pending_publish():
 
 
 def _sweep_stuck_items(bridge, task_mgr):
-    """Find items stuck in 'working' with no active task and mark them failed."""
+    """Find items stuck in 'working' with no active task and mark them failed.
+    Also auto-dismiss alert-type items (informational, not actionable).
+    """
     from datetime import datetime, timezone
     STUCK_THRESHOLD = 1800  # 30 minutes
     for path in bridge.items_dir.glob("*.json"):
         try:
             item = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
+            continue
+        # Auto-dismiss queued alerts — they're notifications, not tasks
+        if item.get("type") == "alert" and item.get("status") == "queued":
+            item_id = item.get("id", path.stem)
+            log.info("Auto-dismissing alert: %s", item_id)
+            bridge.update_status(item_id, "completed")
             continue
         if item.get("status") != "working":
             continue
@@ -1256,6 +1264,118 @@ def do_analyst(slot: str = ""):
 # REFLECT mode — consolidate memory, update interests, self-initiate
 # ---------------------------------------------------------------------------
 
+def _prune_worldview_by_decay():
+    """Ebbinghaus-style pruning: remove worldview sections not accessed in 60+ days.
+
+    Tracks per-section access metadata in worldview_decay.json.
+    A section is "accessed" when the worldview file is loaded during a reflect
+    cycle (proxy for relevance). Sections with zero recorded accesses after
+    DECAY_DAYS are pruned from worldview.md.
+
+    Permanent/HARD-RULE sections are never pruned.
+    """
+    from config import WORLDVIEW_FILE
+    from datetime import timedelta
+
+    DECAY_DAYS = 60
+    PROTECTED_KEYWORDS = {"HARD RULE", "HARD-RULE", "honesty", "quotes", "never"}
+
+    meta_file = WORLDVIEW_FILE.parent / "worldview_decay.json"
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        meta = {}
+
+    if not WORLDVIEW_FILE.exists():
+        return
+
+    worldview_text = WORLDVIEW_FILE.read_text(encoding="utf-8")
+    now = datetime.now()
+    now_str = now.strftime("%Y-%m-%d")
+
+    # Parse sections by ## headings
+    sections = []
+    current_heading = None
+    current_lines = []
+    for line in worldview_text.splitlines(keepends=True):
+        if line.startswith("## "):
+            if current_heading is not None:
+                sections.append((current_heading, "".join(current_lines)))
+            current_heading = line
+            current_lines = []
+        else:
+            current_lines.append(line)
+    if current_heading is not None:
+        sections.append((current_heading, "".join(current_lines)))
+
+    if not sections:
+        return
+
+    # Update access log for all current sections (mark them as "seen today")
+    for heading, _ in sections:
+        heading_key = heading.strip()
+        if heading_key not in meta:
+            meta[heading_key] = {
+                "first_added": now_str,
+                "last_accessed": now_str,
+                "access_count": 1,
+            }
+        else:
+            meta[heading_key]["last_accessed"] = now_str
+            meta[heading_key]["access_count"] = meta[heading_key].get("access_count", 0) + 1
+
+    # Identify sections to prune (zero accesses beyond creation in 60+ days)
+    pruned_headings = []
+    surviving_sections = []
+    header_lines = []  # Non-section preamble
+
+    # Collect preamble (lines before first ##)
+    preamble = ""
+    if sections:
+        first_idx = worldview_text.find(sections[0][0])
+        preamble = worldview_text[:first_idx]
+
+    for heading, body in sections:
+        heading_key = heading.strip()
+        entry = meta.get(heading_key, {})
+
+        # Never prune hard-rule sections
+        if any(kw.lower() in heading.lower() for kw in PROTECTED_KEYWORDS):
+            surviving_sections.append((heading, body))
+            continue
+
+        # Check decay: if access_count == 1 (only the creation touch) and age > DECAY_DAYS
+        first_added_str = entry.get("first_added", now_str)
+        try:
+            first_added = datetime.strptime(first_added_str, "%Y-%m-%d")
+        except ValueError:
+            first_added = now
+        age_days = (now - first_added).days
+        access_count = entry.get("access_count", 1)
+
+        if age_days > DECAY_DAYS and access_count <= 2:
+            pruned_headings.append(heading_key)
+            log.info("Worldview decay: pruning section '%s' (age=%d days, accesses=%d)",
+                     heading_key.strip(), age_days, access_count)
+        else:
+            surviving_sections.append((heading, body))
+
+    if pruned_headings:
+        # Rewrite worldview with surviving sections only
+        new_content = preamble + "".join(
+            heading + body for heading, body in surviving_sections
+        )
+        update_worldview(new_content)
+        log.info("Worldview pruned: removed %d section(s): %s",
+                 len(pruned_headings), [h[:40] for h in pruned_headings])
+
+    # Persist updated metadata
+    try:
+        meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        log.warning("Could not save worldview decay metadata: %s", e)
+
+
 def do_reflect():
     """Weekly reflection: consolidate memory, evolve interests, maybe self-initiate."""
     log.info("Starting reflect cycle")
@@ -1310,6 +1430,12 @@ def do_reflect():
             log.info("Worldview evolved from reflection")
     except Exception as e:
         log.warning("Worldview evolution failed: %s", e)
+
+    # --- Ebbinghaus decay: prune stale worldview sections ---
+    try:
+        _prune_worldview_by_decay()
+    except Exception as e:
+        log.warning("Worldview decay pruning failed: %s", e)
 
     if project_section and "nothing right now" not in project_section.lower():
         # The agent wants to start something on its own
@@ -1842,6 +1968,9 @@ def do_daily_report():
     if pending_file.exists():
         pending_items.append("有一篇文章等你审批发布")
 
+    # 7. Token usage
+    usage_text = _gather_usage_summary(today)
+
     # --- Build report (pure technical — no reflections) ---
     sections = []
     sections.append(f"Mira 日报 {today}")
@@ -1868,6 +1997,9 @@ def do_daily_report():
 
     if stats_text:
         sections.append(f"\nSubstack 数据:\n{stats_text}")
+
+    if usage_text:
+        sections.append(f"\nToken 用量:\n{usage_text}")
 
     if pending_items:
         sections.append(f"\n需要你介入:\n" + "\n".join(f"- {item}" for item in pending_items))
@@ -2653,6 +2785,60 @@ def _gather_today_skills() -> str:
     except (json.JSONDecodeError, OSError):
         pass
     return "\n".join(lines)
+
+
+def _gather_usage_summary(date_str: str) -> str:
+    """Aggregate token usage from daily JSONL log into a readable summary."""
+    usage_file = LOGS_DIR / f"usage_{date_str}.jsonl"
+    if not usage_file.exists():
+        return ""
+    try:
+        # Aggregate by agent × provider × model
+        from collections import defaultdict
+        by_agent = defaultdict(lambda: defaultdict(lambda: {"prompt": 0, "completion": 0, "calls": 0}))
+        by_provider = defaultdict(lambda: {"prompt": 0, "completion": 0, "calls": 0})
+        total = {"prompt": 0, "completion": 0, "calls": 0}
+
+        for line in usage_file.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            agent = r.get("agent", "unknown")
+            provider = r.get("provider", "?")
+            model = r.get("model", "?")
+            pt = r.get("prompt_tokens", 0)
+            ct = r.get("completion_tokens", 0)
+
+            key = f"{provider}/{model}"
+            by_agent[agent][key]["prompt"] += pt
+            by_agent[agent][key]["completion"] += ct
+            by_agent[agent][key]["calls"] += 1
+            by_provider[key]["prompt"] += pt
+            by_provider[key]["completion"] += ct
+            by_provider[key]["calls"] += 1
+            total["prompt"] += pt
+            total["completion"] += ct
+            total["calls"] += 1
+
+        lines = []
+        # Per-model totals
+        lines.append(f"总计: {total['calls']}次调用, {total['prompt']+total['completion']:,} tokens")
+        for key, v in sorted(by_provider.items(), key=lambda x: -(x[1]["prompt"]+x[1]["completion"])):
+            lines.append(f"  {key}: {v['calls']}次, {v['prompt']+v['completion']:,} tok (in:{v['prompt']:,} out:{v['completion']:,})")
+
+        # Per-agent breakdown
+        lines.append("")
+        for agent, models in sorted(by_agent.items()):
+            agent_total = sum(m["prompt"] + m["completion"] for m in models.values())
+            agent_calls = sum(m["calls"] for m in models.values())
+            lines.append(f"{agent}: {agent_calls}次, {agent_total:,} tokens")
+            for key, v in sorted(models.items(), key=lambda x: -(x[1]["prompt"]+x[1]["completion"])):
+                lines.append(f"  {key}: {v['calls']}次, {v['prompt']+v['completion']:,}")
+
+        return "\n".join(lines)
+    except Exception as e:
+        log.warning("Usage summary failed: %s", e)
+        return ""
 
 
 def _gather_today_comments() -> str:
@@ -4157,6 +4343,10 @@ def main():
     _prune_old_logs(LOGS_DIR)
 
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
+
+    # Set usage agent context for token tracking
+    from sub_agent import set_usage_agent
+    set_usage_agent(command if command != "run" else "super")
 
     # Parse optional flags
     args = sys.argv[2:]

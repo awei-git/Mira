@@ -31,8 +31,8 @@ log = logging.getLogger("podcast")
 # Config
 # ---------------------------------------------------------------------------
 
-GEMINI_MODEL_TTS      = "gemini-2.5-pro-preview-tts"
-GEMINI_MODEL_TTS_FALL = "gemini-2.5-flash-preview-tts"  # fallback when Pro hits 429
+GEMINI_MODEL_TTS      = "gemini-2.5-flash-preview-tts"  # Flash: free tier available
+GEMINI_MODEL_TTS_FALL = "gemini-2.5-flash-preview-tts"  # same (Pro has no free tier)
 GEMINI_MODEL_THINK = "gemini-2.5-pro"          # for script generation
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ VOL_MM      = 1.5    # louder than default (1.0)
 # ---------------------------------------------------------------------------
 VOICE_MIRA_EN_GEMINI  = "Leda"    # Mira EN: female, warm, calm, gentle
 VOICE_MIRA_ZH_GEMINI  = "Kore"   # Mira ZH: female, firm, crisp (the "crispy" voice)
-VOICE_HOST_EN_GEMINI  = "Charon"  # EN host: male, warm, grounded, energetic
+VOICE_HOST_EN_GEMINI  = "Charon"  # EN host: male, warm, grounded
 VOICE_HOST_ZH_GEMINI  = "Charon"  # ZH host: male, curious, grounded
 SPEED_ZH_GEMINI      = 1.12      # Gemini ZH tends to be slow; 1.12x tightens it up
 
@@ -168,7 +168,7 @@ def _concat_mp3_chunks(chunk_paths: list[Path], output_path: Path) -> bool:
 
 
 def _call_gemini_tts(payload: dict, api_key: str,
-                     _retries: int = 5, _model: str | None = None) -> bytes | None:
+                     _retries: int = 3, _model: str | None = None) -> bytes | None:
     """POST to Gemini TTS endpoint, return raw PCM bytes or None.
 
     Tries Pro first; on 429 quota exhaustion, falls back to Flash TTS automatically.
@@ -198,17 +198,31 @@ def _call_gemini_tts(payload: dict, api_key: str,
 
         if resp.status_code == 429:
             rate_limited = True
-            # Fallback to Flash TTS if Pro is rate-limited (don't waste time retrying)
-            if model == GEMINI_MODEL_TTS and model != GEMINI_MODEL_TTS_FALL:
-                log.warning("Pro TTS 429 — falling back to Flash TTS")
-                return _call_gemini_tts(payload, api_key, _retries=_retries, _model=GEMINI_MODEL_TTS_FALL)
+            # Parse retry delay from response — each 429 counts toward RPM,
+            # so we MUST wait the full suggested delay before retrying.
+            try:
+                err_msg = resp.json().get("error", {}).get("message", "")
+                import re as _re429
+                m = _re429.search(r"retry in ([\d.]+)s", err_msg)
+                retry_secs = float(m.group(1)) if m else 65.0
+            except Exception:
+                retry_secs = 65.0
             if attempt < _retries - 1:
-                wait = 60 * (attempt + 1)
-                log.warning("Gemini TTS rate limited (429), waiting %ds...", wait)
+                wait = retry_secs + 5  # full API delay + 5s buffer
+                log.warning("Gemini TTS 429 — waiting %.0fs (attempt %d/%d)",
+                            wait, attempt + 1, _retries)
                 _time.sleep(wait)
                 continue
             break
 
+        if resp.status_code == 400 and "generate text" in resp.text:
+            # Known Gemini TTS bug: model sometimes generates text instead of audio.
+            # Retry — usually succeeds on second attempt.
+            log.warning("Gemini TTS 400 (text-instead-of-audio) — retrying")
+            if attempt < _retries - 1:
+                _time.sleep(3)
+                continue
+            break
         if resp.status_code != 200:
             log.error("Gemini TTS %d: %s", resp.status_code, resp.text[:300])
             return None
@@ -253,7 +267,7 @@ def _call_gemini_tts_text(text: str, voice_name: str, lang: str,
     if lang == "zh":
         instruction = "你是播客主播，正在录制一期对谈节目。用自然的播客语气朗读，有感情起伏，该好奇时上扬，该感叹时加重，该停顿时留白。不要像念稿，要像在跟朋友聊一个让你兴奋的话题。\n\n"
     else:
-        instruction = "You are a podcast host recording a conversation episode. Read with natural energy and emotion. Be curious when asking, emphatic when making a point, and pause where it matters. Sound like you are genuinely engaged in the topic, not reading a script.\n\n"
+        instruction = "Say the following text out loud exactly as written, with natural podcast energy and emotion. Be curious when asking, emphatic when making a point, and pause where it matters. Do not generate any text response — only produce audio.\n\n"
     payload = {
         "contents": [{"parts": [{"text": instruction + text}]}],
         "generationConfig": {
@@ -921,8 +935,8 @@ def _tts_call_with_fallback(text: str, speaker: str,
     - If all Gemini attempts fail, try MiniMax once.
     - If both fail, notify user via bridge and return (None, '').
     """
-    GEMINI_RETRIES = 5
-    GEMINI_RETRY_WAIT = 300  # 5 minutes
+    GEMINI_RETRIES = 2
+    GEMINI_RETRY_WAIT = 65  # just over 1 minute — wait for RPM window to clear
 
     def _try_gemini_once() -> tuple[bytes | None, str]:
         api_key = _get_gemini_key()
@@ -944,14 +958,16 @@ def _tts_call_with_fallback(text: str, speaker: str,
             data, fmt = _try_gemini_once()
             if data is not None:
                 if attempt > 0:
-                    log.info("Gemini TTS succeeded on attempt %d/%d", attempt + 1, GEMINI_RETRIES)
+                    log.info("Gemini TTS succeeded on attempt %d", attempt + 1)
                 return data, fmt
             if fmt == 'quota':
-                log.warning("Gemini TTS quota exhausted — skipping remaining retries")
+                # RPD exhausted — don't waste requests retrying, just stop.
+                # Quota resets at midnight Pacific Time.
+                log.error("Gemini TTS daily quota (RPD) exhausted — stop and resume tomorrow")
                 return None, 'quota'
             if attempt < GEMINI_RETRIES - 1:
-                log.warning("Gemini TTS failed (attempt %d/%d) — retrying in %ds",
-                            attempt + 1, GEMINI_RETRIES, GEMINI_RETRY_WAIT)
+                log.warning("Gemini TTS 429 (RPM) — waiting %ds before retry %d/%d",
+                            GEMINI_RETRY_WAIT, attempt + 2, GEMINI_RETRIES)
                 time.sleep(GEMINI_RETRY_WAIT)
         log.error("Gemini TTS failed after %d attempts", GEMINI_RETRIES)
         return None, ''
@@ -1137,8 +1153,8 @@ def generate_tts_conversation(script: str, output_path: Path,
                     if not _pcm_chunk_to_mp3(data, turn_path):
                         log.error("  turn %d PCM→MP3 conversion failed", i + 1)
                         return False
-                # Brief pause between TTS calls to avoid burst rate limits.
-                # MiniMax handles ~20 RPM solo; Gemini QPM needs ~6s.
+                # Respect rate limits: MiniMax ~20 RPM (4s gap);
+                # Gemini TTS Tier 1: generous limits, 6s gap for safety.
                 time.sleep(4 if fmt == 'mp3' else 6)
             turn_mp3s.append(turn_path)
 
