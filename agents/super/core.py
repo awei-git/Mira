@@ -250,7 +250,7 @@ def do_talk():
                 _todo_id = todo_marker.read_text().strip()
                 if _todo_id and content:
                     bridge.add_followup(_todo_id, content, source="agent")
-                    bridge.update_todo(_todo_id, status="pending")  # back to pending for further interaction
+                    bridge.update_todo(_todo_id, status="done")
                     log.info("Todo %s: agent reply written to followups", _todo_id)
             log.info("STATE %s: working -> done", rec.task_id)
         elif rec.status in ("error", "timeout"):
