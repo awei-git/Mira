@@ -10,6 +10,7 @@ Usage:
 import argparse
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -156,6 +157,55 @@ def _emit_status(task_id: str, text: str, icon: str = "gear"):
             )
         except (json.JSONDecodeError, OSError):
             pass
+
+
+# ---------------------------------------------------------------------------
+# Privacy detection — local keyword match, NO cloud API calls
+# ---------------------------------------------------------------------------
+
+_PRIVATE_KEYWORDS = re.compile(
+    r"secret|private|confidential|隐私|私密|保密|机密|"
+    r"password|密码|口令|"
+    r"tax(?:es)?|报税|税务|税|"
+    r"salary|工资|薪资|收入|"
+    r"medical|health|病历|体检|就医|诊断|"
+    r"legal|lawsuit|律师|官司|"
+    r"bank\s*account|银行|账户余额|"
+    r"ssn|social\s*security|身份证|护照|"
+    r"family\s*(?:issue|problem|matter)|家事|家庭矛盾",
+    re.IGNORECASE,
+)
+
+
+def _is_private_task(content: str, task_id: str = "",
+                     tags: list[str] | None = None) -> bool:
+    """Detect privacy-sensitive content using LOCAL keyword matching only.
+
+    No LLM call, no network request. Pure regex + tag check.
+    Conservative: false positives are OK (user can re-route),
+    but false negatives leak private data to cloud APIs.
+
+    Triggers:
+    1. User put "private" or "secret" or "隐私" in message text
+    2. Task ID contains "private" or "secret"
+    3. Task tags include "private" or "secret"
+    4. Content matches privacy keyword patterns (tax, salary, medical, etc.)
+
+    "private 但记住" / "private but remember" → still private, but thread memory kept.
+    """
+    # Explicit user override — user said "private" in the message
+    lower = content[:500].lower()
+    if any(kw in lower for kw in ("private", "secret", "隐私", "私密", "保密")):
+        return True
+
+    # Task metadata
+    if task_id and ("private" in task_id or "secret" in task_id):
+        return True
+    if tags and ("private" in tags or "secret" in tags):
+        return True
+
+    # Content pattern matching
+    return bool(_PRIVATE_KEYWORDS.search(content[:500]))
 
 
 # ---------------------------------------------------------------------------
@@ -1264,6 +1314,15 @@ def main():
         progress = progress_file.read_text(encoding="utf-8")
         log.info("Loaded progress.md (%d chars) from prior run", len(progress))
 
+    # --- Privacy pre-routing: detect secret tasks LOCALLY before any cloud call ---
+    task_tags = msg_data.get("tags", [])
+    if _is_private_task(msg_content, task_id=args.task_id, tags=task_tags):
+        log.info("Privacy keywords detected — routing to secret agent (local only)")
+        _emit_status(args.task_id, "Private mode...", "lock.shield")
+        _handle_secret(workspace, args.task_id, msg_content, msg_sender, thread_id)
+        log.info("Worker exiting (secret — no cloud, no persist)")
+        return
+
     # --- Proactive recall: search memory for relevant prior context ---
     prior_context = ""
     try:
@@ -2185,10 +2244,19 @@ def _handle_math(workspace: Path, task_id: str, content: str,
 
 def _handle_secret(workspace: Path, task_id: str, content: str,
                    sender: str, thread_id: str):
-    """Handle privacy-sensitive requests via local Ollama. No cloud APIs."""
+    """Handle privacy-sensitive requests via local Ollama. No cloud APIs.
+
+    Privacy guarantees:
+    - ONLY calls Ollama (localhost) — no cloud APIs
+    - Does NOT save episode (no pgvector persistence of private content)
+    - Does NOT update memory.md with private content
+    - Does NOT log message content (only task_id and status)
+    - Cleans workspace output after delivering result
+    """
     sys.path.insert(0, str(_AGENTS_DIR / "secret"))
     from handler import handle as secret_handle
 
+    # Load thread history (local file only, not from cloud)
     thread_history = load_thread_history(thread_id)
 
     try:
@@ -2196,18 +2264,37 @@ def _handle_secret(workspace: Path, task_id: str, content: str,
             workspace, task_id, content, sender, thread_id,
             thread_history=thread_history,
         )
-    except Exception as e:
-        _write_result(workspace, task_id, "error", f"Secret agent 失败: {e}")
-        log.error("Secret task %s failed: %s", task_id, e)
+    except (OSError, RuntimeError) as e:
+        _write_result(workspace, task_id, "error", f"Secret agent 失败: {e}",
+                      agent="secret")
+        log.error("Secret task %s failed (no content logged)", task_id)
         return
 
     if summary:
-        _write_result(workspace, task_id, "done", summary, tags=["private"])
-        log.info("Secret task %s completed (local-only)", task_id)
+        # Write result for bridge delivery — but do NOT persist to episode/memory
+        _write_result(workspace, task_id, "done", summary,
+                      tags=["private"], agent="secret")
+
+        # "private 但记住" / "but remember" → keep thread memory for continuity
+        lower = content[:200].lower()
+        keep_memory = any(kw in lower for kw in ("但记住", "记住", "but remember", "remember"))
+
         if thread_id:
-            _update_thread_memory(thread_id, content, summary)
+            if keep_memory:
+                _update_thread_memory(thread_id, content, summary)
+                log.info("Secret task %s completed (local-only, memory kept)", task_id)
+            else:
+                _update_thread_memory(thread_id, "[private message]", "[private response]")
+                log.info("Secret task %s completed (local-only, no persist)", task_id)
+
+        # Clean up workspace — don't leave private content on disk
+        output_file = workspace / "output.md"
+        if output_file.exists():
+            output_file.unlink()
     else:
-        _write_result(workspace, task_id, "error", "本地模型返回了空结果，请确认 Ollama 是否在运行")
+        _write_result(workspace, task_id, "error",
+                      "本地模型返回了空结果，请确认 Ollama 是否在运行",
+                      agent="secret")
         log.error("Secret task %s failed: empty response", task_id)
 
 
@@ -2536,6 +2623,9 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
     tmp_path.rename(result_path)
 
     # --- Archive conversation as episode for long-term recall ---
+    # SKIP for private tasks — never persist sensitive content
+    if tags and "private" in tags:
+        return
     if status in ("done", "completed", "error", "failed"):
         try:
             # Try items/ first, fallback to legacy tasks/

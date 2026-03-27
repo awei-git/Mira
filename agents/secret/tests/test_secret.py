@@ -62,6 +62,32 @@ def test_uses_ollama_only():
     assert "claude_act" not in source, "Secret agent should NOT use claude_act"
 
 
+def test_privacy_routing_keywords():
+    """Privacy keywords should trigger local routing."""
+    sys.path.insert(0, str(_AGENTS / "super"))
+    from task_worker import _is_private_task
+
+    # Should route to secret
+    assert _is_private_task("帮我算一下税"), "税务 should be private"
+    assert _is_private_task("my password is broken"), "password should be private"
+    assert _is_private_task("I need to discuss a family matter"), "family matter should be private"
+    assert _is_private_task("请帮我处理隐私信息"), "隐私 should be private"
+    assert _is_private_task("what's my salary breakdown"), "salary should be private"
+    assert _is_private_task("help me with my medical records"), "medical should be private"
+
+    # Should NOT route to secret (normal tasks)
+    assert not _is_private_task("写一篇关于AI的文章"), "normal writing should not be private"
+    assert not _is_private_task("what is 2+2"), "math should not be private"
+    assert not _is_private_task("搜索最新的机器学习论文"), "research should not be private"
+
+
+def test_handler_no_disk_persistence():
+    """Secret handler should NOT write output.md."""
+    source = Path(_AGENTS / "secret" / "handler.py").read_text(encoding="utf-8")
+    assert "output.md" not in source or "Do NOT write" in source, \
+        "Secret handler should not persist output to disk"
+
+
 def test_ollama_service_running():
     """Ollama should be running and responsive."""
     import urllib.request

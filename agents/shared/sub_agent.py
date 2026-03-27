@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import random
+import re
 import subprocess
 import threading
 import time
