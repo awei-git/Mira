@@ -31,15 +31,22 @@ def extract_pdf_text(path: Path, max_chars: int = 6000) -> str:
 
 
 def _extract_w2_regex(text: str) -> dict:
-    """Extract W-2 data using regex patterns. More reliable than LLM for forms."""
+    """Extract W-2 data using regex patterns + positional heuristics.
+
+    W-2 layout (with or without labels):
+    Line 1: EIN          wages(Box1)       fed_withheld(Box2)
+    Line 2:              ss_wages(Box3)    ss_tax(Box4)
+    Line 3: EIN          med_wages(Box5)   med_tax(Box6)
+    ...
+    State line: ST  EIN  state_wages       state_tax(Box17)
+    Box 12 codes: D=401k, W=HSA, C=group life, DD=health
+    """
     import re
     data = {}
 
-    # Common W-2 patterns: "Box N" followed by amount, or labeled fields
-    # Wages (Box 1)
+    # Strategy 1: Labeled fields (explicit "Box N" or "wages, tips")
     for pattern in [
         r'(?:box\s*1|wages.*tips.*other\s*comp)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
-        r'(?:1\s+wages)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
         r'wages[,\s]*tips[,\s]*(?:other\s+)?comp[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
     ]:
         m = re.search(pattern, text, re.IGNORECASE)
@@ -47,10 +54,8 @@ def _extract_w2_regex(text: str) -> dict:
             data['wages'] = float(m.group(1).replace(',', ''))
             break
 
-    # Federal tax withheld (Box 2)
     for pattern in [
         r'(?:box\s*2|federal\s+income\s+tax\s+withheld)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
-        r'(?:2\s+federal\s+income\s+tax)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
         r'federal\s+(?:income\s+)?tax\s+w(?:ith)?held[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
     ]:
         m = re.search(pattern, text, re.IGNORECASE)
@@ -58,29 +63,61 @@ def _extract_w2_regex(text: str) -> dict:
             data['fed_withheld'] = float(m.group(1).replace(',', ''))
             break
 
-    # State tax withheld (Box 17)
-    for pattern in [
-        r'(?:box\s*17|state\s+income\s+tax)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
-        r'(?:17\s+state\s+income\s+tax)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
-    ]:
-        m = re.search(pattern, text, re.IGNORECASE)
-        if m:
-            data['state_withheld'] = float(m.group(1).replace(',', ''))
-            break
+    # Strategy 2: Positional — find ALL lines with EIN + two amounts
+    # W-2 layout: line1=Box1+2 (wages+fed), line3=Box5+6 (med+med tax)
+    # The FIRST match is Box1 (wages) + Box2 (fed withheld)
+    if 'wages' not in data:
+        # Match SSN (XXX-XX-XXXX) or EIN (XX-XXXXXXX) followed by two amounts
+        ein_lines = re.findall(
+            r'\d{2,3}-\d{2,3}-?\d{3,8}\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})',
+            text
+        )
+        if ein_lines:
+            # First EIN line = Box 1 (wages) + Box 2 (fed withheld)
+            v1 = float(ein_lines[0][0].replace(',', ''))
+            v2 = float(ein_lines[0][1].replace(',', ''))
+            if v1 > v2:
+                data['wages'] = v1
+                data['fed_withheld'] = v2
+            else:
+                data['wages'] = v2
+                data['fed_withheld'] = v1
 
-    # State code (Box 15)
-    m = re.search(r'(?:box\s*15|state\b)[^\w]*([A-Z]{2})\b', text)
+    # State line: "NY  EIN  amount  amount" or "ST  digits  amount  amount"
+    m = re.search(
+        r'\b([A-Z]{2})\s+\d{9,}\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})',
+        text
+    )
     if m:
         data['state'] = m.group(1)
+        # state wages and state tax withheld
+        sw = float(m.group(2).replace(',', ''))
+        st = float(m.group(3).replace(',', ''))
+        if sw > st:
+            data['state_withheld'] = st
+        else:
+            data['state_withheld'] = sw
 
-    # Social security wages (Box 3)
-    for pattern in [
-        r'(?:box\s*3|social\s+security\s+wages)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
-    ]:
-        m = re.search(pattern, text, re.IGNORECASE)
+    # Box 12 codes: D=401k, W=HSA
+    for code, key in [('D', 'retirement_401k'), ('W', 'hsa'),
+                      ('DD', 'health_insurance')]:
+        m = re.search(rf'\b{code}\s+([\d,]+\.\d{{2}})', text)
         if m:
-            data['ss_wages'] = float(m.group(1).replace(',', ''))
-            break
+            data[key] = float(m.group(1).replace(',', ''))
+
+    # SS wages (second line, two amounts where first ~176100 = SS wage base)
+    lines = text.split('\n')
+    for line in lines:
+        amounts = re.findall(r'([\d,]+\.\d{2})', line)
+        if len(amounts) >= 2:
+            v1 = float(amounts[0].replace(',', ''))
+            if 170000 < v1 < 180000:  # SS wage base is ~$176,100 for 2025
+                data['ss_wages'] = v1
+
+    # Employer name
+    m = re.search(r'([\w\s]+(?:Inc|Corp|LLC|Co|Ltd|Platforms)[\w\s.,]*)', text)
+    if m:
+        data['employer'] = m.group(1).strip()
 
     return data
 
