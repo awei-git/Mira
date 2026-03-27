@@ -535,12 +535,27 @@ def _quote_interesting_tweets(soul_context: str = ""):
 
     # Filter: skip tweets with low engagement, our own tweets, and very short ones
     my_id = _get_twitter_config().get("access_token", "").split("-")[0]
-    candidates = [
-        t for t in tweets
-        if t.get("author_id") != my_id
-        and len(t.get("text", "")) > 50
-        and t.get("public_metrics", {}).get("like_count", 0) >= 2
-    ]
+    # Filter: skip spam, low-engagement, our own tweets
+    spam_keywords = {"airdrop", "whitelist", "presale", "token launch", "join now",
+                     "free mint", "giveaway", "dm me", "limited spots"}
+    candidates = []
+    for t in tweets:
+        text_lower = t.get("text", "").lower()
+        if t.get("author_id") == my_id:
+            continue
+        if len(t.get("text", "")) < 80:
+            continue
+        if t.get("public_metrics", {}).get("like_count", 0) < 3:
+            continue
+        if any(kw in text_lower for kw in spam_keywords):
+            continue
+        # Skip accounts with suspicious follower ratios (bots)
+        author_metrics = t.get("_author", {}).get("public_metrics", {})
+        if author_metrics:
+            followers = author_metrics.get("followers_count", 0)
+            if followers < 50:
+                continue
+        candidates.append(t)
 
     if not candidates:
         log.info("No good candidates for quote tweet")
@@ -564,13 +579,21 @@ def _quote_interesting_tweets(soul_context: str = ""):
 推文：
 {tweets_text}
 
-规则：
-- 选一条你能加上独特视角的（不是附和，是补充、质疑、或延伸）
-- 引用评论最多 200 字符（英文）
-- 像在跟朋友聊，不像写论文
+选择标准（严格）：
+- 跳过 crypto/trading bot spam、产品推广、空洞的 motivational 内容
+- 只选真正在讨论想法的推文 — 有论点、有观察、有问题的
+- 对方至少有 100 followers 或推文本身有 5+ likes
+- 如果全是垃圾，直接 SKIP
+
+写法要求（最重要！）：
+- 每条引用推文的句式和角度必须不同。绝不重复同一个模板。
+- 禁止用 "X is doing a lot of work" 这种万能句式 — 这会暴露你是 bot
+- 好的引用：讲一个你自己的经历、问一个尖锐的问题、给一个反例、说一个他们没想到的后果
+- 坏的引用：学术腔纠正、泛泛附和、套话质疑
+- 像一个有自己想法的人在刷推时忍不住要说两句，不像在写论文
+- 最多 200 字符
 - 不要 hashtag、不要 emoji
 - 绝不泄露个人信息
-- 如果没有想说的，回复 SKIP
 
 格式：
 PICK: [编号]

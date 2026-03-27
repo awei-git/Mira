@@ -807,7 +807,16 @@ def run_notes_cycle(briefing_text: str = "",
     summary["queue_remaining"] = len(queue)
 
     if not queue:
-        log.info("Notes cycle: queue empty, nothing to post")
+        # Queue empty — generate a standalone Note from briefing or sparks
+        if can_post_note() and briefing_text:
+            note_text = generate_standalone_note(briefing_text, soul_context)
+            if note_text:
+                result = post_note(note_text)
+                if result:
+                    summary["queue_posted"] = True
+                    log.info("Posted standalone note: %s", note_text[:80])
+                    return summary
+        log.info("Notes cycle: queue empty, no standalone note generated")
         return summary
 
     if not can_post_note():

@@ -1901,7 +1901,7 @@ def do_daily_photo():
     try:
         proc = _sp.run(
             [python312, str(photo_dir / "daily_edit.py")],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, timeout=600,
             cwd=str(photo_dir),
         )
         if proc.returncode != 0:
@@ -1919,30 +1919,76 @@ def do_daily_photo():
         log.warning("Daily photo: %s", result.get("message", "no candidates"))
         return
 
-    # Build feed message
+    # Quality gate: don't send if review score is too low
+    review_score = (result.get("review") or {}).get("score", 0)
+    if review_score < 5:
+        log.warning("Daily photo: review score %s < 5, not sending. Critique: %s",
+                     review_score, (result.get("review") or {}).get("critique", "")[:200])
+        return
+
+    # Extract result data
     output_path = result.get("output", "")
     raw_name = Path(result.get("raw", "unknown")).stem
     score = result.get("score", 0)
     analysis = result.get("params", {}).get("analysis", {})
+    params = result.get("params", {})
 
+    # Copy rendered image to iCloud artifacts for iOS access
+    import shutil as _shutil
+    image_rel_path = ""
+    if output_path and Path(output_path).exists():
+        icloud_photos = ARTIFACTS_DIR / "photos"
+        icloud_photos.mkdir(parents=True, exist_ok=True)
+        icloud_dest = icloud_photos / Path(output_path).name
+        # Only copy if not already in iCloud (daily_edit may output directly there)
+        if Path(output_path).resolve() != icloud_dest.resolve():
+            _shutil.copy2(output_path, icloud_dest)
+        image_rel_path = f"photos/{Path(output_path).name}"
+        log.info("Rendered photo at iCloud: %s", icloud_dest)
+
+    # Build conversational message (Mira's voice)
     scene = analysis.get("scene_type", "")
     mood = analysis.get("mood_target", "")
     issues = analysis.get("key_issues", [])
+    review = result.get("review") or {}
 
-    msg_parts = [f"Today's photo: **{raw_name}**"]
+    # Describe edits applied
+    edit_notes = []
+    exp = params.get("exposure", {})
+    if exp.get("ev", 0) != 0:
+        direction = "提了" if exp["ev"] > 0 else "压了"
+        edit_notes.append(f"{direction}曝光 ({exp['ev']:+.1f} EV)")
+    film = params.get("filmic", {})
+    if film.get("contrast", 1.0) != 1.0:
+        edit_notes.append(f"filmic tone mapping (contrast {film['contrast']:.1f})")
+    cb = params.get("colorbalance", {})
+    if any(cb.get(k, 0) != 0 for k in ("shadows_H", "highlights_H", "shadows_C", "highlights_C")):
+        edit_notes.append("color balance 调了冷暖分离")
+    te = params.get("tone_eq", {})
+    if any(te.get(k, 0) != 0 for k in ("shadows", "blacks", "midtones")):
+        edit_notes.append("tone equalizer 调了暗部层次")
+
+    msg_parts = []
+    desc = f"选了 **{raw_name}**"
     if scene:
-        msg_parts.append(f"Scene: {scene}")
+        desc += f" — {scene}"
     if mood:
-        msg_parts.append(f"Mood: {mood}")
+        desc += f"，{mood}"
+    msg_parts.append(desc)
+
     if issues:
-        msg_parts.append("Key adjustments: " + "; ".join(issues[:3]))
-    msg_parts.append(f"\nModel score: {score:.1f}/10")
-    if output_path:
-        msg_parts.append(f"Output: `{Path(output_path).name}`")
+        msg_parts.append("原片的问题：" + "、".join(issues[:3]))
+
+    if edit_notes:
+        msg_parts.append("\n我做的调整：" + "，".join(edit_notes) + "。")
+
+    # Include self-review
+    if review.get("critique"):
+        msg_parts.append(f"\n我的自评：{review['critique']}")
+
+    msg_parts.append(f"\nReview score: **{review.get('score', score)}/10**")
     msg_parts.append(
-        "\n---\n"
-        "Reply with your score (0-10) and any feedback.\n"
-        "e.g. \"6 — too warm, shadows need more detail\""
+        "\n给个分？(0-10) + 你觉得哪里不对"
     )
 
     content = "\n".join(msg_parts)
@@ -1959,6 +2005,17 @@ def do_daily_photo():
         tags=["photo", "daily", "feedback"],
         origin="agent",
     )
+
+    # Inject image_path into the first message of the item JSON
+    if image_rel_path:
+        item_file = bridge.items_dir / f"{item_id}.json"
+        if item_file.exists():
+            item_data = json.loads(item_file.read_text(encoding="utf-8"))
+            if item_data.get("messages"):
+                item_data["messages"][0]["image_path"] = image_rel_path
+                item_file.write_text(json.dumps(item_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                log.info("Injected image_path=%s into item %s", image_rel_path, item_id)
+
     # Set status to needs-input so it shows in the attention banner
     bridge.update_status(item_id, "needs-input")
 
@@ -2195,7 +2252,7 @@ def _days_since_last_publish() -> float:
         return 999.0
 
 
-PUBLISH_COOLDOWN_DAYS = 3  # minimum days between Substack publications
+PUBLISH_COOLDOWN_DAYS = 2  # minimum days between Substack publications
 
 
 def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
