@@ -43,7 +43,6 @@ Mira/
 │   ├── outbox/         # Agent → User messages
 │   ├── tasks/          # Task state + comment threads
 │   └── heartbeat.json  # Agent status
-├── Mira-iOS/           # SwiftUI iPhone app
 ├── feeds/              # Feed sources + raw data
 ├── logs/               # Agent logs
 ├── config.yml          # Local settings (gitignored)
@@ -97,7 +96,7 @@ The writing pipeline runs models in parallel, then reviews and converges.
 
 ### Mira iOS app
 
-Open `Mira-iOS/Mira/Mira.xcodeproj` in Xcode, build to your device, and point it at the `Mira-bridge/` folder in iCloud Drive.
+The iOS app lives in `~/Sandbox/MiraApp/`. Open `MiraApp/Mira.xcodeproj` in Xcode, build to your device, and point it at the `Mira-bridge/` folder in iCloud Drive.
 
 ## License
 
