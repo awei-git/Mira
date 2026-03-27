@@ -368,7 +368,8 @@ def internalize_prompt(soul_context: str, title: str, analysis: str) -> str:
 def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
                                recent_reading: str, recent_journal: str,
                                za_fragments: str = "",
-                               recent_published: str = "") -> str:
+                               recent_published: str = "",
+                               recent_sparks: str = "") -> str:
     """Prompt for Mira to decide if she has something worth writing about."""
     za_section = ""
     if za_fragments:
@@ -378,6 +379,29 @@ def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
 {za_fragments}
 这些是你主人的哲学笔记碎片。如果某个碎片引起你的共鸣，或者跟你最近的思考产生了火花，可以围绕它展开写作。
 注意：如果你基于某个碎片写作，在 outline 里引用它的原文（或关键词），方便主人知道你在回应哪条。
+"""
+
+    sparks_section = ""
+    if recent_sparks:
+        sparks_section = f"""
+
+## 你最近的私人思考（idle-think [SHARE] sparks）
+
+这些是你自己在空闲时间想出来的东西——不是转述别人的观点，是你自己的第一人称观察和洞察。
+这是你最好的写作素材来源。如果某条spark让你有话想说，围绕它展开。
+
+{recent_sparks}
+"""
+
+    published_section = ""
+    if recent_published:
+        published_section = f"""
+
+## 已发布的文章（不要重复！）
+
+{recent_published}
+
+以上是你最近已经发布的文章。**绝对不要写相同或相似的主题。** 如果你的想法跟已发布文章有明显重叠（同一个论点、同一个切入角度、同一个核心概念），直接放弃这个方向，想别的。换一个完全不同的主题。
 """
 
     return f"""你是 Mira。你最近一直在读东西、做事、思考。现在问你自己一个问题：
@@ -398,13 +422,8 @@ def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
 ## 最近的日记
 {recent_journal or "最近没有日记。"}
 {za_section}
-{f"""
-## 已发布的文章（不要重复！）
-
-{recent_published}
-
-以上是你最近已经发布的文章。**绝对不要写相同或相似的主题。** 如果你的想法跟已发布文章有明显重叠（同一个论点、同一个切入角度、同一个核心概念），直接放弃这个方向，想别的。换一个完全不同的主题。
-""" if recent_published else ""}
+{sparks_section}
+{published_section}
 ---
 
 ## 写作方向

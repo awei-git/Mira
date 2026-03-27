@@ -1220,10 +1220,10 @@ def comment_on_post(post_url: str, comment_text: str) -> dict | None:
             log.warning("Comment on %s skipped (HTTP %d): post may be paywalled, deleted, or comments disabled", post_url, e.code)
         else:
             log.error("Comment on %s failed (HTTP %d): %s", post_url, e.code, error_body)
-        return None
+        return {"_error": True, "_error_code": e.code, "_url": post_url}
     except Exception as e:
         log.error("Comment on %s failed: %s", post_url, e)
-        return None
+        return {"_error": True, "_error_code": 0, "_url": post_url}
 
 
 def delete_comment(comment_id: int) -> bool:

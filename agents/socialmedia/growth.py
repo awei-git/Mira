@@ -140,10 +140,117 @@ def post_comment_on_article(post_url: str, comment_text: str) -> dict | None:
     result = comment_on_post(post_url, comment_text)
 
     if result:
+        if isinstance(result, dict) and result.get("_error"):
+            # comment_on_post returned an error marker
+            _record_failed_url(post_url, error_code=result.get("_error_code", 0))
+            return None
         record_comment(post_url, comment_text, result.get("id", 0))
         log.info("Growth comment posted on %s", post_url)
+    else:
+        _record_failed_url(post_url)
 
     return result
+
+
+def _record_failed_url(url: str, error_code: int = 0):
+    """Record a URL that failed to accept a comment.
+
+    Accumulates failures. At end of each proactive comment cycle,
+    _diagnose_comment_failures() asks the LLM what to do.
+    """
+    state = _load_state()
+    failed = state.get("failed_comment_urls", {})
+    failed[url] = {
+        "last_failed": datetime.now().isoformat(),
+        "error_code": error_code,
+        "fail_count": failed.get(url, {}).get("fail_count", 0) + 1,
+    }
+    state["failed_comment_urls"] = failed
+    _save_state(state)
+    log.info("Recorded failed comment URL (code %d, count %d): %s",
+             error_code, failed[url]["fail_count"], url)
+
+
+def _get_failed_urls() -> set[str]:
+    """Get URLs that have been marked as permanently skipped."""
+    state = _load_state()
+    failed = state.get("failed_comment_urls", {})
+    return {u for u, info in failed.items()
+            if isinstance(info, dict) and info.get("action") == "skip"}
+
+
+def _diagnose_comment_failures():
+    """Ask LLM to decide what to do about accumulated comment failures.
+
+    Called at the end of each proactive comment cycle if there are
+    undiagnosed failures. The LLM can: skip (permanently remove),
+    retry (keep in pool), or replace (suggest finding new posts
+    from that publication instead).
+    """
+    state = _load_state()
+    failed = state.get("failed_comment_urls", {})
+
+    # Find undiagnosed failures (no action yet)
+    undiagnosed = {u: info for u, info in failed.items()
+                   if isinstance(info, dict) and not info.get("action")}
+    if not undiagnosed:
+        return
+
+    failures_text = "\n".join(
+        f"- {url} (HTTP {info.get('error_code', '?')}, failed {info.get('fail_count', 1)}x)"
+        for url, info in undiagnosed.items()
+    )
+
+    prompt = f"""以下 Substack 评论 URL 最近发帖失败了：
+
+{failures_text}
+
+对每个 URL，判断应该怎么处理：
+- **skip**: 帖子被删/付费墙/评论关闭，永久跳过
+- **retry**: 可能是临时问题，下次再试
+- **replace**: 这个 publication 还值得关注，但这篇帖子不行了，去找该 publication 的其他帖子
+
+回复格式（每行一个）：
+URL | action | reason
+
+只输出上面的格式，不要多余的话。"""
+
+    try:
+        from sub_agent import claude_think
+        resp = claude_think(prompt, timeout=30, tier="light")
+    except Exception as e:
+        log.warning("Comment failure diagnosis failed: %s", e)
+        return
+
+    if not resp:
+        return
+
+    import re as _re
+    for line in resp.strip().split("\n"):
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 2:
+            continue
+        url = parts[0]
+        action = parts[1].lower()
+        reason = parts[2] if len(parts) > 2 else ""
+
+        if url not in failed:
+            continue
+
+        if action in ("skip", "retry", "replace"):
+            failed[url]["action"] = action
+            failed[url]["reason"] = reason
+            log.info("Comment failure diagnosed: %s → %s (%s)", url, action, reason)
+
+            # For 'retry', clear the entry after diagnosis so it re-enters the pool
+            if action == "retry":
+                del failed[url]
+        else:
+            # Default to skip for unrecognized actions
+            failed[url]["action"] = "skip"
+
+    state["failed_comment_urls"] = failed
+    _save_state(state)
 
 
 def get_comment_stats() -> dict:
@@ -495,6 +602,7 @@ def _proactive_comment(soul_context: str = ""):
 
     state = _load_state()
     commented_urls = {c["url"] for c in state.get("comment_history", [])}
+    failed_urls = _get_failed_urls()
 
     # Combine LIKEABLE_SUBDOMAINS + subscriptions, filter to *.substack.com only
     # Prioritize smaller publications (subscriptions first — comments are more visible there)
@@ -525,7 +633,7 @@ def _proactive_comment(soul_context: str = ""):
             posts = r.json()
             for post in posts:
                 url = f"https://{sub}.substack.com/p/{post.get('slug', '')}"
-                if url in commented_urls:
+                if url in commented_urls or url in failed_urls:
                     continue
                 # Skip posts older than 14 days
                 pub_date = post.get("post_date", "")
@@ -643,6 +751,12 @@ SKIP"""
             time.sleep(2)  # Small gap between comments
 
     log.info("Proactive commenting: posted %d/%d comments", posted, len(pairs))
+
+    # Diagnose any accumulated failures
+    try:
+        _diagnose_comment_failures()
+    except Exception as e:
+        log.warning("Comment failure diagnosis error: %s", e)
 
 
 # ---------------------------------------------------------------------------

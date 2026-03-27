@@ -3603,6 +3603,28 @@ def do_autowrite_check():
         if journals:
             recent_journal = journals[0].read_text(encoding="utf-8")[:1500]
 
+    # Gather recent idle-think [SHARE] sparks — these are Mira's most personal,
+    # first-person observations and should be the primary source for writing
+    recent_sparks = ""
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        spark_files = sorted(JOURNAL_DIR.glob(f"{today}_idle_question_*.md"), reverse=True)
+        # Also check yesterday
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        spark_files += sorted(JOURNAL_DIR.glob(f"{yesterday}_idle_question_*.md"), reverse=True)
+
+        share_thoughts = []
+        for sf in spark_files[:30]:  # cap file reads
+            content = sf.read_text(encoding="utf-8")
+            share_match = re.search(r'\[SHARE:\s*(.+?)\]', content, re.DOTALL)
+            if share_match:
+                share_thoughts.append(share_match.group(1).strip())
+        if share_thoughts:
+            recent_sparks = "\n\n---\n\n".join(share_thoughts[:10])
+            log.info("Loaded %d SHARE sparks for autowrite context", len(share_thoughts))
+    except Exception as e:
+        log.warning("Failed to load idle-think sparks for autowrite: %s", e)
+
     recent_published = _extract_recent_published_titles(days=14)
 
     prompt = autonomous_writing_prompt(
@@ -3612,6 +3634,7 @@ def do_autowrite_check():
         recent_journal=recent_journal,
         za_fragments=za_fragments,
         recent_published=recent_published,
+        recent_sparks=recent_sparks,
     )
     result = claude_think(prompt, timeout=120)
     if not result:
