@@ -2266,7 +2266,7 @@ def _handle_secret(workspace: Path, task_id: str, content: str,
         )
     except (OSError, RuntimeError) as e:
         _write_result(workspace, task_id, "error", f"Secret agent 失败: {e}",
-                      agent="secret")
+                      tags=["private"], agent="secret")
         log.error("Secret task %s failed (no content logged)", task_id)
         return
 
@@ -2294,7 +2294,7 @@ def _handle_secret(workspace: Path, task_id: str, content: str,
     else:
         _write_result(workspace, task_id, "error",
                       "本地模型返回了空结果，请确认 Ollama 是否在运行",
-                      agent="secret")
+                      tags=["private"], agent="secret")
         log.error("Secret task %s failed: empty response", task_id)
 
 
