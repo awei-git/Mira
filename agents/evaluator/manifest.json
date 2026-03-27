@@ -1,0 +1,11 @@
+{
+  "name": "evaluator",
+  "description": "Performance evaluator — scores each agent individually, aggregates into Mira-level assessment, generates top-down improvement plans.",
+  "keywords": ["evaluate", "assess", "score", "review", "performance", "improvement"],
+  "handles": ["agent evaluation", "performance review", "improvement planning"],
+  "tier": "light",
+  "timeout_category": "short",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": true,
+  "scheduler_only": false
+}

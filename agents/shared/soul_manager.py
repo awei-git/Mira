@@ -118,6 +118,16 @@ def format_soul(soul: dict) -> str:
     except (ImportError, ModuleNotFoundError) as e:
         log.debug("Scorecard loading skipped: %s", e)
 
+    # Active improvement plan (from score → action pipeline)
+    try:
+        from evaluator import get_active_improvements
+        improvements = get_active_improvements()
+        if improvements:
+            parts.append("\n\n# Active Self-Improvement Focus\n")
+            parts.append(improvements)
+    except (ImportError, ModuleNotFoundError):
+        pass
+
     return "".join(parts)
 
 

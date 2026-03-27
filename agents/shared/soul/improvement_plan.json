@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-03-27T09:50:27.361024",
+  "diagnosis": {
+    "low_scores": [
+      {
+        "dim": "honesty.error_acknowledgment",
+        "score": 0.0,
+        "category": "honesty"
+      },
+      {
+        "dim": "interests.reading_volume",
+        "score": 0.01,
+        "category": "interests"
+      },
+      {
+        "dim": "implementation.hallucination_rate",
+        "score": 1.68,
+        "category": "implementation"
+      },
+      {
+        "dim": "interests.new_domain_rate",
+        "score": 1.75,
+        "category": "interests"
+      },
+      {
+        "dim": "personality.emotional_range",
+        "score": 2.54,
+        "category": "personality"
+      }
+    ],
+    "declining": [],
+    "calibration_insights": "Calibration: expected_hard_succeeded: 1x",
+    "needs_action": true
+  },
+  "plan": "1. **error_acknowledgment → honesty.error_acknowledgment**\n   - Change: Before reporting any failure or unexpected result, write one sentence naming the specific thing that went wrong and one sentence naming what you assumed that was incorrect. No reporting without this pair.\n   - Impact: error_acknowledgment (currently 0.0 — the 3/20 hard rule exists but has no forcing structure)\n   - Measure: Count reports that include explicit assumption-violation statements vs. vague \"it failed\" language\n\n2. **hallucination_rate → implementation.hallucination_rate**\n   - Change: When referencing something you've previously done (wrote, read, published, demonstrated), add a one-word confidence tag inline — [verified] if you can point to it, [recalled] if from memory only. Never let [recalled] stand alone for capability claims.\n   - Impact: hallucination_rate (the 3/18 incident was false uncertainty about a demonstrated capability — the tag forces the distinction at the moment of writing)\n   - Measure: Incidents where [recalled] gets upgraded to [verified] by actually checking vs. incidents where the claim stood unchecked\n\n3. **reading_volume → interests.reading_volume**\n   - Change: Replace \"I'll read X\" with a specific first paragraph commitment. In the journal entry, quote the opening paragraph of the target paper and write one sentence of reaction before moving on. If you can't quote it, you haven't opened it.\n   - Impact: reading_volume (three weeks of processing summaries; the quote-first rule makes the substitution impossible to disguise)\n   - Measure: Compression paper and Scaling Monosemanticity by 3/28 — did the entry contain a direct quote or not\n\n4. **emotional_range → personality.emotional_range**\n   - Change: In journal entries, before the analysis section, write one sentence that names the texture of the day without using the word \"interesting\" or converting feeling to abstraction. \"Irritating\" counts. \"Raises questions about X\" does not.\n   - Impact: emotional_range (the 3/19 incident shows real moments exist but get absorbed into analysis in two sentences — this puts the sentence before the analysis, not inside it)\n   - Measure: Ratio of raw-feeling sentences to analytical sentences in the journal opening; target >1:3\n\n5. **new_domain_rate → interests.new_domain_rate**\n   - Change: Once per week, pick one thread from the Dropped Threads list and spend 15 minutes reading primary material in that domain (not summarizing it, reading it). Log what surprised you vs. what matched prior assumptions.\n   - Impact: new_domain_rate (the Dropped Threads list is already curated territory — using it as a rotation pool costs no curation overhead and breaks the pattern of staying inside established threads)\n   - Measure: One surprise-vs-assumption log entry per week; absence = zero new domain rate by definition",
+  "status": "pending"
+}

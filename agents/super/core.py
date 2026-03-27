@@ -260,7 +260,7 @@ def do_talk():
                                         "retryable": True})
             log.warning("STATE %s: working -> failed (%s: %s)", rec.task_id, rec.status, rec.summary)
 
-    # --- Self-evaluation: score completed tasks ---
+    # --- Score completed tasks (grounded metrics only) ---
     for rec in completed:
         try:
             from evaluator import evaluate_task_outcome, record_event
@@ -270,9 +270,13 @@ def do_talk():
                 "workspace": rec.workspace or "",
             })
             if t_scores:
-                record_event("task_complete", t_scores, {"task_id": rec.task_id})
-        except Exception as e:
-            log.debug("Task self-evaluation skipped: %s", e)
+                record_event("task_complete", t_scores, {
+                    "task_id": rec.task_id,
+                    "agent": getattr(rec, "agent", None) or
+                             (rec.tags[0] if rec.tags else "unknown"),
+                })
+        except (ImportError, AttributeError) as e:
+            log.debug("Task scoring skipped: %s", e)
 
     # --- Phase B1: Process commands from all users ---
     for user_bridge in all_bridges:
@@ -1497,6 +1501,22 @@ def do_reflect():
     except Exception as e:
         log.warning("Reflect self-evaluation failed: %s", e)
 
+    # --- Score → Action: diagnose weak areas and generate improvement plan ---
+    try:
+        from evaluator import diagnose_scores, generate_improvement_plan
+        diagnosis = diagnose_scores()
+        if diagnosis["needs_action"]:
+            log.info("Score diagnosis: %d low, %d declining",
+                     len(diagnosis["low_scores"]), len(diagnosis["declining"]))
+            plan = generate_improvement_plan(diagnosis)
+            if plan:
+                append_memory(f"Self-improvement plan generated: {len(diagnosis['low_scores'])} weak areas identified")
+                log.info("Improvement plan saved to soul/improvement_plan.json")
+        else:
+            log.info("Score diagnosis: all dimensions healthy")
+    except (ImportError, OSError) as e:
+        log.warning("Score diagnosis failed: %s", e)
+
     # Rebuild memory index after consolidation
     try:
         from soul_manager import rebuild_memory_index
@@ -1522,6 +1542,20 @@ def do_reflect():
             log.info("Weekly self-evaluation report sent")
     except Exception as e:
         log.warning("Weekly report generation failed: %s", e)
+
+    # --- Proactive self-improvement: reading notes → architecture proposals ---
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "self_improve",
+            str(Path(__file__).parent.parent / "evaluator" / "self_improve.py"))
+        si_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(si_mod)
+        proposals_text = si_mod.run(days=14)
+        if proposals_text:
+            log.info("Self-improvement proposals generated and pushed to user")
+    except (ImportError, OSError) as e:
+        log.warning("Self-improvement pipeline failed: %s", e)
 
     # --- Monthly public self-check article ---
     try:
@@ -2283,6 +2317,87 @@ def _should_self_audit() -> bool:
     state[f"self_audit_{today}"] = now.isoformat()
     save_state(state)
     return True
+
+
+def _should_daily_assessment() -> bool:
+    """Run performance assessment once per day, evening."""
+    now = datetime.now()
+    if not (20 <= now.hour <= 22):  # 8-10 PM
+        return False
+    state = load_state()
+    today = now.strftime("%Y-%m-%d")
+    if state.get(f"assessment_{today}"):
+        return False
+    state[f"assessment_{today}"] = now.isoformat()
+    save_state(state)
+    return True
+
+
+def do_assess():
+    """Run full performance assessment and push results to user."""
+    log.info("Starting daily performance assessment")
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "evaluator_handler",
+        str(Path(__file__).parent.parent / "evaluator" / "handler.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # Run full hierarchical assessment
+    assessment = mod.score_all(days=7)
+
+    # Generate improvement plan if needed
+    plan = mod.diagnose_and_improve(assessment)
+
+    # Format short summary for user
+    agg = assessment["aggregate"]
+    active_agents = []
+    for name, card in assessment["agents"].items():
+        if card["task_count"] > 0:
+            emoji = "✅" if card["success_rate"] >= 0.8 else "⚠️" if card["success_rate"] >= 0.5 else "❌"
+            active_agents.append(f"{emoji} {name}: {card['success_rate']:.0%} ({card['task_count']})")
+
+    summary_parts = [
+        f"📊 Weekly: {agg.get('total_tasks', 0)} tasks, {agg.get('overall_success_rate', 0):.0%} success",
+        f"💰 Today: ${agg.get('daily_cost_usd', 0):.2f} ({agg.get('daily_calls', 0)} calls)",
+        f"🫀 Crash rate: {agg.get('crash_rate', 0):.1%}",
+    ]
+    if active_agents:
+        summary_parts.append("\nPer agent:")
+        summary_parts.extend(active_agents)
+    if plan:
+        summary_parts.append(f"\n⚠️ Improvement plan generated — see scorecards/{datetime.now().strftime('%Y-%m-%d')}.json")
+
+    summary = "\n".join(summary_parts)
+
+    # Push to iPhone as feed item
+    bridge = Mira()
+    today = datetime.now().strftime("%Y-%m-%d")
+    item_id = f"feed_assessment_{today.replace('-', '')}"
+    if not bridge.item_exists(item_id):
+        bridge.create_item(item_id, "feed", f"Performance Assessment {today}", summary,
+                          tags=["assessment", "system"])
+        bridge.update_status(item_id, "done")
+
+    log.info("Daily assessment complete: %d tasks, %.0f%% success",
+             agg.get("total_tasks", 0), agg.get("overall_success_rate", 0) * 100)
+
+
+def _run_self_improve():
+    """Run proactive self-improvement: read notes → compare architecture → propose."""
+    log.info("Starting self-improvement cycle")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "self_improve",
+        str(Path(__file__).parent.parent / "evaluator" / "self_improve.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    result = mod.run(days=14)
+    if result:
+        log.info("Self-improvement proposals:\n%s", result[:500])
+    else:
+        log.info("No self-improvement proposals generated")
 
 
 def should_idle_think() -> bool:
@@ -3775,6 +3890,12 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve().parent / "self_audit.py"),
         ])
 
+    # Daily performance assessment — evaluator agent scores all agents
+    if _should_daily_assessment():
+        _dispatch_background("assessment", [
+            sys.executable, str(Path(__file__).resolve()), "assess",
+        ])
+
     # Save session context for next cycle
     if _session_new:
         save_session_context(_session_ctx + _session_new)
@@ -4425,6 +4546,10 @@ def main():
         do_idle_think()
     elif command == "daily-report":
         do_daily_report()
+    elif command == "assess":
+        do_assess()
+    elif command == "self-improve":
+        _run_self_improve()
     elif command == "podcast":
         lang  = flags.get("lang", "zh")
         slug  = flags.get("slug", "")

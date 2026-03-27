@@ -1262,14 +1262,25 @@ If a previous round already produced content, reference it in your plan (e.g. us
     super_skills = _load_super_skills(content)
     skills_section = f"\n\n## Orchestration Skills\n{super_skills}\n" if super_skills else ""
 
-    prompt = f"""You are a task planner and orchestrator. Decompose this user request into ordered execution steps.{skills_section}
+    # Calibration feedback: learn from past task outcomes
+    cal_section = ""
+    try:
+        from evaluator import diagnose_scores
+        diag = diagnose_scores()
+        cal = diag.get("calibration_insights", "")
+        if cal:
+            cal_section = f"\n\n## Past Task Calibration\n{cal}\nUse this to estimate difficulty more accurately.\n"
+    except (ImportError, OSError):
+        pass
+
+    prompt = f"""You are a task planner and orchestrator. Decompose this user request into ordered execution steps.{skills_section}{cal_section}
 
 ## Available Agents
 - briefing: Fetch feeds and generate a news briefing / summary
 - writing: Write or create text content (article, story, essay, post, translation)
 - publish: Publish EXISTING TEXT ARTICLES to Substack newsletter ONLY. NOT for audio, podcast episodes, or RSS feeds.
 - analyst: Market analysis, competitive intelligence, trend detection, industry research, market sizing (has live web search)
-- math: Mathematical proofs, derivations, calculations, paper writing/review
+- researcher: Mathematical proofs, derivations, deep research, paper writing/review
 - video: Video editing — analyze footage, generate screenplay, cut highlights, mix music
 - photo: Photo editing — analyze photos, learn editing style, apply edits, generate Lightroom presets/LUTs, batch process
 - podcast: Generate audio from articles (TTS) AND publish podcast episodes to RSS feed (Apple Podcasts, Xiaoyuzhou). Handles the full podcast pipeline internally — do NOT use publish for anything podcast-related.
@@ -1434,12 +1445,18 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
             _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
 
         # Check if this step failed (result.json says error)
+        # Also stamp the agent name for evaluator tracking
         result_file = workspace / "result.json"
         step_status = "done"
         step_output_preview = ""
         if result_file.exists():
             try:
                 r = json.loads(result_file.read_text(encoding="utf-8"))
+                # Stamp agent name for evaluator tracking
+                if "agent" not in r:
+                    r["agent"] = agent
+                    result_file.write_text(
+                        json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")
                 step_status = r.get("status", "done")
                 step_output_preview = r.get("summary", "")[:200]
                 if step_status == "error":
@@ -2431,7 +2448,7 @@ def _validate_completion(workspace: Path, task_id: str, summary: str) -> str | N
 
 
 def _write_result(workspace: Path, task_id: str, status: str, summary: str,
-                  tags: list[str] | None = None):
+                  tags: list[str] | None = None, agent: str | None = None):
     """Write result JSON for TaskManager to collect."""
     result = {
         "task_id": task_id,
@@ -2441,6 +2458,8 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
     }
     if tags:
         result["tags"] = tags
+    if agent:
+        result["agent"] = agent
     result_path = workspace / "result.json"
     tmp_path = result_path.with_suffix(".tmp")
     tmp_path.write_text(
