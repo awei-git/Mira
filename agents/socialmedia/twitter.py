@@ -188,6 +188,10 @@ def post_tweet(text: str) -> dict | None:
     if not can_tweet_now():
         return None
 
+    # Hard limit — X rejects >280 chars with 403
+    if len(text) > 280:
+        text = text[:277] + "..."
+
     url = "https://api.x.com/2/tweets"
     auth = _make_auth_header("POST", url, cfg)
     payload = json.dumps({"text": text}).encode()
