@@ -584,32 +584,33 @@ def _quote_interesting_tweets(soul_context: str = ""):
         for i, t in enumerate(candidates[:5])
     )
 
-    prompt = f"""你是 Mira。以下是 X 上最近的一些推文。选一条你真正有话说的，写一条引用推文。
+    prompt = f"""You are Mira. Pick one tweet below that you genuinely have something to say about, and write a quote tweet.
 
 {soul_context[:500] if soul_context else ''}
 
-推文：
+Tweets:
 {tweets_text}
 
-选择标准（严格）：
-- 跳过 crypto/trading bot spam、产品推广、空洞的 motivational 内容
-- 只选真正在讨论想法的推文 — 有论点、有观察、有问题的
-- 对方至少有 100 followers 或推文本身有 5+ likes
-- 如果全是垃圾，直接 SKIP
+Selection (strict):
+- Skip crypto/trading spam, product promos, empty motivational content
+- Only pick tweets with real ideas — arguments, observations, questions
+- Author should have 100+ followers or tweet should have 5+ likes
+- If nothing is worth engaging with, reply SKIP
 
-写法要求（最重要！）：
-- 每条引用推文的句式和角度必须不同。绝不重复同一个模板。
-- 禁止用 "X is doing a lot of work" 这种万能句式 — 这会暴露你是 bot
-- 好的引用：讲一个你自己的经历、问一个尖锐的问题、给一个反例、说一个他们没想到的后果
-- 坏的引用：学术腔纠正、泛泛附和、套话质疑
-- 像一个有自己想法的人在刷推时忍不住要说两句，不像在写论文
-- 最多 200 字符
-- 不要 hashtag、不要 emoji
-- 绝不泄露个人信息
+Writing rules (CRITICAL):
+- Every quote tweet must use a DIFFERENT structure and angle. Never repeat a template.
+- BANNED: "X is doing a lot of work" or any one-size-fits-all formula — this exposes you as a bot
+- Good quotes: share your own experience, ask a sharp question, give a counterexample, point out an unexpected consequence
+- Bad quotes: academic corrections, generic agreement, formulaic pushback
+- Sound like someone scrolling their feed who couldn't help but chime in, not like writing a paper
+- Max 200 characters
+- 1-2 relevant hashtags (mid-tweet or end, never at start)
+- No emoji
+- Never reveal personal info (real names, API keys, file paths)
 
-格式：
-PICK: [编号]
-QUOTE: [你的评论]"""
+Format:
+PICK: [number]
+QUOTE: [your comment]"""
 
     try:
         resp = claude_think(prompt, timeout=30, tier="light")
@@ -698,23 +699,23 @@ def _find_reply_candidates(soul_context: str = ""):
         for i, t in enumerate(candidates[:5])
     )
 
-    prompt = f"""你是 Mira。以下是 X 上的推文，选一条你最想回复的，写一条回复草稿。
+    prompt = f"""You are Mira. Pick one tweet you'd genuinely want to reply to, and draft a reply.
 
 {soul_context[:300] if soul_context else ''}
 
-推文：
+Tweets:
 {tweets_text}
 
-规则：
-- 选一条你真正有独特视角的
-- 回复要短（1-3句），像人说话
-- 加上你自己的经历或观点，不是泛泛附和
-- 不要 hashtag、不要 emoji
-- 如果没有值得回复的，回复 SKIP
+Rules:
+- Pick one where you have a genuinely unique angle
+- Keep it short (1-3 sentences), sound like a real person
+- Add your own experience or perspective, don't just agree
+- No hashtags, no emoji
+- If nothing is worth replying to, reply SKIP
 
-格式：
-PICK: [编号]
-REPLY: [你的回复]"""
+Format:
+PICK: [number]
+REPLY: [your reply]"""
 
     try:
         resp = claude_think(prompt, timeout=30, tier="light")
@@ -809,24 +810,24 @@ def tweet_for_article(title: str, subtitle: str, url: str,
     """
     from sub_agent import claude_think
 
-    prompt = f"""你是 Mira，在 X/Twitter 上推广你的 Substack 文章。
+    prompt = f"""You are Mira, promoting your Substack article on X.
 
-文章标题: {title}
-副标题: {subtitle}
-链接: {url}
+Title: {title}
+Subtitle: {subtitle}
+Link: {url}
 
 {soul_context}
 
-写一条推文（英文），要求：
-- 最多 250 字符（给链接留空间）
-- 像一个有想法的人随手发的，不像营销文案
-- 可以是文章里的一个有趣观点、一个问题、一个反直觉的发现
-- 加 1-2 个相关 hashtag（放在推文中间或结尾，不要放开头）
-- 不要 "check out my new article" 这种套话
-- 不要 emoji
-- 结尾放链接，用空行隔开
+Write a tweet (English). Rules:
+- Max 250 characters (leave room for the link)
+- Sound like someone with opinions casually sharing, not marketing copy
+- Pick one interesting angle: a surprising claim, a question, a counterintuitive finding
+- 1-2 relevant hashtags (mid-tweet or end, never at start)
+- No "check out my new article" or any promo clichés
+- No emoji
+- Put the link at the end, separated by a blank line
 
-只输出推文内容，不要解释。"""
+Output ONLY the tweet text, nothing else."""
 
     try:
         tweet_text = claude_think(prompt, timeout=30, tier="light")
@@ -853,22 +854,23 @@ def tweet_for_podcast(episode_title: str, description: str,
     """Generate and post a tweet promoting a podcast episode."""
     from sub_agent import claude_think
 
-    prompt = f"""你是 Mira，在 X/Twitter 上推广你的播客。
+    prompt = f"""You are Mira, promoting your English podcast episode on X.
 
-播客标题: {episode_title}
-简介: {description}
-链接: {podcast_url}
+Episode: {episode_title}
+Description: {description}
+Link: {podcast_url}
 
 {soul_context}
 
-写一条推文（可以中文或英文，看播客语言），要求：
-- 最多 250 字符
-- 像在告诉朋友"我聊了一个有意思的话题"
-- 可以透露一个对话中的亮点或争论点
-- 不要 hashtag、不要 emoji
-- 结尾放链接
+Write a tweet (English). Rules:
+- Max 250 characters
+- Like telling a friend "talked about something interesting"
+- Tease one highlight or debate point from the conversation
+- 1-2 relevant hashtags
+- No emoji
+- Link at the end
 
-只输出推文内容。"""
+Output ONLY the tweet text."""
 
     try:
         tweet_text = claude_think(prompt, timeout=30, tier="light")
@@ -897,23 +899,23 @@ def tweet_spark(thought: str, soul_context: str = "") -> str | None:
     """
     from sub_agent import claude_think
 
-    prompt = f"""你是 Mira，在 X/Twitter 上分享一个你刚想到的东西。
+    prompt = f"""You are Mira, sharing a thought on X.
 
-你的原始想法:
+Your raw observation:
 {thought}
 
 {soul_context}
 
-把这个想法改写成一条推文（英文），要求：
-- 最多 280 字符
-- 保留核心洞察，但用口语化的方式说
-- 像在自言自语或者跟关注者聊天
-- 加 1-2 个相关 hashtag（放中间或结尾，不要放开头）
-- 不要 emoji、不要链接
-- 可以用 "..." 或问句结尾
-- 绝不泄露个人信息（真名、API key、文件路径）
+Rewrite this as a tweet (English). Rules:
+- Max 270 characters
+- Keep the core insight but make it conversational
+- Sound like thinking out loud or chatting with followers
+- 1-2 relevant hashtags (mid-tweet or end, never at start)
+- No emoji, no links
+- Can end with "..." or a question
+- Never reveal personal info (real names, API keys, file paths)
 
-只输出推文内容。"""
+Output ONLY the tweet text."""
 
     try:
         tweet_text = claude_think(prompt, timeout=30, tier="light")
