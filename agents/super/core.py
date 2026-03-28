@@ -1779,6 +1779,42 @@ def do_journal():
     if sparks_summary:
         briefing_summary += f"\n\n## Today's Sparks (idle-think)\n{sparks_summary[:3000]}"
 
+    # Social media daily stats (X + Substack)
+    try:
+        import json as _json
+        sm_stats = "\n## Social Media Daily Report\n"
+
+        # X/Twitter
+        _tw_state_file = _AGENTS_DIR / "socialmedia" / "twitter_state.json"
+        if _tw_state_file.exists():
+            _tw = _json.loads(_tw_state_file.read_text())
+            tw_today = _tw.get(f"tweets_{today}", 0)
+            qt_today = _tw.get(f"quotes_{today}", 0)
+            reply_q = [r for r in _tw.get("reply_queue", [])
+                       if r.get("date", "").startswith(today)]
+            sm_stats += f"- X tweets: {tw_today}, quotes: {qt_today}, reply candidates: {len(reply_q)}\n"
+
+        # Substack Notes
+        _ns_file = _AGENTS_DIR / "socialmedia" / "notes_state.json"
+        if _ns_file.exists():
+            _ns = _json.loads(_ns_file.read_text())
+            notes_today = _ns.get(f"notes_{today}", 0)
+            queue_left = len(_ns.get("queue", []))
+            sm_stats += f"- Substack Notes: {notes_today} posted, {queue_left} in queue\n"
+
+        # Substack Comments
+        _gs_file = _AGENTS_DIR / "socialmedia" / "growth_state.json"
+        if _gs_file.exists():
+            _gs = _json.loads(_gs_file.read_text())
+            comments_today = _gs.get(f"comments_{today}", 0)
+            sm_stats += f"- Substack comments: {comments_today}\n"
+
+        sm_stats += ("\n目标: X 15条(tweets+quotes+sparks), Notes 8条, Comments 5+条\n"
+                     "如果实际数据低于目标，在日记中分析原因并提出改进。")
+        briefing_summary += sm_stats
+    except Exception as e:
+        log.warning("Failed to gather social media stats for journal: %s", e)
+
     prompt = journal_prompt(soul_ctx, tasks_summary, skills_summary, briefing_summary,
                             za_fragment=za_fragment)
     journal_text = claude_think(prompt, timeout=120)
