@@ -23,8 +23,8 @@ log = logging.getLogger("socialmedia.twitter")
 # Config
 # ---------------------------------------------------------------------------
 
-MAX_TWEETS_PER_DAY = 10
-TWEET_COOLDOWN_HOURS = 1  # Minimum hours between tweets
+MAX_TWEETS_PER_DAY = 15
+TWEET_COOLDOWN_HOURS = 0  # No cooldown — rate managed by daily limit
 
 
 def _get_twitter_config() -> dict:
