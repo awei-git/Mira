@@ -4117,6 +4117,115 @@ def do_autowrite_check():
 
 
 # ---------------------------------------------------------------------------
+# Self-repair: detect and retry failed daily tasks
+# ---------------------------------------------------------------------------
+
+_CRITICAL_DAILY_TASKS = {
+    # state_key_prefix: (dispatch_name, command_args, earliest_hour, latest_hour)
+    "soul_question": ("soul-question", ["soul-question"], 10, 22),
+    "zhesi": ("zhesi", ["zhesi"], 9, 22),
+    "daily_photo": ("daily-photo", ["daily-photo"], 7, 20),
+}
+
+# All tasks to report on at end of day (broader than just critical/retryable)
+_ALL_DAILY_TASKS = [
+    "zhesi", "soul_question", "daily_photo", "journal",
+    "analyst_{today}_0700", "analyst_{today}_1800",
+]
+
+
+def _self_repair_daily_tasks():
+    """Check if critical daily tasks completed. Retry if within window and not running."""
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    hour = now.hour
+    state = load_state()
+
+    for prefix, (bg_name, cmd_args, earliest, latest) in _CRITICAL_DAILY_TASKS.items():
+        state_key = f"{prefix}_{today}"
+        if state.get(state_key):
+            continue  # already completed today
+
+        if hour < earliest or hour > latest:
+            continue  # outside retry window
+
+        # Check if it's currently running
+        pid_file = _BG_PID_DIR / f"{bg_name}.pid"
+        if pid_file.exists():
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                os.kill(old_pid, 0)
+                continue  # still running
+            except (OSError, ValueError):
+                pass
+
+        # Check cooldown — don't retry more than once per 30 min
+        retry_key = f"_retry_{prefix}_{today}"
+        last_retry = state.get(retry_key, "")
+        if last_retry:
+            try:
+                last_dt = datetime.fromisoformat(last_retry)
+                if (now - last_dt).total_seconds() < 1800:
+                    continue
+            except ValueError:
+                pass
+
+        log.warning("Self-repair: %s not completed today, retrying", prefix)
+        state[retry_key] = now.isoformat()
+        save_state(state)
+        _dispatch_background(bg_name, [
+            sys.executable, str(Path(__file__).resolve()), *cmd_args,
+        ])
+
+
+def _daily_task_status_report():
+    """At 21:00, send a feed item summarizing today's task completion status."""
+    now = datetime.now()
+    if now.hour != 21:
+        return
+    today = now.strftime("%Y-%m-%d")
+    today_compact = today.replace("-", "")
+    state = load_state()
+
+    report_key = f"task_status_report_{today}"
+    if state.get(report_key):
+        return
+
+    lines = []
+    all_ok = True
+    for task_tmpl in _ALL_DAILY_TASKS:
+        task_key = task_tmpl.replace("{today}", today)
+        done = bool(state.get(f"{task_key}_{today}") or state.get(task_key))
+        status = "done" if done else "MISSED"
+        if not done:
+            all_ok = False
+        lines.append(f"- {task_key}: {status}")
+
+    if all_ok:
+        summary = f"今日任务全部完成。\n\n" + "\n".join(lines)
+    else:
+        summary = f"有任务未完成：\n\n" + "\n".join(lines)
+
+    try:
+        bridge = Mira(MIRA_DIR)
+        bridge.create_item(
+            item_id=f"task_report_{today_compact}",
+            item_type="feed",
+            title=f"Daily Status: {today}",
+            first_message=summary,
+            sender="agent",
+            tags=["status", "daily"],
+            origin="agent",
+        )
+    except Exception as e:
+        log.warning("Failed to create task status report: %s", e)
+
+    state[report_key] = now.isoformat()
+    save_state(state)
+    log.info("Daily task status report sent")
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -4323,6 +4432,12 @@ def cmd_run():
         _dispatch_background("assessment", [
             sys.executable, str(Path(__file__).resolve()), "assess",
         ])
+
+    # -----------------------------------------------------------------------
+    # Self-repair: retry critical daily tasks that failed or never completed
+    # -----------------------------------------------------------------------
+    _self_repair_daily_tasks()
+    _daily_task_status_report()
 
     # Save session context for next cycle
     if _session_new:
