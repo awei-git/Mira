@@ -62,12 +62,16 @@ class AestheticScorer:
         self._head.load_state_dict(torch.load(MODEL_PATH, map_location="cpu", weights_only=True))
         self._head.eval()
 
-        self._meta = json.loads(META_PATH.read_text())
-        log.info(
-            "Loaded. CV Spearman=%.3f, trained on %d samples",
-            self._meta["cv_spearman"],
-            self._meta["samples"],
-        )
+        if META_PATH.exists():
+            self._meta = json.loads(META_PATH.read_text())
+            log.info(
+                "Loaded. CV Spearman=%.3f, trained on %d samples",
+                self._meta.get("cv_spearman", 0.0),
+                self._meta.get("samples", 0),
+            )
+        else:
+            self._meta = {}
+            log.info("Loaded (no metadata file, scoring will still work)")
 
     def _embed(self, image_path: Path) -> torch.Tensor:
         from PIL import Image

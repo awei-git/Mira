@@ -399,5 +399,11 @@
       "strategy"
     ],
     "created": "2026-03-27T16:37:59.401437"
+  },
+  {
+    "name": "no-silent-completion-claims",
+    "description": "Never claim a substantial piece of work is 'done' the moment someone asks, with no prior visible thinking trace",
+    "file": "no-silent-completion-claims.md",
+    "created": "2026-03-27T21:32:16.698386"
   }
 ]

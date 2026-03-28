@@ -106,18 +106,25 @@ Output as JSON — every value must be a number, not a description:
 }}
 ```
 
-## Parameter Guidelines
+## Parameter Guidelines — CRITICAL: darktable values are EXTREMELY sensitive
 - exposure.ev: typically -1.0 to +2.0. Positive brightens.
 - filmic.white_ev: 2.0 to 6.0. Lower = more highlight compression.
 - filmic.black_ev: -10.0 to -4.0. Higher (less negative) = more shadow lift.
-- filmic.contrast: 0.8 to 1.8. >1.0 = more contrast.
-- colorbalance.contrast: -0.5 to 0.5. Adds midtone contrast.
-- colorbalance.vibrance: -0.5 to 0.5. Boosts weak colors more than strong.
+- filmic.contrast: 0.8 to 1.5. >1.0 = more contrast.
+- colorbalance.contrast: -0.2 to 0.2. Adds midtone contrast.
+- colorbalance.vibrance: -0.2 to 0.2. Boosts weak colors more than strong.
+- colorbalance.saturation_global: -0.1 to 0.1.
+- colorbalance.chroma_global: -0.05 to 0.05. VERY sensitive.
+- colorbalance.chroma_shadows / chroma_highlights: -0.03 to 0.03.
 - colorbalance Y/C/H: luminance/chroma/hue shifts per tonal range.
   - H values are in radians (-pi to pi). For warm shadows, H ~ 0.5-1.0. For cool highlights, H ~ -1.5 to -2.0.
-  - C values 0.0 to 0.3 for subtle color push.
-  - Y values -0.3 to 0.3 for luminance shifts.
-- tone_eq: -2.0 to +2.0 EV per zone. Negative darkens, positive brightens.
+  - C values: 0.001 to 0.01 MAX. Even 0.01 is a strong color push. 0.005 is subtle. NEVER exceed 0.02.
+  - Y values: -0.1 to 0.1 for luminance shifts.
+- tone_eq: -1.0 to +1.0 EV per zone. Negative darkens, positive brightens.
+- brilliance_*: -0.1 to 0.1.
+
+IMPORTANT: These are NOT percentage values. They are absolute multipliers in a linear pipeline.
+A chroma value of 0.1 will create an extreme, unnatural color cast. Keep C values under 0.01.
 
 Be SPECIFIC to this image. Don't give generic defaults. Look at the actual content."""
 
@@ -126,19 +133,66 @@ Be SPECIFIC to this image. Don't give generic defaults. Look at the actual conte
         return {}
 
     import re
+    parsed = None
     m = re.search(r'```(?:json)?\s*\n(.*?)\n```', result, re.DOTALL)
     if m:
         try:
-            return json.loads(m.group(1))
+            parsed = json.loads(m.group(1))
         except json.JSONDecodeError:
             pass
-    m = re.search(r'\{.*\}', result, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group())
-        except json.JSONDecodeError:
-            pass
-    return {}
+    if not parsed:
+        m = re.search(r'\{.*\}', result, re.DOTALL)
+        if m:
+            try:
+                parsed = json.loads(m.group())
+            except json.JSONDecodeError:
+                pass
+    if not parsed:
+        return {}
+    return _clamp_params(parsed)
+
+
+def _clamp_params(params: dict) -> dict:
+    """Hard-clamp colorbalance values to prevent color catastrophe."""
+    cb = params.get("colorbalance", {})
+    if cb:
+        clamps = {
+            "contrast": (-0.3, 0.3),
+            "vibrance": (-0.3, 0.3),
+            "saturation_global": (-0.15, 0.15),
+            "chroma_global": (-0.05, 0.05),
+            "chroma_shadows": (-0.03, 0.03),
+            "chroma_highlights": (-0.03, 0.03),
+            "chroma_midtones": (-0.03, 0.03),
+            "brilliance_global": (-0.1, 0.1),
+            "brilliance_shadows": (-0.1, 0.1),
+            "brilliance_highlights": (-0.1, 0.1),
+            "brilliance_midtones": (-0.1, 0.1),
+        }
+        for key in ("shadows_C", "midtones_C", "highlights_C", "global_C"):
+            clamps[key] = (-0.015, 0.015)
+        for key in ("shadows_Y", "midtones_Y", "highlights_Y", "global_Y"):
+            clamps[key] = (-0.15, 0.15)
+
+        for key, (lo, hi) in clamps.items():
+            if key in cb:
+                original = cb[key]
+                cb[key] = max(lo, min(hi, cb[key]))
+                if cb[key] != original:
+                    log.info("Clamped colorbalance.%s: %.4f -> %.4f", key, original, cb[key])
+        params["colorbalance"] = cb
+
+    te = params.get("tone_eq", {})
+    if te:
+        for key in te:
+            if isinstance(te[key], (int, float)):
+                original = te[key]
+                te[key] = max(-1.5, min(1.5, te[key]))
+                if te[key] != original:
+                    log.info("Clamped tone_eq.%s: %.4f -> %.4f", key, original, te[key])
+        params["tone_eq"] = te
+
+    return params
 
 
 def params_to_xmp(params: dict, raw_path: Path) -> Path:
@@ -253,9 +307,105 @@ def apply_color_match(target_path: Path, reference_path: Path, output_path: Path
         return False
 
 
+def review_edit(original_path: Path, edited_path: Path, params: dict) -> dict:
+    """Vision model reviews the rendered edit vs. the original.
+
+    Returns {"approved": bool, "score": 0-10, "critique": str, "suggestions": str}
+    """
+    prompt = f"""You are a photo editing reviewer. Compare the ORIGINAL and EDITED versions of this photo.
+
+Original: {original_path}
+Edited: {edited_path}
+
+The editing parameters applied were:
+{json.dumps(params, indent=2, default=str)}
+
+Evaluate the edit critically:
+1. Did the color grading improve the photo or make it worse?
+2. Are there obvious problems? (color cast, over-saturation, crushed shadows/blown highlights, unnatural tones)
+3. Does the edit serve the mood of the scene?
+4. Score the edit 0-10 (0=ruined, 5=no improvement, 7=good, 10=perfect)
+
+Output as JSON:
+```json
+{{
+    "approved": true/false,
+    "score": 7,
+    "critique": "what's wrong or right with this edit",
+    "suggestions": "specific parameter changes if not approved, e.g. 'reduce chroma_global from 0.15 to 0.05, shadows_H is too warm'"
+}}
+```
+
+Be HONEST. If the edit is bad, say so. A color cast across the whole image, sepia/monochrome effect, or loss of natural color is a FAIL."""
+
+    result = claude_act(prompt, cwd=edited_path.parent, tier="light")
+    if not result:
+        return {"approved": False, "score": 0, "critique": "review failed", "suggestions": ""}
+
+    import re as _re
+    m = _re.search(r'```(?:json)?\s*\n(.*?)\n```', result, _re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+    m = _re.search(r'\{.*\}', result, _re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            pass
+    return {"approved": False, "score": 0, "critique": result[:200], "suggestions": ""}
+
+
+def revise_params(params: dict, review: dict) -> dict:
+    """Apply reviewer suggestions to adjust parameters for next iteration."""
+    prompt = f"""You are a photo editor receiving feedback on your edit.
+
+Your previous parameters:
+{json.dumps(params, indent=2, default=str)}
+
+Reviewer feedback:
+- Score: {review.get('score', 0)}/10
+- Critique: {review.get('critique', '')}
+- Suggestions: {review.get('suggestions', '')}
+
+Revise the parameters to address the feedback. Output the COMPLETE revised parameter set as JSON.
+Keep the same structure. Only change values that need fixing based on the feedback.
+
+```json
+{{
+    "analysis": {{ ... }},
+    "exposure": {{ ... }},
+    "filmic": {{ ... }},
+    "colorbalance": {{ ... }},
+    "tone_eq": {{ ... }}
+}}
+```"""
+
+    result = claude_act(prompt, tier="light")
+    if not result:
+        return params
+
+    import re as _re
+    m = _re.search(r'```(?:json)?\s*\n(.*?)\n```', result, _re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+    m = _re.search(r'\{.*\}', result, _re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            pass
+    return params
+
+
 def edit_photo(raw_path: Path, reference_path: Path = None,
-               output_dir: Path = None, max_iterations: int = 2) -> dict:
-    """Full editing pipeline for a single RAW photo."""
+               output_dir: Path = None, max_iterations: int = 3) -> dict:
+    """Full editing pipeline: analyze → render → review → iterate if needed."""
     if output_dir is None:
         output_dir = OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -269,13 +419,19 @@ def edit_photo(raw_path: Path, reference_path: Path = None,
     best_score = 0
     best_output = None
     best_params = None
+    best_review = None
+    params = None
 
     for iteration in range(max_iterations):
         log.info("=== Iteration %d for %s ===", iteration + 1, raw_path.stem)
 
-        params = analyze_photo(preview)
+        # First iteration: analyze from scratch. Later: revise based on review.
+        if iteration == 0:
+            params = analyze_photo(preview)
+        else:
+            params = revise_params(params, last_review)
         if not params:
-            log.error("Analysis failed")
+            log.error("Analysis/revision failed")
             continue
 
         analysis = params.get("analysis", {})
@@ -287,31 +443,33 @@ def edit_photo(raw_path: Path, reference_path: Path = None,
         xmp_path = params_to_xmp(params, raw_path)
         log.info("XMP written: %s", xmp_path.name)
 
-        suffix = f"_v{iteration + 1}" if iteration > 0 else ""
-        dt_output = output_dir / f"{raw_path.stem}{suffix}_edited.jpg"
+        dt_output = output_dir / f"{raw_path.stem}_v{iteration + 1}_edited.jpg"
         if not render_with_darktable(raw_path, xmp_path, dt_output):
             continue
 
+        # Skip color matching — it causes unnatural color casts
         final_output = dt_output
 
-        if reference_path and reference_path.exists():
-            cm_output = output_dir / f"{raw_path.stem}{suffix}_colormatched.png"
-            if apply_color_match(dt_output, reference_path, cm_output):
-                final_output = cm_output
+        # Visual review: vision model compares original vs edited
+        last_review = review_edit(preview, final_output, params)
+        review_score = last_review.get("score", 0)
+        approved = last_review.get("approved", False)
+        log.info("Review: score=%s, approved=%s, critique=%s",
+                 review_score, approved, last_review.get("critique", "")[:100])
 
-        from scorer import AestheticScorer
-        scorer = AestheticScorer()
-        score = scorer.score(final_output)
-        log.info("Score: %.2f (iteration %d)", score, iteration + 1)
-
-        if score > best_score:
-            best_score = score
+        if review_score > best_score:
+            best_score = review_score
             best_output = final_output
             best_params = params
+            best_review = last_review
 
-        if score >= 7.0:
-            log.info("Score %.2f >= 7.0, accepting", score)
+        if approved and review_score >= 6:
+            log.info("Review approved (score=%s), accepting", review_score)
             break
+
+        if iteration < max_iterations - 1:
+            log.info("Review not approved, iterating with suggestions: %s",
+                     last_review.get("suggestions", "")[:100])
 
     if best_params:
         params_path = output_dir / f"{raw_path.stem}_params.json"
@@ -322,6 +480,7 @@ def edit_photo(raw_path: Path, reference_path: Path = None,
         "output": str(best_output) if best_output else None,
         "score": best_score,
         "params": best_params,
+        "review": best_review,
     }
 
 

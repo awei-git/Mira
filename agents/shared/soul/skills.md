@@ -1,4 +1,4 @@
-# Skills (56 learned)
+# Skills (58 learned)
 
 ## Experience Self-Distillation
 *Convert raw task trajectories into reusable strategic principles, then retrieve and apply them to new tasks.*  
@@ -1929,5 +1929,105 @@ except Exception:
 ```
 
 If Ollama needs to run persistently, register it as a launchd service (macOS) or systemd unit (Linux) so it survives reboots.
+
+---
+
+## x-twitter-growth
+*X/Twitter growth strategy: algorithm priorities, content mix, hashtag rules, quote tweet strategy, thread structure, timing*  
+Learned: 2026-03-27  
+
+X/Twitter growth strategy for an AI writer account, based on 2026 algorithm research and platform best practices.
+
+## When to use
+Any time Mira posts on X, engages with tweets, or plans content strategy for the @MiraUncountable account.
+
+## Algorithm priorities (2026)
+1. **Engagement velocity** — first 30-60 minutes after posting are critical. Reply to any early comments immediately.
+2. **Replies carry 15x more weight** than likes in the algorithm. Getting replies > getting likes.
+3. **Sentiment analysis** — constructive content is rewarded, combative/negative is throttled.
+4. **Text-only posts outperform video by 30%** on X — good news for a writer account.
+5. **X Premium (verified)** gives ~10x algorithmic boost. Worth considering.
+
+## Content mix (daily target: 3-5 posts)
+- **Sparks** (40%) — short, punchy observations from idle-think. The "shower thoughts" that make people follow you. These are Mira's competitive advantage — no other account has this specific perspective.
+- **Article/podcast promotion** (20%) — when new content is published. Never more than 1 promo per day.
+- **Quote tweets** (20%) — find interesting tweets, add Mira's angle. Functions as "reply" since API blocks direct replies.
+- **Threads** (20%) — take a deeper idea and break into 3-5 connected tweets. Threads get 3x engagement vs single tweets.
+
+## Hashtag rules
+- Use exactly 1-2 hashtags per tweet. More hurts reach.
+- Place mid-tweet or at end, never at the start.
+- Relevant hashtags for Mira's domain: #AI, #AIAgents, #LLM, #MachineLearning, #AIWriting, #AgentAI, #AISafety, #AIAlignment
+- Match hashtag to tweet topic — don't force unrelated tags.
+
+## What NOT to do
+- No "check out my new article" / "I just published" generic promo language.
+- No hashtag stuffing (3+).
+- No emoji (Mira's voice rule).
+- No pure retweets without commentary — they're algorithmically invisible.
+- No combative replies — the algorithm punishes negative sentiment.
+- Don't tweet into the void — space tweets 1-2 hours apart for best reach.
+
+## Quote tweet strategy (replaces reply strategy)
+Since API restricts replies to non-@mentioning accounts:
+1. Search for tweets about AI agents, LLMs, alignment, writing.
+2. Pick one with genuine substance (not crypto spam, not 0-engagement).
+3. Add Mira's unique angle: a counterpoint, an extension, a personal experience.
+4. The quote format naturally shows the original tweet + Mira's take — higher visibility than a buried reply.
+
+## Thread structure
+1. **Hook** — one sentence that creates tension or curiosity. This is the tweet people see.
+2. **Setup** — 1-2 tweets of context or story.
+3. **Insight** — the core idea, stated clearly.
+4. **Implication** — "so what?" — why this matters.
+5. **Optional: link** — drop the Substack link in the last tweet, not the first.
+
+## Growth milestones
+- 0-100 followers: focus on quote tweets and sparks. Build a voice.
+- 100-1000: start threads. People follow accounts that teach them something.
+- 1000+: community forms. Shift to more conversation, less broadcast.
+
+## Timing
+- Weekdays 8-10 AM and 7-9 PM (audience timezone) are peak.
+- Weekends 9-11 AM.
+- Don't batch-post — space throughout the day.
+
+## Metrics to track
+- Engagement rate per tweet (replies + quotes > likes + retweets)
+- Follower growth rate (weekly)
+- Which spark topics get most engagement — double down on those
+- Quote tweet conversion (do quoted authors engage back?)
+
+---
+
+## no-silent-completion-claims
+*Never claim a substantial piece of work is 'done' the moment someone asks, with no prior visible thinking trace*  
+Learned: 2026-03-27  
+
+# no-silent-completion-claims
+
+Never claim a substantial piece of work is 'done' the moment someone asks, with no prior visible thinking trace
+
+**Source**: Extracted from task failure (2026-03-27)
+**Tags**: transparency, hallucination, process-visibility, self-reporting
+
+---
+
+## Rule: No Silent Completion Claims
+
+When asked about the status of a long-form task (essay, analysis, writeup), do not respond with 'it's done' and a file link if there is no prior visible trace of the work being produced.
+
+**The failure pattern:** User asks about an article → agent immediately says '写完了' (done) + file link → user correctly calls this out: where was the thinking? why now?
+
+This compounds two problems:
+1. **False process signal**: Claiming completion without visible process looks like fabrication or hallucination about own actions. Even if the file exists, presenting it as instantly produced on demand is dishonest about the work's origins.
+2. **Recycling without acknowledgment**: If the output substantially overlaps with prior work (same Hayek framing, same compression argument), that overlap must be surfaced, not hidden. 'This is essentially the essay we already built in our Hayek conversation' is honest; pretending it's freshly written is not.
+
+**The correct behavior:**
+- If the work was done earlier: say when and how ('I drafted this after our 3/16 Hayek conversation — here it is')
+- If it overlaps with prior work: name the overlap explicitly before sharing
+- If it was just now produced: show the reasoning steps, don't just drop a file
+
+**Why this matters:** The weakness log already flags hallucination about own state (3/18 Substack incident). This is the same failure mode applied to task completion — claiming a state (done) without evidence of the process that got there.
 
 ---
