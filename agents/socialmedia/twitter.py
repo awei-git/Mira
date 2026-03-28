@@ -441,6 +441,7 @@ def run_twitter_engagement(soul_context: str = ""):
     _reply_to_mentions(soul_context)
     _quote_interesting_tweets(soul_context)
     _find_reply_candidates(soul_context)
+    _auto_follow_interesting_accounts()
 
 
 def _reply_to_mentions(soul_context: str = ""):
@@ -641,6 +642,75 @@ QUOTE: [your comment]"""
         state[f"quotes_{today}"] = qt_today + 1
         _save_state(state)
         log.info("Quote-tweeted @%s: %s", author, quote_text[:60])
+        # Follow the person we just quoted
+        author_id = picked.get("author_id", "")
+        if author_id:
+            follow_user(author_id)
+            like_tweet(picked["id"])
+
+
+def _auto_follow_interesting_accounts():
+    """Follow authors of interesting tweets found during searches.
+
+    Also does a dedicated search for relevant accounts to follow.
+    Max 10 new follows per day.
+    """
+    state = _load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+    follows_today = state.get(f"follows_{today}", 0)
+    if follows_today >= 10:
+        return
+
+    already_followed = set(state.get("followed_ids", []))
+
+    # Search for people talking about AI agents, LLMs, writing
+    topics = [
+        "AI agent building -is:retweet lang:en",
+        "LLM research paper -is:retweet lang:en",
+        "AI writing newsletter -is:retweet lang:en",
+        "autonomous agent system -is:retweet lang:en",
+    ]
+    import random
+    query = random.choice(topics)
+
+    tweets = search_recent_tweets(query, max_results=10)
+    if not tweets:
+        return
+
+    my_id = _get_twitter_config().get("access_token", "").split("-")[0]
+    followed_count = 0
+
+    for t in tweets:
+        author_id = t.get("author_id", "")
+        if not author_id or author_id == my_id or author_id in already_followed:
+            continue
+
+        author = t.get("_author", {})
+        followers = author.get("public_metrics", {}).get("followers_count", 0)
+        # Follow accounts between 100-500K followers (sweet spot for engagement)
+        if followers < 100 or followers > 500_000:
+            continue
+
+        # Skip if their tweet is low quality
+        if len(t.get("text", "")) < 80:
+            continue
+
+        if follow_user(author_id):
+            already_followed.add(author_id)
+            followed_count += 1
+            follows_today += 1
+            # Also like their tweet
+            like_tweet(t["id"])
+
+        if followed_count >= 3 or follows_today >= 10:
+            break
+
+    state[f"follows_{today}"] = follows_today
+    state["followed_ids"] = list(already_followed)[-500:]  # Keep last 500
+    _save_state(state)
+
+    if followed_count:
+        log.info("Auto-followed %d accounts", followed_count)
 
 
 def _find_reply_candidates(soul_context: str = ""):
