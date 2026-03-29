@@ -142,7 +142,7 @@ Return as JSON array:
 
 JSON only."""
 
-    result = claude_think(prompt, timeout=120, tier="heavy")
+    result = claude_think(prompt, timeout=300, tier="heavy")
     if not result:
         log.error("Self-improvement proposal generation failed: empty response")
         return []
