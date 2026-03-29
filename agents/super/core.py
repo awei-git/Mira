@@ -2514,6 +2514,20 @@ def _should_self_audit() -> bool:
     return True
 
 
+def _should_self_evolve() -> bool:
+    """Run self-evolution once per day, around 14:00 (after morning explore)."""
+    now = datetime.now()
+    if not (13 <= now.hour <= 16):  # 1-4 PM window
+        return False
+    state = load_state()
+    today = now.strftime("%Y-%m-%d")
+    if state.get(f"self_evolve_{today}"):
+        return False
+    state[f"self_evolve_{today}"] = now.isoformat()
+    save_state(state)
+    return True
+
+
 def _should_daily_assessment() -> bool:
     """Run performance assessment once per day, evening."""
     now = datetime.now()
@@ -4195,6 +4209,13 @@ def _verify_reflect(state, today):
     return bool(state.get("last_reflect") and
                 state["last_reflect"][:10] >= today)
 
+def _verify_self_evolve(state, today):
+    """Self-evolve verifier: state key set + at least one proposal file exists."""
+    if not state.get(f"self_evolve_{today}"):
+        return False
+    proposals_dir = Path(__file__).resolve().parent / "proposals"
+    return any(proposals_dir.glob(f"{today}_*.json"))
+
 
 _DAILY_TASK_CONTRACTS = {
     "zhesi": {
@@ -4232,6 +4253,12 @@ _DAILY_TASK_CONTRACTS = {
         "window": (18, 22),
         "verify": _verify_analyst("1800"),
         "label": "盘后分析",
+    },
+    "self_evolve": {
+        "dispatch": ("self-evolve", ["self-evolve"]),
+        "window": (13, 16),
+        "verify": _verify_self_evolve,
+        "label": "自我进化",
     },
 }
 
@@ -4523,6 +4550,12 @@ def cmd_run():
     if _should_self_audit():
         _dispatch_background("self-audit", [
             sys.executable, str(Path(__file__).resolve().parent / "self_audit.py"),
+        ])
+
+    # Daily self-evolution — reading notes → architecture improvements
+    if _should_self_evolve():
+        _dispatch_background("self-evolve", [
+            sys.executable, str(Path(__file__).resolve()), "self-evolve",
         ])
 
     # Daily performance assessment — evaluator agent scores all agents
@@ -5193,6 +5226,9 @@ def main():
         do_assess()
     elif command == "self-improve":
         _run_self_improve()
+    elif command == "self-evolve":
+        from self_evolve import run_evolve
+        run_evolve(dry_run="--dry-run" in sys.argv)
     elif command == "podcast":
         lang  = flags.get("lang", "zh")
         slug  = flags.get("slug", "")
