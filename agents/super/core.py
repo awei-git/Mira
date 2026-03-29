@@ -4156,57 +4156,120 @@ def do_autowrite_check():
 # Self-repair: detect and retry failed daily tasks
 # ---------------------------------------------------------------------------
 
-_CRITICAL_DAILY_TASKS = {
-    # state_key_prefix: (dispatch_name, command_args, earliest_hour, latest_hour)
-    "soul_question": ("soul-question", ["soul-question"], 10, 22),
-    "zhesi": ("zhesi", ["zhesi"], 9, 22),
-    "daily_photo": ("daily-photo", ["daily-photo"], 7, 20),
-}
+# ---------------------------------------------------------------------------
+# Task contracts: every scheduled task declares what "done" means
+# ---------------------------------------------------------------------------
+# Each entry: state_key_prefix -> {
+#   "dispatch": (bg_name, [cmd_args]),
+#   "window": (earliest_hour, latest_hour),  # when to schedule + retry
+#   "verify": callable(state, today) -> bool,  # did it actually succeed?
+# }
+# The verify function checks for real output, not just a state flag.
+# A task that set its state flag but produced no output is NOT done.
 
-# All tasks to report on at end of day (broader than just critical/retryable)
-_ALL_DAILY_TASKS = [
-    "zhesi", "soul_question", "daily_photo", "journal",
-    "analyst_{today}_0700", "analyst_{today}_1800",
-]
+def _verify_state_key(prefix):
+    """Simple verifier: state key exists for today."""
+    def check(state, today):
+        return bool(state.get(f"{prefix}_{today}"))
+    return check
+
+def _verify_analyst(slot):
+    """Analyst verifier: state key + briefing file exists."""
+    def check(state, today):
+        key = f"analyst_{today}_{slot}"
+        if not state.get(key):
+            return False
+        briefing = ARTIFACTS_DIR / "briefings" / f"{today}_analyst_{'pre_market' if slot == '0700' else 'post_market'}.md"
+        return briefing.exists()
+    return check
+
+def _verify_journal(state, today):
+    """Journal verifier: journal file exists in soul/journal/."""
+    if not state.get(f"journal_{today}"):
+        return False
+    journal_dir = MIRA_ROOT / "agents" / "shared" / "soul" / "journal"
+    return any(journal_dir.glob(f"{today}*.md"))
+
+def _verify_reflect(state, today):
+    """Weekly reflect: just check state key (output goes to worldview/interests)."""
+    return bool(state.get("last_reflect") and
+                state["last_reflect"][:10] >= today)
+
+
+_DAILY_TASK_CONTRACTS = {
+    "zhesi": {
+        "dispatch": ("zhesi", ["zhesi"]),
+        "window": (9, 22),
+        "verify": _verify_state_key("zhesi"),
+        "label": "每日哲思",
+    },
+    "soul_question": {
+        "dispatch": ("soul-question", ["soul-question"]),
+        "window": (10, 22),
+        "verify": _verify_state_key("soul_question"),
+        "label": "灵魂提问",
+    },
+    "daily_photo": {
+        "dispatch": ("daily-photo", ["daily-photo"]),
+        "window": (7, 20),
+        "verify": _verify_state_key("daily_photo"),
+        "label": "每日修图",
+    },
+    "journal": {
+        "dispatch": ("journal", ["journal"]),
+        "window": (21, 23),
+        "verify": _verify_journal,
+        "label": "日记",
+    },
+    "analyst_pre": {
+        "dispatch": ("analyst-0700", ["analyst", "--slot", "0700"]),
+        "window": (7, 12),
+        "verify": _verify_analyst("0700"),
+        "label": "盘前分析",
+    },
+    "analyst_post": {
+        "dispatch": ("analyst-1800", ["analyst", "--slot", "1800"]),
+        "window": (18, 22),
+        "verify": _verify_analyst("1800"),
+        "label": "盘后分析",
+    },
+}
 
 
 def _self_repair_daily_tasks():
-    """Check if critical daily tasks completed. Retry if within window and not running."""
+    """Check all task contracts. Retry any that failed verification."""
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
     hour = now.hour
     state = load_state()
 
-    for prefix, (bg_name, cmd_args, earliest, latest) in _CRITICAL_DAILY_TASKS.items():
-        state_key = f"{prefix}_{today}"
-        if state.get(state_key):
-            continue  # already completed today
-
+    for task_id, contract in _DAILY_TASK_CONTRACTS.items():
+        earliest, latest = contract["window"]
         if hour < earliest or hour > latest:
-            continue  # outside retry window
+            continue
 
-        # Check if it's currently running
-        pid_file = _BG_PID_DIR / f"{bg_name}.pid"
-        if pid_file.exists():
-            try:
-                old_pid = int(pid_file.read_text().strip())
-                os.kill(old_pid, 0)
-                continue  # still running
-            except (OSError, ValueError):
-                pass
+        # Run the verify function — checks real output, not just flags
+        if contract["verify"](state, today):
+            continue  # genuinely done
 
-        # Check cooldown — don't retry more than once per 30 min
-        retry_key = f"_retry_{prefix}_{today}"
+        bg_name, cmd_args = contract["dispatch"]
+
+        # Skip if currently running
+        if _is_bg_running(bg_name):
+            continue
+
+        # 30-minute cooldown between retries
+        retry_key = f"_retry_{task_id}_{today}"
         last_retry = state.get(retry_key, "")
         if last_retry:
             try:
-                last_dt = datetime.fromisoformat(last_retry)
-                if (now - last_dt).total_seconds() < 1800:
+                if (now - datetime.fromisoformat(last_retry)).total_seconds() < 1800:
                     continue
             except ValueError:
                 pass
 
-        log.warning("Self-repair: %s not completed today, retrying", prefix)
+        log.warning("Self-repair: %s (%s) not verified, retrying",
+                    task_id, contract["label"])
         state[retry_key] = now.isoformat()
         save_state(state)
         _dispatch_background(bg_name, [
@@ -4215,7 +4278,7 @@ def _self_repair_daily_tasks():
 
 
 def _daily_task_status_report():
-    """At 21:00, send a feed item summarizing today's task completion status."""
+    """At 21:00, send a feed item with verified task completion status."""
     now = datetime.now()
     if now.hour != 21:
         return
@@ -4229,18 +4292,17 @@ def _daily_task_status_report():
 
     lines = []
     all_ok = True
-    for task_tmpl in _ALL_DAILY_TASKS:
-        task_key = task_tmpl.replace("{today}", today)
-        done = bool(state.get(f"{task_key}_{today}") or state.get(task_key))
-        status = "done" if done else "MISSED"
-        if not done:
+    for task_id, contract in _DAILY_TASK_CONTRACTS.items():
+        verified = contract["verify"](state, today)
+        status = "done" if verified else "MISSED"
+        if not verified:
             all_ok = False
-        lines.append(f"- {task_key}: {status}")
+        lines.append(f"- {contract['label']} ({task_id}): {status}")
 
     if all_ok:
-        summary = f"今日任务全部完成。\n\n" + "\n".join(lines)
+        summary = "今日任务全部完成（已验证产出）。\n\n" + "\n".join(lines)
     else:
-        summary = f"有任务未完成：\n\n" + "\n".join(lines)
+        summary = "有任务未完成或产出验证失败：\n\n" + "\n".join(lines)
 
     try:
         bridge = Mira(MIRA_DIR)
