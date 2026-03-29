@@ -1,0 +1,18 @@
+{
+  "has_improvement": true,
+  "title": "Add orchestration-vs-inference timing instrumentation to core.py",
+  "description": "Add per-phase wall-clock timing to Mira's main loop in core.py, logging time spent in each orchestration phase (message dispatch, scheduling decisions, state checks, task handoff) separately from time spent waiting on model responses (Claude API calls). Write structured timing summaries to logs/ so Mira can empirically verify its own bottleneck profile.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/super/core.py",
+    "~/Sandbox/Mira/agents/shared/config.py"
+  ],
+  "rationale": "The reading note's central finding is that in agentic systems, CPU orchestration (scheduling, waiting, context management) accounts for ~90% of latency — the model/GPU is just one called component. Mira has CLAUDE_TIMEOUT_THINK=120s and CLAUDE_TIMEOUT_ACT=600s tuned around model response time, and MAX_CONCURRENT_TASKS=2 set conservatively. But if Mira's real bottleneck is its own orchestration loop (30s polling, should_* decision functions, state checks, dispatch overhead), those parameters are measuring the wrong thing and tuning them won't help. Without instrumentation, Mira has no empirical basis to know whether it's GPU-bottlenecked (API-wait-bound) or CPU-bottlenecked (orchestration-bound). The reading note's insight maps directly: 'all the GPU-hour pricing is measuring the wrong thing' → Mira's current timeout/concurrency config may be optimizing the wrong variable.",
+  "diff_description": "In core.py's main loop, wrap each orchestration phase with a lightweight timer: `t0 = time.monotonic()` before and `elapsed = time.monotonic() - t0` after each phase (process_iphone_messages, check_notes_inbox, check_writing_pipeline, should_explore/run_explore, should_reflect, should_journal, etc.). Separately instrument Claude subprocess calls to capture model-wait time. At end of each loop iteration, emit a single structured log line: `TIMING cycle=Ns orchestration=Xms model_wait=Yms phases={...}`. After one week of data, compare orchestration_total vs model_wait_total — if orchestration dominates, revisit MAX_CONCURRENT_TASKS upward and the 30s polling interval downward. If model_wait dominates, current config is correctly calibrated. No logic changes, pure observability addition.",
+  "source_note": "2026-03-28_1-cpu-才是-agentic-inference-的真正瓶颈.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-28_1-cpu-才是-agentic-inference-的真正瓶颈.md",
+  "created_at": "2026-03-28T21:45:44.026851",
+  "date": "2026-03-28",
+  "status": "implemented",
+  "implemented_at": "2026-03-28T21:48:43.263992"
+}

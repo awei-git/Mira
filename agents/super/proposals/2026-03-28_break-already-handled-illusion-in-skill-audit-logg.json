@@ -1,0 +1,16 @@
+{
+  "has_improvement": true,
+  "title": "Break 'already handled' illusion in skill audit logging",
+  "description": "Change soul_manager.audit_skill() to replace binary PASSED/BLOCKED log messages with messages that explicitly name what the audit checked and what it did NOT check. Add an audit_coverage field to the audit result dict listing unchecked surfaces (runtime behavior, novel patterns, multi-step attacks, legitimate-operation abuse). The goal is to prevent the audit's pass state from creating a psychological 'cleared' status that stops further scrutiny.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py"
+  ],
+  "rationale": "The reading note identifies a meta-pattern: defenses that produce a 'handled' psychological state are dangerous because the real attack surface lives in the blind spot of that state. SHA pinning and the LiteLLM compromise are both instances. Mira's skill audit is structurally identical — it runs static pattern checks then logs 'BLOCKED' or passes silently, creating an 'already audited' state. Skills that pass have implicitly cleared a gate they may not have actually cleared. The fix is not to strengthen the checks (that's the SHA pinning instinct — more rigor on the wrong axis), but to make the audit's incompleteness explicit in its own output, breaking the false closure.",
+  "diff_description": "In audit_skill(), change the success log from something like logger.info('Skill %s passed audit', name) to logger.info('Skill %s passed STATIC_PATTERN_ANALYSIS (unchecked: runtime behavior, novel attack vectors, legitimate-operation abuse, multi-step attacks)', name). Add an audit_coverage key to the returned dict: {'result': 'pass', 'checks_performed': ['network_requests', 'dangerous_ops', 'obfuscation', 'privilege_escalation'], 'not_checked': ['runtime_behavior', 'novel_patterns', 'legitimate_op_abuse']}. Callers that currently treat a pass as a full clearance will now see the bounded scope explicitly.",
+  "source_note": "2026-03-28_sha-pinning-和-litellm-供应链攻击是同一个认知错误的两个.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-28_sha-pinning-和-litellm-供应链攻击是同一个认知错误的两个.md",
+  "created_at": "2026-03-28T21:45:44.028663",
+  "date": "2026-03-28",
+  "status": "proposed"
+}

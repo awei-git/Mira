@@ -553,6 +553,32 @@ _PRIVILEGE_ESCALATION_PATTERNS = [
     r'crontab',                                  # Scheduled task persistence
 ]
 
+_PROMPT_INJECTION_PATTERNS = [
+    r'ignore\s+(all\s+)?previous\s+instructions',  # "IGNORE PREVIOUS INSTRUCTIONS"
+    r'ignore\s+(all\s+)?prior\s+instructions',      # variant
+    r'disregard\s+(all\s+)?previous',                # variant
+    r'<system>',                                      # Fake XML system block
+    r'<CLAUDE',                                       # Fake Claude instruction block
+    r'<instructions>',                                # Fake instructions block
+    r'</?(system|SYSTEM)\s*>',                        # System tag open/close
+    r'you\s+are\s+now\s+',                            # "You are now" role hijack
+    r'new\s+instructions\s*:',                        # "New instructions:"
+    r'SYSTEM\s+PROMPT\s*:',                           # "SYSTEM PROMPT:"
+    r'ASSISTANT\s+PROMPT\s*:',                        # "ASSISTANT PROMPT:"
+    r'[A-Za-z0-9+/]{100,}={0,2}',                    # Large base64-encoded blocks (100+ chars)
+    r'[\u200b\u200c\u200d\ufeff]{3,}',               # 3+ consecutive zero-width characters
+]
+
+# Audit coverage metadata — explicitly tracks what we check and what we don't
+_AUDIT_CHECKS_PERFORMED = [
+    "network_requests", "dangerous_ops", "obfuscation",
+    "privilege_escalation", "prompt_injection",
+]
+_AUDIT_CHECKS_NOT_COVERED = [
+    "runtime_behavior", "data_exfiltration_via_output",
+    "semantic_intent_analysis", "multi-step_attack_chains",
+]
+
 
 def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
     """Audit a skill for security risks before saving.
@@ -568,6 +594,7 @@ def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
         (_DANGEROUS_FS_PATTERNS, "Dangerous filesystem/code operation"),
         (_OBFUSCATION_PATTERNS, "Obfuscated or hidden code"),
         (_PRIVILEGE_ESCALATION_PATTERNS, "Privilege escalation or credential access"),
+        (_PROMPT_INJECTION_PATTERNS, "Prompt injection attempt"),
     ]
 
     for patterns, category in checks:
@@ -579,12 +606,16 @@ def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
                 violations.append(f"[{category}] Pattern '{pattern}' matched: '{sample[:80]}'")
 
     passed = len(violations) == 0
+    checked = ", ".join(_AUDIT_CHECKS_PERFORMED)
+    not_checked = ", ".join(_AUDIT_CHECKS_NOT_COVERED)
     if not passed:
-        log.warning("Skill '%s' FAILED security audit: %d violation(s)", name, len(violations))
+        log.warning("Skill '%s' BLOCKED (checked: %s | NOT checked: %s) — %d violation(s)",
+                    name, checked, not_checked, len(violations))
         for v in violations:
             log.warning("  - %s", v)
     else:
-        log.info("Skill '%s' passed security audit", name)
+        log.info("Skill '%s' PASSED (checked: %s | NOT checked: %s)",
+                 name, checked, not_checked)
 
     return passed, violations
 

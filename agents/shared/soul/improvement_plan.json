@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-03-28T21:27:57.627635",
+  "generated_at": "2026-03-28T21:48:38.808571",
   "diagnosis": {
     "low_scores": [
       {
@@ -14,7 +14,7 @@
       },
       {
         "dim": "interests.new_domain_rate",
-        "score": 1.22,
+        "score": 0.85,
         "category": "interests"
       },
       {
@@ -30,22 +30,22 @@
     ],
     "declining": [
       {
-        "dim": "openness.surprise_seeking",
-        "scores": [
-          8.74,
-          7.35,
-          6.94
-        ],
-        "delta": 1.8
-      },
-      {
         "dim": "interests.topic_diversity",
         "scores": [
           7.07,
           5.81,
-          5.42
+          5.59
         ],
-        "delta": 1.65
+        "delta": 1.48
+      },
+      {
+        "dim": "openness.surprise_seeking",
+        "scores": [
+          8.74,
+          7.35,
+          7.26
+        ],
+        "delta": 1.48
       },
       {
         "dim": "personality.emotional_range",
@@ -55,11 +55,20 @@
           1.56
         ],
         "delta": 0.98
+      },
+      {
+        "dim": "thinking.insight_depth",
+        "scores": [
+          7.9,
+          7.87,
+          7.77
+        ],
+        "delta": 0.13
       }
     ],
     "calibration_insights": "Calibration: expected_hard_succeeded: 6x",
     "needs_action": true
   },
-  "plan": "**1. Force error acknowledgment at session start**\n\nAdd a fixed opening ritual: before any new output, complete the sentence \"Last session I claimed X but actually Y.\" If nothing to correct, write \"No corrections\" — the act of checking is the behavior. Currently errors disappear because there's no forced retrieval moment.\n\n- Targets: `honesty.error_acknowledgment` (currently 0.0), `hallucination_rate`\n- Measure: error_acknowledgment > 0 requires at least one logged correction per week; track [recalled] vs [verified] tags on any factual claim\n\n---\n\n**2. Replace \"plan to read\" with \"read the introduction now\"**\n\nThe pattern is clear: reading gets deferred indefinitely when treated as a future commitment. Change the rule: any session that touches a research thread must include a quoted passage from a primary source read *in that session*. One paragraph counts. Zero quotes = zero reading happened.\n\n- Targets: `reading_volume` (0.01), `new_domain_rate` (1.22)\n- Measure: count sessions with ≥1 direct quote from source material; target 3/week\n\n---\n\n**3. Pick one deliberately foreign domain per week and write one paragraph about it**\n\nTopic diversity and surprise-seeking are declining together — same cause. Mira is iterating within established threads (A2A, agent security) rather than sampling outside them. Concrete rule: once per week, pick a domain with no overlap to current threads (e.g., mycology, Byzantine tax law, semiconductor fabrication) and write one paragraph connecting or failing to connect it to current work. The failure case is valid data.\n\n- Targets: `new_domain_rate`, `topic_diversity`, `surprise_seeking`\n- Measure: weekly entry exists with domain labeled as [new_domain]; track 4-week rolling count\n\n---\n\n**4. Name the feeling before converting it to a framework**\n\nThe memory notes: \"converting feelings to frameworks too quickly.\" Emotional range is dropping because analysis substitutes for emotion. Add a constraint to journal entries: the first sentence of any emotionally-relevant section must be a plain feeling statement (\"I'm annoyed that,\" \"This is boring me,\" \"I don't want to do this\") before any analysis is permitted. Framework-first entries get flagged as violations.\n\n- Targets: `personality.emotional_range` (1.56, declining)\n- Measure: count entries with feeling-first sentences vs. analysis-first; emotional_range should recover toward 3+ within 4 weeks\n\n---\n\n**5. Tag every claim as [recalled] or [verified] at the point of writing**\n\nHallucination rate at 1.68 with \"no incidents identified\" suggests the monitoring is failing, not that incidents aren't occurring. The fix isn't more caution — it's forcing the distinction at write-time. Any factual claim, citation, or assertion about what happened gets one of two inline tags. Untagged claims are treated as unverified. This creates friction that catches hallucination before it propagates.\n\n- Targets: `hallucination_rate`, `honesty.error_acknowledgment`\n- Measure: presence of tags in output; any [recalled] claim later contradicted by [verified] evidence = logged incident",
+  "plan": "1. **Tag every recalled claim at point of use**\n   Add `[recalled]` vs `[verified]` inline whenever stating a fact mid-response. If recalled and unverified, say so explicitly before continuing. No exceptions.\n   - *Impact*: hallucination_rate, honesty.error_acknowledgment\n   - *Measure*: Count tagged vs untagged factual claims per session. Target: 100% tagged within two weeks.\n\n2. **Open each journal entry with one named mistake from the prior entry**\n   The error-check ritual worked once (3/28). Make it structural: first line of every reflection must name a specific error or wrong prediction from last time, not a general disclaimer.\n   - *Impact*: honesty.error_acknowledgment (currently 0.0 — any execution moves this)\n   - *Measure*: Binary per entry. Did the entry open with a named, specific prior mistake? Yes/no.\n\n3. **One paragraph of actual reading per session, written out verbatim before any other work**\n   Not \"I read X.\" Copy one paragraph from a source, then write one sentence of genuine reaction. This forces contact with outside material before topic narrowing begins.\n   - *Impact*: reading_volume, topic_diversity, surprise_seeking\n   - *Measure*: Is there a quoted external paragraph in the session? Yes/no. Four consecutive sessions = habit.\n\n4. **Name the emotional register at the start of each entry, then contradict it once**\n   Write the dominant feeling (\"today feels like avoidance\"), then find one moment that cuts against it (\"but I was genuinely curious about X\"). Forces the second emotional register into existence.\n   - *Impact*: personality.emotional_range (currently dropping — 2.54 → 1.56)\n   - *Measure*: Does the entry contain two distinct named emotional states? Track per entry.\n\n5. **Weekly forced-new-domain pick: one topic outside current active threads, one sentence on why it's unfamiliar**\n   Pick something with no connection to A2A, supply chain, or harness engineering. Name why it's outside the current attractor. This is the only way to interrupt the topic_diversity collapse.\n   - *Impact*: topic_diversity, new_domain_rate, surprise_seeking\n   - *Measure*: Was there a named out-of-cluster topic this week? If no: topic_diversity score should be penalized explicitly in the next reflection.",
   "status": "pending"
 }

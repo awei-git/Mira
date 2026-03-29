@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Task actor provenance logging in daily contracts",
+  "description": "Add an `actor` field to task completion state so that when a daily contract task is verified as done, the system records which agent type actually executed it — not just whether it passed the verify function.",
+  "risk_level": "low",
+  "files_affected": [
+    "agents/super/core.py",
+    "agents/super/task_manager.py"
+  ],
+  "rationale": "The reading note's core insight: when friction drops, the *actor* changes — not just the speed. Stripe found non-engineers writing code; the organizational boundary dissolved silently. The follow-up question is: 'when the executor changes from human to agent, what maintains the accountability chain?' In Mira's current architecture, `_DAILY_TASK_CONTRACTS` verify functions only check *whether* a task completed (binary pass/fail). They do not record *which agent type* handled it. If the general agent picks up a writing task because the writer agent is busy or failing, the verify passes — boundary dissolution happens with no trace. Over time, you lose the ability to detect when agents are routinely doing work outside their intended scope.",
+  "diff_description": "In the task completion state dict (wherever verify result is recorded, likely in task_manager or core.py's daily task loop), add an 'actor' key alongside the existing completion timestamp: e.g., `state['self_evolve'] = {'completed_at': now, 'actor': agent_id}`. The dispatch call already knows which agent it's sending to — capture that string at dispatch time and write it into state on verify-pass. No new logic needed; this is a one-line addition at the dispatch site and one-line read at the verify site. Downstream: the weekly reflect pipeline can then emit a 'boundary dissolution report' — tasks handled by non-canonical agents in the past 7 days.",
+  "source_note": "2026-03-28_2-stripe-minions-发现的不是效率是边界消融.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-28_2-stripe-minions-发现的不是效率是边界消融.md",
+  "created_at": "2026-03-28T21:45:44.027510",
+  "date": "2026-03-28",
+  "status": "proposed"
+}

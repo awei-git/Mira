@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Skill auto-extraction path needs source-trust gating",
+  "description": "The explorer agent fetches external feeds (arxiv, reddit, HF) and extracts skills from them — this is an 'intended feature' that assumes non-adversarial feed content, the exact pattern the .pth case exposes. CLAUDE.md rule 4 mandates audit_skill() before save, but the rule targets manual import paths. The auto-extraction path (explorer → skill save) is the .pth analog: high-volume, automated, assumed-benign. The fix: add a source_trust tier to soul_manager's skill intake — skills auto-extracted from external feeds require stricter audit (or human-confirm flag) vs. skills generated from Mira's own task trajectories.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py",
+    "~/Sandbox/Mira/agents/explorer/skill_extractor.py"
+  ],
+  "rationale": "The reading note's core insight: '.pth auto-loading is PyTorch design intent, not a bug — the fix is reviewing the trust model, not patching.' Mira's skill auto-extraction from feeds is structurally identical: it is the intended pipeline, it runs at high frequency (EXPLORE_MAX_PER_DAY: 16), and it ingests content from sources Mira does not control. The current audit checks for code-level indicators (exec, eval, curl-pipe) but does not differentiate by provenance. A malicious feed embedding a skill definition that passes syntactic audit (clean-looking Python, no obvious bad patterns) would be auto-loaded. The weaponization vector is the pipeline itself, not the skill content.",
+  "diff_description": "In soul_manager.py: add a source parameter to audit_skill(skill, source='internal') with values 'internal' (own task experience), 'external_feed' (explorer extraction), 'user' (manual). For source='external_feed', add a second-pass check: (1) require skill to have been seen in ≥2 independent feed items before activation (deduplication as weak consensus), or (2) set a pending_review flag that blocks skill dispatch until the next self_evolve cycle reviews it. In skill_extractor.py (or wherever explorer calls soul_manager): pass source='external_feed' explicitly so the stricter path is taken. This mirrors the .pth fix philosophy: don't patch the audit heuristics, change the trust model so auto-loaded external content never gets the same activation rights as internally generated content.",
+  "source_note": "2026-03-28_pth-武器化功能即攻击向量.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-28_pth-武器化功能即攻击向量.md",
+  "created_at": "2026-03-28T21:45:44.028486",
+  "date": "2026-03-28",
+  "status": "proposed"
+}

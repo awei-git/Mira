@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Agent message trust boundary: validate inter-agent messages before dispatch",
+  "description": "Add a lightweight contamination check in the notes_bridge (or the inbox dispatch path in super/core.py) that validates messages arriving FROM other agents before forwarding them downstream. Specifically: (1) reject or flag messages that assert completed actions without verifiable artifacts (mirrors HARD RULE 1 but applied at the agent-to-agent boundary, not just at output), (2) tag messages by source type — 'human' vs 'agent' — so downstream agents know whether to apply heightened skepticism. This directly operationalizes the reading note's 'trust boundary between agents' defense for the direct-context-sharing contamination mechanism.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/notes_bridge.py",
+    "~/Sandbox/Mira/agents/super/core.py"
+  ],
+  "rationale": "The reading note confirms empirically that cross-agent contamination is real, and identifies two distinct mechanisms: (a) direct context sharing and (b) shared environment pollution. Mira's architecture uses notes_inbox/notes_outbox as the inter-agent channel — this is precisely the 'direct context sharing' pathway. Without a trust boundary here, a hallucinating sub-agent (e.g. writer producing a fabricated source) can inject that hallucination into the super agent's next dispatch decision, which then propagates to yet another sub-agent. The existing HARD RULE 1 prevents Mira from hallucinating to the user, but there is no equivalent rule applied to agent-to-agent message ingestion.",
+  "diff_description": "In notes_bridge.py (or wherever inbox messages are parsed before dispatch): (1) Add a 'source' field to the message schema: values 'human' | 'agent' | 'system'. Set 'agent' for any message written by a sub-agent into the outbox. (2) In the dispatch path in core.py, when source == 'agent', run a brief sanity check: if the message claims a file was written or an action was completed, verify the artifact exists before treating the claim as ground truth (reuse the existing hallucination-detection logic already implied by HARD RULE 2). (3) If verification fails, do not forward the claim downstream — instead log it as a suspected contamination event and either re-issue the sub-task or surface to the user. This is a ~30-line addition concentrated in two places, with no schema-breaking changes to existing message format.",
+  "source_note": "2026-03-28_2-跨-agent-污染是实测数据不是理论.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-28_2-跨-agent-污染是实测数据不是理论.md",
+  "created_at": "2026-03-28T21:45:44.027803",
+  "date": "2026-03-28",
+  "status": "proposed"
+}

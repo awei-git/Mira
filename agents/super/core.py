@@ -1380,10 +1380,13 @@ def do_analyst(slot: str = ""):
         bridge.update_status(item_id, "done")
 
     # Mark this slot as done
+    actor = f"analyst-{slot or 'default'}/claude-think-heavy"
     if slot:
         state[f"analyst_{today}_{slot}"] = True
+        state[f"analyst_{today}_{slot}_actor"] = actor
     else:
         state[f"analyst_{today}"] = True
+        state[f"analyst_{today}_actor"] = actor
     save_state(state)
 
     log.info("Analyst briefing (%s) complete", session_type)
@@ -1898,6 +1901,7 @@ def do_journal():
     # Mark done in state
     state = load_state()
     state[f"journal_{today}"] = datetime.now().isoformat()
+    state[f"journal_{today}_actor"] = "journal/claude-think"
     save_state(state)
 
 
@@ -1929,6 +1933,7 @@ def do_daily_photo():
     # Mark as done early to avoid re-trigger
     state = load_state()
     state[f"daily_photo_{today}"] = datetime.now().isoformat()
+    state[f"daily_photo_{today}_actor"] = "daily-photo/photo-agent"
     save_state(state)
 
     # Run daily_edit.py with python3.12 (needs torch for scorer)
@@ -2524,6 +2529,7 @@ def _should_self_evolve() -> bool:
     if state.get(f"self_evolve_{today}"):
         return False
     state[f"self_evolve_{today}"] = now.isoformat()
+    state[f"self_evolve_{today}_actor"] = "self-evolve/claude-think"
     save_state(state)
     return True
 
@@ -3786,6 +3792,7 @@ def do_zhesi():
         log.warning("Failed to create 哲思 feed: %s", e)
 
     state[f"zhesi_{today}"] = datetime.now().isoformat()
+    state[f"zhesi_{today}_actor"] = "zhesi/claude-think"
     save_state(state)
 
 
@@ -3838,6 +3845,7 @@ def do_soul_question():
         log.warning("Failed to create soul question feed: %s", e)
 
     state[f"soul_question_{today}"] = datetime.now().isoformat()
+    state[f"soul_question_{today}_actor"] = "soul-question/claude-think"
     save_state(state)
 
 
@@ -4324,7 +4332,11 @@ def _daily_task_status_report():
         status = "done" if verified else "MISSED"
         if not verified:
             all_ok = False
-        lines.append(f"- {contract['label']} ({task_id}): {status}")
+        # Look up actor provenance from state (try common key patterns)
+        actor_key = f"{task_id}_{today}_actor"
+        actor = state.get(actor_key, "")
+        actor_suffix = f" [actor: {actor}]" if actor else ""
+        lines.append(f"- {contract['label']} ({task_id}): {status}{actor_suffix}")
 
     if all_ok:
         summary = "今日任务全部完成（已验证产出）。\n\n" + "\n".join(lines)
@@ -4368,18 +4380,24 @@ def cmd_run():
     # Load session context from previous cycles
     _session_ctx = load_session_context()
     _session_new = []  # entries from this cycle
+    _phase_times: dict[str, int] = {}
+    _model_wait_ms = 0  # blocking model calls in this cycle (bg dispatches don't block)
 
     # Safety net: ensure today's journal/zhesi are visible to iOS
+    _t0 = _time.monotonic()
     try:
         _sync_journals_to_briefings()
     except Exception as e:
         log.error("Journal sync check failed: %s", e)
+    _phase_times["sync_journals"] = round((_time.monotonic() - _t0) * 1000)
 
     # Mira first (lightweight, fast) — CRITICAL PATH
+    _t0 = _time.monotonic()
     try:
         do_talk()
     except Exception as e:
         log.error("Mira failed: %s", e)
+    _phase_times["talk"] = round((_time.monotonic() - _t0) * 1000)
 
     if should_shutdown():
         log.info("Shutdown requested — exiting after talk phase")
@@ -4389,14 +4407,17 @@ def cmd_run():
     _elapsed = _time.monotonic() - _cycle_start
     if _elapsed < 8:
         # Check if user approved plans or gave feedback on writing projects
+        _t0 = _time.monotonic()
         try:
             responses = check_writing_responses()
             for resp in responses:
                 advance_project(resp["workspace"], user_input=resp["content"])
         except Exception as e:
             log.error("Writing response check failed: %s", e)
+        _phase_times["writing_responses"] = round((_time.monotonic() - _t0) * 1000)
 
         # Sync Mira's own status + read all app feeds
+        _t0 = _time.monotonic()
         try:
             from app_feeds import read_app_feeds, sync_mira_status
             sync_mira_status()
@@ -4405,23 +4426,31 @@ def cmd_run():
                 log.info("App feeds: %s", ", ".join(f["app"] for f in feeds))
         except Exception as e:
             log.warning("App feed sync/read failed: %s", e)
+        _phase_times["app_feeds"] = round((_time.monotonic() - _t0) * 1000)
     else:
         log.info("Cycle > 8s (%.1fs), deferring non-critical checks", _elapsed)
 
     # --- Harvest background process outcomes & check health ---
+    _t0 = _time.monotonic()
     try:
         health_monitor.harvest_all()
         health_monitor.check_anomalies()
     except Exception as e:
         log.error("Health monitor failed: %s", e)
+    _phase_times["health"] = round((_time.monotonic() - _t0) * 1000)
 
     # Reap stale PID files (hourly) — prevents stuck tasks
+    _t0 = _time.monotonic()
     _reap_stale_pids()
+    _phase_times["reap_pids"] = round((_time.monotonic() - _t0) * 1000)
 
     # --- Auto-publish approved articles when cooldown clears ---
+    _t0 = _time.monotonic()
     _check_pending_publish()
+    _phase_times["pending_publish"] = round((_time.monotonic() - _t0) * 1000)
 
     # --- All heavy work below runs in background processes ---
+    _t0 = _time.monotonic()
 
     # Writing pipeline
     _dispatch_background("writing-pipeline", [
@@ -4563,16 +4592,36 @@ def cmd_run():
         _dispatch_background("assessment", [
             sys.executable, str(Path(__file__).resolve()), "assess",
         ])
+    _phase_times["dispatch"] = round((_time.monotonic() - _t0) * 1000)
 
     # -----------------------------------------------------------------------
     # Self-repair: retry critical daily tasks that failed or never completed
     # -----------------------------------------------------------------------
+    _t0 = _time.monotonic()
     _self_repair_daily_tasks()
     _daily_task_status_report()
+    _phase_times["self_repair"] = round((_time.monotonic() - _t0) * 1000)
 
     # Save session context for next cycle
     if _session_new:
         save_session_context(_session_ctx + _session_new)
+
+    _cycle_ms = round((_time.monotonic() - _cycle_start) * 1000)
+    _orch_ms = sum(_phase_times.values())
+    log.info("TIMING cycle=%ds orchestration=%dms model_wait=%dms phases=%s",
+             round(_cycle_ms / 1000), _orch_ms, _model_wait_ms, json.dumps(_phase_times))
+    try:
+        from config import TIMING_LOG
+        with open(TIMING_LOG, "a", encoding="utf-8") as _tf:
+            _tf.write(json.dumps({
+                "ts": datetime.now().isoformat(),
+                "cycle_ms": _cycle_ms,
+                "orchestration_ms": _orch_ms,
+                "model_wait_ms": _model_wait_ms,
+                "phases": _phase_times,
+            }) + "\n")
+    except Exception as _te:
+        log.debug("Timing log write failed: %s", _te)
 
     log.info("=== Mira Agent sleep ===")
 

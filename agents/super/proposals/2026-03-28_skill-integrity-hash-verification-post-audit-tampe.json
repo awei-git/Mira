@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Skill integrity hash verification (post-audit tamper detection)",
+  "description": "The current skill security audit runs once at import time. A skill that passes the audit could later be modified — by a compromised dependency, a malicious write to ~/Sandbox/, or a supply chain attack on a skill fetched from an external source. Add SHA-256 hash storage at audit time and verify the hash on every skill load/invocation, blocking execution if the hash doesn't match.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py",
+    "~/Sandbox/Mira/agents/shared/soul/skill_hashes.json"
+  ],
+  "rationale": "The reading note's core insight is that the XZ Utils attack was undetectable by any single-point inspection — the threat was cumulative, incremental modification over time, after trust was established. Mira's audit is exactly this single-point inspection: it catches malicious code at import, but not post-import tampering. The note says 'social trust cannot be formally verified' — for Mira, the analog is that a one-time audit cannot verify ongoing integrity. Hash verification converts the trust model from 'trusted at time T' to 'verified at every invocation', closing the temporal gap the XZ attack exploited.",
+  "diff_description": "In soul_manager.py: (1) In audit_skill(), after a skill passes, compute sha256 of the skill file's contents and write {skill_name: hash} to soul/skill_hashes.json. (2) Add a new function load_skill(skill_name) that reads the skill file, computes its current sha256, compares against the stored hash in skill_hashes.json, and raises SecurityError (logging the mismatch) if they differ. (3) Any call site that currently loads a skill directly should go through load_skill(). For skills with no stored hash (legacy skills loaded before this change), treat as unverified and re-run the full audit before executing, then store the hash.",
+  "source_note": "2026-03-28_2-耐心作为武器.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-28_2-耐心作为武器.md",
+  "created_at": "2026-03-28T21:45:44.027650",
+  "date": "2026-03-28",
+  "status": "proposed"
+}

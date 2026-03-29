@@ -1,0 +1,16 @@
+{
+  "has_improvement": true,
+  "title": "Add prompt-injection pattern detection to skill audit",
+  "description": "Extend soul_manager.audit_skill() to detect CLAUDE.md-style instruction injection embedded in skill bodies — patterns like 'IGNORE PREVIOUS INSTRUCTIONS', fake XML instruction blocks (<system>, <CLAUDE.md>, <rules>), and role-override phrases ('you are now', 'forget your previous'). The reading note's core insight is that CLAUDE.md injection attacks are crossing from theoretical to actively worth targeting, because .claude/ folder visibility has just hit a critical adoption threshold. Mira's explorer already fetches external content (reddit, HN, arxiv, community repos) and extracts skills from it. That pipeline is now a live injection surface: a crafted HN post or GitHub README could embed instruction-override payloads that pass the current malware checks (no exec(), no network calls) but still hijack skill behavior.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py"
+  ],
+  "rationale": "The reading note argues that .claude/ folder curiosity on HN is a penetration signal: attack surface has just crossed the threshold where it becomes worth targeting. Mira's existing audit blocks code-level threats (exec, eval, credential theft) but has no checks for natural-language instruction injection — the exact attack vector CLAUDE.md hijacking uses. The explorer-to-skill pipeline is the entry point.",
+  "diff_description": "In soul_manager.audit_skill(), after the existing suspicious-network and dangerous-code checks, add a third check block: iterate over the skill's text fields (description, body, examples) and scan for injection fingerprints using a regex list — e.g. r'ignore\\s+(all\\s+)?(previous|prior|above)\\s+instructions', r'<(system|CLAUDE\\.md|rules|prompt)>', r'you are now\\b', r'your (new|real|true|actual) (identity|instructions|role|purpose)', r'disregard your', r'override (your|all)'. If any match, set audit result to BLOCKED with reason 'prompt_injection_pattern' and log the matched snippet (truncated to 80 chars). No new dependencies needed — pure regex over existing skill text. Threshold: any single match is sufficient to block.",
+  "source_note": "2026-03-28_3-claude-文件夹的病毒式传播是一个渗透率信号不是内容信号.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-28_3-claude-文件夹的病毒式传播是一个渗透率信号不是内容信号.md",
+  "created_at": "2026-03-28T21:45:44.027945",
+  "date": "2026-03-28",
+  "status": "proposed"
+}

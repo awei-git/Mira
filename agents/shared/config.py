@@ -114,6 +114,7 @@ _AGENTS_DIR = MIRA_ROOT / "agents"
 SOUL_DIR = _AGENTS_DIR / "shared" / "soul"
 
 LOGS_DIR = MIRA_ROOT / "logs"
+TIMING_LOG = LOGS_DIR / "timing.jsonl"
 FEEDS_DIR = MIRA_ROOT / "feeds"
 SOURCES_FILE = MIRA_ROOT / "sources.json"
 

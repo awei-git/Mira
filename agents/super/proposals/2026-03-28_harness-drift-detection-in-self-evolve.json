@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Harness drift detection in self_evolve",
+  "description": "Add a harness_drift_check() step inside the self_evolve pipeline that reads _DAILY_TASK_CONTRACTS (the declared harness spec) and compares declared time windows against actual task execution timestamps from recent logs. Flag any task that consistently executes outside its declared window — this is the operational definition of spec-runtime drift for Mira's harness.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/super/core.py",
+    "~/Sandbox/Mira/agents/general/self_evolve.py"
+  ],
+  "rationale": "The reading note's core insight: harness and model are always confounded in evaluation because the harness is invisible. For Mira, _DAILY_TASK_CONTRACTS IS the harness spec — but it's never validated against runtime behavior. As self_evolve modifies Mira's code over time, the declared windows can silently drift from what the scheduler actually does (e.g., a should_* function gets patched but _DAILY_TASK_CONTRACTS is not updated). The note's harder question — 'who ensures spec and runtime don't drift?' — is directly answerable here: the self_evolve agent itself should check this on each run.",
+  "diff_description": "In self_evolve.py, add a function harness_drift_check() that: (1) reads _DAILY_TASK_CONTRACTS from core.py (import or parse the dict); (2) scans ~/Sandbox/Mira/logs/ for the last 7 days of task dispatch records, extracting actual start times per task key; (3) for each task, checks whether >20% of executions fall outside the declared (start_hour, end_hour) window; (4) if drift detected, appends a warning to the self_evolve output report with the task name, declared window, and observed median execution hour. Call harness_drift_check() at the end of the self_evolve run, after other checks. No existing behavior is changed — this is additive logging only.",
+  "source_note": "2026-03-28_natural-language-agent-harnesses-让我意.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-28_natural-language-agent-harnesses-让我意.md",
+  "created_at": "2026-03-28T21:45:44.028311",
+  "date": "2026-03-28",
+  "status": "proposed"
+}
