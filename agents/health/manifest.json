@@ -1,0 +1,10 @@
+{
+  "name": "health",
+  "description": "Family health monitoring agent. Tracks weight, sleep, vitals, symptoms, and checkup reports. Privacy-first: all data processing uses local LLM only.",
+  "keywords": ["健康", "体检", "体重", "血压", "睡眠", "心率", "health", "weight", "sleep", "checkup", "血糖", "头疼", "症状", "symptom", "药", "medication", "运动", "exercise", "steps", "心跳"],
+  "handles": ["health tracking", "medical report parsing", "health monitoring", "symptom logging", "health queries"],
+  "tier": "light",
+  "timeout_category": "short",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": true
+}

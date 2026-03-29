@@ -1,4 +1,5 @@
 """Mira Web GUI — lightweight FastAPI server reading from bridge files."""
+import asyncio
 import json
 import sys
 import uuid
@@ -7,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -417,6 +418,40 @@ def _read_file(path: Path):
             media_type="text/plain; charset=utf-8"
         )
     return FileResponse(path)
+
+# ---------------------------------------------------------------------------
+# SSE — Real-time notifications via Server-Sent Events
+# ---------------------------------------------------------------------------
+
+@app.get("/api/{user_id}/events")
+async def events(user_id: str, request: Request):
+    """SSE stream that polls manifest every 10s and pushes changed items."""
+    async def generate():
+        last_timestamps: dict[str, str] = {}
+        while True:
+            if await request.is_disconnected():
+                break
+            manifest = _read_json(_user_dir(user_id) / "manifest.json")
+            if manifest:
+                for entry in manifest.get("items", []):
+                    eid = entry["id"]
+                    ts = entry.get("updated_at", "")
+                    if last_timestamps.get(eid) != ts:
+                        last_timestamps[eid] = ts
+                        item = _read_json(_user_dir(user_id) / "items" / f"{eid}.json")
+                        if item:
+                            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            # Also push heartbeat
+            hb = _read_json(BRIDGE / "heartbeat.json")
+            if hb:
+                yield f"event: heartbeat\ndata: {json.dumps(hb, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(10)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 # ---------------------------------------------------------------------------
 # Frontend

@@ -381,6 +381,9 @@ def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK,
     timeout from a genuine empty response.
     On quota/rate-limit errors, automatically falls back to CLAUDE_FALLBACK_MODEL.
     """
+    # Model restriction: force local Ollama if set (e.g. for child users)
+    if os.environ.get("MIRA_FORCE_OLLAMA") == "1":
+        return _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=timeout)
     model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
     # Strip CLAUDECODE env var to allow nested Claude CLI sessions (LaunchAgent)
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
@@ -423,6 +426,9 @@ def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT,
     On quota/rate-limit errors, falls back to CLAUDE_FALLBACK_MODEL (thinking only,
     no tool access — caller receives text output without file operations).
     """
+    # Model restriction: force local Ollama if set (e.g. for child users)
+    if os.environ.get("MIRA_FORCE_OLLAMA") == "1":
+        return _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=timeout)
     model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
     cmd = [
         CLAUDE_BIN, "-p", prompt,

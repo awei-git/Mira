@@ -39,6 +39,7 @@ from config import (
     RESEARCH_TIME, RESEARCH_TOPIC, SOUL_QUESTION_TIME,
     SKILL_STUDY_SOURCE_GROUPS, SKILL_STUDY_COOLDOWN_HOURS, SKILL_STUDY_TIME,
     EPISODES_DIR, validate_config,
+    get_user_config, is_agent_allowed, get_model_restriction, should_filter_content,
 )
 from mira import Mira, Message
 from task_manager import TaskManager, TASKS_DIR
@@ -193,6 +194,13 @@ def _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd=None):
         log.info("STATE %s: dispatch deferred (all %d slots occupied)", msg.id,
                  task_mgr.get_active_count())
         return "busy"
+    # Inject user access control context into message for the worker
+    if cmd:
+        msg.user_id = cmd.get("_user_id", "ang")
+        msg.user_role = cmd.get("_user_role", "admin")
+        msg.model_restriction = cmd.get("_model_restriction")
+        msg.content_filter = cmd.get("_content_filter", False)
+        msg.allowed_agents = cmd.get("_allowed_agents", [])
     task_id = task_mgr.dispatch(msg, workspace)
     if task_id:
         bridge.update_status(msg.id, "working")
@@ -289,6 +297,17 @@ def do_talk():
             item_id = cmd.get("item_id", "")
             tags = cmd.get("tags") or []
             log.info("Mira command [%s]: type=%s title=%s", user_bridge.user_id, cmd_type, title[:60])
+
+            # --- Access control: check user permissions ---
+            user_cfg = get_user_config(user_bridge.user_id)
+            if user_cfg["role"] == "guest":
+                log.warning("Unknown user '%s' — restricted to guest access", user_bridge.user_id)
+            # Store user context in command for downstream use
+            cmd["_user_id"] = user_bridge.user_id
+            cmd["_user_role"] = user_cfg["role"]
+            cmd["_model_restriction"] = user_cfg.get("model_restriction")
+            cmd["_content_filter"] = user_cfg.get("content_filter", False)
+            cmd["_allowed_agents"] = user_cfg.get("allowed_agents", ["general"])
 
             if cmd_type == "new_request":
                 task_id = cmd.get("item_id") or f"req_{uuid.uuid4().hex[:8]}"
@@ -2505,6 +2524,120 @@ def do_spark_check():
 # IDLE-THINK mode — threshold-driven self-awakening
 # ---------------------------------------------------------------------------
 
+def _should_health_check() -> bool:
+    """Run health check once per day, evening (19-21)."""
+    now = datetime.now()
+    if not (19 <= now.hour <= 21):
+        return False
+    state = load_state()
+    today = now.strftime("%Y-%m-%d")
+    if state.get(f"health_check_{today}"):
+        return False
+    state[f"health_check_{today}"] = now.isoformat()
+    save_state(state)
+    return True
+
+
+def _should_health_weekly_report() -> bool:
+    """Generate weekly health report on Mondays, 9-11 AM."""
+    now = datetime.now()
+    if now.weekday() != 0:  # Monday = 0
+        return False
+    if not (9 <= now.hour <= 11):
+        return False
+    state = load_state()
+    week_key = f"health_weekly_{now.strftime('%Y-W%W')}"
+    if state.get(week_key):
+        return False
+    state[week_key] = now.isoformat()
+    save_state(state)
+    return True
+
+
+def _run_health_check():
+    """Ingest Apple Health exports + run anomaly detection for all users."""
+    sys.path.insert(0, str(_AGENTS_DIR / "health"))
+    from health_store import HealthStore
+    from ingest import ingest_all_users
+    from monitor import check_all_users, format_alerts
+    from config import DATABASE_URL
+
+    store = HealthStore(DATABASE_URL)
+
+    # 1. Ingest any new Apple Health exports
+    bridge_path = Path(MIRA_DIR)
+    ingested = ingest_all_users(bridge_path, store)
+    if ingested:
+        log.info("Health: ingested %d metrics from Apple Health", ingested)
+
+    # 2. Run anomaly detection for all users
+    users_dir = bridge_path / "users"
+    user_ids = [d.name for d in users_dir.iterdir() if d.is_dir()] if users_dir.exists() else ["ang"]
+
+    alerts_by_user = check_all_users(store, user_ids)
+
+    # 3. Send alerts via bridge
+    if alerts_by_user:
+        all_bridges = Mira.for_all_users()
+        bridges_by_user = {b.user_id: b for b in all_bridges}
+        for uid, alerts in alerts_by_user.items():
+            message = format_alerts(uid, alerts)
+            bridge = bridges_by_user.get(uid, bridges_by_user.get("ang"))
+            if bridge:
+                alert_id = f"health_alert_{datetime.now().strftime('%Y%m%d')}"
+                if not bridge.item_exists(alert_id):
+                    bridge.create_task(alert_id, f"健康提醒 - {uid}",
+                                       message, sender="health_agent",
+                                       tags=["health", "alert"], origin="agent")
+                    bridge.update_status(alert_id, "done", agent_message=message)
+                    log.info("Health alert sent to %s: %d alerts", uid, len(alerts))
+    else:
+        log.info("Health check: all clear for all users")
+
+    store.close()
+
+
+def _run_health_weekly_report():
+    """Generate and publish weekly health reports for all users."""
+    sys.path.insert(0, str(_AGENTS_DIR / "health"))
+    from health_store import HealthStore
+    from report import generate_weekly_report
+    from config import DATABASE_URL
+
+    store = HealthStore(DATABASE_URL)
+    all_bridges = Mira.for_all_users()
+    bridges_by_user = {b.user_id: b for b in all_bridges}
+
+    users_dir = Path(MIRA_DIR) / "users"
+    user_ids = [d.name for d in users_dir.iterdir() if d.is_dir()] if users_dir.exists() else ["ang"]
+
+    for uid in user_ids:
+        report = generate_weekly_report(store, uid)
+        if "暂无健康数据" in report:
+            continue
+
+        # Write to iCloud Artifacts
+        today = datetime.now().strftime("%Y-%m-%d")
+        artifacts_base = Path(ARTIFACTS_DIR).parent  # go up from ang to all users
+        health_dir = artifacts_base / uid / "health"
+        health_dir.mkdir(parents=True, exist_ok=True)
+        report_file = health_dir / f"weekly_{today}.md"
+        report_file.write_text(report, encoding="utf-8")
+        log.info("Health weekly report written: %s", report_file)
+
+        # Send notification via bridge
+        bridge = bridges_by_user.get(uid)
+        if bridge:
+            report_id = f"health_weekly_{today}"
+            if not bridge.item_exists(report_id):
+                bridge.create_task(report_id, f"健康周报 - {uid}",
+                                   report, sender="health_agent",
+                                   tags=["health", "report"], origin="agent")
+                bridge.update_status(report_id, "done", agent_message=report)
+
+    store.close()
+
+
 def _should_self_audit() -> bool:
     """Run self-audit once per day, morning hours only."""
     now = datetime.now()
@@ -4574,6 +4707,20 @@ def cmd_run():
         _dispatch_background("idle-think", [
             sys.executable, str(Path(__file__).resolve()), "idle-think",
         ])
+
+    # Daily health check — ingest Apple Health data + run anomaly detection
+    if _should_health_check():
+        try:
+            _run_health_check()
+        except Exception as e:
+            log.error("Health check failed: %s", e)
+
+    # Weekly health report — Monday morning
+    if _should_health_weekly_report():
+        try:
+            _run_health_weekly_report()
+        except Exception as e:
+            log.error("Health weekly report failed: %s", e)
 
     # Daily self-audit — scan own logs, run tests, check codebase
     if _should_self_audit():

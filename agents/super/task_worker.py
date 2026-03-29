@@ -1220,6 +1220,16 @@ def main():
     msg_sender = msg_data.get("sender", "unknown")
     thread_id = args.thread_id or msg_data.get("thread_id", "")
 
+    # --- User access control context ---
+    _user_id = msg_data.get("user_id", "ang")
+    _user_role = msg_data.get("user_role", "admin")
+    _model_restriction = msg_data.get("model_restriction")
+    _content_filter = msg_data.get("content_filter", False)
+    _allowed_agents = msg_data.get("allowed_agents", [])
+    log.info("User context: user=%s role=%s model_restriction=%s content_filter=%s allowed_agents=%s",
+             _user_id, _user_role, _model_restriction, _content_filter,
+             ",".join(_allowed_agents) if _allowed_agents else "all")
+
     # Load conversation history and execution history for context
     conversation = load_task_conversation(args.task_id)
     conversation = compress_conversation(conversation)
@@ -1341,7 +1351,9 @@ def main():
         planning_context = f"## Progress from prior session\n{progress}\n\n{planning_context}"
 
     plan = _plan_task(msg_content, conversation=conversation, exec_history=exec_history,
-                      prior_context=planning_context)
+                      prior_context=planning_context,
+                      allowed_agents=_allowed_agents,
+                      content_filter=_content_filter)
     log.info("Plan: %s", plan)
 
     _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id)
@@ -1357,7 +1369,8 @@ def main():
 # ---------------------------------------------------------------------------
 
 def _plan_task(content: str, conversation: str = "", exec_history: str = "",
-               prior_context: str = "") -> list[dict]:
+               prior_context: str = "", allowed_agents: list[str] | None = None,
+               content_filter: bool = False) -> list[dict]:
     """Use LLM to decompose a request into an ordered list of steps.
 
     Each step is {"agent": "<name>", "instruction": "<what to do>"}.
@@ -1399,23 +1412,42 @@ If a previous round already produced content, reference it in your plan (e.g. us
     except (ImportError, OSError):
         pass
 
+    # Build available agents list — filter by user permissions
+    _all_agent_descs = {
+        "briefing": "Fetch feeds and generate a news briefing / summary",
+        "writing": "Write or create text content (article, story, essay, post, translation)",
+        "publish": "Publish EXISTING TEXT ARTICLES to Substack newsletter ONLY. NOT for audio, podcast episodes, or RSS feeds.",
+        "analyst": "Market analysis, competitive intelligence, trend detection, industry research, market sizing (has live web search)",
+        "researcher": "Mathematical proofs, derivations, deep research, paper writing/review",
+        "video": "Video editing — analyze footage, generate screenplay, cut highlights, mix music",
+        "photo": "Photo editing — analyze photos, learn editing style, apply edits, generate Lightroom presets/LUTs, batch process",
+        "podcast": "Generate audio from articles (TTS) AND publish podcast episodes to RSS feed (Apple Podcasts, Xiaoyuzhou). Handles the full podcast pipeline internally — do NOT use publish for anything podcast-related.",
+        "secret": "PRIVATE MODE — runs entirely on local LLM (Ollama), nothing leaves this machine. Route here for: personal finance, health, legal, passwords, family matters, 隐私敏感内容, anything the user explicitly marks as private/secret/隐私/私密",
+        "socialmedia": "Substack operations — check notes, read/reply to comments, manage followers, post notes, check engagement stats, fix broken links. Has direct API access to Substack.",
+        "surfer": "Browser automation — navigate non-Substack websites, fill forms, click buttons, extract data from JS-rendered pages.",
+        "general": "Answer questions, search, analyze, code, file operations, anything else (has web browsing for research tasks)",
+        "discussion": "The user wants to CHAT, not execute a task. Casual conversation, opinions, reflections, 'what do you think', philosophical questions, sharing thoughts. Use this when the message is conversational in nature and doesn't ask for any concrete action.",
+        "health": "Health monitoring — record weight/sleep/vitals, log symptoms/medications, query health trends, parse checkup reports. Privacy-first: all processing local.",
+        "clarify": "Ask the user a question ONLY if the request is genuinely ambiguous and cannot be inferred",
+    }
+    if allowed_agents:
+        # Always include clarify + discussion as fallbacks
+        agent_filter = set(allowed_agents) | {"clarify", "discussion"}
+        filtered = {k: v for k, v in _all_agent_descs.items() if k in agent_filter}
+    else:
+        filtered = _all_agent_descs
+    agent_lines = "\n".join(f"- {name}: {desc}" for name, desc in filtered.items())
+
+    content_filter_rule = ""
+    if content_filter:
+        content_filter_rule = """
+- CONTENT FILTER ACTIVE: This is a child user. Only provide age-appropriate, safe, educational content.
+  Never discuss violence, drugs, alcohol, sexual content, or anything dangerous. Redirect inappropriate requests to something positive."""
+
     prompt = f"""You are a task planner and orchestrator. Decompose this user request into ordered execution steps.{skills_section}{cal_section}
 
 ## Available Agents
-- briefing: Fetch feeds and generate a news briefing / summary
-- writing: Write or create text content (article, story, essay, post, translation)
-- publish: Publish EXISTING TEXT ARTICLES to Substack newsletter ONLY. NOT for audio, podcast episodes, or RSS feeds.
-- analyst: Market analysis, competitive intelligence, trend detection, industry research, market sizing (has live web search)
-- researcher: Mathematical proofs, derivations, deep research, paper writing/review
-- video: Video editing — analyze footage, generate screenplay, cut highlights, mix music
-- photo: Photo editing — analyze photos, learn editing style, apply edits, generate Lightroom presets/LUTs, batch process
-- podcast: Generate audio from articles (TTS) AND publish podcast episodes to RSS feed (Apple Podcasts, Xiaoyuzhou). Handles the full podcast pipeline internally — do NOT use publish for anything podcast-related.
-- secret: PRIVATE MODE — runs entirely on local LLM (Ollama), nothing leaves this machine. Route here for: personal finance, health, legal, passwords, family matters, 隐私敏感内容, anything the user explicitly marks as private/secret/隐私/私密
-- socialmedia: Substack operations — check notes, read/reply to comments, manage followers, post notes, check engagement stats, fix broken links. Has direct API access to Substack.
-- surfer: Browser automation — navigate non-Substack websites, fill forms, click buttons, extract data from JS-rendered pages.
-- general: Answer questions, search, analyze, code, file operations, anything else (has web browsing for research tasks)
-- discussion: The user wants to CHAT, not execute a task. Casual conversation, opinions, reflections, "what do you think", philosophical questions, sharing thoughts. Use this when the message is conversational in nature and doesn't ask for any concrete action.
-- clarify: Ask the user a question ONLY if the request is genuinely ambiguous and cannot be inferred
+{agent_lines}
 
 ## Rules
 - Apply the routing, intent-inference, and instruction-crafting skills above to produce the best plan.
@@ -1424,7 +1456,7 @@ If a previous round already produced content, reference it in your plan (e.g. us
 - Match instruction language to the user's language.
 - NEVER ask for confirmation before starting. AVOID clarify unless truly impossible to infer.
 - Prefer specialized agents over general-purpose ones. surfer (browser) is a last resort — only use it when no other agent can handle the task.
-- HARD RULE: Any task mentioning Substack (notes, comments, links, engagement, subscribers) MUST use socialmedia, NEVER surfer. Surfer cannot authenticate to Substack.
+- HARD RULE: Any task mentioning Substack (notes, comments, links, engagement, subscribers) MUST use socialmedia, NEVER surfer. Surfer cannot authenticate to Substack.{content_filter_rule}
 
 ## Model Tier Selection
 Each step must include a "tier" field:
@@ -1552,6 +1584,24 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                           tags=["clarify"])
             _append_exec_log(workspace, round_num, "clarify", "needs-input", instruction)
             return
+
+        # --- Access control: verify agent is allowed for this user ---
+        if _allowed_agents and agent not in _allowed_agents and agent not in ("clarify", "discussion"):
+            log.warning("ACCESS DENIED: user=%s agent=%s not in allowed_agents=%s",
+                        _user_id, agent, _allowed_agents)
+            denied_msg = f"Sorry, you don't have access to the {agent} agent. Available: {', '.join(_allowed_agents)}"
+            _write_result(workspace, task_id, "error", denied_msg)
+            return
+
+        # --- Content filter: prepend safety prompt for child users ---
+        if _content_filter:
+            from config import CHILD_SAFETY_PROMPT
+            instruction = f"{CHILD_SAFETY_PROMPT}\n\n---\n\n{instruction}"
+
+        # --- Model restriction: force local model for restricted users ---
+        if _model_restriction == "ollama":
+            os.environ["MIRA_FORCE_OLLAMA"] = "1"
+            log.info("Model restriction: forcing Ollama for user=%s", _user_id)
 
         # Registry-based dispatch: load handler dynamically from manifest
         from agent_registry import get_registry

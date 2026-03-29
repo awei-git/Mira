@@ -189,9 +189,11 @@ function selectProfile(id, name) {
   buildSidebar();
   refresh();
   pollTimer = setInterval(refresh, 15000);
+  startSSE(id);
 }
 function switchProfile() {
   clearInterval(pollTimer);
+  if (eventSource) { eventSource.close(); eventSource = null; }
   currentUser = null; currentItemId = null;
   localStorage.removeItem('mira_profile');
   document.getElementById('profilePicker').style.display = 'flex';
@@ -563,6 +565,58 @@ async function sendNew() {
     await fetch(`/api/${currentUser}/request`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t.substring(0,50),content:t})});
     refresh();
   }
+}
+
+// ===== Browser Notifications via SSE =====
+let eventSource = null;
+const notifiedIds = new Set();
+
+function startSSE(userId) {
+  if (eventSource) eventSource.close();
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'default') Notification.requestPermission();
+
+  eventSource = new EventSource(`/api/${userId}/events`);
+  eventSource.onmessage = (e) => {
+    try {
+      const item = JSON.parse(e.data);
+      if (!item || !item.id) return;
+      const key = `${item.id}_${item.updated_at}`;
+      if (notifiedIds.has(key)) return;
+      notifiedIds.add(key);
+      // Only notify for actionable states
+      if (item.status === 'needs-input' || item.status === 'done' || item.type === 'feed') {
+        showBrowserNotification(item);
+      }
+      // Also refresh the UI
+      refresh();
+    } catch {}
+  };
+  eventSource.onerror = () => {
+    // SSE will auto-reconnect
+  };
+}
+
+function showBrowserNotification(item) {
+  if (Notification.permission !== 'granted') return;
+  let title, body;
+  if (item.status === 'needs-input') {
+    title = 'Needs your reply';
+    body = item.title;
+  } else if (item.status === 'done' && item.origin === 'user') {
+    title = `Done: ${item.title}`;
+    body = (item.messages && item.messages.length) ? item.messages[item.messages.length-1].content.substring(0,100) : '';
+  } else if (item.type === 'feed') {
+    const tags = item.tags || [];
+    if (tags.includes('briefing')) title = 'Briefing';
+    else if (tags.includes('journal')) title = 'Journal';
+    else if (tags.includes('trading')) title = 'Trading Signal';
+    else title = 'Mira';
+    body = item.title;
+  } else return;
+
+  const n = new Notification(title, { body, icon: '/favicon.ico', tag: item.id });
+  n.onclick = () => { window.focus(); loadItem(item.id); };
 }
 
 // ===== Init =====

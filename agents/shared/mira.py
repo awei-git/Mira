@@ -37,6 +37,12 @@ class Message:
     thread_id: str = ""
     priority: str = "normal"
     metadata: dict = field(default_factory=dict)
+    # User access control (set by super agent before dispatch)
+    user_id: str = "ang"
+    user_role: str = "admin"
+    model_restriction: str | None = None
+    content_filter: bool = False
+    allowed_agents: list = field(default_factory=list)
 
     @classmethod
     def from_file(cls, path: Path) -> "Message | None":
@@ -52,6 +58,11 @@ class Message:
                 thread_id=data.get("thread_id", ""),
                 priority=data.get("priority", "normal"),
                 metadata=data.get("metadata", {}),
+                user_id=data.get("user_id", "ang"),
+                user_role=data.get("user_role", "admin"),
+                model_restriction=data.get("model_restriction"),
+                content_filter=data.get("content_filter", False),
+                allowed_agents=data.get("allowed_agents", []),
             )
         except (json.JSONDecodeError, KeyError, OSError) as e:
             log.error("Failed to read message %s: %s", path.name, e)

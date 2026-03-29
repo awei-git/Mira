@@ -93,6 +93,14 @@ def _parse_simple_yaml(text: str) -> dict:
 def _load_config() -> dict:
     if _CONFIG_FILE.exists():
         try:
+            import yaml
+            return yaml.safe_load(_CONFIG_FILE.read_text(encoding="utf-8")) or {}
+        except ImportError:
+            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("mira.config").warning("PyYAML failed: %s, trying simple parser", e)
+        try:
             return _parse_simple_yaml(_CONFIG_FILE.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
             import logging
@@ -205,6 +213,69 @@ OLLAMA_EMBED_MODEL = _ollama_cfg.get("embed_model", "nomic-embed-text")
 # ---------------------------------------------------------------------------
 _db_cfg = _cfg.get("database", {})
 DATABASE_URL = _db_cfg.get("url", "postgresql://ai_admin:ai_admin@127.0.0.1:5432/ai_system")
+
+# ---------------------------------------------------------------------------
+# User Access Control
+# ---------------------------------------------------------------------------
+_users_cfg = _cfg.get("users", {})
+
+# All known agents (used when role allows "all")
+ALL_AGENTS = [
+    "general", "discussion", "writing", "publish", "briefing",
+    "analyst", "researcher", "video", "photo", "podcast",
+    "socialmedia", "surfer", "secret", "coder", "reader", "health",
+]
+
+CHILD_SAFETY_PROMPT = """You are a helpful, safe AI assistant for a child. Follow these rules strictly:
+- Use age-appropriate language and concepts
+- Never discuss violence, weapons, drugs, alcohol, or sexual content
+- Never help with anything that could be dangerous or harmful
+- If asked about sensitive topics, redirect to something educational and positive
+- Be encouraging, patient, and educational
+- Never share personal information or help bypass parental controls
+- If unsure whether something is appropriate, err on the side of caution"""
+
+
+def get_user_config(user_id: str) -> dict:
+    """Return user config with defaults. Unknown users get restricted guest access."""
+    default = {
+        "role": "guest",
+        "display_name": user_id,
+        "allowed_agents": ["general", "discussion"],
+        "model_restriction": "ollama",
+        "content_filter": True,
+    }
+    user_cfg = _users_cfg.get(user_id, default)
+    if not isinstance(user_cfg, dict):
+        return default
+    # Normalize allowed_agents
+    allowed = user_cfg.get("allowed_agents", ["general"])
+    if allowed == "all":
+        user_cfg["allowed_agents"] = ALL_AGENTS
+    return {
+        "role": user_cfg.get("role", "guest"),
+        "display_name": user_cfg.get("display_name", user_id),
+        "allowed_agents": user_cfg.get("allowed_agents", ["general"]),
+        "model_restriction": user_cfg.get("model_restriction"),
+        "content_filter": user_cfg.get("content_filter", False),
+    }
+
+
+def is_agent_allowed(user_id: str, agent: str) -> bool:
+    """Check if a user is allowed to use a specific agent."""
+    cfg = get_user_config(user_id)
+    return agent in cfg["allowed_agents"]
+
+
+def get_model_restriction(user_id: str) -> str | None:
+    """Return model restriction for user, or None if unrestricted."""
+    return get_user_config(user_id).get("model_restriction")
+
+
+def should_filter_content(user_id: str) -> bool:
+    """Return True if content filtering is required for this user."""
+    return get_user_config(user_id).get("content_filter", False)
+
 
 # ---------------------------------------------------------------------------
 # Services (ports — single source of truth)
