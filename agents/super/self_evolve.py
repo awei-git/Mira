@@ -520,6 +520,13 @@ def run_evolve(dry_run: bool = False) -> dict:
     # Step 5: Report
     send_report(proposals, implementations, today)
 
+    # Mark completion in agent state
+    from core import load_state, save_state
+    state = load_state()
+    state[f"self_evolve_{today}"] = datetime.now().isoformat()
+    state[f"self_evolve_{today}_actor"] = "self-evolve/claude-think"
+    save_state(state)
+
     log.info("=== Self-Evolution complete: %d proposals, %d implementations ===",
              len(proposals), len(implementations))
     return result
