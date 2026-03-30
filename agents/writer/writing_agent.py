@@ -402,6 +402,12 @@ def step_revision(idea: dict, round_num: int) -> bool:
     success, output = run_claude(prompt, project_dir)
 
     if success:
+        # Separate article body from revision log
+        if "===REVISION_LOG===" in output:
+            body, rev_log = output.split("===REVISION_LOG===", 1)
+            output = body.strip()
+            rev_log_path = project_dir / "drafts" / f"revision_log_r{round_num}.md"
+            rev_log_path.write_text(rev_log.strip(), encoding="utf-8")
         revision_path = project_dir / "drafts" / f"revision_r{round_num}.md"
         if not save_output(output, revision_path, f"revision_r{round_num}"):
             update_idea_status(idea["path"], {
@@ -863,15 +869,6 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
 
             if final_file.exists():
                 article_text = final_file.read_text(encoding="utf-8")
-
-                # Strip revision header (修订稿 R1, 日期, 字数, 基于) from top
-                article_text = re.sub(
-                    r'^#\s*修订稿.*?\n---\s*\n+', '', article_text, flags=re.DOTALL
-                )
-                # Strip revision tables (修改记录) from published text
-                article_text = re.sub(
-                    r'\n---\s*\n+## 修改记录.*', '', article_text, flags=re.DOTALL
-                )
 
                 # Extract title from the article's first heading (authoritative)
                 pub_title = title

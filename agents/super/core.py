@@ -554,7 +554,6 @@ def _check_pending_publish():
     try:
         sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
         from substack import publish_to_substack
-        from pathlib import Path
 
         workspace = Path(pending["workspace"])
         final = workspace / pending.get("final_md", "final.md")
@@ -2593,6 +2592,35 @@ def _run_health_check():
                     log.info("Health alert sent to %s: %d alerts", uid, len(alerts))
     else:
         log.info("Health check: all clear for all users")
+
+    # 4. Daily GPT health insight — every day, for every user
+    from report import generate_daily_insight
+    from config import HEALTH_REPORT_MODEL
+    all_bridges = all_bridges if alerts_by_user else Mira.for_all_users()
+    bridges_by_user_all = {b.user_id: b for b in all_bridges}
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    for uid in user_ids:
+        insight_id = f"health_insight_{today_str}_{uid}"
+        bridge = bridges_by_user_all.get(uid, bridges_by_user_all.get("ang"))
+        if not bridge or bridge.item_exists(insight_id):
+            continue
+        try:
+            insight = generate_daily_insight(store, uid, model=HEALTH_REPORT_MODEL)
+            if insight:
+                bridge.create_task(insight_id, f"今日健康洞察",
+                                   insight, sender="health_agent",
+                                   tags=["health", "insight"], origin="agent")
+                bridge.update_status(insight_id, "done", agent_message=insight)
+                log.info("Daily health insight sent to %s", uid)
+
+                # Also write to summary for iOS app
+                summary_path = Path(MIRA_DIR) / "users" / uid / "health"
+                summary_path.mkdir(parents=True, exist_ok=True)
+                insight_file = summary_path / "daily_insight.md"
+                insight_file.write_text(f"# 今日健康洞察 | {today_str}\n\n{insight}", encoding="utf-8")
+        except Exception as e:
+            log.warning("Daily health insight for %s failed: %s", uid, e)
 
     store.close()
 

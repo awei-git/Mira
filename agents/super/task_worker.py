@@ -1242,7 +1242,9 @@ def main():
             plan = json.loads(pending_plan_file.read_text(encoding="utf-8"))
             pending_plan_file.unlink()  # consumed
             log.info("Resuming pending plan (%d steps): %s", len(plan), plan)
-            _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id)
+            _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
+                         user_id=_user_id, allowed_agents=_allowed_agents,
+                         content_filter=_content_filter, model_restriction=_model_restriction)
             log.info("Worker exiting")
             return
         except (json.JSONDecodeError, OSError) as e:
@@ -1286,7 +1288,9 @@ def main():
             try:
                 plan = json.loads(pending_plan_file.read_text(encoding="utf-8"))
                 pending_plan_file.unlink()
-                _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id)
+                _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
+                         user_id=_user_id, allowed_agents=_allowed_agents,
+                         content_filter=_content_filter, model_restriction=_model_restriction)
             except (json.JSONDecodeError, OSError) as e:
                 log.warning("Failed to load pending plan on approval: %s", e)
                 _write_result(workspace, args.task_id, "error",
@@ -1356,7 +1360,9 @@ def main():
                       content_filter=_content_filter)
     log.info("Plan: %s", plan)
 
-    _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id)
+    _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
+                 user_id=_user_id, allowed_agents=_allowed_agents,
+                 content_filter=_content_filter, model_restriction=_model_restriction)
 
     # --- Write progress.md for next session ---
     _write_progress(workspace, args.task_id, msg_content)
@@ -1519,7 +1525,9 @@ JSON:"""
 
 
 def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
-                  content: str, sender: str, thread_id: str):
+                  content: str, sender: str, thread_id: str,
+                  user_id: str = "ang", allowed_agents: list | None = None,
+                  content_filter: bool = False, model_restriction: str | None = None):
     """Execute a multi-step plan. Each step's output feeds into the next."""
     prev_output = None
     is_multi = len(plan) > 1
@@ -1530,13 +1538,18 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
     heartbeat.start()
     try:
         _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
-                           prev_output, is_multi, round_num)
+                           prev_output, is_multi, round_num,
+                           user_id=user_id, allowed_agents=allowed_agents or [],
+                           content_filter=content_filter,
+                           model_restriction=model_restriction)
     finally:
         heartbeat.stop()
 
 
 def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
-                        prev_output, is_multi, round_num):
+                        prev_output, is_multi, round_num, *,
+                        user_id: str = "ang", allowed_agents: list | None = None,
+                        content_filter: bool = False, model_restriction: str | None = None):
     """Inner loop extracted so heartbeat can be stopped in finally block."""
     # Set thread-local task_id so agents can emit progress via emit_progress()
     _set_streaming_task_id(task_id)
@@ -1586,22 +1599,22 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
             return
 
         # --- Access control: verify agent is allowed for this user ---
-        if _allowed_agents and agent not in _allowed_agents and agent not in ("clarify", "discussion"):
+        if allowed_agents and agent not in allowed_agents and agent not in ("clarify", "discussion"):
             log.warning("ACCESS DENIED: user=%s agent=%s not in allowed_agents=%s",
-                        _user_id, agent, _allowed_agents)
-            denied_msg = f"Sorry, you don't have access to the {agent} agent. Available: {', '.join(_allowed_agents)}"
+                        user_id, agent, allowed_agents)
+            denied_msg = f"Sorry, you don't have access to the {agent} agent. Available: {', '.join(allowed_agents)}"
             _write_result(workspace, task_id, "error", denied_msg)
             return
 
         # --- Content filter: prepend safety prompt for child users ---
-        if _content_filter:
+        if content_filter:
             from config import CHILD_SAFETY_PROMPT
             instruction = f"{CHILD_SAFETY_PROMPT}\n\n---\n\n{instruction}"
 
         # --- Model restriction: force local model for restricted users ---
-        if _model_restriction == "ollama":
+        if model_restriction == "ollama":
             os.environ["MIRA_FORCE_OLLAMA"] = "1"
-            log.info("Model restriction: forcing Ollama for user=%s", _user_id)
+            log.info("Model restriction: forcing Ollama for user=%s", user_id)
 
         # Registry-based dispatch: load handler dynamically from manifest
         from agent_registry import get_registry
@@ -2363,13 +2376,19 @@ def _handle_discussion_agent(workspace: Path, task_id: str, content: str,
             from pathlib import Path as _P
             soul_dir = _P(__file__).resolve().parent.parent / "shared" / "soul"
             history_file = soul_dir / "soul_questions_history.json"
-            history = json.loads(history_file.read_text()) if history_file.exists() else []
-            history.append({
+            data = json.loads(history_file.read_text()) if history_file.exists() else {"questions": [], "answers": []}
+            if isinstance(data, dict):
+                answers = data.setdefault("answers", [])
+            else:
+                # Legacy list format — migrate
+                data = {"questions": data, "answers": []}
+                answers = data["answers"]
+            answers.append({
                 "date": datetime.now().strftime("%Y-%m-%d"),
                 "user_answer": content[:500],
                 "task_id": task_id,
             })
-            history_file.write_text(json.dumps(history, ensure_ascii=False, indent=2))
+            history_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
         except Exception as e:
             log.warning("Failed to save soul question answer: %s", e)
         # Fall through to handle_discussion — generate a real response to the user's answer
@@ -2517,7 +2536,7 @@ def _handle_autowrite_approval(workspace: Path, task_id: str):
     # Find final.md in the writing artifacts
     # task_id is like autowrite_invisible_instructions → slug is invisible-instructions
     slug = task_id.replace("autowrite_", "").replace("_", "-")
-    artifacts_base = Path(MIRA_DIR).parent / "artifacts" / "writings"
+    artifacts_base = ARTIFACTS_DIR / "writings"
     # Try exact slug, then glob
     final = None
     for candidate in [artifacts_base / slug / "final.md",

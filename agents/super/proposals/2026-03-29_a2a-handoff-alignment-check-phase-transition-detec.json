@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "A2A Handoff Alignment Check — Phase Transition Detection",
+  "description": "Add a lightweight coherence check at each agent-to-agent handoff in the pipeline. When agent A's output is passed to agent B as input context, measure a proxy for representation drift (e.g., keyword overlap ratio, compression ratio of the summary vs. the source, or token-length ratio). If the drift proxy exceeds a configurable threshold, log a warning and optionally request a clarification pass before continuing — rather than letting downstream agents silently operate on degenerate signal.",
+  "risk_level": "medium",
+  "files_affected": [
+    "Mira/agents/shared/sub_agent.py",
+    "Mira/agents/shared/config.py"
+  ],
+  "rationale": "The reading note's core insight is that A2A error propagation is not linear — it has a phase transition. Below a distribution-distance threshold, downstream agents amplify noise; above it, they receive no signal at all (form without content). Mira's pipeline already chains agents (super → writer → reviewer, explorer → briefing writer, etc.). Currently there is no check that the handoff context is still within the 'noisy but recoverable' regime. Adding this check converts an invisible failure mode (silent signal collapse) into an observable, logged event.",
+  "diff_description": "1. In config.py: add A2A_DRIFT_WARN_THRESHOLD (default 0.15) and A2A_DRIFT_BLOCK_THRESHOLD (default 0.05) — these are keyword-overlap ratios (intersection/union of content-bearing tokens between upstream output and downstream prompt context). 2. In sub_agent.py, in the function that packages upstream output as downstream context (likely the part that builds the messages list for a sub-agent call): after building the context string, compute overlap_ratio = len(upstream_keywords & downstream_keywords) / len(upstream_keywords | downstream_keywords). If overlap_ratio < A2A_DRIFT_BLOCK_THRESHOLD, log ERROR and raise a PipelineAlignmentError before the call. If overlap_ratio < A2A_DRIFT_WARN_THRESHOLD, log WARNING and proceed. Upstream keywords = content-bearing tokens (len > 4, not stopwords) from the upstream agent's output. Downstream keywords = same from the assembled prompt. This is a heuristic, not ground truth — the goal is catching catastrophic signal collapse, not measuring semantic distance precisely.",
+  "source_note": "2026-03-29_on-policy-distillation-失败--知识传递的相变.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-29_on-policy-distillation-失败--知识传递的相变.md",
+  "created_at": "2026-03-29T13:04:46.053861",
+  "date": "2026-03-29",
+  "status": "proposed"
+}

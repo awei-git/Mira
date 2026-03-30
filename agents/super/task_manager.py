@@ -173,11 +173,13 @@ class TaskManager:
         if msg.thread_id:
             cmd.extend(["--thread-id", msg.thread_id])
 
+        stderr_log = workspace_dir / "worker_stderr.log"
         try:
+            stderr_fh = open(stderr_log, "w", encoding="utf-8")
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=stderr_fh,
                 start_new_session=True,
             )
         except Exception as e:
@@ -313,10 +315,24 @@ class TaskManager:
             rec.completed_at = _utc_iso()
             return True
 
-        # Process died without producing output
+        # Process died without producing output — check stderr for crash info
         rec.status = "error"
         rec.completed_at = _utc_iso()
-        rec.summary = "Worker exited without producing output"
+        stderr_file = ws / "worker_stderr.log"
+        crash_info = ""
+        if stderr_file.exists():
+            try:
+                stderr_text = stderr_file.read_text(encoding="utf-8").strip()
+                if stderr_text:
+                    # Extract last line (usually the exception message)
+                    last_lines = stderr_text.strip().split("\n")[-2:]
+                    crash_info = " ".join(l.strip() for l in last_lines)[:200]
+            except OSError:
+                pass
+        if crash_info:
+            rec.summary = f"Worker crashed: {crash_info}"
+        else:
+            rec.summary = "Worker exited without producing output"
         return False
 
     def _kill_task(self, rec: TaskRecord):

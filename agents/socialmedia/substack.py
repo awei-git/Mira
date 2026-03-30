@@ -490,14 +490,6 @@ Output ONLY the subtitle, nothing else."""
         if subtitle:
             log.info("Auto-generated subtitle: %s", subtitle)
 
-    # Strip revision metadata header (修订稿 R1 / 日期 / 字数 / 基于 / ---)
-    import re as _re
-    _rev_pattern = _re.compile(
-        r"^#\s*修订稿.*?\n(?:(?:日期|字数|基于)[:：].*\n)*\s*---\s*\n",
-        _re.MULTILINE,
-    )
-    article_text = _rev_pattern.sub("", article_text, count=1)
-
     # Convert markdown to HTML
     body_html = _md_to_html(article_text)
 

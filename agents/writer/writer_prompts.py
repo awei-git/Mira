@@ -171,24 +171,17 @@ def revise_prompt(writing_type: str, round_num: int) -> str:
 
 ## 输出
 
-直接输出修改后的完整稿件，格式如下：
+输出两个部分，用 `===REVISION_LOG===` 分隔：
 
-# 修订稿 R{round_num}
-日期：[今天日期]
-字数：[实际字数]
-基于：draft_r{round_num}.md + critique_r{round_num}.md
+[完整修订后的正文，从标题开始，不要加任何元数据头]
 
----
+===REVISION_LOG===
 
-[完整修订后的正文]
-
----
-
-## 修改记录
 | 意见 | 处理方式 | 状态 |
 |------|---------|------|
+[每处修改对应的审稿意见]
 
-不要输出修订稿以外的任何内容。"""
+正文部分必须是干净的、可直接发布的文章。不要包含"修订稿"、日期、字数、"基于"等流程信息。"""
 
 
 def feedback_draft_prompt(writing_type: str, round_num: int) -> str:
@@ -215,18 +208,15 @@ def feedback_draft_prompt(writing_type: str, round_num: int) -> str:
 
 ## 输出
 
-直接输出修改后的完整稿件，格式如下：
+输出两个部分，用 `===REVISION_LOG===` 分隔：
 
-# 基于反馈的第{round_num}轮稿件
-日期：[今天日期]
-字数：[实际字数]
-基于：revision_r{round_num - 1}.md + feedback.md
+[完整修订后的正文，从标题开始，不要加任何元数据头]
 
----
+===REVISION_LOG===
 
-[完整正文]
+[修改说明]
 
----
+正文部分必须是干净的、可直接发布的文章。不要包含"修订稿"、日期、字数、"基于"等流程信息。
 
 ## 反馈采纳记录
 | 反馈内容 | 处理方式 | 说明 |
