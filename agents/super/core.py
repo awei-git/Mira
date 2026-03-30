@@ -545,66 +545,162 @@ def do_talk():
 
 
 def _check_pending_publish():
-    """Auto-publish approved articles when cooldown clears."""
-    state = load_state()
-    pending = state.get("pending_publish")
-    if not pending:
-        return
+    """Auto-publish approved articles from the manifest."""
+    from publish_manifest import get_next_pending, update_manifest
+
+    entry = get_next_pending("published")  # finds status="approved"
+    if not entry:
+        # Legacy fallback: check agent_state.json (one release cycle)
+        state = load_state()
+        legacy = state.get("pending_publish")
+        if legacy:
+            # Migrate to manifest
+            slug = legacy.get("item_id", "unknown").replace("autowrite_", "").replace("_", "-")
+            final_md = legacy.get("final_md", "final.md")
+            workspace = legacy.get("workspace", "")
+            if not Path(final_md).is_absolute() and workspace:
+                final_md = str(Path(workspace) / final_md)
+            update_manifest(
+                slug,
+                title=legacy.get("title", slug),
+                status="approved",
+                workspace=workspace,
+                final_md=final_md,
+                item_id=legacy.get("item_id", ""),
+                auto_podcast=legacy.get("auto_podcast", True),
+            )
+            del state["pending_publish"]
+            save_state(state)
+            log.info("Migrated legacy pending_publish '%s' to manifest", slug)
+            entry = get_next_pending("published")
+        if not entry:
+            return
 
     try:
         sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
         from substack import publish_to_substack
 
-        workspace = Path(pending["workspace"])
-        final = workspace / pending.get("final_md", "final.md")
+        final = Path(entry["final_md"])
         if not final.exists():
-            log.warning("Pending publish: final.md not found at %s", final)
+            update_manifest(entry["slug"], error=f"final_md not found: {final}")
             return
 
+        workspace = Path(entry.get("workspace", final.parent))
         content = final.read_text(encoding="utf-8")
         result = publish_to_substack(
-            title=pending["title"],
-            subtitle=pending.get("subtitle", ""),
+            title=entry["title"],
+            subtitle=entry.get("subtitle", ""),
             article_text=content,
             workspace=workspace,
         )
 
         if "发布被拦截" in result or "cooldown" in result.lower():
+            log.info("Publish cooldown active for '%s': %s", entry["slug"], result[:80])
             return  # still in cooldown, try next cycle
 
-        # Published successfully — clean up
-        log.info("Auto-published '%s': %s", pending["title"], result[:100])
-        del state["pending_publish"]
-        save_state(state)
+        # Published successfully
+        post_url = ""
+        for part in result.split():
+            if "substack.com" in part:
+                post_url = part
+                break
+
+        update_manifest(entry["slug"], status="published", substack_url=post_url)
+        log.info("Auto-published '%s': %s", entry["title"], result[:100])
 
         # Update item status
         bridge = Mira()
-        item_id = pending.get("item_id")
+        item_id = entry.get("item_id")
         if item_id:
             bridge.update_status(item_id, "done",
                                 agent_message=f"已发布到 Substack: {result[:200]}")
 
         # Queue notes for the new article
         from notes import queue_notes_for_article
-        post_url = ""
-        for part in result.split():
-            if "substack.com" in part:
-                post_url = part
-                break
         if post_url:
-            queue_notes_for_article(pending["title"], content[:3000], post_url)
+            queue_notes_for_article(entry["title"], content[:3000], post_url)
 
-        # Auto-generate podcast if flagged
-        if pending.get("auto_podcast"):
-            log.info("Triggering auto-podcast for '%s'", pending["title"])
-            _dispatch_background("auto-podcast", [
-                sys.executable, str(Path(__file__).resolve()), "podcast",
-                "--title", pending["title"],
-                "--file", str(final),
-            ])
+        # Tweet about the new article
+        try:
+            sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
+            from twitter import tweet_for_article
+            tweet_result = tweet_for_article(
+                entry["title"], entry.get("subtitle", ""), post_url,
+                soul_context="")
+            if tweet_result:
+                log.info("Tweeted about '%s'", entry["title"])
+        except Exception as tw_e:
+            log.warning("Twitter promotion failed for '%s': %s", entry["slug"], tw_e)
 
     except Exception as e:
-        log.warning("Pending publish check failed: %s", e)
+        update_manifest(entry["slug"], error=str(e))
+        log.warning("Pending publish failed for '%s': %s", entry["slug"], e)
+
+
+def _check_pending_podcast():
+    """Trigger podcast generation for published articles."""
+    from publish_manifest import get_next_pending, update_manifest
+
+    # EN podcast
+    # EN podcast — dispatch if published and not yet started
+    entry = get_next_pending("podcast_en")  # finds status="published"
+    if entry and entry.get("auto_podcast"):
+        final = Path(entry["final_md"])
+        slug = entry["slug"]
+        bg_name = f"podcast-en-{slug}"
+        if final.exists():
+            # _dispatch_background deduplicates by name (PID file check)
+            log.info("Triggering EN podcast for '%s'", entry["title"])
+            _dispatch_background(bg_name, [
+                sys.executable, str(_AGENTS_DIR / "podcast" / "handler.py"),
+                "--run", "conversation",
+                "--title", entry["title"],
+                "--file", str(final),
+                "--lang", "en",
+                "--slug", slug,
+            ])
+            # Don't update manifest here — podcast CLI updates it on completion
+        else:
+            update_manifest(slug, error=f"Podcast: final_md not found: {final}")
+
+    # ZH podcast — dispatch if EN done
+    entry_zh = get_next_pending("podcast_zh")  # finds status="podcast_en"
+    if entry_zh and entry_zh.get("auto_podcast"):
+        final = Path(entry_zh["final_md"])
+        slug = entry_zh["slug"]
+        bg_name = f"podcast-zh-{slug}"
+        if final.exists():
+            log.info("Triggering ZH podcast for '%s'", entry_zh["title"])
+            _dispatch_background(bg_name, [
+                sys.executable, str(_AGENTS_DIR / "podcast" / "handler.py"),
+                "--run", "conversation",
+                "--title", entry_zh["title"],
+                "--file", str(final),
+                "--lang", "zh",
+                "--slug", slug,
+            ])
+            # Don't update manifest here — podcast CLI updates it on completion
+        else:
+            update_manifest(slug, error=f"Podcast: final_md not found: {final}")
+
+    # Check if both podcasts done → mark complete
+    from publish_manifest import load_manifest
+    manifest = load_manifest()
+    for entry in manifest.get("articles", {}).values():
+        if entry.get("status") == "podcast_zh":
+            # Both podcasts done, advance to complete
+            update_manifest(entry["slug"], status="complete")
+            log.info("Pipeline complete for '%s'", entry.get("title", entry["slug"]))
+
+
+def _sweep_publish_pipeline():
+    """Check for articles stuck in the pipeline and log warnings."""
+    from publish_manifest import get_stuck_articles
+
+    stuck = get_stuck_articles(timeout_minutes=120)
+    for entry in stuck:
+        log.warning("PIPELINE STUCK: '%s' at status '%s' for >2h",
+                    entry.get("title", entry["slug"]), entry.get("status"))
 
 
 def _sweep_stuck_items(bridge, task_mgr):
@@ -2524,9 +2620,9 @@ def do_spark_check():
 # ---------------------------------------------------------------------------
 
 def _should_health_check() -> bool:
-    """Run health check once per day, evening (19-21)."""
+    """Run health check once per day, morning or evening (8-10 or 19-21)."""
     now = datetime.now()
-    if not (19 <= now.hour <= 21):
+    if not (8 <= now.hour <= 10 or 19 <= now.hour <= 21):
         return False
     state = load_state()
     today = now.strftime("%Y-%m-%d")
@@ -4605,9 +4701,11 @@ def cmd_run():
     _reap_stale_pids()
     _phase_times["reap_pids"] = round((_time.monotonic() - _t0) * 1000)
 
-    # --- Auto-publish approved articles when cooldown clears ---
+    # --- Publishing pipeline: publish → podcast → sweep ---
     _t0 = _time.monotonic()
     _check_pending_publish()
+    _check_pending_podcast()
+    _sweep_publish_pipeline()
     _phase_times["pending_publish"] = round((_time.monotonic() - _t0) * 1000)
 
     # --- All heavy work below runs in background processes ---

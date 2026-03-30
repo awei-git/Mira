@@ -1436,13 +1436,22 @@ def _extract_article(workspace: Path, content: str) -> tuple[str | None, str]:
     """Find article text from content references or workspace files."""
     article_text, title = None, "Untitled"
 
-    # Explicit file reference: @file:/path/to/file.md
-    file_match = re.search(r'@file:(.+?)(?:\s|$)', content)
+    # Explicit title: --title "Something"
+    title_match = re.search(r'--title\s+"([^"]+)"', content)
+    if title_match:
+        title = title_match.group(1).strip()
+
+    # Explicit file reference: @file:/path/to/file.md or --file /path/to/file.md
+    # Support quoted paths (spaces in path) and unquoted
+    file_match = re.search(r'(?:@file:|--file\s+)"([^"]+)"', content)
+    if not file_match:
+        file_match = re.search(r'(?:@file:|--file\s+)(\S+)', content)
     if file_match:
         fpath = Path(file_match.group(1).strip().replace("~", str(Path.home())))
         if fpath.exists():
             article_text = fpath.read_text(encoding="utf-8")
-            title = fpath.stem.replace("-", " ").replace("_", " ").title()
+            if not title_match:
+                title = fpath.stem.replace("-", " ").replace("_", " ").title()
 
     # Chained output from previous pipeline step
     if not article_text and "--- 上一步的输出 ---" in content:
@@ -1457,42 +1466,10 @@ def _extract_article(workspace: Path, content: str) -> tuple[str | None, str]:
                 title = p.stem
                 break
 
-    # Auto-find latest published article if no explicit source
+    # NO fallback guessing — if --file didn't match and workspace has nothing,
+    # fail explicitly instead of silently picking the wrong article.
     if not article_text:
-        import sys as _sys
-        _shared = str(Path(__file__).resolve().parent.parent / "shared")
-        if _shared not in _sys.path:
-            _sys.path.insert(0, _shared)
-        try:
-            from config import WRITINGS_OUTPUT_DIR
-            published_dir = WRITINGS_OUTPUT_DIR / "_published"
-            if published_dir.exists():
-                published = sorted(published_dir.glob("*.md"),
-                                   key=lambda p: p.stat().st_mtime, reverse=True)
-                if published:
-                    article_text = published[0].read_text(encoding="utf-8")
-                    title = published[0].stem.replace("-", " ").replace("_", " ").title()
-        except Exception:
-            pass
-
-    # Also check writings project folders for final.md
-    if not article_text:
-        try:
-            from config import WRITINGS_OUTPUT_DIR
-            projects = sorted(WRITINGS_OUTPUT_DIR.iterdir(),
-                              key=lambda p: p.stat().st_mtime, reverse=True)
-            for proj in projects:
-                if not proj.is_dir() or proj.name.startswith("_"):
-                    continue
-                final = proj / "final" / "final.md"
-                if not final.exists():
-                    final = proj / "final.md"
-                if final.exists():
-                    article_text = final.read_text(encoding="utf-8")
-                    title = proj.name.replace("-", " ").title()
-                    break
-        except Exception:
-            pass
+        log.error("No article found. Provide --file with a valid path.")
 
     # Override title from first heading
     if article_text:
@@ -1551,3 +1528,80 @@ def handle(workspace: Path, task_id: str, content: str,
         (workspace / "output.md").write_text(msg, encoding="utf-8")
         # Return None so task_worker marks this as status="error" and aborts the pipeline
         return None
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point — called by core.py _check_pending_podcast via background dispatch
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse
+    import sys as _sys
+    import logging as _logging
+
+    _logging.basicConfig(level=_logging.INFO,
+                         format="%(asctime)s [%(levelname)s] %(message)s")
+
+    parser = argparse.ArgumentParser(description="Podcast generator CLI")
+    parser.add_argument("--run", required=True, choices=["conversation", "voiceover"],
+                        help="Generation mode")
+    parser.add_argument("--title", required=True, help="Article title")
+    parser.add_argument("--file", required=True, help="Path to article markdown")
+    parser.add_argument("--lang", default="en", choices=["en", "zh"],
+                        help="Language (en or zh)")
+    parser.add_argument("--slug", default="", help="Override slug (default: derived from title)")
+    args = parser.parse_args()
+
+    article_path = Path(args.file)
+    if not article_path.exists():
+        print(f"ERROR: File not found: {article_path}", file=_sys.stderr)
+        _sys.exit(1)
+
+    article_text = article_path.read_text(encoding="utf-8")
+    title = args.title
+    lang = args.lang
+
+    _log = _logging.getLogger("podcast")
+    _log.info("CLI: mode=%s lang=%s title='%s' file=%s (%d chars)",
+              args.run, lang, title, article_path, len(article_text))
+
+    if args.run == "conversation":
+        result = generate_conversation_for_article(article_text, title, lang=lang)
+    else:
+        result = generate_audio_for_article(article_text, title, lang=lang)
+
+    if result:
+        _log.info("SUCCESS: %s", result)
+
+        # Auto-publish to RSS
+        try:
+            from rss import publish_episode
+            episode_mp3 = Path(str(result))
+            rss_result = publish_episode(
+                mp3_path=episode_mp3,
+                title=title,
+                description=f"Podcast episode for: {title}",
+                lang=lang,
+            )
+            if rss_result:
+                _log.info("RSS published: %s", rss_result)
+            else:
+                _log.warning("RSS publish returned None for %s", title)
+        except Exception as e:
+            _log.error("RSS publish failed: %s", e)
+
+        # Update manifest
+        try:
+            shared = str(Path(__file__).resolve().parent.parent / "shared")
+            if shared not in _sys.path:
+                _sys.path.insert(0, shared)
+            from publish_manifest import update_manifest
+            slug = args.slug or _slug(title)
+            status = "podcast_en" if lang == "en" else "podcast_zh"
+            update_manifest(slug, status=status)
+            _log.info("Manifest updated: %s → %s", slug, status)
+        except Exception as e:
+            _log.warning("Manifest update failed: %s", e)
+    else:
+        _log.error("FAILED: podcast generation returned None")
+        _sys.exit(1)

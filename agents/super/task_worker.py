@@ -2530,34 +2530,78 @@ def _handle_general(workspace: Path, task_id: str, content: str,
 
 
 def _handle_autowrite_approval(workspace: Path, task_id: str):
-    """Handle approval for an autowrite article — strip metadata, save to pending_publish."""
+    """Handle approval for an autowrite article — write to publish manifest."""
     import re as _re
+    from publish_manifest import update_manifest
 
-    # Find final.md in the writing artifacts
-    # task_id is like autowrite_invisible_instructions → slug is invisible-instructions
+    # Find the article's published/final markdown
     slug = task_id.replace("autowrite_", "").replace("_", "-")
     artifacts_base = ARTIFACTS_DIR / "writings"
-    # Try exact slug, then glob
+
+    # Search order: _published/ file, final.md, final/final.md, workspace
     final = None
-    for candidate in [artifacts_base / slug / "final.md",
-                      workspace / "final.md"]:
-        if candidate.exists():
-            final = candidate
+    article_dir = None
+
+    # Try exact slug directory first
+    for slug_candidate in [slug]:
+        proj = artifacts_base / slug_candidate
+        if not proj.is_dir():
+            continue
+        article_dir = proj
+        # Check _published/ (post-review version)
+        pub_dir = proj / "_published"
+        if pub_dir.is_dir():
+            pub_files = sorted(pub_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if pub_files:
+                final = pub_files[0]
+                break
+        # Check drafts/revision_r*.md (latest revision)
+        drafts_dir = proj / "drafts"
+        if drafts_dir.is_dir():
+            revisions = sorted(drafts_dir.glob("revision_r*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if revisions:
+                final = revisions[0]
+                break
+        # Check final.md / final/final.md
+        for candidate in [proj / "final.md", proj / "final" / "final.md"]:
+            if candidate.exists():
+                final = candidate
+                break
+        if final:
             break
+
+    # Broader search: match slug prefix against all project dirs
     if not final:
-        # Search more broadly
-        for d in artifacts_base.iterdir():
-            if d.is_dir() and slug[:10] in d.name:
-                f = d / "final.md"
-                if f.exists():
-                    final = f
-                    break
+        try:
+            for d in sorted(artifacts_base.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+                if not d.is_dir() or d.name.startswith("_"):
+                    continue
+                if slug[:10] in d.name:
+                    article_dir = d
+                    pub_dir = d / "_published"
+                    if pub_dir.is_dir():
+                        pub_files = sorted(pub_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+                        if pub_files:
+                            final = pub_files[0]
+                            break
+                    for candidate in [d / "final.md", d / "final" / "final.md"]:
+                        if candidate.exists():
+                            final = candidate
+                            break
+                    if final:
+                        break
+        except OSError:
+            pass
+
+    # Last resort: workspace
+    if not final and (workspace / "final.md").exists():
+        final = workspace / "final.md"
 
     if not final:
-        _write_result(workspace, task_id, "error", f"找不到 final.md (slug={slug})")
+        _write_result(workspace, task_id, "error", f"找不到文章 (slug={slug})")
         return
 
-    # Strip revision metadata
+    # Read and strip revision metadata
     content = final.read_text(encoding="utf-8")
     content = _re.sub(r'^#\s*修订稿.*?\n', '', content)
     content = _re.sub(r'^#\s*初稿.*?\n', '', content)
@@ -2565,34 +2609,34 @@ def _handle_autowrite_approval(workspace: Path, task_id: str):
     content = _re.sub(r'^字数[：:].*?\n', '', content)
     content = _re.sub(r'^基于[：:].*?\n', '', content)
     content = _re.sub(r'^---\s*\n', '', content)
-    content = content.lstrip('\n')
+    # Strip trailing revision table (修改记录 / changelog)
+    content = _re.sub(r'\n---\s*\n+##?\s*修改记录.*', '', content, flags=_re.DOTALL)
+    content = _re.sub(r'\n---\s*\n+##?\s*Changelog.*', '', content, flags=_re.DOTALL | _re.IGNORECASE)
+    content = content.strip()
 
     # Write cleaned version back
     final.write_text(content, encoding="utf-8")
 
-    # Extract title from first heading
+    # Extract title from first heading or frontmatter
     title_match = _re.search(r'^##?\s*(.+)$', content, _re.MULTILINE)
+    if not title_match:
+        title_match = _re.search(r'^title:\s*"?([^"\n]+)"?', content, _re.MULTILINE)
     title = title_match.group(1).strip() if title_match else slug.replace("-", " ").title()
 
-    # Save to agent state for auto-publish
-    from config import STATE_FILE
-    state = json.loads(STATE_FILE.read_text(encoding="utf-8")) if STATE_FILE.exists() else {}
-    state["pending_publish"] = {
-        "title": title,
-        "subtitle": "",
-        "workspace": str(final.parent),
-        "final_md": "final.md",
-        "approved_at": _utc_iso(),
-        "item_id": task_id,
-        "auto_podcast": True,
-    }
-    tmp = STATE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.rename(STATE_FILE)
+    # Write to publish manifest (replaces agent_state.json single-slot)
+    update_manifest(
+        slug,
+        title=title,
+        status="approved",
+        workspace=str(article_dir or final.parent),
+        final_md=str(final),
+        item_id=task_id,
+        auto_podcast=True,
+    )
 
     _write_result(workspace, task_id, "done",
                   f"已批准发布 '{title}'。冷却期到了自动发，发完自动生成 podcast。")
-    log.info("Autowrite '%s' approved, saved to pending_publish", title)
+    log.info("Autowrite '%s' approved → manifest (final=%s)", title, final)
 
 
 def _write_progress(workspace: Path, task_id: str, user_request: str):

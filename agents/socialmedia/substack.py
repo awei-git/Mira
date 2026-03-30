@@ -490,6 +490,21 @@ Output ONLY the subtitle, nothing else."""
         if subtitle:
             log.info("Auto-generated subtitle: %s", subtitle)
 
+    # Strip metadata that should never be published
+    import re as _re_strip
+    # YAML frontmatter
+    article_text = _re_strip.sub(r'^---\n.*?\n---\n', '', article_text, flags=_re_strip.DOTALL)
+    # Revision table at end
+    article_text = _re_strip.sub(r'\n---\s*\n+##?\s*修改记录.*', '', article_text, flags=_re_strip.DOTALL)
+    article_text = _re_strip.sub(r'\n---\s*\n+##?\s*Changelog.*', '', article_text, flags=_re_strip.DOTALL | _re_strip.IGNORECASE)
+    # Line-level metadata
+    article_text = _re_strip.sub(r'^#\s*修订稿.*?\n', '', article_text)
+    article_text = _re_strip.sub(r'^#\s*初稿.*?\n', '', article_text)
+    article_text = _re_strip.sub(r'^日期[：:].*?\n', '', article_text)
+    article_text = _re_strip.sub(r'^字数[：:].*?\n', '', article_text)
+    article_text = _re_strip.sub(r'^基于[：:].*?\n', '', article_text)
+    article_text = article_text.strip()
+
     # Convert markdown to HTML
     body_html = _md_to_html(article_text)
 

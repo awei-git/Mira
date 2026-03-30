@@ -5,7 +5,9 @@ Flow for each new episode:
     2. Add episode entry to feed.xml with GitHub Pages URL
     3. Git add (MP3 + feed.xml), commit + push
 
-RSS feed URL: https://awei-git.github.io/mira-podcast/feed.xml
+RSS feeds:
+  ZH: https://awei-git.github.io/MiraPodcastZh/feed.xml
+  EN: https://awei-git.github.io/MiraPodcastEn/feed.xml
 """
 import json
 import logging
@@ -20,6 +22,13 @@ from xml.etree import ElementTree as ET
 
 log = logging.getLogger("podcast.rss")
 
+# Register XML namespaces at module load — required for both parsing and serialization
+ET.register_namespace("itunes",  "http://www.itunes.com/dtds/podcast-1.0.dtd")
+ET.register_namespace("content", "http://purl.org/rss/1.0/modules/content/")
+ET.register_namespace("atom",    "http://www.w3.org/2005/Atom")
+ET.register_namespace("sy",      "http://purl.org/rss/modules/syndication/")
+ET.register_namespace("podcast", "https://podcastindex.org/namespace/1.0")
+
 # Registry for content:encoded CDATA sections — ElementTree escapes < and >
 # so we use opaque placeholders and do string-level replacement in _save_feed.
 _cdata_registry: dict[str, str] = {}
@@ -28,27 +37,58 @@ _cdata_registry: dict[str, str] = {}
 # Config
 # ---------------------------------------------------------------------------
 
-GITHUB_REPO     = "awei-git/mira-podcast"
-GITHUB_PAGES_URL = "https://awei-git.github.io/mira-podcast"
-FEED_URL        = f"{GITHUB_PAGES_URL}/feed.xml"
+# Per-language podcast config
+_PODCAST_CONFIG = {
+    "zh": {
+        "repo": "awei-git/MiraPodcastZh",
+        "pages_url": "https://awei-git.github.io/MiraPodcastZh",
+        "title": "米拉与我 · Mira and Me",
+        "description": (
+            "米拉(Mira)是一个AI智能体，每天读论文、写文章、犯错误。"
+            "她有自己的记忆、判断和困惑。"
+            "这档播客里，她和她的智人体搭档聊她真正每天在想的事情。"
+            "不是AI科普，是一个agent的真实视角与体验。"
+            " 讨论稿地址: uncountablemira.substack.com"
+        ),
+        "language": "zh-CN",
+        "repo_dir": Path(tempfile.gettempdir()) / "mira-podcast-zh",
+    },
+    "en": {
+        "repo": "awei-git/MiraPodcastEn",
+        "pages_url": "https://awei-git.github.io/MiraPodcastEn",
+        "title": "Mira and Me",
+        "description": (
+            "Mira is an AI agent who reads papers, writes essays, and makes mistakes every day. "
+            "She has her own memory, judgment, and confusion. "
+            "In this podcast, she and her human partner discuss what she's actually thinking about. "
+            "Not AI explainers — a real agent's perspective and experience. "
+            "Essays at: uncountablemira.substack.com"
+        ),
+        "language": "en",
+        "repo_dir": Path(tempfile.gettempdir()) / "mira-podcast-en",
+    },
+}
 
-PODCAST_TITLE       = "米拉与我 · Mira and Me"
-PODCAST_DESCRIPTION = (
-    "米拉(Mira)是一个AI智能体，每天读论文、写文章、犯错误。"
-    "她有自己的记忆、判断和困惑。"
-    "这档播客里，她和她的智人体搭档聊她真正每天在想的事情。"
-    "不是AI科普，是一个agent的真实视角与体验。"
-    " 讨论稿地址: uncountablemira.substack.com"
-)
 PODCAST_LINK        = "https://uncountablemira.substack.com"
 PODCAST_AUTHOR      = "Mira"
 PODCAST_EMAIL       = "weiang0212@gmail.com"
-PODCAST_LANGUAGE    = "zh-CN"
-PODCAST_COVER_URL   = f"{GITHUB_PAGES_URL}/cover.jpg"
 PODCAST_CATEGORY    = "Technology"
 
-# Local repo clone path
-REPO_DIR = Path(tempfile.gettempdir()) / "mira-podcast-repo"
+
+def _get_config(lang: str = "zh") -> dict:
+    """Get podcast config for a language."""
+    return _PODCAST_CONFIG.get(lang, _PODCAST_CONFIG["zh"])
+
+
+# Legacy globals — default to ZH for backward compatibility
+GITHUB_REPO      = _PODCAST_CONFIG["zh"]["repo"]
+GITHUB_PAGES_URL = _PODCAST_CONFIG["zh"]["pages_url"]
+FEED_URL         = f"{GITHUB_PAGES_URL}/feed.xml"
+PODCAST_TITLE    = _PODCAST_CONFIG["zh"]["title"]
+PODCAST_DESCRIPTION = _PODCAST_CONFIG["zh"]["description"]
+PODCAST_LANGUAGE = _PODCAST_CONFIG["zh"]["language"]
+PODCAST_COVER_URL = f"{GITHUB_PAGES_URL}/cover.jpg"
+REPO_DIR         = _PODCAST_CONFIG["zh"]["repo_dir"]
 
 
 # ---------------------------------------------------------------------------
@@ -59,14 +99,17 @@ def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subproc
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
 
 
-def _ensure_repo() -> bool:
-    """Clone or pull the repo to REPO_DIR."""
-    if REPO_DIR.exists():
-        result = _run(["git", "pull", "--rebase"], cwd=REPO_DIR, check=False)
+def _ensure_repo(lang: str = "zh") -> bool:
+    """Clone or pull the repo for the given language."""
+    cfg = _get_config(lang)
+    repo_dir = cfg["repo_dir"]
+    repo = cfg["repo"]
+    if repo_dir.exists():
+        result = _run(["git", "pull", "--rebase"], cwd=repo_dir, check=False)
         if result.returncode != 0:
             log.warning("git pull failed: %s", result.stderr)
     else:
-        result = _run(["git", "clone", f"https://github.com/{GITHUB_REPO}.git", str(REPO_DIR)])
+        result = _run(["git", "clone", f"https://github.com/{repo}.git", str(repo_dir)])
         if result.returncode != 0:
             log.error("git clone failed: %s", result.stderr)
             return False
@@ -98,40 +141,44 @@ def _format_duration(seconds: int) -> str:
     return f"{m}:{s:02d}"
 
 
-def _copy_mp3_to_repo(mp3_path: Path) -> str:
-    """Copy MP3 into repo/podcast/ and return the GitHub Pages URL."""
+def _copy_mp3_to_repo(mp3_path: Path, repo_dir: Path = None, pages_url: str = "",
+                      slug: str = "") -> str:
+    """Copy MP3 into repo/audios/ using slug as filename (not episode.mp3)."""
     import shutil
-    dest_dir = REPO_DIR / "audios"
+    repo_dir = repo_dir or REPO_DIR
+    pages_url = pages_url or GITHUB_PAGES_URL
+    # Use slug as filename — episode.mp3 is not unique across episodes
+    filename = f"{slug}.mp3" if slug else mp3_path.parent.name + ".mp3"
+    dest_dir = repo_dir / "audios"
     dest_dir.mkdir(exist_ok=True)
-    dest = dest_dir / mp3_path.name
-    # Always overwrite — episode may have been regenerated with new TTS/script
+    dest = dest_dir / filename
     shutil.copy2(mp3_path, dest)
-    return f"{GITHUB_PAGES_URL}/audios/{mp3_path.name}"
+    return f"{pages_url}/audios/{filename}"
 
 
-def _copy_transcript_to_repo(mp3_path: Path) -> tuple[str | None, str]:
-    """Copy SRT (preferred) or plain text transcript into repo/podcast/transcripts/.
-
-    Returns (url, mime_type) or (None, '') if not found.
-    SRT is required for Apple Podcasts transcript display.
-    """
+def _copy_transcript_to_repo(mp3_path: Path, repo_dir: Path = None,
+                              pages_url: str = "", slug: str = "") -> tuple[str | None, str]:
+    """Copy SRT or script.txt into repo/transcripts/ using slug as filename."""
     import shutil
-    dest_dir = REPO_DIR / "transcripts"
+    repo_dir = repo_dir or REPO_DIR
+    pages_url = pages_url or GITHUB_PAGES_URL
+    basename = slug if slug else mp3_path.parent.name
+    dest_dir = repo_dir / "transcripts"
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    # Prefer SRT (has timestamps, Apple Podcasts compatible)
+    # Prefer SRT
     srt_path = mp3_path.parent / f"{mp3_path.stem}.srt"
     if srt_path.exists():
-        dest = dest_dir / f"{mp3_path.stem}.srt"
+        dest = dest_dir / f"{basename}.srt"
         shutil.copy2(srt_path, dest)
-        return f"{GITHUB_PAGES_URL}/transcripts/{mp3_path.stem}.srt", "application/srt"
+        return f"{pages_url}/transcripts/{basename}.srt", "application/srt"
 
-    # Fallback to plain text
-    script_path = mp3_path.parent / f"{mp3_path.stem}_script.txt"
+    # Fallback: script.txt (conversation transcript)
+    script_path = mp3_path.parent / "script.txt"
     if script_path.exists():
-        dest = dest_dir / f"{mp3_path.stem}.txt"
+        dest = dest_dir / f"{basename}.txt"
         shutil.copy2(script_path, dest)
-        return f"{GITHUB_PAGES_URL}/transcripts/{mp3_path.stem}.txt", "text/plain"
+        return f"{pages_url}/transcripts/{basename}.txt", "text/plain"
 
     return None, ""
 
@@ -159,13 +206,11 @@ def _script_to_html(txt: str) -> str:
 # RSS XML helpers
 # ---------------------------------------------------------------------------
 
-def _load_or_create_feed(feed_path: Path) -> ET.Element:
+def _load_or_create_feed(feed_path: Path, lang: str = "zh") -> ET.Element:
     """Load existing feed.xml or create a fresh one."""
     _cdata_registry.clear()
     if feed_path.exists():
         raw = feed_path.read_text(encoding="utf-8")
-        # Extract content:encoded CDATA sections before ET parsing,
-        # because ET will escape < and > in text, destroying the HTML.
         def _extract(m: re.Match) -> str:
             key = f"CDATAPH{len(_cdata_registry)}END"
             _cdata_registry[key] = m.group(1)
@@ -176,7 +221,11 @@ def _load_or_create_feed(feed_path: Path) -> ET.Element:
         )
         return ET.fromstring(raw)
 
-    # Build skeleton
+    # Build skeleton using per-language config
+    cfg = _get_config(lang)
+    feed_url = f"{cfg['pages_url']}/feed.xml"
+    cover_url = f"{cfg['pages_url']}/cover.jpg"
+
     rss = ET.Element("rss", {
         "version": "2.0",
         "xmlns:itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd",
@@ -193,18 +242,18 @@ def _load_or_create_feed(feed_path: Path) -> ET.Element:
             el.text = text
         return el
 
-    sub(channel, "title",          PODCAST_TITLE)
+    sub(channel, "title",          cfg["title"])
     sub(channel, "link",           PODCAST_LINK)
-    sub(channel, "description",    PODCAST_DESCRIPTION)
-    sub(channel, "language",       PODCAST_LANGUAGE)
-    sub(channel, "atom:link",      href=FEED_URL, rel="self", type="application/rss+xml")
+    sub(channel, "description",    cfg["description"])
+    sub(channel, "language",       cfg["language"])
+    sub(channel, "atom:link",      href=feed_url, rel="self", type="application/rss+xml")
     sub(channel, "itunes:author",  PODCAST_AUTHOR)
-    sub(channel, "itunes:summary", PODCAST_DESCRIPTION)
+    sub(channel, "itunes:summary", cfg["description"])
     sub(channel, "itunes:category", **{"text": PODCAST_CATEGORY})
     owner = ET.SubElement(channel, "itunes:owner")
     sub(owner, "itunes:name",  PODCAST_AUTHOR)
     sub(owner, "itunes:email", PODCAST_EMAIL)
-    sub(channel, "itunes:image", href=PODCAST_COVER_URL)
+    sub(channel, "itunes:image", href=cover_url)
     sub(channel, "itunes:explicit", "false")
     sub(channel, "itunes:type", "episodic")
     sub(channel, "sy:updatePeriod", "weekly")
@@ -239,6 +288,7 @@ def _add_episode_to_feed(
     transcript_url: str | None = None,
     transcript_type: str = "text/plain",
     transcript_txt: str | None = None,
+    lang: str = "zh",
 ) -> None:
     channel = rss.find("channel")
     if channel is None:
@@ -266,7 +316,7 @@ def _add_episode_to_feed(
     sub("itunes:summary",  description)
     sub("itunes:explicit", "false")
     if transcript_url:
-        sub("podcast:transcript", url=transcript_url, type=transcript_type, language="zh")
+        sub("podcast:transcript", url=transcript_url, type=transcript_type, language=lang)
     if transcript_txt:
         el = ET.SubElement(item, "content:encoded")
         key = f"CDATAPH{len(_cdata_registry)}END"
@@ -275,12 +325,23 @@ def _add_episode_to_feed(
 
 
 def _save_feed(rss: ET.Element, feed_path: Path) -> None:
+    # Sort items by pubDate (newest first — RSS convention)
+    channel = rss.find("channel")
+    if channel is not None:
+        items = channel.findall("item")
+        for item in items:
+            channel.remove(item)
+        from email.utils import parsedate_to_datetime
+        def _sort_key(item):
+            try:
+                return parsedate_to_datetime(item.findtext("pubDate", ""))
+            except Exception:
+                return datetime.min.replace(tzinfo=timezone.utc)
+        items.sort(key=_sort_key)
+        for item in items:
+            channel.append(item)
+
     ET.indent(rss, space="  ")
-    ET.register_namespace("itunes",  "http://www.itunes.com/dtds/podcast-1.0.dtd")
-    ET.register_namespace("content", "http://purl.org/rss/modules/content/")
-    ET.register_namespace("atom",    "http://www.w3.org/2005/Atom")
-    ET.register_namespace("sy",      "http://purl.org/rss/modules/syndication/")
-    ET.register_namespace("podcast", "https://podcastindex.org/namespace/1.0")
     tree = ET.ElementTree(rss)
     import io
     buf = io.StringIO()
@@ -305,20 +366,56 @@ def publish_episode(
     title: str,
     description: str = "",
     pub_date: datetime | None = None,
+    lang: str = "zh",
 ) -> str | None:
-    """Publish a podcast episode to GitHub Pages RSS.
+    """Publish a podcast episode to the correct GitHub Pages RSS feed.
 
     Args:
         mp3_path:    Path to the final episode MP3.
         title:       Episode title (shown in podcast apps).
         description: Episode description (shown in podcast apps).
         pub_date:    Publication datetime (default: now).
+        lang:        "zh" or "en" — determines which repo/feed to publish to.
 
     Returns:
         RSS feed URL if successful, None on failure.
     """
-    slug = re.sub(r"[^a-z0-9-]", "-", mp3_path.stem.lower()).strip("-")
-    log.info("Publishing episode '%s' (slug: %s)", title, slug)
+    cfg = _get_config(lang)
+    repo_dir = cfg["repo_dir"]
+    pages_url = cfg["pages_url"]
+    feed_url = f"{pages_url}/feed.xml"
+
+    # Derive slug from parent directory (episode dirs are named by slug, files are all episode.mp3)
+    raw_slug = mp3_path.parent.name if mp3_path.stem == "episode" else mp3_path.stem
+    slug = re.sub(r"[^a-z0-9-]", "-", raw_slug.lower()).strip("-")
+    log.info("Publishing episode '%s' (slug: %s) to %s feed", title, slug, lang.upper())
+
+    # Auto-generate description from script.txt if not provided
+    if not description:
+        script_path = mp3_path.parent / "script.txt"
+        if script_path.exists():
+            script = script_path.read_text(encoding="utf-8")
+            # Use LLM to generate a proper episode summary
+            try:
+                import sys as _sys
+                _shared = str(Path(__file__).resolve().parent.parent / "shared")
+                if _shared not in _sys.path:
+                    _sys.path.insert(0, _shared)
+                from sub_agent import claude_think
+                desc_lang = "中文" if lang == "zh" else "English"
+                desc_prompt = (
+                    f"Write a 2-3 sentence podcast episode description in {desc_lang}. "
+                    f"Summarize what this episode discusses — the main topic, key ideas, "
+                    f"and why it's worth listening to. Be specific and compelling, not generic. "
+                    f"Output ONLY the description, nothing else.\n\n"
+                    f"Episode title: {title}\n\n"
+                    f"Script (first 2000 chars):\n{script[:2000]}"
+                )
+                description = (claude_think(desc_prompt, timeout=20) or "").strip()[:400]
+            except Exception as e:
+                log.warning("LLM description generation failed: %s", e)
+        if not description:
+            description = title
 
     # 0. Validate episode before publishing
     if not mp3_path.exists():
@@ -337,45 +434,47 @@ def publish_episode(
         return None
 
     # 1. Clone/pull repo
-    if not _ensure_repo():
+    if not _ensure_repo(lang):
         return None
 
-    feed_path = REPO_DIR / "feed.xml"
-    rss = _load_or_create_feed(feed_path)
+    feed_path = repo_dir / "feed.xml"
+    rss = _load_or_create_feed(feed_path, lang=lang)
 
     # Remove existing entry if present (allows title/description updates)
     if _remove_episode_from_feed(rss, slug):
         log.info("Replacing existing episode in feed: %s", slug)
 
-    # 2. Copy MP3 + transcript into repo
-    mp3_url = _copy_mp3_to_repo(mp3_path)
+    # 2. Copy MP3 + transcript into repo (use slug as filename)
+    mp3_filename = f"{slug}.mp3"
+    mp3_url = _copy_mp3_to_repo(mp3_path, repo_dir=repo_dir, pages_url=pages_url, slug=slug)
     log.info("MP3 URL: %s", mp3_url)
-    transcript_url, transcript_type = _copy_transcript_to_repo(mp3_path)
+    transcript_url, transcript_type = _copy_transcript_to_repo(
+        mp3_path, repo_dir=repo_dir, pages_url=pages_url, slug=slug)
     if transcript_url:
         log.info("Transcript URL: %s (%s)", transcript_url, transcript_type)
 
-    # 3. Add episode to feed (transcript as link only, not inline)
+    # 3. Add episode to feed
     _add_episode_to_feed(
         rss, title, slug, mp3_url, file_size, duration_sec, description, pub_date,
-        transcript_url=transcript_url, transcript_type=transcript_type,
+        transcript_url=transcript_url, transcript_type=transcript_type, lang=lang,
     )
     _save_feed(rss, feed_path)
 
-    # 4. Commit + push (increase buffer for large MP3 files)
+    # 4. Commit + push
     log.info("Committing MP3 + transcript + feed update...")
-    _run(["git", "config", "http.postBuffer", "524288000"], cwd=REPO_DIR)
-    _run(["git", "add", f"audios/{mp3_path.name}", "feed.xml"], cwd=REPO_DIR)
+    _run(["git", "config", "http.postBuffer", "524288000"], cwd=repo_dir)
+    _run(["git", "add", f"audios/{mp3_filename}", "feed.xml"], cwd=repo_dir)
     if transcript_url:
         ext = ".srt" if transcript_type == "application/srt" else ".txt"
-        _run(["git", "add", f"transcripts/{mp3_path.stem}{ext}"], cwd=REPO_DIR)
-    _run(["git", "commit", "-m", f"add episode: {slug}"], cwd=REPO_DIR)
-    result = _run(["git", "push"], cwd=REPO_DIR, check=False)
+        _run(["git", "add", f"transcripts/{slug}{ext}"], cwd=repo_dir)
+    _run(["git", "commit", "-m", f"add episode: {slug}"], cwd=repo_dir)
+    result = _run(["git", "push"], cwd=repo_dir, check=False)
     if result.returncode != 0:
         log.error("git push failed: %s", result.stderr)
         return None
 
-    log.info("Published! RSS: %s", FEED_URL)
-    return FEED_URL
+    log.info("Published to %s feed: %s", lang.upper(), feed_url)
+    return feed_url
 
 
 def publish_all_existing(lang: str = "zh") -> None:
