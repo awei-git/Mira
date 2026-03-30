@@ -36,6 +36,7 @@ from config import (
     WORKSPACE_DIR,
     MODELS, WRITING_MODELS, REVIEW_MODELS, WRITING_CRITERIA,
     MIN_REVIEW_ROUNDS, CLAUDE_TIMEOUT_PLAN,
+    WRITING_MIN_DRAFT_CHARS, WRITING_MIN_SCORE_3RD_ROUND,
 )
 from sub_agent import model_think, claude_think
 from soul_manager import load_soul, format_soul
@@ -47,6 +48,18 @@ from prompts import (
 )
 
 log = logging.getLogger("mira")
+
+
+def _log_workflow_failure(slug: str, step: str, error_msg: str):
+    """Record a structured failure for post-mortem analysis."""
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
+        from failure_log import record_failure
+        record_failure(pipeline="writing", step=step, slug=slug,
+                       error_type="workflow_error", error_message=error_msg[:500])
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -221,8 +234,12 @@ def _on_plan_approved(ws: Path, p: dict, plan_text: str) -> str:
 
     writers = WRITING_MODELS[:max(3, len(WRITING_MODELS))]
     drafts = _write_drafts(soul_ctx, plan_text, p["idea"], vd, writers)
+
+    # Filter out stub drafts
+    drafts = {k: v for k, v in drafts.items() if len(v.strip()) >= WRITING_MIN_DRAFT_CHARS}
     if not drafts:
-        log.error("All writers failed for '%s'", title)
+        log.error("All drafts are too short (< %d chars) or failed for '%s'", WRITING_MIN_DRAFT_CHARS, title)
+        _log_workflow_failure(ws.name, "write_drafts", f"All drafts failed or < {WRITING_MIN_DRAFT_CHARS} chars for '{title}'")
         p["phase"] = "error"
         _save_project(ws, p)
         return "error"
@@ -508,8 +525,8 @@ def _review_cycle(vd: Path, drafts: dict[str, str],
         avg = sum(round_scores.values()) / max(len(round_scores), 1)
         log.info("Round %d avg score: %.1f/10", rnd, avg)
 
-        if avg >= 9.0 and rnd >= 3:
-            log.info("Score >= 9.0 at round %d, stopping early", rnd)
+        if avg >= WRITING_MIN_SCORE_3RD_ROUND and rnd >= 3:
+            log.info("Score >= %.1f at round %d, stopping early", WRITING_MIN_SCORE_3RD_ROUND, rnd)
             break
 
         # Revise (skip on last round)
@@ -518,6 +535,9 @@ def _review_cycle(vd: Path, drafts: dict[str, str],
                 revise_draft_prompt(current_draft, combined, criteria, rnd),
                 model_name="claude", timeout=300,
             )
+            if revised and revised.strip() == current_draft.strip():
+                log.warning("Revision round %d produced no changes, stopping early", rnd)
+                break
             if revised:
                 current_draft = revised
                 (revisions_dir / f"round_{rnd:02d}.md").write_text(
@@ -668,8 +688,8 @@ def _harsh_review_cycle(vd: Path, draft: str, outline: str,
         log.info("Round %d score: %.1f/10", rnd, avg_score)
 
         # Early stop if quality is very high
-        if avg_score >= 9.0 and rnd >= 3:
-            log.info("Score >= 9.0 at round %d, stopping early", rnd)
+        if avg_score >= WRITING_MIN_SCORE_3RD_ROUND and rnd >= 3:
+            log.info("Score >= %.1f at round %d, stopping early", WRITING_MIN_SCORE_3RD_ROUND, rnd)
             break
 
         # Revise using GPT-5/DeepSeek (skip last round)
@@ -744,6 +764,7 @@ def start_from_plan(title: str, plan_path: str, writing_type: str = "novel"):
     chapter_structure = _parse_chapter_structure(plan_text)
     if not chapter_structure:
         log.error("Failed to parse chapter structure for '%s'", title)
+        _log_workflow_failure(workspace.name, "parse_chapters", f"Failed to parse chapter structure for '{title}'")
         project["phase"] = "error"
         _save_project(workspace, project)
         return
@@ -791,6 +812,7 @@ def start_from_plan(title: str, plan_path: str, writing_type: str = "novel"):
 
     if not all_chapter_texts:
         log.error("No chapters written for '%s'", title)
+        _log_workflow_failure(workspace.name, "write_chapters", f"No chapters written for '{title}'")
         project["phase"] = "error"
         _save_project(workspace, project)
         return
@@ -896,8 +918,12 @@ def run_full_pipeline(title: str, body: str) -> tuple[Path, str]:
     # --- Write (3+ agents) ---
     writers = WRITING_MODELS[:max(3, len(WRITING_MODELS))]
     drafts = _write_drafts(soul_ctx, plan, body, vd, writers)
+
+    # Filter out stub drafts
+    drafts = {k: v for k, v in drafts.items() if len(v.strip()) >= WRITING_MIN_DRAFT_CHARS}
     if not drafts:
-        log.error("All writers failed for '%s'", title)
+        log.error("All drafts are too short (< %d chars) or failed for '%s'", WRITING_MIN_DRAFT_CHARS, title)
+        _log_workflow_failure(slug, "write_drafts", f"All drafts failed or < {WRITING_MIN_DRAFT_CHARS} chars for '{title}'")
         project["phase"] = "error"
         _save_project(ws, project)
         return ws, ""

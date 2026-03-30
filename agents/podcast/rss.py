@@ -474,6 +474,33 @@ def publish_episode(
         return None
 
     log.info("Published to %s feed: %s", lang.upper(), feed_url)
+
+    # Post-condition: verify episode appears in the published feed
+    try:
+        import urllib.request as _urllib_req
+        req = _urllib_req.Request(feed_url, headers={"User-Agent": "Mira/1.0"})
+        resp = _urllib_req.urlopen(req, timeout=20)
+        feed_content = resp.read().decode()
+        if slug not in feed_content:
+            try:
+                import sys as _sys
+                _shared = str(Path(__file__).resolve().parent.parent / "shared")
+                if _shared not in _sys.path:
+                    _sys.path.insert(0, _shared)
+                from failure_log import record_failure
+                record_failure(
+                    pipeline="rss", step="feed_verification", slug=slug,
+                    error_type="episode_not_in_feed",
+                    error_message=f"Episode '{slug}' not found in published feed",
+                    expected_output=f"Episode entry in {feed_url}",
+                    actual_output="Episode missing from feed XML",
+                )
+            except Exception:
+                pass
+            log.warning("RSS verification: episode '%s' not found in feed", slug)
+    except Exception as e:
+        log.warning("RSS feed verification failed: %s", e)
+
     return feed_url
 
 

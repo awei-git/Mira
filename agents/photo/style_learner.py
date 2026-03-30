@@ -21,6 +21,7 @@ from pathlib import Path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
+from config import PHOTO_STYLE_LEARN_TIMEOUT
 from sub_agent import claude_act, claude_think
 
 log = logging.getLogger("photo.style_learner")
@@ -217,7 +218,7 @@ Use the Lightroom parameter ranges:
 
 Be specific with numbers — don't use 0 for everything. If the style consistently leans warm, put a positive temperature shift. If shadows are always lifted, put a positive Blacks2012 value. The numbers should be a STARTING POINT that gets the user 70-80% to their look."""
 
-    result = claude_think(prompt, timeout=180, tier="heavy")
+    result = claude_think(prompt, timeout=PHOTO_STYLE_LEARN_TIMEOUT, tier="heavy")
     if not result:
         return None
 

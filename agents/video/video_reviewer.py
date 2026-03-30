@@ -8,10 +8,20 @@ for iterative refinement without full re-render.
 """
 import json
 import logging
+import sys
 import time
 import urllib.request
 import urllib.error
 from pathlib import Path
+
+_AGENTS_DIR = Path(__file__).resolve().parent.parent
+if str(_AGENTS_DIR / "shared") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+
+from config import (
+    GEMINI_VIDEO_MODEL, GEMINI_VIDEO_REVIEWER_MAX_TOKENS,
+    GEMINI_REVIEWER_TEMPERATURE,
+)
 
 log = logging.getLogger("video.reviewer")
 
@@ -19,7 +29,6 @@ log = logging.getLogger("video.reviewer")
 from scene_analyzer import (
     _upload_to_file_api,
     _MIME_TYPES,
-    GEMINI_VIDEO_MODEL,
 )
 
 _REVIEW_PROMPT = """You are an expert video editor reviewing a finished edit.
@@ -138,8 +147,8 @@ def review_rough_cut(video_path: Path, edit_plan: dict,
             ],
         }],
         "generationConfig": {
-            "maxOutputTokens": 4096,
-            "temperature": 0.3,
+            "maxOutputTokens": GEMINI_VIDEO_REVIEWER_MAX_TOKENS,
+            "temperature": GEMINI_REVIEWER_TEMPERATURE,
         },
     }
 

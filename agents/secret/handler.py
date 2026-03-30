@@ -16,7 +16,7 @@ import logging
 import re
 from pathlib import Path
 
-from config import OLLAMA_DEFAULT_MODEL
+from config import OLLAMA_DEFAULT_MODEL, SECRET_MAX_FILE_CHARS, SECRET_MAX_FILES
 from sub_agent import _ollama_call
 
 log = logging.getLogger("secret_agent")
@@ -43,8 +43,8 @@ _TEXT_EXTENSIONS = {
 
 # Max total chars across all files to inject into prompt
 # 32B model handles ~16K context well, 32K is limit
-_MAX_TOTAL_FILE_CHARS = 12000
-_MAX_FILES = 5
+_MAX_TOTAL_FILE_CHARS = SECRET_MAX_FILE_CHARS
+_MAX_FILES = SECRET_MAX_FILES
 
 
 def _parse_file_intent(query: str) -> dict:

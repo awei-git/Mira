@@ -20,6 +20,7 @@ import argparse
 import json
 import logging
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -27,6 +28,9 @@ from pathlib import Path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
+from config import (
+    VIDEO_MAX_REVIEW_ITERATIONS, VIDEO_REVIEW_SCORE,
+)
 from sub_agent import claude_think, _get_api_key
 from scene_analyzer import analyze_all, analyze_all_v2
 from triage import triage_all
@@ -44,6 +48,30 @@ from video_reviewer import (
 
 log = logging.getLogger("video.handler")
 
+
+def _check_disk_space(output_dir: str, required_gb: float = 2.0) -> bool:
+    """Check if enough disk space is available for rendering."""
+    try:
+        usage = shutil.disk_usage(output_dir)
+        free_gb = usage.free / (1024 ** 3)
+        if free_gb < required_gb:
+            log.error("Insufficient disk space: %.1f GB free, need %.1f GB", free_gb, required_gb)
+            return False
+        return True
+    except Exception as e:
+        log.warning("Cannot check disk space: %s", e)
+        return True  # Proceed if can't check
+
+
+def _log_video_failure(step: str, error_msg: str, slug: str = "video"):
+    try:
+        from failure_log import record_failure
+        record_failure(pipeline="video", step=step, slug=slug,
+                       error_type="video_agent_error", error_message=error_msg[:500])
+    except Exception:
+        pass
+
+
 # Signals that user approves the screenplay
 _APPROVE_PATTERNS = re.compile(
     r'\b(ok|好的?|可以|开始[剪切]|go|cut|proceed|执行|没问题|就这样|lgtm|开剪)\b',
@@ -52,8 +80,8 @@ _APPROVE_PATTERNS = re.compile(
 
 _STATE_FILE = "video_state.json"
 _TASTE_PROFILE_PATH = Path(__file__).parent / "editing_taste_profile.md"
-_MAX_REVIEW_ITERATIONS = 2
-_REVIEW_THRESHOLD = 7.0
+_MAX_REVIEW_ITERATIONS = VIDEO_MAX_REVIEW_ITERATIONS
+_REVIEW_THRESHOLD = VIDEO_REVIEW_SCORE
 
 
 def handle(workspace: Path, task_id: str, instruction: str,
@@ -97,6 +125,7 @@ def handle(workspace: Path, task_id: str, instruction: str,
         return _run_prepare_see_think(workspace, state)
     except Exception as e:
         log.error("Video pipeline failed: %s", e, exc_info=True)
+        _log_video_failure("pipeline_exception", str(e), slug=task_id)
         return f"视频处理失败: {e}"
 
 
@@ -128,6 +157,8 @@ def _run_prepare_see_think(workspace: Path, state: dict) -> str:
                          beat_map["tempo"], len(beat_map["phrases"]))
             except Exception as e:
                 log.warning("Beat analysis failed: %s", e)
+                _log_video_failure("beat_analysis_failed", str(e),
+                                   slug=music_path.stem)
 
     # ── Phase 0.5: TRIAGE (local pre-filter) ──
     log.info("=== Phase 0.5: Triage ===")
@@ -157,6 +188,8 @@ def _run_prepare_see_think(workspace: Path, state: dict) -> str:
             scene_log = analyze_all(input_dir, workspace, gemini_key, openai_key,
                                     transcribe=state.get("transcribe", False))
         if not scene_log.get("scenes"):
+            _log_video_failure("scene_analysis_failed", "No valid scenes found in footage",
+                               slug=Path(state["input_dir"]).name)
             return "视频分析没有找到有效场景"
 
     total_dur = scene_log.get("total_duration", 0)
@@ -193,6 +226,9 @@ def _run_prepare_see_think(workspace: Path, state: dict) -> str:
         state["has_edit_plan"] = False
 
     if not screenplay:
+        _log_video_failure("screenplay_failed",
+                           f"generate_screenplay/edit_plan returned empty for {n_scenes} scenes",
+                           slug=Path(state["input_dir"]).name)
         return "Screenplay 生成失败"
 
     # Pause for user review
@@ -229,6 +265,15 @@ def _run_render_and_review(workspace: Path, state: dict) -> str:
     music_path = Path(state["music_path"]) if state.get("music_path") else None
     content_mode = state.get("content_mode", "family")
 
+    # Pre-render resource check: disk space
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if not _check_disk_space(str(output_dir)):
+        error_msg = "磁盘空间不足 (需要至少 2 GB 可用空间)"
+        _log_video_failure("disk_space_check", error_msg,
+                           slug=Path(state["input_dir"]).name)
+        (workspace / "output.md").write_text(f"# Error\n\n{error_msg}\n")
+        return error_msg
+
     gemini_key = _get_api_key("gemini")
 
     # Load edit plan if available
@@ -251,6 +296,8 @@ def _run_render_and_review(workspace: Path, state: dict) -> str:
         if result:
             final_path = result
         else:
+            _log_video_failure("render_failed", "execute_edit_plan returned None",
+                               slug=Path(state["input_dir"]).name)
             return "剪辑渲染失败"
     else:
         # Fallback: old pipeline
@@ -288,6 +335,9 @@ def _run_render_and_review(workspace: Path, state: dict) -> str:
 
             fixes = review.get("fix_proposals", [])
             if not fixes:
+                _log_video_failure("review_failed",
+                                   f"Review iteration {iteration}: no fix proposals returned (score={review.get('overall', 0)})",
+                                   slug=Path(state["input_dir"]).name)
                 break
 
             clips_dir = output_dir / "clips"
@@ -323,6 +373,9 @@ def _run_render_and_review(workspace: Path, state: dict) -> str:
                 log.info("Iteration %d: overall %.1f/10",
                          iteration, review.get("overall", 0))
             else:
+                _log_video_failure("review_failed",
+                                   f"re_render_clips returned empty on iteration {iteration}",
+                                   slug=Path(state["input_dir"]).name)
                 break
 
         state["review"] = review
@@ -416,6 +469,7 @@ def _revise_screenplay(workspace: Path, state: dict, feedback: str) -> str:
 
     revised = claude_think(prompt, timeout=120, tier="light")
     if not revised:
+        _log_video_failure("screenplay_revision_failed", "claude_think returned empty for revision")
         return "修改失败，请再试"
 
     version = state.get("screenplay_version", 1) + 1

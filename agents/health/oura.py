@@ -181,9 +181,8 @@ def fetch_and_store(store, access_token: str, person_id: str,
                                     unit="hours", source="oura", recorded_at=recorded)
                 count += 1
 
-            # Temperature deviation
-            temp_dev = s.get("average_breath")  # respiratory rate
-            readiness_temp = s.get("readiness_score_temperature_deviation")
+            # Note: temperature deviation comes from readiness contributors, not sleep
+            resp_rate = s.get("average_breath")  # respiratory rate, not temperature
             if s.get("average_heart_rate"):
                 # Average sleeping HR is more useful than single resting
                 pass  # already captured above

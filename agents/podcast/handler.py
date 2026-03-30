@@ -31,8 +31,13 @@ log = logging.getLogger("podcast")
 # Config
 # ---------------------------------------------------------------------------
 
-GEMINI_MODEL_TTS      = "gemini-2.5-flash-preview-tts"  # Flash: free tier available
-GEMINI_MODEL_TTS_FALL = "gemini-2.5-flash-preview-tts"  # same (Pro has no free tier)
+from config import (GEMINI_TTS_MODEL, GEMINI_TTS_TIMEOUT, GEMINI_TTS_MAX_RETRIES,
+                    GEMINI_TTS_BACKOFF_MULTIPLIER, MINIMAX_TTS_MAX_RETRIES,
+                    MINIMAX_SAMPLE_RATE, GPT5_MODEL, PODCAST_FALLBACK_MAX_TOKENS,
+                    GEMINI_AUTO_RETRIES, GEMINI_AUTO_RETRY_WAIT)
+
+GEMINI_MODEL_TTS      = GEMINI_TTS_MODEL  # Flash: free tier available
+GEMINI_MODEL_TTS_FALL = GEMINI_TTS_MODEL  # same (Pro has no free tier)
 GEMINI_MODEL_THINK = "gemini-2.5-pro"          # for script generation
 
 # ---------------------------------------------------------------------------
@@ -123,6 +128,28 @@ def _get_minimax_key() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Failure logging helper
+# ---------------------------------------------------------------------------
+
+def _record_podcast_failure(slug: str, error_type: str, error_message: str,
+                            lang: str = "", title: str = ""):
+    """Record a podcast pipeline failure to the structured failure log."""
+    try:
+        import sys as _sys
+        _shared = str(Path(__file__).resolve().parent.parent / "shared")
+        if _shared not in _sys.path:
+            _sys.path.insert(0, _shared)
+        from failure_log import record_failure
+        record_failure(
+            pipeline="podcast", step=f"podcast_{lang}" if lang else "podcast",
+            slug=slug, error_type=error_type, error_message=error_message,
+            context={"lang": lang, "title": title},
+        )
+    except Exception as e:
+        log.warning("Failed to record podcast failure: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # Shared utilities
 # ---------------------------------------------------------------------------
 
@@ -192,7 +219,7 @@ def _concat_mp3_chunks(chunk_paths: list[Path], output_path: Path) -> bool:
 
 
 def _call_gemini_tts(payload: dict, api_key: str,
-                     _retries: int = 3, _model: str | None = None) -> bytes | None:
+                     _retries: int = GEMINI_TTS_MAX_RETRIES, _model: str | None = None) -> bytes | None:
     """POST to Gemini TTS endpoint, return raw PCM bytes or None.
 
     Tries Pro first; on 429 quota exhaustion, falls back to Flash TTS automatically.
@@ -209,10 +236,10 @@ def _call_gemini_tts(payload: dict, api_key: str,
     for attempt in range(_retries):
         rate_limited = False
         try:
-            resp = requests.post(url, json=payload, timeout=420)
+            resp = requests.post(url, json=payload, timeout=GEMINI_TTS_TIMEOUT)
         except Exception as e:
             if attempt < _retries - 1:
-                wait = 15 * (attempt + 1)
+                wait = GEMINI_TTS_BACKOFF_MULTIPLIER * (attempt + 1)
                 log.warning("Gemini TTS exception (attempt %d): %s — retrying in %ds",
                             attempt + 1, e, wait)
                 _time.sleep(wait)
@@ -321,7 +348,7 @@ def _call_gemini_tts_text(text: str, voice_name: str, lang: str,
 
 
 def _call_minimax_tts(text: str, voice_id: str, api_key: str,
-                      lang: str = "en", _retries: int = 3) -> bytes | None:
+                      lang: str = "en", _retries: int = MINIMAX_TTS_MAX_RETRIES) -> bytes | None:
     """POST to MiniMax text_to_speech, return MP3 bytes directly.
 
     Uses /v1/text_to_speech (Audio Starter plan compatible).
@@ -339,7 +366,7 @@ def _call_minimax_tts(text: str, voice_id: str, api_key: str,
         "speed": speed,
         "vol": VOL_MM,
         "pitch": 0,
-        "audio_sample_rate": 32000,
+        "audio_sample_rate": MINIMAX_SAMPLE_RATE,
         "bitrate": 128000,
         "format": "mp3",
     }
@@ -750,9 +777,9 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
             from sub_agent import _get_api_key
             client = _openai.OpenAI(api_key=_get_api_key("openai"))
             response = client.chat.completions.create(
-                model="gpt-5.4",
+                model=GPT5_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                max_completion_tokens=16000,
+                max_completion_tokens=PODCAST_FALLBACK_MAX_TOKENS,
                 timeout=600,
             )
             result = response.choices[0].message.content
@@ -973,8 +1000,8 @@ def _tts_call_with_fallback(text: str, speaker: str,
     - If all Gemini attempts fail, try MiniMax once.
     - If both fail, notify user via bridge and return (None, '').
     """
-    GEMINI_RETRIES = 2
-    GEMINI_RETRY_WAIT = 65  # just over 1 minute — wait for RPM window to clear
+    GEMINI_RETRIES = GEMINI_AUTO_RETRIES
+    GEMINI_RETRY_WAIT = GEMINI_AUTO_RETRY_WAIT  # just over 1 minute — wait for RPM window to clear
 
     def _try_gemini_once() -> tuple[bytes | None, str]:
         api_key = _get_gemini_key()
@@ -1363,6 +1390,9 @@ def generate_conversation_for_article(article_text: str, title: str,
                         _saved_count, _min_chars)
             script = generate_conversation_script(article_text, title, lang=lang)
             if not script:
+                _record_podcast_failure(slug, "script_generation_failed",
+                                        "Script regeneration returned None (saved script too short)",
+                                        lang=lang, title=title)
                 return None
             script_path.write_text(script, encoding="utf-8")
         else:
@@ -1370,6 +1400,9 @@ def generate_conversation_for_article(article_text: str, title: str,
     else:
         script = generate_conversation_script(article_text, title, lang=lang)
         if not script:
+            _record_podcast_failure(slug, "script_generation_failed",
+                                    "Script generation returned None",
+                                    lang=lang, title=title)
             return None
         script_path.write_text(script, encoding="utf-8")
     turns = _parse_turns(script)
@@ -1389,6 +1422,9 @@ def generate_conversation_for_article(article_text: str, title: str,
     if conv_path.exists():
         log.info("Step 2: Conversation TTS already done, skipping")
     elif not generate_tts_conversation(script, conv_path, lang=lang):
+        _record_podcast_failure(slug, "tts_failed",
+                                "generate_tts_conversation returned False",
+                                lang=lang, title=title)
         return None
 
     # Pre-cut music slices (reusable assets, committed in agents/podcast/music/)
@@ -1423,6 +1459,9 @@ def generate_conversation_for_article(article_text: str, title: str,
     log.info("Step 6: Assembling final episode...")
     if not assemble_episode(intro_path, conv_path, outro_path, final_path, lang=lang):
         log.warning("Assembly failed — returning conversation only")
+        _record_podcast_failure(slug, "assembly_failed",
+                                "assemble_episode returned False",
+                                lang=lang, title=title)
         return conv_path
 
     return final_path
@@ -1590,14 +1629,23 @@ if __name__ == "__main__":
         except Exception as e:
             _log.error("RSS publish failed: %s", e)
 
-        # Update manifest
+        # Validate podcast before updating manifest
         try:
             shared = str(Path(__file__).resolve().parent.parent / "shared")
             if shared not in _sys.path:
                 _sys.path.insert(0, shared)
-            from publish_manifest import update_manifest
+            from publish_manifest import update_manifest, validate_step
             slug = args.slug or _slug(title)
             status = "podcast_en" if lang == "en" else "podcast_zh"
+
+            passed, verify_err = validate_step(slug, status,
+                                               mp3_path=str(result))
+            if not passed:
+                _record_podcast_failure(slug, "verification_failed", verify_err,
+                                        lang=lang, title=title)
+                _log.warning("Podcast verification failed for '%s': %s", title, verify_err)
+                # Still update manifest — episode exists, just may be short
+
             update_manifest(slug, status=status)
             _log.info("Manifest updated: %s → %s", slug, status)
         except Exception as e:

@@ -546,7 +546,7 @@ def do_talk():
 
 def _check_pending_publish():
     """Auto-publish approved articles from the manifest."""
-    from publish_manifest import get_next_pending, update_manifest
+    from publish_manifest import get_next_pending, update_manifest, validate_step
 
     entry = get_next_pending("published")  # finds status="approved"
     if not entry:
@@ -604,6 +604,23 @@ def _check_pending_publish():
             if "substack.com" in part:
                 post_url = part
                 break
+
+        # Post-condition: verify the published URL is reachable
+        passed, verify_err = validate_step(entry["slug"], "published",
+                                           url=post_url, title=entry["title"])
+        if not passed:
+            try:
+                from failure_log import record_failure
+                record_failure(
+                    pipeline="publish", step="substack_publish", slug=entry["slug"],
+                    error_type="verification_failed", error_message=verify_err,
+                    expected_output=f"Accessible article at {post_url}",
+                    actual_output=verify_err,
+                )
+            except Exception:
+                pass
+            log.warning("Publish verification failed for '%s': %s", entry["title"], verify_err)
+            # Don't fail hard — URL may take time to propagate
 
         update_manifest(entry["slug"], status="published", substack_url=post_url)
         log.info("Auto-published '%s': %s", entry["title"], result[:100])
@@ -694,13 +711,40 @@ def _check_pending_podcast():
 
 
 def _sweep_publish_pipeline():
-    """Check for articles stuck in the pipeline and log warnings."""
-    from publish_manifest import get_stuck_articles
+    """Check for articles stuck in the pipeline and log warnings.
+
+    If an entry has exhausted MAX_RETRIES, notify the user via bridge.
+    """
+    from publish_manifest import get_stuck_articles, MAX_RETRIES
 
     stuck = get_stuck_articles(timeout_minutes=120)
     for entry in stuck:
         log.warning("PIPELINE STUCK: '%s' at status '%s' for >2h",
                     entry.get("title", entry["slug"]), entry.get("status"))
+
+        if entry.get("retry_count", 0) >= MAX_RETRIES:
+            log.error("Pipeline STUCK after %d retries: '%s' at '%s'",
+                      entry.get("retry_count", 0), entry.get("slug"), entry.get("status"))
+            try:
+                from datetime import datetime, timezone
+                m = Mira()
+                m.create_item(
+                    item_id=f"stuck_{entry['slug']}",
+                    title=f"Pipeline stuck: {entry.get('title', entry['slug'])}",
+                    messages=[{
+                        "id": f"stuck_{entry['slug']}_alert",
+                        "sender": "system",
+                        "content": (
+                            f"Article '{entry.get('title')}' stuck at {entry['status']} "
+                            f"after {entry.get('retry_count', 0)} retries. "
+                            f"Last error: {entry.get('error', 'unknown')}. "
+                            f"Manual intervention needed."
+                        ),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }],
+                )
+            except Exception as e:
+                log.warning("Failed to notify about stuck pipeline: %s", e)
 
 
 def _sweep_stuck_items(bridge, task_mgr):
@@ -1106,8 +1150,13 @@ def _do_deep_dive(soul_ctx: str, dive: dict):
     (mira_briefings / f"{today}_deep_dive.md").write_text(result, encoding="utf-8")
 
     # Check if a skill was extracted
+    # More flexible skill extraction - handles whitespace variations
     skill_match = re.search(
-        r"Name:\s*(.+)\nDescription:\s*(.+)\nContent:\n(.+?)(?:\n```|$)",
+        r'Name:\s*(.+?)[\n\r]+'
+        r'Description:\s*(.+?)[\n\r]+'
+        r'(?:Tags:\s*\[.*?\][\n\r]+)?'  # Optional tags line
+        r'Content:\s*[\n\r]+'
+        r'(.+?)(?:\n```|$)',
         result, re.DOTALL,
     )
     if skill_match:
@@ -1326,25 +1375,36 @@ def do_skill_study(group_idx: int = 0):
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     # Parse skill blocks from output
-    skill_blocks = re.findall(
-        r"```\s*\nName:\s*(.+)\nDescription:\s*(.+)\nTags:\s*\[(.+?)\]\nContent:\n(.+?)```",
-        result, re.DOTALL,
+    # More flexible skill block extraction
+    skill_pattern = re.compile(
+        r'```\s*[\n\r]+'
+        r'Name:\s*(.+?)[\n\r]+'
+        r'Description:\s*(.+?)[\n\r]+'
+        r'(?:Tags:\s*\[(.+?)\][\n\r]+)?'  # Tags optional
+        r'Content:\s*[\n\r]+'
+        r'(.+?)'
+        r'```',
+        re.DOTALL,
     )
+    skill_blocks = skill_pattern.findall(result)
 
-    for name, desc, tags, content in skill_blocks:
+    for name, desc, _tags, content in skill_blocks:
         name = name.strip()
         desc = desc.strip()
         content = content.strip()
         slug = name.lower().replace(" ", "-")
 
-        # Save to domain-specific skill directory
-        skill_path = skill_dir / f"{slug}.md"
         skill_content = f"# {name}\n\n## One-liner\n{desc}\n\n{content}"
+
+        # Save to learned skills index first (runs security audit + quality gate)
+        if not save_skill(name, desc, skill_content):
+            log.warning("Skill '%s' rejected by quality gate, skipping per-agent copy", name)
+            continue
+
+        # Only write to domain-specific skill directory after gate passes
+        skill_path = skill_dir / f"{slug}.md"
         skill_path.write_text(skill_content, encoding="utf-8")
         log.info("Saved %s skill: %s", domain, name)
-
-        # Also save to learned skills index (for soul awareness)
-        save_skill(name, desc, skill_content)
 
     if skill_blocks:
         append_memory(f"Learned {len(skill_blocks)} {domain} skill(s) from study session")
@@ -1877,6 +1937,17 @@ def do_journal():
     except Exception as e:
         log.warning("Failed to load reading notes for journal: %s", e)
 
+    # 7. Pipeline failures today
+    pipeline_failures = ""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+        from failure_log import get_failure_summary
+        pipeline_failures = get_failure_summary(days=1)
+        if "No pipeline failures" not in pipeline_failures:
+            log.info("Including %d chars of failure summary in journal", len(pipeline_failures))
+    except Exception as e:
+        log.debug("Failed to load pipeline failures for journal: %s", e)
+
     # --- Ask Claude to write the journal ---
     soul = load_soul()
     soul_ctx = format_soul(soul)
@@ -1896,6 +1967,10 @@ def do_journal():
     if sparks_summary:
         briefing_summary += f"\n\n## Today's Sparks (idle-think)\n{sparks_summary[:3000]}"
 
+    # Pipeline failures
+    if pipeline_failures and "No pipeline failures" not in pipeline_failures:
+        briefing_summary += f"\n\n## Pipeline Failures Today\n{pipeline_failures}"
+
     # Social media daily stats (X + Substack)
     try:
         import json as _json
@@ -1910,6 +1985,16 @@ def do_journal():
             reply_q = [r for r in _tw.get("reply_queue", [])
                        if r.get("date", "").startswith(today)]
             sm_stats += f"- X tweets: {tw_today}, quotes: {qt_today}, reply candidates: {len(reply_q)}\n"
+
+            # Twitter performance metrics
+            try:
+                sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
+                from twitter import get_performance_summary
+                perf = get_performance_summary(_tw)
+                if perf and "No tweet metrics" not in perf:
+                    sm_stats += f"- Twitter performance: {perf}\n"
+            except Exception:
+                pass
 
         # Substack Notes
         _ns_file = _AGENTS_DIR / "socialmedia" / "notes_state.json"
@@ -3939,6 +4024,20 @@ def do_growth_cycle():
     except Exception as e:
         log.error("Growth cycle failed: %s", e)
 
+    # Collect pending twitter metrics after engagement cycle
+    try:
+        from twitter import collect_pending_metrics
+        import json as _json
+        _tw_state_path = Path(__file__).resolve().parent.parent / "socialmedia" / "twitter_state.json"
+        if _tw_state_path.exists():
+            _tw_state = _json.loads(_tw_state_path.read_text())
+            collected = collect_pending_metrics(_tw_state)
+            if collected:
+                log.info("Collected metrics for %d tweets", len(collected))
+                _tw_state_path.write_text(_json.dumps(_tw_state, indent=2, ensure_ascii=False))
+    except Exception as e:
+        log.debug("Twitter metrics collection failed: %s", e)
+
 
 # ---------------------------------------------------------------------------
 # Substack Notes cycle
@@ -5003,11 +5102,17 @@ def _dispatch_background(name: str, cmd: list[str]):
             log.debug("record_outcome('%s') failed: %s", name, e)
 
         # Cooldown: don't re-dispatch if the PID file was written recently
+        # Reduced from 5min to 1min; processes that crashed in <30s get faster retry
         try:
             import time as _time
             age = _time.time() - pid_file.stat().st_mtime
-            if age < 300:  # 5-minute cooldown
-                log.debug("Background '%s' in cooldown (%ds since last run)", name, int(age))
+            cooldown = 60  # 1-minute cooldown (was 5 minutes)
+            # If process ran < 30s it likely failed at startup — allow faster retry
+            if age < 30:
+                cooldown = 30
+            if age < cooldown:
+                log.debug("Background '%s' in cooldown (%ds since last run, cooldown=%ds)",
+                          name, int(age), cooldown)
                 return
         except OSError:
             pass

@@ -47,6 +47,17 @@ Work in: {workspace}
         log.error("Explorer agent returned empty for task %s", task_id)
         return None
 
+    if len(result) > 10000:
+        log.warning("Briefing unusually long (%d chars), truncating to 8000", len(result))
+        # Find a natural break point near 8000 chars
+        truncate_at = result.rfind('\n', 7000, 8000)
+        if truncate_at == -1:
+            truncate_at = 8000
+        result = result[:truncate_at]
+
+    if len(result) < 100:
+        log.warning("Briefing suspiciously short (%d chars)", len(result))
+
     # Read output.md if written
     output_file = workspace / "output.md"
     if output_file.exists():

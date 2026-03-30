@@ -20,14 +20,14 @@ _AGENTS_DIR = _SURFER_DIR.parent
 sys.path.insert(0, str(_SURFER_DIR))
 sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
-from config import MIRA_DIR
+from config import (
+    MIRA_DIR, SURFER_MAX_STEPS, SURFER_STEP_TIMEOUT,
+    SURFER_LLM_TIMEOUT, SURFER_EXTRACTION_TIMEOUT,
+)
 from soul_manager import load_soul, format_soul
 from sub_agent import claude_think
 
 log = logging.getLogger("surfer_agent")
-
-MAX_STEPS = 20
-STEP_TIMEOUT = 15  # seconds per action
 
 # Available browser actions the LLM can choose from
 _ACTIONS_SPEC = """
@@ -92,7 +92,7 @@ def handle(workspace: Path, task_id: str, content: str,
         history = []
         result = None
 
-        for step in range(MAX_STEPS):
+        for step in range(SURFER_MAX_STEPS):
             # Build the planning prompt
             prompt = _build_step_prompt(
                 task=content,
@@ -100,11 +100,11 @@ def handle(workspace: Path, task_id: str, content: str,
                 page_state=page_state,
                 history=history,
                 step=step + 1,
-                max_steps=MAX_STEPS,
+                max_steps=SURFER_MAX_STEPS,
             )
 
             # Ask LLM what to do next
-            llm_response = claude_think(prompt, timeout=30)
+            llm_response = claude_think(prompt, timeout=SURFER_LLM_TIMEOUT)
             if not llm_response:
                 log.warning("Step %d: LLM returned empty response", step + 1)
                 continue
@@ -155,7 +155,7 @@ def handle(workspace: Path, task_id: str, content: str,
                 page_state = _format_page_state(browser_result)
 
         if result is None:
-            result = f"Reached max steps ({MAX_STEPS}) without completing. Last page: {page_state[:500]}"
+            result = f"Reached max steps ({SURFER_MAX_STEPS}) without completing. Last page: {page_state[:500]}"
 
     # Write output
     output = _format_output(content, result, history)
@@ -281,7 +281,7 @@ Page content:
 
 Extract ONLY the requested information. Be concise and precise."""
 
-    result = claude_think(prompt, timeout=20)
+    result = claude_think(prompt, timeout=SURFER_EXTRACTION_TIMEOUT)
     return result or "[Extraction failed]"
 
 

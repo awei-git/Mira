@@ -7,9 +7,6 @@ from pathlib import Path
 
 log = logging.getLogger("health_ingest")
 
-# Force local LLM
-os.environ["MIRA_FORCE_OLLAMA"] = "1"
-
 
 def ingest_apple_health(bridge_dir: Path, person_id: str, store) -> int:
     """Read apple_health_export.json from bridge, insert new metrics, return count.

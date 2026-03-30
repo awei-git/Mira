@@ -12,9 +12,6 @@ from pathlib import Path
 
 log = logging.getLogger("health_agent")
 
-# Force local LLM for all health data processing
-os.environ["MIRA_FORCE_OLLAMA"] = "1"
-
 from config import OLLAMA_DEFAULT_MODEL, DATABASE_URL
 from sub_agent import _ollama_call
 
@@ -24,6 +21,9 @@ def handle(workspace: Path, task_id: str, content: str,
            thread_history: str = "", thread_memory: str = "",
            tier: str = "light") -> str | None:
     """Main entry point for the health agent."""
+    # Force local LLM for all health data processing — set at call time,
+    # not import time, to avoid poisoning the env for other agents/tests.
+    os.environ["MIRA_FORCE_OLLAMA"] = "1"
     log.info("Health agent: task=%s content=%s", task_id, content[:80])
 
     from health_store import HealthStore

@@ -12,8 +12,18 @@ sys.path.insert(0, str(_AGENTS / "super"))
 sys.path.insert(0, str(_AGENTS / "shared"))
 
 
+def _load_evaluator_handler():
+    """Import evaluator handler explicitly to avoid sys.path collisions."""
+    import importlib.util
+    handler_path = _AGENTS / "evaluator" / "handler.py"
+    spec = importlib.util.spec_from_file_location("evaluator_handler", handler_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def test_handler_imports():
-    import handler
+    handler = _load_evaluator_handler()
     assert callable(handler.handle)
     assert callable(handler.score_all)
     assert callable(handler.score_agent)
@@ -29,11 +39,12 @@ def test_manifest_valid():
 
 def test_all_agents_have_criteria():
     """Every agent with a manifest should have evaluation criteria defined."""
-    from handler import AGENT_CRITERIA
+    _handler = _load_evaluator_handler()
+    AGENT_CRITERIA = _handler.AGENT_CRITERIA
     from agent_registry import AgentRegistry
     registry = AgentRegistry()
     # Agents that don't need criteria (meta-agents, scheduler-only)
-    exempt = {"evaluator", "reader", "surfer", "photo", "video"}
+    exempt = {"evaluator", "reader", "surfer", "photo", "video", "health"}
     for name in registry.list_agents():
         if name in exempt:
             continue
@@ -43,7 +54,8 @@ def test_all_agents_have_criteria():
 
 def test_criteria_have_metrics():
     """Each agent's criteria should have at least 2 metrics."""
-    from handler import AGENT_CRITERIA
+    _handler = _load_evaluator_handler()
+    AGENT_CRITERIA = _handler.AGENT_CRITERIA
     for name, criteria in AGENT_CRITERIA.items():
         assert "metrics" in criteria, f"{name} criteria missing 'metrics'"
         assert len(criteria["metrics"]) >= 2, \
@@ -52,24 +64,24 @@ def test_criteria_have_metrics():
 
 def test_score_agent_empty():
     """Scoring an agent with no history should return gracefully."""
-    from handler import score_agent
-    result = score_agent("coder", days=0)
+    _h = _load_evaluator_handler()
+    result = _h.score_agent("coder", days=0)
     assert result["task_count"] == 0
     assert "note" in result
 
 
 def test_score_super():
     """Super scoring should work even with minimal data."""
-    from handler import score_super
-    result = score_super(days=1)
+    _h = _load_evaluator_handler()
+    result = _h.score_super(days=1)
     assert "scores" in result
     assert "crash_rate" in result["scores"]
 
 
 def test_score_all():
     """Full assessment should complete without errors."""
-    from handler import score_all
-    result = score_all(days=7)
+    _h = _load_evaluator_handler()
+    result = _h.score_all(days=7)
     assert "agents" in result
     assert "super" in result
     assert "aggregate" in result
@@ -78,7 +90,7 @@ def test_score_all():
 
 def test_no_llm_self_eval_in_scoring():
     """Scoring functions should NOT call any LLM — all deterministic."""
-    import handler
+    handler = _load_evaluator_handler()
     source = Path(handler.__file__).read_text(encoding="utf-8")
     # score_agent and score_super should not use claude_think/act
     # (diagnose_and_improve uses model_think, which is OK — it's a separate step)

@@ -19,19 +19,29 @@ sys.path.insert(0, str(_AGENTS / "super"))
 sys.path.insert(0, str(_AGENTS / "shared"))
 
 
+def _load_secret_handler():
+    """Import secret handler explicitly to avoid sys.path collisions."""
+    import importlib.util
+    handler_path = _AGENTS / "secret" / "handler.py"
+    spec = importlib.util.spec_from_file_location("secret_handler", handler_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 # ---------------------------------------------------------------------------
 # Fast tests (no LLM)
 # ---------------------------------------------------------------------------
 
 def test_handler_imports():
-    import handler
+    handler = _load_secret_handler()
     assert hasattr(handler, "handle")
     assert callable(handler.handle)
 
 
 def test_handler_signature():
-    from handler import handle
-    sig = inspect.signature(handle)
+    handler = _load_secret_handler()
+    sig = inspect.signature(handler.handle)
     params = set(sig.parameters.keys())
     assert {"workspace", "task_id", "content", "sender", "thread_id"}.issubset(params)
 
@@ -45,9 +55,8 @@ def test_manifest_valid():
 
 def test_no_cloud_imports():
     """Secret agent handler should NOT import any cloud API client."""
-    import handler
+    handler = _load_secret_handler()
     source = Path(handler.__file__).read_text(encoding="utf-8")
-    # Should not directly import cloud API clients
     cloud_imports = ["import openai", "import anthropic", "import google"]
     for imp in cloud_imports:
         assert imp not in source, f"Secret agent imports cloud API: {imp}"
@@ -55,7 +64,7 @@ def test_no_cloud_imports():
 
 def test_uses_ollama_only():
     """Secret agent should use _ollama_call, not claude_think/act or _api_call."""
-    import handler
+    handler = _load_secret_handler()
     source = Path(handler.__file__).read_text(encoding="utf-8")
     assert "_ollama_call" in source, "Secret agent should use _ollama_call"
     assert "claude_think" not in source, "Secret agent should NOT use claude_think"

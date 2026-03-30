@@ -1599,6 +1599,8 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
             return
 
         # --- Access control: verify agent is allowed for this user ---
+        # NOTE: allowed_agents is loaded fresh from get_user_config() at dispatch time
+        # (in core.py), so permission revocation takes effect on next message cycle.
         if allowed_agents and agent not in allowed_agents and agent not in ("clarify", "discussion"):
             log.warning("ACCESS DENIED: user=%s agent=%s not in allowed_agents=%s",
                         user_id, agent, allowed_agents)
@@ -1628,6 +1630,12 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
         except KeyError:
             # Agent not in registry — fall back to general handler
             log.warning("Agent '%s' not in registry, falling back to general", agent)
+            _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+        except ImportError as e:
+            # Guard: explicit ImportError catch with diagnostic info
+            # (learned from real failures — dynamic imports fail silently)
+            log.error("ImportError loading agent '%s': %s — check module path and "
+                      "handler function name in agent manifest", agent, e)
             _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
         except Exception as e:
             log.error("Registry handler for '%s' failed: %s — falling back to general", agent, e)
@@ -2734,6 +2742,14 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
         encoding="utf-8",
     )
     tmp_path.rename(result_path)
+
+    # Guard: verify output.md exists when claiming task is done
+    # (learned from real failures — agent claimed completion but produced no output)
+    if status == "done":
+        output_path = workspace / "output.md"
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            log.warning("Task %s claimed done but output.md missing/empty — "
+                        "result.json written but output may be incomplete", task_id)
 
     # --- Archive conversation as episode for long-term recall ---
     # SKIP for private tasks — never persist sensitive content

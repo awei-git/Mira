@@ -14,7 +14,7 @@ Scoring philosophy:
 import json
 import logging
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _SHARED = Path(__file__).resolve().parent.parent / "shared"
@@ -29,6 +29,7 @@ log = logging.getLogger("evaluator_agent")
 _SOUL_DIR = _SHARED / "soul"
 _SCORECARDS_DIR = _SOUL_DIR / "scorecards"
 _IMPROVEMENT_FILE = _SOUL_DIR / "improvement_plan.json"
+_IMPROVEMENT_HISTORY = Path(__file__).parent / "improvement_history.jsonl"
 
 # ---------------------------------------------------------------------------
 # Per-agent criteria — each agent is scored on what MATTERS for its role
@@ -338,6 +339,111 @@ def score_all(days: int = 7) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Improvement plan outcome tracking
+# ---------------------------------------------------------------------------
+
+def _extract_baseline_scores(assessment: dict) -> dict[str, float]:
+    """Extract per-agent success rates from an assessment for baseline comparison."""
+    scores = {}
+    for name, card in assessment.get("agents", {}).items():
+        if card.get("task_count", 0) > 0:
+            scores[name] = card["success_rate"]
+    # Include aggregate
+    agg = assessment.get("aggregate", {})
+    if "overall_success_rate" in agg:
+        scores["_overall"] = agg["overall_success_rate"]
+    if "crash_rate" in agg:
+        scores["_crash_rate"] = agg["crash_rate"]
+    return scores
+
+
+def save_improvement_plan_with_baseline(plan_data: dict, assessment: dict):
+    """Save improvement plan with baseline scores for later comparison."""
+    baseline = _extract_baseline_scores(assessment)
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "problems": plan_data.get("problems", []),
+        "weak_agents": plan_data.get("weak_agents", []),
+        "baseline_scores": baseline,
+        "status": "pending",
+    }
+    with open(_IMPROVEMENT_HISTORY, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    log.info("Saved improvement baseline with %d agent scores", len(baseline))
+
+
+def check_improvement_outcomes(current_assessment: dict) -> str:
+    """Compare current scores against previous improvement plan baselines.
+
+    Returns a summary of which improvements worked and which didn't.
+    """
+    if not _IMPROVEMENT_HISTORY.exists():
+        return ""
+
+    plans = []
+    for line in _IMPROVEMENT_HISTORY.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            try:
+                plans.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    if not plans:
+        return ""
+
+    current = _extract_baseline_scores(current_assessment)
+    results = []
+
+    for plan_record in plans[-5:]:  # Check last 5 plans
+        baseline = plan_record.get("baseline_scores", {})
+        ts = plan_record.get("timestamp", "unknown")[:10]
+        problems = plan_record.get("problems", [])
+
+        improved = []
+        regressed = []
+        unchanged = []
+
+        for agent, baseline_score in baseline.items():
+            if not isinstance(baseline_score, (int, float)):
+                continue
+            current_score = current.get(agent)
+            if current_score is None or not isinstance(current_score, (int, float)):
+                continue
+
+            diff = current_score - baseline_score
+            # For crash_rate, lower is better — invert the comparison
+            if agent == "_crash_rate":
+                diff = -diff
+
+            if diff > 0.05:
+                improved.append(f"{agent}: {baseline_score:.2f}->{current_score:.2f}")
+            elif diff < -0.05:
+                regressed.append(f"{agent}: {baseline_score:.2f}->{current_score:.2f}")
+            else:
+                unchanged.append(agent)
+
+        if improved and not regressed:
+            status = "improved"
+        elif regressed:
+            status = "regressed"
+        else:
+            status = "no_change"
+
+        # Update status in the record
+        plan_record["status"] = status
+
+        results.append(f"[{ts}] {status}: +{len(improved)} -{len(regressed)} ={len(unchanged)}")
+        if problems:
+            results.append(f"  Problems: {'; '.join(problems[:3])}")
+        if improved:
+            results.append(f"  Improved: {', '.join(improved)}")
+        if regressed:
+            results.append(f"  Regressed: {', '.join(regressed)}")
+
+    return "\n".join(results) if results else ""
+
+
+# ---------------------------------------------------------------------------
 # Top-down improvement: Mira diagnosis → targeted sub-agent fixes
 # ---------------------------------------------------------------------------
 
@@ -372,6 +478,32 @@ def diagnose_and_improve(assessment: dict) -> str | None:
                 f"{name} agent: {card['success_rate']:.0%} success "
                 f"({card['failed']}/{card['task_count']} failed)"
             )
+
+    # Enrich assessment with failure_log data
+    try:
+        from failure_log import get_failure_summary, load_recent_failures
+
+        recent_failures = load_recent_failures(days=7)
+        failure_summary = get_failure_summary(days=7)
+
+        assessment["pipeline_failures_7d"] = len(recent_failures)
+        assessment["failure_summary"] = failure_summary
+
+        # Group by pipeline for per-agent scoring
+        failure_by_pipeline = {}
+        for f in recent_failures:
+            p = f.get("pipeline", "unknown")
+            failure_by_pipeline[p] = failure_by_pipeline.get(p, 0) + 1
+        assessment["failures_by_pipeline"] = failure_by_pipeline
+
+        # Flag pipelines with high failure counts as problems
+        for pipeline, count in failure_by_pipeline.items():
+            if count >= 3:
+                problems.append(
+                    f"{pipeline} pipeline: {count} failures in 7 days"
+                )
+    except Exception as e:
+        log.debug("Could not load failure log for evaluation: %s", e)
 
     if not problems:
         log.info("Assessment healthy — no improvements needed")
@@ -424,6 +556,7 @@ Be specific. "Improve the prompt" is not actionable. "Add error handling for emp
             }
             _IMPROVEMENT_FILE.write_text(
                 json.dumps(plan_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            save_improvement_plan_with_baseline(plan_data, assessment)
             log.info("Top-down improvement plan: %d problems, %d weak agents",
                      len(problems), len(weak_agents))
             return plan
@@ -483,6 +616,11 @@ def handle(workspace: Path, task_id: str, content: str,
                 f"- **{name}** {emoji}: {card['success_rate']:.0%} "
                 f"({card['succeeded']}/{card['task_count']})"
             )
+
+    # Check outcomes of previous improvement plans
+    outcomes = check_improvement_outcomes(assessment)
+    if outcomes:
+        lines.extend(["", "## Improvement Tracking (last plans)", outcomes])
 
     if plan:
         lines.extend(["", "## Improvement Plan", plan])

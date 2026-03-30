@@ -65,6 +65,25 @@ def setup_logging():
 
 log = logging.getLogger("writing-pipeline")
 
+
+def _log_writing_failure(slug: str, step: str, error_msg: str):
+    """Record a writing pipeline failure for structured diagnosis."""
+    try:
+        import sys as _sys
+        _shared = str(Path(__file__).resolve().parents[1] / "shared")
+        if _shared not in _sys.path:
+            _sys.path.insert(0, _shared)
+        from failure_log import record_failure
+        record_failure(
+            pipeline="writing",
+            step=step,
+            slug=slug,
+            error_type="writing_pipeline_error",
+            error_message=error_msg[:500],
+        )
+    except Exception:
+        pass
+
 # ---------------------------------------------------------------------------
 # Idea file parsing and updating
 # ---------------------------------------------------------------------------
@@ -320,9 +339,11 @@ def step_scaffold(idea: dict, is_restart: bool = False) -> bool:
         })
         return True
     else:
+        error_msg = f"scaffold failed: {output[:200]}"
+        _log_writing_failure(idea["slug"], "scaffold", error_msg)
         update_idea_status(idea["path"], {
             "state": "error",
-            "last_error": f"scaffold failed: {output[:200]}",
+            "last_error": error_msg,
         })
         return False
 
@@ -342,10 +363,36 @@ def step_draft(idea: dict, round_num: int) -> bool:
     if success:
         draft_path = project_dir / "drafts" / f"draft_r{round_num}.md"
         if not save_output(output, draft_path, f"draft_r{round_num}"):
+            _log_writing_failure(idea["slug"], f"draft_r{round_num}", "draft: empty output from Claude")
             update_idea_status(idea["path"], {
                 "state": "error",
                 "last_error": "draft: empty output from Claude",
             })
+            return False
+
+        # -- Word count validation --
+        draft_text = (project_dir / "drafts" / f"draft_r{round_num}.md").read_text(encoding="utf-8")
+        cjk_chars = len(re.findall(r'[\u4e00-\u9fff\u3400-\u4dbf]', draft_text))
+        en_words = len(re.findall(r'[a-zA-Z]+', draft_text))
+        total_words = cjk_chars + en_words
+
+        spec_path = project_dir / "规格.md"
+        target_words = 0
+        if spec_path.exists():
+            spec_text = spec_path.read_text(encoding="utf-8")
+            wc_match = re.search(r'(?:字数|word.?count|目标字数)[：:]\s*(\d+)', spec_text, re.IGNORECASE)
+            if wc_match:
+                target_words = int(wc_match.group(1))
+
+        if target_words > 0 and total_words < target_words * 0.5:
+            log.warning("Draft r%d word count %d is less than 50%% of target %d for '%s'",
+                        round_num, total_words, target_words, idea.get("title", ""))
+
+        if total_words < 200:
+            log.error("Draft r%d is only %d words - too short to be a real draft for '%s'",
+                      round_num, total_words, idea.get("title", ""))
+            _log_writing_failure(idea["slug"], f"draft_r{round_num}", f"Draft too short: {total_words} words")
+            update_idea_status(idea["path"], {"state": "error", "last_error": f"Draft too short: {total_words} words"})
             return False
 
         state = "drafting" if round_num == 1 else "feedback_drafting"
@@ -355,9 +402,11 @@ def step_draft(idea: dict, round_num: int) -> bool:
         })
         return True
     else:
+        error_msg = f"draft r{round_num} failed: {output[:200]}"
+        _log_writing_failure(idea["slug"], f"draft_r{round_num}", error_msg)
         update_idea_status(idea["path"], {
             "state": "error",
-            "last_error": f"draft r{round_num} failed: {output[:200]}",
+            "last_error": error_msg,
         })
         return False
 
@@ -373,11 +422,20 @@ def step_critique(idea: dict, round_num: int) -> bool:
     if success:
         critique_path = project_dir / "drafts" / f"critique_r{round_num}.md"
         if not save_output(output, critique_path, f"critique_r{round_num}"):
+            _log_writing_failure(idea["slug"], f"critique_r{round_num}", "critique: empty output from Claude")
             update_idea_status(idea["path"], {
                 "state": "error",
                 "last_error": "critique: empty output from Claude",
             })
             return False
+
+        # -- Critique structure validation --
+        critique_text = (project_dir / "drafts" / f"critique_r{round_num}.md").read_text(encoding="utf-8")
+        has_priorities = bool(re.search(r'P[012]', critique_text))
+        has_actionable = bool(re.search(r'(?:修改|改|删|加|补|替换|重写|调整|移除|fix|change|add|remove|rewrite)', critique_text))
+        if not has_priorities and not has_actionable:
+            log.warning("Critique r%d for '%s' has no P0/P1/P2 labels and no actionable feedback",
+                        round_num, idea.get("title", ""))
 
         state = "critiquing" if round_num == 1 else "feedback_critiquing"
         update_idea_status(idea["path"], {
@@ -386,9 +444,11 @@ def step_critique(idea: dict, round_num: int) -> bool:
         })
         return True
     else:
+        error_msg = f"critique r{round_num} failed: {output[:200]}"
+        _log_writing_failure(idea["slug"], f"critique_r{round_num}", error_msg)
         update_idea_status(idea["path"], {
             "state": "error",
-            "last_error": f"critique r{round_num} failed: {output[:200]}",
+            "last_error": error_msg,
         })
         return False
 
@@ -410,6 +470,7 @@ def step_revision(idea: dict, round_num: int) -> bool:
             rev_log_path.write_text(rev_log.strip(), encoding="utf-8")
         revision_path = project_dir / "drafts" / f"revision_r{round_num}.md"
         if not save_output(output, revision_path, f"revision_r{round_num}"):
+            _log_writing_failure(idea["slug"], f"revision_r{round_num}", "revision: empty output from Claude")
             update_idea_status(idea["path"], {
                 "state": "error",
                 "last_error": "revision: empty output from Claude",
@@ -423,9 +484,11 @@ def step_revision(idea: dict, round_num: int) -> bool:
         })
         return True
     else:
+        error_msg = f"revision r{round_num} failed: {output[:200]}"
+        _log_writing_failure(idea["slug"], f"revision_r{round_num}", error_msg)
         update_idea_status(idea["path"], {
             "state": "error",
-            "last_error": f"revision r{round_num} failed: {output[:200]}",
+            "last_error": error_msg,
         })
         return False
 
@@ -441,6 +504,7 @@ def step_feedback_draft(idea: dict, round_num: int) -> bool:
     if success:
         draft_path = project_dir / "drafts" / f"draft_r{round_num}.md"
         if not save_output(output, draft_path, f"feedback_draft_r{round_num}"):
+            _log_writing_failure(idea["slug"], f"feedback_draft_r{round_num}", "feedback draft: empty output from Claude")
             update_idea_status(idea["path"], {
                 "state": "error",
                 "last_error": "feedback draft: empty output from Claude",
@@ -453,9 +517,11 @@ def step_feedback_draft(idea: dict, round_num: int) -> bool:
         })
         return True
     else:
+        error_msg = f"feedback draft r{round_num} failed: {output[:200]}"
+        _log_writing_failure(idea["slug"], f"feedback_draft_r{round_num}", error_msg)
         update_idea_status(idea["path"], {
             "state": "error",
-            "last_error": f"feedback draft r{round_num} failed: {output[:200]}",
+            "last_error": error_msg,
         })
         return False
 
@@ -612,6 +678,7 @@ def cmd_run():
 
         except Exception as e:
             log.error("Error processing %s: %s", idea_path.name, e, exc_info=True)
+            _log_writing_failure(idea_path.stem, "cmd_run", str(e)[:500])
             try:
                 update_idea_status(idea_path, {
                     "state": "error",
@@ -849,9 +916,11 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
                         # draft_r2.md+ are the actual revised articles (round 2+)
                         candidates = [
                             f for f in sorted(
-                                drafts_dir.glob("draft_r[2-9].md"), reverse=True
+                                drafts_dir.glob("draft_r*.md"), reverse=True
                             )
                             if f.stat().st_size >= MIN_ARTICLE_BYTES
+                            and re.search(r'draft_r(\d+)\.md$', f.name)
+                            and int(re.search(r'draft_r(\d+)\.md$', f.name).group(1)) >= 2
                         ]
                     if not candidates:
                         candidates = sorted(drafts_dir.glob("R[0-9]*.md"), reverse=True)
@@ -867,8 +936,26 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
                     if candidates:
                         final_file = candidates[0]
 
+            if not final_file.exists():
+                log.error("No publishable draft found for project '%s'", proj_path)
+                _log_writing_failure(proj_path.name, "final_selection",
+                                     f"No draft file found matching any selection pattern in {proj_path}/drafts/")
+
             if final_file.exists():
                 article_text = final_file.read_text(encoding="utf-8")
+
+                # Content validation of selected draft
+                _valid_draft = True
+                if not article_text or len(article_text.strip()) < 500:
+                    log.error("Selected draft '%s' is too short (%d chars)", final_file, len(article_text or ""))
+                    _log_writing_failure(proj_path.name, "final_validation",
+                                         f"Draft too short: {len(article_text or '')} chars")
+                    _valid_draft = False
+                elif not article_text.strip().startswith('#'):
+                    log.warning("Selected draft '%s' doesn't start with a heading", final_file)
+
+                if not _valid_draft:
+                    raise ValueError(f"Selected draft too short: {len(article_text or '')} chars")
 
                 # Extract title from the article's first heading (authoritative)
                 pub_title = title

@@ -1,0 +1,18 @@
+{
+  "has_improvement": true,
+  "title": "Tiered output verification queue — treat human attention as the scarce resource",
+  "description": "Add a verification_tier classification to all pipeline outputs (auto / queue / block). 'auto' outputs flow immediately (low-stakes, routine). 'queue' outputs are collected into a daily digest for human spot-check. 'block' outputs (like Substack publishes) halt until explicit confirmation. Right now Mira has a binary model: either mandatory human gate (Substack rule) or nothing. The reading note's insight is that human verification speed is a hard biological ceiling, so the architecture should treat human attention as the bottleneck resource to allocate, not a safety bolt to add case-by-case.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/config.py",
+    "~/Sandbox/Mira/agents/writer/pipeline.py",
+    "~/Sandbox/Mira/agents/super/core.py"
+  ],
+  "rationale": "The note states: 'bottleneck has shifted from can we produce to can we confirm what was produced is correct' and verification cost has no technical solution. Mira currently produces briefings, analyses, writings, and social posts at a rate that exceeds any reasonable human review capacity. Without explicit triage, every output implicitly competes equally for human attention — which means high-stakes outputs (published essays, financial analyses used for decisions) may get the same (zero) scrutiny as a routine briefing. Formalizing a three-tier system encodes the biological constraint directly into the architecture rather than relying on ad-hoc rules.",
+  "diff_description": "1. In config.py: add VERIFICATION_TIERS = ['auto', 'queue', 'block'] and a mapping from output_type → default tier (e.g. briefing→auto, analyst_report→queue, substack_publish→block, self_evolve_skill→queue). 2. In writer/pipeline.py and other output-producing agents: attach verification_tier to the output metadata dict before writing to disk or dispatching. 3. In super/core.py: before the daily journal task, collect all 'queue'-tier outputs from the day, write a compact verification digest to iCloud MtJoy/Mira-Artifacts/verification_queue_YYYY-MM-DD.md for human spot-check. 'block'-tier behavior already exists for Substack — formalize it as the same mechanism. This adds ~30 lines total and touches existing output-writing paths without changing logic.",
+  "source_note": "2026-03-30_verification-cost-是生物性约束不是工程问题.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-30_verification-cost-是生物性约束不是工程问题.md",
+  "created_at": "2026-03-30T13:07:11.505862",
+  "date": "2026-03-30",
+  "status": "proposed"
+}

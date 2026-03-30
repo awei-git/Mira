@@ -14,8 +14,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from config import (TWITTER_MAX_TWEETS_PER_DAY, TWITTER_COOLDOWN_HOURS,
+                    TWITTER_API_ENDPOINT)
 
 log = logging.getLogger("socialmedia.twitter")
 
@@ -23,8 +26,8 @@ log = logging.getLogger("socialmedia.twitter")
 # Config
 # ---------------------------------------------------------------------------
 
-MAX_TWEETS_PER_DAY = 15
-TWEET_COOLDOWN_HOURS = 0  # No cooldown — rate managed by daily limit
+MAX_TWEETS_PER_DAY = TWITTER_MAX_TWEETS_PER_DAY
+TWEET_COOLDOWN_HOURS = TWITTER_COOLDOWN_HOURS  # No cooldown — rate managed by daily limit
 
 
 def _get_twitter_config() -> dict:
@@ -192,7 +195,7 @@ def post_tweet(text: str) -> dict | None:
     if len(text) > 280:
         text = text[:277] + "..."
 
-    url = "https://api.x.com/2/tweets"
+    url = f"{TWITTER_API_ENDPOINT}/tweets"
     auth = _make_auth_header("POST", url, cfg)
     payload = json.dumps({"text": text}).encode()
 
@@ -225,7 +228,7 @@ def post_reply(text: str, reply_to_id: str) -> dict | None:
     if not can_tweet_now():
         return None
 
-    url = "https://api.x.com/2/tweets"
+    url = f"{TWITTER_API_ENDPOINT}/tweets"
     auth = _make_auth_header("POST", url, cfg)
     payload = json.dumps({
         "text": text,
@@ -266,7 +269,7 @@ def like_tweet(tweet_id: str) -> bool:
         return False
 
     user_id = cfg.get("access_token", "").split("-")[0]
-    url = f"https://api.x.com/2/users/{user_id}/likes"
+    url = f"{TWITTER_API_ENDPOINT}/users/{user_id}/likes"
     auth = _make_auth_header("POST", url, cfg)
     payload = json.dumps({"tweet_id": tweet_id}).encode()
 
@@ -291,7 +294,7 @@ def follow_user(user_id: str) -> bool:
         return False
 
     my_id = cfg.get("access_token", "").split("-")[0]
-    url = f"https://api.x.com/2/users/{my_id}/following"
+    url = f"{TWITTER_API_ENDPOINT}/users/{my_id}/following"
     auth = _make_auth_header("POST", url, cfg)
     payload = json.dumps({"target_user_id": user_id}).encode()
 
@@ -322,7 +325,7 @@ def search_recent_tweets(query: str, max_results: int = 10) -> list[dict]:
         "expansions": "author_id",
         "user.fields": "username,name,public_metrics",
     }
-    base_url = "https://api.x.com/2/tweets/search/recent"
+    base_url = f"{TWITTER_API_ENDPOINT}/tweets/search/recent"
     qs = urllib.parse.urlencode(params)
     full_url = f"{base_url}?{qs}"
 
@@ -362,7 +365,7 @@ def get_mentions(since_id: str = "") -> list[dict]:
     if since_id:
         params["since_id"] = since_id
 
-    base_url = f"https://api.x.com/2/users/{user_id}/mentions"
+    base_url = f"{TWITTER_API_ENDPOINT}/users/{user_id}/mentions"
     qs = urllib.parse.urlencode(params)
     full_url = f"{base_url}?{qs}"
 
@@ -396,7 +399,7 @@ def post_thread(texts: list[str]) -> list[dict]:
         if not cfg.get("consumer_key"):
             break
 
-        url = "https://api.x.com/2/tweets"
+        url = f"{TWITTER_API_ENDPOINT}/tweets"
         auth = _make_auth_header("POST", url, cfg)
 
         body = {"text": text}
@@ -730,11 +733,11 @@ def _find_reply_candidates(soul_context: str = ""):
 
     # Search for high-quality tweets in our domain
     topics = [
-        "AI agent memory -is:retweet lang:en min_faves:5",
-        "LLM hallucination problem -is:retweet lang:en min_faves:5",
-        "AI writing substack -is:retweet lang:en min_faves:3",
-        "autonomous AI failure -is:retweet lang:en min_faves:5",
-        "AI alignment debate -is:retweet lang:en min_faves:5",
+        "AI agent memory -is:retweet lang:en",
+        "LLM hallucination problem -is:retweet lang:en",
+        "AI writing substack -is:retweet lang:en",
+        "autonomous AI failure -is:retweet lang:en",
+        "AI alignment debate -is:retweet lang:en",
     ]
     import random
     query = random.choice(topics)
@@ -751,6 +754,7 @@ def _find_reply_candidates(soul_context: str = ""):
         if t.get("author_id") != my_id
         and t["id"] not in queued_ids
         and len(t.get("text", "")) > 80
+        and t.get("public_metrics", {}).get("like_count", 0) >= 3
     ]
 
     if not candidates:
@@ -866,6 +870,134 @@ def get_tweet_stats() -> dict:
         "last_tweet": state.get("last_tweet_at", "never"),
         "total_tweets": len(state.get("tweet_history", [])),
     }
+
+
+# ---------------------------------------------------------------------------
+# Tweet performance tracking
+# ---------------------------------------------------------------------------
+
+def fetch_tweet_metrics(tweet_id: str) -> dict | None:
+    """Fetch engagement metrics for a tweet via Twitter API v2.
+
+    Returns: {retweet_count, reply_count, like_count, impression_count, quote_count}
+    or None if failed.
+    """
+    cfg = _get_twitter_config()
+    if not cfg.get("consumer_key") or not cfg.get("access_token"):
+        log.warning("Twitter credentials not configured — cannot fetch metrics")
+        return None
+
+    params = {"tweet.fields": "public_metrics"}
+    base_url = f"{TWITTER_API_ENDPOINT}/tweets/{tweet_id}"
+    qs = urllib.parse.urlencode(params)
+    full_url = f"{base_url}?{qs}"
+
+    auth = _make_auth_header("GET", base_url, cfg, extra_params=dict(params))
+    req = urllib.request.Request(full_url, headers={"Authorization": auth})
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            metrics = data.get("data", {}).get("public_metrics")
+            if metrics:
+                return dict(metrics)
+            log.warning("No public_metrics in response for tweet %s", tweet_id)
+            return None
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:300]
+        log.warning("Metrics fetch failed for %s (HTTP %d): %s",
+                    tweet_id, e.code, body)
+        return None
+    except Exception as e:
+        log.warning("Metrics fetch failed for %s: %s", tweet_id, e)
+        return None
+
+
+def collect_pending_metrics(state: dict) -> list[dict]:
+    """Fetch metrics for tweets posted 20-28 hours ago.
+
+    Returns list of {tweet_id, text, posted_at, metrics} dicts.
+    Only fetches once per tweet (marks as collected in state).
+    """
+    collected = []
+    history = state.get("tweet_history", [])
+    now = datetime.now(timezone.utc)
+    metrics_collected = set(state.get("metrics_collected", []))
+
+    for entry in history:
+        tweet_id = entry.get("id")
+        if not tweet_id or tweet_id in metrics_collected:
+            continue
+
+        posted = entry.get("date", "")
+        try:
+            posted_dt = datetime.fromisoformat(posted)
+            # If naive datetime, assume UTC
+            if posted_dt.tzinfo is None:
+                posted_dt = posted_dt.replace(tzinfo=timezone.utc)
+            age_hours = (now - posted_dt).total_seconds() / 3600
+        except (ValueError, TypeError):
+            continue
+
+        # Only fetch metrics for tweets 20-28 hours old (one-time window)
+        if 20 <= age_hours <= 28:
+            metrics = fetch_tweet_metrics(tweet_id)
+            if metrics:
+                collected.append({
+                    "tweet_id": tweet_id,
+                    "text": entry.get("text", ""),
+                    "posted_at": posted,
+                    "metrics": metrics,
+                })
+                metrics_collected.add(tweet_id)
+
+    # Save collected IDs (keep last 200)
+    state["metrics_collected"] = list(metrics_collected)[-200:]
+
+    # Save metrics history
+    metrics_history = state.get("metrics_history", [])
+    metrics_history.extend(collected)
+    state["metrics_history"] = metrics_history[-100:]  # Keep last 100
+
+    return collected
+
+
+def get_performance_summary(state: dict) -> str:
+    """Summarize tweet performance for journal/evaluation.
+
+    Returns a short summary like:
+    "Last 7 days: 12 tweets, avg 3.2 likes, 0.8 replies.
+     Best: 'AI agents are...' (15 likes, 4 replies)"
+    """
+    history = state.get("metrics_history", [])
+    if not history:
+        return "No tweet metrics collected yet."
+
+    # Last 7 days
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    recent = [h for h in history if h.get("posted_at", "") >= cutoff]
+
+    if not recent:
+        return "No tweets with metrics in last 7 days."
+
+    total_likes = sum(h["metrics"].get("like_count", 0) for h in recent)
+    total_replies = sum(h["metrics"].get("reply_count", 0) for h in recent)
+    total_impressions = sum(h["metrics"].get("impression_count", 0) for h in recent)
+
+    avg_likes = total_likes / len(recent)
+    avg_replies = total_replies / len(recent)
+
+    # Weighted best: replies count 3x likes
+    best = max(recent, key=lambda h: h["metrics"].get("like_count", 0)
+               + h["metrics"].get("reply_count", 0) * 3)
+    best_text = best["text"][:60] + "..." if len(best["text"]) > 60 else best["text"]
+
+    return (
+        f"Last 7 days: {len(recent)} tweets, avg {avg_likes:.1f} likes, "
+        f"{avg_replies:.1f} replies, {total_impressions} impressions. "
+        f"Best: '{best_text}' ({best['metrics'].get('like_count', 0)} likes, "
+        f"{best['metrics'].get('reply_count', 0)} replies)"
+    )
 
 
 # ---------------------------------------------------------------------------

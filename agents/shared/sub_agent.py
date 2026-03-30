@@ -21,7 +21,11 @@ from pathlib import Path
 from config import (
     CLAUDE_BIN, CLAUDE_TIMEOUT_THINK, CLAUDE_TIMEOUT_ACT,
     SECRETS_FILE, MODELS, WRITING_MODELS, DEFAULT_MODEL, CLAUDE_FALLBACK_MODEL,
-    LOGS_DIR,
+    LOGS_DIR, OLLAMA_DEFAULT_MODEL,
+    CLAUDE_SONNET_MODEL, CLAUDE_OPUS_MODEL,
+    GPT5_MODEL, DEEPSEEK_CHAT_MODEL,
+    OPENAI_API_ENDPOINT, DEEPSEEK_API_ENDPOINT,
+    DEEPSEEK_MAX_TOKENS, DEEPSEEK_TEMPERATURE,
 )
 
 log = logging.getLogger("mira")
@@ -344,8 +348,8 @@ def _is_quota_error(stderr: str) -> bool:
 # Tier → Claude model ID mapping.
 # "light" uses Sonnet (fast, cheap), "heavy" uses Opus (best quality).
 _CLAUDE_MODELS = {
-    "light": "claude-sonnet-4-6",
-    "heavy": "claude-opus-4-6",
+    "light": CLAUDE_SONNET_MODEL,
+    "heavy": CLAUDE_OPUS_MODEL,
 }
 
 # Tier → OpenAI reasoning_effort mapping (for GPT-5.4 and o-series).
@@ -470,8 +474,8 @@ def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT,
 # ---------------------------------------------------------------------------
 
 _API_ENDPOINTS = {
-    "openai": "https://api.openai.com/v1/chat/completions",
-    "deepseek": "https://api.deepseek.com/chat/completions",
+    "openai": OPENAI_API_ENDPOINT,
+    "deepseek": DEEPSEEK_API_ENDPOINT,
     # Gemini uses a different URL pattern — handled in _gemini_call
     # Ollama uses a different URL pattern — handled in _ollama_call
 }
@@ -500,7 +504,7 @@ def _probe_endpoint(provider: str) -> bool:
         return True
 
     payload = {
-        "model": "gpt-5.4" if provider == "openai" else "deepseek-chat",
+        "model": GPT5_MODEL if provider == "openai" else DEEPSEEK_CHAT_MODEL,
         "messages": [{"role": "user", "content": "hi"}],
         "max_tokens": 1,
     }
@@ -711,8 +715,8 @@ def _api_call(provider: str, model_id: str, prompt: str,
         if reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
     elif provider == "deepseek":
-        payload["max_tokens"] = 8192
-        payload["temperature"] = 0.8
+        payload["max_tokens"] = DEEPSEEK_MAX_TOKENS
+        payload["temperature"] = DEEPSEEK_TEMPERATURE
     else:
         payload["max_tokens"] = 32768
         payload["temperature"] = 0.8
