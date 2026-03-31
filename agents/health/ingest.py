@@ -136,6 +136,124 @@ Report text:
     return parsed
 
 
+def parse_checkup_images(image_paths: list[Path], person_id: str, store) -> dict:
+    """Parse checkup report images using local OCR + LLM.
+
+    Extracts text via pytesseract, then parses into structured data.
+    """
+    if not image_paths:
+        return {}
+
+    # Try OCR on images
+    combined_text = ""
+    for img_path in image_paths[:10]:
+        text = _extract_image_text(img_path)
+        if text:
+            combined_text += text + "\n---\n"
+
+    if not combined_text.strip():
+        log.warning("No text extracted from checkup images for %s", person_id)
+        # Store the report record even without parsing
+        from datetime import date
+        store.insert_report(
+            person_id=person_id,
+            report_date=date.today(),
+            parsed_json={"images": [p.name for p in image_paths]},
+            summary="体检报告已上传，待解析",
+            source_file=str(image_paths[0].parent),
+        )
+        return {"images": [p.name for p in image_paths]}
+
+    # Parse extracted text into structured data
+    from config import OLLAMA_DEFAULT_MODEL
+    from sub_agent import _ollama_call
+
+    prompt = f"""Extract all test results from this medical checkup report.
+For each test item, extract:
+- name: test name (Chinese + English if available)
+- value: numeric value
+- unit: measurement unit
+- ref_range: reference range (e.g., "3.5-5.5")
+- flag: "normal", "high", "low", or "abnormal"
+
+Also extract:
+- report_date: the date of the checkup (YYYY-MM-DD format)
+- flagged_high: list of test names that are flagged high or abnormal
+
+Return as JSON:
+{{"report_date": "...", "flagged_high": [...], "items": [...]}}
+
+Report text:
+{combined_text[:8000]}"""
+
+    try:
+        result = _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=120)
+        text_result = result.strip()
+        if "```" in text_result:
+            text_result = text_result.split("```")[1].strip()
+            if text_result.startswith("json"):
+                text_result = text_result[4:].strip()
+        parsed = json.loads(text_result)
+    except (json.JSONDecodeError, Exception) as e:
+        log.error("Failed to parse checkup images: %s", e)
+        return {}
+
+    # Store in database
+    from datetime import date
+    report_date_str = parsed.get("report_date", "")
+    try:
+        report_date = date.fromisoformat(report_date_str)
+    except (ValueError, TypeError):
+        report_date = date.today()
+
+    summary_items = []
+    for item in parsed.get("items", []):
+        if item.get("flag") and item["flag"] != "normal":
+            summary_items.append(
+                f"{item['name']}: {item.get('value','?')}{item.get('unit','')} ({item['flag']})")
+
+    summary = "异常指标: " + "; ".join(summary_items) if summary_items else "各项指标正常"
+
+    store.insert_report(
+        person_id=person_id,
+        report_date=report_date,
+        parsed_json=parsed,
+        summary=summary,
+        source_file=str(image_paths[0].parent),
+    )
+
+    for item in parsed.get("items", []):
+        try:
+            value = float(item.get("value", ""))
+            store.insert_metric(
+                person_id, item["name"], value,
+                unit=item.get("unit", ""),
+                source="checkup",
+            )
+        except (ValueError, TypeError):
+            continue
+
+    log.info("Parsed checkup images for %s: %d items, %d abnormal",
+             person_id, len(parsed.get("items", [])), len(summary_items))
+    return parsed
+
+
+def _extract_image_text(image_path: Path) -> str:
+    """Extract text from an image using OCR."""
+    try:
+        import pytesseract
+        from PIL import Image
+        img = Image.open(str(image_path))
+        # Use Chinese + English for medical reports
+        text = pytesseract.image_to_string(img, lang="chi_sim+eng")
+        return text.strip()
+    except ImportError:
+        log.warning("pytesseract/PIL not available for OCR")
+    except Exception as e:
+        log.warning("OCR failed for %s: %s", image_path.name, e)
+    return ""
+
+
 def _extract_pdf_text(pdf_path: Path) -> str:
     """Extract text from a PDF file."""
     try:

@@ -20,9 +20,24 @@ agents/.bg_pids/
 # Writer ideas (personal notes)
 agents/writer/ideas/
 
-# Soul (personal memory, journal)
+# Soul (personal data — memory, journal, conversations, episodes, notes)
 agents/shared/soul/journal/
 agents/shared/soul/memory.md
+agents/shared/soul/conversations/
+agents/shared/soul/episodes/
+agents/shared/soul/reading_notes/
+agents/shared/soul/scorecards/
+agents/shared/soul/proposals/
+agents/shared/soul/.backups/
+agents/shared/soul/identity.md
+agents/shared/soul/worldview.md
+agents/shared/soul/interests.md
+agents/shared/soul/calibration.jsonl
+agents/shared/soul/catalog.jsonl
+agents/shared/soul/book_review_history.json
+agents/shared/soul/soul_questions_history.json
+agents/shared/soul/worldview_decay.json
+agents/shared/soul/.soul_hashes.json
 
 # Sync state files
 *.sync.json
