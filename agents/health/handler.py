@@ -29,12 +29,17 @@ def handle(workspace: Path, task_id: str, content: str,
     from health_store import HealthStore
     store = HealthStore(DATABASE_URL)
 
+    # Resolve person_id: sender from iOS is device name (e.g. "iphone"),
+    # but we need the user_id (e.g. "ang"). Extract from workspace path
+    # which is .../users/{user_id}/tasks/... or fall back to "ang".
+    user_id = _resolve_user_id(workspace, sender)
+
     # Classify the input
-    intent = _classify(content, sender)
+    intent = _classify(content, user_id)
     log.info("Classified: %s", intent)
 
     intent_type = intent.get("type", "query")
-    person = intent.get("person", sender)
+    person = intent.get("person", user_id)
 
     if intent_type == "metric":
         return _handle_metric(store, workspace, task_id, intent, person)
@@ -48,6 +53,33 @@ def handle(workspace: Path, task_id: str, content: str,
         return _handle_checkup(store, workspace, task_id, content, person)
     else:
         return _handle_query(store, workspace, task_id, content, person)
+
+
+def _resolve_user_id(workspace: Path, sender: str) -> str:
+    """Map device sender name to user_id.
+
+    The iOS app sends device name as sender (e.g. "iphone", "ipad").
+    We need the bridge user_id (e.g. "ang", "liquan") for DB queries.
+    """
+    # Device names that aren't real user IDs
+    device_names = {"iphone", "ipad", "macbook", "mac", "unknown", "user", "?"}
+    if sender.lower() not in device_names:
+        return sender
+
+    # Try to extract from workspace path: .../tasks/{task_id}/...
+    # The task is dispatched per-user, workspace parent structure varies
+    try:
+        from config import MIRA_DIR
+        # Check which user directory this task belongs to
+        task_id_dir = workspace.name if workspace.is_dir() else workspace.parent.name
+        users_dir = Path(MIRA_DIR) / "users"
+        if users_dir.exists():
+            for user_dir in users_dir.iterdir():
+                if user_dir.is_dir() and not user_dir.name.startswith("."):
+                    return user_dir.name  # Return first non-dot user (typically "ang")
+    except Exception:
+        pass
+    return "ang"  # Safe default
 
 
 def _classify(content: str, sender: str) -> dict:

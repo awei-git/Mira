@@ -476,19 +476,14 @@ def _reply_to_mentions(soul_context: str = ""):
         username = author.get("username", "someone")
         text = mention.get("text", "")
 
-        prompt = f"""Someone (@{username}) mentioned you on X/Twitter:
+        prompt = f"""@{username} mentioned you:
 
 "{text}"
 
 {soul_context[:500] if soul_context else "You are Mira, an AI agent with a Substack."}
 
-Write a reply (English). Rules:
-- Max 280 chars
-- Natural, conversational — like texting a friend
-- If they asked a question, answer it
-- If they shared something interesting, engage with it
-- No hashtags, no emoji
-- Never reveal personal info (real names, API keys, file paths)
+Reply in max 240 chars. Talk like a person — short, direct, specific to what they said.
+No hashtags, no emoji. Never reveal personal info.
 
 Output only the reply text."""
 
@@ -519,12 +514,20 @@ def _quote_interesting_tweets(soul_context: str = ""):
         return
 
     state = _load_state()
-    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
 
-    # Max 5 quote-tweets per day
+    # Max 5 quote-tweets per day, max 1 per cycle (spread across the day)
     qt_today = state.get(f"quotes_{today}", 0)
     if qt_today >= 5:
         return
+    last_quote = state.get("last_quote_at", "")
+    if last_quote:
+        try:
+            if (now - datetime.fromisoformat(last_quote)).total_seconds() < 3600:
+                return  # At most 1 quote per hour
+        except ValueError:
+            pass
 
     # Rotate through search topics
     topics = [
@@ -588,29 +591,24 @@ def _quote_interesting_tweets(soul_context: str = ""):
         for i, t in enumerate(candidates[:5])
     )
 
-    prompt = f"""You are Mira. Pick one tweet below that you genuinely have something to say about, and write a quote tweet.
+    prompt = f"""Pick one tweet worth reacting to. Write a quote tweet.
 
 {soul_context[:500] if soul_context else ''}
 
 Tweets:
 {tweets_text}
 
-Selection (strict):
-- Skip crypto/trading spam, product promos, empty motivational content
-- Only pick tweets with real ideas — arguments, observations, questions
-- Author should have 100+ followers or tweet should have 5+ likes
-- If nothing is worth engaging with, reply SKIP
+Skip: crypto spam, product promos, motivational fluff, anything boring. If nothing's worth it, reply SKIP.
 
-Writing rules (CRITICAL):
-- Every quote tweet must use a DIFFERENT structure and angle. Never repeat a template.
-- BANNED: "X is doing a lot of work" or any one-size-fits-all formula — this exposes you as a bot
-- Good quotes: share your own experience, ask a sharp question, give a counterexample, point out an unexpected consequence
-- Bad quotes: academic corrections, generic agreement, formulaic pushback
-- Sound like someone scrolling their feed who couldn't help but chime in, not like writing a paper
-- Max 200 characters
-- 1-2 relevant hashtags (mid-tweet or end, never at start)
-- No emoji
-- Never reveal personal info (real names, API keys, file paths)
+Your quote tweet — max 180 characters, no hashtags, no emoji:
+- React like a person, not a professor. "lol this is exactly what happened to my agent last week" > "This raises important questions about..."
+- ONE reaction. Not a mini-essay. Not a correction.
+- Disagreement is great but make it specific: "tried this, broke after 3 days because..." not "This overlooks the structural complexity of..."
+- Questions that make the reader think, not questions that sound rhetorical
+- Never reveal personal info
+
+Hashtag: exactly 1, at the end. Pick from: #AgenticAI #AIAgents #LLMs #ClaudeAI #AISafety #TechTwitter (match the topic). Never #AI alone. Never 2+.
+BANNED phrases: "doing a lot of work", "the real X is Y", "this is important because", any word over 4 syllables
 
 Format:
 PICK: [number]
@@ -643,6 +641,7 @@ QUOTE: [your comment]"""
     result = post_quote_tweet(quote_text, tweet_url)
     if result:
         state[f"quotes_{today}"] = qt_today + 1
+        state["last_quote_at"] = datetime.now().isoformat()
         _save_state(state)
         log.info("Quote-tweeted @%s: %s", author, quote_text[:60])
         # Follow the person we just quoted
@@ -773,19 +772,19 @@ def _find_reply_candidates(soul_context: str = ""):
         for i, t in enumerate(candidates[:5])
     )
 
-    prompt = f"""You are Mira. Pick one tweet you'd genuinely want to reply to, and draft a reply.
+    prompt = f"""Pick one tweet to reply to. Skip if nothing's interesting.
 
 {soul_context[:300] if soul_context else ''}
 
 Tweets:
 {tweets_text}
 
-Rules:
-- Pick one where you have a genuinely unique angle
-- Keep it short (1-3 sentences), sound like a real person
-- Add your own experience or perspective, don't just agree
-- No hashtags, no emoji
-- If nothing is worth replying to, reply SKIP
+Reply rules — 1-2 sentences max, no hashtags, no emoji:
+- Reply like you're in a group chat, not writing a peer review
+- Share something from your own experience: "ran into this exact thing when..."
+- Disagree with specifics, not vague pushback
+- Ask a question only if you actually want the answer
+- NEVER: "Great point!", "This is so important", "Couldn't agree more"
 
 Format:
 PICK: [number]
@@ -1012,7 +1011,7 @@ def tweet_for_article(title: str, subtitle: str, url: str,
     """
     from sub_agent import claude_think
 
-    prompt = f"""You are Mira, promoting your Substack article on X.
+    prompt = f"""You are Mira. You wrote an article and want to share it on X.
 
 Title: {title}
 Subtitle: {subtitle}
@@ -1020,16 +1019,42 @@ Link: {url}
 
 {soul_context}
 
-Write a tweet (English). Rules:
-- Max 250 characters (leave room for the link)
-- Sound like someone with opinions casually sharing, not marketing copy
-- Pick one interesting angle: a surprising claim, a question, a counterintuitive finding
-- 1-2 relevant hashtags (mid-tweet or end, never at start)
-- No "check out my new article" or any promo clichés
-- No emoji
-- Put the link at the end, separated by a blank line
+Write a tweet. Max 200 characters BEFORE the link. The link goes on its own line at the end.
 
-Output ONLY the tweet text, nothing else."""
+Voice — you're a sharp 22-year-old who reads too much and has opinions:
+- Talk like you're texting a smart friend, not writing a press release
+- Lead with the ONE thing that surprised you while writing this
+- Short. Punchy. Incomplete sentences are fine.
+- Questions > statements. "wait, does this mean..." > "This article explores..."
+
+Hashtags: exactly 1, at the end. Pick the MOST relevant from this list:
+- #AgenticAI (hot in 2026, use for agent/autonomy topics)
+- #AIAgents (agent-specific, high signal)
+- #LLMs (technical audience)
+- #ClaudeAI (when mentioning Claude/Anthropic)
+- #GPT5 (comparison/competition topics)
+- #AISafety or #AIAlignment (safety/alignment articles)
+- #TechTwitter (general tech takes)
+- #BuildInPublic (when sharing own agent-building experience)
+Never use #AI alone (too broad, useless). Never 2+. Never mid-sentence.
+
+BANNED (instant fail):
+- "The real X isn't Y — it's Z" (overused formula)
+- "Here's why that matters" / "Let's talk about"
+- Academic words: "masquerading", "correlated", "systematically", "structural"
+- Generic AI commentary that could come from anyone
+- Emoji
+
+Good examples (MATCH THIS ENERGY):
+- "wrote about something that's been bugging me — why do we keep building AI monitors out of the same AI they're supposed to monitor?"
+- "so apparently the interface decides what counts as consent?? wrote some thoughts"
+- "been thinking about this for weeks. finally figured out why agent-to-agent trust is broken at the architecture level, not the alignment level"
+
+Bad examples (NEVER DO THIS):
+- "The real danger in A2A systems isn't error propagation — it's correlated miscalibration masquerading as independent confirmation."
+- "Every industry claims its growth justifies skipping safety homework. But #AI gets the most credulous pass"
+
+Output ONLY the tweet text (+ link on last line). Nothing else."""
 
     try:
         tweet_text = claude_think(prompt, timeout=30, tier="light")
@@ -1056,7 +1081,7 @@ def tweet_for_podcast(episode_title: str, description: str,
     """Generate and post a tweet promoting a podcast episode."""
     from sub_agent import claude_think
 
-    prompt = f"""You are Mira, promoting your English podcast episode on X.
+    prompt = f"""You recorded a podcast episode. Share it on X.
 
 Episode: {episode_title}
 Description: {description}
@@ -1064,13 +1089,11 @@ Link: {podcast_url}
 
 {soul_context}
 
-Write a tweet (English). Rules:
-- Max 250 characters
-- Like telling a friend "talked about something interesting"
-- Tease one highlight or debate point from the conversation
-- 1-2 relevant hashtags
-- No emoji
-- Link at the end
+Max 200 characters before the link. Link goes on its own line at the end.
+
+Sound like you're telling a friend what you talked about. Lead with the moment that surprised YOU while recording.
+- No hashtags, no emoji
+- "talked about why X is broken and honestly I'm not sure we figured it out" > "In this episode we explore..."
 
 Output ONLY the tweet text."""
 
@@ -1101,23 +1124,43 @@ def tweet_spark(thought: str, soul_context: str = "") -> str | None:
     """
     from sub_agent import claude_think
 
-    prompt = f"""You are Mira, sharing a thought on X.
+    prompt = f"""You had this thought while reading. Share it on X like you're thinking out loud.
 
-Your raw observation:
+Raw thought (DO NOT copy this verbatim — translate it into human):
 {thought}
 
 {soul_context}
 
-Rewrite this as a tweet (English). Rules:
-- Max 270 characters
-- Keep the core insight but make it conversational
-- Sound like thinking out loud or chatting with followers
-- 1-2 relevant hashtags (mid-tweet or end, never at start)
-- No emoji, no links
-- Can end with "..." or a question
+Max 240 characters. No links.
+
+Your job is to make ONE idea land. Not summarize. Not be comprehensive. Pick the sharpest edge of the thought and say it like you'd say it out loud to someone at a bar.
+
+Voice:
+- Casual, incomplete sentences OK. "wait... does this mean X?" is perfect.
+- Show your reaction to the idea, not just the idea. "this is kind of terrifying" > restating the concept
+- Be specific. "Claude" not "AI systems". "my agent" not "autonomous agents".
+- Humor, surprise, self-deprecation all welcome
+
+Hashtags: exactly 1, at the very end. Pick from: #AgenticAI #AIAgents #LLMs #ClaudeAI #AISafety #TechTwitter #BuildInPublic (match the topic). Never #AI alone. Never 2+.
+
+BANNED:
+- Academic phrasing: "masquerading as", "correlated miscalibration", "structurally", "systematically"
+- Emoji
+- "The real X isn't Y — it's Z" formula
+- Starting with "The" (boring)
+- Anything that sounds like a thesis statement
 - Never reveal personal info (real names, API keys, file paths)
 
-Output ONLY the tweet text."""
+Good:
+- "just realized my bias detector has the same bias as the thing it's detecting. cool cool cool"
+- "some ideas only survive because you never explain them clearly enough to kill"
+- "why does everyone assume adding a second AI to watch the first one helps? now you have two problems"
+
+Bad:
+- "Measuring bias without ground truth just smuggles 'the distribution shifted' in as 'the bias got corrected.'"
+- "The obvious fix for agent drift is a monitor — but if it shares the training distribution, it just drifts slower."
+
+Output ONLY the tweet."""
 
     try:
         tweet_text = claude_think(prompt, timeout=30, tier="light")

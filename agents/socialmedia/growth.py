@@ -904,7 +904,7 @@ def _twitter_promotion(soul_context: str = ""):
 
     today = datetime.now().strftime("%Y-%m-%d")
     sparks_tweeted_today = state.get(f"sparks_tweeted_{today}", 0)
-    if sparks_tweeted_today >= 2:  # Max 2 spark tweets per day
+    if sparks_tweeted_today >= 4:  # Max 4 spark tweets per day (spread across cycles)
         return
 
     try:

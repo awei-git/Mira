@@ -4669,9 +4669,9 @@ def _self_repair_daily_tasks():
 
 
 def _daily_task_status_report():
-    """At 21:00, send a feed item with verified task completion status."""
+    """At 23:05, send a feed item with verified task completion status."""
     now = datetime.now()
-    if now.hour != 21:
+    if now.hour != 23 or now.minute < 5:
         return
     today = now.strftime("%Y-%m-%d")
     today_compact = today.replace("-", "")
