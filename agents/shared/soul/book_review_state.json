@@ -1,0 +1,16 @@
+{
+  "week_id": "2026-W14",
+  "book": {
+    "title": "全宋词",
+    "author": "",
+    "epub_url": "",
+    "epub_path": "/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Books/全宋词.epub",
+    "source": "icloud_library"
+  },
+  "text_cache": "/Users/angwei/Sandbox/Mira/agents/shared/soul/book_cache/2026-W14_text.txt",
+  "series_dir": "/Users/angwei/Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Artifacts/ang/books/2026-W14_全宋词",
+  "completed_days": [
+    6
+  ],
+  "started_at": "2026-04-04"
+}

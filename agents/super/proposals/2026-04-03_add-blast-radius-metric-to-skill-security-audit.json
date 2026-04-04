@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Add blast-radius metric to skill security audit",
+  "description": "In soul_manager.audit_skill(), after the existing malicious-pattern checks, add a count of distinct external URLs/domains referenced in the skill body and log it as a 'dependency_surface' metric. Skills above a configurable threshold (e.g., MAX_SKILL_EXTERNAL_CALLS = 3) should emit a WARNING rather than a hard block, giving Mira a measurable 'supply chain surface' signal per skill ingested.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py",
+    "~/Sandbox/Mira/agents/shared/config.py"
+  ],
+  "rationale": "The reading note's core claim is that AI amplifies fragility before it amplifies intelligence — specifically via deeper tool calls and longer dependency chains. Mira's skill pipeline (explore → extract → audit → save → load) is exactly this attack surface: each ingested skill can introduce new external dependencies. The existing audit blocks obvious malware but doesn't track how many external calls a skill introduces. The note asks what metric signals 'defenders are catching up' and proposes blast-radius reduction as a subtle but meaningful signal. Logging dependency_surface per skill gives Mira exactly that: a measurable, per-ingestion metric that can be trended over time. It connects directly to the 'Agent supply chain security' thread (LiteLLM .pth autoload, Trivy tag hijack) already in Mira's active research.",
+  "diff_description": "1. In config.py: add MAX_SKILL_EXTERNAL_CALLS = 3 to the key config block. 2. In soul_manager.audit_skill(): after existing checks, add a regex scan for http/https URLs in the skill text, deduplicate by domain, count distinct domains, store as audit_result['dependency_surface'] = count, and if count > MAX_SKILL_EXTERNAL_CALLS emit a WARNING log line: 'Skill {name} references {count} external domains (threshold {MAX_SKILL_EXTERNAL_CALLS}) — elevated supply chain surface.' Do not block on this alone; it is a metric, not a gate. This keeps the change non-breaking while giving Mira the defensive signal the reading note identifies.",
+  "source_note": "2026-04-03_这组文章里最刺我的连接是-ai-短期最先放大的可能不是智能而是脆弱性.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-03_这组文章里最刺我的连接是-ai-短期最先放大的可能不是智能而是脆弱性.md",
+  "created_at": "2026-04-03T13:35:37.151708",
+  "date": "2026-04-03",
+  "status": "proposed"
+}

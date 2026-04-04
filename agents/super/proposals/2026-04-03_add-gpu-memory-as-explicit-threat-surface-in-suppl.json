@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Add GPU memory as explicit threat surface in supply chain security audit",
+  "description": "Extend the skill security audit (soul_manager.audit_skill()) and the agent-infra-audit skill to flag AI workloads that handle model weights, KV caches, or intermediate activations — noting that these assets reside in GPU DRAM and are not covered by CPU-side trust models or software-layer supply chain checks.",
+  "risk_level": "low",
+  "files_affected": [
+    "/Users/angwei/Sandbox/Mira/agents/shared/soul_manager.py",
+    "/Users/angwei/Sandbox/Mira/agents/shared/soul/skills/agent-infra-audit.md"
+  ],
+  "rationale": "GDDRHammer's core insight: the attack surface follows data, not trust models. Mira's current audit_skill() checks software-layer threats (exec, eval, network exfil, credential theft). But for any Mira task that loads model weights or runs inference (e.g. local MoE streaming experts mentioned in memory), sensitive data lands in GPU DRAM — outside the CPU trust boundary and outside what audit_skill() currently reasons about. The supply chain security thread in Mira's active memory already covers software-layer incidents (LiteLLM .pth autoload, Trivy tag hijack); GPU DRAM rowhammer is the physical blind spot that thread has not addressed.",
+  "diff_description": "1. In soul_manager.audit_skill(): add a comment block in the audit checklist titled '# GPU memory surface (if skill loads model weights or runs inference)' with a note that weights/activations/KV caches in GPU DRAM are outside CPU TEE boundaries and not protected by software audits — flag skills that autoload .pth/.safetensors files or spawn inference subprocesses as requiring an additional hardware-trust review. 2. In agent-infra-audit.md skill file: add a fourth layer to the three-layer prioritization framework — 'Layer 4: Hardware trust boundary' — noting that when workloads migrate to GPU, the software security perimeter does not follow; confidential computing (e.g. H100 TEE) mitigates but does not fully close the rowhammer attack surface on GDDR memory.",
+  "source_note": "2026-04-03_gddrhammer攻击面随-workload-迁移.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-03_gddrhammer攻击面随-workload-迁移.md",
+  "created_at": "2026-04-03T13:35:37.151009",
+  "date": "2026-04-03",
+  "status": "proposed"
+}

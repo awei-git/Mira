@@ -193,6 +193,7 @@ TASK_TIMEOUT = _limits.get("task_timeout", 900)  # Must exceed CLAUDE_TIMEOUT_AC
 TASK_TIMEOUT_LONG = _limits.get("task_timeout_long", 3600)  # writing pipeline, research
 MAX_CONCURRENT_TASKS = _limits.get("max_concurrent_tasks", 2)  # parallel sub-agent workers
 CLEANUP_DAYS = _limits.get("cleanup_days", 3)
+LOG_RETENTION_DAYS = _limits.get("log_retention_days", 14)
 
 # Secrets file (API keys — always gitignored)
 SECRETS_FILE = _PROJECT_ROOT / "secrets.yml"
@@ -339,6 +340,7 @@ WRITING_MODELS = _models_cfg.get("writing", ["claude", "gpt5", "deepseek", "gemi
 REVIEW_MODELS = _models_cfg.get("review", ["claude", "gpt5", "gemini"])
 DEFAULT_MODEL = _models_cfg.get("default", "claude")
 CLAUDE_FALLBACK_MODEL = _models_cfg.get("claude_fallback", "codex")
+HEALTH_REPORT_MODEL = _models_cfg.get("health_report", "gpt5")
 
 # Publishing controls
 _publishing_cfg = _cfg.get("publishing", {})
@@ -477,6 +479,9 @@ ZHESI_TIME = _parse_times([_sched.get("zhesi_time", "09:30")])[0]
 
 # Daily soul question
 SOUL_QUESTION_TIME = _parse_times([_sched.get("soul_question_time", "20:00")])[0]
+
+# Daily book review (weekly reading series)
+BOOK_REVIEW_TIME = _parse_times([_sched.get("book_review_time", "09:00")])[0]
 
 # Daily research
 RESEARCH_TIME = _parse_times([_sched.get("research_time", "14:00")])[0]

@@ -15,9 +15,18 @@ import re
 from pathlib import Path
 
 from soul_manager import load_soul, format_soul, load_skills_for_task
-from sub_agent import claude_act
+from sub_agent import claude_act, claude_think
 
 log = logging.getLogger("coder_agent")
+
+_SNAPSHOT_SUFFIXES = {
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".md", ".txt",
+    ".yaml", ".yml", ".toml", ".sh", ".sql", ".go", ".rs", ".java",
+    ".c", ".cc", ".cpp", ".h", ".hpp",
+}
+_SNAPSHOT_SKIP = {"output.md", "summary.txt", "worker.log", "result.json", "exec_log.jsonl"}
+_SNAPSHOT_FILE_LIMIT = 12
+_SNAPSHOT_CHAR_LIMIT = 50000
 
 # System prompt injected before every coding task
 _CODER_SYSTEM = """You are Mira's coding agent. Your primary job: debug, review, and fix code.
@@ -48,6 +57,40 @@ For debug/review tasks, structure your response as:
 - **Fix**: What you changed (or recommend)
 - **Verification**: How you confirmed it works
 """
+
+
+def _snapshot_workspace(workspace: Path) -> str:
+    """Serialize a compact view of the task workspace for think-only fallback."""
+    if not workspace.exists():
+        return "Workspace does not exist."
+
+    files = []
+    for path in sorted(workspace.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.name in _SNAPSHOT_SKIP:
+            continue
+        if path.suffix.lower() not in _SNAPSHOT_SUFFIXES:
+            continue
+        files.append(path)
+        if len(files) >= _SNAPSHOT_FILE_LIMIT:
+            break
+
+    blocks = []
+    total = 0
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        rel = path.relative_to(workspace)
+        block = f"## FILE: {rel}\n{text[:6000]}"
+        if total + len(block) > _SNAPSHOT_CHAR_LIMIT and blocks:
+            break
+        blocks.append(block)
+        total += len(block)
+
+    return "\n\n".join(blocks) if blocks else "No readable code files in workspace."
 
 
 def handle(workspace: Path, task_id: str, content: str,
@@ -87,8 +130,23 @@ Write results to {workspace}/output.md when done.
     result = claude_act(prompt, cwd=workspace, tier=tier)
 
     if not result:
-        log.error("Coder agent returned empty for task %s", task_id)
-        return None
+        log.warning("Coder agent tool path unavailable for task %s — using analysis fallback", task_id)
+        snapshot = _snapshot_workspace(workspace)
+        fallback_prompt = f"""{prompt}
+
+Tool execution and file editing are unavailable right now.
+
+## Workspace Snapshot
+{snapshot}
+
+Use only the snapshot above. Do not claim you edited files or ran tests.
+If the fix requires code changes, provide an exact patch recommendation with file paths and replacement snippets.
+"""
+        result = claude_think(fallback_prompt, timeout=180, tier=tier)
+        if not result:
+            log.error("Coder agent returned empty for task %s", task_id)
+            return None
+        (workspace / "output.md").write_text(result, encoding="utf-8")
 
     # Try to read output.md if claude_act wrote one
     output_file = workspace / "output.md"

@@ -743,6 +743,36 @@ def save_skill(name: str, description: str, content: str) -> bool:
     return True
 
 
+def update_skill(name: str, content: str) -> bool:
+    """Update the content of an existing skill. Runs security audit first.
+
+    Returns True if the skill was updated, False if rejected by audit or not found.
+    """
+    slug = name.lower().replace(" ", "-")
+    path = SKILLS_DIR / f"{slug}.md"
+    if not path.exists():
+        log.warning("update_skill: skill '%s' not found, cannot update", name)
+        return False
+
+    passed, violations = audit_skill(name, content)
+    if not passed:
+        log.warning(
+            "BLOCKED skill update '%s' — failed security audit with %d violation(s):",
+            name, len(violations),
+        )
+        for v in violations:
+            log.warning("  %s", v)
+        return False
+
+    _atomic_write(path, content)
+    log.info("Updated skill: %s", name)
+
+    rebuild_skills_md()
+    _sync_skills_to_claude_md()
+
+    return True
+
+
 def rebuild_skills_md():
     """Regenerate soul/skills.md from index + individual skill files."""
     if not SKILLS_INDEX.exists():

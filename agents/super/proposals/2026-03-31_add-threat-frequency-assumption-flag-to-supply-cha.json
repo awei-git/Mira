@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Add threat-frequency assumption flag to supply chain security taxonomy",
+  "description": "In the supply chain security agent or researcher module, add a config constant or metadata field that tags the threat taxonomy's underlying frequency assumptions (e.g., THREAT_FREQ_ASSUMPTION = 'pre-scaling-law-baseline'). When the analyst or researcher agent loads or applies the four-layer taxonomy, it should emit a warning if no frequency recalibration has been done recently — specifically flagging that the priority ordering was built under historical cost assumptions that may shift by an order of magnitude.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/researcher/skills/agent-supply-chain-security.md",
+    "~/Sandbox/Mira/agents/shared/config.py"
+  ],
+  "rationale": "The reading note's core insight: the supply chain four-layer taxonomy was built under historical frequency priors ('high-cost attacks are rare'). If attack costs follow a scaling law, those priors break and the priority ordering within the taxonomy becomes wrong — not because the taxonomy is structurally flawed, but because its inputs (frequency estimates) are stale. This is an instance of the 'dimension-outside-the-distribution' realization already in memory: risk frameworks are conditional on meta-assumptions they cannot self-evaluate. Flagging the assumption explicitly inside the skill file makes the limitation visible rather than hidden.",
+  "diff_description": "1. In the supply chain security skill file (wherever it lives under agents/researcher/ or agents/writer/), add a front-matter or header block: 'FREQUENCY_ASSUMPTION: pre-2025 baseline (high-cost attacks rare). RECALIBRATE IF: attack-cost scaling evidence emerges. Priority ordering is sensitive to this assumption — a 10x cost reduction could invert tiers 2 and 3.' 2. In config.py, optionally add SUPPLY_CHAIN_FREQ_ASSUMPTION_DATE = '2026-03' so the reflect or self-evolve pipeline can flag it as stale after N months. No logic changes required — this is a documentation/metadata addition that makes a hidden axiom explicit.",
+  "source_note": "2026-03-31_2-网络攻击的-scaling-law--威胁模型的坐标系问题.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-31_2-网络攻击的-scaling-law--威胁模型的坐标系问题.md",
+  "created_at": "2026-03-31T13:33:22.336725",
+  "date": "2026-03-31",
+  "status": "proposed"
+}

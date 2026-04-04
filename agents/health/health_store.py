@@ -156,6 +156,45 @@ class HealthStore:
             )
             return [dict(r) for r in cur.fetchall()]
 
+    # ---- Insights (daily/weekly/alert — generated content) ----
+
+    def upsert_insight(self, person_id: str, insight_date: date,
+                       insight_type: str, content: str, model: str = ""):
+        """Insert or replace a health insight for a given date+type."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO health_insights (person_id, insight_date, insight_type, content, model) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (person_id, insight_date, insight_type) "
+                "DO UPDATE SET content = EXCLUDED.content, model = EXCLUDED.model",
+                (person_id, insight_date, insight_type, content, model)
+            )
+        log.info("Insight upserted: %s %s %s", person_id, insight_date, insight_type)
+
+    def get_latest_insight(self, person_id: str, insight_type: str = "daily") -> dict | None:
+        """Get the most recent insight of a given type."""
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT insight_date, insight_type, content, model, created_at "
+                "FROM health_insights WHERE person_id=%s AND insight_type=%s "
+                "ORDER BY insight_date DESC LIMIT 1",
+                (person_id, insight_type)
+            )
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def get_recent_insights(self, person_id: str, insight_type: str = "daily",
+                            limit: int = 7) -> list[dict]:
+        """Get recent insights for history."""
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT insight_date, insight_type, content, model, created_at "
+                "FROM health_insights WHERE person_id=%s AND insight_type=%s "
+                "ORDER BY insight_date DESC LIMIT %s",
+                (person_id, insight_type, limit)
+            )
+            return [dict(r) for r in cur.fetchall()]
+
     # ---- Monitoring (anomaly detection helpers) ----
 
     def get_metric_stats(self, person_id: str, metric_type: str,

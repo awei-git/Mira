@@ -9,7 +9,7 @@ from pathlib import Path
 
 from config import MIRA_DIR
 from soul_manager import load_soul, format_soul, load_skills_for_task
-from sub_agent import claude_act
+from sub_agent import claude_act, claude_think
 from prompts import respond_prompt
 
 log = logging.getLogger("general_agent")
@@ -77,6 +77,15 @@ def handle(workspace: Path, task_id: str, content: str,
 
     log.info("Calling claude_act for task %s (tier=%s)", task_id, tier)
     result = claude_act(prompt, cwd=workspace, tier=tier)
+
+    if not result:
+        log.warning("General agent tool path unavailable for task %s — using think-only fallback", task_id)
+        fallback_prompt = (
+            prompt
+            + "\n\nTool execution is unavailable. Answer directly using only the context above. "
+              "Do not claim you edited files, ran commands, or fetched additional sources unless they are already included."
+        )
+        result = claude_think(fallback_prompt, timeout=120, tier=tier)
 
     if result:
         (workspace / "output.md").write_text(result, encoding="utf-8")

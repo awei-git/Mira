@@ -60,25 +60,21 @@ def _resolve_user_id(workspace: Path, sender: str) -> str:
 
     The iOS app sends device name as sender (e.g. "iphone", "ipad").
     We need the bridge user_id (e.g. "ang", "liquan") for DB queries.
+    Extract from workspace path which contains .../users/{user_id}/...
     """
     # Device names that aren't real user IDs
     device_names = {"iphone", "ipad", "macbook", "mac", "unknown", "user", "?"}
     if sender.lower() not in device_names:
         return sender
 
-    # Try to extract from workspace path: .../tasks/{task_id}/...
-    # The task is dispatched per-user, workspace parent structure varies
-    try:
-        from config import MIRA_DIR
-        # Check which user directory this task belongs to
-        task_id_dir = workspace.name if workspace.is_dir() else workspace.parent.name
-        users_dir = Path(MIRA_DIR) / "users"
-        if users_dir.exists():
-            for user_dir in users_dir.iterdir():
-                if user_dir.is_dir() and not user_dir.name.startswith("."):
-                    return user_dir.name  # Return first non-dot user (typically "ang")
-    except Exception:
-        pass
+    # Extract user_id from workspace path: .../users/{user_id}/tasks/...
+    parts = workspace.resolve().parts
+    for i, part in enumerate(parts):
+        if part == "users" and i + 1 < len(parts):
+            candidate = parts[i + 1]
+            if candidate and not candidate.startswith("."):
+                return candidate
+
     return "ang"  # Safe default
 
 
@@ -134,6 +130,14 @@ def _handle_metric(store, workspace: Path, task_id: str,
                              "I couldn't parse the value. Please try: 记录体重 72.5")
 
     store.insert_metric(person, metric_type, float(value), unit)
+
+    # Refresh health_summary.json so iOS dashboard updates immediately
+    try:
+        from summary import write_summary_to_bridge
+        from config import MIRA_DIR
+        write_summary_to_bridge(store, Path(MIRA_DIR), person)
+    except Exception:
+        pass
 
     # Get recent trend for context
     recent = store.get_recent_metrics(person, metric_type, days=30)

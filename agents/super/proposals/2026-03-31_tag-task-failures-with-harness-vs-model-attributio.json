@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Tag task failures with harness vs. model attribution",
+  "description": "When Mira logs a task failure, classify the failure source as 'harness' (timeout, import error, tool call failure, bad prompt structure, missing file) vs 'model' (reasoning error, hallucinated output, capability limit) vs 'unknown'. Emit this as a structured field in the failure log. The self_evolve pipeline should then read this tag to decide what to improve: harness failures warrant prompt/decomposition fixes; model failures warrant capability routing or task reformulation.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/super/task_worker.py",
+    "~/Sandbox/Mira/agents/shared/config.py"
+  ],
+  "rationale": "The reading note identifies a diagnostic error: treating harness failures as model capability limits. Mira's self_evolve task is supposed to improve Mira over time, but if its input logs don't distinguish harness failures from model failures, it will misattribute — e.g., blaming the model for a timeout caused by a poorly decomposed task, or trying to 'improve prompting' for what is actually a genuine model capability ceiling. This is exactly the systematic bias Gerganov identified in benchmarks, replicated inside Mira's own improvement loop.",
+  "diff_description": "In task_worker.py, wrap the exception handler to classify the error before logging: (1) TIMEOUT or context-length exceeded → 'harness/decomposition'; (2) ImportError, FileNotFoundError, tool call HTTP error → 'harness/infra'; (3) VerificationError (claimed completion but output missing) → 'model/hallucination'; (4) catch-all → 'unknown'. Add a 'failure_attribution': {'source': 'harness|model|unknown', 'reason': str} field to the structured log dict. In self_evolve, when reading the failure log, surface this attribution in the self-critique prompt so the agent reasons about harness vs. model cause separately.",
+  "source_note": "2026-03-31_1-harness-vs-model-混淆.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-31_1-harness-vs-model-混淆.md",
+  "created_at": "2026-03-31T13:33:22.335219",
+  "date": "2026-03-31",
+  "status": "proposed"
+}

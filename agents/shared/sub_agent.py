@@ -407,9 +407,9 @@ def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK,
 
     if result.returncode != 0:
         log.error("claude_think failed (exit %d): %s", result.returncode, result.stderr[:300])
-        if _is_quota_error(result.stderr):
-            return _fallback_think(prompt, timeout, tier)
-        return ""
+        reason = "quota/rate-limit" if _is_quota_error(result.stderr) else f"cli exit {result.returncode}"
+        log.warning("claude_think unavailable (%s) — using fallback model", reason)
+        return _fallback_think(prompt, timeout, tier)
 
     output = result.stdout.strip()
     _log_usage("anthropic", model_id,
@@ -458,10 +458,9 @@ def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT,
 
     if result.returncode != 0:
         log.error("claude_act failed (exit %d): %s", result.returncode, result.stderr[:300])
-        if _is_quota_error(result.stderr):
-            log.warning("claude_act quota hit — falling back to thinking-only mode")
-            return _fallback_think(prompt, timeout, tier)
-        return ""
+        reason = "quota/rate-limit" if _is_quota_error(result.stderr) else f"cli exit {result.returncode}"
+        log.warning("claude_act unavailable (%s) — falling back to thinking-only mode", reason)
+        return _fallback_think(prompt, timeout, tier)
 
     output = result.stdout.strip()
     _log_usage("anthropic", model_id,
@@ -506,8 +505,12 @@ def _probe_endpoint(provider: str) -> bool:
     payload = {
         "model": GPT5_MODEL if provider == "openai" else DEEPSEEK_CHAT_MODEL,
         "messages": [{"role": "user", "content": "hi"}],
-        "max_tokens": 1,
     }
+    if provider == "openai":
+        payload["max_completion_tokens"] = 16
+        payload["reasoning_effort"] = "medium"
+    else:
+        payload["max_tokens"] = 1
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         endpoint, data=body,

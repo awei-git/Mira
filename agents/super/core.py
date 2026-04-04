@@ -36,9 +36,9 @@ from config import (
     MAX_BRIEFING_ITEMS, MAX_DEEP_DIVES, MIRA_DIR, ARTIFACTS_DIR, CLEANUP_DAYS,
     JOURNAL_DIR, JOURNAL_TIME, SKILLS_INDEX, WRITINGS_OUTPUT_DIR, WRITINGS_DIR,
     ANALYST_TIMES, ANALYST_BUSINESS_DAYS_ONLY, ZHESI_TIME, ZA_FILE,
-    RESEARCH_TIME, RESEARCH_TOPIC, SOUL_QUESTION_TIME,
+    RESEARCH_TIME, RESEARCH_TOPIC, SOUL_QUESTION_TIME, BOOK_REVIEW_TIME,
     SKILL_STUDY_SOURCE_GROUPS, SKILL_STUDY_COOLDOWN_HOURS, SKILL_STUDY_TIME,
-    EPISODES_DIR, validate_config,
+    EPISODES_DIR, LOG_RETENTION_DAYS, validate_config,
     get_user_config, is_agent_allowed, get_model_restriction, should_filter_content,
 )
 from mira import Mira, Message
@@ -2705,9 +2705,13 @@ def do_spark_check():
 # ---------------------------------------------------------------------------
 
 def _should_health_check() -> bool:
-    """Run health check once per day, morning or evening (8-10 or 19-21)."""
+    """Run health check once per day in the morning (7-9 AM).
+
+    Oura syncs overnight data by ~6-7 AM. We fetch at 7-9 AM so the
+    daily insight reflects last night's sleep and this morning's readiness.
+    """
     now = datetime.now()
-    if not (8 <= now.hour <= 10 or 19 <= now.hour <= 21):
+    if not (7 <= now.hour <= 9):
         return False
     state = load_state()
     today = now.strftime("%Y-%m-%d")
@@ -2716,6 +2720,21 @@ def _should_health_check() -> bool:
     state[f"health_check_{today}"] = now.isoformat()
     save_state(state)
     return True
+
+
+def _has_pending_health_exports() -> bool:
+    """Return True if any user has an Apple Health export waiting to ingest."""
+    users_dir = MIRA_DIR / "users"
+    if not users_dir.exists():
+        return False
+
+    for user_dir in users_dir.iterdir():
+        if not user_dir.is_dir() or user_dir.name.startswith("."):
+            continue
+        export_file = user_dir / "health" / "apple_health_export.json"
+        if export_file.exists():
+            return True
+    return False
 
 
 def _should_health_weekly_report() -> bool:
@@ -2735,79 +2754,142 @@ def _should_health_weekly_report() -> bool:
 
 
 def _run_health_check():
-    """Ingest Apple Health exports + run anomaly detection for all users."""
+    """Daily health pipeline: fetch data → DB → summary → insight → bridge.
+
+    Runs once each morning (7-9 AM). DB is source of truth; bridge items
+    are a write-through cache for iOS display using stable IDs (one file
+    per type per user, overwritten daily).
+    """
     sys.path.insert(0, str(_AGENTS_DIR / "health"))
     from health_store import HealthStore
     from ingest import ingest_all_users
     from monitor import check_all_users, format_alerts
-    from config import DATABASE_URL
+    from summary import write_summary_to_bridge
+    from report import generate_daily_insight
+    from config import DATABASE_URL, SECRETS_FILE, HEALTH_REPORT_MODEL
 
     store = HealthStore(DATABASE_URL)
-
-    # 1. Ingest any new Apple Health exports
     bridge_path = Path(MIRA_DIR)
+    today = datetime.now().date()
+
+    # --- 1. Ingest: Oura API + Apple Health exports → DB ---
+
+    try:
+        import yaml
+        secrets = yaml.safe_load(SECRETS_FILE.read_text(encoding="utf-8")) or {}
+        oura_cfg = secrets.get("api_keys", {}).get("oura", {})
+        oura_users = {"ang": oura_cfg} if isinstance(oura_cfg, str) else \
+                     oura_cfg if isinstance(oura_cfg, dict) else {}
+        from oura import fetch_and_store as oura_fetch
+        for uid, token in oura_users.items():
+            try:
+                count = oura_fetch(store, token, uid, days_back=1)
+                log.info("Oura: fetched %d metrics for %s", count, uid)
+            except Exception as e:
+                log.warning("Oura fetch failed for %s: %s", uid, e)
+    except Exception as e:
+        log.warning("Oura setup failed: %s", e)
+
     ingested = ingest_all_users(bridge_path, store)
     if ingested:
         log.info("Health: ingested %d metrics from Apple Health", ingested)
 
-    # 2. Run anomaly detection for all users
+    # --- 2. Discover users ---
+
     users_dir = bridge_path / "users"
-    user_ids = [d.name for d in users_dir.iterdir() if d.is_dir()] if users_dir.exists() else ["ang"]
+    user_ids = sorted(
+        d.name for d in users_dir.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
+    ) if users_dir.exists() else ["ang"]
+
+    # --- 3. Refresh health_summary.json for each user (iOS dashboard) ---
+
+    for uid in user_ids:
+        try:
+            write_summary_to_bridge(store, bridge_path, uid)
+        except Exception as e:
+            log.warning("Health summary for %s failed: %s", uid, e)
+
+    # --- 4. Anomaly detection → DB + bridge ---
+
+    all_bridges = Mira.for_all_users()
+    bridges_by_user = {b.user_id: b for b in all_bridges}
 
     alerts_by_user = check_all_users(store, user_ids)
+    for uid, alerts in (alerts_by_user or {}).items():
+        bridge = bridges_by_user.get(uid)
+        if not bridge:
+            continue
+        message = format_alerts(uid, alerts)
+        store.upsert_insight(uid, today, "alert", message)
+        _write_health_feed(bridge, f"health_alert_{uid}", "健康提醒",
+                           message, ["health", "alert"])
+        log.info("Health alert sent to %s: %d alerts", uid, len(alerts))
 
-    # 3. Send alerts via bridge
-    if alerts_by_user:
-        all_bridges = Mira.for_all_users()
-        bridges_by_user = {b.user_id: b for b in all_bridges}
-        for uid, alerts in alerts_by_user.items():
-            message = format_alerts(uid, alerts)
-            bridge = bridges_by_user.get(uid, bridges_by_user.get("ang"))
-            if bridge:
-                alert_id = f"health_alert_{datetime.now().strftime('%Y%m%d')}"
-                if not bridge.item_exists(alert_id):
-                    bridge.create_task(alert_id, f"健康提醒 - {uid}",
-                                       message, sender="health_agent",
-                                       tags=["health", "alert"], origin="agent")
-                    bridge.update_status(alert_id, "done", agent_message=message)
-                    log.info("Health alert sent to %s: %d alerts", uid, len(alerts))
-    else:
+    if not alerts_by_user:
         log.info("Health check: all clear for all users")
 
-    # 4. Daily GPT health insight — every day, for every user
-    from report import generate_daily_insight
-    from config import HEALTH_REPORT_MODEL
-    all_bridges = all_bridges if alerts_by_user else Mira.for_all_users()
-    bridges_by_user_all = {b.user_id: b for b in all_bridges}
+    # --- 5. Daily GPT insight → DB + bridge ---
 
-    today_str = datetime.now().strftime("%Y-%m-%d")
     for uid in user_ids:
-        insight_id = f"health_insight_{today_str}_{uid}"
-        bridge = bridges_by_user_all.get(uid, bridges_by_user_all.get("ang"))
-        if not bridge or bridge.item_exists(insight_id):
+        bridge = bridges_by_user.get(uid)
+        if not bridge:
+            continue
+        # Skip if already generated today (check DB, not bridge)
+        existing = store.get_latest_insight(uid, "daily")
+        if existing and existing["insight_date"] == today:
+            log.info("Health insight for %s already exists today, skipping", uid)
             continue
         try:
             insight = generate_daily_insight(store, uid, model=HEALTH_REPORT_MODEL)
-            if insight:
-                bridge.create_task(insight_id, f"今日健康洞察",
-                                   insight, sender="health_agent",
-                                   tags=["health", "insight"], origin="agent")
-                bridge.update_status(insight_id, "done", agent_message=insight)
-                log.info("Daily health insight sent to %s", uid)
-
-                # Also write to summary for iOS app
-                summary_path = Path(MIRA_DIR) / "users" / uid / "health"
-                summary_path.mkdir(parents=True, exist_ok=True)
-                insight_file = summary_path / "daily_insight.md"
-                insight_file.write_text(f"# 今日健康洞察 | {today_str}\n\n{insight}", encoding="utf-8")
+            if not insight:
+                continue
+            store.upsert_insight(uid, today, "daily", insight, model=HEALTH_REPORT_MODEL)
+            _write_health_feed(bridge, f"health_insight_{uid}", "今日健康洞察",
+                               insight, ["health", "insight"])
+            log.info("Daily health insight sent to %s", uid)
         except Exception as e:
             log.warning("Daily health insight for %s failed: %s", uid, e)
 
     store.close()
 
 
+def _write_health_feed(bridge, item_id: str, title: str, content: str,
+                       tags: list[str]):
+    """Write a health feed item to bridge, overwriting any previous version.
+
+    Uses a stable item_id so there's always exactly one file per type per user.
+    Directly uses bridge._write_item + _update_manifest for atomic consistency.
+    """
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    item = {
+        "id": item_id,
+        "type": "feed",
+        "title": title,
+        "status": "done",
+        "tags": tags,
+        "origin": "agent",
+        "pinned": True,
+        "quick": False,
+        "parent_id": "",
+        "created_at": now,
+        "updated_at": now,
+        "messages": [{
+            "id": f"{abs(hash(now + item_id)) % 0xFFFFFFFF:08x}",
+            "sender": "health_agent",
+            "content": content,
+            "timestamp": now,
+            "kind": "text",
+        }],
+        "error": None,
+        "result_path": None,
+    }
+    bridge._write_item(item)
+    bridge._update_manifest(item)
+
+
 def _run_health_weekly_report():
-    """Generate and publish weekly health reports for all users."""
+    """Generate weekly health reports → DB + bridge (stable ID)."""
     sys.path.insert(0, str(_AGENTS_DIR / "health"))
     from health_store import HealthStore
     from report import generate_weekly_report
@@ -2816,33 +2898,35 @@ def _run_health_weekly_report():
     store = HealthStore(DATABASE_URL)
     all_bridges = Mira.for_all_users()
     bridges_by_user = {b.user_id: b for b in all_bridges}
+    today = datetime.now().date()
 
     users_dir = Path(MIRA_DIR) / "users"
-    user_ids = [d.name for d in users_dir.iterdir() if d.is_dir()] if users_dir.exists() else ["ang"]
+    user_ids = sorted(
+        d.name for d in users_dir.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
+    ) if users_dir.exists() else ["ang"]
 
     for uid in user_ids:
         report = generate_weekly_report(store, uid)
         if "暂无健康数据" in report:
             continue
 
+        # Store in DB
+        store.upsert_insight(uid, today, "weekly", report)
+
         # Write to iCloud Artifacts
-        today = datetime.now().strftime("%Y-%m-%d")
-        artifacts_base = Path(ARTIFACTS_DIR).parent  # go up from ang to all users
+        today_str = today.isoformat()
+        artifacts_base = Path(ARTIFACTS_DIR).parent
         health_dir = artifacts_base / uid / "health"
         health_dir.mkdir(parents=True, exist_ok=True)
-        report_file = health_dir / f"weekly_{today}.md"
-        report_file.write_text(report, encoding="utf-8")
-        log.info("Health weekly report written: %s", report_file)
+        (health_dir / f"weekly_{today_str}.md").write_text(report, encoding="utf-8")
+        log.info("Health weekly report written for %s", uid)
 
-        # Send notification via bridge
+        # Write to bridge (stable ID — overwrites previous week)
         bridge = bridges_by_user.get(uid)
         if bridge:
-            report_id = f"health_weekly_{today}"
-            if not bridge.item_exists(report_id):
-                bridge.create_task(report_id, f"健康周报 - {uid}",
-                                   report, sender="health_agent",
-                                   tags=["health", "report"], origin="agent")
-                bridge.update_status(report_id, "done", agent_message=report)
+            _write_health_feed(bridge, f"health_weekly_{uid}", f"健康周报",
+                               report, ["health", "report"])
 
     store.close()
 
@@ -2888,6 +2972,35 @@ def _should_daily_assessment() -> bool:
     state[f"assessment_{today}"] = now.isoformat()
     save_state(state)
     return True
+
+
+def should_log_cleanup() -> bool:
+    """Run log cleanup once per day, between 3-4am."""
+    now = datetime.now()
+    if now.hour != 3:
+        return False
+    state = load_state()
+    today = now.strftime("%Y-%m-%d")
+    if state.get(f"log_cleanup_{today}"):
+        return False
+    state[f"log_cleanup_{today}"] = now.isoformat()
+    save_state(state)
+    return True
+
+
+def log_cleanup():
+    """Delete log files older than LOG_RETENTION_DAYS."""
+    import time as _time
+    cutoff = _time.time() - LOG_RETENTION_DAYS * 86400
+    deleted = 0
+    for f in LOGS_DIR.iterdir():
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            try:
+                f.unlink()
+                deleted += 1
+            except OSError as e:
+                log.warning("log_cleanup: could not delete %s: %s", f, e)
+    log.info("log_cleanup: deleted %d files older than %d days", deleted, LOG_RETENTION_DAYS)
 
 
 def do_assess():
@@ -3844,6 +3957,45 @@ def should_soul_question() -> bool:
 
     state = load_state()
     return not state.get(f"soul_question_{now.strftime('%Y-%m-%d')}")
+
+
+def should_book_review() -> bool:
+    """Check if it's time for the daily book review report (once per day)."""
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), BOOK_REVIEW_TIME)
+    delta = (now - scheduled).total_seconds() / 60
+
+    if delta < 0 or delta > 120:  # 2-hour window
+        return False
+
+    state = load_state()
+    return not state.get(f"book_review_{now.strftime('%Y-%m-%d')}")
+
+
+def do_book_review():
+    """Run the daily book review pipeline (weekly reading series)."""
+    log.info("Starting daily book review")
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Mark as done early to avoid re-trigger
+    state = load_state()
+    state[f"book_review_{today}"] = datetime.now().isoformat()
+    save_state(state)
+
+    try:
+        import subprocess as _sp
+        result = _sp.run(
+            [sys.executable, str(_AGENTS_DIR / "reader" / "daily_book_review.py")],
+            capture_output=True, text=True, timeout=900,
+        )
+        if result.returncode != 0:
+            log.error("Book review failed (rc=%d): %s", result.returncode, result.stderr[-500:])
+        else:
+            log.info("Book review completed")
+            if result.stdout:
+                log.info("Output: %s", result.stdout[-300:])
+    except Exception as e:
+        log.error("Book review exception: %s", e)
 
 
 def should_check_writing() -> bool:
@@ -4856,6 +5008,12 @@ def cmd_run():
             "--slot", analyst_slot,
         ])
 
+    # Daily book review (weekly reading series)
+    if should_book_review():
+        _dispatch_background("book-review", [
+            sys.executable, str(Path(__file__).resolve()), "book-review",
+        ])
+
     # Daily research
     if should_research():
         _dispatch_background("daily-research", [
@@ -4933,8 +5091,10 @@ def cmd_run():
             sys.executable, str(Path(__file__).resolve()), "idle-think",
         ])
 
-    # Daily health check — ingest Apple Health data + run anomaly detection
-    if _should_health_check():
+    # Daily health check — ingest Apple Health data + run anomaly detection.
+    # Also process pending iPhone exports immediately instead of waiting
+    # until the next morning window.
+    if _should_health_check() or _has_pending_health_exports():
         try:
             _run_health_check()
         except Exception as e:
@@ -4958,6 +5118,13 @@ def cmd_run():
         _dispatch_background("self-evolve", [
             sys.executable, str(Path(__file__).resolve()), "self-evolve",
         ])
+
+    # Nightly log cleanup — delete log files older than LOG_RETENTION_DAYS
+    if should_log_cleanup():
+        try:
+            log_cleanup()
+        except Exception as e:
+            log.error("log_cleanup failed: %s", e)
 
     # Daily performance assessment — evaluator agent scores all agents
     if _should_daily_assessment():
@@ -5661,6 +5828,8 @@ def main():
         slug  = flags.get("slug", "")
         title = flags.get("title", slug.replace("-", " ").title())
         run_podcast_episode(lang, slug, title)
+    elif command == "book-review":
+        do_book_review()
     elif command == "daily-photo":
         do_daily_photo()
     elif command == "skill-study":

@@ -31,6 +31,13 @@ def _load_module(name, path):
 _wcfg = _load_module("writing_config", _writing_dir / "writer_config.py")
 _wprompts = _load_module("writing_prompts", _writing_dir / "writer_prompts.py")
 
+_shared_dir = str(_writing_dir.parent / "shared")
+if _shared_dir not in sys.path:
+    sys.path.insert(0, _shared_dir)
+
+from config import CLAUDE_FALLBACK_MODEL
+from sub_agent import model_think
+
 CLAUDE_BIN = _wcfg.CLAUDE_BIN
 CLAUDE_MAX_RETRIES = _wcfg.CLAUDE_MAX_RETRIES
 CLAUDE_TIMEOUT = _wcfg.CLAUDE_TIMEOUT
@@ -64,6 +71,18 @@ def setup_logging():
 
 
 log = logging.getLogger("writing-pipeline")
+
+_QUOTA_SIGNALS = (
+    "rate limit",
+    "quota",
+    "usage limit",
+    "too many requests",
+    "credit",
+    "overloaded",
+    "capacity",
+)
+_FALLBACK_CONTEXT_LIMIT = 12000
+_FALLBACK_TOTAL_LIMIT = 60000
 
 
 def _log_writing_failure(slug: str, step: str, error_msg: str):
@@ -169,6 +188,106 @@ def idea_changed(idea: dict) -> bool:
     current_hash = idea_content_hash(idea)
     return saved_hash != current_hash
 
+
+def _is_quota_error(stderr: str) -> bool:
+    lower = (stderr or "").lower()
+    return any(sig in lower for sig in _QUOTA_SIGNALS)
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return f"{text[:limit]}\n\n...[truncated {omitted} chars]..."
+
+
+def _collect_fallback_context(cwd: Path) -> str:
+    """Serialize the project's working set so API fallback can reason without tools."""
+    candidates: list[Path] = [
+        cwd / "idea.md",
+        cwd / "规格.md",
+        cwd / "大纲.md",
+        cwd / "章节.md",
+        cwd / "描述.md",
+        cwd / "修改.md",
+        cwd / "CLAUDE.md",
+        cwd / FEEDBACK_FILENAME,
+        _writing_dir / "frameworks" / "universal.md",
+        _writing_dir / "frameworks" / "essay.md",
+        _writing_dir / "frameworks" / "novel.md",
+        _writing_dir / "frameworks" / "blog.md",
+        _writing_dir / "checklists" / "anti-ai.md",
+        _writing_dir / "checklists" / "self-edit.md",
+        _writing_dir / "checklists" / "pre-submit.md",
+    ]
+
+    drafts_dir = cwd / "drafts"
+    if drafts_dir.exists():
+        draft_files = sorted(
+            drafts_dir.glob("*.md"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        candidates.extend(draft_files[:6])
+
+    blocks = []
+    seen: set[Path] = set()
+    total_chars = 0
+    for path in candidates:
+        if not path.exists():
+            continue
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            blocks.append(f"### FILE: {path}\n[read failed: {exc}]")
+            continue
+        truncated = _truncate_text(text, _FALLBACK_CONTEXT_LIMIT)
+        block = f"### FILE: {path}\n{truncated}"
+        if total_chars + len(block) > _FALLBACK_TOTAL_LIMIT and blocks:
+            break
+        blocks.append(block)
+        total_chars += len(block)
+
+    if not blocks:
+        return "No project files were readable."
+    return "\n\n".join(blocks)
+
+
+def _run_fallback_model(prompt: str, cwd: Path, reason: str) -> tuple[bool, str]:
+    context = _collect_fallback_context(cwd)
+    augmented_prompt = f"""{prompt}
+
+下面是当前项目工作区和参考文件的快照。当前模型无法直接读文件，所以你必须只基于这些文件内容完成同样任务，并严格遵守原 prompt 的输出格式要求。不要解释，不要描述你的推理过程，只输出最终结果。
+
+## Workspace snapshot
+
+{context}
+"""
+    log.warning(
+        "Claude unavailable for %s (%s) — falling back to %s with serialized context",
+        cwd,
+        reason,
+        CLAUDE_FALLBACK_MODEL,
+    )
+    output = (model_think(
+        augmented_prompt,
+        model_name=CLAUDE_FALLBACK_MODEL,
+        timeout=CLAUDE_TIMEOUT,
+    ) or "").strip()
+    if output:
+        log.info(
+            "Fallback model %s succeeded in %s, output %d chars",
+            CLAUDE_FALLBACK_MODEL,
+            cwd,
+            len(output),
+        )
+        return True, output
+    return False, f"{reason}; fallback model {CLAUDE_FALLBACK_MODEL} returned empty output"
+
 # ---------------------------------------------------------------------------
 # Claude CLI wrapper
 # ---------------------------------------------------------------------------
@@ -182,6 +301,7 @@ def run_claude(prompt: str, cwd: Path) -> tuple[bool, str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDECODE")}
     env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
 
+    last_error = ""
     for attempt in range(1, CLAUDE_MAX_RETRIES + 1):
         try:
             log.info("Running claude (attempt %d) in %s", attempt, cwd)
@@ -196,6 +316,10 @@ def run_claude(prompt: str, cwd: Path) -> tuple[bool, str]:
 
             if result.returncode == 0:
                 output = result.stdout.strip()
+                if not output:
+                    last_error = "Claude returned empty output"
+                    log.warning("Claude returned empty output (attempt %d)", attempt)
+                    break
                 log.info(
                     "Claude succeeded (attempt %d), output %d chars",
                     attempt,
@@ -203,18 +327,27 @@ def run_claude(prompt: str, cwd: Path) -> tuple[bool, str]:
                 )
                 return True, output
             else:
+                last_error = result.stderr[:500] or f"Claude exited {result.returncode}"
                 log.warning(
                     "Claude failed (attempt %d, exit %d): %s",
                     attempt,
                     result.returncode,
-                    result.stderr[:500],
+                    last_error,
                 )
+                if _is_quota_error(result.stderr):
+                    return _run_fallback_model(prompt, cwd, "Claude quota/rate-limit")
         except subprocess.TimeoutExpired:
+            last_error = f"Claude timed out after {CLAUDE_TIMEOUT}s"
             log.warning("Claude timed out (attempt %d) after %ds", attempt, CLAUDE_TIMEOUT)
         except Exception as e:
+            last_error = str(e)
             log.error("Claude error (attempt %d): %s", attempt, e)
 
-    return False, f"Failed after {CLAUDE_MAX_RETRIES} attempts"
+    return _run_fallback_model(
+        prompt,
+        cwd,
+        last_error or f"Claude failed after {CLAUDE_MAX_RETRIES} attempts",
+    )
 
 # ---------------------------------------------------------------------------
 # Output parsing helpers
@@ -256,12 +389,65 @@ def resolve_type(raw_type: str) -> str:
     return TYPE_ALIASES.get(t, t)
 
 
+def _check_topic_overlap(idea: dict) -> str | None:
+    """Check if a similar article has already been published.
+
+    Returns a warning string if overlap detected, None if clear.
+    """
+    try:
+        from soul_manager import catalog_list
+        from sub_agent import claude_think
+    except ImportError:
+        return None
+
+    published = [e for e in catalog_list()
+                 if e.get("status") == "published" and e.get("type") == "article"]
+    if not published:
+        return None
+
+    pub_titles = "\n".join(
+        f"- {e.get('title','')} ({e.get('date','')[:10]}): {e.get('description','')[:100]}"
+        for e in published[-20:]  # last 20 articles
+    )
+    idea_text = idea.get("content_above", "")[:800]
+
+    result = claude_think(
+        f"""Compare this new article idea against the list of already-published articles.
+Is there significant thematic overlap (same core thesis, same argument, same angle)?
+
+NEW IDEA:
+{idea_text}
+
+PUBLISHED ARTICLES:
+{pub_titles}
+
+Reply with ONLY one of:
+- "CLEAR" if the idea is sufficiently distinct
+- "OVERLAP: <published title>" if there is significant overlap, naming which article""",
+        timeout=20,
+    )
+    if result and "OVERLAP" in result.upper():
+        return result.strip()
+    return None
+
+
 def step_scaffold(idea: dict, is_restart: bool = False) -> bool:
     """Create project directory and fill templates.
 
     If is_restart=True, wipe the old project dir and re-scaffold from
     the updated idea content.
     """
+    # Guard: check for overlap with already-published articles
+    if not is_restart:
+        overlap = _check_topic_overlap(idea)
+        if overlap:
+            log.warning("Topic overlap detected for '%s': %s", idea.get("slug",""), overlap)
+            update_idea_status(idea["path"], {
+                "state": "overlap_blocked",
+                "last_error": f"Topic overlap: {overlap}",
+            })
+            return False
+
     writing_type = resolve_type(idea.get("type", "essay"))
     if writing_type not in TYPE_SCAFFOLD:
         log.error("Unknown type '%s' for %s", writing_type, idea["slug"])
@@ -622,6 +808,10 @@ def advance_idea(idea: dict) -> bool:
     elif state == "feedback_critiquing":
         return step_revision(idea, round_num)
 
+    elif state == "ready_to_publish":
+        log.info("%s is waiting for publish approval, skipping", idea["slug"])
+        return False
+
     elif state in ("done", "error"):
         log.info("%s is %s, skipping", idea["slug"], state)
         return False
@@ -664,14 +854,14 @@ def cmd_run():
             idea = parse_idea(idea_path)
             state = idea.get("state", "new").strip()
 
-            if state in ("done", "error"):
+            if state in ("done", "error", "ready_to_publish"):
                 continue
 
             # Advance up to MAX_STEPS_PER_RUN steps per idea
             for _ in range(MAX_STEPS_PER_RUN):
                 idea = parse_idea(idea_path)  # Re-parse after each update
                 state = idea.get("state", "").strip()
-                if state in ("done", "error", "awaiting_feedback"):
+                if state in ("done", "error", "awaiting_feedback", "ready_to_publish"):
                     break
                 if not advance_idea(idea):
                     break
@@ -1018,7 +1208,7 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
             bridge = Mira()
             today = datetime.now().strftime("%Y-%m-%d")
             task_id = f"autowrite_{today}"
-            if final_state in ("done", "awaiting_feedback"):
+            if final_state in ("done", "awaiting_feedback", "ready_to_publish"):
                 bridge.update_task_status(
                     task_id, "working",
                     agent_message=f"写完了，等待用户确认发布。项目在 {project_dir}",
