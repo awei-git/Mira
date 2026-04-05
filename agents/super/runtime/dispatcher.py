@@ -1,0 +1,166 @@
+"""Background process dispatcher — spawn and track long-running tasks.
+
+Manages PID files, concurrency limits, cooldowns, and stale process cleanup.
+Extracted from core.py to reduce file size.
+"""
+import logging
+import os
+import subprocess
+from pathlib import Path
+
+log = logging.getLogger("mira")
+
+# Lazy imports to avoid circular dependency
+_config_loaded = False
+_MIRA_ROOT = None
+_LOGS_DIR = None
+
+
+def _ensure_config():
+    global _config_loaded, _MIRA_ROOT, _LOGS_DIR
+    if not _config_loaded:
+        from config import MIRA_ROOT, LOGS_DIR
+        _MIRA_ROOT = MIRA_ROOT
+        _LOGS_DIR = LOGS_DIR
+        _config_loaded = True
+
+
+def _get_bg_pid_dir() -> Path:
+    _ensure_config()
+    return _MIRA_ROOT / "agents" / ".bg_pids"
+
+
+MAX_CONCURRENT_BG = 2  # Max background processes running at once
+
+
+def _count_bg_running() -> int:
+    """Count how many background processes are currently alive."""
+    bg_dir = _get_bg_pid_dir()
+    if not bg_dir.exists():
+        return 0
+    count = 0
+    for pid_file in bg_dir.glob("*.pid"):
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            os.kill(old_pid, 0)
+            count += 1
+        except (OSError, ValueError):
+            pass
+    return count
+
+
+def _is_bg_running(name: str) -> bool:
+    """Check if a background process is still alive by its PID file."""
+    pid_file = _get_bg_pid_dir() / f"{name}.pid"
+    if not pid_file.exists():
+        return False
+    try:
+        old_pid = int(pid_file.read_text().strip())
+        os.kill(old_pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _reap_stale_pids():
+    """Remove PID files for processes that died > 1 hour ago. Runs hourly."""
+    bg_dir = _get_bg_pid_dir()
+    if not bg_dir.exists():
+        return
+    import time as _time
+    from core import load_state, save_state
+    state = load_state()
+    last_reap = state.get("last_pid_reap", 0)
+    if _time.time() - last_reap < 3600:
+        return
+    reaped = 0
+    for pid_file in bg_dir.glob("*.pid"):
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            os.kill(old_pid, 0)
+        except (OSError, ValueError):
+            # Process dead — check if stale (mtime > 1 hour)
+            try:
+                age = _time.time() - pid_file.stat().st_mtime
+                if age > 3600:
+                    pid_file.unlink()
+                    reaped += 1
+            except OSError:
+                pass
+    if reaped:
+        log.info("Reaped %d stale PID files", reaped)
+    state["last_pid_reap"] = _time.time()
+    save_state(state)
+
+
+def _dispatch_background(name: str, cmd: list[str]):
+    """Spawn a background process if one isn't already running for this name.
+
+    Enforces a global concurrency limit (MAX_CONCURRENT_BG) to prevent
+    too many Claude CLI subprocesses from competing for resources.
+    Tracks PID to avoid duplicate runs. Fire-and-forget.
+    """
+    _ensure_config()
+    import health_monitor
+
+    bg_dir = _get_bg_pid_dir()
+    bg_dir.mkdir(parents=True, exist_ok=True)
+    pid_file = bg_dir / f"{name}.pid"
+
+    # Global concurrency limit — don't spawn if too many are already running
+    running = _count_bg_running()
+    if running >= MAX_CONCURRENT_BG:
+        log.debug("Background '%s' deferred — %d/%d slots occupied",
+                  name, running, MAX_CONCURRENT_BG)
+        return
+
+    # Check if a previous run is still active or finished recently
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            os.kill(old_pid, 0)  # check if alive
+            log.info("Background '%s' still running (PID %d), skipping", name, old_pid)
+            return
+        except (OSError, ValueError):
+            pass  # process gone, safe to start new one
+
+        # Harvest outcome of the dead process
+        try:
+            health_monitor.record_outcome(name)
+        except Exception as e:
+            log.debug("record_outcome('%s') failed: %s", name, e)
+
+        # Cooldown: don't re-dispatch if the PID file was written recently
+        # Reduced from 5min to 1min; processes that crashed in <30s get faster retry
+        try:
+            import time as _time
+            age = _time.time() - pid_file.stat().st_mtime
+            cooldown = 60  # 1-minute cooldown (was 5 minutes)
+            # If process ran < 30s it likely failed at startup — allow faster retry
+            if age < 30:
+                cooldown = 30
+            if age < cooldown:
+                log.debug("Background '%s' in cooldown (%ds since last run, cooldown=%ds)",
+                          name, int(age), cooldown)
+                return
+        except OSError:
+            pass
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=open(_LOGS_DIR / f"bg-{name}.log", "a"),
+            start_new_session=True,
+            cwd=str(_MIRA_ROOT / "agents" / "super"),
+        )
+        pid_file.write_text(str(proc.pid))
+        health_monitor.record_dispatch(name, proc.pid)
+        log.info("Background '%s' dispatched (PID %d)", name, proc.pid)
+    except Exception as e:
+        log.error("Failed to dispatch background '%s': %s", name, e)
+
+
+# Expose the PID directory getter as a module-level function.
+# Usage: from runtime.dispatcher import get_bg_pid_dir; get_bg_pid_dir()
+get_bg_pid_dir = _get_bg_pid_dir

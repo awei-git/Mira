@@ -60,6 +60,23 @@ from prompts import (
     worldview_evolution_prompt, zhesi_prompt, spark_check_prompt,
 )
 
+# Extracted modules — triggers decide "should we run X?", dispatcher spawns bg tasks
+from runtime.triggers import (
+    should_explore, should_journal, should_research, should_skill_study,
+    should_analyst, should_reflect, should_zhesi, should_soul_question,
+    should_book_review, should_check_writing, should_podcast,
+    should_check_comments, should_growth_cycle, should_post_notes,
+    should_spark_check, should_idle_think, should_log_cleanup,
+    should_daily_photo, should_daily_report,
+    _should_health_check, _should_health_weekly_report,
+    _should_self_audit, _should_self_evolve, _should_daily_assessment,
+    DAILY_PHOTO_TIME, DAILY_REPORT_TIME, GROWTH_COOLDOWN_HOURS, NOTES_COOLDOWN_HOURS,
+)
+from runtime.dispatcher import (
+    _dispatch_background, _is_bg_running, _reap_stale_pids, _count_bg_running,
+    MAX_CONCURRENT_BG,
+)
+
 log = logging.getLogger("mira")
 
 
@@ -1422,43 +1439,6 @@ def do_skill_study(group_idx: int = 0):
     save_state(state)
 
 
-def should_skill_study() -> dict | None:
-    """Check if it's time for daily skill study. Returns group info or None.
-
-    Alternates between video and photo study sessions.
-    """
-    now = datetime.now()
-
-    # Only study during active hours
-    if now.time() < EXPLORE_ACTIVE_START or now.time() >= EXPLORE_ACTIVE_END:
-        return None
-
-    # Check if it's past the scheduled time
-    scheduled = datetime.combine(now.date(), SKILL_STUDY_TIME)
-    if now < scheduled:
-        return None
-
-    state = load_state()
-    today = now.strftime("%Y-%m-%d")
-
-    # Check cooldown
-    last = state.get("last_skill_study", "")
-    if last:
-        try:
-            last_dt = datetime.fromisoformat(last)
-            elapsed_hours = (now - last_dt).total_seconds() / 3600
-            if elapsed_hours < SKILL_STUDY_COOLDOWN_HOURS:
-                return None
-        except ValueError:
-            pass
-
-    # Find a domain that hasn't been studied today
-    for i, group in enumerate(SKILL_STUDY_SOURCE_GROUPS):
-        domain = group["domain"]
-        if not state.get(f"skill_study_{today}_{domain}"):
-            return {"group_idx": i, "domain": domain}
-
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -2137,18 +2117,8 @@ def do_journal():
 # Daily photo edit — pick, edit, push to Home for WA feedback at 07:00
 # ---------------------------------------------------------------------------
 
-DAILY_PHOTO_TIME = time(7, 0)
 
 
-def should_daily_photo() -> bool:
-    """Check if it's time for the daily photo edit (once per day, at 07:00)."""
-    now = datetime.now()
-    scheduled = datetime.combine(now.date(), DAILY_PHOTO_TIME)
-    delta = (now - scheduled).total_seconds() / 60
-    if delta < 0 or delta > 60:
-        return False
-    state = load_state()
-    return not state.get(f"daily_photo_{now.strftime('%Y-%m-%d')}")
 
 
 def do_daily_photo():
@@ -2394,18 +2364,8 @@ def handle_photo_feedback(item_id: str, user_message: str):
 # Daily status report — sent to WA via bridge at 22:00
 # ---------------------------------------------------------------------------
 
-DAILY_REPORT_TIME = time(22, 0)
 
 
-def should_daily_report() -> bool:
-    """Check if it's time for the daily status report (once per day, at 22:00)."""
-    now = datetime.now()
-    scheduled = datetime.combine(now.date(), DAILY_REPORT_TIME)
-    delta = (now - scheduled).total_seconds() / 60
-    if delta < 0 or delta > 60:
-        return False
-    state = load_state()
-    return not state.get(f"daily_report_{now.strftime('%Y-%m-%d')}")
 
 
 def do_daily_report():
@@ -2621,41 +2581,6 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
 # Proactive thought sharing — Mira messages WA when she has something worth discussing
 # ---------------------------------------------------------------------------
 
-def should_spark_check() -> bool:
-    """Decide whether to run a spark check this cycle.
-
-    Not time-scheduled — runs based on accumulated input:
-    - At least 2 hours since last spark check
-    - At least 1 new briefing or reading note since last check
-    - Max 2 proactive messages per day (don't be annoying)
-    """
-    state = load_state()
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    # Max 2 per day
-    sparks_today = state.get(f"sparks_{today}", 0)
-    if sparks_today >= 2:
-        return False
-
-    # Minimum 2 hours between checks
-    last_check = state.get("last_spark_check", "")
-    if last_check:
-        try:
-            last_dt = datetime.fromisoformat(last_check)
-            if datetime.now() - last_dt < timedelta(hours=2):
-                return False
-        except ValueError:
-            pass
-
-    # Only check if there's been new input (explore, task, etc.)
-    # Use a simple heuristic: check if memory has grown since last spark check
-    last_memory_lines = state.get("spark_memory_lines", 0)
-    from soul_manager import get_memory_size
-    current_lines = get_memory_size()
-    if current_lines <= last_memory_lines:
-        return False
-
-    return True
 
 
 def do_spark_check():
@@ -2733,22 +2658,6 @@ def do_spark_check():
 # IDLE-THINK mode — threshold-driven self-awakening
 # ---------------------------------------------------------------------------
 
-def _should_health_check() -> bool:
-    """Run health check once per day in the morning (7-9 AM).
-
-    Oura syncs overnight data by ~6-7 AM. We fetch at 7-9 AM so the
-    daily insight reflects last night's sleep and this morning's readiness.
-    """
-    now = datetime.now()
-    if not (7 <= now.hour <= 9):
-        return False
-    state = load_state()
-    today = now.strftime("%Y-%m-%d")
-    if state.get(f"health_check_{today}"):
-        return False
-    state[f"health_check_{today}"] = now.isoformat()
-    save_state(state)
-    return True
 
 
 def _has_pending_health_exports() -> bool:
@@ -2766,20 +2675,6 @@ def _has_pending_health_exports() -> bool:
     return False
 
 
-def _should_health_weekly_report() -> bool:
-    """Generate weekly health report on Mondays, 9-11 AM."""
-    now = datetime.now()
-    if now.weekday() != 0:  # Monday = 0
-        return False
-    if not (9 <= now.hour <= 11):
-        return False
-    state = load_state()
-    week_key = f"health_weekly_{now.strftime('%Y-W%W')}"
-    if state.get(week_key):
-        return False
-    state[week_key] = now.isoformat()
-    save_state(state)
-    return True
 
 
 def _run_health_check():
@@ -2960,61 +2855,12 @@ def _run_health_weekly_report():
     store.close()
 
 
-def _should_self_audit() -> bool:
-    """Run self-audit once per day, morning hours only."""
-    now = datetime.now()
-    if not (8 <= now.hour <= 10):  # Only between 8-10 AM
-        return False
-    state = load_state()
-    today = now.strftime("%Y-%m-%d")
-    if state.get(f"self_audit_{today}"):
-        return False
-    state[f"self_audit_{today}"] = now.isoformat()
-    save_state(state)
-    return True
 
 
-def _should_self_evolve() -> bool:
-    """Run self-evolution once per day, around 14:00 (after morning explore)."""
-    now = datetime.now()
-    if not (13 <= now.hour <= 16):  # 1-4 PM window
-        return False
-    state = load_state()
-    today = now.strftime("%Y-%m-%d")
-    if state.get(f"self_evolve_{today}"):
-        return False
-    state[f"self_evolve_{today}"] = now.isoformat()
-    state[f"self_evolve_{today}_actor"] = "self-evolve/claude-think"
-    save_state(state)
-    return True
 
 
-def _should_daily_assessment() -> bool:
-    """Run performance assessment once per day, evening."""
-    now = datetime.now()
-    if not (20 <= now.hour <= 22):  # 8-10 PM
-        return False
-    state = load_state()
-    today = now.strftime("%Y-%m-%d")
-    if state.get(f"assessment_{today}"):
-        return False
-    state[f"assessment_{today}"] = now.isoformat()
-    save_state(state)
-    return True
 
 
-def should_log_cleanup() -> bool:
-    """Run log cleanup once per day, between 3-4am."""
-    now = datetime.now()
-    if now.hour != 3:
-        return False
-    state = load_state()
-    today = now.strftime("%Y-%m-%d")
-    if state.get(f"log_cleanup_{today}"):
-        return False
-    state[f"log_cleanup_{today}"] = now.isoformat()
-    save_state(state)
-    return True
 
 
 def log_cleanup():
@@ -3099,32 +2945,6 @@ def _run_self_improve():
         log.info("No self-improvement proposals generated")
 
 
-def should_idle_think() -> bool:
-    """Returns True if emptiness has crossed the threshold and agent is idle.
-
-    The emptiness value accumulates over time when Mira is idle. More pending
-    questions = faster accumulation. When it exceeds the threshold, Mira
-    self-awakens to think through the top-priority question.
-
-    External input bypasses this entirely (handled in do_talk / cmd_run).
-    """
-    try:
-        from emptiness import tick, check_threshold
-        from task_manager import TaskManager
-    except ImportError:
-        return False
-
-    # Don't self-awaken if there are active tasks (external input takes priority)
-    try:
-        task_mgr = TaskManager()
-        if task_mgr.get_active_count() > 0:
-            return False
-    except Exception as e:
-        log.debug("Active task count check failed: %s", e)
-
-    # Advance emptiness value for this cycle, then check threshold
-    tick()
-    return check_threshold()
 
 
 def harvest_observations(output_text: str, source: str = ""):
@@ -3781,89 +3601,10 @@ def _mine_za_one(state: dict | None = None) -> str:
 # Schedule logic
 # ---------------------------------------------------------------------------
 
-def should_explore() -> dict | None:
-    """Check if Mira should explore now. Free-form, curiosity-driven.
-
-    Returns {"sources": [...], "label": str} or None.
-    Explores whenever idle (cooldown-based), picks sources she hasn't read recently.
-    """
-    import random
-
-    now = datetime.now()
-
-    # Only explore during active hours
-    if now.time() < EXPLORE_ACTIVE_START or now.time() >= EXPLORE_ACTIVE_END:
-        return None
-
-    state = load_state()
-
-    # Check daily cap
-    today = now.strftime("%Y-%m-%d")
-    explore_count = state.get(f"explore_count_{today}", 0)
-    if explore_count >= EXPLORE_MAX_PER_DAY:
-        return None
-
-    # Check cooldown since last explore
-    last = state.get("last_explore", "")
-    if last:
-        try:
-            last_dt = datetime.fromisoformat(last)
-            elapsed = (now - last_dt).total_seconds() / 60
-            if elapsed < EXPLORE_COOLDOWN_MINUTES:
-                return None
-        except ValueError:
-            pass
-
-    # Pick sources: prefer least-recently-used group
-    if not EXPLORE_SOURCE_GROUPS:
-        return None
-
-    recent_groups = state.get("explore_recent_groups", [])  # list of group indices
-    # Score each group: lower = used more recently
-    scores = []
-    for i, group in enumerate(EXPLORE_SOURCE_GROUPS):
-        if i in recent_groups:
-            # Position in recent list (0 = most recent)
-            recency = len(recent_groups) - recent_groups.index(i)
-        else:
-            recency = len(EXPLORE_SOURCE_GROUPS) + 1  # never used = highest priority
-        # Add small random jitter so it's not purely deterministic
-        scores.append(recency + random.random() * 0.5)
-
-    chosen_idx = max(range(len(scores)), key=lambda i: scores[i])
-    chosen_sources = EXPLORE_SOURCE_GROUPS[chosen_idx]
-    label = "_".join(chosen_sources[:2])  # e.g. "arxiv_huggingface"
-
-    return {"sources": chosen_sources, "label": label, "group_idx": chosen_idx}
 
 
-def should_journal() -> bool:
-    """Check if it's time for the daily journal (once per day, around JOURNAL_TIME)."""
-    now = datetime.now()
-    scheduled = datetime.combine(now.date(), JOURNAL_TIME)
-    delta = (now - scheduled).total_seconds() / 60
-
-    # Only trigger in a 60-minute window AFTER journal time
-    if delta < 0 or delta > 60:
-        return False
-
-    state = load_state()
-    journal_key = f"journal_{now.strftime('%Y-%m-%d')}"
-    return not state.get(journal_key)
 
 
-def should_research() -> bool:
-    """Check if it's time for the daily research task."""
-    if not RESEARCH_TOPIC:
-        return False
-    now = datetime.now()
-    scheduled = datetime.combine(now.date(), RESEARCH_TIME)
-    delta = (now - scheduled).total_seconds() / 60
-    if not (0 <= delta <= 60):
-        return False
-    state = load_state()
-    key = f"research_{now.strftime('%Y-%m-%d')}"
-    return not state.get(key)
 
 
 def do_research():
@@ -3916,89 +3657,14 @@ def do_research():
     log.info("Daily research complete (workspace: %s)", workspace)
 
 
-def should_analyst() -> str | None:
-    """Check if it's time for an analyst briefing. Returns slot label or None.
-
-    Supports multiple analyst times (e.g. 07:00 pre-market, 18:00 post-market).
-    """
-    now = datetime.now()
-
-    # Skip weekends if configured
-    if ANALYST_BUSINESS_DAYS_ONLY and now.weekday() >= 5:
-        return None
-
-    state = load_state()
-
-    for t in ANALYST_TIMES:
-        scheduled = datetime.combine(now.date(), t)
-        delta = (now - scheduled).total_seconds() / 60
-        if 0 <= delta <= 60:
-            slot_key = f"analyst_{now.strftime('%Y-%m-%d')}_{t.strftime('%H%M')}"
-            if not state.get(slot_key):
-                return t.strftime("%H%M")
-
-    return None
 
 
-def should_reflect() -> bool:
-    """Check if it's time for weekly reflection."""
-    now = datetime.now()
-    if now.weekday() != REFLECT_DAY:
-        return False
-
-    current_time = now.time()
-    scheduled = datetime.combine(now.date(), REFLECT_TIME)
-    delta = abs((now - scheduled).total_seconds()) / 60
-    if delta > 60:  # 1 hour window for reflect
-        return False
-
-    state = load_state()
-    last = state.get("last_reflect", "")
-    if last:
-        last_dt = datetime.fromisoformat(last)
-        if (now - last_dt).total_seconds() < 6 * 3600:  # at most once per 6 hours
-            return False
-
-    return True
 
 
-def should_zhesi() -> bool:
-    """Check if it's time for the daily philosophical thought."""
-    now = datetime.now()
-    scheduled = datetime.combine(now.date(), ZHESI_TIME)
-    delta = (now - scheduled).total_seconds() / 60
-
-    if delta < 0 or delta > 60:
-        return False
-
-    state = load_state()
-    return not state.get(f"zhesi_{now.strftime('%Y-%m-%d')}")
 
 
-def should_soul_question() -> bool:
-    """Check if it's time for the daily soul question."""
-    now = datetime.now()
-    scheduled = datetime.combine(now.date(), SOUL_QUESTION_TIME)
-    delta = (now - scheduled).total_seconds() / 60
-
-    if delta < 0 or delta > 60:
-        return False
-
-    state = load_state()
-    return not state.get(f"soul_question_{now.strftime('%Y-%m-%d')}")
 
 
-def should_book_review() -> bool:
-    """Check if it's time for the daily book review report (once per day)."""
-    now = datetime.now()
-    scheduled = datetime.combine(now.date(), BOOK_REVIEW_TIME)
-    delta = (now - scheduled).total_seconds() / 60
-
-    if delta < 0 or delta > 120:  # 2-hour window
-        return False
-
-    state = load_state()
-    return not state.get(f"book_review_{now.strftime('%Y-%m-%d')}")
 
 
 def do_book_review():
@@ -4027,41 +3693,12 @@ def do_book_review():
         log.error("Book review exception: %s", e)
 
 
-def should_check_writing() -> bool:
-    """Check if it's time for a proactive autonomous writing check.
-
-    Runs during idle hours (10:00-22:00), at most once every 4 hours.
-    """
-    now = datetime.now()
-    if now.hour < 10 or now.hour >= 22:
-        return False
-
-    state = load_state()
-    last = state.get("last_autowrite_check", "")
-    if last:
-        try:
-            last_dt = datetime.fromisoformat(last)
-            if (now - last_dt).total_seconds() < 4 * 3600:
-                return False
-        except ValueError:
-            pass
-
-    return True
 
 
 # ---------------------------------------------------------------------------
 # PODCAST mode — generate conversation episode for published articles
 # ---------------------------------------------------------------------------
 
-def should_podcast() -> tuple[str, str, str] | None:
-    """Delegate podcast backlog selection to the podcast agent."""
-    import sys as _sys
-    podcast_dir = str(Path(__file__).resolve().parent.parent / "podcast")
-    if podcast_dir not in _sys.path:
-        _sys.path.insert(0, podcast_dir)
-    from autopipeline import should_podcast as _should_podcast
-
-    return _should_podcast()
 
 
 
@@ -4080,26 +3717,6 @@ def run_podcast_episode(lang: str, slug: str, title: str):
 # Substack comment monitoring
 # ---------------------------------------------------------------------------
 
-def should_check_comments() -> bool:
-    """Check if it's time to look for new Substack comments.
-
-    Runs during waking hours, at most once every 2 hours.
-    """
-    now = datetime.now()
-    if now.hour < 8 or now.hour >= 23:
-        return False
-
-    state = load_state()
-    last = state.get("last_comment_check", "")
-    if last:
-        try:
-            last_dt = datetime.fromisoformat(last)
-            if (now - last_dt).total_seconds() < 2 * 3600:
-                return False
-        except ValueError:
-            pass
-
-    return True
 
 
 def do_check_comments():
@@ -4159,29 +3776,8 @@ def do_check_comments():
 # Substack growth cycle — likes, comments, engagement
 # ---------------------------------------------------------------------------
 
-GROWTH_COOLDOWN_HOURS = 2  # Run growth cycle every 2 hours (8:00-23:00 = ~7 runs/day)
 
 
-def should_growth_cycle() -> bool:
-    """Check if it's time to run the growth cycle (likes, proactive comments).
-
-    Independent of explore — runs on its own schedule during waking hours.
-    """
-    now = datetime.now()
-    if now.hour < 8 or now.hour >= 23:
-        return False
-
-    state = load_state()
-    last = state.get("last_growth_cycle", "")
-    if last:
-        try:
-            last_dt = datetime.fromisoformat(last)
-            if (now - last_dt).total_seconds() < GROWTH_COOLDOWN_HOURS * 3600:
-                return False
-        except ValueError:
-            pass
-
-    return True
 
 
 def do_growth_cycle():
@@ -4224,28 +3820,6 @@ def do_growth_cycle():
 # Substack Notes cycle
 # ---------------------------------------------------------------------------
 
-NOTES_COOLDOWN_HOURS = 4  # Run Notes cycle at most every 4 hours
-
-def should_post_notes() -> bool:
-    """Check if it's time to run the Notes cycle.
-
-    Runs during waking hours, at most every 4 hours.
-    """
-    now = datetime.now()
-    if now.hour < 9 or now.hour >= 22:
-        return False
-
-    state = load_state()
-    last = state.get("last_notes_cycle", "")
-    if last:
-        try:
-            last_dt = datetime.fromisoformat(last)
-            if (now - last_dt).total_seconds() < NOTES_COOLDOWN_HOURS * 3600:
-                return False
-        except ValueError:
-            pass
-
-    return True
 
 
 def do_notes_cycle():
@@ -5198,137 +4772,12 @@ def cmd_run():
 
 
 
-# (Artifacts sync removed — iCloud is now the primary artifacts directory.
-#  ARTIFACTS_DIR in config.py points directly to iCloud. No sync needed.)
 
 
-# ---------------------------------------------------------------------------
-# Background dispatch for long-running tasks
-# ---------------------------------------------------------------------------
-
-_BG_PID_DIR = MIRA_ROOT / "agents" / ".bg_pids"
-MAX_CONCURRENT_BG = 2  # Max background processes running at once
 
 
-def _count_bg_running() -> int:
-    """Count how many background processes are currently alive."""
-    if not _BG_PID_DIR.exists():
-        return 0
-    count = 0
-    for pid_file in _BG_PID_DIR.glob("*.pid"):
-        try:
-            old_pid = int(pid_file.read_text().strip())
-            os.kill(old_pid, 0)
-            count += 1
-        except (OSError, ValueError):
-            pass
-    return count
 
 
-def _is_bg_running(name: str) -> bool:
-    """Check if a background process is still alive by its PID file."""
-    pid_file = _BG_PID_DIR / f"{name}.pid"
-    if not pid_file.exists():
-        return False
-    try:
-        old_pid = int(pid_file.read_text().strip())
-        os.kill(old_pid, 0)
-        return True
-    except (OSError, ValueError):
-        return False
-
-
-def _reap_stale_pids():
-    """Remove PID files for processes that died > 1 hour ago. Runs hourly."""
-    if not _BG_PID_DIR.exists():
-        return
-    import time as _time
-    state = load_state()
-    last_reap = state.get("last_pid_reap", 0)
-    if _time.time() - last_reap < 3600:
-        return
-    reaped = 0
-    for pid_file in _BG_PID_DIR.glob("*.pid"):
-        try:
-            old_pid = int(pid_file.read_text().strip())
-            os.kill(old_pid, 0)
-        except (OSError, ValueError):
-            # Process dead — check if stale (mtime > 1 hour)
-            try:
-                age = _time.time() - pid_file.stat().st_mtime
-                if age > 3600:
-                    pid_file.unlink()
-                    reaped += 1
-            except OSError:
-                pass
-    if reaped:
-        log.info("Reaped %d stale PID files", reaped)
-    state["last_pid_reap"] = _time.time()
-    save_state(state)
-
-
-def _dispatch_background(name: str, cmd: list[str]):
-    """Spawn a background process if one isn't already running for this name.
-
-    Enforces a global concurrency limit (MAX_CONCURRENT_BG) to prevent
-    too many Claude CLI subprocesses from competing for resources.
-    Tracks PID to avoid duplicate runs. Fire-and-forget.
-    """
-    _BG_PID_DIR.mkdir(parents=True, exist_ok=True)
-    pid_file = _BG_PID_DIR / f"{name}.pid"
-
-    # Global concurrency limit — don't spawn if too many are already running
-    running = _count_bg_running()
-    if running >= MAX_CONCURRENT_BG:
-        log.debug("Background '%s' deferred — %d/%d slots occupied",
-                  name, running, MAX_CONCURRENT_BG)
-        return
-
-    # Check if a previous run is still active or finished recently
-    if pid_file.exists():
-        try:
-            old_pid = int(pid_file.read_text().strip())
-            os.kill(old_pid, 0)  # check if alive
-            log.info("Background '%s' still running (PID %d), skipping", name, old_pid)
-            return
-        except (OSError, ValueError):
-            pass  # process gone, safe to start new one
-
-        # Harvest outcome of the dead process
-        try:
-            health_monitor.record_outcome(name)
-        except Exception as e:
-            log.debug("record_outcome('%s') failed: %s", name, e)
-
-        # Cooldown: don't re-dispatch if the PID file was written recently
-        # Reduced from 5min to 1min; processes that crashed in <30s get faster retry
-        try:
-            import time as _time
-            age = _time.time() - pid_file.stat().st_mtime
-            cooldown = 60  # 1-minute cooldown (was 5 minutes)
-            # If process ran < 30s it likely failed at startup — allow faster retry
-            if age < 30:
-                cooldown = 30
-            if age < cooldown:
-                log.debug("Background '%s' in cooldown (%ds since last run, cooldown=%ds)",
-                          name, int(age), cooldown)
-                return
-        except OSError:
-            pass
-
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=open(LOGS_DIR / f"bg-{name}.log", "a"),
-            start_new_session=True,
-            cwd=str(MIRA_ROOT / "agents" / "super"),
-        )
-        pid_file.write_text(str(proc.pid))
-        health_monitor.record_dispatch(name, proc.pid)
-        log.info("Background '%s' dispatched (PID %d)", name, proc.pid)
-    except Exception as e:
-        log.error("Failed to dispatch background '%s': %s", name, e)
 
 
 # ---------------------------------------------------------------------------
