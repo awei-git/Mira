@@ -635,6 +635,69 @@ def test_health_preflight_accepts_existing_checkup_dir(tmp_path, monkeypatch):
     assert passed is True, msg
 
 
+def test_legacy_publish_uses_registry_preflight_and_preserves_needs_input(tmp_path, monkeypatch):
+    import handlers_legacy
+
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+
+    class FakeRegistry:
+        def load_preflight(self, name: str):
+            assert name == "socialmedia"
+            return lambda ws, task_id, instruction, sender, thread_id, **kwargs: (True, "")
+
+        def load_handler(self, name: str):
+            assert name == "socialmedia"
+
+            def handler(ws, task_id, instruction, sender, thread_id, **kwargs):
+                (ws / "output.md").write_text("Confirm publish?", encoding="utf-8")
+                return "NEEDS_APPROVAL:Confirm publish?"
+
+            return handler
+
+    monkeypatch.setattr("handlers_legacy.get_registry", lambda: FakeRegistry())
+    monkeypatch.setattr("handlers_legacy._update_thread_memory", lambda *args, **kwargs: None)
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    handlers_legacy._handle_publish(workspace, "task141", "publish this", "ang", "thread1")
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert result["status"] == "needs-input"
+    assert result["summary"] == "Confirm publish?"
+    assert result["agent"] == "socialmedia"
+
+
+def test_legacy_secret_respects_registry_preflight_block(tmp_path, monkeypatch):
+    import handlers_legacy
+
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+
+    class FakeRegistry:
+        def load_preflight(self, name: str):
+            assert name == "secret"
+            return lambda ws, task_id, instruction, sender, thread_id, **kwargs: (
+                False,
+                "PREFLIGHT BLOCKED [secret]: missing file",
+            )
+
+        def load_handler(self, name: str):
+            raise AssertionError("secret handler should not run when preflight blocks")
+
+    monkeypatch.setattr("handlers_legacy.get_registry", lambda: FakeRegistry())
+    monkeypatch.setattr("handlers_legacy._update_thread_memory", lambda *args, **kwargs: None)
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    handlers_legacy._handle_secret(workspace, "task142", "@file:/missing.pdf 帮我看", "ang", "thread1")
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert result["status"] == "error"
+    assert "PREFLIGHT BLOCKED [secret]" in result["summary"]
+    assert result["agent"] == "secret"
+    assert result["tags"] == ["private"]
+    assert not (workspace / "output.md").exists()
+
+
 def test_autowrite_approval_prefers_metadata_file(tmp_path, monkeypatch):
     import handlers_legacy
 

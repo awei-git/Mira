@@ -24,6 +24,7 @@ if str(_AGENTS_DIR / "general") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "general"))
 
 from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR
+from agent_registry import get_registry
 from persona.persona_context import get_persona_context
 from soul_manager import load_soul, format_soul, recall_context
 from sub_agent import claude_act, claude_think, ClaudeTimeoutError
@@ -47,6 +48,10 @@ from task_worker import (
     _emit_status,
     ITEMS_DIR,
     TASKS_DIR,
+    _invoke_registry_handler,
+    _invoke_registry_preflight,
+    _ensure_step_result,
+    _snapshot_file,
 )
 
 log = logging.getLogger("task_worker")
@@ -62,6 +67,61 @@ def _legacy_persona_prompt(max_length: int = 1600,
     if belief_ctx:
         text = f"{soul_ctx}\n\n{belief_ctx}"
     return text[:max_length]
+
+
+def _read_result_json(workspace: Path) -> dict:
+    result_file = workspace / "result.json"
+    if not result_file.exists():
+        return {}
+    try:
+        return json.loads(result_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _run_registry_agent_legacy(agent: str, workspace: Path, task_id: str, content: str,
+                               sender: str, thread_id: str, tier: str = "light") -> dict:
+    """Run a registry agent through the canonical preflight/handler contract."""
+    registry = get_registry()
+    output_snapshot = _snapshot_file(workspace / "output.md")
+
+    try:
+        preflight_fn = registry.load_preflight(agent)
+    except Exception as e:
+        msg = f"{agent} preflight load failed: {e}"
+        (workspace / "output.md").write_text(msg, encoding="utf-8")
+        _write_result(workspace, task_id, "error", msg, agent=agent)
+        return _read_result_json(workspace)
+
+    if preflight_fn:
+        try:
+            passed, preflight_msg = _invoke_registry_preflight(
+                preflight_fn, workspace, task_id, content, sender, thread_id, tier,
+            )
+        except Exception as e:
+            preflight_msg = f"{agent} preflight failed: {e}"
+            (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
+            _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+            return _read_result_json(workspace)
+        if not passed:
+            (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
+            _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+            return _read_result_json(workspace)
+
+    try:
+        handler_fn = registry.load_handler(agent)
+        handler_result = _invoke_registry_handler(
+            handler_fn, workspace, task_id, content, sender, thread_id, tier,
+        )
+    except ClaudeTimeoutError:
+        raise
+    except Exception as e:
+        msg = f"{agent} handler failed: {e}"
+        _write_result(workspace, task_id, "error", msg, agent=agent)
+        return _read_result_json(workspace)
+
+    _ensure_step_result(workspace, task_id, agent, content, handler_result, output_snapshot)
+    return _read_result_json(workspace)
 
 
 # ---------------------------------------------------------------------------
@@ -464,34 +524,20 @@ def _handle_publish(workspace: Path, task_id: str, content: str,
                     sender: str, thread_id: str):
     """Route publish requests to the social media agent."""
     try:
-        # Add socialmedia dir to path so handler.py can import substack.py
-        sm_dir = str(_AGENTS_DIR / "socialmedia")
-        if sm_dir not in sys.path:
-            sys.path.insert(0, sm_dir)
-
-        spec = importlib.util.spec_from_file_location(
-            "sm_handler", str(_AGENTS_DIR / "socialmedia" / "handler.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        publish_handle = mod.handle
-
         log.info("Publishing content for task %s", task_id)
-        summary = publish_handle(workspace, task_id, content, sender, thread_id)
+        result = _run_registry_agent_legacy("socialmedia", workspace, task_id, content, sender, thread_id)
     except Exception as e:
         log.error("Publish handler crashed: %s", e)
         _write_result(workspace, task_id, "error", f"\u53d1\u5e03\u5931\u8d25: {e}")
         return
 
-    if summary:
-        tags = smart_classify(content, summary)
-        tags.append("publish")
-        _write_result(workspace, task_id, "done", summary, tags=tags)
+    if result.get("status") == "done" and result.get("summary"):
         log.info("Publish task %s completed", task_id)
-
         if thread_id:
-            _update_thread_memory(thread_id, content, summary)
+            _update_thread_memory(thread_id, content, result["summary"])
+    elif result.get("status") == "needs-input":
+        log.info("Publish task %s waiting for approval", task_id)
     else:
-        _write_result(workspace, task_id, "error", "\u53d1\u5e03\u5931\u8d25")
         log.error("Publish task %s failed", task_id)
 
 
@@ -503,25 +549,8 @@ def _handle_analyst(workspace: Path, task_id: str, content: str,
                     sender: str, thread_id: str, tier: str = "light"):
     """Handle market analysis requests via the analyst agent."""
     try:
-        analyst_dir = str(_AGENTS_DIR / "analyst")
-        if analyst_dir not in sys.path:
-            sys.path.insert(0, analyst_dir)
-
-        spec = importlib.util.spec_from_file_location(
-            "analyst_handler", str(_AGENTS_DIR / "analyst" / "handler.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        analyst_handle = mod.handle
-
-        thread_history = load_thread_history(thread_id)
-        thread_memory = load_thread_memory(thread_id)
-
         log.info("Running analyst for task %s (tier=%s)", task_id, tier)
-        summary = analyst_handle(
-            workspace, task_id, content, sender, thread_id,
-            thread_history=thread_history, thread_memory=thread_memory,
-            tier=tier,
-        )
+        result = _run_registry_agent_legacy("analyst", workspace, task_id, content, sender, thread_id, tier=tier)
     except ClaudeTimeoutError:
         _write_result(workspace, task_id, "error",
                       "\u5206\u6790\u8d85\u65f6\uff0c\u8bf7\u7f29\u5c0f\u5206\u6790\u8303\u56f4\u91cd\u8bd5\u3002")
@@ -532,10 +561,8 @@ def _handle_analyst(workspace: Path, task_id: str, content: str,
         _write_result(workspace, task_id, "error", f"\u5206\u6790\u5931\u8d25: {e}")
         return
 
-    if summary:
-        tags = smart_classify(content, summary)
-        tags.append("analysis")
-        _write_result(workspace, task_id, "done", summary, tags=tags)
+    summary = result.get("summary", "")
+    if result.get("status") == "done" and summary:
         log.info("Analyst task %s completed", task_id)
 
         if thread_id:
@@ -546,7 +573,6 @@ def _handle_analyst(workspace: Path, task_id: str, content: str,
         except Exception as e:
             log.warning("Skill extraction failed: %s", e)
     else:
-        _write_result(workspace, task_id, "error", "\u5206\u6790\u8fd4\u56de\u7a7a\u7ed3\u679c")
         log.error("Analyst task %s failed: empty response", task_id)
 
 
@@ -558,28 +584,20 @@ def _handle_video(workspace: Path, task_id: str, content: str,
                   sender: str, thread_id: str):
     """Handle video editing requests via the video agent."""
     try:
-        spec = importlib.util.spec_from_file_location(
-            "video_handler", str(_AGENTS_DIR / "video" / "handler.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        video_handle = mod.handle
-
         log.info("Running video pipeline for task %s", task_id)
-        summary = video_handle(workspace, task_id, content, sender, thread_id)
+        result = _run_registry_agent_legacy("video", workspace, task_id, content, sender, thread_id)
     except Exception as e:
         log.error("Video handler crashed: %s", e)
         _write_result(workspace, task_id, "error", f"\u89c6\u9891\u5904\u7406\u5931\u8d25: {e}")
         return
 
-    if summary:
-        tags = ["video", "editing"]
-        _write_result(workspace, task_id, "done", summary, tags=tags)
+    summary = result.get("summary", "")
+    if result.get("status") == "done" and summary:
         log.info("Video task %s completed", task_id)
 
         if thread_id:
             _update_thread_memory(thread_id, content, summary)
     else:
-        _write_result(workspace, task_id, "error", "\u89c6\u9891\u5904\u7406\u8fd4\u56de\u7a7a\u7ed3\u679c")
         log.error("Video task %s failed: empty response", task_id)
 
 
@@ -591,28 +609,20 @@ def _handle_photo(workspace: Path, task_id: str, content: str,
                   sender: str, thread_id: str):
     """Handle photo editing requests via the photo agent."""
     try:
-        spec = importlib.util.spec_from_file_location(
-            "photo_handler", str(_AGENTS_DIR / "photo" / "handler.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        photo_handle = mod.handle
-
         log.info("Running photo pipeline for task %s", task_id)
-        summary = photo_handle(workspace, task_id, content, sender, thread_id)
+        result = _run_registry_agent_legacy("photo", workspace, task_id, content, sender, thread_id)
     except Exception as e:
         log.error("Photo handler crashed: %s", e)
         _write_result(workspace, task_id, "error", f"\u4fee\u56fe\u5931\u8d25: {e}")
         return
 
-    if summary:
-        tags = ["photo", "editing"]
-        _write_result(workspace, task_id, "done", summary, tags=tags)
+    summary = result.get("summary", "")
+    if result.get("status") == "done" and summary:
         log.info("Photo task %s completed", task_id)
 
         if thread_id:
             _update_thread_memory(thread_id, content, summary)
     else:
-        _write_result(workspace, task_id, "error", "\u4fee\u56fe\u5904\u7406\u8fd4\u56de\u7a7a\u7ed3\u679c")
         log.error("Photo task %s failed: empty response", task_id)
 
 
@@ -624,25 +634,19 @@ def _handle_podcast(workspace: Path, task_id: str, content: str,
                     sender: str, thread_id: str):
     """Handle audio/podcast generation requests via the podcast agent."""
     try:
-        podcast_dir = str(_AGENTS_DIR / "podcast")
-        if podcast_dir not in sys.path:
-            sys.path.insert(0, podcast_dir)
-        from handler import handle as podcast_handle
-
         log.info("Running podcast pipeline for task %s", task_id)
-        summary = podcast_handle(workspace, task_id, content, sender, thread_id)
+        result = _run_registry_agent_legacy("podcast", workspace, task_id, content, sender, thread_id)
     except Exception as e:
         log.error("Podcast handler crashed: %s", e)
         _write_result(workspace, task_id, "error", f"\u97f3\u9891\u751f\u6210\u5931\u8d25: {e}")
         return
 
-    if summary:
-        _write_result(workspace, task_id, "done", summary, tags=["podcast", "audio"])
+    summary = result.get("summary", "")
+    if result.get("status") == "done" and summary:
         log.info("Podcast task %s completed", task_id)
         if thread_id:
             _update_thread_memory(thread_id, content, summary)
     else:
-        _write_result(workspace, task_id, "error", "\u97f3\u9891\u751f\u6210\u8fd4\u56de\u7a7a\u7ed3\u679c")
         log.error("Podcast task %s failed: empty response", task_id)
 
 
@@ -780,19 +784,8 @@ def _handle_math(workspace: Path, task_id: str, content: str,
                  sender: str, thread_id: str, tier: str = "heavy"):
     """Handle research tasks via the researcher agent (formerly math)."""
     try:
-        spec = importlib.util.spec_from_file_location(
-            "researcher_handler", str(_AGENTS_DIR / "researcher" / "handler.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        thread_history = load_thread_history(thread_id)
-        thread_memory = load_thread_memory(thread_id)
-
         log.info("Running researcher agent for task %s", task_id)
-        summary = mod.handle(
-            workspace, task_id, content, sender, thread_id,
-            thread_history=thread_history, thread_memory=thread_memory,
-        )
+        result = _run_registry_agent_legacy("researcher", workspace, task_id, content, sender, thread_id, tier=tier)
     except ClaudeTimeoutError:
         _write_result(workspace, task_id, "error", "\u7814\u7a76\u4efb\u52a1\u8d85\u65f6\uff0c\u8bf7\u7f29\u5c0f\u8303\u56f4\u91cd\u8bd5\u3002")
         log.error("Research task %s timed out", task_id)
@@ -802,10 +795,8 @@ def _handle_math(workspace: Path, task_id: str, content: str,
         _write_result(workspace, task_id, "error", f"\u7814\u7a76\u4efb\u52a1\u5931\u8d25: {e}")
         return
 
-    if summary:
-        tags = smart_classify(content, summary)
-        tags.append("research")
-        _write_result(workspace, task_id, "done", summary, tags=tags)
+    summary = result.get("summary", "")
+    if result.get("status") == "done" and summary:
         log.info("Research task %s completed", task_id)
 
         if thread_id:
@@ -816,7 +807,6 @@ def _handle_math(workspace: Path, task_id: str, content: str,
         except Exception as e:
             log.warning("Skill extraction failed: %s", e)
     else:
-        _write_result(workspace, task_id, "error", "\u6570\u5b66\u4efb\u52a1\u8fd4\u56de\u7a7a\u7ed3\u679c")
         log.error("Math task %s failed: empty response", task_id)
 
 
@@ -835,24 +825,16 @@ def _handle_secret(workspace: Path, task_id: str, content: str,
     - Does NOT log message content (only task_id and status)
     - Cleans workspace output after delivering result
     """
-    sys.path.insert(0, str(_AGENTS_DIR / "secret"))
-    from handler import handle as secret_handle
-
-    # Load thread history (local file only, not from cloud)
-    thread_history = load_thread_history(thread_id)
-
     try:
-        summary = secret_handle(
-            workspace, task_id, content, sender, thread_id,
-            thread_history=thread_history,
-        )
+        result = _run_registry_agent_legacy("secret", workspace, task_id, content, sender, thread_id)
     except (OSError, RuntimeError) as e:
         _write_result(workspace, task_id, "error", f"Secret agent \u5931\u8d25: {e}",
                       tags=["private"], agent="secret")
         log.error("Secret task %s failed (no content logged)", task_id)
         return
 
-    if summary:
+    summary = result.get("summary", "")
+    if result.get("status") == "done" and summary:
         # Write result for bridge delivery -- but do NOT persist to episode/memory
         _write_result(workspace, task_id, "done", summary,
                       tags=["private"], agent="secret")
@@ -874,8 +856,22 @@ def _handle_secret(workspace: Path, task_id: str, content: str,
         if output_file.exists():
             output_file.unlink()
     else:
+        if result.get("status") == "error":
+            _write_result(
+                workspace,
+                task_id,
+                "error",
+                result.get("summary", "Secret agent failed"),
+                tags=["private"],
+                agent="secret",
+            )
+            output_file = workspace / "output.md"
+            if output_file.exists():
+                output_file.unlink()
+            log.error("Secret task %s failed during preflight/handler execution", task_id)
+            return
         _write_result(workspace, task_id, "error",
-                      "\u672c\u5730\u6a21\u578b\u8fd4\u56de\u4e86\u7a7a\u7ed3\u679c\uff0c\u8bf7\u786e\u8ba4 Ollama \u662f\u5426\u5728\u8fd0\u884c",
+                      "\u672c\u5730\u6a21\u578b\u8fd4\u56de\u4e86\u7a7a\u7ed3\u679c\uff0c\u8bf7\u786e\u8ba4 oMLX \u662f\u5426\u5728\u8fd0\u884c",
                       tags=["private"], agent="secret")
         log.error("Secret task %s failed: empty response", task_id)
 
@@ -942,23 +938,21 @@ def _handle_socialmedia(workspace: Path, task_id: str, content: str,
                         sender: str, thread_id: str):
     """Handle Substack social media tasks via direct API (no browser)."""
     try:
-        sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
-        from handler import handle as socialmedia_handle
-
         log.info("Running socialmedia agent for task %s", task_id)
-        result = socialmedia_handle(workspace, task_id, content, sender, thread_id)
-        summary = result if isinstance(result, str) else str(result)
+        result = _run_registry_agent_legacy("socialmedia", workspace, task_id, content, sender, thread_id)
     except Exception as e:
         log.error("Socialmedia handler crashed: %s", e)
         summary = f"Socialmedia task failed: {e}"
         _write_result(workspace, task_id, "error", summary)
         return
 
-    if summary:
-        tags = smart_classify(content, summary)
-        _write_result(workspace, task_id, "done", summary, tags=tags)
-    else:
-        _write_result(workspace, task_id, "error", "Socialmedia agent returned empty result")
+    if result.get("status") == "done":
+        return
+    if result.get("status") == "needs-input":
+        return
+    if result.get("status") == "error":
+        return
+    _write_result(workspace, task_id, "error", "Socialmedia agent returned empty result")
 
 
 # ---------------------------------------------------------------------------
@@ -969,22 +963,15 @@ def _handle_surfer(workspace: Path, task_id: str, content: str,
                    sender: str, thread_id: str):
     """Handle browser automation requests via the surfer agent."""
     try:
-        spec = importlib.util.spec_from_file_location(
-            "surfer_handler", str(_AGENTS_DIR / "surfer" / "handler.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        surfer_handle = mod.handle
-
         log.info("Running surfer pipeline for task %s", task_id)
-        summary = surfer_handle(workspace, task_id, content, sender, thread_id)
+        result = _run_registry_agent_legacy("surfer", workspace, task_id, content, sender, thread_id)
     except Exception as e:
         log.error("Surfer handler crashed: %s", e)
         _write_result(workspace, task_id, "error", f"\u6d4f\u89c8\u5668\u81ea\u52a8\u5316\u5931\u8d25: {e}")
         return
 
-    if summary:
-        tags = ["surfer", "browser"]
-        _write_result(workspace, task_id, "done", summary, tags=tags)
+    summary = result.get("summary", "")
+    if result.get("status") == "done" and summary:
         log.info("Surfer task %s completed", task_id)
 
         if thread_id:
@@ -995,7 +982,6 @@ def _handle_surfer(workspace: Path, task_id: str, content: str,
         except Exception as e:
             log.warning("Skill extraction failed: %s", e)
     else:
-        _write_result(workspace, task_id, "error", "\u6d4f\u89c8\u5668\u81ea\u52a8\u5316\u8fd4\u56de\u7a7a\u7ed3\u679c")
         log.error("Surfer task %s failed: empty response", task_id)
 
 
