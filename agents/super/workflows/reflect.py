@@ -317,6 +317,13 @@ def do_reflect():
     except Exception as e:
         log.warning("Knowledge lint failed: %s", e)
 
+    # --- Wiki maintenance: prune stale pages, refresh cross-links ---
+    try:
+        from workflows.wiki import do_wiki_maintenance
+        do_wiki_maintenance()
+    except Exception as e:
+        log.warning("Wiki maintenance failed: %s", e)
+
     # --- Weekly self-evaluation report to WA ---
     try:
         from evaluator import generate_weekly_report

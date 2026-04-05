@@ -2,7 +2,7 @@
 
 Replaces the SQLite-based memory_index.py with:
 - PostgreSQL + pgvector for vector storage and similarity search
-- Ollama nomic-embed-text for local, free, fast embeddings (768 dims)
+- oMLX nomic-embed-text for local, free, fast embeddings (768 dims)
 - Hybrid scoring: 70% vector + 30% keyword, with temporal decay
 - Fallback to memory_index.py if Postgres is unavailable
 
@@ -65,12 +65,12 @@ def _chunk_text(text: str) -> list[str]:
 
 
 def _embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed texts using Ollama nomic-embed-text. Returns list of 768-dim vectors."""
-    from sub_agent import ollama_embed
+    """Embed texts using oMLX nomic-embed-text. Returns list of 768-dim vectors."""
+    from sub_agent import omlx_embed
 
     embeddings = []
     for text in texts:
-        emb = ollama_embed(text)
+        emb = omlx_embed(text)
         embeddings.append(emb)
 
     return embeddings
