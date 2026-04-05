@@ -98,3 +98,48 @@ def test_build_job_dispatch_formats_dynamic_templates():
         "--slot",
         "arxiv_hf",
     ]
+
+
+def test_build_job_dispatch_appends_user_flag_for_per_user_jobs():
+    from runtime.jobs import build_job_dispatch, get_job
+
+    job = get_job("idle-think")
+    assert job is not None
+    assert job.per_user is True
+
+    bg_name, cmd = build_job_dispatch(
+        job,
+        True,
+        python_executable="python3",
+        core_path="/tmp/core.py",
+        user_id="liquan",
+    )
+
+    assert bg_name == "idle-think-liquan"
+    assert cmd == [
+        "python3",
+        "/tmp/core.py",
+        "idle-think",
+        "--user",
+        "liquan",
+    ]
+
+
+def test_spark_check_job_is_per_user():
+    from runtime.jobs import get_job
+
+    job = get_job("spark-check")
+
+    assert job is not None
+    assert job.per_user is True
+    assert job.bg_name_pattern == "spark-check-{user_id}"
+
+
+def test_soul_question_job_is_per_user():
+    from runtime.jobs import get_job
+
+    job = get_job("soul-question")
+
+    assert job is not None
+    assert job.per_user is True
+    assert job.bg_name_pattern == "soul-question-{user_id}"

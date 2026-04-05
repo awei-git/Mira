@@ -111,6 +111,159 @@ def test_dispatch_scheduled_jobs_runs_inline_jobs(monkeypatch):
     assert ran == ["health-check", "log-cleanup"]
 
 
+def test_load_state_user_namespace_round_trip(monkeypatch, tmp_path):
+    import core
+
+    state_file = tmp_path / ".agent_state.json"
+    monkeypatch.setattr(core, "STATE_FILE", state_file)
+
+    core.save_state({"global_flag": True})
+    core.save_state({"last_spark_check": "2026-04-05T00:00:00"}, user_id="liquan")
+
+    assert core.load_state() == {
+        "global_flag": True,
+        "users": {"liquan": {"last_spark_check": "2026-04-05T00:00:00"}},
+    }
+    assert core.load_state(user_id="liquan") == {"last_spark_check": "2026-04-05T00:00:00"}
+
+
+def test_load_state_user_namespace_falls_back_to_legacy_flat_keys(monkeypatch, tmp_path):
+    import core
+
+    state_file = tmp_path / ".agent_state.json"
+    monkeypatch.setattr(core, "STATE_FILE", state_file)
+    state_file.write_text(json.dumps({
+        "journal_2026-04-05": "done",
+        "last_reflect": "2026-04-05T01:00:00",
+        "spontaneous_idea_2026-04-05": "title",
+        "global_flag": True,
+    }), encoding="utf-8")
+
+    assert core.load_state(user_id="liquan") == {
+        "journal_2026-04-05": "done",
+        "last_reflect": "2026-04-05T01:00:00",
+        "spontaneous_idea_2026-04-05": "title",
+    }
+
+
+def test_dispatch_scheduled_jobs_dispatches_per_user_jobs(monkeypatch):
+    import core
+
+    jobs = [
+        SimpleNamespace(name="idle-think", inline=False, priority=5, per_user=True),
+    ]
+    dispatched = []
+    session_new = []
+
+    monkeypatch.setattr(core, "get_jobs", lambda: jobs)
+    monkeypatch.setattr(core, "get_known_user_ids", lambda: ["ang", "liquan"])
+    monkeypatch.setattr(
+        core,
+        "evaluate_job_payload",
+        lambda job, user_id=None: True if user_id == "liquan" else None,
+    )
+    monkeypatch.setattr(
+        core,
+        "build_job_dispatch",
+        lambda job, payload, python_executable, core_path, user_id=None: (
+            f"idle-think-{user_id}",
+            ["python", "core.py", "idle-think", "--user", user_id],
+        ),
+    )
+    monkeypatch.setattr(
+        core,
+        "build_job_session_record",
+        lambda job, payload: {"action": "idle_think", "detail": ""},
+    )
+    monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd: dispatched.append((name, cmd)))
+
+    core._dispatch_scheduled_jobs(session_new)
+
+    assert dispatched == [("idle-think-liquan", ["python", "core.py", "idle-think", "--user", "liquan"])]
+    assert len(session_new) == 1
+    assert session_new[0]["action"] == "idle_think"
+    assert session_new[0]["detail"] == "liquan"
+    assert "ts" in session_new[0]
+
+
+def test_do_talk_routes_completed_task_to_matching_user_bridge(monkeypatch):
+    import core
+
+    class FakeBridge:
+        def __init__(self, user_id):
+            self.user_id = user_id
+            self.updated = []
+            self.heartbeats = []
+
+        def heartbeat(self, agent_status):
+            self.heartbeats.append(agent_status)
+
+        def update_status(self, task_id, status, agent_message="", error=None):
+            self.updated.append((task_id, status, agent_message, error))
+
+        def set_tags(self, task_id, tags):
+            pass
+
+        def add_followup(self, todo_id, content, source="agent"):
+            pass
+
+        def update_todo(self, todo_id, status="done"):
+            pass
+
+        def poll_commands(self):
+            return []
+
+        def poll(self):
+            return []
+
+        def cleanup_old(self, days=0):
+            pass
+
+        def get_next_todo(self):
+            return None
+
+        def items_dir(self):
+            return None
+
+    ang = FakeBridge("ang")
+    liquan = FakeBridge("liquan")
+
+    rec = SimpleNamespace(
+        task_id="req_1",
+        user_id="liquan",
+        status="done",
+        summary="done",
+        tags=[],
+        workspace="",
+    )
+
+    class FakeTaskManager:
+        def get_status_summary(self):
+            return {"busy": False, "active_count": 0, "active_tasks": [], "last_completed": ""}
+
+        def check_tasks(self):
+            return [rec]
+
+        def get_reply_content(self, completed):
+            return "reply body"
+
+        def get_active_count(self):
+            return 0
+
+        def cleanup_old_records(self, max_age_days=7):
+            pass
+
+    monkeypatch.setattr(core.Mira, "for_all_users", classmethod(lambda cls: [ang, liquan]))
+    monkeypatch.setattr(core, "TaskManager", FakeTaskManager)
+    monkeypatch.setattr(core, "_status_footer", lambda task_mgr: "")
+    monkeypatch.setattr(core, "_sweep_stuck_items", lambda bridge, task_mgr: None)
+
+    core.do_talk()
+
+    assert not ang.updated
+    assert liquan.updated == [("req_1", "done", "reply body", None)]
+
+
 def test_canonical_writing_pipeline_only_advances_plan_ready(monkeypatch, tmp_path):
     import core
 

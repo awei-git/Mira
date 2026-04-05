@@ -17,6 +17,7 @@ from config import (
     MIRA_DIR, EPISODES_DIR, WRITINGS_DIR, LOGS_DIR,
     ZA_FILE,
 )
+from user_paths import artifact_name_for_user, user_journal_dir
 try:
     from mira import Mira
 except (ImportError, ModuleNotFoundError):
@@ -106,25 +107,32 @@ def _sync_journals_to_briefings():
     briefings_dir = ARTIFACTS_DIR / "briefings"
     briefings_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check journal
-    journal_src = JOURNAL_DIR / f"{today}.md"
-    journal_dst = briefings_dir / f"{today}_journal.md"
-    if journal_src.exists() and not journal_dst.exists():
-        try:
-            journal_dst.write_text(journal_src.read_text(encoding="utf-8"), encoding="utf-8")
-            log.info("Restored journal to briefings: %s", journal_dst.name)
-        except OSError as e:
-            log.error("Failed to restore journal to briefings: %s", e)
+    try:
+        from config import get_known_user_ids
+        user_ids = get_known_user_ids()
+    except Exception:
+        user_ids = ["ang"]
 
-    # Check zhesi
-    zhesi_src = JOURNAL_DIR / f"{today}_zhesi.md"
-    zhesi_dst = briefings_dir / f"{today}_zhesi.md"
-    if zhesi_src.exists() and not zhesi_dst.exists():
-        try:
-            zhesi_dst.write_text(zhesi_src.read_text(encoding="utf-8"), encoding="utf-8")
-            log.info("Restored zhesi to briefings: %s", zhesi_dst.name)
-        except OSError as e:
-            log.error("Failed to restore zhesi to briefings: %s", e)
+    for user_id in user_ids:
+        journal_dir = user_journal_dir(user_id)
+
+        journal_src = journal_dir / f"{today}.md"
+        journal_dst = briefings_dir / artifact_name_for_user(f"{today}_journal.md", user_id)
+        if journal_src.exists() and not journal_dst.exists():
+            try:
+                journal_dst.write_text(journal_src.read_text(encoding="utf-8"), encoding="utf-8")
+                log.info("Restored journal to briefings: %s", journal_dst.name)
+            except OSError as e:
+                log.error("Failed to restore journal to briefings: %s", e)
+
+        zhesi_src = journal_dir / f"{today}_zhesi.md"
+        zhesi_dst = briefings_dir / artifact_name_for_user(f"{today}_zhesi.md", user_id)
+        if zhesi_src.exists() and not zhesi_dst.exists():
+            try:
+                zhesi_dst.write_text(zhesi_src.read_text(encoding="utf-8"), encoding="utf-8")
+                log.info("Restored zhesi to briefings: %s", zhesi_dst.name)
+            except OSError as e:
+                log.error("Failed to restore zhesi to briefings: %s", e)
 
 
 def _slugify(title: str) -> str:
@@ -684,7 +692,8 @@ type 可以是:
         log.warning("harvest_observations failed: %s", e)
 
 
-def _maybe_create_spontaneous_idea(thought_text: str, source: str = ""):
+def _maybe_create_spontaneous_idea(thought_text: str, source: str = "",
+                                   user_id: str | None = None):
     """Create a writing idea if a thought connects to 2+ existing threads.
 
     Checks the thought against memory.md, worldview.md, and recent reading
@@ -700,7 +709,7 @@ def _maybe_create_spontaneous_idea(thought_text: str, source: str = ""):
     from core import load_state, save_state
 
     # Rate limit: max 1 spontaneous idea per day
-    state = load_state()
+    state = load_state(user_id=user_id)
     today = datetime.now().strftime("%Y-%m-%d")
     if state.get(f"spontaneous_idea_{today}"):
         return
@@ -836,7 +845,7 @@ Original thought: {thought_text[:500]}
     try:
         idea_path.write_text(idea_content, encoding="utf-8")
         state[f"spontaneous_idea_{today}"] = title
-        save_state(state)
+        save_state(state, user_id=user_id)
         log.info("Spontaneous writing idea created: %s (%s)", title, idea_path.name)
     except OSError as e:
         log.warning("Failed to save spontaneous idea: %s", e)

@@ -196,7 +196,7 @@ def do_reflect(user_id: str = "ang"):
 
     # --- Evolve worldview ---
     try:
-        recent_reading = load_recent_reading_notes(days=14)
+        recent_reading = load_recent_reading_notes(days=14, user_id=user_id)
         from config import WORLDVIEW_FILE
         current_wv = WORLDVIEW_FILE.read_text(encoding="utf-8") if WORLDVIEW_FILE.exists() else ""
         wv_prompt = worldview_evolution_prompt(soul_ctx, current_wv, recent_reading, recent_work)
@@ -377,6 +377,6 @@ def do_reflect(user_id: str = "ang"):
     except Exception as e:
         log.warning("Monthly self-check publish failed: %s", e)
 
-    state = load_state()
+    state = load_state(user_id=user_id)
     state["last_reflect"] = datetime.now().isoformat()
-    save_state(state)
+    save_state(state, user_id=user_id)
