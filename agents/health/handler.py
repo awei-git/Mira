@@ -396,7 +396,7 @@ def _generate_on_demand_advice(store, person: str, input_text: str,
         # Raw health data was already stored locally; the prompt contains
         # only aggregated summaries, no PII beyond person_id.
         from sub_agent import set_model_policy
-        set_model_policy(None)  # lift ollama restriction for this call
+        set_model_policy(None)  # lift local-model restriction for this call
         try:
             result = model_think(prompt, model_name="gpt5", timeout=60)
         finally:

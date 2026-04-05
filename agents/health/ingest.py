@@ -19,8 +19,20 @@ def ingest_apple_health(bridge_dir: Path, person_id: str, store) -> int:
 
     try:
         data = json.loads(export_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        log.error("Failed to read health export for %s: %s", person_id, e)
+    except OSError as e:
+        if e.errno == 11:  # EDEADLK — retry once after brief pause
+            import time
+            time.sleep(0.5)
+            try:
+                data = json.loads(export_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as e2:
+                log.warning("Health export retry failed for %s: %s", person_id, e2)
+                return 0
+        else:
+            log.error("Failed to read health export for %s: %s", person_id, e)
+            return 0
+    except json.JSONDecodeError as e:
+        log.error("Failed to parse health export for %s: %s", person_id, e)
         return 0
 
     metrics = data.get("metrics", [])

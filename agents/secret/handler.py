@@ -64,7 +64,7 @@ def _parse_file_intent(query: str) -> dict:
     """Use local LLM to understand what files the user is referring to.
 
     Returns: {"directory_hints": [...], "file_patterns": [...], "year": "..."}
-    All local — Ollama only.
+    All local — oMLX only.
     """
     parse_prompt = f"""The user mentions files on their computer:
 

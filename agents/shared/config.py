@@ -219,7 +219,7 @@ OMLX_DEFAULT_MODEL = _omlx_cfg.get("default_model", "gemma-4-31b-it-4bit")
 OMLX_FALLBACK_MODEL = _omlx_cfg.get("fallback_model", "Qwen3.5-27B-4bit")
 OMLX_EMBED_MODEL = _omlx_cfg.get("embed_model", "nomicai-modernbert-embed-base-4bit")
 
-# Backward-compatible aliases while runtime code still speaks "ollama".
+# Legacy aliases — kept only for external callers; prefer OMLX_* names.
 OLLAMA_HOST = OMLX_HOST
 OLLAMA_PORT = OMLX_PORT
 OLLAMA_DEFAULT_MODEL = OMLX_DEFAULT_MODEL
@@ -373,10 +373,10 @@ MODELS = {
         "model_id": OMLX_DEFAULT_MODEL,
         "style": "Local LLM (oMLX) — private, no network, Apple Silicon optimized",
     },
-    "ollama": {
-        "provider": "ollama",
+    "ollama": {  # Legacy alias — routes to oMLX
+        "provider": "omlx",
         "model_id": OMLX_DEFAULT_MODEL,
-        "style": "Legacy local-model alias routed to the current oMLX default model",
+        "style": "Legacy alias for oMLX — kept for backward compatibility",
     },
 }
 
@@ -594,7 +594,8 @@ OPENAI_API_ENDPOINT = _endpoints.get("openai", "https://api.openai.com/v1/chat/c
 OPENAI_EMBEDDINGS_ENDPOINT = _endpoints.get("openai_embeddings", "https://api.openai.com/v1/embeddings")
 DEEPSEEK_API_ENDPOINT = _endpoints.get("deepseek", "https://api.deepseek.com/chat/completions")
 TWITTER_API_ENDPOINT = _endpoints.get("twitter", "https://api.x.com/2")
-OLLAMA_API_ENDPOINT = _endpoints.get("ollama", "http://127.0.0.1:11434")
+OMLX_API_ENDPOINT = _endpoints.get("omlx", f"http://{OMLX_HOST}:{OMLX_PORT}")
+OLLAMA_API_ENDPOINT = OMLX_API_ENDPOINT  # Legacy alias
 
 # ---------------------------------------------------------------------------
 # External tool paths (from config.yml paths: section)

@@ -91,7 +91,7 @@ def set_model_policy(policy: str | None):
 
 def _force_local() -> bool:
     """Check if current step requires local oMLX model."""
-    return getattr(_model_policy, "value", None) in ("omlx", "ollama")
+    return getattr(_model_policy, "value", None) in ("omlx",)
 
 
 def _force_ollama() -> bool:
@@ -722,7 +722,7 @@ def _gemini_call(model_id: str, prompt: str,
 def _api_call(provider: str, model_id: str, prompt: str,
               system: str = "", timeout: int = 120,
               reasoning_effort: str = "") -> str:
-    """Call OpenAI-compatible chat completion API (OpenAI, DeepSeek, Ollama)."""
+    """Call OpenAI-compatible chat completion API (OpenAI, DeepSeek, oMLX)."""
     if provider == "gemini":
         return _gemini_call(model_id, prompt, system, timeout)
 

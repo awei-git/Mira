@@ -823,10 +823,10 @@ def _handle_math(workspace: Path, task_id: str, content: str,
 
 def _handle_secret(workspace: Path, task_id: str, content: str,
                    sender: str, thread_id: str):
-    """Handle privacy-sensitive requests via local Ollama. No cloud APIs.
+    """Handle privacy-sensitive requests via local oMLX. No cloud APIs.
 
     Privacy guarantees:
-    - ONLY calls Ollama (localhost) -- no cloud APIs
+    - ONLY calls oMLX (localhost) -- no cloud APIs
     - Does NOT save episode (no pgvector persistence of private content)
     - Does NOT update memory.md with private content
     - Does NOT log message content (only task_id and status)

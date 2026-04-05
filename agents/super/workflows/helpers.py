@@ -620,7 +620,7 @@ def _days_since_last_publish() -> float:
 def harvest_observations(output_text: str, source: str = "", user_id: str = "ang"):
     """Extract observations, questions, and connections from output text.
 
-    Uses Ollama (local, fast, free) to extract structured thoughts.
+    Uses local LLM (oMLX, fast, free) to extract structured thoughts.
     Called after explore briefings, task completions, and journal entries.
     """
     if not output_text or len(output_text.strip()) < 100:
@@ -651,7 +651,7 @@ type 可以是:
 只输出JSON数组，不要其他内容。"""
 
     try:
-        result = model_think(prompt, model_name="ollama", timeout=30)
+        result = model_think(prompt, model_name="omlx", timeout=30)
         if not result:
             return
 
@@ -736,7 +736,7 @@ def _maybe_create_spontaneous_idea(thought_text: str, source: str = "",
     if len(threads) < 2:
         return
 
-    # Use Ollama (local, fast) to check connections
+    # Use local LLM (oMLX, fast) to check connections
     thread_list = "\n".join(f"- {k}" for k in list(threads.keys())[:30])
     prompt = f"""判断以下思考片段是否同时关联了至少2条不同的已有思考线索。
 
@@ -758,7 +758,7 @@ def _maybe_create_spontaneous_idea(thought_text: str, source: str = "",
 只输出JSON。如果关联不足2条或连接牵强，connected_threads 设为实际数量，skip 设为 true。"""
 
     try:
-        result = model_think(prompt, model_name="ollama", timeout=30)
+        result = model_think(prompt, model_name="omlx", timeout=30)
         if not result:
             return
 

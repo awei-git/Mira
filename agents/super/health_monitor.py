@@ -109,7 +109,7 @@ def record_outcome(name: str):
             pass
 
     # Secondary signal: only count Traceback (unhandled exception) as failure.
-    # WARNING/ERROR log lines from non-fatal issues (e.g. Ollama embed 500,
+    # WARNING/ERROR log lines from non-fatal issues (e.g. oMLX embed 500,
     # MiniMax credit) should NOT mark the whole process as failed.
     if log_file.exists():
         try:

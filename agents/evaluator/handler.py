@@ -91,7 +91,7 @@ AGENT_CRITERIA = {
         },
     },
     "secret": {
-        "description": "Private tasks via local Ollama",
+        "description": "Private tasks via local oMLX",
         "metrics": {
             "task_success": "Tasks completed / attempted",
             "stayed_local": "No cloud API calls detected (always should be 100%)",

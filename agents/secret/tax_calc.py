@@ -156,7 +156,7 @@ def extract_tax_data(pdf_texts: dict[str, str], ollama_model: str) -> dict:
 
     Strategy: regex first (reliable for standard forms), LLM fallback for edge cases.
     """
-    from sub_agent import _ollama_call
+    from sub_agent import _omlx_call as _ollama_call  # Legacy name kept for param compat
 
     # Step 1: Try regex extraction first — much more reliable than LLM
     regex_data = {}
