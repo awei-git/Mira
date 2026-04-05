@@ -561,7 +561,7 @@ def _quote_interesting_tweets(soul_context: str = ""):
             continue
         if len(t.get("text", "")) < 80:
             continue
-        if t.get("public_metrics", {}).get("like_count", 0) < 3:
+        if t.get("public_metrics", {}).get("like_count", 0) < 1:
             continue
         if any(kw in text_lower for kw in spam_keywords):
             continue
@@ -571,8 +571,8 @@ def _quote_interesting_tweets(soul_context: str = ""):
         author_metrics = t.get("_author", {}).get("public_metrics", {})
         if author_metrics:
             followers = author_metrics.get("followers_count", 0)
-            # Skip bots (<50) and mega-accounts (>1M, they won't notice us)
-            if followers < 50 or followers > 1_000_000:
+            # Skip bots (<10) and mega-accounts (>1M, they won't notice us)
+            if followers < 10 or followers > 1_000_000:
                 continue
         candidates.append(t)
 
@@ -753,7 +753,7 @@ def _find_reply_candidates(soul_context: str = ""):
         if t.get("author_id") != my_id
         and t["id"] not in queued_ids
         and len(t.get("text", "")) > 80
-        and t.get("public_metrics", {}).get("like_count", 0) >= 3
+        and t.get("public_metrics", {}).get("like_count", 0) >= 1
     ]
 
     if not candidates:
