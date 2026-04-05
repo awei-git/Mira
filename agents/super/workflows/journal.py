@@ -340,6 +340,13 @@ def do_journal():
     except Exception as e:
         log.warning("Retention policy failed: %s", e)
 
+    # Update personal wiki with today's knowledge
+    try:
+        from workflows.wiki import do_wiki_update
+        do_wiki_update(trigger="journal", new_content=journal_text)
+    except Exception as e:
+        log.warning("Wiki update failed: %s", e)
+
     # Mark done in state
     state = load_state()
     state[f"journal_{today}"] = datetime.now().isoformat()

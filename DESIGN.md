@@ -130,7 +130,7 @@ _plan_task(content, conversation, exec_history) → [
 
 **Routing rules** (embedded in planner prompt):
 - `socialmedia` for all Substack operations (HARD RULE: never surfer)
-- `secret` for private/sensitive content (routes to local Ollama)
+- `secret` for private/sensitive content (routes to local oMLX)
 - `discussion` for conversational messages
 - `clarify` only when genuinely ambiguous
 - Most requests = 1 step; multi-step only for real data dependencies
@@ -182,7 +182,7 @@ Each agent has a `manifest.json`:
 | **surfer** | Browser automation (last resort) | light | short |
 | **reader** | Book review, reading notes | light | short |
 | **researcher** | Research tasks | light | short |
-| **secret** | Private/sensitive (local Ollama only) | light | short |
+| **secret** | Private/sensitive (local oMLX only) | light | short |
 | **discussion** | Open-ended conversation | light | short |
 
 ---
@@ -340,7 +340,7 @@ MODELS = {
     "deepseek":     {"provider": "deepseek", "model_id": "deepseek-chat"},
     "gemini":       {"provider": "gemini",   "model_id": "gemini-3.1-flash-lite-preview"},
     "gemini-pro":   {"provider": "gemini",   "model_id": "gemini-3.1-pro-preview"},
-    "ollama":       {"provider": "ollama",   "model_id": "qwen2.5:32b-instruct-q4_K_M"},
+    "omlx":         {"provider": "omlx",     "model_id": "qwen3.5-27b"},
 }
 ```
 
@@ -356,7 +356,7 @@ model_think(prompt, model="deepseek") # Direct model selection
 
 ```
 Claude CLI → (quota hit?) → GPT-5.4 fallback
-Ollama → (timeout?) → Claude CLI fallback
+oMLX → (timeout?) → Claude CLI fallback
 Any model → (fail?) → claude_think() as last resort
 ```
 
