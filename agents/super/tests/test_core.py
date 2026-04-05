@@ -200,6 +200,31 @@ def test_writing_agent_iterate_prefers_canonical_project(monkeypatch, tmp_path, 
     assert advanced == [project_dir]
 
 
+def test_writing_agent_iterate_falls_back_to_legacy(monkeypatch, tmp_path, capsys):
+    import writing_agent
+
+    monkeypatch.setattr(writing_agent, "_find_canonical_project", lambda slug: None)
+    monkeypatch.setattr(writing_agent, "IDEAS_DIR", tmp_path / "ideas")
+    writing_agent.IDEAS_DIR.mkdir()
+    (writing_agent.IDEAS_DIR / "legacy.md").write_text(
+        "# Legacy\n\n---\n<!-- AUTO-MANAGED BELOW -->\n## Status\n\n- **state**: scaffolded\n- **project_dir**: \n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        writing_agent,
+        "parse_idea",
+        lambda path: {"slug": "legacy", "state": "drafting", "project_dir": "", "path": path},
+    )
+    monkeypatch.setattr(writing_agent, "advance_idea", lambda idea: True)
+
+    writing_agent.cmd_iterate("legacy")
+
+    output = capsys.readouterr().out
+    assert "falling back to legacy idea files" in output
+    assert "[legacy] Current state: drafting" in output
+    assert "[legacy] Advanced to: drafting" in output
+
+
 def test_writing_agent_status_lists_canonical_and_legacy(monkeypatch, tmp_path, capsys):
     import writing_agent
 
