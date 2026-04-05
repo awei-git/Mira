@@ -367,11 +367,5 @@
     "description": "Always confirm the exact output file path exists before marking a task as complete",
     "file": "verify-output-path-before-task-completion.md",
     "created": "2026-04-05T13:36:03.941911"
-  },
-  {
-    "name": "verify-output-path-existence-before-completion",
-    "description": "Always confirm the output file was actually written to the expected path before declaring task success",
-    "file": "verify-output-path-existence-before-completion.md",
-    "created": "2026-04-05T13:39:37.789465"
   }
 ]

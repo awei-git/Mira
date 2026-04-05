@@ -145,14 +145,16 @@ def _load_state_raw() -> dict:
     return {}
 
 
-def _save_state_raw(state: dict):
+def _locked_state_write(update_fn):
     lock_file = STATE_FILE.with_suffix(".lock")
     try:
         with open(lock_file, "w") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
             try:
+                state = _load_state_raw()
+                new_state = update_fn(state)
                 STATE_FILE.write_text(
-                    json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
+                    json.dumps(new_state, indent=2, ensure_ascii=False), encoding="utf-8"
                 )
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
@@ -179,6 +181,8 @@ def load_state(user_id: str | None = None) -> dict:
 
     # Backward compatibility: first per-user read can still see migrated keys
     # from the old flat state file until that user writes its own namespace.
+    if user_id != "ang":
+        return {}
     return {
         key: value for key, value in state.items()
         if _is_legacy_user_state_key(key)
@@ -187,16 +191,18 @@ def load_state(user_id: str | None = None) -> dict:
 
 def save_state(state: dict, user_id: str | None = None):
     if not user_id:
-        _save_state_raw(state)
+        _locked_state_write(lambda _old_state: state)
         return
 
-    raw_state = _load_state_raw()
-    users = raw_state.get("users")
-    if not isinstance(users, dict):
-        users = {}
-    users[user_id] = state
-    raw_state["users"] = users
-    _save_state_raw(raw_state)
+    def _update(raw_state: dict) -> dict:
+        users = raw_state.get("users")
+        if not isinstance(users, dict):
+            users = {}
+        users[user_id] = state
+        raw_state["users"] = users
+        return raw_state
+
+    _locked_state_write(_update)
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +574,10 @@ def do_talk():
 
     # --- Phase B2: Dispatch legacy inbox messages to background workers ---
     legacy_messages_found = False
+    legacy_busy = False
     for bridge in all_bridges:
+        if legacy_busy:
+            break
         messages = bridge.poll()
         if not messages:
             continue
@@ -618,6 +627,7 @@ def do_talk():
                         bridge.mark_processed(msg_path)
                     elif task_mgr.is_busy():
                         log.info("Mira [%s] retry queued (agent busy)", msg.id)
+                        legacy_busy = True
                         break
                     else:
                         bridge.reply(msg.id, msg.sender, "重试分发失败，请稍后再试。",
@@ -665,6 +675,7 @@ def do_talk():
             elif task_mgr.is_busy():
                 # Busy — don't mark processed, will retry next launchd cycle
                 log.info("Mira [%s] queued (agent busy)", msg.id)
+                legacy_busy = True
                 break  # no point trying more messages
             else:
                 # Actual dispatch failure
