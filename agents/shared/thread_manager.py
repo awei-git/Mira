@@ -40,13 +40,13 @@ class ThreadManager:
 
     def _save_index(self):
         tmp = INDEX_FILE.with_suffix(".tmp")
+        lock = INDEX_FILE.with_suffix(".lock")
         data = json.dumps(self._threads, indent=2, ensure_ascii=False)
-        with open(tmp, "w", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            f.write(data)
-            f.flush()
-            fcntl.flock(f, fcntl.LOCK_UN)
-        tmp.rename(INDEX_FILE)
+        with open(lock, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            tmp.write_text(data, encoding="utf-8")
+            tmp.rename(INDEX_FILE)
+            fcntl.flock(lf, fcntl.LOCK_UN)
 
     def create_thread(self, title: str) -> str:
         """Create a new thread, return its ID."""

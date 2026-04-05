@@ -308,6 +308,7 @@ def _validate_plan_step(step: dict, valid_agents: set) -> dict | None:
             from failure_log import record_failure
             record_failure("planner", "validate_step", raw_agent,
                            error_type="invalid_agent",
+                           error_message=f"Agent '{raw_agent}' not in valid set",
                            context={"step": step, "valid_agents": sorted(valid_agents)})
         except (ImportError, OSError):
             pass
@@ -1667,32 +1668,34 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
             instruction = f"{CHILD_SAFETY_PROMPT}\n\n---\n\n{instruction}"
 
         # --- Model restriction: force local model for restricted users ---
-        if model_restriction == "ollama":
-            os.environ["MIRA_FORCE_OLLAMA"] = "1"
-            log.info("Model restriction: forcing Ollama for user=%s", user_id)
+        from sub_agent import set_usage_agent, set_model_policy
+        if model_restriction:
+            set_model_policy(model_restriction)
+            log.info("Model policy: %s for user=%s", model_restriction, user_id)
+        else:
+            set_model_policy(None)
 
         # Registry-based dispatch: load handler dynamically from manifest
         from agent_registry import get_registry
-        from sub_agent import set_usage_agent
         registry = get_registry()
         set_usage_agent(agent)
 
         try:
-            handler_fn = registry.load_handler(agent)
-            handler_fn(workspace, task_id, instruction, sender, thread_id)
-        except KeyError:
-            # Agent not in registry — fall back to general handler
-            log.warning("Agent '%s' not in registry, falling back to general", agent)
-            _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
-        except ImportError as e:
-            # Guard: explicit ImportError catch with diagnostic info
-            # (learned from real failures — dynamic imports fail silently)
-            log.error("ImportError loading agent '%s': %s — check module path and "
-                      "handler function name in agent manifest", agent, e)
-            _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
-        except Exception as e:
-            log.error("Registry handler for '%s' failed: %s — falling back to general", agent, e)
-            _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+            try:
+                handler_fn = registry.load_handler(agent)
+                handler_fn(workspace, task_id, instruction, sender, thread_id)
+            except KeyError:
+                log.warning("Agent '%s' not in registry, falling back to general", agent)
+                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+            except ImportError as e:
+                log.error("ImportError loading agent '%s': %s — check module path and "
+                          "handler function name in agent manifest", agent, e)
+                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+            except Exception as e:
+                log.error("Registry handler for '%s' failed: %s — falling back to general", agent, e)
+                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+        finally:
+            set_model_policy(None)  # always reset after step
 
         # Check if this step failed (result.json says error)
         # Also stamp the agent name for evaluator tracking

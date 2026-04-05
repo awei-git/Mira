@@ -4918,12 +4918,15 @@ def cmd_run():
     # Timing guard: skip non-critical checks if cycle already > 8s
     _elapsed = _time.monotonic() - _cycle_start
     if _elapsed < 8:
-        # Check if user approved plans or gave feedback on writing projects
+        # Auto-advance writing projects stuck in plan_ready (no more Notes approval)
         _t0 = _time.monotonic()
         try:
             responses = check_writing_responses()
             for resp in responses:
-                advance_project(resp["workspace"], user_input=resp["content"])
+                phase = resp["project"].get("phase", "")
+                if phase == "plan_ready":
+                    log.info("Auto-advancing plan_ready project: %s", resp["project"].get("title"))
+                    advance_project(resp["workspace"])
         except Exception as e:
             log.error("Writing response check failed: %s", e)
         _phase_times["writing_responses"] = round((_time.monotonic() - _t0) * 1000)
@@ -5840,14 +5843,13 @@ def main():
         group_idx = int(flags.get("group", "0"))
         do_skill_study(group_idx=group_idx)
     elif command == "write-check":
-        # Manually check and advance writing projects
+        # List active writing projects
         responses = check_writing_responses()
         if responses:
             for r in responses:
-                print(f"Advancing: {r['project']['title']} ({r['project']['phase']})")
-                advance_project(r["workspace"], r["content"])
+                print(f"Active: {r['project']['title']} ({r['project']['phase']})")
         else:
-            print("No writing projects awaiting response")
+            print("No active writing projects")
     elif command == "write-from-plan":
         if len(sys.argv) < 3:
             print("Usage: core.py write-from-plan <path-to-大纲.md> [--title 标题] [--type novel|essay|blog|technical|poetry]")

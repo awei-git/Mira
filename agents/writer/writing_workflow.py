@@ -3,12 +3,12 @@
 Phases:
     analyze        Determine type, complexity, criteria
     plan           Multi-agent discussion to create writing plan
-    await_plan     Wait for user to approve/edit plan (via Apple Notes)
     write          3+ agents write drafts following the plan
     review         3+ reviewers score and critique (5+ rounds)
-    await_feedback Wait for user feedback on converged draft
     revise         Revise based on feedback (loops back to review)
     done           Final version complete
+
+Note: Apple Notes sync was removed. Review/feedback is via Mira app thread.
 
 Versioning:
     workspace/{slug}/
@@ -118,7 +118,7 @@ def start_project(title: str, body: str, workspace: Path):
         "idea": body,
         "type": type_key,
         "type_name": type_info["name"],
-        "phase": "await_plan",
+        "phase": "plan_ready",
         "version": 1,
         "criteria": criteria,
         "analysis": analysis,
@@ -126,18 +126,7 @@ def start_project(title: str, body: str, workspace: Path):
     }
     _save_project(workspace, project)
 
-    # --- Post plan to Apple Notes for user review ---
-    criteria_names = ", ".join(criteria.keys())
-    note_body = (
-        f"Status: wip\n\n"
-        f"# 写作计划: {title}\n\n"
-        f"类型: {type_info['name']} | 语言: {analysis.get('language', '?')}\n"
-        f"评估标准: {criteria_names}\n\n---\n\n"
-        f"{merged}\n\n---\n\n"
-        f"请审阅并编辑上面的计划。完成后将 Status 改为 done。"
-    )
-# REMOVED:     create_note(f"计划: {title}", note_body)
-# REMOVED:     log.info("Plan posted for user review: %s", title)
+    log.info("Plan ready for '%s' — auto-advancing to write phase", title)
 
 
 def _analyze(body: str) -> dict:
@@ -208,9 +197,9 @@ def advance_project(workspace: Path, user_input: str = "") -> str:
     title = p["title"]
     log.info("Advancing '%s' from phase: %s", title, phase)
 
-    if phase == "await_plan":
+    if phase == "plan_ready":
         return _on_plan_approved(workspace, p, user_input)
-    elif phase == "await_feedback":
+    elif phase == "draft_ready":
         return _on_feedback(workspace, p, user_input)
     else:
         log.warning("Project '%s' in non-advanceable phase: %s", title, phase)
@@ -252,24 +241,11 @@ def _on_plan_approved(ws: Path, p: dict, plan_text: str) -> str:
     final_draft = _review_cycle(vd, drafts, criteria, reviewers)
     (vd / "converged.md").write_text(final_draft, encoding="utf-8")
 
-    # --- Post draft for user feedback ---
-    p["phase"] = "await_feedback"
+    # Draft complete — ready for feedback via Mira app thread
+    p["phase"] = "draft_ready"
     _save_project(ws, p)
-
-    preview = final_draft[:8000]
-    note_body = (
-        f"Status: wip\n\n"
-        f"# 初稿: {title}\n\n"
-        f"版本 {v} | 经过 {MIN_REVIEW_ROUNDS} 轮评审\n\n"
-        f"{preview}\n\n---\n\n"
-        f"## 反馈\n"
-        f"请在下方写反馈，完成后将 Status 改为 done。\n"
-        f"写 \"完成\" 表示满意，可以定稿。"
-    )
-# REMOVED:     create_note(f"初稿: {title}", note_body)
-# REMOVED: 
-# REMOVED:     log.info("Draft posted for feedback: %s (v%d)", title, v)
-    return "await_feedback"
+    log.info("Draft ready for feedback: %s (v%d)", title, v)
+    return "draft_ready"
 
 
 def _on_feedback(ws: Path, p: dict, feedback: str) -> str:
@@ -314,24 +290,11 @@ def _on_feedback(ws: Path, p: dict, feedback: str) -> str:
     final_draft = _review_cycle(vd, {"revised": revised}, criteria, reviewers)
     (vd / "converged.md").write_text(final_draft, encoding="utf-8")
 
-    # --- Post updated draft ---
-    p["phase"] = "await_feedback"
+    # Revised draft ready for feedback
+    p["phase"] = "draft_ready"
     _save_project(ws, p)
-
-    preview = final_draft[:8000]
-    note_body = (
-        f"Status: wip\n\n"
-        f"# 修订稿: {title}\n\n"
-        f"版本 {v} | 基于您的反馈修订\n\n"
-        f"{preview}\n\n---\n\n"
-        f"## 反馈\n"
-        f"请在下方写反馈，完成后将 Status 改为 done。\n"
-        f"写 \"完成\" 表示满意，可以定稿。"
-    )
-# REMOVED:     create_note(f"初稿: {title}", note_body)
-# REMOVED: 
-# REMOVED:     log.info("Revised draft posted: %s (v%d)", title, v)
-    return "await_feedback"
+    log.info("Revised draft ready: %s (v%d)", title, v)
+    return "draft_ready"
 
 
 def _strip_revision_metadata(text: str) -> str:
@@ -565,53 +528,23 @@ def _save_review(reviews_dir: Path, rnd: int, scores: dict, reviews: dict):
 # ---------------------------------------------------------------------------
 
 def check_writing_responses() -> list[dict]:
-    """Check Apple Notes for plan approvals or draft feedback.
+    """Check for writing projects awaiting feedback.
 
-    Looks for notes with "计划:" or "初稿:" prefix that the user has changed
-    from Status: wip to Status: done.
-
-    Returns list of {workspace, project, content}.
+    Returns list of {workspace, project} for projects in draft_ready phase.
+    Feedback is now handled via Mira app thread, not Apple Notes.
     """
     active = find_active_projects()
     if not active:
         return []
 
-    notes = []  # Apple Notes removed
-    if not notes:
-        return []
+    # No longer polls Apple Notes — feedback comes via Mira app thread
+    # This function now just returns active projects for status reporting
+    return [{"workspace": ws, "project": proj} for ws, proj in active]
 
-    responses = []
-    for ws, proj in active:
-        title = proj["title"]
-        phase = proj["phase"]
 
-        if phase == "await_plan":
-            prefix = f"计划: {title}"
-        elif phase == "await_feedback":
-            prefix = f"初稿: {title}"
-        else:
-            continue
-
-        for note in notes:
-            if note["name"].strip() != prefix:
-                continue
-
-            body = note["body"]
-            status = _parse_status(body)
-            if status != "done":
-                continue
-
-            content = _extract_content(body, phase)
-            if content:
-                responses.append({
-                    "workspace": ws,
-                    "project": proj,
-                    "content": content,
-                })
-                log.info("Found response for '%s' (%s)", title, phase)
-            break
-
-    return responses
+def _check_writing_responses_legacy():
+    """DEPRECATED: Old Apple Notes polling. Kept for reference only."""
+    return []
 
 
 def _parse_chapter_structure(outline: str) -> list[dict]:
@@ -833,25 +766,10 @@ def start_from_plan(title: str, plan_path: str, writing_type: str = "novel"):
     )
     (vd / "converged.md").write_text(final_draft, encoding="utf-8")
 
-    # --- Step 5: Post for feedback ---
-    project["phase"] = "await_feedback"
+    # --- Step 5: Draft ready ---
+    project["phase"] = "draft_ready"
     _save_project(workspace, project)
-
-    writers_used = ", ".join(writer_pool)
-    preview = final_draft[:8000]
-    note_body = (
-        f"Status: wip\n\n"
-        f"# 初稿: {title}\n\n"
-        f"版本 1 | {len(all_chapter_texts)}章 | 写手: {writers_used} | 评审: Claude (严格模式)\n\n"
-        f"{preview}\n\n---\n\n"
-        f"完整文稿: {vd}/draft.md\n\n"
-        f"## 反馈\n"
-        f"请在下方写反馈，完成后将 Status 改为 done。\n"
-        f"写 \"完成\" 表示满意，可以定稿。"
-    )
-# REMOVED:     create_note(f"初稿: {title}", note_body)
-# REMOVED: 
-# REMOVED:     log.info("Draft posted for feedback: %s", title)
+    log.info("Long-form draft ready: %s (%d chapters)", title, len(all_chapter_texts))
 
 
 # ---------------------------------------------------------------------------
@@ -979,43 +897,12 @@ def find_active_projects() -> list[tuple[Path, dict]]:
             continue
         try:
             p = json.loads(pf.read_text(encoding="utf-8"))
-            if p.get("phase") in ("await_plan", "await_feedback"):
+            if p.get("phase") in ("plan_ready", "draft_ready"):
                 active.append((d, p))
         except Exception:
             continue
     return active
 
 
-def _parse_status(body: str) -> str:
-    """Extract Status value from note body."""
-    for line in body.split("\n"):
-        m = re.match(r"^\s*[Ss]tatus[:\uff1a]\s*(\w+)", line)
-        if m:
-            return m.group(1).strip().lower()
-    return ""
 
-
-def _extract_content(body: str, phase: str) -> str:
-    """Extract user-edited content from a note body, stripping boilerplate."""
-    # Remove Status line
-    lines = [l for l in body.split("\n")
-             if not re.match(r"^\s*[Ss]tatus[:\uff1a]", l)]
-    text = "\n".join(lines)
-
-    if phase == "await_plan":
-        # Return the plan content (between headers and trailing instructions)
-        text = re.sub(r"\n---\n\n请审阅.*$", "", text, flags=re.DOTALL)
-        return text.strip()
-
-    if phase == "await_feedback":
-        # Extract only the feedback section
-        m = re.search(r"## 反馈\s*\n(.+?)(?:\n---|\Z)", text, re.DOTALL)
-        if m:
-            fb = m.group(1).strip()
-            # Remove boilerplate instruction lines (not DOTALL — per-line only)
-            fb = re.sub(r"请在下方写反馈[^\n]*\n?", "", fb)
-            fb = re.sub(r'写 "完成"[^\n]*\n?', "", fb)
-            fb = re.sub(r"写 \"完成\"[^\n]*\n?", "", fb)
-            return fb.strip()
-
-    return text.strip()
+# _parse_status() and _extract_content() removed — Apple Notes integration deleted.

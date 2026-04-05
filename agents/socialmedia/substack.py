@@ -400,6 +400,22 @@ def _upload_image_to_substack(image_path: str, subdomain: str, cookie: str) -> s
 def publish_to_substack(title: str, subtitle: str,
                         article_text: str, workspace: Path) -> str:
     """Publish an article to Substack. Returns status message."""
+    # Preflight check
+    try:
+        from preflight import preflight_check
+        pf = preflight_check("publish", {
+            "instruction": f"Publish '{title}' to Substack",
+            "title": title,
+            "content": article_text,
+            "platform": "substack",
+        })
+        if not pf.passed:
+            msg = f"Preflight blocked publish: {'; '.join(pf.blocking_reasons)}"
+            log.error(msg)
+            return msg
+    except ImportError:
+        pass
+
     # Guard: respect the global kill switch
     try:
         from config import SUBSTACK_PUBLISHING_DISABLED

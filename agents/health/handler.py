@@ -21,9 +21,9 @@ def handle(workspace: Path, task_id: str, content: str,
            thread_history: str = "", thread_memory: str = "",
            tier: str = "light") -> str | None:
     """Main entry point for the health agent."""
-    # Force local LLM for all health data processing — set at call time,
-    # not import time, to avoid poisoning the env for other agents/tests.
-    os.environ["MIRA_FORCE_OLLAMA"] = "1"
+    # Force local LLM for all health data processing (privacy boundary)
+    from sub_agent import set_model_policy
+    set_model_policy("ollama")
     log.info("Health agent: task=%s content=%s", task_id, content[:80])
 
     from health_store import HealthStore
@@ -355,12 +355,12 @@ def _generate_on_demand_advice(store, person: str, input_text: str,
         # Temporarily allow cloud LLM for advice generation.
         # Raw health data was already stored locally; the prompt contains
         # only aggregated summaries, no PII beyond person_id.
-        saved = os.environ.pop("MIRA_FORCE_OLLAMA", None)
+        from sub_agent import set_model_policy
+        set_model_policy(None)  # lift ollama restriction for this call
         try:
             result = model_think(prompt, model_name="gpt5", timeout=60)
         finally:
-            if saved is not None:
-                os.environ["MIRA_FORCE_OLLAMA"] = saved
+            set_model_policy("ollama")  # restore
         if result and len(result.strip()) > 30:
             return result.strip()
     except Exception as e:

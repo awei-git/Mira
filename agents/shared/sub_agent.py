@@ -72,6 +72,7 @@ def redact_secrets(text: str) -> str:
 
 # Thread-local caller context: set by task_worker before dispatching
 _caller_agent = threading.local()
+_model_policy = threading.local()
 
 
 def set_usage_agent(agent_name: str):
@@ -81,6 +82,16 @@ def set_usage_agent(agent_name: str):
 
 def _get_usage_agent() -> str:
     return getattr(_caller_agent, "name", "unknown")
+
+
+def set_model_policy(policy: str | None):
+    """Set per-step model policy (e.g., 'ollama'). None = default."""
+    _model_policy.value = policy
+
+
+def _force_ollama() -> bool:
+    """Check if current step requires local Ollama model."""
+    return getattr(_model_policy, "value", None) == "ollama"
 
 
 # Cost per 1M tokens (USD) — update when prices change
@@ -386,7 +397,7 @@ def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK,
     On quota/rate-limit errors, automatically falls back to CLAUDE_FALLBACK_MODEL.
     """
     # Model restriction: force local Ollama if set (e.g. for child users)
-    if os.environ.get("MIRA_FORCE_OLLAMA") == "1":
+    if _force_ollama():
         return _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=timeout)
     model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
     # Strip CLAUDECODE env var to allow nested Claude CLI sessions (LaunchAgent)
@@ -431,7 +442,7 @@ def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT,
     no tool access — caller receives text output without file operations).
     """
     # Model restriction: force local Ollama if set (e.g. for child users)
-    if os.environ.get("MIRA_FORCE_OLLAMA") == "1":
+    if _force_ollama():
         return _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=timeout)
     model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
     cmd = [
@@ -762,6 +773,9 @@ def _api_call(provider: str, model_id: str, prompt: str,
 def model_think(prompt: str, model_name: str = DEFAULT_MODEL,
                 system: str = "", timeout: int = CLAUDE_TIMEOUT_THINK) -> str:
     """Call any model for thinking (no tools). Falls back to Claude on failure."""
+    # Model restriction: force local Ollama if policy is set (privacy boundary)
+    if _force_ollama():
+        return _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=timeout)
     cfg = MODELS.get(model_name)
     if not cfg:
         log.warning("Unknown model '%s', falling back to claude", model_name)
