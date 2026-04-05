@@ -8,7 +8,7 @@ sys.path.insert(0, str(_SUPER.parent / "shared"))
 
 
 def test_normalize_canonical_name():
-    from task_worker import _normalize_agent_name
+    from planning.plan_schema import normalize_agent_name as _normalize_agent_name
     valid = {"writer", "explorer", "general", "socialmedia"}
     name, alias = _normalize_agent_name("writer", valid)
     assert name == "writer"
@@ -16,7 +16,7 @@ def test_normalize_canonical_name():
 
 
 def test_normalize_alias():
-    from task_worker import _normalize_agent_name
+    from planning.plan_schema import normalize_agent_name as _normalize_agent_name
     valid = {"writer", "explorer", "general", "socialmedia"}
     name, alias = _normalize_agent_name("writing", valid)
     assert name == "writer"
@@ -24,7 +24,7 @@ def test_normalize_alias():
 
 
 def test_normalize_publish_alias():
-    from task_worker import _normalize_agent_name
+    from planning.plan_schema import normalize_agent_name as _normalize_agent_name
     valid = {"writer", "explorer", "general", "socialmedia"}
     name, alias = _normalize_agent_name("publish", valid)
     assert name == "socialmedia"
@@ -32,7 +32,7 @@ def test_normalize_publish_alias():
 
 
 def test_normalize_briefing_alias():
-    from task_worker import _normalize_agent_name
+    from planning.plan_schema import normalize_agent_name as _normalize_agent_name
     valid = {"writer", "explorer", "general", "socialmedia"}
     name, alias = _normalize_agent_name("briefing", valid)
     assert name == "explorer"
@@ -40,7 +40,7 @@ def test_normalize_briefing_alias():
 
 
 def test_normalize_unknown_agent():
-    from task_worker import _normalize_agent_name
+    from planning.plan_schema import normalize_agent_name as _normalize_agent_name
     valid = {"writer", "explorer", "general"}
     name, alias = _normalize_agent_name("nonexistent", valid)
     assert name is None
@@ -48,7 +48,7 @@ def test_normalize_unknown_agent():
 
 
 def test_validate_plan_step_valid():
-    from task_worker import _validate_plan_step
+    from planning.plan_schema import validate_plan_step as _validate_plan_step
     valid = {"writer", "explorer", "general", "socialmedia"}
     step = {"agent": "writer", "instruction": "Write an article", "tier": "heavy"}
     result = _validate_plan_step(step, valid)
@@ -58,7 +58,7 @@ def test_validate_plan_step_valid():
 
 
 def test_validate_plan_step_alias_resolved():
-    from task_worker import _validate_plan_step
+    from planning.plan_schema import validate_plan_step as _validate_plan_step
     valid = {"writer", "explorer", "general", "socialmedia"}
     step = {"agent": "writing", "instruction": "Write something"}
     result = _validate_plan_step(step, valid)
@@ -67,7 +67,7 @@ def test_validate_plan_step_alias_resolved():
 
 
 def test_validate_plan_step_invalid_agent():
-    from task_worker import _validate_plan_step
+    from planning.plan_schema import validate_plan_step as _validate_plan_step
     valid = {"writer", "explorer", "general"}
     step = {"agent": "nonexistent", "instruction": "Do something"}
     result = _validate_plan_step(step, valid)
@@ -75,7 +75,7 @@ def test_validate_plan_step_invalid_agent():
 
 
 def test_validate_plan_step_empty_instruction():
-    from task_worker import _validate_plan_step
+    from planning.plan_schema import validate_plan_step as _validate_plan_step
     valid = {"writer", "general"}
     step = {"agent": "writer", "instruction": ""}
     result = _validate_plan_step(step, valid)
@@ -83,7 +83,7 @@ def test_validate_plan_step_empty_instruction():
 
 
 def test_validate_plan_step_default_tier():
-    from task_worker import _validate_plan_step
+    from planning.plan_schema import validate_plan_step as _validate_plan_step
     valid = {"general"}
     step = {"agent": "general", "instruction": "Do something"}
     result = _validate_plan_step(step, valid)
@@ -91,7 +91,7 @@ def test_validate_plan_step_default_tier():
 
 
 def test_validate_plan_step_with_prediction():
-    from task_worker import _validate_plan_step
+    from planning.plan_schema import validate_plan_step as _validate_plan_step
     valid = {"general"}
     step = {
         "agent": "general",

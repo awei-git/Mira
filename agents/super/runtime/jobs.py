@@ -1,0 +1,307 @@
+"""Declarative job registry for Mira's background scheduler.
+
+Replaces the hand-coded if/should_* chain in core.py with a data-driven
+job table. Each job declares its trigger, cooldown, priority, and handler.
+
+The scheduler iterates this table instead of a wall of if-statements.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime
+
+log = logging.getLogger("mira.scheduler")
+
+
+@dataclass
+class JobSpec:
+    """Declarative specification for a background job."""
+
+    name: str
+    command: list[str]  # CLI args for the background process
+    trigger: str  # "time_window", "cooldown", "conditional"
+
+    # Time window trigger: run once per day during this window
+    window_start: int | None = None  # hour (0-23)
+    window_end: int | None = None  # hour (0-23)
+
+    # Cooldown trigger: minimum hours between runs
+    cooldown_hours: float = 0
+
+    # Priority: lower = higher priority (for concurrency limits)
+    priority: int = 50
+
+    # Concurrency group: jobs in same group can't run simultaneously
+    blocking_group: str = "default"
+
+    # State key pattern for "already ran today" checks
+    state_key_pattern: str = ""  # e.g., "journal_{date}", "analyst_{date}_{slot}"
+
+    # Whether this runs inline (not as background process)
+    inline: bool = False
+
+    # Description for debugging
+    description: str = ""
+
+    # Whether this job is currently enabled
+    enabled: bool = True
+
+    def state_key(self, today: str = "", slot: str = "") -> str:
+        """Generate the state key for today's run."""
+        if not self.state_key_pattern:
+            return f"{self.name}_{today}"
+        return self.state_key_pattern.format(date=today, slot=slot)
+
+    def in_window(self, hour: int) -> bool:
+        """Check if current hour is within this job's time window.
+        Handles midnight crossing (e.g., window_start=22, window_end=2).
+        """
+        if self.window_start is None or self.window_end is None:
+            return True
+        end = self.window_end if self.window_end <= 24 else self.window_end
+        if end > 23:
+            end = 24  # clamp: 24 means "end of day"
+        if self.window_start <= end:
+            return self.window_start <= hour < end
+        # Midnight crossing
+        return hour >= self.window_start or hour < end
+
+
+# ---------------------------------------------------------------------------
+# Job registry — all background jobs declared in one place
+# ---------------------------------------------------------------------------
+
+BACKGROUND_JOBS: list[JobSpec] = [
+    # === Content & Knowledge ===
+    JobSpec(
+        name="explore",
+        command=["explore"],
+        trigger="cooldown",
+        cooldown_hours=0,  # controlled by EXPLORE_COOLDOWN_MINUTES in config
+        window_start=6, window_end=23,
+        priority=10,
+        blocking_group="content",
+        description="Fetch feeds and generate briefings",
+    ),
+    JobSpec(
+        name="writing-pipeline",
+        command=["writing-pipeline"],
+        trigger="conditional",  # always runs, internal logic decides
+        priority=20,
+        blocking_group="content",
+        description="Advance writing projects through pipeline",
+    ),
+    JobSpec(
+        name="autowrite-check",
+        command=["autowrite-check"],
+        trigger="cooldown",
+        cooldown_hours=4,
+        window_start=10, window_end=22,
+        state_key_pattern="last_autowrite_check",
+        description="Check for auto-writing opportunities",
+    ),
+
+    # === Reflection & Growth ===
+    JobSpec(
+        name="journal",
+        command=["journal"],
+        trigger="time_window",
+        window_start=22, window_end=24,
+        state_key_pattern="journal_{date}",
+        priority=30,
+        description="Daily journal entry",
+    ),
+    JobSpec(
+        name="reflect",
+        command=["reflect"],
+        trigger="time_window",
+        cooldown_hours=6,
+        priority=40,
+        state_key_pattern="last_reflect",
+        description="Weekly reflection (worldview update)",
+    ),
+    JobSpec(
+        name="soul-question",
+        command=["soul-question"],
+        trigger="time_window",
+        state_key_pattern="soul_question_{date}",
+        description="Daily soul question for self-examination",
+    ),
+    JobSpec(
+        name="spark-check",
+        command=["spark-check"],
+        trigger="cooldown",
+        cooldown_hours=2,
+        state_key_pattern="last_spark_check",
+        description="Check for new sparks from memory growth",
+    ),
+    JobSpec(
+        name="idle-think",
+        command=["idle-think"],
+        trigger="conditional",
+        priority=90,
+        description="Think when idle (low priority)",
+    ),
+
+    # === Publishing & Social ===
+    JobSpec(
+        name="substack-comments",
+        command=["check-comments"],
+        trigger="cooldown",
+        cooldown_hours=2,
+        window_start=8, window_end=23,
+        state_key_pattern="last_comment_check",
+        description="Check and reply to Substack comments",
+    ),
+    JobSpec(
+        name="substack-growth",
+        command=["growth-cycle"],
+        trigger="cooldown",
+        cooldown_hours=2,
+        window_start=8, window_end=23,
+        state_key_pattern="last_growth_cycle",
+        description="Substack growth activities",
+    ),
+    JobSpec(
+        name="substack-notes",
+        command=["notes-cycle"],
+        trigger="cooldown",
+        cooldown_hours=4,
+        window_start=9, window_end=22,
+        state_key_pattern="last_notes_cycle",
+        description="Post Substack notes",
+    ),
+
+    # === Analysis & Research ===
+    JobSpec(
+        name="analyst-pre",
+        command=["analyst", "--slot", "pre"],
+        trigger="time_window",
+        window_start=7, window_end=9,
+        state_key_pattern="analyst_{date}_pre",
+        description="Pre-market analysis",
+    ),
+    JobSpec(
+        name="analyst-post",
+        command=["analyst", "--slot", "post"],
+        trigger="time_window",
+        window_start=18, window_end=20,
+        state_key_pattern="analyst_{date}_post",
+        description="Post-market analysis",
+    ),
+    JobSpec(
+        name="daily-research",
+        command=["research"],
+        trigger="time_window",
+        state_key_pattern="research_{date}",
+        description="Daily research topic",
+    ),
+    JobSpec(
+        name="book-review",
+        command=["book-review"],
+        trigger="time_window",
+        state_key_pattern="book_review_{date}",
+        description="Daily book review",
+    ),
+    JobSpec(
+        name="skill-study",
+        command=["skill-study"],
+        trigger="cooldown",
+        cooldown_hours=4,
+        state_key_pattern="last_skill_study",
+        description="Study and extract skills from feed content",
+    ),
+
+    # === Media ===
+    JobSpec(
+        name="daily-photo",
+        command=["daily-photo"],
+        trigger="time_window",
+        window_start=7, window_end=9,
+        state_key_pattern="daily_photo_{date}",
+        description="Daily photo editing",
+    ),
+
+    # === Health (inline) ===
+    JobSpec(
+        name="health-check",
+        command=["health-check"],
+        trigger="time_window",
+        window_start=7, window_end=9,
+        state_key_pattern="health_check_{date}",
+        inline=True,
+        description="Health data check and export",
+    ),
+
+    # === Self-improvement ===
+    JobSpec(
+        name="self-audit",
+        command=["self-audit"],
+        trigger="time_window",
+        window_start=8, window_end=10,
+        state_key_pattern="self_audit_{date}",
+        description="Daily self-audit",
+    ),
+    JobSpec(
+        name="self-evolve",
+        command=["self-evolve"],
+        trigger="time_window",
+        window_start=13, window_end=16,
+        state_key_pattern="self_evolve_{date}",
+        description="Self-evolution proposals",
+    ),
+    JobSpec(
+        name="assessment",
+        command=["assess"],
+        trigger="time_window",
+        window_start=20, window_end=22,
+        state_key_pattern="assessment_{date}",
+        description="Daily performance assessment",
+    ),
+    JobSpec(
+        name="daily-report",
+        command=["daily-report"],
+        trigger="time_window",
+        state_key_pattern="daily_report_{date}",
+        description="Daily status report",
+    ),
+    JobSpec(
+        name="zhesi",
+        command=["zhesi"],
+        trigger="time_window",
+        state_key_pattern="zhesi_{date}",
+        description="Daily philosophical reflection (哲思)",
+    ),
+
+    # === Maintenance ===
+    JobSpec(
+        name="log-cleanup",
+        command=["log-cleanup"],
+        trigger="time_window",
+        window_start=3, window_end=4,
+        state_key_pattern="log_cleanup_{date}",
+        inline=True,
+        description="Clean old log files",
+    ),
+]
+
+
+def get_jobs(enabled_only: bool = True) -> list[JobSpec]:
+    """Return all registered jobs."""
+    if enabled_only:
+        return [j for j in BACKGROUND_JOBS if j.enabled]
+    return list(BACKGROUND_JOBS)
+
+
+def get_job(name: str) -> JobSpec | None:
+    """Look up a job by name."""
+    for j in BACKGROUND_JOBS:
+        if j.name == name:
+            return j
+    return None
+
+
+def list_job_names() -> list[str]:
+    """Return sorted list of all job names."""
+    return sorted(j.name for j in BACKGROUND_JOBS)

@@ -1795,6 +1795,31 @@ def do_reflect():
             if plan:
                 append_memory(f"Self-improvement plan generated: {len(diagnosis['low_scores'])} weak areas identified")
                 log.info("Improvement plan saved to soul/improvement_plan.json")
+
+            # Feed low scores into action backlog
+            try:
+                from action_backlog import ActionBacklog, ActionItem
+                backlog = ActionBacklog()
+                for ls in diagnosis.get("low_scores", [])[:5]:
+                    backlog.add(ActionItem(
+                        title=f"Improve {ls['dim']}",
+                        description=f"Score {ls['score']:.1f} — below threshold",
+                        source="reflect",
+                        priority="high" if ls["score"] < 2.0 else "medium",
+                        target_dimension=ls["dim"],
+                    ))
+                for dl in diagnosis.get("declining", [])[:3]:
+                    backlog.add(ActionItem(
+                        title=f"Stop decline in {dl['dim']}",
+                        description=f"Trend: {dl['scores']} (delta={dl['delta']:.2f})",
+                        source="reflect",
+                        priority="medium",
+                        target_dimension=dl["dim"],
+                    ))
+                backlog.expire_stale()
+                log.info("Reflect → backlog: %s", backlog.summary())
+            except (ImportError, OSError) as e:
+                log.warning("Action backlog update failed: %s", e)
         else:
             log.info("Score diagnosis: all dimensions healthy")
     except (ImportError, OSError) as e:
