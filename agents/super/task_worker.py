@@ -8,6 +8,7 @@ Usage:
     python task_worker.py --msg-file <path> --workspace <path> --task-id <id> [--thread-id <id>]
 """
 import argparse
+import inspect
 import json
 import logging
 import re
@@ -880,26 +881,42 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
         registry = get_registry()
         set_usage_agent(agent)
 
+        output_file = workspace / "output.md"
+        result_file = workspace / "result.json"
+        output_snapshot = _snapshot_file(output_file)
+
         try:
             try:
                 handler_fn = registry.load_handler(agent)
-                handler_fn(workspace, task_id, instruction, sender, thread_id)
+                handler_result = _invoke_registry_handler(
+                    handler_fn, workspace, task_id, instruction, sender, thread_id, tier,
+                )
             except KeyError:
                 log.warning("Agent '%s' not in registry, falling back to general", agent)
+                handler_result = None
                 _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
             except ImportError as e:
                 log.error("ImportError loading agent '%s': %s — check module path and "
                           "handler function name in agent manifest", agent, e)
+                handler_result = None
                 _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
             except Exception as e:
                 log.error("Registry handler for '%s' failed: %s — falling back to general", agent, e)
+                handler_result = None
                 _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
         finally:
             set_model_policy(None)  # always reset after step
 
         # Check if this step failed (result.json says error)
         # Also stamp the agent name for evaluator tracking
-        result_file = workspace / "result.json"
+        _ensure_step_result(
+            workspace,
+            task_id,
+            agent,
+            content,
+            handler_result,
+            output_snapshot,
+        )
         step_status = "done"
         step_output_preview = ""
         if result_file.exists():
@@ -923,7 +940,6 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                 pass
 
         # Read output from this step for chaining
-        output_file = workspace / "output.md"
         if output_file.exists():
             prev_output = output_file.read_text(encoding="utf-8")
             step_output_preview = prev_output[:200]
@@ -1118,6 +1134,99 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
         auto_flush(context_summary)
     except Exception as e:
         log.debug("Auto-flush skipped: %s", e)
+
+
+def _snapshot_file(path: Path) -> tuple[int, int] | None:
+    """Return a cheap file snapshot used to detect whether a handler updated output."""
+    if not path.exists():
+        return None
+    stat = path.stat()
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _invoke_registry_handler(handler_fn, workspace: Path, task_id: str, instruction: str,
+                             sender: str, thread_id: str, tier: str):
+    """Invoke a registry-loaded handler with optional runtime context kwargs.
+
+    Registry handlers have drifted signatures: some support `tier`, some also
+    accept `thread_history` / `thread_memory`, while others only accept the core
+    positional contract. Inspect the signature and pass only supported kwargs.
+    """
+    kwargs = {}
+    params = inspect.signature(handler_fn).parameters
+    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+    if accepts_kwargs or "tier" in params:
+        kwargs["tier"] = tier
+
+    needs_thread_history = accepts_kwargs or "thread_history" in params
+    needs_thread_memory = accepts_kwargs or "thread_memory" in params
+    if needs_thread_history:
+        kwargs["thread_history"] = load_thread_history(thread_id)
+    if needs_thread_memory:
+        kwargs["thread_memory"] = load_thread_memory(thread_id)
+
+    return handler_fn(workspace, task_id, instruction, sender, thread_id, **kwargs)
+
+
+def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
+                        handler_result: str | None,
+                        output_snapshot: tuple[int, int] | None) -> None:
+    """Backfill result.json for handlers that only return text/output.md."""
+    result_file = workspace / "result.json"
+    if result_file.exists():
+        return
+
+    output_file = workspace / "output.md"
+    output_changed = _snapshot_file(output_file) != output_snapshot
+    result_text = handler_result.strip() if isinstance(handler_result, str) else ""
+
+    if result_text.startswith("NEEDS_APPROVAL:") or result_text.startswith("NEEDS_INPUT:"):
+        summary = result_text.split(":", 1)[1].strip()
+        if not output_changed:
+            output_file.write_text(summary, encoding="utf-8")
+        _write_result(
+            workspace,
+            task_id,
+            "needs-input",
+            summary,
+            tags=[agent],
+            agent=agent,
+        )
+        return
+
+    summary = _load_step_summary(workspace)
+    if not summary and result_text:
+        summary = result_text
+    if not output_changed and result_text:
+        output_file.write_text(result_text, encoding="utf-8")
+        output_changed = True
+    if output_changed and not summary and output_file.exists():
+        summary = output_file.read_text(encoding="utf-8")[:300]
+
+    if summary:
+        tags = smart_classify(request, summary)
+        _write_result(workspace, task_id, "done", summary, tags=tags, agent=agent)
+        return
+
+    _write_result(
+        workspace,
+        task_id,
+        "error",
+        f"{agent} handler returned no result or output",
+        agent=agent,
+    )
+
+
+def _load_step_summary(workspace: Path) -> str:
+    """Load a handler-provided summary if present."""
+    summary_file = workspace / "summary.txt"
+    if summary_file.exists():
+        try:
+            return summary_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+    return ""
 
 
 def _update_thread_memory(thread_id: str, request: str, summary: str):
