@@ -128,3 +128,20 @@ def test_persistence():
         assert store2.get_beliefs()[0].statement == "Data persists"
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def test_add_reloads_latest_state_before_write():
+    from belief_store import BeliefStore, BeliefRecord
+    store1, tmp = _make_store()
+    try:
+        assert store1.add_belief(BeliefRecord(statement="Belief A", domain="test", confidence=0.8))
+        store2 = BeliefStore(path=tmp)
+        assert store2.add_belief(BeliefRecord(statement="Belief B", domain="test", confidence=0.7))
+
+        assert store1.add_belief(BeliefRecord(statement="Belief C", domain="test", confidence=0.6))
+
+        reloaded = BeliefStore(path=tmp)
+        assert sorted(b.statement for b in reloaded.get_beliefs()) == ["Belief A", "Belief B", "Belief C"]
+    finally:
+        tmp.unlink(missing_ok=True)
+        tmp.with_suffix(".lock").unlink(missing_ok=True)

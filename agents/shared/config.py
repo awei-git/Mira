@@ -53,7 +53,7 @@ def _parse_simple_yaml(text: str) -> dict:
         if val and val[0] in ('"', "'") and val[-1] == val[0]:
             val = val[1:-1]
         if indent == 0:
-            if val == "" or val == "":
+            if val == "":
                 # section header
                 current_section = key
                 result[key] = {}
@@ -185,6 +185,7 @@ RESEARCH_DIR = ARTIFACTS_DIR / "research"
 WIKI_DIR = ARTIFACTS_DIR / "wiki"
 WIKI_META = SOUL_DIR / "wiki_meta.json"
 WIKI_LOG_MAX_LINES = 500
+PODCAST_REPOS_DIR = MIRA_ROOT / ".podcast_repos"
 
 # Legacy aliases
 WORKSPACE_DIR = RESEARCH_DIR

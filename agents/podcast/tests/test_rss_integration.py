@@ -74,6 +74,15 @@ def test_lang_config_language_codes():
     assert _get_config("en")["language"] == "en"
 
 
+def test_lang_config_repo_dirs_are_persistent():
+    from config import PODCAST_REPOS_DIR
+    from rss import _get_config
+    zh = _get_config("zh")
+    en = _get_config("en")
+    assert zh["repo_dir"] == PODCAST_REPOS_DIR / "zh"
+    assert en["repo_dir"] == PODCAST_REPOS_DIR / "en"
+
+
 # ---------------------------------------------------------------------------
 # 3. File naming — must use slug, never "episode.mp3"
 # ---------------------------------------------------------------------------

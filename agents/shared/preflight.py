@@ -10,6 +10,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import config
+
 log = logging.getLogger("mira")
 
 
@@ -283,8 +285,7 @@ def _verify_file(path_str: str, expected: dict, checks: list, reasons: list):
 def _verify_publish(identifier: str, expected: dict, checks: list, reasons: list):
     """Verify a publish action. identifier could be a slug or URL."""
     # For publish, we check that the output file exists in the published dir
-    from config import WRITINGS_OUTPUT_DIR
-    published_dir = WRITINGS_OUTPUT_DIR / "_published"
+    published_dir = config.WRITINGS_OUTPUT_DIR / "_published"
 
     if not published_dir.exists():
         checks.append(CheckResult("published_dir", False, "Published dir missing"))

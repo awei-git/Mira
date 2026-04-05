@@ -66,91 +66,132 @@ class ActionBacklog:
 
     def __init__(self, path: Path | None = None):
         self._path = path or _BACKLOG_FILE
+        self._lock_path = self._path.with_suffix(".lock")
         self._items: list[ActionItem] = []
         self.load()
 
-    def load(self):
+    def _read_items_unlocked(self) -> list[ActionItem]:
         if not self._path.exists():
-            self._items = []
-            return
+            return []
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
-            self._items = [i for d in data if (i := ActionItem.from_dict(d)) is not None]
+            return [i for d in data if (i := ActionItem.from_dict(d)) is not None]
         except (json.JSONDecodeError, OSError) as e:
             log.warning("Failed to load action backlog: %s", e)
-            self._items = []
+            return []
+
+    def _write_items_unlocked(self, items: list[ActionItem]):
+        tmp = self._path.with_suffix(".tmp")
+        data = json.dumps([i.to_dict() for i in items], indent=2, ensure_ascii=False)
+        tmp.write_text(data, encoding="utf-8")
+        tmp.rename(self._path)
+
+    def _with_lock(self, lock_type: int, fn):
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._lock_path, "a+", encoding="utf-8") as lf:
+            fcntl.flock(lf, lock_type)
+            try:
+                return fn()
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+
+    def load(self):
+        self._items = self._with_lock(fcntl.LOCK_SH, self._read_items_unlocked)
 
     def save(self):
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(".tmp")
-        lock = self._path.with_suffix(".lock")
-        data = json.dumps([i.to_dict() for i in self._items],
-                          indent=2, ensure_ascii=False)
-        with open(lock, "w") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
-            tmp.write_text(data, encoding="utf-8")
-            tmp.rename(self._path)
-            fcntl.flock(lf, fcntl.LOCK_UN)
+        def _save():
+            self._write_items_unlocked(self._items)
+        self._with_lock(fcntl.LOCK_EX, _save)
 
     def add(self, item: ActionItem) -> bool:
         """Add an action item. Returns False if duplicate title exists."""
-        for existing in self._items:
-            if existing.title == item.title and existing.status in ("proposed", "approved", "in_progress"):
-                return False
-        self._items.append(item)
-        self.save()
-        log.info("BACKLOG_ADD: %s (source=%s, priority=%s)", item.title, item.source, item.priority)
-        return True
+        added = False
+
+        def _add():
+            nonlocal added
+            items = self._read_items_unlocked()
+            for existing in items:
+                if existing.title == item.title and existing.status in ("proposed", "approved", "in_progress"):
+                    self._items = items
+                    return
+            items.append(item)
+            self._write_items_unlocked(items)
+            self._items = items
+            added = True
+
+        self._with_lock(fcntl.LOCK_EX, _add)
+        if added:
+            log.info("BACKLOG_ADD: %s (source=%s, priority=%s)", item.title, item.source, item.priority)
+        return added
 
     def update_status(self, title: str, new_status: str, resolution: str = "") -> bool:
         """Update the status of an action item."""
         if new_status not in VALID_STATUSES:
             return False
-        for item in self._items:
-            if item.title == title:
-                item.status = new_status
-                item.updated_at = _utc_now()
-                if resolution:
-                    item.resolution = resolution
-                self.save()
-                log.info("BACKLOG_UPDATE: %s → %s", title, new_status)
-                return True
-        return False
+        updated = False
+
+        def _update():
+            nonlocal updated
+            items = self._read_items_unlocked()
+            for item in items:
+                if item.title == title:
+                    item.status = new_status
+                    item.updated_at = _utc_now()
+                    if resolution:
+                        item.resolution = resolution
+                    self._write_items_unlocked(items)
+                    self._items = items
+                    updated = True
+                    return
+            self._items = items
+
+        self._with_lock(fcntl.LOCK_EX, _update)
+        if updated:
+            log.info("BACKLOG_UPDATE: %s → %s", title, new_status)
+        return updated
 
     def get_active(self) -> list[ActionItem]:
         """Return items that need attention (proposed/approved/in_progress)."""
+        self.load()
         return [i for i in self._items
                 if i.status in ("proposed", "approved", "in_progress")
                 and not i.is_expired()]
 
     def get_by_status(self, status: str) -> list[ActionItem]:
+        self.load()
         return [i for i in self._items if i.status == status]
 
     def expire_stale(self, max_days: int = 30) -> int:
         """Mark old proposed items as expired. Returns count expired."""
         count = 0
         cutoff = datetime.now(timezone.utc)
-        for item in self._items:
-            if item.status != "proposed":
-                continue
-            # Check explicit expiry
-            if item.is_expired():
-                item.status = "expired"
-                item.updated_at = _utc_now()
-                count += 1
-                continue
-            # Check age-based expiry
-            try:
-                created = datetime.fromisoformat(item.created_at.replace("Z", "+00:00"))
-                age_days = (cutoff - created).days
-                if age_days > max_days:
+
+        def _expire():
+            nonlocal count
+            items = self._read_items_unlocked()
+            for item in items:
+                if item.status != "proposed":
+                    continue
+                if item.is_expired():
                     item.status = "expired"
                     item.updated_at = _utc_now()
                     count += 1
-            except (ValueError, TypeError):
-                pass
+                    continue
+                try:
+                    created = datetime.fromisoformat(item.created_at.replace("Z", "+00:00"))
+                    age_days = (cutoff - created).days
+                    if age_days > max_days:
+                        item.status = "expired"
+                        item.updated_at = _utc_now()
+                        count += 1
+                except (ValueError, TypeError):
+                    pass
+            if count:
+                self._write_items_unlocked(items)
+            self._items = items
+
+        self._with_lock(fcntl.LOCK_EX, _expire)
         if count:
-            self.save()
             log.info("BACKLOG_EXPIRE: %d items expired", count)
         return count
 
@@ -164,4 +205,5 @@ class ActionBacklog:
         return f"Backlog: {len(active)} active ({', '.join(parts) if parts else 'empty'})"
 
     def __len__(self) -> int:
+        self.load()
         return len(self._items)

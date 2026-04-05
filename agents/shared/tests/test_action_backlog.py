@@ -74,3 +74,20 @@ def test_summary():
         assert "2 active" in s
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def test_add_reloads_latest_state_before_write():
+    from action_backlog import ActionBacklog, ActionItem
+    bl1, tmp = _make_backlog()
+    try:
+        assert bl1.add(ActionItem(title="First", description="a", source="reflect"))
+        bl2 = ActionBacklog(path=tmp)
+        assert bl2.add(ActionItem(title="Second", description="b", source="reflect"))
+
+        assert bl1.add(ActionItem(title="Third", description="c", source="reflect"))
+
+        reloaded = ActionBacklog(path=tmp)
+        assert sorted(item.title for item in reloaded.get_active()) == ["First", "Second", "Third"]
+    finally:
+        tmp.unlink(missing_ok=True)
+        tmp.with_suffix(".lock").unlink(missing_ok=True)

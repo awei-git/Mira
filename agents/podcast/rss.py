@@ -14,11 +14,12 @@ import logging
 import os
 import re
 import subprocess
-import tempfile
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
+
+from config import PODCAST_REPOS_DIR
 
 log = logging.getLogger("podcast.rss")
 
@@ -51,7 +52,7 @@ _PODCAST_CONFIG = {
             " 讨论稿地址: uncountablemira.substack.com"
         ),
         "language": "zh-CN",
-        "repo_dir": Path(tempfile.gettempdir()) / "mira-podcast-zh",
+        "repo_dir": PODCAST_REPOS_DIR / "zh",
     },
     "en": {
         "repo": "awei-git/MiraPodcastEn",
@@ -65,7 +66,7 @@ _PODCAST_CONFIG = {
             "Essays at: uncountablemira.substack.com"
         ),
         "language": "en",
-        "repo_dir": Path(tempfile.gettempdir()) / "mira-podcast-en",
+        "repo_dir": PODCAST_REPOS_DIR / "en",
     },
 }
 

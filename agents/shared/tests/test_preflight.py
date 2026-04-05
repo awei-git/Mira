@@ -106,3 +106,16 @@ def test_verify_file_contains():
     result2 = verify_artifact("file", path, {"contains": "lazy dog"})
     assert not result2.verified
     Path(path).unlink(missing_ok=True)
+
+
+def test_verify_publish_uses_runtime_config_path(tmp_path, monkeypatch):
+    import config
+    from preflight import verify_artifact
+
+    pubdir = tmp_path / "_published"
+    pubdir.mkdir(parents=True)
+    (pubdir / "essay-slug.md").write_text("x" * 300, encoding="utf-8")
+    monkeypatch.setattr(config, "WRITINGS_OUTPUT_DIR", tmp_path)
+
+    result = verify_artifact("publish", "essay-slug", {"min_length": 200})
+    assert result.verified

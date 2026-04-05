@@ -26,7 +26,7 @@ STALENESS_HOURS = {
 def _is_stale(data_point: dict, metric_type: str) -> bool:
     """Check if a data point is too old to alert on."""
     max_hours = STALENESS_HOURS.get(metric_type, 48)
-    recorded = data_point.get("recorded_at")
+    recorded = data_point.get("date") or data_point.get("recorded_at")
     if not recorded:
         return True
     try:
@@ -40,6 +40,16 @@ def _is_stale(data_point: dict, metric_type: str) -> bool:
         return age > timedelta(hours=max_hours)
     except (ValueError, TypeError):
         return True  # Can't parse = treat as stale
+
+
+def _recorded_day(data_point: dict) -> str | None:
+    """Normalize metric timestamps to a YYYY-MM-DD string for day-level comparisons."""
+    recorded = data_point.get("date") or data_point.get("recorded_at")
+    if not recorded:
+        return None
+    if isinstance(recorded, str):
+        return recorded[:10]
+    return str(recorded)[:10]
 
 
 # Anomaly thresholds
@@ -283,10 +293,10 @@ def _check_weight(store, person_id: str, rules: dict) -> list[dict]:
     latest = data[0]
     latest_val = latest["value"]
     # Find previous measurement from a DIFFERENT day
-    latest_date = latest["recorded_at"][:10] if isinstance(latest["recorded_at"], str) else str(latest["recorded_at"])[:10]
+    latest_date = _recorded_day(latest)
     prev = None
     for d in data[1:]:
-        d_date = d["recorded_at"][:10] if isinstance(d["recorded_at"], str) else str(d["recorded_at"])[:10]
+        d_date = _recorded_day(d)
         if d_date != latest_date:
             prev = d
             break
@@ -434,7 +444,7 @@ def _check_blood_sugar(store, person_id: str, rules: dict) -> list[dict]:
     bs_rules = rules["blood_sugar"]
 
     # Heuristic: measurements before 10am are likely fasting
-    recorded_time = latest.get("recorded_at")
+    recorded_time = latest.get("date") or latest.get("recorded_at")
     is_likely_fasting = False
     if recorded_time:
         try:

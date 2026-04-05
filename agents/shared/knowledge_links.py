@@ -9,15 +9,22 @@ from datetime import datetime
 
 log = logging.getLogger("mira")
 
-VALID_TYPES = {"memory", "worldview", "reading_note", "skill", "episode", "writeback"}
+VALID_TYPES = {"memory", "worldview", "reading_note", "skill", "episode", "writeback", "wiki"}
 VALID_RELATIONS = {"supports", "contradicts", "extends", "supersedes", "related"}
 
 
 def _get_conn():
     """Get PostgreSQL connection from memory store."""
-    from memory_store import get_store
-    store = get_store()
-    return store.conn
+    try:
+        from memory_store import get_store
+        store = get_store()
+        conn = store.conn
+        if not conn:
+            log.warning("knowledge_links unavailable: memory store returned no DB connection")
+        return conn
+    except Exception as e:
+        log.warning("knowledge_links unavailable: failed to get DB connection: %s", e)
+        return None
 
 
 def _ensure_table():
@@ -46,7 +53,7 @@ def _ensure_table():
         cur.close()
         return True
     except Exception as e:
-        log.debug("knowledge_links table setup failed: %s", e)
+        log.warning("knowledge_links table setup failed: %s", e)
         try:
             conn.rollback()
         except Exception:
@@ -99,7 +106,7 @@ def add_link(source_type: str, source_id: str,
         cur.close()
         return True
     except Exception as e:
-        log.debug("add_link failed: %s", e)
+        log.warning("add_link failed: %s", e)
         try:
             conn.rollback()
         except Exception:
@@ -129,7 +136,7 @@ def get_links(source_type: str, source_id: str) -> list[dict]:
             for r in rows
         ]
     except Exception as e:
-        log.debug("get_links failed: %s", e)
+        log.warning("get_links failed: %s", e)
         return []
 
 
@@ -155,7 +162,7 @@ def get_backlinks(target_type: str, target_id: str) -> list[dict]:
             for r in rows
         ]
     except Exception as e:
-        log.debug("get_backlinks failed: %s", e)
+        log.warning("get_backlinks failed: %s", e)
         return []
 
 
@@ -200,7 +207,7 @@ def auto_link(content: str, source_type: str, source_id: str,
                 created += 1
 
     except Exception as e:
-        log.debug("auto_link failed: %s", e)
+        log.warning("auto_link failed: %s", e)
 
     if created:
         log.info("Auto-linked %s/%s → %d related entries", source_type, source_id[:30], created)
