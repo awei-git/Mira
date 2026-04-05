@@ -88,3 +88,50 @@ def test_run_autowrite_pipeline_writes_metadata_and_requests_approval(monkeypatc
     assert meta["final_md"] == str(final_file)
     assert bridge.calls
     assert bridge.calls[-1][1] == "needs-input"
+
+
+def test_writing_agent_run_command_uses_canonical_pipeline(monkeypatch, tmp_path):
+    import writing_agent
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    advanced = []
+
+    monkeypatch.setattr(
+        writing_agent,
+        "_get_canonical_writing_ops",
+        lambda: (
+            lambda: [{"workspace": workspace, "project": {"phase": "plan_ready"}}],
+            lambda path: advanced.append(path),
+        ),
+    )
+
+    count = writing_agent._run_canonical_pipeline()
+
+    assert count == 1
+    assert advanced == [workspace]
+
+
+def test_writing_agent_auto_command_uses_canonical_runner(monkeypatch):
+    import writing_agent
+
+    captured = {}
+    monkeypatch.setattr(
+        writing_agent,
+        "_get_canonical_autowrite_runner",
+        lambda: lambda task_id, title, writing_type, idea: captured.update({
+            "task_id": task_id,
+            "title": title,
+            "writing_type": writing_type,
+            "idea": idea,
+        }),
+    )
+
+    writing_agent._run_canonical_autowrite("Title", "essay", "Idea body", task_id="autowrite_test")
+
+    assert captured == {
+        "task_id": "autowrite_test",
+        "title": "Title",
+        "writing_type": "essay",
+        "idea": "Idea body",
+    }

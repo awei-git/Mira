@@ -2,10 +2,10 @@
 """Writing automation pipeline.
 
 Usage:
-    writing_agent.py run               # Automated daily run (LaunchAgent)
-    writing_agent.py status            # Show all project statuses
-    writing_agent.py iterate <slug>    # Manually advance one idea by one step
-    writing_agent.py new               # Show template for creating new ideas
+    writing_agent.py run               # Canonical writing_workflow scheduler shim
+    writing_agent.py status            # Show legacy idea/project statuses
+    writing_agent.py iterate <slug>    # Legacy manual step for idea files
+    writing_agent.py new               # Show template for legacy idea files
 """
 
 import hashlib
@@ -34,6 +34,9 @@ _wprompts = _load_module("writing_prompts", _writing_dir / "writer_prompts.py")
 _shared_dir = str(_writing_dir.parent / "shared")
 if _shared_dir not in sys.path:
     sys.path.insert(0, _shared_dir)
+_super_dir = str(_writing_dir.parent / "super")
+if _super_dir not in sys.path:
+    sys.path.insert(0, _super_dir)
 
 from config import CLAUDE_FALLBACK_MODEL
 from sub_agent import model_think
@@ -976,6 +979,40 @@ def cmd_sync():
         print("No changes from Apple Notes")
 
 
+def _get_canonical_writing_ops():
+    """Return the canonical writing workflow functions."""
+    from writing_workflow import check_writing_responses, advance_project
+    return check_writing_responses, advance_project
+
+
+def _run_canonical_pipeline() -> int:
+    """Scheduler shim: advance canonical writing_workflow projects only."""
+    check_writing_responses, advance_project = _get_canonical_writing_ops()
+    advanced = 0
+    for resp in check_writing_responses():
+        phase = resp["project"].get("phase", "")
+        if phase == "plan_ready":
+            advance_project(resp["workspace"])
+            advanced += 1
+    log.info("Canonical writing pipeline advanced %d project(s)", advanced)
+    return advanced
+
+
+def _get_canonical_autowrite_runner():
+    """Return the canonical autonomous-writing entry point."""
+    from workflows.writing import run_autowrite_pipeline
+    return run_autowrite_pipeline
+
+
+def _run_canonical_autowrite(title: str, writing_type: str, idea_content: str,
+                             task_id: str = ""):
+    """Compatibility shim for the old `writing_agent.py auto` command."""
+    task_id = task_id or f"autowrite_{datetime.now().strftime('%Y-%m-%d')}"
+    log.warning("writing_agent.py auto is deprecated; delegating to canonical autowrite")
+    runner = _get_canonical_autowrite_runner()
+    runner(task_id, title, writing_type, idea_content)
+
+
 def cmd_auto(title: str, writing_type: str, idea_content: str):
     """Create an idea file from args and run the full pipeline on it.
 
@@ -1230,12 +1267,12 @@ Autonomous writing by Mira. Write with personal voice — this is from lived exp
 USAGE = """Usage: writing_agent.py <command> [args]
 
 Commands:
-    run                 Automated daily run (processes all ideas)
-    status              Show status of all ideas/projects
-    iterate <slug>      Manually advance one idea by one step
-    sync                Sync Apple Notes → idea files
-    new                 Show how to create a new idea
-    auto                Autonomous writing (called by core.py)
+    run                 Canonical writing_workflow scheduler shim
+    status              Show legacy idea/project statuses
+    iterate <slug>      Legacy manual step for idea files
+    sync                Sync Apple Notes → legacy idea files
+    new                 Show template for legacy idea files
+    auto                Canonical autowrite shim (deprecated command)
 """
 
 
@@ -1260,7 +1297,7 @@ def main():
             i += 1
 
     if command == "run":
-        cmd_run()
+        _run_canonical_pipeline()
     elif command == "status":
         cmd_status()
     elif command == "sync":
@@ -1276,7 +1313,8 @@ def main():
         title = flags.get("title", "Untitled")
         writing_type = flags.get("type", "essay")
         idea = flags.get("idea", "")
-        cmd_auto(title, writing_type, idea)
+        task_id = flags.get("task-id", "")
+        _run_canonical_autowrite(title, writing_type, idea, task_id=task_id)
     else:
         print(f"Unknown command: {command}")
         print(USAGE)
