@@ -38,6 +38,7 @@ agents/shared/soul/book_review_history.json
 agents/shared/soul/soul_questions_history.json
 agents/shared/soul/worldview_decay.json
 agents/shared/soul/.soul_hashes.json
+agents/health/alert_history.json
 
 # Sync state files
 *.sync.json
