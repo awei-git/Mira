@@ -234,6 +234,201 @@ def test_execute_plan_steps_passes_tier_and_thread_context(tmp_path, monkeypatch
     assert captured["thread_memory"] == "memory block"
 
 
+def test_execute_plan_steps_respects_registry_preflight(tmp_path, monkeypatch):
+    """Registry preflight can block execution before the handler runs."""
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    called = {"handler": False}
+
+    class FakeRegistry:
+        def load_preflight(self, name: str):
+            assert name == "writer"
+            return lambda ws, task_id, instruction, sender, thread_id, **kwargs: (
+                False,
+                "PREFLIGHT BLOCKED [file_write]: missing content",
+            )
+
+        def load_handler(self, name: str):
+            assert name == "writer"
+
+            def handler(ws, task_id, instruction, sender, thread_id, **kwargs):
+                called["handler"] = True
+                return "should not run"
+
+            return handler
+
+    monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    plan = [{
+        "agent": "writer",
+        "instruction": "",
+        "tier": "light",
+        "prediction": {"difficulty": "easy", "failure_modes": [], "success_criteria": "blocked"},
+    }]
+    task_worker._execute_plan_steps(
+        plan,
+        workspace,
+        "task127",
+        "",
+        "ang",
+        "thread1",
+        None,
+        False,
+        1,
+    )
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert result["status"] == "error"
+    assert "PREFLIGHT BLOCKED" in result["summary"]
+    assert called["handler"] is False
+
+
+def test_execute_plan_steps_fails_closed_on_preflight_exception(tmp_path, monkeypatch):
+    """Preflight exceptions must fail closed, not fall back to general."""
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    called = {"handler": False}
+
+    class FakeRegistry:
+        def load_preflight(self, name: str):
+            assert name == "writer"
+
+            def preflight(ws, task_id, instruction, sender, thread_id, **kwargs):
+                raise RuntimeError("boom")
+
+            return preflight
+
+        def load_handler(self, name: str):
+            assert name == "writer"
+
+            def handler(ws, task_id, instruction, sender, thread_id, **kwargs):
+                called["handler"] = True
+                return "should not run"
+
+            return handler
+
+    monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    plan = [{
+        "agent": "writer",
+        "instruction": "write it",
+        "tier": "light",
+        "prediction": {"difficulty": "easy", "failure_modes": [], "success_criteria": "blocked"},
+    }]
+    task_worker._execute_plan_steps(
+        plan,
+        workspace,
+        "task128",
+        "write it",
+        "ang",
+        "thread1",
+        None,
+        False,
+        1,
+    )
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert result["status"] == "error"
+    assert "preflight failed" in result["summary"]
+    assert called["handler"] is False
+
+
+def test_execute_plan_steps_falls_back_when_preflight_load_errors(tmp_path, monkeypatch):
+    """Registry preflight import/load errors should follow normal general fallback."""
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    called = {"general": False, "handler": False}
+
+    class FakeRegistry:
+        def load_preflight(self, name: str):
+            assert name == "writer"
+            raise ImportError("bad preflight import")
+
+        def load_handler(self, name: str):
+            called["handler"] = True
+            raise AssertionError("handler should not load after preflight import error")
+
+    def fake_general(ws, task_id, instruction, sender, thread_id, **kwargs):
+        called["general"] = True
+        (ws / "output.md").write_text("Fallback reply", encoding="utf-8")
+        (ws / "summary.txt").write_text("Fallback reply", encoding="utf-8")
+        task_worker._write_result(ws, task_id, "done", "Fallback reply", agent="general")
+
+    monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
+    monkeypatch.setattr(task_worker, "_handle_general", fake_general)
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    plan = [{
+        "agent": "writer",
+        "instruction": "write it",
+        "tier": "light",
+        "prediction": {"difficulty": "easy", "failure_modes": [], "success_criteria": "fallback"},
+    }]
+    task_worker._execute_plan_steps(
+        plan,
+        workspace,
+        "task128b",
+        "write it",
+        "ang",
+        "thread1",
+        None,
+        False,
+        1,
+    )
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert result["status"] == "done"
+    assert result["agent"] == "general"
+    assert called["general"] is True
+    assert called["handler"] is False
+
+
+def test_socialmedia_handle_reuses_preflight_cache(tmp_path, monkeypatch):
+    """Execution should use the exact plan/content that preflight approved."""
+    registry = AgentRegistry()
+    handler = registry.load_handler("socialmedia")
+    preflight = registry.load_preflight("socialmedia")
+    assert preflight is not None
+
+    module_globals = handler.__globals__
+    monkeypatch.setitem(
+        module_globals,
+        "_plan_publish",
+        lambda content: {
+            "platform": "substack",
+            "source": "article.md",
+            "title": "Approved Title",
+            "subtitle": "",
+        },
+    )
+    monkeypatch.setitem(module_globals, "_resolve_content", lambda source, content: "# Approved\n\nBody" * 40)
+    monkeypatch.setitem(module_globals, "MIRA_ROOT", tmp_path)
+
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+
+    passed, msg = preflight(workspace, "task129", "publish it", "ang", "thread1")
+    assert passed, msg
+
+    monkeypatch.setitem(
+        module_globals,
+        "_plan_publish",
+        lambda content: (_ for _ in ()).throw(AssertionError("handle should reuse preflight cache")),
+    )
+    monkeypatch.setitem(
+        module_globals,
+        "_resolve_content",
+        lambda source, content: (_ for _ in ()).throw(AssertionError("handle should reuse preflight cache")),
+    )
+
+    result = handler(workspace, "task129", "publish it", "ang", "thread1")
+
+    assert result is not None
+    assert result.startswith("NEEDS_APPROVAL:")
+
+
 def test_autowrite_approval_prefers_metadata_file(tmp_path, monkeypatch):
     import handlers_legacy
 

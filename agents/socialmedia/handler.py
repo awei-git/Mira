@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config import ARTIFACTS_DIR, WRITINGS_OUTPUT_DIR, SUBSTACK_PUBLISHING_DISABLED, MIRA_ROOT
+from preflight import preflight_check
 from sub_agent import claude_think
 
 log = logging.getLogger("publisher")
@@ -28,6 +29,7 @@ _ERROR_KEYWORDS = [
 ]
 # Real articles are long; anything shorter than this is almost certainly not publishable
 _MIN_PUBLISH_CHARS = 200
+_PREFLIGHT_CACHE = ".socialmedia_preflight.json"
 
 
 def _content_looks_like_error(text: str) -> tuple[bool, str]:
@@ -67,7 +69,7 @@ PLATFORMS = {
 
 
 def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str) -> str | None:
+           sender: str, thread_id: str, **kwargs) -> str | None:
     """Handle a publish request. Returns summary or None on failure."""
 
     # Guard: Substack publishing disabled
@@ -77,7 +79,13 @@ def handle(workspace: Path, task_id: str, content: str,
         return msg
 
     # Step 1: Figure out what to publish and where
-    plan = _plan_publish(content)
+    cached = _load_preflight_cache(workspace)
+    if cached:
+        plan = cached.get("plan", {})
+        article_text = cached.get("article_text", "")
+    else:
+        plan = _plan_publish(content)
+        article_text = ""
     if not plan:
         return None
 
@@ -89,7 +97,8 @@ def handle(workspace: Path, task_id: str, content: str,
     log.info("Publishing to %s: title='%s' source='%s'", platform, title, source)
 
     # Step 2: Find the content to publish
-    article_text = _resolve_content(source, content)
+    if not article_text:
+        article_text = _resolve_content(source, content)
     if not article_text:
         msg = f"找不到要发布的内容: {source}"
         (workspace / "output.md").write_text(msg, encoding="utf-8")
@@ -149,6 +158,64 @@ def handle(workspace: Path, task_id: str, content: str,
     actual_result = result[len("NEEDS_APPROVAL:"):] if result.startswith("NEEDS_APPROVAL:") else result
     (workspace / "output.md").write_text(actual_result, encoding="utf-8")
     return result
+
+
+def preflight(workspace: Path, task_id: str, content: str,
+              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+    """Execution preflight for publish actions before side effects happen."""
+    plan = _plan_publish(content)
+    if not plan:
+        return False, "PREFLIGHT BLOCKED [publish]: could not determine publish target"
+
+    platform = plan.get("platform", "substack")
+    title = plan.get("title", "") or "untitled"
+    source = plan.get("source", "")
+    article_text = _resolve_content(source, content)
+    if not article_text:
+        return False, f"PREFLIGHT BLOCKED [publish]: 找不到要发布的内容: {source}"
+
+    is_error, error_reason = _content_looks_like_error(article_text)
+    if is_error:
+        return False, f"PREFLIGHT BLOCKED [publish]: {error_reason}"
+
+    action_type = "broadcast" if platform == "substack_note" else "publish"
+    result = preflight_check(
+        action_type,
+        {
+            "instruction": content,
+            "title": title,
+            "content": article_text,
+            "platform": platform,
+            "channel": platform,
+        },
+    )
+    if result.passed:
+        _write_preflight_cache(workspace, plan, article_text)
+        return True, ""
+    return False, result.summary()
+
+
+def _write_preflight_cache(workspace: Path, plan: dict, article_text: str) -> None:
+    cache_file = workspace / _PREFLIGHT_CACHE
+    cache_file.write_text(
+        json.dumps({"plan": plan, "article_text": article_text}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _load_preflight_cache(workspace: Path) -> dict | None:
+    cache_file = workspace / _PREFLIGHT_CACHE
+    if not cache_file.exists():
+        return None
+    try:
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    try:
+        cache_file.unlink()
+    except OSError:
+        pass
+    return data
 
 
 def _handle_note(content: str, inline_text: str | None,

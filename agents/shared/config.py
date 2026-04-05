@@ -181,6 +181,11 @@ BRIEFINGS_DIR = ARTIFACTS_DIR / "briefings"
 WRITINGS_OUTPUT_DIR = ARTIFACTS_DIR / "writings"
 RESEARCH_DIR = ARTIFACTS_DIR / "research"
 
+# Personal wiki — topic-indexed knowledge base (on iCloud for iOS access)
+WIKI_DIR = ARTIFACTS_DIR / "wiki"
+WIKI_META = SOUL_DIR / "wiki_meta.json"
+WIKI_LOG_MAX_LINES = 500
+
 # Legacy aliases
 WORKSPACE_DIR = RESEARCH_DIR
 MIRA_DIR = MIRA_BRIDGE_DIR
@@ -204,13 +209,19 @@ LOG_RETENTION_DAYS = _limits.get("log_retention_days", 14)
 SECRETS_FILE = _PROJECT_ROOT / "secrets.yml"
 
 # ---------------------------------------------------------------------------
-# Ollama (local LLM — privacy-safe, no network)
+# oMLX (local LLM — privacy-safe, no network, Apple Silicon optimized)
 # ---------------------------------------------------------------------------
-_ollama_cfg = _cfg.get("ollama", {})
-OLLAMA_HOST = _ollama_cfg.get("host", "127.0.0.1")
-OLLAMA_PORT = _ollama_cfg.get("port", 11434)
-OLLAMA_DEFAULT_MODEL = _ollama_cfg.get("default_model", "qwen2.5:32b-instruct-q4_K_M")
-OLLAMA_EMBED_MODEL = _ollama_cfg.get("embed_model", "nomic-embed-text")
+_omlx_cfg = _cfg.get("omlx", {})
+OMLX_HOST = _omlx_cfg.get("host", "127.0.0.1")
+OMLX_PORT = _omlx_cfg.get("port", 8800)
+OMLX_DEFAULT_MODEL = _omlx_cfg.get("default_model", "qwen3.5-27b")
+OMLX_EMBED_MODEL = _omlx_cfg.get("embed_model", "nomic-embed-text")
+
+# Backward-compatible aliases while runtime code still speaks "ollama".
+OLLAMA_HOST = OMLX_HOST
+OLLAMA_PORT = OMLX_PORT
+OLLAMA_DEFAULT_MODEL = OMLX_DEFAULT_MODEL
+OLLAMA_EMBED_MODEL = OMLX_EMBED_MODEL
 
 # ---------------------------------------------------------------------------
 # Database (PostgreSQL — localhost only)
@@ -246,7 +257,7 @@ def get_user_config(user_id: str) -> dict:
         "role": "guest",
         "display_name": user_id,
         "allowed_agents": ["general", "discussion"],
-        "model_restriction": "ollama",
+        "model_restriction": "omlx",
         "content_filter": True,
     }
     user_cfg = _users_cfg.get(user_id, default)
@@ -327,15 +338,15 @@ MODELS = {
         "model_id": "gpt-5.4",
         "style": "OpenAI GPT-5.4 — used as Claude fallback when quota is hit",
     },
+    "omlx": {
+        "provider": "omlx",
+        "model_id": OMLX_DEFAULT_MODEL,
+        "style": "Local LLM (oMLX) — private, no network, Apple Silicon optimized",
+    },
     "ollama": {
         "provider": "ollama",
-        "model_id": "qwen2.5:32b-instruct-q4_K_M",
-        "style": "Local LLM — private, no network, good Chinese support",
-    },
-    "ollama-large": {
-        "provider": "ollama",
-        "model_id": "qwen2.5:72b-instruct-q4_K_M",
-        "style": "Local premium LLM — slower but stronger reasoning, fully private",
+        "model_id": OMLX_DEFAULT_MODEL,
+        "style": "Legacy local-model alias routed to the current oMLX default model",
     },
 }
 

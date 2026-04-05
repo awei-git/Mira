@@ -888,6 +888,40 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
 
         try:
             try:
+                preflight_fn = getattr(registry, "load_preflight", lambda name: None)(agent)
+            except KeyError:
+                log.warning("Agent '%s' not in registry during preflight load, falling back to general", agent)
+                handler_result = None
+                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+                continue
+            except ImportError as e:
+                log.error("ImportError loading preflight for agent '%s': %s — falling back to general", agent, e)
+                handler_result = None
+                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+                continue
+            except Exception as e:
+                log.error("Registry preflight for '%s' failed to load: %s — falling back to general", agent, e)
+                handler_result = None
+                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+                continue
+
+            if preflight_fn:
+                try:
+                    passed, preflight_msg = _invoke_registry_preflight(
+                        preflight_fn, workspace, task_id, instruction, sender, thread_id, tier,
+                    )
+                except Exception as e:
+                    preflight_msg = f"{agent} preflight failed: {e}"
+                    log.error("Preflight for '%s' raised: %s", agent, e)
+                    (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
+                    _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+                    return
+                if not passed:
+                    log.warning("Preflight blocked agent '%s': %s", agent, preflight_msg)
+                    (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
+                    _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+                    return
+            try:
                 handler_fn = registry.load_handler(agent)
                 handler_result = _invoke_registry_handler(
                     handler_fn, workspace, task_id, instruction, sender, thread_id, tier,
@@ -1262,6 +1296,26 @@ def _invoke_registry_handler(handler_fn, workspace: Path, task_id: str, instruct
         kwargs["thread_memory"] = load_thread_memory(thread_id)
 
     return handler_fn(workspace, task_id, instruction, sender, thread_id, **kwargs)
+
+
+def _invoke_registry_preflight(preflight_fn, workspace: Path, task_id: str, instruction: str,
+                               sender: str, thread_id: str, tier: str):
+    """Invoke an optional registry preflight hook with matching runtime kwargs."""
+    kwargs = {}
+    params = inspect.signature(preflight_fn).parameters
+    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+    if accepts_kwargs or "tier" in params:
+        kwargs["tier"] = tier
+
+    needs_thread_history = accepts_kwargs or "thread_history" in params
+    needs_thread_memory = accepts_kwargs or "thread_memory" in params
+    if needs_thread_history:
+        kwargs["thread_history"] = load_thread_history(thread_id)
+    if needs_thread_memory:
+        kwargs["thread_memory"] = load_thread_memory(thread_id)
+
+    return preflight_fn(workspace, task_id, instruction, sender, thread_id, **kwargs)
 
 
 def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,

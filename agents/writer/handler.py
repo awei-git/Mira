@@ -14,7 +14,7 @@ import shutil
 from pathlib import Path
 
 from persona.persona_context import get_persona_context
-from preflight import verify_artifact
+from preflight import preflight_check, verify_artifact
 from sub_agent import claude_think
 from writing_workflow import run_full_pipeline
 
@@ -24,6 +24,22 @@ _QUICK_WRITE_SIGNALS = (
     "短文", "短一点", "简短", "quick", "tweet", "note", "caption",
     "100字", "200字", "300字", "brief", "一句", "一段",
 )
+
+
+def preflight(workspace: Path, task_id: str, content: str,
+              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+    """Execution preflight for writer tasks before any file artifacts are created."""
+    result = preflight_check(
+        "file_write",
+        {
+            "instruction": content,
+            "path": str(workspace / "output.md"),
+            "content": content.strip(),
+        },
+    )
+    if result.passed:
+        return True, ""
+    return False, result.summary()
 
 
 def handle(workspace: Path, task_id: str, content: str,

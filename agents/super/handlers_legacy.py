@@ -52,6 +52,18 @@ from task_worker import (
 log = logging.getLogger("task_worker")
 
 
+def _legacy_persona_prompt(max_length: int = 1600,
+                           domains: list[str] | None = None) -> str:
+    """Preserve soul integrity + memory/skills while adding structured beliefs."""
+    soul_ctx = format_soul(load_soul())
+    persona = get_persona_context(domains=domains)
+    belief_ctx = persona.beliefs[:600] if persona.beliefs else ""
+    text = soul_ctx
+    if belief_ctx:
+        text = f"{soul_ctx}\n\n{belief_ctx}"
+    return text[:max_length]
+
+
 # ---------------------------------------------------------------------------
 # Edit-artifact detection and handler
 # ---------------------------------------------------------------------------
@@ -109,8 +121,7 @@ def _handle_edit_artifact(task_data: dict, workspace: Path, task_id: str,
     if not original:
         return ""
 
-    soul = load_soul()
-    soul_ctx = format_soul(soul)
+    soul_ctx = _legacy_persona_prompt(max_length=1200, domains=["taste", "style", "writing"])
 
     prompt = f"""{soul_ctx[:500]}
 
@@ -296,8 +307,7 @@ def _handle_briefing(workspace: Path, task_id: str, content: str,
         _write_result(workspace, task_id, "done", msg, tags=["briefing"])
         return
 
-    soul = load_soul()
-    soul_ctx = format_soul(soul)
+    soul_ctx = _legacy_persona_prompt(max_length=2200)
 
     # Format feed items
     lines = []
@@ -378,8 +388,7 @@ def _handle_writing(workspace: Path, task_id: str, content: str,
 def _handle_quick_write(workspace: Path, task_id: str, content: str,
                         title: str, sender: str, thread_id: str):
     """Single-model quick draft -- no multi-agent plan/review cycle."""
-    soul = load_soul()
-    soul_ctx = format_soul(soul)
+    soul_ctx = _legacy_persona_prompt(max_length=1200, domains=["taste", "style", "writing"])
 
     prompt = (
         f"\u4f60\u662f\u4e00\u4e2a\u5199\u4f5c\u52a9\u624b\u3002\u4ee5\u4e0b\u662f\u4f60\u7684\u8eab\u4efd:\n{soul_ctx[:500]}\n\n"
@@ -675,8 +684,7 @@ def _handle_article_comment(workspace: Path, task_id: str, thread_id: str,
         article_context = article_content[:4000]
 
     # Load soul for personality
-    soul = load_soul()
-    soul_context = format_soul(soul)
+    soul_context = _legacy_persona_prompt(max_length=2200)
 
     # Load conversation history for this comment thread (deduplicated + compressed)
     conversation = compress_conversation(load_task_conversation(task_id))

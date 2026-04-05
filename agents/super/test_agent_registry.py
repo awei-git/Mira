@@ -85,6 +85,18 @@ def test_handlers_importable():
     print(f"  OK: {len(loaded)} handlers imported successfully")
 
 
+def test_optional_preflight_hooks_load():
+    """Agents may expose an optional preflight() hook in the same module."""
+    r = AgentRegistry()
+    writer_pf = r.load_preflight("writer")
+    social_pf = r.load_preflight("socialmedia")
+    general_pf = r.load_preflight("general")
+
+    assert callable(writer_pf)
+    assert callable(social_pf)
+    assert general_pf is None
+
+
 def test_descriptions_for_planner():
     """get_agent_descriptions returns non-empty formatted string."""
     r = AgentRegistry()
