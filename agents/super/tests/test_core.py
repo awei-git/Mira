@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 _AGENTS = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS / "super"))
@@ -37,6 +38,59 @@ def test_soul_loads():
     assert isinstance(soul, dict), f"load_soul returned {type(soul)}"
     assert "identity" in soul, "Soul missing identity"
     assert "worldview" in soul, "Soul missing worldview"
+
+
+def test_dispatch_scheduled_jobs_uses_registry(monkeypatch):
+    import core
+
+    jobs = [
+        SimpleNamespace(name="explore", inline=False, command=["explore"], priority=5),
+        SimpleNamespace(name="substack-growth", inline=False, command=["growth-cycle"], priority=10),
+        SimpleNamespace(name="skill-study", inline=False, command=["skill-study"], priority=20),
+    ]
+    payloads = {
+        "explore": {"label": "arxiv_hf", "sources": ["arxiv", "huggingface"]},
+        "substack-growth": True,
+        "skill-study": {"domain": "video", "group_idx": 2},
+    }
+    dispatched = []
+    session_new = []
+
+    monkeypatch.setattr(core, "get_jobs", lambda: jobs)
+    monkeypatch.setattr(core, "_scheduled_job_payload", lambda job: payloads.get(job.name))
+    monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd: dispatched.append((name, cmd)))
+
+    core._dispatch_scheduled_jobs(session_new)
+
+    assert [name for name, _ in dispatched] == [
+        "explore-arxiv_hf",
+        "substack-growth",
+        "skill-study-video",
+    ]
+    assert "--sources" in dispatched[0][1]
+    assert "arxiv,huggingface" in dispatched[0][1]
+    assert dispatched[1][1][-1] == "growth-cycle"
+    assert dispatched[2][1][-2:] == ["--group", "2"]
+    assert [entry["action"] for entry in session_new] == ["explore", "growth_cycle"]
+    assert session_new[0]["detail"] == "arxiv_hf"
+
+
+def test_dispatch_scheduled_jobs_runs_inline_jobs(monkeypatch):
+    import core
+
+    jobs = [
+        SimpleNamespace(name="health-check", inline=True, command=["health-check"], priority=1),
+        SimpleNamespace(name="log-cleanup", inline=True, command=["log-cleanup"], priority=2),
+    ]
+    ran = []
+
+    monkeypatch.setattr(core, "get_jobs", lambda: jobs)
+    monkeypatch.setattr(core, "_scheduled_job_payload", lambda job: True)
+    monkeypatch.setattr(core, "_run_inline_scheduled_job", lambda job, payload: ran.append(job.name))
+
+    core._dispatch_scheduled_jobs([])
+
+    assert ran == ["health-check", "log-cleanup"]
 
 
 def test_canonical_writing_pipeline_only_advances_plan_ready(monkeypatch, tmp_path):

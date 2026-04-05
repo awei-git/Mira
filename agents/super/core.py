@@ -91,6 +91,7 @@ from runtime.dispatcher import (
     _dispatch_background, _is_bg_running, _reap_stale_pids, _count_bg_running,
     MAX_CONCURRENT_BG,
 )
+from runtime.jobs import get_jobs
 
 log = logging.getLogger("mira")
 
@@ -1231,6 +1232,117 @@ def _run_health_weekly_report():
 # Schedule logic
 # ---------------------------------------------------------------------------
 
+def _scheduled_job_payload(job):
+    """Evaluate a declarative scheduler job and return its trigger payload."""
+    trigger_map = {
+        "writing-pipeline": lambda: True,
+        "explore": should_explore,
+        "reflect": should_reflect,
+        "journal": should_journal,
+        "daily-report": should_daily_report,
+        "daily-photo": should_daily_photo,
+        "analyst-pre": should_analyst,
+        "analyst-post": should_analyst,
+        "book-review": should_book_review,
+        "daily-research": should_research,
+        "zhesi": should_zhesi,
+        "soul-question": should_soul_question,
+        "autowrite-check": should_check_writing,
+        "skill-study": should_skill_study,
+        "substack-comments": should_check_comments,
+        "substack-growth": should_growth_cycle,
+        "substack-notes": should_post_notes,
+        "spark-check": should_spark_check,
+        "idle-think": should_idle_think,
+        "health-check": lambda: _should_health_check() or _has_pending_health_exports(),
+        "self-audit": _should_self_audit,
+        "self-evolve": _should_self_evolve,
+        "log-cleanup": should_log_cleanup,
+        "assessment": _should_daily_assessment,
+    }
+
+    trigger = trigger_map.get(job.name)
+    if trigger is None:
+        log.debug("No scheduler trigger registered for job '%s'", job.name)
+        return None
+
+    payload = trigger()
+    if job.name == "analyst-pre":
+        return payload if payload == "0700" else None
+    if job.name == "analyst-post":
+        return payload if payload == "1800" else None
+    return payload
+
+
+def _scheduled_job_background_spec(job, payload):
+    """Build the background process name and command for a scheduled job."""
+    core_path = str(Path(__file__).resolve())
+
+    if job.name == "explore":
+        label = payload["label"]
+        sources_arg = ",".join(payload["sources"])
+        return (
+            f"explore-{label}",
+            [sys.executable, core_path, "explore", "--sources", sources_arg, "--slot", label],
+        )
+
+    if job.name in {"analyst-pre", "analyst-post"}:
+        slot = str(payload)
+        return (
+            f"analyst-{slot}",
+            [sys.executable, core_path, "analyst", "--slot", slot],
+        )
+
+    if job.name == "skill-study":
+        domain = payload["domain"]
+        group_idx = str(payload["group_idx"])
+        return (
+            f"skill-study-{domain}",
+            [sys.executable, core_path, "skill-study", "--group", group_idx],
+        )
+
+    if job.name == "self-audit":
+        return (
+            "self-audit",
+            [sys.executable, str(Path(__file__).resolve().parent / "self_audit.py")],
+        )
+
+    return job.name, [sys.executable, core_path, *job.command]
+
+
+def _run_inline_scheduled_job(job, payload):
+    """Execute an inline scheduled job immediately in-process."""
+    if job.name == "health-check":
+        _run_health_check()
+        return
+    if job.name == "log-cleanup":
+        log_cleanup()
+        return
+    raise ValueError(f"No inline runner registered for job '{job.name}'")
+
+
+def _dispatch_scheduled_jobs(session_new: list[dict]):
+    """Run the declarative background scheduler using runtime.jobs."""
+    for job in sorted(get_jobs(), key=lambda item: item.priority):
+        payload = _scheduled_job_payload(job)
+        if not payload:
+            continue
+
+        if job.inline:
+            try:
+                _run_inline_scheduled_job(job, payload)
+            except Exception as e:
+                log.error("%s failed: %s", job.name, e)
+            continue
+
+        bg_name, cmd = _scheduled_job_background_spec(job, payload)
+        _dispatch_background(bg_name, cmd)
+
+        if job.name == "explore":
+            session_new.append(session_record("explore", payload["label"]))
+        elif job.name == "substack-growth":
+            session_new.append(session_record("growth_cycle"))
+
 
 # ---------------------------------------------------------------------------
 # PODCAST mode — generate conversation episode for published articles
@@ -1514,109 +1626,9 @@ def cmd_run():
     _sweep_publish_pipeline()
     _phase_times["pending_publish"] = round((_time.monotonic() - _t0) * 1000)
 
-    # --- All heavy work below runs in background processes ---
+    # --- All heavy work below runs through the declarative scheduler ---
     _t0 = _time.monotonic()
-
-    # Writing pipeline
-    _dispatch_background("writing-pipeline", [
-        sys.executable, str(Path(__file__).resolve()), "writing-pipeline",
-    ])
-
-    # Explore — free-form, curiosity-driven
-    explore_pick = should_explore()
-    if explore_pick:
-        sources_arg = ",".join(explore_pick["sources"])
-        _dispatch_background(f"explore-{explore_pick['label']}", [
-            sys.executable, str(Path(__file__).resolve()), "explore",
-            "--sources", sources_arg, "--slot", explore_pick["label"],
-        ])
-        _session_new.append(session_record("explore", explore_pick["label"]))
-
-    if should_reflect():
-        _dispatch_background("reflect", [
-            sys.executable, str(Path(__file__).resolve()), "reflect",
-        ])
-
-    if should_journal():
-        _dispatch_background("journal", [
-            sys.executable, str(Path(__file__).resolve()), "journal",
-        ])
-
-    if should_daily_report():
-        _dispatch_background("daily-report", [
-            sys.executable, str(Path(__file__).resolve()), "daily-report",
-        ])
-
-    # Daily photo edit — pick, edit, push for WA feedback
-    if should_daily_photo():
-        _dispatch_background("daily-photo", [
-            sys.executable, str(Path(__file__).resolve()), "daily-photo",
-        ])
-
-    # Analyst — dual schedule (pre-market + post-market)
-    analyst_slot = should_analyst()
-    if analyst_slot:
-        _dispatch_background(f"analyst-{analyst_slot}", [
-            sys.executable, str(Path(__file__).resolve()), "analyst",
-            "--slot", analyst_slot,
-        ])
-
-    # Daily book review (weekly reading series)
-    if should_book_review():
-        _dispatch_background("book-review", [
-            sys.executable, str(Path(__file__).resolve()), "book-review",
-        ])
-
-    # Daily research
-    if should_research():
-        _dispatch_background("daily-research", [
-            sys.executable, str(Path(__file__).resolve()), "research",
-        ])
-
-    # 每日哲思
-    if should_zhesi():
-        _dispatch_background("zhesi", [
-            sys.executable, str(Path(__file__).resolve()), "zhesi",
-        ])
-
-    # 每日灵魂问题
-    if should_soul_question():
-        _dispatch_background("soul-question", [
-            sys.executable, str(Path(__file__).resolve()), "soul-question",
-        ])
-
-    # Proactive autonomous writing check
-    if should_check_writing():
-        _dispatch_background("autowrite-check", [
-            sys.executable, str(Path(__file__).resolve()), "autowrite-check",
-        ])
-
-    # Skill study — daily video/photo craft learning
-    skill_pick = should_skill_study()
-    if skill_pick:
-        _dispatch_background(f"skill-study-{skill_pick['domain']}", [
-            sys.executable, str(Path(__file__).resolve()), "skill-study",
-            "--group", str(skill_pick["group_idx"]),
-        ])
-
-    # Substack comment check — reply to readers
-    if should_check_comments():
-        _dispatch_background("substack-comments", [
-            sys.executable, str(Path(__file__).resolve()), "check-comments",
-        ])
-
-    # Substack growth — likes + proactive comments (independent of explore)
-    if should_growth_cycle():
-        _dispatch_background("substack-growth", [
-            sys.executable, str(Path(__file__).resolve()), "growth-cycle",
-        ])
-        _session_new.append(session_record("growth_cycle"))
-
-    # Substack Notes — backfill articles + post standalone Notes
-    if should_post_notes():
-        _dispatch_background("substack-notes", [
-            sys.executable, str(Path(__file__).resolve()), "notes-cycle",
-        ])
+    _dispatch_scheduled_jobs(_session_new)
 
     # Podcast — DISABLED (voice quality check, re-enable after intro-mira regen)
     # _any_audio_running = any(
@@ -1632,58 +1644,12 @@ def cmd_run():
     #             "--lang", lang, "--slug", slug, "--title", title,
     #         ])
 
-    # Proactive thought sharing — message WA when Mira has something worth discussing
-    if should_spark_check():
-        _dispatch_background("spark-check", [
-            sys.executable, str(Path(__file__).resolve()), "spark-check",
-        ])
-
-    # Threshold-driven self-awakening — think about pending questions when idle pressure builds
-    if should_idle_think():
-        _dispatch_background("idle-think", [
-            sys.executable, str(Path(__file__).resolve()), "idle-think",
-        ])
-
-    # Daily health check — ingest Apple Health data + run anomaly detection.
-    # Also process pending iPhone exports immediately instead of waiting
-    # until the next morning window.
-    if _should_health_check() or _has_pending_health_exports():
-        try:
-            _run_health_check()
-        except Exception as e:
-            log.error("Health check failed: %s", e)
-
     # Weekly health report — Monday morning
     if _should_health_weekly_report():
         try:
             _run_health_weekly_report()
         except Exception as e:
             log.error("Health weekly report failed: %s", e)
-
-    # Daily self-audit — scan own logs, run tests, check codebase
-    if _should_self_audit():
-        _dispatch_background("self-audit", [
-            sys.executable, str(Path(__file__).resolve().parent / "self_audit.py"),
-        ])
-
-    # Daily self-evolution — reading notes → architecture improvements
-    if _should_self_evolve():
-        _dispatch_background("self-evolve", [
-            sys.executable, str(Path(__file__).resolve()), "self-evolve",
-        ])
-
-    # Nightly log cleanup — delete log files older than LOG_RETENTION_DAYS
-    if should_log_cleanup():
-        try:
-            log_cleanup()
-        except Exception as e:
-            log.error("log_cleanup failed: %s", e)
-
-    # Daily performance assessment — evaluator agent scores all agents
-    if _should_daily_assessment():
-        _dispatch_background("assessment", [
-            sys.executable, str(Path(__file__).resolve()), "assess",
-        ])
     _phase_times["dispatch"] = round((_time.monotonic() - _t0) * 1000)
 
     # -----------------------------------------------------------------------

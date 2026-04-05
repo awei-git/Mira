@@ -24,6 +24,7 @@ if str(_AGENTS_DIR / "general") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "general"))
 
 from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR
+from persona.persona_context import get_persona_context
 from soul_manager import load_soul, format_soul, recall_context
 from sub_agent import claude_act, claude_think, ClaudeTimeoutError
 from writing_workflow import run_full_pipeline
@@ -188,19 +189,10 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
     # Build conversation history from thread inbox/outbox
     conv_history = load_thread_history(thread_id)
 
-    # Load soul (identity + worldview + memory + interests)
+    persona = get_persona_context()
     soul = load_soul()
-    identity = soul.get("identity", "")
-    worldview = soul.get("worldview", "")
     memory = soul.get("memory", "")
-
-    # Load structured beliefs for grounded opinions
-    belief_context = ""
-    try:
-        from belief_store import BeliefStore
-        belief_context = BeliefStore().get_belief_context()
-    except (ImportError, OSError):
-        pass
+    thread_memory = load_thread_memory(thread_id)
 
     # Load recent context
     journals = _load_recent_journals(3)
@@ -217,15 +209,18 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
     prompt = f"""You are Mira. You are having a conversation with {sender} -- not executing a task.
 
 ## Who you are
-{identity[:1000]}
+{persona.identity[:1000]}
 
 ## Your worldview
-{worldview[:1500]}
+{persona.worldview[:1500]}
 
-{belief_context if belief_context else ""}
+{persona.beliefs if persona.beliefs else ""}
 
 ## Your recent memory
 {memory[:1000]}
+
+## Thread memory
+{thread_memory if thread_memory else "(no saved thread memory)"}
 
 ## Recent journal entries (your reflections)
 {journals if journals else "(no recent journal entries)"}

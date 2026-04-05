@@ -27,6 +27,7 @@ sys.path.insert(0, str(_AGENTS_DIR / "general"))
 import shutil
 
 from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR, MEMORY_FILE, WORLDVIEW_FILE
+from preflight import verify_artifact
 from soul_manager import (load_soul, format_soul, append_memory, save_skill,
                          save_episode, recall_context, save_knowledge_note)
 from sub_agent import claude_act, claude_think, ClaudeTimeoutError
@@ -1218,6 +1219,26 @@ def _snapshot_file(path: Path) -> tuple[int, int] | None:
     return (stat.st_mtime_ns, stat.st_size)
 
 
+def _verify_step_artifact(workspace: Path, task_id: str, agent: str, status: str) -> bool:
+    """Require a real output artifact before claiming success or input-needed."""
+    if status not in ("done", "needs-input"):
+        return True
+
+    output_file = workspace / "output.md"
+    verify = verify_artifact("file", str(output_file), {"min_size": 1})
+    if verify.verified:
+        return True
+
+    _write_result(
+        workspace,
+        task_id,
+        "error",
+        f"{agent} produced no verifiable output: {verify.summary()}",
+        agent=agent,
+    )
+    return False
+
+
 def _invoke_registry_handler(handler_fn, workspace: Path, task_id: str, instruction: str,
                              sender: str, thread_id: str, tier: str):
     """Invoke a registry-loaded handler with optional runtime context kwargs.
@@ -1249,6 +1270,16 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
     """Backfill result.json for handlers that only return text/output.md."""
     result_file = workspace / "result.json"
     if result_file.exists():
+        try:
+            existing = json.loads(result_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+        _verify_step_artifact(
+            workspace,
+            task_id,
+            agent,
+            existing.get("status", ""),
+        )
         return
 
     output_file = workspace / "output.md"
@@ -1259,6 +1290,8 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
         summary = result_text.split(":", 1)[1].strip()
         if not output_changed:
             output_file.write_text(summary, encoding="utf-8")
+        if not _verify_step_artifact(workspace, task_id, agent, "needs-input"):
+            return
         _write_result(
             workspace,
             task_id,
@@ -1280,6 +1313,8 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
 
     if summary:
         tags = smart_classify(request, summary)
+        if not _verify_step_artifact(workspace, task_id, agent, "done"):
+            return
         _write_result(workspace, task_id, "done", summary, tags=tags, agent=agent)
         return
 

@@ -137,6 +137,54 @@ def test_execute_plan_steps_backfills_done_result(tmp_path, monkeypatch):
     assert result["agent"] == "writer"
 
 
+def test_execute_plan_steps_rewrites_done_without_output_to_error(tmp_path, monkeypatch):
+    """A handler cannot claim done without producing a verifiable artifact."""
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+
+    class FakeRegistry:
+        def load_handler(self, name: str):
+            assert name == "general"
+
+            def handler(ws, task_id, instruction, sender, thread_id):
+                (ws / "result.json").write_text(
+                    json.dumps({
+                        "task_id": task_id,
+                        "status": "done",
+                        "summary": "Claimed success",
+                    }, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                return "Claimed success"
+
+            return handler
+
+    monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    plan = [{
+        "agent": "general",
+        "instruction": "Do something",
+        "tier": "light",
+        "prediction": {"difficulty": "easy", "failure_modes": [], "success_criteria": "done"},
+    }]
+    task_worker._execute_plan_steps(
+        plan,
+        workspace,
+        "task126",
+        "做点事情",
+        "ang",
+        "thread1",
+        None,
+        False,
+        1,
+    )
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert result["status"] == "error"
+    assert "no verifiable output" in result["summary"]
+
+
 def test_execute_plan_steps_passes_tier_and_thread_context(tmp_path, monkeypatch):
     """Registry dispatch should pass supported runtime kwargs to handlers."""
     workspace = tmp_path / "task"
