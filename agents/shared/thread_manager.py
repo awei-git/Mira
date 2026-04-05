@@ -4,6 +4,7 @@ Threads group messages by topic. Each thread has:
 - An entry in threads/index.json
 - Optional per-thread memory in threads/{id}/memory.md
 """
+import fcntl
 import json
 import logging
 import uuid
@@ -38,10 +39,14 @@ class ThreadManager:
             return []
 
     def _save_index(self):
-        INDEX_FILE.write_text(
-            json.dumps(self._threads, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        tmp = INDEX_FILE.with_suffix(".tmp")
+        data = json.dumps(self._threads, indent=2, ensure_ascii=False)
+        with open(tmp, "w", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.write(data)
+            f.flush()
+            fcntl.flock(f, fcntl.LOCK_UN)
+        tmp.rename(INDEX_FILE)
 
     def create_thread(self, title: str) -> str:
         """Create a new thread, return its ID."""
@@ -113,7 +118,7 @@ class ThreadManager:
         return ""
 
     def append_thread_memory(self, thread_id: str, entry: str):
-        """Append to per-thread memory."""
+        """Append to per-thread memory (fcntl-locked)."""
         if not thread_id:
             return
         thread_dir = THREADS_DIR / thread_id
@@ -123,12 +128,13 @@ class ThreadManager:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         line = f"- [{ts}] {entry}\n"
 
-        if mem_file.exists():
-            text = mem_file.read_text(encoding="utf-8")
-        else:
-            text = "# Thread Memory\n\n"
-        text += line
-        mem_file.write_text(text, encoding="utf-8")
+        with open(mem_file, "a", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            if mem_file.stat().st_size == 0:
+                f.write("# Thread Memory\n\n")
+            f.write(line)
+            f.flush()
+            fcntl.flock(f, fcntl.LOCK_UN)
 
     def list_threads(self, include_archived: bool = False) -> list[dict]:
         """Return all threads, optionally including archived ones."""

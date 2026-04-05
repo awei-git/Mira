@@ -119,10 +119,11 @@ def _load_architecture_context() -> str:
     try:
         from agent_registry import AgentRegistry
         registry = AgentRegistry()
-        registry.scan()
         agents_summary = []
-        for name, manifest in registry.all_agents().items():
-            agents_summary.append(f"  - {name}: {manifest.description} (tier={manifest.tier})")
+        for name in registry.list_agents():
+            manifest = registry.get_manifest(name)
+            if manifest:
+                agents_summary.append(f"  - {name}: {manifest.description} (tier={manifest.tier})")
         sections.append("=== Agent Registry ===\n" + "\n".join(agents_summary))
     except Exception as e:
         log.warning("Could not load agent registry: %s", e)

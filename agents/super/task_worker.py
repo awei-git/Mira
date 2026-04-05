@@ -239,20 +239,80 @@ _VALID_TIERS = {"light", "heavy"}
 _VALID_DIFFICULTIES = {"easy", "medium", "hard"}
 
 
+# Alias map: names the planner might hallucinate → canonical registry names
+_AGENT_ALIASES = {
+    "writing": "writer",
+    "write": "writer",
+    "briefing": "explorer",
+    "explore": "explorer",
+    "publish": "socialmedia",
+    "publishing": "socialmedia",
+    "substack": "socialmedia",
+    "social": "socialmedia",
+    "math": "researcher",
+    "research": "researcher",
+    "code": "coder",
+    "coding": "coder",
+    "browser": "surfer",
+    "web": "surfer",
+    "chat": "discussion",
+    "talk": "discussion",
+    "private": "secret",
+    "privacy": "secret",
+    "market": "analyst",
+    "analysis": "analyst",
+    "evaluate": "evaluator",
+    "camera": "photo",
+    "photography": "photo",
+    "edit_video": "video",
+    "film": "video",
+    "medicine": "health",
+    "medical": "health",
+    "audio": "podcast",
+    "tts": "podcast",
+}
+
+
+def _normalize_agent_name(name: str, valid_agents: set) -> tuple[str | None, str | None]:
+    """Normalize an agent name via alias map.
+
+    Returns (canonical_name, alias_used) where alias_used is None if no
+    normalization was needed, or the original name if it was aliased.
+    """
+    if name in valid_agents:
+        return name, None
+    canonical = _AGENT_ALIASES.get(name)
+    if canonical and canonical in valid_agents:
+        return canonical, name
+    return None, name
+
+
 def _validate_plan_step(step: dict, valid_agents: set) -> dict | None:
     """Validate a plan step against the required schema.
 
     Returns the validated (and normalized) step, or None if invalid.
     Schema:
-      - agent: string, must be in valid_agents
+      - agent: string, must be in valid_agents (aliases auto-resolved)
       - instruction: non-empty string
       - tier: 'light' or 'heavy' (defaults to 'light' if missing)
       - prediction: optional dict with difficulty/failure_modes/success_criteria
     """
     if not isinstance(step, dict):
         return None
-    agent = step.get("agent")
-    if agent not in valid_agents:
+    raw_agent = step.get("agent", "")
+    agent, alias_used = _normalize_agent_name(raw_agent, valid_agents)
+    if alias_used:
+        log.info("PLAN_ALIAS_NORMALIZE: '%s' → '%s'", alias_used, agent or "REJECTED")
+    if agent is None:
+        try:
+            from failure_log import record_failure
+            record_failure("planner", "validate_step", raw_agent,
+                           error_type="invalid_agent",
+                           context={"step": step, "valid_agents": sorted(valid_agents)})
+        except (ImportError, OSError):
+            pass
+        log.warning("PLAN_STEP_REJECTED: agent='%s' not in valid set %s | step=%s",
+                    raw_agent, sorted(valid_agents), step)
         return None
     instruction = step.get("instruction", "").strip()
     if not instruction:
@@ -1418,24 +1478,17 @@ If a previous round already produced content, reference it in your plan (e.g. us
     except (ImportError, OSError):
         pass
 
-    # Build available agents list — filter by user permissions
-    _all_agent_descs = {
-        "briefing": "Fetch feeds and generate a news briefing / summary",
-        "writing": "Write or create text content (article, story, essay, post, translation)",
-        "publish": "Publish EXISTING TEXT ARTICLES to Substack newsletter ONLY. NOT for audio, podcast episodes, or RSS feeds.",
-        "analyst": "Market analysis, competitive intelligence, trend detection, industry research, market sizing (has live web search)",
-        "researcher": "Mathematical proofs, derivations, deep research, paper writing/review",
-        "video": "Video editing — analyze footage, generate screenplay, cut highlights, mix music",
-        "photo": "Photo editing — analyze photos, learn editing style, apply edits, generate Lightroom presets/LUTs, batch process",
-        "podcast": "Generate audio from articles (TTS) AND publish podcast episodes to RSS feed (Apple Podcasts, Xiaoyuzhou). Handles the full podcast pipeline internally — do NOT use publish for anything podcast-related.",
-        "secret": "PRIVATE MODE — runs entirely on local LLM (Ollama), nothing leaves this machine. Route here for: personal finance, health, legal, passwords, family matters, 隐私敏感内容, anything the user explicitly marks as private/secret/隐私/私密",
-        "socialmedia": "Substack operations — check notes, read/reply to comments, manage followers, post notes, check engagement stats, fix broken links. Has direct API access to Substack.",
-        "surfer": "Browser automation — navigate non-Substack websites, fill forms, click buttons, extract data from JS-rendered pages.",
-        "general": "Answer questions, search, analyze, code, file operations, anything else (has web browsing for research tasks)",
-        "discussion": "The user wants to CHAT, not execute a task. Casual conversation, opinions, reflections, 'what do you think', philosophical questions, sharing thoughts. Use this when the message is conversational in nature and doesn't ask for any concrete action.",
-        "health": "Health monitoring — record weight/sleep/vitals, log symptoms/medications, query health trends, parse checkup reports. Privacy-first: all processing local.",
-        "clarify": "Ask the user a question ONLY if the request is genuinely ambiguous and cannot be inferred",
-    }
+    # Build available agents list from registry (single source of truth)
+    from agent_registry import get_registry
+    _registry = get_registry()
+    _all_agent_descs = {}
+    for _name in _registry.list_agents():
+        _m = _registry.get_manifest(_name)
+        if _m:
+            _handles = ", ".join(_m.handles) if _m.handles else _m.description
+            _all_agent_descs[_name] = _handles
+    # clarify is a virtual agent (not in registry)
+    _all_agent_descs["clarify"] = "Ask the user a question ONLY if the request is genuinely ambiguous and cannot be inferred"
     if allowed_agents:
         # Always include clarify + discussion as fallbacks
         agent_filter = set(allowed_agents) | {"clarify", "discussion"}
@@ -1481,16 +1534,16 @@ The "prediction" block is REQUIRED on every step. It captures your expectation b
 - success_criteria: one sentence describing what "done" looks like
 
 ## Examples
-- "今天有什么新闻" → [{{"agent": "briefing", "instruction": "生成今日新闻简报", "tier": "light", "prediction": {{"difficulty": "easy", "failure_modes": ["feed fetch timeout"], "success_criteria": "briefing with 5+ items returned"}}}}]
-- "写一篇关于AI的文章" → [{{"agent": "writing", "instruction": "写一篇600-800字的Substack文章，探讨AI的某个具体有趣角度，有独特观点", "tier": "heavy"}}]
-- "写一个Hello World发到substack" → [{{"agent": "writing", "instruction": "写一篇简短的Hello World文章", "tier": "light"}}, {{"agent": "publish", "instruction": "将上一步写好的文章发布到Substack", "tier": "light"}}]
+- "今天有什么新闻" → [{{"agent": "explorer", "instruction": "生成今日新闻简报", "tier": "light", "prediction": {{"difficulty": "easy", "failure_modes": ["feed fetch timeout"], "success_criteria": "briefing with 5+ items returned"}}}}]
+- "写一篇关于AI的文章" → [{{"agent": "writer", "instruction": "写一篇600-800字的Substack文章，探讨AI的某个具体有趣角度，有独特观点", "tier": "heavy"}}]
+- "写一个Hello World发到substack" → [{{"agent": "writer", "instruction": "写一篇简短的Hello World文章", "tier": "light"}}, {{"agent": "socialmedia", "instruction": "将上一步写好的文章发布到Substack", "tier": "light"}}]
 - "分析一下AI agent市场" → [{{"agent": "analyst", "instruction": "分析2026年AI agent市场的竞争格局：主要玩家、市场份额估算、战略差异化点和近期趋势", "tier": "heavy"}}]
 - "帮我去bhphotos上看看有什么好deal" → [{{"agent": "surfer", "instruction": "打开bhphotovideo.com的deals页面，提取当前打折商品", "tier": "light"}}]
 - "帮我去这个网站填个表单" → [{{"agent": "surfer", "instruction": "打开指定网站，找到表单并填写", "tier": "light"}}]
 - "每天早上9点给我发briefing" → [{{"agent": "general", "instruction": "用scheduler模块创建一个每天9点运行的定时任务", "tier": "light"}}]
 - "你觉得AI会取代程序员吗" → [{{"agent": "discussion", "instruction": "用户想讨论AI是否会取代程序员", "tier": "heavy"}}]
 - "今天怎么样" → [{{"agent": "discussion", "instruction": "用户在打招呼", "tier": "light"}}]
-- "把自由意志那篇发到substack" → [{{"agent": "publish", "instruction": "将'自由意志'文章发布到Substack", "tier": "light"}}]
+- "把自由意志那篇发到substack" → [{{"agent": "socialmedia", "instruction": "将'自由意志'文章发布到Substack", "tier": "light"}}]
 - "帮我算一下税" → [{{"agent": "secret", "instruction": "帮用户计算税务（隐私模式，本地处理）", "tier": "light"}}]
 - "帮我修这张照片" → [{{"agent": "photo", "instruction": "分析并修图", "tier": "light"}}]
 - "证明这个定理" → [{{"agent": "researcher", "instruction": "证明用户给出的定理", "tier": "heavy"}}]
