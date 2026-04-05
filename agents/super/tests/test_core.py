@@ -36,3 +36,24 @@ def test_soul_loads():
     assert isinstance(soul, dict), f"load_soul returned {type(soul)}"
     assert "identity" in soul, "Soul missing identity"
     assert "worldview" in soul, "Soul missing worldview"
+
+
+def test_canonical_writing_pipeline_only_advances_plan_ready(monkeypatch, tmp_path):
+    import core
+
+    advanced = []
+    workspace_a = tmp_path / "a"
+    workspace_b = tmp_path / "b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+
+    monkeypatch.setattr(core, "check_writing_responses", lambda: [
+        {"workspace": workspace_a, "project": {"title": "Plan", "phase": "plan_ready"}},
+        {"workspace": workspace_b, "project": {"title": "Draft", "phase": "draft_ready"}},
+    ])
+    monkeypatch.setattr(core, "advance_project", lambda workspace: advanced.append(workspace))
+
+    count = core._run_canonical_writing_pipeline()
+
+    assert count == 1
+    assert advanced == [workspace_a]

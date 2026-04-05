@@ -44,7 +44,7 @@ from task_manager import TaskManager, TASKS_DIR
 from soul_manager import load_soul, format_soul, append_memory
 from sub_agent import claude_think
 from writing_workflow import (
-    start_project, check_writing_responses, advance_project, start_from_plan,
+    check_writing_responses, advance_project, start_from_plan,
 )
 from prompts import respond_prompt
 
@@ -779,6 +779,22 @@ def _sweep_publish_pipeline():
                 log.warning("Failed to notify about stuck pipeline: %s", e)
 
 
+def _run_canonical_writing_pipeline() -> int:
+    """Advance canonical writing_workflow projects that are ready to move."""
+    advanced = 0
+    responses = check_writing_responses()
+    for resp in responses:
+        phase = resp["project"].get("phase", "")
+        title = resp["project"].get("title", "")
+        if phase == "plan_ready":
+            log.info("Auto-advancing canonical writing project: %s", title)
+            advance_project(resp["workspace"])
+            advanced += 1
+        elif phase == "draft_ready":
+            log.info("Writing project awaiting user feedback: %s", title)
+    return advanced
+
+
 def _sweep_stuck_items(bridge, task_mgr):
     """Find items stuck in 'working' with no active task and mark them failed.
     Also auto-dismiss alert-type items (informational, not actionable).
@@ -1458,12 +1474,7 @@ def cmd_run():
         # Auto-advance writing projects stuck in plan_ready (no more Notes approval)
         _t0 = _time.monotonic()
         try:
-            responses = check_writing_responses()
-            for resp in responses:
-                phase = resp["project"].get("phase", "")
-                if phase == "plan_ready":
-                    log.info("Auto-advancing plan_ready project: %s", resp["project"].get("title"))
-                    advance_project(resp["workspace"])
+            _run_canonical_writing_pipeline()
         except Exception as e:
             log.error("Writing response check failed: %s", e)
         _phase_times["writing_responses"] = round((_time.monotonic() - _t0) * 1000)
@@ -1508,9 +1519,7 @@ def cmd_run():
 
     # Writing pipeline
     _dispatch_background("writing-pipeline", [
-        sys.executable,
-        str(_AGENTS_DIR / "writer" / "writing_agent.py"),
-        "run",
+        sys.executable, str(Path(__file__).resolve()), "writing-pipeline",
     ])
 
     # Explore — free-form, curiosity-driven
@@ -1783,6 +1792,9 @@ def main():
         do_soul_question()
     elif command == "autowrite-check":
         do_autowrite_check()
+    elif command == "writing-pipeline":
+        advanced = _run_canonical_writing_pipeline()
+        log.info("Canonical writing pipeline advanced %d project(s)", advanced)
     elif command == "check-comments":
         do_check_comments()
     elif command == "growth-cycle":
@@ -1831,7 +1843,7 @@ def main():
         writing_type = flags.get("type", "novel")
         start_from_plan(title, plan_path, writing_type)
     else:
-        print(f"Usage: {sys.argv[0]} [run|talk|respond|explore|reflect|journal|analyst|zhesi|skill-study|autowrite-check|write-check|write-from-plan|spark-check]")
+        print(f"Usage: {sys.argv[0]} [run|talk|respond|explore|reflect|journal|analyst|zhesi|skill-study|autowrite-check|writing-pipeline|write-check|write-from-plan|spark-check]")
         sys.exit(1)
 
 
