@@ -35,7 +35,11 @@ from config import (
     validate_config,
     get_user_config, is_agent_allowed, get_model_restriction, should_filter_content,
 )
-from mira import Mira, Message
+try:
+    from mira import Mira, Message
+except (ImportError, ModuleNotFoundError):
+    Mira = None
+    Message = None
 from task_manager import TaskManager, TASKS_DIR
 from soul_manager import load_soul, format_soul, append_memory
 from sub_agent import claude_think
