@@ -1053,6 +1053,34 @@ def _handle_autowrite_approval(workspace: Path, task_id: str):
     import re as _re
     from publish_manifest import update_manifest
 
+    meta_file = workspace / "autowrite_meta.json"
+    if meta_file.exists():
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            final = Path(meta["final_md"])
+            article_dir = Path(meta.get("workspace", final.parent))
+            title = meta.get("title", final.stem)
+            slug = meta.get("slug", article_dir.name)
+            update_manifest(
+                slug,
+                title=title,
+                status="approved",
+                workspace=str(article_dir),
+                final_md=str(final),
+                item_id=task_id,
+                auto_podcast=meta.get("auto_podcast", True),
+            )
+            _write_result(
+                workspace,
+                task_id,
+                "done",
+                f"已批准发布 '{title}'。冷却期到了自动发，发完自动生成 podcast。",
+            )
+            log.info("Autowrite '%s' approved via metadata -> manifest (final=%s)", title, final)
+            return
+        except Exception as e:
+            log.warning("Autowrite metadata approval fallback failed for %s: %s", task_id, e)
+
     # Find the article's published/final markdown
     slug = task_id.replace("autowrite_", "").replace("_", "-")
     artifacts_base = ARTIFACTS_DIR / "writings"

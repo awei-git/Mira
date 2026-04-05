@@ -184,3 +184,36 @@ def test_execute_plan_steps_passes_tier_and_thread_context(tmp_path, monkeypatch
     assert captured["tier"] == "heavy"
     assert captured["thread_history"] == "history block"
     assert captured["thread_memory"] == "memory block"
+
+
+def test_autowrite_approval_prefers_metadata_file(tmp_path, monkeypatch):
+    import handlers_legacy
+
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    final_file = tmp_path / "project" / "final.md"
+    final_file.parent.mkdir()
+    final_file.write_text("# Title\n\nBody", encoding="utf-8")
+    meta = {
+        "title": "Title",
+        "slug": "title-slug",
+        "workspace": str(final_file.parent),
+        "final_md": str(final_file),
+        "auto_podcast": True,
+    }
+    (workspace / "autowrite_meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+    captured = {}
+
+    def fake_update_manifest(slug, **fields):
+        captured["slug"] = slug
+        captured["fields"] = fields
+        return {}
+
+    monkeypatch.setattr("publish_manifest.update_manifest", fake_update_manifest)
+    handlers_legacy._handle_autowrite_approval(workspace, "autowrite_2026-04-05")
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert captured["slug"] == "title-slug"
+    assert captured["fields"]["status"] == "approved"
+    assert result["status"] == "done"

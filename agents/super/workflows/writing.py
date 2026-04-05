@@ -7,14 +7,17 @@ in agents/writer/.
 import json
 import logging
 import re
+import shutil
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+if str(_AGENTS_DIR / "writer") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 
-from config import JOURNAL_DIR, WRITINGS_DIR
+from config import JOURNAL_DIR, WRITINGS_DIR, MIRA_ROOT
 try:
     from mira import Mira
 except (ImportError, ModuleNotFoundError):
@@ -25,6 +28,7 @@ from soul_manager import (
 )
 from sub_agent import claude_think
 from prompts import autonomous_writing_prompt
+from writing_workflow import run_full_pipeline
 
 from workflows.helpers import (
     _mine_za_ideas, _days_since_last_publish,
@@ -33,6 +37,70 @@ from workflows.helpers import (
 )
 
 log = logging.getLogger("mira")
+_TASKS_DIR = MIRA_ROOT / "tasks"
+
+
+def _autowrite_workspace(task_id: str) -> Path:
+    workspace = _TASKS_DIR / task_id
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
+def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_content: str):
+    """Run autonomous writing on the canonical writer pipeline.
+
+    Produces the final draft in writings/, writes task-local metadata for later
+    approval handling, and updates the bridge task to needs-input with a preview.
+    """
+    workspace = _autowrite_workspace(task_id)
+    bridge = Mira() if Mira else None
+
+    try:
+        project_dir, final_text = run_full_pipeline(title, idea_content)
+        final_file = project_dir / "final.md"
+        if final_file.exists():
+            shutil.copy2(final_file, workspace / "output.md")
+            article_text = final_file.read_text(encoding="utf-8")
+        else:
+            article_text = final_text
+            (workspace / "output.md").write_text(article_text, encoding="utf-8")
+
+        meta = {
+            "task_id": task_id,
+            "title": title,
+            "writing_type": writing_type,
+            "slug": project_dir.name,
+            "workspace": str(project_dir),
+            "final_md": str(final_file if final_file.exists() else workspace / "output.md"),
+            "auto_podcast": True,
+        }
+        (workspace / "autowrite_meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        summary = f"Autowrite draft ready: {title}"
+        (workspace / "summary.txt").write_text(summary, encoding="utf-8")
+
+        preview_text = article_text[:4000]
+        if len(article_text) > 4000:
+            preview_text += f"\n\n[...文章还有 {len(article_text) - 4000} 字，已截断]"
+        approval_msg = (
+            f"写好了！终稿如下，确认后发布。\n\n"
+            f"**{title}**\n\n"
+            f"---\n\n"
+            f"{preview_text}\n\n"
+            f"---\n\n"
+            f"回复 approve 确认发布，reject 取消。"
+        )
+        if bridge:
+            bridge.update_task_status(task_id, "needs-input", agent_message=approval_msg)
+        log.info("Canonical autowrite complete for '%s' (%s)", title, project_dir)
+    except Exception as e:
+        log.error("Canonical autowrite failed for '%s': %s", title, e)
+        (workspace / "summary.txt").write_text(f"Autowrite failed: {e}", encoding="utf-8")
+        if bridge:
+            bridge.update_task_status(task_id, "error", agent_message=f"写作出错了: {e}")
+        raise
 
 
 def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
@@ -124,8 +192,9 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
     # Dispatch writing as background task
     _dispatch_background(f"autowrite-{today}", [
         sys.executable,
-        str(Path(__file__).resolve().parent.parent.parent / "writer" / "writing_agent.py"),
-        "auto",
+        str(Path(__file__).resolve().parent.parent / "core.py"),
+        "autowrite-run",
+        "--task-id", task_id,
         "--title", title,
         "--type", writing_type,
         "--idea", content,
@@ -293,8 +362,9 @@ def do_autowrite_check():
 
     _dispatch_background(f"autowrite-{today}", [
         sys.executable,
-        str(Path(__file__).resolve().parent.parent.parent / "writer" / "writing_agent.py"),
-        "auto",
+        str(Path(__file__).resolve().parent.parent / "core.py"),
+        "autowrite-run",
+        "--task-id", task_id,
         "--title", title,
         "--type", writing_type,
         "--idea", content,

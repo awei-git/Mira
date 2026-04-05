@@ -73,7 +73,7 @@ from workflows.daily import (
 from workflows.social import (
     do_check_comments, do_growth_cycle, do_notes_cycle, do_spark_check,
 )
-from workflows.writing import do_autowrite_check
+from workflows.writing import do_autowrite_check, run_autowrite_pipeline
 
 # Extracted modules — triggers decide "should we run X?", dispatcher spawns bg tasks
 from runtime.triggers import (
@@ -1792,6 +1792,12 @@ def main():
         do_soul_question()
     elif command == "autowrite-check":
         do_autowrite_check()
+    elif command == "autowrite-run":
+        task_id = flags.get("task-id", f"autowrite_{datetime.now().strftime('%Y-%m-%d')}")
+        title = flags.get("title", "Untitled")
+        writing_type = flags.get("type", "essay")
+        idea = flags.get("idea", "")
+        run_autowrite_pipeline(task_id, title, writing_type, idea)
     elif command == "writing-pipeline":
         advanced = _run_canonical_writing_pipeline()
         log.info("Canonical writing pipeline advanced %d project(s)", advanced)
@@ -1843,7 +1849,7 @@ def main():
         writing_type = flags.get("type", "novel")
         start_from_plan(title, plan_path, writing_type)
     else:
-        print(f"Usage: {sys.argv[0]} [run|talk|respond|explore|reflect|journal|analyst|zhesi|skill-study|autowrite-check|writing-pipeline|write-check|write-from-plan|spark-check]")
+        print(f"Usage: {sys.argv[0]} [run|talk|respond|explore|reflect|journal|analyst|zhesi|skill-study|autowrite-check|autowrite-run|writing-pipeline|write-check|write-from-plan|spark-check]")
         sys.exit(1)
 
 
