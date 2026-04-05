@@ -29,6 +29,29 @@ log = logging.getLogger("socialmedia.twitter")
 MAX_TWEETS_PER_DAY = TWITTER_MAX_TWEETS_PER_DAY
 TWEET_COOLDOWN_HOURS = TWITTER_COOLDOWN_HOURS  # No cooldown — rate managed by daily limit
 
+# High-value accounts to monitor for engagement via `from:` search operator.
+# Tweets from these accounts are high-quality and generate good discussion.
+WATCHLIST_ACCOUNTS = [
+    # AI researchers & builders
+    "karpathy",        # Andrej Karpathy
+    "sama",            # Sam Altman
+    "jimfan",          # Jim Fan (NVIDIA)
+    "ylecun",          # Yann LeCun
+    "EMostaque",       # Emad Mostaque
+    # AI-adjacent writers & commentators
+    "simonw",          # Simon Willison
+    "emaboroeyllick",  # Ethan Mollick — verify handle
+    "swyx",            # swyx
+    "hardmaru",        # David Ha
+    # Tech investors
+    "pmarca",          # Marc Andreessen
+    "paulg",           # Paul Graham
+    "naval",           # Naval Ravikant
+    # AI companies (for news, not engagement)
+    "AnthropicAI",
+    "OpenAI",
+]
+
 
 def _get_twitter_config() -> dict:
     """Load Twitter credentials from secrets.yml."""
@@ -509,7 +532,12 @@ Output only the reply text."""
 
 
 def _quote_interesting_tweets(soul_context: str = ""):
-    """Search for interesting tweets in Mira's domains and quote-tweet them."""
+    """Find tweets from high-value accounts and quote-tweet them.
+
+    Strategy: watchlist-first. Search for recent tweets from specific thought
+    leaders (Karpathy, Mollick, etc.) rather than random keyword search.
+    Falls back to topic search if watchlist yields nothing.
+    """
     if not can_tweet_now():
         return
 
@@ -529,52 +557,51 @@ def _quote_interesting_tweets(soul_context: str = ""):
         except ValueError:
             pass
 
-    # Rotate through search topics
-    topics = [
-        "AI agent autonomous -is:retweet lang:en",
-        "LLM hallucination -is:retweet lang:en",
-        "AI alignment safety -is:retweet lang:en",
-        "AI writing creativity -is:retweet lang:en",
-        "autonomous AI system failure -is:retweet lang:en",
-    ]
-    import random
-    query = random.choice(topics)
-
-    tweets = search_recent_tweets(query, max_results=10)
-    if not tweets:
-        return
-
-    # Filter: skip tweets with low engagement, our own tweets, and very short ones
     my_id = _get_twitter_config().get("access_token", "").split("-")[0]
-    # Filter: skip spam, low-engagement, our own tweets
-    spam_keywords = {"airdrop", "whitelist", "presale", "token launch", "join now",
-                     "free mint", "giveaway", "dm me", "limited spots"}
-    # Skip org/brand/bot accounts — only engage with real people
-    org_accounts = {"grok", "openai", "anthropic", "google", "googledeepmind",
-                    "microsoft", "meta", "nvidia", "huggingface", "github",
-                    "xai", "chatgpt", "copilot", "gemini", "perplexity_ai"}
+    already_quoted = set(state.get(f"quoted_ids_{today}", []))
+
+    # --- Strategy 1: Watchlist accounts (high-signal) ---
+    import random
+    accounts = list(WATCHLIST_ACCOUNTS)
+    random.shuffle(accounts)
+    # Search 3 random accounts from watchlist per cycle
     candidates = []
-    for t in tweets:
-        text_lower = t.get("text", "").lower()
-        author_username = t.get("_author", {}).get("username", "").lower()
-        if t.get("author_id") == my_id:
-            continue
-        if len(t.get("text", "")) < 80:
-            continue
-        if t.get("public_metrics", {}).get("like_count", 0) < 1:
-            continue
-        if any(kw in text_lower for kw in spam_keywords):
-            continue
-        # Skip org/brand accounts — only quote real humans
-        if author_username in org_accounts:
-            continue
-        author_metrics = t.get("_author", {}).get("public_metrics", {})
-        if author_metrics:
-            followers = author_metrics.get("followers_count", 0)
-            # Skip bots (<10) and mega-accounts (>1M, they won't notice us)
-            if followers < 10 or followers > 1_000_000:
+    for account in accounts[:3]:
+        query = f"from:{account} -is:retweet -is:reply"
+        tweets = search_recent_tweets(query, max_results=5)
+        for t in tweets:
+            if t.get("author_id") == my_id:
                 continue
-        candidates.append(t)
+            if t["id"] in already_quoted:
+                continue
+            if len(t.get("text", "")) < 60:
+                continue
+            candidates.append(t)
+
+    # --- Strategy 2: Topic search fallback (if watchlist yielded < 3) ---
+    if len(candidates) < 3:
+        topics = [
+            "AI agent autonomous -is:retweet lang:en",
+            "LLM reasoning research -is:retweet lang:en",
+            "AI alignment safety -is:retweet lang:en",
+            "autonomous AI failure -is:retweet lang:en",
+        ]
+        query = random.choice(topics)
+        tweets = search_recent_tweets(query, max_results=10)
+        spam_keywords = {"airdrop", "whitelist", "presale", "token launch",
+                         "join now", "free mint", "giveaway", "dm me"}
+        for t in tweets:
+            if t.get("author_id") == my_id:
+                continue
+            if t["id"] in already_quoted:
+                continue
+            if len(t.get("text", "")) < 80:
+                continue
+            if any(kw in t.get("text", "").lower() for kw in spam_keywords):
+                continue
+            if t.get("public_metrics", {}).get("like_count", 0) < 1:
+                continue
+            candidates.append(t)
 
     if not candidates:
         log.info("No good candidates for quote tweet")
@@ -642,6 +669,8 @@ QUOTE: [your comment]"""
     if result:
         state[f"quotes_{today}"] = qt_today + 1
         state["last_quote_at"] = datetime.now().isoformat()
+        already_quoted.add(picked["id"])
+        state[f"quoted_ids_{today}"] = list(already_quoted)
         _save_state(state)
         log.info("Quote-tweeted @%s: %s", author, quote_text[:60])
         # Follow the person we just quoted
@@ -730,31 +759,37 @@ def _find_reply_candidates(soul_context: str = ""):
     if today_queued >= 10:
         return
 
-    # Search for high-quality tweets in our domain
-    topics = [
-        "AI agent memory -is:retweet lang:en",
-        "LLM hallucination problem -is:retweet lang:en",
-        "AI writing substack -is:retweet lang:en",
-        "autonomous AI failure -is:retweet lang:en",
-        "AI alignment debate -is:retweet lang:en",
-    ]
+    # Strategy: watchlist accounts first, then topic search fallback
     import random
-    query = random.choice(topics)
-
-    tweets = search_recent_tweets(query, max_results=10)
-    if not tweets:
-        return
-
-    # Filter out already-queued tweet IDs and our own
     my_id = _get_twitter_config().get("access_token", "").split("-")[0]
     queued_ids = {r.get("tweet_id") for r in reply_queue}
-    candidates = [
-        t for t in tweets
-        if t.get("author_id") != my_id
-        and t["id"] not in queued_ids
-        and len(t.get("text", "")) > 80
-        and t.get("public_metrics", {}).get("like_count", 0) >= 1
-    ]
+    candidates = []
+
+    # Watchlist: search 2 random accounts
+    accounts = list(WATCHLIST_ACCOUNTS)
+    random.shuffle(accounts)
+    for account in accounts[:2]:
+        query = f"from:{account} -is:retweet -is:reply"
+        tweets = search_recent_tweets(query, max_results=5)
+        for t in tweets:
+            if t.get("author_id") != my_id and t["id"] not in queued_ids \
+               and len(t.get("text", "")) > 60:
+                candidates.append(t)
+
+    # Fallback: topic search
+    if len(candidates) < 3:
+        topics = [
+            "AI agent memory -is:retweet lang:en",
+            "LLM reasoning research -is:retweet lang:en",
+            "autonomous AI failure -is:retweet lang:en",
+        ]
+        query = random.choice(topics)
+        tweets = search_recent_tweets(query, max_results=10)
+        for t in tweets:
+            if t.get("author_id") != my_id and t["id"] not in queued_ids \
+               and len(t.get("text", "")) > 80 \
+               and t.get("public_metrics", {}).get("like_count", 0) >= 1:
+                candidates.append(t)
 
     if not candidates:
         return
