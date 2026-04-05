@@ -244,11 +244,12 @@ def _synthesize_outputs(original_request: str, plan: list[dict],
 
     Only called for multi-step plans where the last step's raw output
     may benefit from integration with the original request context.
-    Skips synthesis if the last agent was publish (nothing to synthesize).
+    Skips synthesis if the last agent was publish/socialmedia/clarify
+    (the step output is already the user-facing result).
     """
     last_agent = plan[-1].get("agent", "")
-    # No synthesis needed for publish/clarify — the output is the result
-    if last_agent in ("publish", "clarify"):
+    # No synthesis needed for publish-like steps — the output is the result
+    if last_agent in ("publish", "socialmedia", "clarify"):
         return ""
 
     # Also skip if the output is already short/clean (single-step feel)
