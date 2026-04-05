@@ -29,28 +29,47 @@ log = logging.getLogger("socialmedia.twitter")
 MAX_TWEETS_PER_DAY = TWITTER_MAX_TWEETS_PER_DAY
 TWEET_COOLDOWN_HOURS = TWITTER_COOLDOWN_HOURS  # No cooldown — rate managed by daily limit
 
-# High-value accounts to monitor for engagement via `from:` search operator.
-# Tweets from these accounts are high-quality and generate good discussion.
-WATCHLIST_ACCOUNTS = [
-    # AI researchers & builders
-    "karpathy",        # Andrej Karpathy
-    "sama",            # Sam Altman
-    "jimfan",          # Jim Fan (NVIDIA)
-    "ylecun",          # Yann LeCun
-    "EMostaque",       # Emad Mostaque
-    # AI-adjacent writers & commentators
-    "simonw",          # Simon Willison
-    "emaboroeyllick",  # Ethan Mollick — verify handle
-    "swyx",            # swyx
-    "hardmaru",        # David Ha
-    # Tech investors
-    "pmarca",          # Marc Andreessen
-    "paulg",           # Paul Graham
-    "naval",           # Naval Ravikant
-    # AI companies (for news, not engagement)
-    "AnthropicAI",
-    "OpenAI",
+# Seed accounts for initial watchlist — Mira auto-discovers more over time.
+_SEED_WATCHLIST = [
+    "karpathy", "simonw", "swyx", "jimfan", "hardmaru",
+    "AnthropicAI", "OpenAI",
 ]
+
+# Minimum engagement score to add an account to the watchlist
+_WATCHLIST_MIN_AVG_LIKES = 20
+_WATCHLIST_MAX_SIZE = 50
+
+
+def get_watchlist() -> list[str]:
+    """Return the dynamic watchlist of accounts to monitor.
+
+    Combines seed accounts with accounts discovered through engagement.
+    Stored in twitter state file, grows automatically.
+    """
+    state = _load_state()
+    dynamic = state.get("watchlist", [])
+    # Merge seed + dynamic, deduplicate, preserve order
+    seen = set()
+    result = []
+    for account in _SEED_WATCHLIST + dynamic:
+        lower = account.lower()
+        if lower not in seen:
+            seen.add(lower)
+            result.append(account)
+    return result[:_WATCHLIST_MAX_SIZE]
+
+
+def add_to_watchlist(username: str, reason: str = ""):
+    """Add an account to the dynamic watchlist."""
+    state = _load_state()
+    dynamic = state.get("watchlist", [])
+    if username.lower() not in {u.lower() for u in dynamic + _SEED_WATCHLIST}:
+        dynamic.append(username)
+        if len(dynamic) > _WATCHLIST_MAX_SIZE:
+            dynamic = dynamic[-_WATCHLIST_MAX_SIZE:]
+        state["watchlist"] = dynamic
+        _save_state(state)
+        log.info("Watchlist +: @%s (%s)", username, reason or "auto-discovered")
 
 
 def _get_twitter_config() -> dict:
@@ -562,7 +581,7 @@ def _quote_interesting_tweets(soul_context: str = ""):
 
     # --- Strategy 1: Watchlist accounts (high-signal) ---
     import random
-    accounts = list(WATCHLIST_ACCOUNTS)
+    accounts = list(get_watchlist())
     random.shuffle(accounts)
     # Search 3 random accounts from watchlist per cycle
     candidates = []
@@ -673,6 +692,11 @@ QUOTE: [your comment]"""
         state[f"quoted_ids_{today}"] = list(already_quoted)
         _save_state(state)
         log.info("Quote-tweeted @%s: %s", author, quote_text[:60])
+        # Auto-discover: add quoted author to watchlist if high engagement
+        if author:
+            avg_likes = picked.get("public_metrics", {}).get("like_count", 0)
+            if avg_likes >= _WATCHLIST_MIN_AVG_LIKES:
+                add_to_watchlist(author, f"quoted, {avg_likes} likes")
         # Follow the person we just quoted
         author_id = picked.get("author_id", "")
         if author_id:
@@ -730,8 +754,12 @@ def _auto_follow_interesting_accounts():
             already_followed.add(author_id)
             followed_count += 1
             follows_today += 1
-            # Also like their tweet
             like_tweet(t["id"])
+            # Auto-discover: add to watchlist if high engagement
+            username = author.get("username", "")
+            likes = t.get("public_metrics", {}).get("like_count", 0)
+            if username and likes >= _WATCHLIST_MIN_AVG_LIKES:
+                add_to_watchlist(username, f"followed, {likes} likes on tweet")
 
         if followed_count >= 3 or follows_today >= 10:
             break
@@ -766,7 +794,7 @@ def _find_reply_candidates(soul_context: str = ""):
     candidates = []
 
     # Watchlist: search 2 random accounts
-    accounts = list(WATCHLIST_ACCOUNTS)
+    accounts = list(get_watchlist())
     random.shuffle(accounts)
     for account in accounts[:2]:
         query = f"from:{account} -is:retweet -is:reply"
