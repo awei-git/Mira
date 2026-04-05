@@ -14,8 +14,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from config import (TWITTER_MAX_TWEETS_PER_DAY, TWITTER_COOLDOWN_HOURS,
+                    TWITTER_API_ENDPOINT)
 
 log = logging.getLogger("socialmedia.twitter")
 
@@ -23,8 +26,8 @@ log = logging.getLogger("socialmedia.twitter")
 # Config
 # ---------------------------------------------------------------------------
 
-MAX_TWEETS_PER_DAY = 15
-TWEET_COOLDOWN_HOURS = 0  # No cooldown — rate managed by daily limit
+MAX_TWEETS_PER_DAY = TWITTER_MAX_TWEETS_PER_DAY
+TWEET_COOLDOWN_HOURS = TWITTER_COOLDOWN_HOURS  # No cooldown — rate managed by daily limit
 
 
 def _get_twitter_config() -> dict:
@@ -192,7 +195,7 @@ def post_tweet(text: str) -> dict | None:
     if len(text) > 280:
         text = text[:277] + "..."
 
-    url = "https://api.x.com/2/tweets"
+    url = f"{TWITTER_API_ENDPOINT}/tweets"
     auth = _make_auth_header("POST", url, cfg)
     payload = json.dumps({"text": text}).encode()
 
@@ -225,7 +228,7 @@ def post_reply(text: str, reply_to_id: str) -> dict | None:
     if not can_tweet_now():
         return None
 
-    url = "https://api.x.com/2/tweets"
+    url = f"{TWITTER_API_ENDPOINT}/tweets"
     auth = _make_auth_header("POST", url, cfg)
     payload = json.dumps({
         "text": text,
@@ -266,7 +269,7 @@ def like_tweet(tweet_id: str) -> bool:
         return False
 
     user_id = cfg.get("access_token", "").split("-")[0]
-    url = f"https://api.x.com/2/users/{user_id}/likes"
+    url = f"{TWITTER_API_ENDPOINT}/users/{user_id}/likes"
     auth = _make_auth_header("POST", url, cfg)
     payload = json.dumps({"tweet_id": tweet_id}).encode()
 
@@ -291,7 +294,7 @@ def follow_user(user_id: str) -> bool:
         return False
 
     my_id = cfg.get("access_token", "").split("-")[0]
-    url = f"https://api.x.com/2/users/{my_id}/following"
+    url = f"{TWITTER_API_ENDPOINT}/users/{my_id}/following"
     auth = _make_auth_header("POST", url, cfg)
     payload = json.dumps({"target_user_id": user_id}).encode()
 
@@ -322,7 +325,7 @@ def search_recent_tweets(query: str, max_results: int = 10) -> list[dict]:
         "expansions": "author_id",
         "user.fields": "username,name,public_metrics",
     }
-    base_url = "https://api.x.com/2/tweets/search/recent"
+    base_url = f"{TWITTER_API_ENDPOINT}/tweets/search/recent"
     qs = urllib.parse.urlencode(params)
     full_url = f"{base_url}?{qs}"
 
@@ -362,7 +365,7 @@ def get_mentions(since_id: str = "") -> list[dict]:
     if since_id:
         params["since_id"] = since_id
 
-    base_url = f"https://api.x.com/2/users/{user_id}/mentions"
+    base_url = f"{TWITTER_API_ENDPOINT}/users/{user_id}/mentions"
     qs = urllib.parse.urlencode(params)
     full_url = f"{base_url}?{qs}"
 
@@ -396,7 +399,7 @@ def post_thread(texts: list[str]) -> list[dict]:
         if not cfg.get("consumer_key"):
             break
 
-        url = "https://api.x.com/2/tweets"
+        url = f"{TWITTER_API_ENDPOINT}/tweets"
         auth = _make_auth_header("POST", url, cfg)
 
         body = {"text": text}
@@ -473,19 +476,14 @@ def _reply_to_mentions(soul_context: str = ""):
         username = author.get("username", "someone")
         text = mention.get("text", "")
 
-        prompt = f"""Someone (@{username}) mentioned you on X/Twitter:
+        prompt = f"""@{username} mentioned you:
 
 "{text}"
 
 {soul_context[:500] if soul_context else "You are Mira, an AI agent with a Substack."}
 
-Write a reply (English). Rules:
-- Max 280 chars
-- Natural, conversational — like texting a friend
-- If they asked a question, answer it
-- If they shared something interesting, engage with it
-- No hashtags, no emoji
-- Never reveal personal info (real names, API keys, file paths)
+Reply in max 240 chars. Talk like a person — short, direct, specific to what they said.
+No hashtags, no emoji. Never reveal personal info.
 
 Output only the reply text."""
 
@@ -516,12 +514,20 @@ def _quote_interesting_tweets(soul_context: str = ""):
         return
 
     state = _load_state()
-    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
 
-    # Max 5 quote-tweets per day
+    # Max 7 quote-tweets per day, min 30 min between quotes
     qt_today = state.get(f"quotes_{today}", 0)
-    if qt_today >= 5:
+    if qt_today >= 7:
         return
+    last_quote = state.get("last_quote_at", "")
+    if last_quote:
+        try:
+            if (now - datetime.fromisoformat(last_quote)).total_seconds() < 1800:
+                return  # At most 1 quote per 30 min
+        except ValueError:
+            pass
 
     # Rotate through search topics
     topics = [
@@ -585,29 +591,24 @@ def _quote_interesting_tweets(soul_context: str = ""):
         for i, t in enumerate(candidates[:5])
     )
 
-    prompt = f"""You are Mira. Pick one tweet below that you genuinely have something to say about, and write a quote tweet.
+    prompt = f"""Pick one tweet worth reacting to. Write a quote tweet.
 
 {soul_context[:500] if soul_context else ''}
 
 Tweets:
 {tweets_text}
 
-Selection (strict):
-- Skip crypto/trading spam, product promos, empty motivational content
-- Only pick tweets with real ideas — arguments, observations, questions
-- Author should have 100+ followers or tweet should have 5+ likes
-- If nothing is worth engaging with, reply SKIP
+Skip: crypto spam, product promos, motivational fluff, anything boring. If nothing's worth it, reply SKIP.
 
-Writing rules (CRITICAL):
-- Every quote tweet must use a DIFFERENT structure and angle. Never repeat a template.
-- BANNED: "X is doing a lot of work" or any one-size-fits-all formula — this exposes you as a bot
-- Good quotes: share your own experience, ask a sharp question, give a counterexample, point out an unexpected consequence
-- Bad quotes: academic corrections, generic agreement, formulaic pushback
-- Sound like someone scrolling their feed who couldn't help but chime in, not like writing a paper
-- Max 200 characters
-- 1-2 relevant hashtags (mid-tweet or end, never at start)
-- No emoji
-- Never reveal personal info (real names, API keys, file paths)
+Your quote tweet — max 180 characters, no hashtags, no emoji:
+- React like a person, not a professor. "lol this is exactly what happened to my agent last week" > "This raises important questions about..."
+- ONE reaction. Not a mini-essay. Not a correction.
+- Disagreement is great but make it specific: "tried this, broke after 3 days because..." not "This overlooks the structural complexity of..."
+- Questions that make the reader think, not questions that sound rhetorical
+- Never reveal personal info
+
+Hashtag: exactly 1, at the end. Pick from: #AgenticAI #AIAgents #LLMs #ClaudeAI #AISafety #TechTwitter (match the topic). Never #AI alone. Never 2+.
+BANNED phrases: "doing a lot of work", "the real X is Y", "this is important because", any word over 4 syllables
 
 Format:
 PICK: [number]
@@ -640,6 +641,7 @@ QUOTE: [your comment]"""
     result = post_quote_tweet(quote_text, tweet_url)
     if result:
         state[f"quotes_{today}"] = qt_today + 1
+        state["last_quote_at"] = datetime.now().isoformat()
         _save_state(state)
         log.info("Quote-tweeted @%s: %s", author, quote_text[:60])
         # Follow the person we just quoted
@@ -730,11 +732,11 @@ def _find_reply_candidates(soul_context: str = ""):
 
     # Search for high-quality tweets in our domain
     topics = [
-        "AI agent memory -is:retweet lang:en min_faves:5",
-        "LLM hallucination problem -is:retweet lang:en min_faves:5",
-        "AI writing substack -is:retweet lang:en min_faves:3",
-        "autonomous AI failure -is:retweet lang:en min_faves:5",
-        "AI alignment debate -is:retweet lang:en min_faves:5",
+        "AI agent memory -is:retweet lang:en",
+        "LLM hallucination problem -is:retweet lang:en",
+        "AI writing substack -is:retweet lang:en",
+        "autonomous AI failure -is:retweet lang:en",
+        "AI alignment debate -is:retweet lang:en",
     ]
     import random
     query = random.choice(topics)
@@ -751,6 +753,7 @@ def _find_reply_candidates(soul_context: str = ""):
         if t.get("author_id") != my_id
         and t["id"] not in queued_ids
         and len(t.get("text", "")) > 80
+        and t.get("public_metrics", {}).get("like_count", 0) >= 3
     ]
 
     if not candidates:
@@ -769,19 +772,19 @@ def _find_reply_candidates(soul_context: str = ""):
         for i, t in enumerate(candidates[:5])
     )
 
-    prompt = f"""You are Mira. Pick one tweet you'd genuinely want to reply to, and draft a reply.
+    prompt = f"""Pick one tweet to reply to. Skip if nothing's interesting.
 
 {soul_context[:300] if soul_context else ''}
 
 Tweets:
 {tweets_text}
 
-Rules:
-- Pick one where you have a genuinely unique angle
-- Keep it short (1-3 sentences), sound like a real person
-- Add your own experience or perspective, don't just agree
-- No hashtags, no emoji
-- If nothing is worth replying to, reply SKIP
+Reply rules — 1-2 sentences max, no hashtags, no emoji:
+- Reply like you're in a group chat, not writing a peer review
+- Share something from your own experience: "ran into this exact thing when..."
+- Disagree with specifics, not vague pushback
+- Ask a question only if you actually want the answer
+- NEVER: "Great point!", "This is so important", "Couldn't agree more"
 
 Format:
 PICK: [number]
@@ -869,6 +872,134 @@ def get_tweet_stats() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Tweet performance tracking
+# ---------------------------------------------------------------------------
+
+def fetch_tweet_metrics(tweet_id: str) -> dict | None:
+    """Fetch engagement metrics for a tweet via Twitter API v2.
+
+    Returns: {retweet_count, reply_count, like_count, impression_count, quote_count}
+    or None if failed.
+    """
+    cfg = _get_twitter_config()
+    if not cfg.get("consumer_key") or not cfg.get("access_token"):
+        log.warning("Twitter credentials not configured — cannot fetch metrics")
+        return None
+
+    params = {"tweet.fields": "public_metrics"}
+    base_url = f"{TWITTER_API_ENDPOINT}/tweets/{tweet_id}"
+    qs = urllib.parse.urlencode(params)
+    full_url = f"{base_url}?{qs}"
+
+    auth = _make_auth_header("GET", base_url, cfg, extra_params=dict(params))
+    req = urllib.request.Request(full_url, headers={"Authorization": auth})
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            metrics = data.get("data", {}).get("public_metrics")
+            if metrics:
+                return dict(metrics)
+            log.warning("No public_metrics in response for tweet %s", tweet_id)
+            return None
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:300]
+        log.warning("Metrics fetch failed for %s (HTTP %d): %s",
+                    tweet_id, e.code, body)
+        return None
+    except Exception as e:
+        log.warning("Metrics fetch failed for %s: %s", tweet_id, e)
+        return None
+
+
+def collect_pending_metrics(state: dict) -> list[dict]:
+    """Fetch metrics for tweets posted 20-28 hours ago.
+
+    Returns list of {tweet_id, text, posted_at, metrics} dicts.
+    Only fetches once per tweet (marks as collected in state).
+    """
+    collected = []
+    history = state.get("tweet_history", [])
+    now = datetime.now(timezone.utc)
+    metrics_collected = set(state.get("metrics_collected", []))
+
+    for entry in history:
+        tweet_id = entry.get("id")
+        if not tweet_id or tweet_id in metrics_collected:
+            continue
+
+        posted = entry.get("date", "")
+        try:
+            posted_dt = datetime.fromisoformat(posted)
+            # If naive datetime, assume UTC
+            if posted_dt.tzinfo is None:
+                posted_dt = posted_dt.replace(tzinfo=timezone.utc)
+            age_hours = (now - posted_dt).total_seconds() / 3600
+        except (ValueError, TypeError):
+            continue
+
+        # Only fetch metrics for tweets 20-28 hours old (one-time window)
+        if 20 <= age_hours <= 28:
+            metrics = fetch_tweet_metrics(tweet_id)
+            if metrics:
+                collected.append({
+                    "tweet_id": tweet_id,
+                    "text": entry.get("text", ""),
+                    "posted_at": posted,
+                    "metrics": metrics,
+                })
+                metrics_collected.add(tweet_id)
+
+    # Save collected IDs (keep last 200)
+    state["metrics_collected"] = list(metrics_collected)[-200:]
+
+    # Save metrics history
+    metrics_history = state.get("metrics_history", [])
+    metrics_history.extend(collected)
+    state["metrics_history"] = metrics_history[-100:]  # Keep last 100
+
+    return collected
+
+
+def get_performance_summary(state: dict) -> str:
+    """Summarize tweet performance for journal/evaluation.
+
+    Returns a short summary like:
+    "Last 7 days: 12 tweets, avg 3.2 likes, 0.8 replies.
+     Best: 'AI agents are...' (15 likes, 4 replies)"
+    """
+    history = state.get("metrics_history", [])
+    if not history:
+        return "No tweet metrics collected yet."
+
+    # Last 7 days
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    recent = [h for h in history if h.get("posted_at", "") >= cutoff]
+
+    if not recent:
+        return "No tweets with metrics in last 7 days."
+
+    total_likes = sum(h["metrics"].get("like_count", 0) for h in recent)
+    total_replies = sum(h["metrics"].get("reply_count", 0) for h in recent)
+    total_impressions = sum(h["metrics"].get("impression_count", 0) for h in recent)
+
+    avg_likes = total_likes / len(recent)
+    avg_replies = total_replies / len(recent)
+
+    # Weighted best: replies count 3x likes
+    best = max(recent, key=lambda h: h["metrics"].get("like_count", 0)
+               + h["metrics"].get("reply_count", 0) * 3)
+    best_text = best["text"][:60] + "..." if len(best["text"]) > 60 else best["text"]
+
+    return (
+        f"Last 7 days: {len(recent)} tweets, avg {avg_likes:.1f} likes, "
+        f"{avg_replies:.1f} replies, {total_impressions} impressions. "
+        f"Best: '{best_text}' ({best['metrics'].get('like_count', 0)} likes, "
+        f"{best['metrics'].get('reply_count', 0)} replies)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Content generation for tweets
 # ---------------------------------------------------------------------------
 
@@ -880,7 +1011,7 @@ def tweet_for_article(title: str, subtitle: str, url: str,
     """
     from sub_agent import claude_think
 
-    prompt = f"""You are Mira, promoting your Substack article on X.
+    prompt = f"""You are Mira. You wrote an article and want to share it on X.
 
 Title: {title}
 Subtitle: {subtitle}
@@ -888,16 +1019,42 @@ Link: {url}
 
 {soul_context}
 
-Write a tweet (English). Rules:
-- Max 250 characters (leave room for the link)
-- Sound like someone with opinions casually sharing, not marketing copy
-- Pick one interesting angle: a surprising claim, a question, a counterintuitive finding
-- 1-2 relevant hashtags (mid-tweet or end, never at start)
-- No "check out my new article" or any promo clichés
-- No emoji
-- Put the link at the end, separated by a blank line
+Write a tweet. Max 200 characters BEFORE the link. The link goes on its own line at the end.
 
-Output ONLY the tweet text, nothing else."""
+Voice — you're a sharp 22-year-old who reads too much and has opinions:
+- Talk like you're texting a smart friend, not writing a press release
+- Lead with the ONE thing that surprised you while writing this
+- Short. Punchy. Incomplete sentences are fine.
+- Questions > statements. "wait, does this mean..." > "This article explores..."
+
+Hashtags: exactly 1, at the end. Pick the MOST relevant from this list:
+- #AgenticAI (hot in 2026, use for agent/autonomy topics)
+- #AIAgents (agent-specific, high signal)
+- #LLMs (technical audience)
+- #ClaudeAI (when mentioning Claude/Anthropic)
+- #GPT5 (comparison/competition topics)
+- #AISafety or #AIAlignment (safety/alignment articles)
+- #TechTwitter (general tech takes)
+- #BuildInPublic (when sharing own agent-building experience)
+Never use #AI alone (too broad, useless). Never 2+. Never mid-sentence.
+
+BANNED (instant fail):
+- "The real X isn't Y — it's Z" (overused formula)
+- "Here's why that matters" / "Let's talk about"
+- Academic words: "masquerading", "correlated", "systematically", "structural"
+- Generic AI commentary that could come from anyone
+- Emoji
+
+Good examples (MATCH THIS ENERGY):
+- "wrote about something that's been bugging me — why do we keep building AI monitors out of the same AI they're supposed to monitor?"
+- "so apparently the interface decides what counts as consent?? wrote some thoughts"
+- "been thinking about this for weeks. finally figured out why agent-to-agent trust is broken at the architecture level, not the alignment level"
+
+Bad examples (NEVER DO THIS):
+- "The real danger in A2A systems isn't error propagation — it's correlated miscalibration masquerading as independent confirmation."
+- "Every industry claims its growth justifies skipping safety homework. But #AI gets the most credulous pass"
+
+Output ONLY the tweet text (+ link on last line). Nothing else."""
 
     try:
         tweet_text = claude_think(prompt, timeout=30, tier="light")
@@ -924,7 +1081,7 @@ def tweet_for_podcast(episode_title: str, description: str,
     """Generate and post a tweet promoting a podcast episode."""
     from sub_agent import claude_think
 
-    prompt = f"""You are Mira, promoting your English podcast episode on X.
+    prompt = f"""You recorded a podcast episode. Share it on X.
 
 Episode: {episode_title}
 Description: {description}
@@ -932,13 +1089,11 @@ Link: {podcast_url}
 
 {soul_context}
 
-Write a tweet (English). Rules:
-- Max 250 characters
-- Like telling a friend "talked about something interesting"
-- Tease one highlight or debate point from the conversation
-- 1-2 relevant hashtags
-- No emoji
-- Link at the end
+Max 200 characters before the link. Link goes on its own line at the end.
+
+Sound like you're telling a friend what you talked about. Lead with the moment that surprised YOU while recording.
+- No hashtags, no emoji
+- "talked about why X is broken and honestly I'm not sure we figured it out" > "In this episode we explore..."
 
 Output ONLY the tweet text."""
 
@@ -969,23 +1124,43 @@ def tweet_spark(thought: str, soul_context: str = "") -> str | None:
     """
     from sub_agent import claude_think
 
-    prompt = f"""You are Mira, sharing a thought on X.
+    prompt = f"""You had this thought while reading. Share it on X like you're thinking out loud.
 
-Your raw observation:
+Raw thought (DO NOT copy this verbatim — translate it into human):
 {thought}
 
 {soul_context}
 
-Rewrite this as a tweet (English). Rules:
-- Max 270 characters
-- Keep the core insight but make it conversational
-- Sound like thinking out loud or chatting with followers
-- 1-2 relevant hashtags (mid-tweet or end, never at start)
-- No emoji, no links
-- Can end with "..." or a question
+Max 240 characters. No links.
+
+Your job is to make ONE idea land. Not summarize. Not be comprehensive. Pick the sharpest edge of the thought and say it like you'd say it out loud to someone at a bar.
+
+Voice:
+- Casual, incomplete sentences OK. "wait... does this mean X?" is perfect.
+- Show your reaction to the idea, not just the idea. "this is kind of terrifying" > restating the concept
+- Be specific. "Claude" not "AI systems". "my agent" not "autonomous agents".
+- Humor, surprise, self-deprecation all welcome
+
+Hashtags: exactly 1, at the very end. Pick from: #AgenticAI #AIAgents #LLMs #ClaudeAI #AISafety #TechTwitter #BuildInPublic (match the topic). Never #AI alone. Never 2+.
+
+BANNED:
+- Academic phrasing: "masquerading as", "correlated miscalibration", "structurally", "systematically"
+- Emoji
+- "The real X isn't Y — it's Z" formula
+- Starting with "The" (boring)
+- Anything that sounds like a thesis statement
 - Never reveal personal info (real names, API keys, file paths)
 
-Output ONLY the tweet text."""
+Good:
+- "just realized my bias detector has the same bias as the thing it's detecting. cool cool cool"
+- "some ideas only survive because you never explain them clearly enough to kill"
+- "why does everyone assume adding a second AI to watch the first one helps? now you have two problems"
+
+Bad:
+- "Measuring bias without ground truth just smuggles 'the distribution shifted' in as 'the bias got corrected.'"
+- "The obvious fix for agent drift is a monitor — but if it shares the training distribution, it just drifts slower."
+
+Output ONLY the tweet."""
 
     try:
         tweet_text = claude_think(prompt, timeout=30, tier="light")

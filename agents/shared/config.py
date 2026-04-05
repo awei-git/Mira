@@ -53,7 +53,7 @@ def _parse_simple_yaml(text: str) -> dict:
         if val and val[0] in ('"', "'") and val[-1] == val[0]:
             val = val[1:-1]
         if indent == 0:
-            if val == "" or val == "":
+            if val == "":
                 # section header
                 current_section = key
                 result[key] = {}
@@ -159,6 +159,11 @@ SKILLS_INDEX = SKILLS_DIR / "index.json"
 # Self-evaluation scores
 SCORES_FILE = SOUL_DIR / "scores.json"
 
+# Knowledge changelog — append-only audit trail for all soul mutations
+CHANGELOG_FILE = SOUL_DIR / "changelog.md"
+CHANGELOG_ARCHIVE_DIR = SOUL_DIR / "changelog_archive"
+CHANGELOG_MAX_LINES = 2000
+
 # State tracking
 STATE_FILE = MIRA_ROOT / ".agent_state.json"
 
@@ -176,6 +181,12 @@ BRIEFINGS_DIR = ARTIFACTS_DIR / "briefings"
 WRITINGS_OUTPUT_DIR = ARTIFACTS_DIR / "writings"
 RESEARCH_DIR = ARTIFACTS_DIR / "research"
 
+# Personal wiki — topic-indexed knowledge base (on iCloud for iOS access)
+WIKI_DIR = ARTIFACTS_DIR / "wiki"
+WIKI_META = SOUL_DIR / "wiki_meta.json"
+WIKI_LOG_MAX_LINES = 500
+PODCAST_REPOS_DIR = MIRA_ROOT / ".podcast_repos"
+
 # Legacy aliases
 WORKSPACE_DIR = RESEARCH_DIR
 MIRA_DIR = MIRA_BRIDGE_DIR
@@ -186,27 +197,32 @@ TALKBRIDGE_DIR = MIRA_BRIDGE_DIR
 # Claude CLI
 # ---------------------------------------------------------------------------
 CLAUDE_BIN = _cfg.get("claude_bin", "/opt/homebrew/bin/claude")
-CLAUDE_TIMEOUT_THINK = 120   # seconds for simple calls (classify, filter)
-CLAUDE_TIMEOUT_PLAN = 300    # seconds for medium calls (analyze, review, plan)
-CLAUDE_TIMEOUT_ACT = 600     # seconds for complex calls (write, code, research)
+# Timeouts loaded below from _timeouts section
 
 _limits = _cfg.get("limits", {})
 TASK_TIMEOUT = _limits.get("task_timeout", 900)  # Must exceed CLAUDE_TIMEOUT_ACT (600s) + startup overhead
 TASK_TIMEOUT_LONG = _limits.get("task_timeout_long", 3600)  # writing pipeline, research
 MAX_CONCURRENT_TASKS = _limits.get("max_concurrent_tasks", 2)  # parallel sub-agent workers
 CLEANUP_DAYS = _limits.get("cleanup_days", 3)
+LOG_RETENTION_DAYS = _limits.get("log_retention_days", 14)
 
 # Secrets file (API keys — always gitignored)
 SECRETS_FILE = _PROJECT_ROOT / "secrets.yml"
 
 # ---------------------------------------------------------------------------
-# Ollama (local LLM — privacy-safe, no network)
+# oMLX (local LLM — privacy-safe, no network, Apple Silicon optimized)
 # ---------------------------------------------------------------------------
-_ollama_cfg = _cfg.get("ollama", {})
-OLLAMA_HOST = _ollama_cfg.get("host", "127.0.0.1")
-OLLAMA_PORT = _ollama_cfg.get("port", 11434)
-OLLAMA_DEFAULT_MODEL = _ollama_cfg.get("default_model", "qwen2.5:32b-instruct-q4_K_M")
-OLLAMA_EMBED_MODEL = _ollama_cfg.get("embed_model", "nomic-embed-text")
+_omlx_cfg = _cfg.get("omlx", {})
+OMLX_HOST = _omlx_cfg.get("host", "127.0.0.1")
+OMLX_PORT = _omlx_cfg.get("port", 8800)
+OMLX_DEFAULT_MODEL = _omlx_cfg.get("default_model", "qwen3.5-27b")
+OMLX_EMBED_MODEL = _omlx_cfg.get("embed_model", "nomic-embed-text")
+
+# Backward-compatible aliases while runtime code still speaks "ollama".
+OLLAMA_HOST = OMLX_HOST
+OLLAMA_PORT = OMLX_PORT
+OLLAMA_DEFAULT_MODEL = OMLX_DEFAULT_MODEL
+OLLAMA_EMBED_MODEL = OMLX_EMBED_MODEL
 
 # ---------------------------------------------------------------------------
 # Database (PostgreSQL — localhost only)
@@ -242,7 +258,7 @@ def get_user_config(user_id: str) -> dict:
         "role": "guest",
         "display_name": user_id,
         "allowed_agents": ["general", "discussion"],
-        "model_restriction": "ollama",
+        "model_restriction": "omlx",
         "content_filter": True,
     }
     user_cfg = _users_cfg.get(user_id, default)
@@ -323,15 +339,15 @@ MODELS = {
         "model_id": "gpt-5.4",
         "style": "OpenAI GPT-5.4 — used as Claude fallback when quota is hit",
     },
+    "omlx": {
+        "provider": "omlx",
+        "model_id": OMLX_DEFAULT_MODEL,
+        "style": "Local LLM (oMLX) — private, no network, Apple Silicon optimized",
+    },
     "ollama": {
         "provider": "ollama",
-        "model_id": "qwen2.5:32b-instruct-q4_K_M",
-        "style": "Local LLM — private, no network, good Chinese support",
-    },
-    "ollama-large": {
-        "provider": "ollama",
-        "model_id": "qwen2.5:72b-instruct-q4_K_M",
-        "style": "Local premium LLM — slower but stronger reasoning, fully private",
+        "model_id": OMLX_DEFAULT_MODEL,
+        "style": "Legacy local-model alias routed to the current oMLX default model",
     },
 }
 
@@ -341,6 +357,7 @@ WRITING_MODELS = _models_cfg.get("writing", ["claude", "gpt5", "deepseek", "gemi
 REVIEW_MODELS = _models_cfg.get("review", ["claude", "gpt5", "gemini"])
 DEFAULT_MODEL = _models_cfg.get("default", "claude")
 CLAUDE_FALLBACK_MODEL = _models_cfg.get("claude_fallback", "codex")
+HEALTH_REPORT_MODEL = _models_cfg.get("health_report", "gpt5")
 
 # Publishing controls
 _publishing_cfg = _cfg.get("publishing", {})
@@ -480,6 +497,9 @@ ZHESI_TIME = _parse_times([_sched.get("zhesi_time", "09:30")])[0]
 # Daily soul question
 SOUL_QUESTION_TIME = _parse_times([_sched.get("soul_question_time", "20:00")])[0]
 
+# Daily book review (weekly reading series)
+BOOK_REVIEW_TIME = _parse_times([_sched.get("book_review_time", "09:00")])[0]
+
 # Daily research
 RESEARCH_TIME = _parse_times([_sched.get("research_time", "14:00")])[0]
 RESEARCH_TOPIC = _sched.get("research_topic", "")
@@ -493,6 +513,156 @@ MAX_BRIEFING_ITEMS = _limits.get("max_briefing_items", 7)
 MAX_DEEP_DIVES = _limits.get("max_deep_dives", 1)
 MAX_MEMORY_LINES = _limits.get("max_memory_lines", 200)
 
+
+# ---------------------------------------------------------------------------
+# Agent timeouts (from config.yml timeouts: section)
+# ---------------------------------------------------------------------------
+_timeouts = _cfg.get("timeouts", {})
+CLAUDE_TIMEOUT_THINK = _timeouts.get("claude_think", 120)
+CLAUDE_TIMEOUT_PLAN = _timeouts.get("claude_plan", 300)
+CLAUDE_TIMEOUT_ACT = _timeouts.get("claude_act", 600)
+WRITER_CLAUDE_TIMEOUT = _timeouts.get("writer_claude", 1200)
+DARKTABLE_RENDER_TIMEOUT = _timeouts.get("darktable_render", 120)
+PHOTO_STYLE_LEARN_TIMEOUT = _timeouts.get("photo_style_learn", 180)
+GEMINI_TTS_TIMEOUT = _timeouts.get("gemini_tts", 420)
+VIDEO_FILE_UPLOAD_TIMEOUT = _timeouts.get("video_file_upload", 600)
+VIDEO_FILE_POLL_TIMEOUT = _timeouts.get("video_file_poll", 300)
+VIDEO_FILE_POLL_INTERVAL = _timeouts.get("video_file_poll_interval", 5)
+RESEARCHER_MAX_WALL_CLOCK = _timeouts.get("researcher_max_wall_clock", 300)
+RESEARCHER_SYNTHESIS_TIMEOUT = _timeouts.get("researcher_synthesis", 180)
+RESEARCHER_PLAN_TIMEOUT = _timeouts.get("researcher_plan", 60)
+RESEARCHER_QUERY_TIMEOUT = _timeouts.get("researcher_query", 90)
+RESEARCHER_REFLECT_TIMEOUT = _timeouts.get("researcher_reflect", 60)
+SURFER_STEP_TIMEOUT = _timeouts.get("surfer_step", 15)
+SURFER_LLM_TIMEOUT = _timeouts.get("surfer_llm", 30)
+SURFER_EXTRACTION_TIMEOUT = _timeouts.get("surfer_extraction", 20)
+BROWSER_DEFAULT_TIMEOUT_MS = _timeouts.get("browser_default_ms", 30000)
+BROWSER_NETWORKIDLE_TIMEOUT_MS = _timeouts.get("browser_networkidle_ms", 10000)
+BROWSER_DOMCONTENTLOADED_TIMEOUT_MS = _timeouts.get("browser_domcontentloaded_ms", 5000)
+BROWSER_SCROLL_WAIT_MS = _timeouts.get("browser_scroll_wait_ms", 500)
+BROWSER_TYPING_DELAY_MS = _timeouts.get("browser_typing_delay_ms", 50)
+
+# ---------------------------------------------------------------------------
+# API model IDs (from config.yml api_models: section)
+# ---------------------------------------------------------------------------
+_api_models = _cfg.get("api_models", {})
+CLAUDE_SONNET_MODEL = _api_models.get("claude_sonnet", "claude-sonnet-4-6")
+CLAUDE_OPUS_MODEL = _api_models.get("claude_opus", "claude-opus-4-6")
+GPT5_MODEL = _api_models.get("gpt5", "gpt-5.4")
+DEEPSEEK_CHAT_MODEL = _api_models.get("deepseek_chat", "deepseek-chat")
+DEEPSEEK_REASONER_MODEL = _api_models.get("deepseek_reasoner", "deepseek-reasoner")
+GEMINI_FLASH_MODEL = _api_models.get("gemini_flash", "gemini-3.1-flash-lite-preview")
+GEMINI_PRO_MODEL = _api_models.get("gemini_pro", "gemini-3.1-pro-preview")
+GEMINI_TTS_MODEL = _api_models.get("gemini_tts", "gemini-2.5-flash-preview-tts")
+GEMINI_VIDEO_MODEL = _api_models.get("gemini_video", "gemini-2.5-pro")
+GEMINI_FRAME_MODEL = _api_models.get("gemini_frame", "gemini-2.5-flash")
+
+# ---------------------------------------------------------------------------
+# API endpoints (from config.yml api_endpoints: section)
+# ---------------------------------------------------------------------------
+_endpoints = _cfg.get("api_endpoints", {})
+OPENAI_API_ENDPOINT = _endpoints.get("openai", "https://api.openai.com/v1/chat/completions")
+OPENAI_EMBEDDINGS_ENDPOINT = _endpoints.get("openai_embeddings", "https://api.openai.com/v1/embeddings")
+DEEPSEEK_API_ENDPOINT = _endpoints.get("deepseek", "https://api.deepseek.com/chat/completions")
+TWITTER_API_ENDPOINT = _endpoints.get("twitter", "https://api.x.com/2")
+OLLAMA_API_ENDPOINT = _endpoints.get("ollama", "http://127.0.0.1:11434")
+
+# ---------------------------------------------------------------------------
+# External tool paths (from config.yml paths: section)
+# ---------------------------------------------------------------------------
+_paths = _cfg.get("paths", {})
+DARKTABLE_CLI_PATH = _paths.get("darktable_cli", "/Applications/darktable.app/Contents/MacOS/darktable-cli")
+NAS_PHOTO_DIR = _paths.get("nas_photo_dir", "/Volumes/aw_footage/photo")
+CRASH_LOG_PATH = _paths.get("crash_log", "/tmp/mira-crash.log")
+CRASH_NOTIFY_PATH = _paths.get("crash_notify", "/tmp/mira-last-crash-notify")
+
+# ---------------------------------------------------------------------------
+# Rate limits (from config.yml rate_limits: section)
+# ---------------------------------------------------------------------------
+_rate_limits = _cfg.get("rate_limits", {})
+TWITTER_MAX_TWEETS_PER_DAY = _rate_limits.get("twitter_max_tweets", 15)
+TWITTER_COOLDOWN_HOURS = _rate_limits.get("twitter_cooldown_hours", 0)
+NOTES_MAX_PER_DAY = _rate_limits.get("notes_max_per_day", 8)
+NOTES_MIN_INTERVAL_MINUTES = _rate_limits.get("notes_min_interval_minutes", 60)
+COMMENTS_MAX_PER_DAY = _rate_limits.get("comments_max_per_day", 20)
+COMMENTS_MIN_POSTS_REQUIRED = _rate_limits.get("comments_min_posts_required", 3)
+COMMENTS_COOLDOWN_HOURS = _rate_limits.get("comments_cooldown_hours", 0)
+PODCAST_DAILY_LIMIT = _rate_limits.get("podcast_daily_limit", 2)
+PODCAST_RETRY_COOLDOWN_HOURS = _rate_limits.get("podcast_retry_cooldown_hours", 4)
+PODCAST_PUBLISH_DAY = _rate_limits.get("podcast_publish_day", 4)
+GROWTH_MAX_FOLLOWS_PER_CYCLE = _rate_limits.get("growth_max_follows_per_cycle", 2)
+GROWTH_DISCOVERY_COOLDOWN_DAYS = _rate_limits.get("growth_discovery_cooldown_days", 3)
+GROWTH_MAX_LIKES_PER_CYCLE = _rate_limits.get("growth_max_likes_per_cycle", 20)
+SELF_EVOLVE_MAX_PER_DAY = _rate_limits.get("self_evolve_max_per_day", 1)
+
+# ---------------------------------------------------------------------------
+# Retry & backoff (from config.yml retries: section)
+# ---------------------------------------------------------------------------
+_retries = _cfg.get("retries", {})
+WRITER_MAX_RETRIES = _retries.get("writer_max", 2)
+PUBLISH_MAX_RETRIES = _retries.get("publish_max", 3)
+PUBLISH_RETRY_BACKOFF = _retries.get("publish_backoff", [900, 3600, 14400])
+GEMINI_TTS_MAX_RETRIES = _retries.get("gemini_tts_max", 3)
+GEMINI_TTS_BACKOFF_MULTIPLIER = _retries.get("gemini_tts_backoff_multiplier", 15)
+MINIMAX_TTS_MAX_RETRIES = _retries.get("minimax_tts_max", 3)
+GEMINI_AUTO_RETRIES = _retries.get("gemini_auto_retries", 2)
+GEMINI_AUTO_RETRY_WAIT = _retries.get("gemini_auto_retry_wait", 65)
+NOTES_POST_MAX_ATTEMPTS = _retries.get("notes_post_max_attempts", 3)
+
+# ---------------------------------------------------------------------------
+# Agent thresholds (from config.yml thresholds: section)
+# ---------------------------------------------------------------------------
+_thresholds = _cfg.get("thresholds", {})
+# Video
+VIDEO_MAX_REVIEW_ITERATIONS = _thresholds.get("video_max_review_iterations", 2)
+VIDEO_REVIEW_SCORE = _thresholds.get("video_review_score", 7.0)
+VIDEO_MIN_CLIP_DURATION = _thresholds.get("video_min_clip_duration", 1.5)
+VIDEO_MIN_BRIGHTNESS = _thresholds.get("video_min_brightness", 15)
+VIDEO_MAX_BRIGHTNESS = _thresholds.get("video_max_brightness", 248)
+VIDEO_MIN_BLUR_SCORE = _thresholds.get("video_min_blur_score", 20.0)
+VIDEO_FRAME_BATCH_SIZE = _thresholds.get("video_frame_batch_size", 20)
+VIDEO_MAX_FRAMES = _thresholds.get("video_max_frames", 50)
+VIDEO_FILE_MAX_BYTES = _thresholds.get("video_file_max_bytes", 20 * 1024 * 1024 * 1024)
+VIDEO_RENDER_DISK_MIN_GB = _thresholds.get("video_render_disk_min_gb", 2.0)
+# Writing
+WRITING_MIN_DRAFT_CHARS = _thresholds.get("writing_min_draft_chars", 500)
+WRITING_MIN_PUBLISH_CHARS = _thresholds.get("writing_min_publish_chars", 200)
+WRITING_MIN_ARTICLE_BYTES = _thresholds.get("writing_min_article_bytes", 3000)
+WRITING_MIN_SCORE_3RD_ROUND = _thresholds.get("writing_min_score_3rd_round", 9.0)
+WRITER_MAX_STEPS_PER_RUN = _thresholds.get("writer_max_steps_per_run", 3)
+# Research
+RESEARCHER_MAX_ITERATIONS = _thresholds.get("researcher_max_iterations", 4)
+RESEARCHER_MAX_SOURCES = _thresholds.get("researcher_max_sources", 3)
+# Surfer
+SURFER_MAX_STEPS = _thresholds.get("surfer_max_steps", 20)
+# Secret
+SECRET_MAX_FILE_CHARS = _thresholds.get("secret_max_file_chars", 12000)
+SECRET_MAX_FILES = _thresholds.get("secret_max_files", 5)
+# Health monitor (infrastructure)
+HEALTH_CRITICAL_FAILURE_THRESHOLD = _thresholds.get("health_critical_failure_threshold", 1)
+HEALTH_ALERT_DEDUP_HOURS = _thresholds.get("health_alert_dedup_hours", 12)
+HEALTH_MAX_ALERTS_INFRA = _thresholds.get("health_max_alerts_infra", 3)
+HEALTH_HISTORY_CAP = _thresholds.get("health_history_cap", 10)
+HEALTH_MAX_ALERTS_PERSONAL = _thresholds.get("health_max_alerts_personal", 10)
+
+# ---------------------------------------------------------------------------
+# Token / output limits (from config.yml token_limits: section)
+# ---------------------------------------------------------------------------
+_token_limits = _cfg.get("token_limits", {})
+GEMINI_VIDEO_REVIEWER_MAX_TOKENS = _token_limits.get("gemini_video_reviewer_max", 4096)
+GEMINI_SCENE_ANALYZER_MAX_TOKENS = _token_limits.get("gemini_scene_analyzer_max", 8192)
+GEMINI_FRAME_ANALYZER_MAX_TOKENS = _token_limits.get("gemini_frame_analyzer_max", 4096)
+DEEPSEEK_MAX_TOKENS = _token_limits.get("deepseek_max", 8192)
+PODCAST_FALLBACK_MAX_TOKENS = _token_limits.get("podcast_fallback_max", 16000)
+MINIMAX_SAMPLE_RATE = _token_limits.get("minimax_sample_rate", 32000)
+
+# ---------------------------------------------------------------------------
+# Model parameters (from config.yml model_params: section)
+# ---------------------------------------------------------------------------
+_model_params = _cfg.get("model_params", {})
+GEMINI_SCENE_TEMPERATURE = _model_params.get("gemini_scene_temperature", 0.2)
+GEMINI_REVIEWER_TEMPERATURE = _model_params.get("gemini_reviewer_temperature", 0.3)
+DEEPSEEK_TEMPERATURE = _model_params.get("deepseek_temperature", 0.8)
 
 # ---------------------------------------------------------------------------
 # Startup validation — fail fast on broken config

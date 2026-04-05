@@ -33,8 +33,19 @@ sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
 from sub_agent import claude_think, claude_act, model_think
 from config import MIRA_ROOT
+from preflight import preflight_check
 
 log = logging.getLogger("photo.handler")
+
+
+def _log_photo_failure(step: str, error_msg: str, slug: str = "photo"):
+    try:
+        from failure_log import record_failure
+        record_failure(pipeline="photo", step=step, slug=slug,
+                       error_type="photo_agent_error", error_message=error_msg[:500])
+    except Exception:
+        pass
+
 
 _PHOTO_DIR = Path(__file__).resolve().parent
 _SKILLS_DIR = _PHOTO_DIR / "skills"
@@ -57,6 +68,61 @@ _STATE_FILE = "photo_state.json"
 # ---------------------------------------------------------------------------
 # Main handler (called by task_worker)
 # ---------------------------------------------------------------------------
+
+def preflight(workspace: Path, task_id: str, instruction: str,
+              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+    """Block photo jobs that have no resolvable image inputs or style context."""
+    state = _load_state(workspace)
+    phase = state.get("phase", "")
+    preflight_text = instruction.strip() or phase or "photo task"
+    result = preflight_check(
+        "file_write",
+        {
+            "instruction": preflight_text,
+            "path": str(workspace / "output.md"),
+            "content": preflight_text,
+        },
+    )
+    if not result.passed:
+        return False, result.summary()
+
+    if phase == "edit_review":
+        if state.get("images"):
+            return True, ""
+        return False, "PREFLIGHT BLOCKED [photo]: review state is missing image list"
+
+    if phase == "style_learning":
+        ref_dir = _extract_path(instruction)
+        if not ref_dir and state.get("reference_dir"):
+            ref_dir = Path(state["reference_dir"])
+        if not ref_dir:
+            ref_dir = _REFERENCE_DIR
+        if ref_dir.exists() and _find_images(ref_dir):
+            return True, ""
+        return False, "PREFLIGHT BLOCKED [photo]: style-learning state is missing reference images"
+
+    intent = _classify_intent(instruction)
+    if intent == "generate_preset":
+        if _load_active_style():
+            return True, ""
+        return False, "PREFLIGHT BLOCKED [photo]: 还没有 style profile，不能生成 preset"
+
+    if intent == "learn_style":
+        ref_dir = _extract_path(instruction) or _REFERENCE_DIR
+        if ref_dir.exists() and _find_images(ref_dir):
+            return True, ""
+        return False, f"PREFLIGHT BLOCKED [photo]: 在 {ref_dir} 里没找到参考图片"
+
+    images = _extract_images(instruction)
+    if intent == "compare":
+        if len(images) >= 2:
+            return True, ""
+        return False, "PREFLIGHT BLOCKED [photo]: 对比模式需要两张图片"
+
+    if images:
+        return True, ""
+    return False, "PREFLIGHT BLOCKED [photo]: 找不到要处理的图片或目录"
+
 
 def handle(workspace: Path, task_id: str, instruction: str,
            sender: str, thread_id: str, **kwargs) -> str:
@@ -191,6 +257,7 @@ def _compare_photos(workspace: Path, state: dict, instruction: str) -> str:
     result = compare_versions(original, edited)
 
     if "error" in result and "raw_review" not in result:
+        _log_photo_failure("compare_failed", f"{original.name} vs {edited.name}: {result['error']}")
         return f"对比失败: {result['error']}"
 
     # Format output
@@ -296,6 +363,7 @@ def _analyze_only(workspace: Path, state: dict, instruction: str) -> str:
             results.append(f"## {img.name}\n\n{analysis}")
 
     if not results:
+        _log_photo_failure("analysis_failed", f"Vision model returned no results for {len(images)} images")
         return "分析失败——vision model 没返回结果。"
 
     output = "\n\n---\n\n".join(results)
@@ -328,6 +396,7 @@ def _analyze_and_plan(workspace: Path, state: dict, instruction: str) -> str:
             analyses.append({"file": str(img), "name": img.name, "analysis": analysis})
 
     if not analyses:
+        _log_photo_failure("analysis_failed", f"No analyses returned for {len(sample)} sample images")
         return "分析失败。"
 
     state["phase"] = "edit_review"
@@ -379,6 +448,7 @@ def _revise_plan(workspace: Path, state: dict, feedback: str) -> str:
 
     revised = claude_think(prompt, timeout=120, tier="light")
     if not revised:
+        _log_photo_failure("plan_revision_failed", "claude_think returned empty for plan revision")
         return "修改失败，请再说一次你想怎么调整。"
 
     state["analyses"] = [{"file": a["file"], "name": a["name"], "analysis": revised}
@@ -435,6 +505,7 @@ def _run_edits(workspace: Path, state: dict) -> str:
                 results.append(f"- {img.name} → 编辑失败")
         except Exception as e:
             log.error("Edit failed for %s: %s", img.name, e)
+            _log_photo_failure("render_failed", f"{img.name}: {e}", slug=img.stem)
             results.append(f"- {img.name} → 错误: {e}")
 
     state["phase"] = "done"
@@ -484,6 +555,7 @@ def _start_style_learning(workspace: Path, state: dict, instruction: str) -> str
     if not style_profile:
         state["phase"] = ""
         _save_state(workspace, state)
+        _log_photo_failure("style_learning_failed", f"learn_style returned empty for {len(images)} reference images")
         return "风格学习失败——分析没返回结果。"
 
     # Save style profile
@@ -592,6 +664,7 @@ def _generate_preset(workspace: Path, state: dict, instruction: str) -> str:
         results.append(f"- 3D LUT: [mira_style.cube](file://presets/mira_style.cube)")
 
     if not results:
+        _log_photo_failure("preset_generation_failed", "Both XMP and LUT generation failed")
         return "预设生成失败。"
 
     state["phase"] = "done"

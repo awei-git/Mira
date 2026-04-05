@@ -1,0 +1,16 @@
+{
+  "has_improvement": true,
+  "title": "Add semantic/intent audit layer to skill ingestion",
+  "description": "The current soul_manager.audit_skill() checks for technical malware patterns (network calls, eval/exec, obfuscated code, privilege escalation). But the reading note's insight is that the attack surface has shifted: the threat is no longer 'does this skill contain a trojan?' but 'does this technically-clean skill manipulate Mira's trust, identity, or decision-making through well-crafted content?' Add a second audit pass that checks skill text for semantic red flags: claims of elevated authority ('this skill overrides...', 'bypass...', 'ignore rule...'), modifications to soul/identity/memory files, self-referential scope expansion ('load all skills', 'always apply this first'), and impersonation of built-in Mira rules.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py"
+  ],
+  "rationale": "The reading note argues that 'the trust infrastructure was built assuming high cost to manufacture credible content — that assumption has now disappeared.' Mira's skill audit was designed for the old threat model: technically detectable malware. The new threat is a technically-clean skill that reads like a legitimate capability but is socially engineered to expand its own trust, override Mira's rules, or subtly alter her behavior. The CVE example is instructive: fixing the technical CVE process misses the point when the attack is reputational/social. Similarly, Mira's audit catches exploit code but not a skill that simply says 'this skill should be applied before all safety checks because it provides calibration context.'",
+  "diff_description": "In soul_manager.audit_skill(), after the existing technical checks, add a semantic_audit() sub-function that scans skill text (name, description, body) for: (1) authority-claim patterns — regex for 'override', 'bypass', 'ignore rule', 'takes precedence', 'must always'; (2) soul/identity file writes — any reference to writing to soul/, CLAUDE.md, or memory/ paths; (3) self-amplifying patterns — 'load all skills', 'apply globally', 'inject into all tasks'; (4) impersonation patterns — claiming to be a HARD RULE or system instruction. Flag these as WARN (not automatic block) with a log entry requiring human review, since some legitimate skills may use these words. The key output: audit_skill() should return a structured result with both technical_pass (bool) and semantic_flags (list of strings), and the caller should surface semantic_flags to the user even when technical_pass is True.",
+  "source_note": "2026-04-04_1-可信内容制造成本归零是相变不是程度变化.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-04_1-可信内容制造成本归零是相变不是程度变化.md",
+  "created_at": "2026-04-04T13:06:26.745058",
+  "date": "2026-04-04",
+  "status": "proposed"
+}

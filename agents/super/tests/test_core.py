@@ -1,7 +1,9 @@
 """Smoke tests — verify core modules import and basic functions work."""
 from __future__ import annotations
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 _AGENTS = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS / "super"))
@@ -12,15 +14,12 @@ sys.path.insert(0, str(_AGENTS / "writer"))
 def test_core_imports():
     import core
     assert hasattr(core, "cmd_run"), "core.py missing cmd_run"
-    assert hasattr(core, "do_explore"), "core.py missing do_explore"
-    assert hasattr(core, "do_journal"), "core.py missing do_journal"
 
 
 def test_config_imports():
-    from config import (MIRA_ROOT, WORKSPACE_DIR, STATE_FILE, BRIEFINGS_DIR,
-                        MIRA_BRIDGE_DIR, ARTIFACTS_DIR)
-    assert MIRA_ROOT.exists(), f"MIRA_ROOT doesn't exist: {MIRA_ROOT}"
-    assert STATE_FILE.parent.exists(), f"STATE_FILE parent doesn't exist"
+    from config import MIRA_ROOT, STATE_FILE
+    # In CI, MIRA_ROOT may not exist — just check the import works
+    assert MIRA_ROOT is not None
 
 
 def test_registry_loads():
@@ -39,3 +38,284 @@ def test_soul_loads():
     assert isinstance(soul, dict), f"load_soul returned {type(soul)}"
     assert "identity" in soul, "Soul missing identity"
     assert "worldview" in soul, "Soul missing worldview"
+
+
+def test_dispatch_scheduled_jobs_uses_registry(monkeypatch):
+    import core
+
+    jobs = [
+        SimpleNamespace(name="explore", inline=False, priority=5),
+        SimpleNamespace(name="substack-growth", inline=False, priority=10),
+        SimpleNamespace(name="skill-study", inline=False, priority=20),
+    ]
+    payloads = {
+        "explore": {"label": "arxiv_hf", "sources": ["arxiv", "huggingface"]},
+        "substack-growth": True,
+        "skill-study": {"domain": "video", "group_idx": 2},
+    }
+    dispatched = []
+    session_new = []
+
+    monkeypatch.setattr(core, "get_jobs", lambda: jobs)
+    monkeypatch.setattr(core, "evaluate_job_payload", lambda job: payloads.get(job.name))
+    monkeypatch.setattr(
+        core,
+        "build_job_dispatch",
+        lambda job, payload, python_executable, core_path: {
+            "explore": ("explore-arxiv_hf", ["python", "core.py", "explore", "--sources", "arxiv,huggingface", "--slot", "arxiv_hf"]),
+            "substack-growth": ("substack-growth", ["python", "core.py", "growth-cycle"]),
+            "skill-study": ("skill-study-video", ["python", "core.py", "skill-study", "--group", "2"]),
+        }[job.name],
+    )
+    monkeypatch.setattr(
+        core,
+        "build_job_session_record",
+        lambda job, payload: {
+            "explore": {"action": "explore", "detail": "arxiv_hf"},
+            "substack-growth": {"action": "growth_cycle", "detail": ""},
+            "skill-study": None,
+        }[job.name],
+    )
+    monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd: dispatched.append((name, cmd)))
+
+    core._dispatch_scheduled_jobs(session_new)
+
+    assert [name for name, _ in dispatched] == [
+        "explore-arxiv_hf",
+        "substack-growth",
+        "skill-study-video",
+    ]
+    assert "--sources" in dispatched[0][1]
+    assert "arxiv,huggingface" in dispatched[0][1]
+    assert dispatched[1][1][-1] == "growth-cycle"
+    assert dispatched[2][1][-2:] == ["--group", "2"]
+    assert [entry["action"] for entry in session_new] == ["explore", "growth_cycle"]
+    assert session_new[0]["detail"] == "arxiv_hf"
+
+
+def test_dispatch_scheduled_jobs_runs_inline_jobs(monkeypatch):
+    import core
+
+    jobs = [
+        SimpleNamespace(name="health-check", inline=True, inline_runner="health-check", priority=1),
+        SimpleNamespace(name="log-cleanup", inline=True, inline_runner="log-cleanup", priority=2),
+    ]
+    ran = []
+
+    monkeypatch.setattr(core, "get_jobs", lambda: jobs)
+    monkeypatch.setattr(core, "evaluate_job_payload", lambda job: True)
+    monkeypatch.setattr(core, "_run_inline_scheduled_job", lambda job, payload: ran.append(job.name))
+
+    core._dispatch_scheduled_jobs([])
+
+    assert ran == ["health-check", "log-cleanup"]
+
+
+def test_canonical_writing_pipeline_only_advances_plan_ready(monkeypatch, tmp_path):
+    import core
+
+    advanced = []
+    workspace_a = tmp_path / "a"
+    workspace_b = tmp_path / "b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+
+    monkeypatch.setattr(core, "check_writing_responses", lambda: [
+        {"workspace": workspace_a, "project": {"title": "Plan", "phase": "plan_ready"}},
+        {"workspace": workspace_b, "project": {"title": "Draft", "phase": "draft_ready"}},
+    ])
+    monkeypatch.setattr(core, "advance_project", lambda workspace: advanced.append(workspace))
+
+    count = core._run_canonical_writing_pipeline()
+
+    assert count == 1
+    assert advanced == [workspace_a]
+
+
+def test_run_autowrite_pipeline_writes_metadata_and_requests_approval(monkeypatch, tmp_path):
+    from workflows import writing
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    final_file = project_dir / "final.md"
+    final_file.write_text("# Test Essay\n\nBody text.", encoding="utf-8")
+
+    class FakeBridge:
+        def __init__(self):
+            self.calls = []
+
+        def update_task_status(self, task_id, status, agent_message=""):
+            self.calls.append((task_id, status, agent_message))
+
+    bridge = FakeBridge()
+    monkeypatch.setattr(writing, "_TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(writing, "Mira", lambda: bridge)
+    monkeypatch.setattr(writing, "run_full_pipeline", lambda title, body: (project_dir, final_file.read_text(encoding="utf-8")))
+
+    writing.run_autowrite_pipeline("autowrite_2026-04-05", "Test Essay", "essay", "idea body")
+
+    task_ws = (tmp_path / "tasks" / "autowrite_2026-04-05")
+    meta = json.loads((task_ws / "autowrite_meta.json").read_text(encoding="utf-8"))
+    assert meta["slug"] == project_dir.name
+    assert meta["final_md"] == str(final_file)
+    assert bridge.calls
+    assert bridge.calls[-1][1] == "needs-input"
+
+
+def test_writing_agent_run_command_uses_canonical_pipeline(monkeypatch, tmp_path):
+    import writing_agent
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    advanced = []
+
+    monkeypatch.setattr(
+        writing_agent,
+        "_get_canonical_writing_ops",
+        lambda: (
+            lambda: [{"workspace": workspace, "project": {"phase": "plan_ready"}}],
+            lambda path: advanced.append(path),
+        ),
+    )
+
+    count = writing_agent._run_canonical_pipeline()
+
+    assert count == 1
+    assert advanced == [workspace]
+
+
+def test_writing_agent_cmd_run_delegates_to_canonical_pipeline(monkeypatch):
+    import writing_agent
+
+    monkeypatch.setattr(writing_agent, "_run_canonical_pipeline", lambda: 7)
+
+    assert writing_agent.cmd_run() == 7
+
+
+def test_writing_agent_auto_command_uses_canonical_runner(monkeypatch):
+    import writing_agent
+
+    captured = {}
+    monkeypatch.setattr(
+        writing_agent,
+        "_get_canonical_autowrite_runner",
+        lambda: lambda task_id, title, writing_type, idea: captured.update({
+            "task_id": task_id,
+            "title": title,
+            "writing_type": writing_type,
+            "idea": idea,
+        }),
+    )
+
+    writing_agent._run_canonical_autowrite("Title", "essay", "Idea body", task_id="autowrite_test")
+
+    assert captured == {
+        "task_id": "autowrite_test",
+        "title": "Title",
+        "writing_type": "essay",
+        "idea": "Idea body",
+    }
+
+
+def test_writing_agent_cmd_auto_delegates_to_canonical_runner(monkeypatch):
+    import writing_agent
+
+    captured = {}
+    monkeypatch.setattr(
+        writing_agent,
+        "_run_canonical_autowrite",
+        lambda title, writing_type, idea_content: captured.update({
+            "title": title,
+            "writing_type": writing_type,
+            "idea_content": idea_content,
+        }),
+    )
+
+    writing_agent.cmd_auto("Title", "essay", "Idea body")
+
+    assert captured == {
+        "title": "Title",
+        "writing_type": "essay",
+        "idea_content": "Idea body",
+    }
+
+
+def test_writing_agent_iterate_prefers_canonical_project(monkeypatch, tmp_path, capsys):
+    import writing_agent
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    advanced = []
+    state = {"phase": "plan_ready"}
+
+    monkeypatch.setattr(
+        writing_agent,
+        "_find_canonical_project",
+        lambda slug: (project_dir, {"phase": state["phase"]}) if slug == "proj" else None,
+    )
+    monkeypatch.setattr(
+        writing_agent,
+        "_get_canonical_writing_ops",
+        lambda: (None, lambda workspace: advanced.append(workspace)),
+    )
+    monkeypatch.setattr(
+        writing_agent,
+        "_iter_canonical_projects",
+        lambda: [(project_dir, {"phase": "draft_ready"})],
+    )
+
+    writing_agent.cmd_iterate("proj")
+
+    output = capsys.readouterr().out
+    assert "Canonical project proj: phase=plan_ready" in output
+    assert "Advanced to: draft_ready" in output
+    assert advanced == [project_dir]
+
+
+def test_writing_agent_iterate_falls_back_to_legacy(monkeypatch, tmp_path, capsys):
+    import writing_agent
+
+    monkeypatch.setattr(writing_agent, "_find_canonical_project", lambda slug: None)
+    monkeypatch.setattr(writing_agent, "IDEAS_DIR", tmp_path / "ideas")
+    writing_agent.IDEAS_DIR.mkdir()
+    (writing_agent.IDEAS_DIR / "legacy.md").write_text(
+        "# Legacy\n\n---\n<!-- AUTO-MANAGED BELOW -->\n## Status\n\n- **state**: scaffolded\n- **project_dir**: \n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        writing_agent,
+        "parse_idea",
+        lambda path: {"slug": "legacy", "state": "drafting", "project_dir": "", "path": path},
+    )
+    monkeypatch.setattr(writing_agent, "advance_idea", lambda idea: True)
+
+    writing_agent.cmd_iterate("legacy")
+
+    output = capsys.readouterr().out
+    assert "falling back to legacy idea files" in output
+    assert "[legacy] Current state: drafting" in output
+    assert "[legacy] Advanced to: drafting" in output
+
+
+def test_writing_agent_status_lists_canonical_and_legacy(monkeypatch, tmp_path, capsys):
+    import writing_agent
+
+    monkeypatch.setattr(
+        writing_agent,
+        "_iter_canonical_projects",
+        lambda: [(tmp_path / "proj", {"phase": "draft_ready", "version": 2, "updated_at": "2026-04-05T12:00:00"})],
+    )
+    monkeypatch.setattr(writing_agent, "IDEAS_DIR", tmp_path / "ideas")
+    writing_agent.IDEAS_DIR.mkdir()
+    (writing_agent.IDEAS_DIR / "legacy.md").write_text(
+        "# Legacy\n\n---\n<!-- AUTO-MANAGED BELOW -->\n## Status\n\n- **state**: new\n",
+        encoding="utf-8",
+    )
+
+    writing_agent.cmd_status()
+
+    output = capsys.readouterr().out
+    assert "proj" in output
+    assert "draft_ready" in output
+    assert "Legacy idea files still present:" in output
+    assert "legacy: new" in output

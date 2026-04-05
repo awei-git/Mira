@@ -46,5 +46,35 @@
     "description": "Design titles and graphics that serve the story — communicate information at the right moment and disappear without being noticed.",
     "file": "titles-and-motion-graphics.md",
     "tags": ["video", "editing", "motion-graphics", "titles", "typography", "design"]
+  },
+  {
+    "name": "Audio Ducking and Mixing",
+    "description": "Automatically lower music volume under dialogue and control audio levels across tracks.",
+    "file": "audio-ducking.md",
+    "tags": ["video", "audio", "mixing", "music", "dialogue"]
+  },
+  {
+    "name": "Beat-Sync Editing",
+    "description": "Align cuts and transitions to musical beats using librosa analysis and ffmpeg automation.",
+    "file": "beat-sync-editing.md",
+    "tags": ["video", "editing", "music", "rhythm", "automation"]
+  },
+  {
+    "name": "J-Cut and L-Cut",
+    "description": "Overlap audio and video across cuts — audio leads picture (J-cut) or picture leads audio (L-cut) for smoother transitions.",
+    "file": "j-cut-l-cut.md",
+    "tags": ["video", "editing", "transitions", "audio", "technique"]
+  },
+  {
+    "name": "LUT Color Grading Pipeline",
+    "description": "Apply 3D LUTs for consistent color grading across clips using ffmpeg lut3d filter.",
+    "file": "lut-color-grading.md",
+    "tags": ["video", "color-grading", "LUT", "ffmpeg", "post-production"]
+  },
+  {
+    "name": "Speed Ramping",
+    "description": "Dynamically vary playback speed within a clip for dramatic emphasis — smooth acceleration and deceleration.",
+    "file": "speed-ramping.md",
+    "tags": ["video", "editing", "speed", "slow-motion", "technique"]
   }
 ]

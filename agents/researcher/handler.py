@@ -12,18 +12,31 @@ Also handles math research (proofs, paper review) via specialized skills.
 """
 import json
 import logging
+import re
+import sys
 import time
 from pathlib import Path
+
+_AGENTS_DIR = Path(__file__).resolve().parent.parent
+if str(_AGENTS_DIR / "shared") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+
+from config import (
+    RESEARCHER_MAX_ITERATIONS, RESEARCHER_MAX_WALL_CLOCK,
+    RESEARCHER_MAX_SOURCES, RESEARCHER_SYNTHESIS_TIMEOUT,
+    RESEARCHER_PLAN_TIMEOUT, RESEARCHER_QUERY_TIMEOUT,
+    RESEARCHER_REFLECT_TIMEOUT,
+)
 
 log = logging.getLogger("researcher_agent")
 
 _SKILLS_DIR = Path(__file__).parent / "skills"
 _SKILLS_INDEX = _SKILLS_DIR / "index.json"
 
-# Budget limits
-MAX_ITERATIONS = 4          # max plan→research→reflect cycles
-MAX_WALL_CLOCK = 300        # 5 minutes total
-MAX_SOURCES_PER_QUESTION = 3
+# Budget limits (from config)
+MAX_ITERATIONS = RESEARCHER_MAX_ITERATIONS
+MAX_WALL_CLOCK = RESEARCHER_MAX_WALL_CLOCK
+MAX_SOURCES_PER_QUESTION = RESEARCHER_MAX_SOURCES
 
 
 def _load_skills(tags: list[str] | None = None) -> str:
@@ -43,6 +56,49 @@ def _is_math_task(content: str) -> bool:
                     "integral", "derivative", "equation", "证明", "定理"}
     lower = content.lower()
     return sum(1 for s in math_signals if s in lower) >= 2
+
+
+def _local_research_question(question: str, claude_think) -> str:
+    """Fallback research path when Claude tool mode cannot browse/write files."""
+    from web_browser import read_article, search
+
+    query = re.sub(r"\s+", " ", question).strip()[:200]
+    results = search(query, max_results=min(MAX_SOURCES_PER_QUESTION, 5))
+    if not results:
+        return ""
+
+    source_blocks = []
+    for i, result in enumerate(results[:MAX_SOURCES_PER_QUESTION], 1):
+        page = read_article(result.url)
+        excerpt = page.summary(1600) if page.ok else result.snippet
+        source_blocks.append(
+            f"""## Source {i}
+Title: {result.title}
+URL: {result.url}
+Snippet: {result.snippet}
+
+Excerpt:
+{excerpt}"""
+        )
+
+    prompt = f"""You are Mira's researcher agent. Tool-mode browsing is unavailable, so another system has gathered source material for you.
+
+## Research Question
+{question}
+
+## Source Pack
+{chr(10).join(source_blocks)}
+
+## Task
+Write a research memo that:
+- summarizes the key findings with specific facts, dates, and names
+- includes inline source citations as markdown links using the supplied titles/URLs
+- explicitly notes contradictions or uncertainty
+- is concise but information-dense
+
+Markdown only.
+"""
+    return (claude_think(prompt, timeout=RESEARCHER_QUERY_TIMEOUT, tier="light") or "").strip()
 
 
 def handle(workspace: Path, task_id: str, content: str,
@@ -92,7 +148,7 @@ def _handle_math(workspace, content, soul_ctx, skills_ctx,
 Be rigorous: state assumptions, distinguish proved from conjectured,
 flag gaps. Use LaTeX where appropriate."""
 
-    result = claude_think(prompt, timeout=180, tier="heavy")
+    result = claude_think(prompt, timeout=RESEARCHER_SYNTHESIS_TIMEOUT, tier="heavy")
     if result:
         (workspace / "output.md").write_text(result, encoding="utf-8")
     return result
@@ -116,7 +172,7 @@ Return as JSON array of strings. Example:
 
 JSON only, no other text."""
 
-    plan_raw = claude_think(plan_prompt, timeout=60, tier="light")
+    plan_raw = claude_think(plan_prompt, timeout=RESEARCHER_PLAN_TIMEOUT, tier="light")
     try:
         sub_questions = json.loads(plan_raw.strip().strip("```json").strip("```"))
     except (json.JSONDecodeError, ValueError):
@@ -155,7 +211,11 @@ Instructions:
 
 Write findings to output.md in the workspace."""
 
-            result = claude_act(research_prompt, cwd=workspace, timeout=90, tier="light")
+            result = claude_act(research_prompt, cwd=workspace, timeout=RESEARCHER_QUERY_TIMEOUT, tier="light")
+            if not result:
+                log.warning("Research tool path unavailable for question '%s' — using local web fallback",
+                            question[:80])
+                result = _local_research_question(question, claude_think)
             if result:
                 knowledge_base.append({
                     "question": question,
@@ -183,7 +243,7 @@ If the query is sufficiently answered, respond with: DONE
 Otherwise, respond with a JSON array of 1-3 NEW sub-questions to investigate.
 JSON or "DONE", nothing else."""
 
-            reflect_raw = claude_think(reflect_prompt, timeout=60, tier="light")
+            reflect_raw = claude_think(reflect_prompt, timeout=RESEARCHER_REFLECT_TIMEOUT, tier="light")
             if "DONE" in reflect_raw.upper():
                 log.info("Research converged at iteration %d", iteration)
                 break
@@ -221,7 +281,7 @@ Synthesize the research findings into a comprehensive report:
 - End with key takeaways and open questions
 - Markdown format"""
 
-    report = claude_think(synth_prompt, timeout=120, tier="heavy")
+    report = claude_think(synth_prompt, timeout=RESEARCHER_SYNTHESIS_TIMEOUT, tier="heavy")
     if not report:
         # Fallback: return raw findings
         report = f"# Research: {content}\n\n{kb_full}"

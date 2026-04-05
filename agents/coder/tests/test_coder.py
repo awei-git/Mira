@@ -17,22 +17,35 @@ sys.path.insert(0, str(_AGENTS / "coder"))
 sys.path.insert(0, str(_AGENTS / "super"))
 sys.path.insert(0, str(_AGENTS / "shared"))
 
+# Clear cached handler so we get coder's handler.py, not another agent's
+sys.modules.pop("handler", None)
+
 
 # ---------------------------------------------------------------------------
 # Fast tests (no tokens)
 # ---------------------------------------------------------------------------
 
+def _load_coder_handler():
+    """Import the coder handler explicitly (avoid sys.path collisions)."""
+    import importlib.util
+    handler_path = Path(__file__).resolve().parents[1] / "handler.py"
+    spec = importlib.util.spec_from_file_location("coder_handler", handler_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def test_handler_imports():
     """handler.py should import without errors."""
-    import handler
+    handler = _load_coder_handler()
     assert hasattr(handler, "handle")
     assert callable(handler.handle)
 
 
 def test_handler_signature():
     """handle() should accept the standard agent interface."""
-    from handler import handle
-    sig = inspect.signature(handle)
+    handler = _load_coder_handler()
+    sig = inspect.signature(handler.handle)
     params = set(sig.parameters.keys())
     required = {"workspace", "task_id", "content", "sender", "thread_id"}
     assert required.issubset(params), f"Missing params: {required - params}"
@@ -89,7 +102,8 @@ def test_skills_have_trigger_sections():
 
 def test_validate_python_files():
     """_validate_python_files should catch syntax errors."""
-    from handler import _validate_python_files
+    handler = _load_coder_handler()
+    _validate_python_files = handler._validate_python_files
 
     with tempfile.TemporaryDirectory() as tmpdir:
         ws = Path(tmpdir)
@@ -104,8 +118,8 @@ def test_validate_python_files():
 
 def test_system_prompt_mentions_debug():
     """System prompt should emphasize debug/review focus."""
-    from handler import _CODER_SYSTEM
-    lower = _CODER_SYSTEM.lower()
+    handler = _load_coder_handler()
+    lower = handler._CODER_SYSTEM.lower()
     assert "debug" in lower
     assert "review" in lower
     assert "read before" in lower or "read the" in lower

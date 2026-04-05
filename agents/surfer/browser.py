@@ -14,9 +14,20 @@ import base64
 import json
 import logging
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+_AGENTS_DIR = Path(__file__).resolve().parent.parent
+if str(_AGENTS_DIR / "shared") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+
+from config import (
+    BROWSER_DEFAULT_TIMEOUT_MS, BROWSER_NETWORKIDLE_TIMEOUT_MS,
+    BROWSER_DOMCONTENTLOADED_TIMEOUT_MS, BROWSER_SCROLL_WAIT_MS,
+    BROWSER_TYPING_DELAY_MS,
+)
 
 log = logging.getLogger("surfer.browser")
 
@@ -44,7 +55,7 @@ class BrowserResult:
 class BrowserSession:
     """Manages a Playwright browser session with persistent state."""
 
-    def __init__(self, headless: bool = True, timeout: int = 30000,
+    def __init__(self, headless: bool = True, timeout: int = BROWSER_DEFAULT_TIMEOUT_MS,
                  screenshots_dir: Optional[Path] = None):
         self._headless = headless
         self._timeout = timeout
@@ -97,7 +108,7 @@ class BrowserSession:
         self._ensure_page()
         try:
             self._page.goto(url, wait_until=wait_until, timeout=self._timeout)
-            self._page.wait_for_load_state("networkidle", timeout=10000)
+            self._page.wait_for_load_state("networkidle", timeout=BROWSER_NETWORKIDLE_TIMEOUT_MS)
         except Exception:
             pass  # networkidle timeout is non-fatal
         return self._snapshot()
@@ -106,7 +117,7 @@ class BrowserSession:
         self._ensure_page()
         try:
             self._page.click(selector, timeout=self._timeout)
-            self._page.wait_for_load_state("domcontentloaded", timeout=5000)
+            self._page.wait_for_load_state("domcontentloaded", timeout=BROWSER_DOMCONTENTLOADED_TIMEOUT_MS)
         except Exception as e:
             return BrowserResult(error=f"Click failed on '{selector}': {e}")
         return self._snapshot()
@@ -119,7 +130,7 @@ class BrowserSession:
             return BrowserResult(error=f"Fill failed on '{selector}': {e}")
         return self._snapshot()
 
-    def type_text(self, selector: str, text: str, delay: int = 50) -> BrowserResult:
+    def type_text(self, selector: str, text: str, delay: int = BROWSER_TYPING_DELAY_MS) -> BrowserResult:
         """Type text character by character (useful for search boxes with autocomplete)."""
         self._ensure_page()
         try:
@@ -133,7 +144,7 @@ class BrowserSession:
         self._ensure_page()
         try:
             self._page.keyboard.press(key)
-            self._page.wait_for_load_state("domcontentloaded", timeout=5000)
+            self._page.wait_for_load_state("domcontentloaded", timeout=BROWSER_DOMCONTENTLOADED_TIMEOUT_MS)
         except Exception:
             pass
         return self._snapshot()
@@ -142,7 +153,7 @@ class BrowserSession:
         self._ensure_page()
         delta = amount if direction == "down" else -amount
         self._page.mouse.wheel(0, delta)
-        self._page.wait_for_timeout(500)
+        self._page.wait_for_timeout(BROWSER_SCROLL_WAIT_MS)
         return self._snapshot()
 
     def select(self, selector: str, value: str) -> BrowserResult:
@@ -153,7 +164,7 @@ class BrowserSession:
             return BrowserResult(error=f"Select failed on '{selector}': {e}")
         return self._snapshot()
 
-    def wait_for(self, selector: str, timeout: int = 10000) -> BrowserResult:
+    def wait_for(self, selector: str, timeout: int = BROWSER_NETWORKIDLE_TIMEOUT_MS) -> BrowserResult:
         self._ensure_page()
         try:
             self._page.wait_for_selector(selector, timeout=timeout)

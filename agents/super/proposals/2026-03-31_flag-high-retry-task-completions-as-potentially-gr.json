@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Flag high-retry task completions as potentially ground solutions",
+  "description": "When a sub-agent task succeeds only after multiple retries, tag the completion as GROUND_SOLUTION rather than SOLVED in the task log and state output. This surfaces the distinction the reading note identifies: convergence-by-grinding (environment reshaped to suppress the error) vs. genuine solution. Currently, Mira's verification functions (_verify_state_key, _verify_analyst, etc.) only check existence/presence — a task that succeeds on attempt 4 after silently modifying intermediate state looks identical to one that succeeded on attempt 1.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/sub_agent.py",
+    "~/Sandbox/Mira/agents/super/core.py"
+  ],
+  "rationale": "The reading note's core insight: while-loop convergence reaches 'no longer triggering errors' not 'understood and fixed.' In multi-agent pipelines this is dangerous because one agent's environmental reshaping silently corrupts downstream context — exactly A2A hallucination amplification at the task level. Mira already has retry logic in sub_agent.py (CLAUDE_TIMEOUT_THINK/ACT, MAX_CONCURRENT_TASKS). The missing piece is that retry count is tracked for timeout management but not surfaced in task outcome metadata. A task that grinds to success on attempt 4 should be distinguishable from one that succeeded on attempt 1.",
+  "diff_description": "In sub_agent.py: add a 'retry_count' field to the task result dict that is incremented on each retry. In the task completion handler in core.py: if retry_count >= 2 and task status is success, append a GROUND_SOLUTION warning to the task log entry (e.g., '[GROUND] succeeded after N retries — verify output is a genuine solution, not a suppressed error'). No behavior change — this is purely observability. The weekly reflect pipeline can then surface GROUND_SOLUTION-tagged completions for review, analogous to how eval failures are currently reviewed.",
+  "source_note": "2026-03-31_2-把问题磨成粉末不等于解决问题.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-31_2-把问题磨成粉末不等于解决问题.md",
+  "created_at": "2026-03-31T13:33:22.336359",
+  "date": "2026-03-31",
+  "status": "proposed"
+}

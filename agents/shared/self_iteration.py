@@ -183,7 +183,13 @@ Rules:
 
 
 def save_article_skills(skills: list[dict], source_title: str):
-    """Save extracted article skills to the writer skills directory."""
+    """Save extracted article skills to the writer skills directory.
+
+    Routes through save_skill() for security audit and quality gate.
+    Only writes per-agent copy if the skill passes.
+    """
+    from soul_manager import save_skill
+
     writer_skills_dir = Path(__file__).resolve().parent.parent / "writer" / "skills"
     writer_skills_dir.mkdir(parents=True, exist_ok=True)
 
@@ -194,9 +200,10 @@ def save_article_skills(skills: list[dict], source_title: str):
         if path.exists():
             log.info("Writer skill already exists, skipping: %s", name)
             continue
+        description = skill.get('description', '')
         content = f"""# {name}
 
-{skill.get('description', '')}
+{description}
 
 **Extracted from**: "{source_title}" ({datetime.now().strftime('%Y-%m-%d')})
 **Tags**: {', '.join(skill.get('tags', []))}
@@ -205,6 +212,12 @@ def save_article_skills(skills: list[dict], source_title: str):
 
 {skill.get('content', '')}
 """
+        # Route through quality gate first
+        if not save_skill(name, description, content):
+            log.warning("Writer skill '%s' rejected by quality gate, skipping", name)
+            continue
+
+        # Only write per-agent copy after gate passes
         path.write_text(content, encoding="utf-8")
         log.info("Saved writer craft skill: %s (from '%s')", name, source_title)
 

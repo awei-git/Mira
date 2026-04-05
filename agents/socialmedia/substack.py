@@ -400,6 +400,22 @@ def _upload_image_to_substack(image_path: str, subdomain: str, cookie: str) -> s
 def publish_to_substack(title: str, subtitle: str,
                         article_text: str, workspace: Path) -> str:
     """Publish an article to Substack. Returns status message."""
+    # Preflight check
+    try:
+        from preflight import preflight_check
+        pf = preflight_check("publish", {
+            "instruction": f"Publish '{title}' to Substack",
+            "title": title,
+            "content": article_text,
+            "platform": "substack",
+        })
+        if not pf.passed:
+            msg = f"Preflight blocked publish: {'; '.join(pf.blocking_reasons)}"
+            log.error(msg)
+            return msg
+    except ImportError:
+        pass
+
     # Guard: respect the global kill switch
     try:
         from config import SUBSTACK_PUBLISHING_DISABLED
@@ -489,6 +505,21 @@ Output ONLY the subtitle, nothing else."""
         subtitle = subtitle.strip().strip('"').strip("'")[:140]
         if subtitle:
             log.info("Auto-generated subtitle: %s", subtitle)
+
+    # Strip metadata that should never be published
+    import re as _re_strip
+    # YAML frontmatter
+    article_text = _re_strip.sub(r'^---\n.*?\n---\n', '', article_text, flags=_re_strip.DOTALL)
+    # Revision table at end
+    article_text = _re_strip.sub(r'\n---\s*\n+##?\s*修改记录.*', '', article_text, flags=_re_strip.DOTALL)
+    article_text = _re_strip.sub(r'\n---\s*\n+##?\s*Changelog.*', '', article_text, flags=_re_strip.DOTALL | _re_strip.IGNORECASE)
+    # Line-level metadata
+    article_text = _re_strip.sub(r'^#\s*修订稿.*?\n', '', article_text)
+    article_text = _re_strip.sub(r'^#\s*初稿.*?\n', '', article_text)
+    article_text = _re_strip.sub(r'^日期[：:].*?\n', '', article_text)
+    article_text = _re_strip.sub(r'^字数[：:].*?\n', '', article_text)
+    article_text = _re_strip.sub(r'^基于[：:].*?\n', '', article_text)
+    article_text = article_text.strip()
 
     # Convert markdown to HTML
     body_html = _md_to_html(article_text)
@@ -637,7 +668,14 @@ Output ONLY the subtitle, nothing else."""
 
 def upload_audio_to_post(mp3_path: Path, post_id: int | str,
                           label: str | None = None) -> bool:
-    """Upload an MP3 and embed it as an audio player block in the post body.
+    """Upload an MP3 and embed it as an audio player block in the post body."""
+    raise RuntimeError(
+        "upload_audio_to_post() is DISABLED. "
+        "Audio is published to RSS feeds via podcast/rss.py, NOT embedded in Substack posts. "
+        "Never upload audio to Substack."
+    )
+    # Original docstring continuation below (dead code):
+    """
 
     Flow:
     1. POST /api/v1/audio/upload  → presigned S3 URL + media_id

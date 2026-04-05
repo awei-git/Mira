@@ -10,17 +10,26 @@ for prioritized analysis in Phase 1.
 import json
 import logging
 import subprocess
+import sys
 from pathlib import Path
+
+_AGENTS_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+
+from config import (
+    VIDEO_MIN_CLIP_DURATION, VIDEO_MIN_BRIGHTNESS,
+    VIDEO_MAX_BRIGHTNESS, VIDEO_MIN_BLUR_SCORE,
+)
 
 log = logging.getLogger("video.triage")
 
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".mts", ".mpg", ".wmv"}
 
-# Rejection thresholds
-_MIN_DURATION = 1.5          # seconds
-_MIN_BRIGHTNESS = 15         # 0-255, below = lens cap / pure black
-_MAX_BRIGHTNESS = 248        # above = pure white / overexposed
-_MIN_BLUR_SCORE = 20.0       # laplacian variance, below = extremely blurry
+# Rejection thresholds (from config)
+_MIN_DURATION = VIDEO_MIN_CLIP_DURATION
+_MIN_BRIGHTNESS = VIDEO_MIN_BRIGHTNESS
+_MAX_BRIGHTNESS = VIDEO_MAX_BRIGHTNESS
+_MIN_BLUR_SCORE = VIDEO_MIN_BLUR_SCORE
 
 
 def _ffprobe_info(path: Path) -> dict:

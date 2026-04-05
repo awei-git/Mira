@@ -1,11 +1,12 @@
-"""Secret agent tests — verify local-only Ollama pipeline works.
+"""Secret agent tests — verify local-only oMLX pipeline works.
 
 Fast tests: handler import, manifest, no cloud API leakage
-Slow tests: actual Ollama call (requires local Ollama running with qwen2.5:32b)
+Slow tests: actual oMLX call (requires local oMLX running with qwen3.5-27b)
 """
 from __future__ import annotations
 import inspect
 import json
+import re
 import sys
 import tempfile
 import uuid
@@ -19,19 +20,29 @@ sys.path.insert(0, str(_AGENTS / "super"))
 sys.path.insert(0, str(_AGENTS / "shared"))
 
 
+def _load_secret_handler():
+    """Import secret handler explicitly to avoid sys.path collisions."""
+    import importlib.util
+    handler_path = _AGENTS / "secret" / "handler.py"
+    spec = importlib.util.spec_from_file_location("secret_handler", handler_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 # ---------------------------------------------------------------------------
 # Fast tests (no LLM)
 # ---------------------------------------------------------------------------
 
 def test_handler_imports():
-    import handler
+    handler = _load_secret_handler()
     assert hasattr(handler, "handle")
     assert callable(handler.handle)
 
 
 def test_handler_signature():
-    from handler import handle
-    sig = inspect.signature(handle)
+    handler = _load_secret_handler()
+    sig = inspect.signature(handler.handle)
     params = set(sig.parameters.keys())
     assert {"workspace", "task_id", "content", "sender", "thread_id"}.issubset(params)
 
@@ -45,19 +56,18 @@ def test_manifest_valid():
 
 def test_no_cloud_imports():
     """Secret agent handler should NOT import any cloud API client."""
-    import handler
+    handler = _load_secret_handler()
     source = Path(handler.__file__).read_text(encoding="utf-8")
-    # Should not directly import cloud API clients
     cloud_imports = ["import openai", "import anthropic", "import google"]
     for imp in cloud_imports:
         assert imp not in source, f"Secret agent imports cloud API: {imp}"
 
 
-def test_uses_ollama_only():
-    """Secret agent should use _ollama_call, not claude_think/act or _api_call."""
-    import handler
+def test_uses_omlx_only():
+    """Secret agent should use _omlx_call, not claude_think/act or _api_call."""
+    handler = _load_secret_handler()
     source = Path(handler.__file__).read_text(encoding="utf-8")
-    assert "_ollama_call" in source, "Secret agent should use _ollama_call"
+    assert "_omlx_call" in source, "Secret agent should use _omlx_call"
     assert "claude_think" not in source, "Secret agent should NOT use claude_think"
     assert "claude_act" not in source, "Secret agent should NOT use claude_act"
 
@@ -84,30 +94,31 @@ def test_privacy_routing_keywords():
 def test_handler_no_disk_persistence():
     """Secret handler should NOT write output.md."""
     source = Path(_AGENTS / "secret" / "handler.py").read_text(encoding="utf-8")
-    assert "output.md" not in source or "Do NOT write" in source, \
-        "Secret handler should not persist output to disk"
+    assert not re.search(r'output\.md["\']\)\.write_text', source), \
+        "Secret handler should not persist output.md directly"
 
 
-def test_ollama_service_running():
-    """Ollama should be running and responsive."""
+def test_omlx_service_running():
+    """oMLX should be running and responsive."""
     import urllib.request
     try:
-        with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=5) as resp:
+        with urllib.request.urlopen("http://127.0.0.1:8800/v1/models", timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            models = [m["name"] for m in data.get("models", [])]
-            assert any("qwen" in m for m in models), f"No qwen model found in Ollama: {models}"
+            models = [m["id"] for m in data.get("data", [])]
+            assert any("qwen" in m for m in models), f"No qwen model found in oMLX: {models}"
     except Exception as e:
-        pytest.skip(f"Ollama not running: {e}")
+        pytest.skip(f"oMLX not running: {e}")
 
 
 # ---------------------------------------------------------------------------
-# Slow tests (real Ollama call — requires local qwen2.5:32b)
+# Slow tests (real oMLX call — requires local qwen3.5-27b)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.slow
 def test_secret_answers_question():
-    """Secret agent should answer a simple question via Ollama."""
-    from handler import handle
+    """Secret agent should answer a simple question via oMLX."""
+    test_omlx_service_running()
+    handle = _load_secret_handler().handle
 
     ws = Path(tempfile.mkdtemp(prefix="mira_secret_test_"))
     result = handle(
@@ -122,9 +133,10 @@ def test_secret_answers_question():
 
 
 @pytest.mark.slow
-def test_secret_writes_output():
-    """Secret agent should write output.md to workspace."""
-    from handler import handle
+def test_secret_does_not_write_output():
+    """Secret agent should rely on task_worker backfill, not direct disk persistence."""
+    test_omlx_service_running()
+    handle = _load_secret_handler().handle
 
     ws = Path(tempfile.mkdtemp(prefix="mira_secret_test_"))
     result = handle(
@@ -136,4 +148,4 @@ def test_secret_writes_output():
     )
     assert result, "Secret agent returned empty"
     output_file = ws / "output.md"
-    assert output_file.exists(), "Secret agent should write output.md"
+    assert not output_file.exists(), "Secret agent should not write output.md directly"

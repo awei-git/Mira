@@ -14,6 +14,7 @@ Pipeline:
 
 import json
 import logging
+import re as _re_mod
 import subprocess
 import sys
 from pathlib import Path
@@ -21,6 +22,7 @@ from pathlib import Path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
+from config import DARKTABLE_CLI_PATH, DARKTABLE_RENDER_TIMEOUT
 from sub_agent import claude_act
 from dt_xmp import (
     make_exposure, make_filmic, make_colorbalance,
@@ -29,7 +31,41 @@ from dt_xmp import (
 
 log = logging.getLogger("photo.editor")
 
-DARKTABLE_CLI = "/Applications/darktable.app/Contents/MacOS/darktable-cli"
+
+def _log_photo_failure(step: str, error_msg: str, slug: str = "photo"):
+    try:
+        from failure_log import record_failure
+        record_failure(pipeline="photo", step=step, slug=slug,
+                       error_type="photo_agent_error", error_message=error_msg[:500])
+    except Exception:
+        pass
+
+
+DARKTABLE_CLI = DARKTABLE_CLI_PATH
+
+
+def _check_darktable_version() -> str | None:
+    """Check darktable version for XMP compatibility.
+
+    Returns version string or None if darktable not found.
+    Logs warning if version doesn't match expected format.
+    """
+    try:
+        result = subprocess.run(
+            [DARKTABLE_CLI, "--version"],
+            capture_output=True, text=True, timeout=5
+        )
+        # Parse version from output
+        match = _re_mod.search(r'darktable\s+(\d+\.\d+\.\d+)', result.stdout + result.stderr)
+        if match:
+            version = match.group(1)
+            major, minor, _ = version.split(".")
+            if int(major) < 4:
+                log.warning("darktable %s is old - XMP format may be incompatible (expected 4.x+)", version)
+            return version
+        return None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
 STYLE_DNA = Path(__file__).parent.parent / "shared/soul/learned/wa-photography-style-dna.md"
 OUTPUT_DIR = Path(__file__).parent / "output"
 
@@ -273,7 +309,7 @@ def render_with_darktable(raw_path: Path, xmp_path: Path, output_path: Path) -> 
         "--hq", "true", "--apply-custom-presets", "false",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=DARKTABLE_RENDER_TIMEOUT)
         if output_path.exists() and output_path.stat().st_size > 0:
             log.info("Rendered: %s (%.1f MB)", output_path.name,
                      output_path.stat().st_size / 1024 / 1024)
@@ -304,6 +340,8 @@ def apply_color_match(target_path: Path, reference_path: Path, output_path: Path
         return True
     except Exception as e:
         log.error("Color match failed: %s", e)
+        _log_photo_failure("color_match_failed", f"{target_path.name}: {e}",
+                           slug=target_path.stem)
         return False
 
 
@@ -406,6 +444,12 @@ Keep the same structure. Only change values that need fixing based on the feedba
 def edit_photo(raw_path: Path, reference_path: Path = None,
                output_dir: Path = None, max_iterations: int = 3) -> dict:
     """Full editing pipeline: analyze → render → review → iterate if needed."""
+    # Verify darktable is available before doing any work
+    dt_version = _check_darktable_version()
+    if dt_version is None:
+        log.error("darktable-cli not found at %s", DARKTABLE_CLI)
+        return None
+
     if output_dir is None:
         output_dir = OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -432,6 +476,9 @@ def edit_photo(raw_path: Path, reference_path: Path = None,
             params = revise_params(params, last_review)
         if not params:
             log.error("Analysis/revision failed")
+            _log_photo_failure("analysis_empty",
+                               f"analyze_photo returned empty on iteration {iteration + 1}",
+                               slug=raw_path.stem)
             continue
 
         analysis = params.get("analysis", {})
@@ -445,6 +492,9 @@ def edit_photo(raw_path: Path, reference_path: Path = None,
 
         dt_output = output_dir / f"{raw_path.stem}_v{iteration + 1}_edited.jpg"
         if not render_with_darktable(raw_path, xmp_path, dt_output):
+            _log_photo_failure("darktable_render_failed",
+                               f"darktable-cli failed for {raw_path.name} iteration {iteration + 1}",
+                               slug=raw_path.stem)
             continue
 
         # Skip color matching — it causes unnatural color casts
@@ -470,6 +520,15 @@ def edit_photo(raw_path: Path, reference_path: Path = None,
         if iteration < max_iterations - 1:
             log.info("Review not approved, iterating with suggestions: %s",
                      last_review.get("suggestions", "")[:100])
+
+    if best_score < 6 and best_score > 0:
+        _log_photo_failure("quality_target_not_met",
+                           f"Best score {best_score}/10 after {max_iterations} iterations",
+                           slug=raw_path.stem)
+    elif best_score == 0:
+        _log_photo_failure("edit_pipeline_failed",
+                           f"No successful render after {max_iterations} iterations",
+                           slug=raw_path.stem)
 
     if best_params:
         params_path = output_dir / f"{raw_path.stem}_params.json"

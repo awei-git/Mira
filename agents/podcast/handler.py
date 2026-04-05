@@ -31,8 +31,14 @@ log = logging.getLogger("podcast")
 # Config
 # ---------------------------------------------------------------------------
 
-GEMINI_MODEL_TTS      = "gemini-2.5-flash-preview-tts"  # Flash: free tier available
-GEMINI_MODEL_TTS_FALL = "gemini-2.5-flash-preview-tts"  # same (Pro has no free tier)
+from config import (GEMINI_TTS_MODEL, GEMINI_TTS_TIMEOUT, GEMINI_TTS_MAX_RETRIES,
+                    GEMINI_TTS_BACKOFF_MULTIPLIER, MINIMAX_TTS_MAX_RETRIES,
+                    MINIMAX_SAMPLE_RATE, GPT5_MODEL, PODCAST_FALLBACK_MAX_TOKENS,
+                    GEMINI_AUTO_RETRIES, GEMINI_AUTO_RETRY_WAIT)
+from preflight import preflight_check
+
+GEMINI_MODEL_TTS      = GEMINI_TTS_MODEL  # Flash: free tier available
+GEMINI_MODEL_TTS_FALL = GEMINI_TTS_MODEL  # same (Pro has no free tier)
 GEMINI_MODEL_THINK = "gemini-2.5-pro"          # for script generation
 
 # ---------------------------------------------------------------------------
@@ -123,6 +129,28 @@ def _get_minimax_key() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Failure logging helper
+# ---------------------------------------------------------------------------
+
+def _record_podcast_failure(slug: str, error_type: str, error_message: str,
+                            lang: str = "", title: str = ""):
+    """Record a podcast pipeline failure to the structured failure log."""
+    try:
+        import sys as _sys
+        _shared = str(Path(__file__).resolve().parent.parent / "shared")
+        if _shared not in _sys.path:
+            _sys.path.insert(0, _shared)
+        from failure_log import record_failure
+        record_failure(
+            pipeline="podcast", step=f"podcast_{lang}" if lang else "podcast",
+            slug=slug, error_type=error_type, error_message=error_message,
+            context={"lang": lang, "title": title},
+        )
+    except Exception as e:
+        log.warning("Failed to record podcast failure: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # Shared utilities
 # ---------------------------------------------------------------------------
 
@@ -192,7 +220,7 @@ def _concat_mp3_chunks(chunk_paths: list[Path], output_path: Path) -> bool:
 
 
 def _call_gemini_tts(payload: dict, api_key: str,
-                     _retries: int = 3, _model: str | None = None) -> bytes | None:
+                     _retries: int = GEMINI_TTS_MAX_RETRIES, _model: str | None = None) -> bytes | None:
     """POST to Gemini TTS endpoint, return raw PCM bytes or None.
 
     Tries Pro first; on 429 quota exhaustion, falls back to Flash TTS automatically.
@@ -209,10 +237,10 @@ def _call_gemini_tts(payload: dict, api_key: str,
     for attempt in range(_retries):
         rate_limited = False
         try:
-            resp = requests.post(url, json=payload, timeout=420)
+            resp = requests.post(url, json=payload, timeout=GEMINI_TTS_TIMEOUT)
         except Exception as e:
             if attempt < _retries - 1:
-                wait = 15 * (attempt + 1)
+                wait = GEMINI_TTS_BACKOFF_MULTIPLIER * (attempt + 1)
                 log.warning("Gemini TTS exception (attempt %d): %s — retrying in %ds",
                             attempt + 1, e, wait)
                 _time.sleep(wait)
@@ -321,7 +349,7 @@ def _call_gemini_tts_text(text: str, voice_name: str, lang: str,
 
 
 def _call_minimax_tts(text: str, voice_id: str, api_key: str,
-                      lang: str = "en", _retries: int = 3) -> bytes | None:
+                      lang: str = "en", _retries: int = MINIMAX_TTS_MAX_RETRIES) -> bytes | None:
     """POST to MiniMax text_to_speech, return MP3 bytes directly.
 
     Uses /v1/text_to_speech (Audio Starter plan compatible).
@@ -339,7 +367,7 @@ def _call_minimax_tts(text: str, voice_id: str, api_key: str,
         "speed": speed,
         "vol": VOL_MM,
         "pitch": 0,
-        "audio_sample_rate": 32000,
+        "audio_sample_rate": MINIMAX_SAMPLE_RATE,
         "bitrate": 128000,
         "format": "mp3",
     }
@@ -547,6 +575,11 @@ def generate_audio_for_article(article_text: str, title: str,
                                 output_dir: Path | None = None,
                                 lang: str = "en") -> Path | None:
     """Voiceover pipeline: article → spoken script → TTS → MP3."""
+    raise RuntimeError(
+        "generate_audio_for_article() is DISABLED. "
+        "Use generate_conversation_for_article() for podcast episodes. "
+        "Voiceover (single-speaker) is no longer used."
+    )
     import sys
     shared = str(Path(__file__).resolve().parent.parent / "shared")
     if shared not in sys.path:
@@ -750,9 +783,9 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
             from sub_agent import _get_api_key
             client = _openai.OpenAI(api_key=_get_api_key("openai"))
             response = client.chat.completions.create(
-                model="gpt-5.4",
+                model=GPT5_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                max_completion_tokens=16000,
+                max_completion_tokens=PODCAST_FALLBACK_MAX_TOKENS,
                 timeout=600,
             )
             result = response.choices[0].message.content
@@ -818,6 +851,9 @@ def _clean_turn_text(text: str) -> str:
     text = re.sub(r'[\[\]【】「」『』""''《》]', '', text)  # remove brackets/quotes
     text = re.sub(r'[、·・･]', '，', text)            # Chinese stops → comma
     text = re.sub(r'[/\\*#@%^&+=|~`]', ' ', text)  # special symbols → space
+    # Space English acronyms so TTS spells them out (AI→A I, LLM→L L M)
+    text = re.sub(r'(?<![A-Za-z])([A-Z]{2,})(?![A-Za-z])',
+                  lambda m: ' '.join(m.group(1)), text)
     text = re.sub(r'\s{2,}', ' ', text)             # collapse spaces
     return text.strip()
 
@@ -973,8 +1009,8 @@ def _tts_call_with_fallback(text: str, speaker: str,
     - If all Gemini attempts fail, try MiniMax once.
     - If both fail, notify user via bridge and return (None, '').
     """
-    GEMINI_RETRIES = 2
-    GEMINI_RETRY_WAIT = 65  # just over 1 minute — wait for RPM window to clear
+    GEMINI_RETRIES = GEMINI_AUTO_RETRIES
+    GEMINI_RETRY_WAIT = GEMINI_AUTO_RETRY_WAIT  # just over 1 minute — wait for RPM window to clear
 
     def _try_gemini_once() -> tuple[bytes | None, str]:
         api_key = _get_gemini_key()
@@ -1363,6 +1399,9 @@ def generate_conversation_for_article(article_text: str, title: str,
                         _saved_count, _min_chars)
             script = generate_conversation_script(article_text, title, lang=lang)
             if not script:
+                _record_podcast_failure(slug, "script_generation_failed",
+                                        "Script regeneration returned None (saved script too short)",
+                                        lang=lang, title=title)
                 return None
             script_path.write_text(script, encoding="utf-8")
         else:
@@ -1370,6 +1409,9 @@ def generate_conversation_for_article(article_text: str, title: str,
     else:
         script = generate_conversation_script(article_text, title, lang=lang)
         if not script:
+            _record_podcast_failure(slug, "script_generation_failed",
+                                    "Script generation returned None",
+                                    lang=lang, title=title)
             return None
         script_path.write_text(script, encoding="utf-8")
     turns = _parse_turns(script)
@@ -1389,6 +1431,9 @@ def generate_conversation_for_article(article_text: str, title: str,
     if conv_path.exists():
         log.info("Step 2: Conversation TTS already done, skipping")
     elif not generate_tts_conversation(script, conv_path, lang=lang):
+        _record_podcast_failure(slug, "tts_failed",
+                                "generate_tts_conversation returned False",
+                                lang=lang, title=title)
         return None
 
     # Pre-cut music slices (reusable assets, committed in agents/podcast/music/)
@@ -1423,6 +1468,9 @@ def generate_conversation_for_article(article_text: str, title: str,
     log.info("Step 6: Assembling final episode...")
     if not assemble_episode(intro_path, conv_path, outro_path, final_path, lang=lang):
         log.warning("Assembly failed — returning conversation only")
+        _record_podcast_failure(slug, "assembly_failed",
+                                "assemble_episode returned False",
+                                lang=lang, title=title)
         return conv_path
 
     return final_path
@@ -1436,13 +1484,22 @@ def _extract_article(workspace: Path, content: str) -> tuple[str | None, str]:
     """Find article text from content references or workspace files."""
     article_text, title = None, "Untitled"
 
-    # Explicit file reference: @file:/path/to/file.md
-    file_match = re.search(r'@file:(.+?)(?:\s|$)', content)
+    # Explicit title: --title "Something"
+    title_match = re.search(r'--title\s+"([^"]+)"', content)
+    if title_match:
+        title = title_match.group(1).strip()
+
+    # Explicit file reference: @file:/path/to/file.md or --file /path/to/file.md
+    # Support quoted paths (spaces in path) and unquoted
+    file_match = re.search(r'(?:@file:|--file\s+)"([^"]+)"', content)
+    if not file_match:
+        file_match = re.search(r'(?:@file:|--file\s+)(\S+)', content)
     if file_match:
         fpath = Path(file_match.group(1).strip().replace("~", str(Path.home())))
         if fpath.exists():
             article_text = fpath.read_text(encoding="utf-8")
-            title = fpath.stem.replace("-", " ").replace("_", " ").title()
+            if not title_match:
+                title = fpath.stem.replace("-", " ").replace("_", " ").title()
 
     # Chained output from previous pipeline step
     if not article_text and "--- 上一步的输出 ---" in content:
@@ -1457,42 +1514,10 @@ def _extract_article(workspace: Path, content: str) -> tuple[str | None, str]:
                 title = p.stem
                 break
 
-    # Auto-find latest published article if no explicit source
+    # NO fallback guessing — if --file didn't match and workspace has nothing,
+    # fail explicitly instead of silently picking the wrong article.
     if not article_text:
-        import sys as _sys
-        _shared = str(Path(__file__).resolve().parent.parent / "shared")
-        if _shared not in _sys.path:
-            _sys.path.insert(0, _shared)
-        try:
-            from config import WRITINGS_OUTPUT_DIR
-            published_dir = WRITINGS_OUTPUT_DIR / "_published"
-            if published_dir.exists():
-                published = sorted(published_dir.glob("*.md"),
-                                   key=lambda p: p.stat().st_mtime, reverse=True)
-                if published:
-                    article_text = published[0].read_text(encoding="utf-8")
-                    title = published[0].stem.replace("-", " ").replace("_", " ").title()
-        except Exception:
-            pass
-
-    # Also check writings project folders for final.md
-    if not article_text:
-        try:
-            from config import WRITINGS_OUTPUT_DIR
-            projects = sorted(WRITINGS_OUTPUT_DIR.iterdir(),
-                              key=lambda p: p.stat().st_mtime, reverse=True)
-            for proj in projects:
-                if not proj.is_dir() or proj.name.startswith("_"):
-                    continue
-                final = proj / "final" / "final.md"
-                if not final.exists():
-                    final = proj / "final.md"
-                if final.exists():
-                    article_text = final.read_text(encoding="utf-8")
-                    title = proj.name.replace("-", " ").title()
-                    break
-        except Exception:
-            pass
+        log.error("No article found. Provide --file with a valid path.")
 
     # Override title from first heading
     if article_text:
@@ -1501,6 +1526,30 @@ def _extract_article(workspace: Path, content: str) -> tuple[str | None, str]:
             title = m.group(1).strip()
 
     return article_text, title
+
+
+def preflight(workspace: Path, task_id: str, content: str,
+              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+    """Block podcast generation when there is no usable article to narrate."""
+    article_text, _title = _extract_article(workspace, content)
+    if not article_text:
+        return False, "PREFLIGHT BLOCKED [podcast]: 找不到要生成音频的文章内容"
+
+    article_text = article_text.strip()
+    if len(article_text) < 50:
+        return False, "PREFLIGHT BLOCKED [podcast]: 文章内容太短，不适合生成音频"
+
+    result = preflight_check(
+        "file_write",
+        {
+            "instruction": content,
+            "path": str(workspace / "output.md"),
+            "content": article_text,
+        },
+    )
+    if result.passed:
+        return True, ""
+    return False, result.summary()
 
 
 def handle(workspace: Path, task_id: str, content: str,
@@ -1551,3 +1600,89 @@ def handle(workspace: Path, task_id: str, content: str,
         (workspace / "output.md").write_text(msg, encoding="utf-8")
         # Return None so task_worker marks this as status="error" and aborts the pipeline
         return None
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point — called by core.py _check_pending_podcast via background dispatch
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse
+    import sys as _sys
+    import logging as _logging
+
+    _logging.basicConfig(level=_logging.INFO,
+                         format="%(asctime)s [%(levelname)s] %(message)s")
+
+    parser = argparse.ArgumentParser(description="Podcast generator CLI")
+    parser.add_argument("--run", required=True, choices=["conversation", "voiceover"],
+                        help="Generation mode")
+    parser.add_argument("--title", required=True, help="Article title")
+    parser.add_argument("--file", required=True, help="Path to article markdown")
+    parser.add_argument("--lang", default="en", choices=["en", "zh"],
+                        help="Language (en or zh)")
+    parser.add_argument("--slug", default="", help="Override slug (default: derived from title)")
+    args = parser.parse_args()
+
+    article_path = Path(args.file)
+    if not article_path.exists():
+        print(f"ERROR: File not found: {article_path}", file=_sys.stderr)
+        _sys.exit(1)
+
+    article_text = article_path.read_text(encoding="utf-8")
+    title = args.title
+    lang = args.lang
+
+    _log = _logging.getLogger("podcast")
+    _log.info("CLI: mode=%s lang=%s title='%s' file=%s (%d chars)",
+              args.run, lang, title, article_path, len(article_text))
+
+    if args.run == "conversation":
+        result = generate_conversation_for_article(article_text, title, lang=lang)
+    else:
+        result = generate_audio_for_article(article_text, title, lang=lang)
+
+    if result:
+        _log.info("SUCCESS: %s", result)
+
+        # Auto-publish to RSS
+        try:
+            from rss import publish_episode
+            episode_mp3 = Path(str(result))
+            rss_result = publish_episode(
+                mp3_path=episode_mp3,
+                title=title,
+                description=f"Podcast episode for: {title}",
+                lang=lang,
+            )
+            if rss_result:
+                _log.info("RSS published: %s", rss_result)
+            else:
+                _log.warning("RSS publish returned None for %s", title)
+        except Exception as e:
+            _log.error("RSS publish failed: %s", e)
+
+        # Validate podcast before updating manifest
+        try:
+            shared = str(Path(__file__).resolve().parent.parent / "shared")
+            if shared not in _sys.path:
+                _sys.path.insert(0, shared)
+            from publish_manifest import update_manifest, validate_step
+            slug = args.slug or _slug(title)
+            status = "podcast_en" if lang == "en" else "podcast_zh"
+
+            passed, verify_err = validate_step(slug, status,
+                                               mp3_path=str(result))
+            if not passed:
+                _record_podcast_failure(slug, "verification_failed", verify_err,
+                                        lang=lang, title=title)
+                _log.warning("Podcast verification failed for '%s': %s", title, verify_err)
+                # Still update manifest — episode exists, just may be short
+
+            update_manifest(slug, status=status)
+            _log.info("Manifest updated: %s → %s", slug, status)
+        except Exception as e:
+            _log.warning("Manifest update failed: %s", e)
+    else:
+        _log.error("FAILED: podcast generation returned None")
+        _sys.exit(1)

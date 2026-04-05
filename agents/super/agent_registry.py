@@ -52,6 +52,7 @@ class AgentRegistry:
         self._agents_dir = agents_dir or _AGENTS_DIR
         self._manifests: dict[str, AgentManifest] = {}
         self._handlers: dict[str, Callable] = {}
+        self._modules: dict[str, object] = {}
         self._scan()
 
     def _scan(self):
@@ -90,15 +91,10 @@ class AgentRegistry:
         """Return set of valid agent names (for plan validation)."""
         return set(self._manifests.keys())
 
-    def load_handler(self, name: str) -> Callable:
-        """Dynamically import and return the handler function for an agent.
-
-        Handlers are cached after first load.
-        Raises KeyError if agent not registered, ImportError if handler can't load.
-        """
-        if name in self._handlers:
-            return self._handlers[name]
-
+    def _load_module(self, name: str):
+        """Dynamically import and cache the agent module."""
+        if name in self._modules:
+            return self._modules[name]
         manifest = self._manifests.get(name)
         if not manifest:
             raise KeyError(f"Agent '{name}' not in registry. Available: {self.list_agents()}")
@@ -125,7 +121,24 @@ class AgentRegistry:
 
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        self._modules[name] = module
+        return module
 
+    def load_handler(self, name: str) -> Callable:
+        """Dynamically import and return the handler function for an agent.
+
+        Handlers are cached after first load.
+        Raises KeyError if agent not registered, ImportError if handler can't load.
+        """
+        if name in self._handlers:
+            return self._handlers[name]
+
+        manifest = self._manifests.get(name)
+        if not manifest:
+            raise KeyError(f"Agent '{name}' not in registry. Available: {self.list_agents()}")
+
+        file_path, func_name = manifest.handler_path()
+        module = self._load_module(name)
         handler = getattr(module, func_name, None)
         if handler is None:
             raise ImportError(f"Function '{func_name}' not found in {file_path}")
@@ -133,6 +146,12 @@ class AgentRegistry:
         self._handlers[name] = handler
         log.info("Loaded handler: %s → %s:%s", name, file_path.name, func_name)
         return handler
+
+    def load_preflight(self, name: str) -> Callable | None:
+        """Return optional preflight hook for an agent module."""
+        module = self._load_module(name)
+        preflight = getattr(module, "preflight", None)
+        return preflight if callable(preflight) else None
 
 
 # Singleton — created once at import time

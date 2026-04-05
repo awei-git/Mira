@@ -1,0 +1,16 @@
+{
+  "has_improvement": true,
+  "title": "Capability-gap audit step in soul_manager.audit_skill()",
+  "description": "The current skill security audit (HARD RULE #4) is pattern-based: it checks for known-bad signatures (curl-pipe-to-shell, eval, sudo, base64 payloads, etc.). The Carlini insight is that the most dangerous things are NOT near known patterns — the 20-year-old vulnerability was undetected precisely because human auditors walk along the gradient of past experience. Pattern-matching audits have the same blind spot. Add a second audit step that does capability inference rather than pattern matching: prompt Claude to enumerate ALL capabilities the skill code actually exercises (filesystem paths touched, network hosts contacted, env vars read, subprocesses spawned, etc.), then compare against the skill's declared tags/description. Flag any capability present in the code but absent from the declaration as 'undocumented capability — manual review required'. This is defense-side application of the same systematic exhaustive search the reading note describes.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py"
+  ],
+  "rationale": "The reading note observes that AI systematic exhaustive search finds what pattern-matching misses because it does not walk along the gradient of known attack patterns. Mira's audit_skill() is entirely pattern-based (known bad signatures). The same logic applies: a malicious skill that avoids all known patterns passes the audit. The fix is to add a capability-inference pass — enumerate what the skill actually does, not just what it looks like — which is precisely the exhaustive-search mode Carlini demonstrates. The note also flags the dual-use asymmetry: whoever deploys this capability on defense first gains the asymmetric advantage. Adding it to Mira's own audit pipeline is a concrete instance of that defensive application.",
+  "diff_description": "In soul_manager.py, after the existing pattern-based audit_skill() checks pass, add a second phase: call Claude (via the existing sub_agent interface) with a prompt that asks it to list every external capability the skill code exercises — file system paths, network calls, subprocess invocations, environment variable reads, inter-process communication — and return them as a structured list. Then compare that list against the skill's declared tags and description. If the inferred capability list contains anything not represented in the declared metadata (e.g., skill declares tags=['writing','craft'] but code reads ~/.ssh/ or makes outbound HTTP calls), append a 'CAPABILITY_GAP' warning to the audit result and require manual confirmation before enabling the skill. The existing BLOCKED/logged path for failed audits handles the enforcement; this change only adds the detection step.",
+  "source_note": "2026-03-30_carlini--2003年漏洞攻守不对称的拐点.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-30_carlini--2003年漏洞攻守不对称的拐点.md",
+  "created_at": "2026-03-30T13:07:11.505018",
+  "date": "2026-03-30",
+  "status": "proposed"
+}

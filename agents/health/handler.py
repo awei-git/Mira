@@ -1,7 +1,7 @@
 """Health agent — family health monitoring, privacy-first.
 
 Tracks weight, sleep, vitals, symptoms, and checkup reports.
-All data processing uses LOCAL LLM (Ollama) only — raw health data
+All data processing uses LOCAL LLM (oMLX) only — raw health data
 never leaves localhost.
 """
 import json
@@ -12,11 +12,9 @@ from pathlib import Path
 
 log = logging.getLogger("health_agent")
 
-# Force local LLM for all health data processing
-os.environ["MIRA_FORCE_OLLAMA"] = "1"
-
-from config import OLLAMA_DEFAULT_MODEL, DATABASE_URL
-from sub_agent import _ollama_call
+from config import OMLX_DEFAULT_MODEL, DATABASE_URL
+from preflight import preflight_check
+from sub_agent import _omlx_call
 
 
 def handle(workspace: Path, task_id: str, content: str,
@@ -24,17 +22,25 @@ def handle(workspace: Path, task_id: str, content: str,
            thread_history: str = "", thread_memory: str = "",
            tier: str = "light") -> str | None:
     """Main entry point for the health agent."""
+    # Force local LLM for all health data processing (privacy boundary)
+    from sub_agent import set_model_policy
+    set_model_policy("omlx")
     log.info("Health agent: task=%s content=%s", task_id, content[:80])
 
     from health_store import HealthStore
     store = HealthStore(DATABASE_URL)
 
+    # Resolve person_id: sender from iOS is device name (e.g. "iphone"),
+    # but we need the user_id (e.g. "ang"). Extract from workspace path
+    # which is .../users/{user_id}/tasks/... or fall back to "ang".
+    user_id = _resolve_user_id(workspace, sender)
+
     # Classify the input
-    intent = _classify(content, sender)
+    intent = _classify(content, user_id)
     log.info("Classified: %s", intent)
 
     intent_type = intent.get("type", "query")
-    person = intent.get("person", sender)
+    person = intent.get("person", user_id)
 
     if intent_type == "metric":
         return _handle_metric(store, workspace, task_id, intent, person)
@@ -44,8 +50,77 @@ def handle(workspace: Path, task_id: str, content: str,
         return _handle_query(store, workspace, task_id, content, person)
     elif intent_type == "report":
         return _handle_report_request(store, workspace, task_id, content, person)
+    elif intent_type == "checkup":
+        return _handle_checkup(store, workspace, task_id, content, person)
     else:
         return _handle_query(store, workspace, task_id, content, person)
+
+
+def _extract_checkup_dir(content: str, workspace: Path) -> Path | None:
+    """Resolve the uploaded checkup directory from message content."""
+    path_line = [line for line in content.split("\n") if "路径:" in line]
+    if not path_line:
+        return None
+
+    rel_path = path_line[0].split("路径:")[-1].strip()
+    if not rel_path:
+        return None
+
+    raw_path = Path(rel_path).expanduser()
+    if raw_path.is_absolute():
+        return raw_path
+
+    bridge_path = Path(os.environ.get("MIRA_DIR", str(workspace.parent.parent)))
+    return bridge_path / rel_path
+
+
+def preflight(workspace: Path, task_id: str, content: str,
+              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+    """Block malformed health tasks before we write to the DB or bridge files."""
+    result = preflight_check(
+        "file_write",
+        {
+            "instruction": content,
+            "path": str(workspace / "output.md"),
+            "content": content.strip(),
+        },
+    )
+    if not result.passed:
+        return False, result.summary()
+
+    if any(token in content.lower() for token in ("体检", "checkup", "report")):
+        checkup_dir = _extract_checkup_dir(content, workspace)
+        if checkup_dir is not None:
+            if not checkup_dir.exists():
+                return False, f"PREFLIGHT BLOCKED [health]: 体检报告目录不存在: {checkup_dir}"
+            images = list(checkup_dir.glob("*.jpg")) + list(checkup_dir.glob("*.jpeg")) + list(checkup_dir.glob("*.png"))
+            if not images:
+                return False, f"PREFLIGHT BLOCKED [health]: 体检报告目录里没有可解析图片: {checkup_dir}"
+
+    return True, ""
+
+
+def _resolve_user_id(workspace: Path, sender: str) -> str:
+    """Map device sender name to user_id.
+
+    The iOS app sends device name as sender (e.g. "iphone", "ipad").
+    We need the bridge user_id (e.g. "ang", "liquan") for DB queries.
+    Extract from workspace path which contains .../users/{user_id}/...
+    """
+    # Device names that aren't real user IDs
+    device_names = {"iphone", "ipad", "macbook", "mac", "unknown", "user", "?"}
+    if sender.lower() not in device_names:
+        return sender
+
+    # Extract user_id from workspace path: .../users/{user_id}/tasks/...
+    parts = workspace.resolve().parts
+    for i, part in enumerate(parts):
+        if part == "users" and i + 1 < len(parts):
+            candidate = parts[i + 1]
+            if candidate and not candidate.startswith("."):
+                return candidate
+
+    return "ang"  # Safe default
 
 
 def _classify(content: str, sender: str) -> dict:
@@ -64,6 +139,8 @@ Categories:
   Extract: {{"type": "query", "person": "<who>", "query": "<what they want to know>"}}
 - "report": User wants a health report or summary
   Extract: {{"type": "report", "person": "<who>"}}
+- "checkup": User uploaded a checkup report (mentions 体检报告, checkup, report images, etc.)
+  Extract: {{"type": "checkup", "person": "<who>", "content": "<any notes>"}}
 
 Rules:
 - "person" defaults to "{sender}" unless another person is mentioned (e.g., 妈妈, 爸爸, liquan)
@@ -73,7 +150,7 @@ Rules:
 Return ONLY the JSON object, no explanation."""
 
     try:
-        result = _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=30)
+        result = _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=30)
         # Extract JSON from response
         text = result.strip()
         if "```" in text:
@@ -99,6 +176,14 @@ def _handle_metric(store, workspace: Path, task_id: str,
 
     store.insert_metric(person, metric_type, float(value), unit)
 
+    # Refresh health_summary.json so iOS dashboard updates immediately
+    try:
+        from summary import write_summary_to_bridge
+        from config import MIRA_DIR
+        write_summary_to_bridge(store, Path(MIRA_DIR), person)
+    except Exception:
+        pass
+
     # Get recent trend for context
     recent = store.get_recent_metrics(person, metric_type, days=30)
     trend_msg = ""
@@ -109,18 +194,32 @@ def _handle_metric(store, workspace: Path, task_id: str,
         direction = "↑" if diff > 0 else "↓" if diff < 0 else "→"
         trend_msg = f"\n30天均值: {avg:.1f}{unit}, 当前 {direction} {abs(diff):.1f}"
 
+    # Generate advice for concerning metrics (blood pressure, blood sugar)
+    advice = None
+    if metric_type in ("blood_pressure_sys", "blood_pressure_dia", "blood_sugar", "temperature"):
+        advice = _generate_on_demand_advice(
+            store, person, f"{metric_type}: {value}{unit}{trend_msg}", "metric")
+
     response = f"已记录 {person} 的{metric_type}: {value}{unit}{trend_msg}"
+    if advice:
+        response += f"\n\n---\n\n{advice}"
     return _write_result(workspace, task_id, response)
 
 
 def _handle_note(store, workspace: Path, task_id: str,
                  intent: dict, person: str) -> str:
-    """Record a health note (symptom, medication, etc.)."""
+    """Record a health note (symptom, medication, etc.) and generate advice."""
     category = intent.get("category", "general")
     note_content = intent.get("content", "")
 
     store.insert_note(person, category, note_content)
-    response = f"已记录 {person} 的健康笔记 ({category}): {note_content}"
+
+    # Generate immediate GPT advice for symptoms
+    advice = _generate_on_demand_advice(store, person, note_content, category)
+    if advice:
+        response = f"已记录 {person} 的健康笔记 ({category}): {note_content}\n\n---\n\n{advice}"
+    else:
+        response = f"已记录 {person} 的健康笔记 ({category}): {note_content}"
     return _write_result(workspace, task_id, response)
 
 
@@ -169,7 +268,7 @@ def _handle_query(store, workspace: Path, task_id: str,
 - 给出实用的建议，但声明你不是医生，重要问题请咨询专业医生
 - 如果有异常趋势，明确指出"""
 
-    response = _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=60)
+    response = _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=60)
     return _write_result(workspace, task_id, response)
 
 
@@ -179,6 +278,134 @@ def _handle_report_request(store, workspace: Path, task_id: str,
     from report import generate_weekly_report
     report = generate_weekly_report(store, person)
     return _write_result(workspace, task_id, report)
+
+
+def _handle_checkup(store, workspace: Path, task_id: str,
+                    content: str, person: str) -> str:
+    """Handle uploaded checkup report — parse images and generate advice."""
+    from ingest import parse_checkup_images
+
+    # Extract image paths from content
+    # Content format: "体检报告上传: checkup_xxx.jpg, ...\n备注: ...\n路径: users/.../health/checkups/"
+    checkup_dir = _extract_checkup_dir(content, workspace)
+
+    parsed = None
+    if checkup_dir and checkup_dir.exists():
+        images = sorted(checkup_dir.glob("*.jpg"))
+        if images:
+            parsed = parse_checkup_images(images, person, store)
+
+    # Store as note too for immediate context
+    note_content = content.split("\n")[0]  # first line = summary
+    store.insert_note(person, "checkup", note_content)
+
+    # Generate advice with checkup context
+    advice = _generate_on_demand_advice(store, person, content, "checkup")
+
+    if parsed and parsed.get("items"):
+        abnormal = [i for i in parsed["items"] if i.get("flag") and i["flag"] != "normal"]
+        response = f"体检报告已解析: {len(parsed['items'])} 项检查"
+        if abnormal:
+            response += f", {len(abnormal)} 项异常"
+            for item in abnormal[:5]:
+                response += f"\n- {item['name']}: {item.get('value','?')}{item.get('unit','')} ({item['flag']})"
+    else:
+        response = f"已记录体检报告。"
+
+    if advice:
+        response += f"\n\n---\n\n{advice}"
+
+    return _write_result(workspace, task_id, response)
+
+
+def _generate_on_demand_advice(store, person: str, input_text: str,
+                               category: str = "symptom") -> str | None:
+    """Generate immediate GPT advice based on new input + existing health data.
+
+    Unlike the daily scheduled insight, this runs on-demand whenever the user
+    submits symptoms, notes, or checkup data — so they get actionable advice
+    right away instead of waiting for the next daily check.
+    """
+    from sub_agent import model_think
+
+    # Gather context: recent metrics + notes + checkup
+    data_parts = []
+    for metric_name, label in [
+        ("weight", "体重(kg)"), ("body_fat", "体脂(%)"),
+        ("sleep_hours", "睡眠(h)"), ("heart_rate", "静息心率(bpm)"),
+        ("hrv", "HRV(ms)"), ("blood_oxygen", "血氧(%)"),
+        ("blood_pressure_sys", "收缩压(mmHg)"), ("blood_pressure_dia", "舒张压(mmHg)"),
+        ("blood_sugar", "血糖(mmol/L)"),
+    ]:
+        latest = store.get_latest_metric(person, metric_name)
+        if latest:
+            data_parts.append(f"- {label}: {latest['value']:.1f}")
+
+    notes = store.get_recent_notes(person, days=7)
+    note_parts = [f"- [{n.get('category','')}] {n.get('date','')}: {n.get('content','')}"
+                  for n in notes[:5]]
+
+    checkup_text = "无"
+    reports = store.get_recent_reports(person, limit=1)
+    if reports:
+        r = reports[0]
+        checkup_text = f"日期: {r['report_date']} ({r['report_type']})"
+        if r.get("summary"):
+            checkup_text += f"\n{r['summary'][:300]}"
+        parsed = r.get("parsed_json")
+        if isinstance(parsed, str):
+            try:
+                parsed = json.loads(parsed)
+            except Exception:
+                parsed = None
+        if parsed and isinstance(parsed, dict):
+            flagged = parsed.get("flagged_high", [])
+            if flagged:
+                checkup_text += f"\n异常项: {', '.join(flagged)}"
+
+    data_text = "\n".join(data_parts) if data_parts else "暂无穿戴设备数据"
+    notes_text = "\n".join(note_parts) if note_parts else "无"
+
+    prompt = f"""你是一个专业的私人健康顾问。用户刚提交了新的健康信息，请给出针对性的分析和建议。
+
+## 用户刚提交的内容
+类型: {category}
+内容: {input_text}
+
+## 近期健康数据
+{data_text}
+
+## 近期症状/备注
+{notes_text}
+
+## 最近体检报告
+{checkup_text}
+
+## 要求
+1. 针对用户刚提交的内容给出具体分析（不要泛泛而谈）
+2. 如果是症状，结合已有健康数据判断可能的原因，给出 2-3 条今天可以做的事
+3. 如果体检有异常项，结合症状一起分析
+4. 如果数据不足以判断，明确说需要什么额外信息
+5. 语气像一个关心你的朋友，不要像医生写报告
+6. 用中文，简洁，总共不超过 300 字
+7. 重要问题提醒就医
+"""
+
+    try:
+        # Temporarily allow cloud LLM for advice generation.
+        # Raw health data was already stored locally; the prompt contains
+        # only aggregated summaries, no PII beyond person_id.
+        from sub_agent import set_model_policy
+        set_model_policy(None)  # lift ollama restriction for this call
+        try:
+            result = model_think(prompt, model_name="gpt5", timeout=60)
+        finally:
+            set_model_policy("omlx")  # restore
+        if result and len(result.strip()) > 30:
+            return result.strip()
+    except Exception as e:
+        log.warning("On-demand health advice failed: %s", e)
+    return None
 
 
 def _write_result(workspace: Path, task_id: str, response: str) -> str:

@@ -12,21 +12,34 @@ import json
 import logging
 import re
 import subprocess
+import sys
 import time
 import urllib.request
 import urllib.error
 from pathlib import Path
+
+_AGENTS_DIR = Path(__file__).resolve().parent.parent
+if str(_AGENTS_DIR / "shared") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+
+from config import (
+    VIDEO_FILE_MAX_BYTES, VIDEO_FILE_UPLOAD_TIMEOUT,
+    VIDEO_FILE_POLL_INTERVAL, VIDEO_FILE_POLL_TIMEOUT,
+    GEMINI_VIDEO_MODEL, GEMINI_FRAME_MODEL,
+    GEMINI_SCENE_ANALYZER_MAX_TOKENS, GEMINI_FRAME_ANALYZER_MAX_TOKENS,
+    GEMINI_SCENE_TEMPERATURE, VIDEO_MAX_FRAMES,
+)
 
 log = logging.getLogger("video.scene_analyzer")
 
 # Video extensions to scan
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".mts", ".mpg", ".wmv"}
 
-# Gemini File API limits (20GB for paid tier, 2GB for free tier)
-_FILE_API_MAX_BYTES = 20 * 1024 * 1024 * 1024  # 20GB
-_FILE_API_UPLOAD_TIMEOUT = 600  # 10 min for large files
-_FILE_API_POLL_INTERVAL = 5  # seconds between state checks
-_FILE_API_POLL_TIMEOUT = 300  # max wait for processing
+# Gemini File API limits (from config)
+_FILE_API_MAX_BYTES = VIDEO_FILE_MAX_BYTES
+_FILE_API_UPLOAD_TIMEOUT = VIDEO_FILE_UPLOAD_TIMEOUT
+_FILE_API_POLL_INTERVAL = VIDEO_FILE_POLL_INTERVAL
+_FILE_API_POLL_TIMEOUT = VIDEO_FILE_POLL_TIMEOUT
 
 # MIME type mapping
 _MIME_TYPES = {
@@ -39,10 +52,6 @@ _MIME_TYPES = {
     ".mpg": "video/mpeg",
     ".wmv": "video/x-ms-wmv",
 }
-
-# Gemini model for video analysis — Pro for best quality, Flash for speed/cost
-GEMINI_VIDEO_MODEL = "gemini-2.5-pro"
-GEMINI_FRAME_MODEL = "gemini-2.5-flash"  # fallback for frame-based
 
 
 # ---------------------------------------------------------------------------
@@ -282,8 +291,8 @@ def analyze_video_native(video_path: Path, api_key: str) -> list[dict]:
             ],
         }],
         "generationConfig": {
-            "maxOutputTokens": 8192,
-            "temperature": 0.2,
+            "maxOutputTokens": GEMINI_SCENE_ANALYZER_MAX_TOKENS,
+            "temperature": GEMINI_SCENE_TEMPERATURE,
         },
     }
 
@@ -382,7 +391,7 @@ def analyze_video_native(video_path: Path, api_key: str) -> list[dict]:
 
 def extract_frames(video_path: Path, output_dir: Path,
                    interval: float = 2.0, scene_threshold: float = 0.3,
-                   max_frames: int = 50) -> list[dict]:
+                   max_frames: int = VIDEO_MAX_FRAMES) -> list[dict]:
     """Extract key frames from a video using ffmpeg.
 
     Used for: (1) thumbnails in scene_log, (2) fallback when native video fails.
@@ -529,8 +538,8 @@ def analyze_frames_gemini(frames: list[dict], api_key: str,
         payload = {
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
-                "maxOutputTokens": 4096,
-                "temperature": 0.3,
+                "maxOutputTokens": GEMINI_FRAME_ANALYZER_MAX_TOKENS,
+                "temperature": GEMINI_SCENE_TEMPERATURE,
             },
         }
         body = json.dumps(payload).encode("utf-8")

@@ -1,0 +1,16 @@
+{
+  "has_improvement": true,
+  "title": "Log model version + timestamp on every sub-agent call for A2A drift detection",
+  "description": "In agents/shared/sub_agent.py (the module that dispatches calls to specialized agents), capture and log: (1) the model_id returned in the API response metadata, (2) a wall-clock timestamp for each sub-agent invocation, (3) the task type. Write these as structured log lines to logs/. This creates a temporal audit trail so behavioral drift across A2A chains can be detected post-hoc — if the same prompt yields systematically different outputs on different days, the log will show which node drifted and when.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/sub_agent.py"
+  ],
+  "rationale": "The reading note's core insight: in an A2A chain, any node undergoing real-time RL (or model updates) has a shifting behavior distribution. 'Same prompt, tomorrow's result may systematically shift.' Mira's super agent dispatches to 8+ specialized agents; if any one node drifts, downstream outputs are silently corrupted. Without a temporal audit trail there is no way to know which node caused instability. This maps directly to Mira's existing Logging and Observability skill: 'log at boundaries and decisions.' A sub-agent call is exactly such a boundary.",
+  "diff_description": "In sub_agent.py, after receiving each Claude API response, extract response.model (the actual model ID served) and datetime.utcnow().isoformat(). Append a JSON line to logs/a2a_audit.jsonl with fields: {ts, task_type, agent_name, model_id, input_tokens, output_tokens}. No behavior changes — pure observability addition. This is a 5-10 line change around the existing response-handling code.",
+  "source_note": "2026-03-30_cursor-实时-rla2a-多了一个时序维度.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-30_cursor-实时-rla2a-多了一个时序维度.md",
+  "created_at": "2026-03-30T13:07:11.505469",
+  "date": "2026-03-30",
+  "status": "proposed"
+}

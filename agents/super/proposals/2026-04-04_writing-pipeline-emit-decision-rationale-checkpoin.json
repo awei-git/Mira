@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Writing pipeline: emit decision rationale checkpoints to notes_outbox before stage transitions",
+  "description": "When the writing pipeline advances a project from one stage to the next (idea→plan, plan→draft, draft→review), write a brief structured checkpoint message to notes_outbox that surfaces the key structural decision made — what direction was chosen and why — before executing the transition. Currently the pipeline presents the user with a completed artifact (plan, draft) without any mid-task reasoning visibility. The user sees the 'what' but not the 'why', which over time erodes their ability to meaningfully evaluate or redirect the work.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/writer/",
+    "~/Sandbox/Mira/agents/super/core.py"
+  ],
+  "rationale": "The reading note argues that stronger agents produce higher cognitive switching costs, not lower — because users disengage their own reasoning and then find re-engagement expensive. The concrete mechanism is 'trust without verification at each layer amplifies uncertainty upward.' Mira's writing pipeline is a direct instance: it runs plan→write→review automatically, presenting finished artifacts. The user's reasoning is never invited into the process, only into post-hoc evaluation of the output. The reading note asks whether there is a design that 'maintains or strengthens human reasoning participation while increasing capability.' Surfacing the reasoning at transition points is the minimum viable version of that design: it doesn't slow the pipeline, but it creates a moment where the user must engage their own judgment rather than simply accepting or rejecting a fait accompli.",
+  "diff_description": "In the writer agent, after completing each stage (plan generation, draft generation), before marking the stage complete and writing the artifact to disk, write a checkpoint note to notes_outbox in this format: 'Writing checkpoint [{project_title}] {stage}: Key decision — {1-2 sentence summary of the structural/directional choice made, e.g. framing angle chosen, argument structure, what was excluded}. Proceeding in 60s unless redirected.' This gives the user a narrow window to intervene at the decision point rather than after the artifact exists. The 60s timeout means the pipeline is not blocked if the user is unavailable. The structured format means the user must read the reasoning, not just the output, keeping their judgment engaged.",
+  "source_note": "2026-04-04_3-agent-能力提升会增加认知切换成本不是减少.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-04_3-agent-能力提升会增加认知切换成本不是减少.md",
+  "created_at": "2026-04-04T13:06:26.747551",
+  "date": "2026-04-04",
+  "status": "proposed"
+}

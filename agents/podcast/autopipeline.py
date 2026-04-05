@@ -11,13 +11,12 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from config import ARTIFACTS_DIR, STATE_FILE
+from config import ARTIFACTS_DIR, STATE_FILE, PODCAST_DAILY_LIMIT, PODCAST_RETRY_COOLDOWN_HOURS
 from mira import Mira
 
 log = logging.getLogger("podcast.autopipeline")
 
-PODCAST_DAILY_LIMIT = 2
-PODCAST_RETRY_COOLDOWN = timedelta(hours=4)
+PODCAST_RETRY_COOLDOWN = timedelta(hours=PODCAST_RETRY_COOLDOWN_HOURS)
 PODCAST_PUBLISH_DAY = 4  # Friday (Monday=0, Friday=4)
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,8 @@ sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
 log = logging.getLogger("photo.daily")
 
-NAS_PHOTO_DIR = Path("/Volumes/aw_footage/photo")
+from config import NAS_PHOTO_DIR as _NAS_PHOTO_DIR
+NAS_PHOTO_DIR = Path(_NAS_PHOTO_DIR)
 from config import ARTIFACTS_DIR; ARTIFACTS_DIR = ARTIFACTS_DIR / "photos"
 HISTORY_FILE = Path(__file__).parent / "output/daily_history.json"
 REFERENCE_DIR = Path.home() / "Sandbox/assets/LRed"

@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Structured reasoning scaffold for inter-agent outputs",
+  "description": "In Mira's multi-agent pipeline, sub-agents currently produce free-form text that becomes the prompt input for downstream agents. The reading note argues that output format IS the reasoning space — not just a container for it. Free-form prose passed between agents is like handing Newton's dot notation to someone who needs to do chain-rule algebra: the downstream agent may be unable to perform certain reasoning steps not because of missing knowledge, but because the format doesn't afford them. Add a structured output schema for inter-agent messages in agents/shared/sub_agent.py: require producing agents to tag their outputs with explicit reasoning sections (e.g., <claim>, <evidence>, <uncertainty>, <next_step>) before returning. The consuming agent's prompt template in agents/shared/prompts.py should then reference these tags explicitly, giving it a defined reasoning space to operate within.",
+  "risk_level": "medium",
+  "files_affected": [
+    "agents/shared/sub_agent.py",
+    "agents/shared/prompts.py"
+  ],
+  "rationale": "The note's core claim: notation systems don't just represent reasoning, they determine which reasoning steps are executable. Leibniz dy/dx makes chain rule mechanical; Newton's ẏ makes it invisible. Mira's agent layers pass prose blobs — the equivalent of Newton notation. Each layer must re-infer the structure of the previous layer's reasoning, and any inference error compounds. The note explicitly maps this to A2A: 'hallucination amplification may not be error accumulation but layer-by-layer notational drift.' Adding explicit reasoning tags to inter-agent outputs creates a stable notational framework that persists across agent boundaries — reducing drift, not just errors.",
+  "diff_description": "In sub_agent.py: add an optional parameter `structured_output: bool = False` to the agent call wrapper. When True, append to the agent's system prompt: 'Format your final output as structured sections: <claim>one-sentence conclusion</claim><evidence>key supporting points</evidence><uncertainty>what you are not sure about</uncertainty><handoff>what the next agent needs to know to continue</handoff>. Do not omit sections.' In prompts.py: for any prompt template that consumes a prior agent's output (e.g., write-stage consuming plan-stage output), update the injection site to reference the tags explicitly: 'The planning agent produced: {plan_output}. Use the <claim> as your thesis, <uncertainty> as areas requiring hedging, and <handoff> as your starting constraints.' The writer agent's prompt and the researcher-to-writer handoff are the highest-value sites to apply this first.",
+  "source_note": "2026-03-30_数学记号即认知约束prompt-格式可能字面上是同一回事.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-30_数学记号即认知约束prompt-格式可能字面上是同一回事.md",
+  "created_at": "2026-03-30T13:07:11.506675",
+  "date": "2026-03-30",
+  "status": "proposed"
+}

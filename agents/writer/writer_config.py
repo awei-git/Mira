@@ -7,7 +7,10 @@ _shared_dir = str(Path(__file__).resolve().parent.parent / "shared")
 if _shared_dir not in sys.path:
     sys.path.insert(0, _shared_dir)
 
-from config import WRITINGS_OUTPUT_DIR, CLAUDE_BIN as _CLAUDE_BIN
+from config import (
+    WRITINGS_OUTPUT_DIR, CLAUDE_BIN as _CLAUDE_BIN,
+    WRITER_CLAUDE_TIMEOUT, WRITER_MAX_RETRIES, WRITER_MAX_STEPS_PER_RUN,
+)
 
 # Base paths — writer agent directory (resources live here now)
 WRITINGS_ROOT = Path(__file__).resolve().parent
@@ -20,12 +23,12 @@ LOGS_DIR = WRITINGS_ROOT / "logs"
 
 # Claude CLI
 CLAUDE_BIN = _CLAUDE_BIN
-CLAUDE_TIMEOUT = 1200  # seconds per invocation (20 min — revision needs more than drafting)
-CLAUDE_MAX_RETRIES = 2
+CLAUDE_TIMEOUT = WRITER_CLAUDE_TIMEOUT  # seconds per invocation (20 min — revision needs more than drafting)
+CLAUDE_MAX_RETRIES = WRITER_MAX_RETRIES
 
 # How many steps to advance per idea per daily run
 # 3 = scaffold + draft + critique in one run
-MAX_STEPS_PER_RUN = 3
+MAX_STEPS_PER_RUN = WRITER_MAX_STEPS_PER_RUN
 
 # Type-to-framework mapping
 TYPE_FRAMEWORK = {

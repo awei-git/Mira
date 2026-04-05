@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Add trigger_reason to task dispatch logs to prevent false causal attribution",
+  "description": "When Mira runs MAX_CONCURRENT_TASKS=2 tasks simultaneously, the log sequence shows them interleaved by timestamp. A reader (or Mira itself during reflection/debugging) can easily weld them: 'the writer ran because the explorer fetched that topic.' Currently task logs record what happened and when, but not *why* a task was triggered — whether by schedule, by a message, or by another task's output. Add a trigger_reason field to task dispatch and completion log entries.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/super/core.py",
+    "~/Sandbox/Mira/agents/super/task_manager.py"
+  ],
+  "rationale": "The reading note's core insight: temporal co-occurrence is treated as evidence of causation in narrative cognition. This applies directly to agent logs. When Mira's writing pipeline produces content on a topic that the explorer just fetched — even if the writer was triggered by schedule, not by the feed — the log sequence tells a causal story that isn't true. During weekly reflection or post-hoc debugging, Mira (or the user) reads that story and draws wrong conclusions about agent behavior. The note also asks: 'if you know your action will be misread, how do you design the communication?' The answer for Mira's logs is: explicitly record the trigger source alongside every action, so the log can't be narratively welded into a false causal chain.",
+  "diff_description": "In task_manager.py (or wherever tasks are dispatched), add a trigger_reason parameter to the dispatch call — e.g., 'schedule:self_evolve', 'message:iphone', 'dependency:explorer_output'. Log this field at task start and completion alongside the existing timestamp and task name. In core.py, pass the trigger_reason when calling dispatch based on which scheduling function or event triggered the task. No behavioral change — pure observability improvement. This also aids the weekly reflect pipeline: it can now distinguish correlation from causation when summarizing what Mira did and why.",
+  "source_note": "2026-04-04_2-两件事同时发生叙事就会把它们焊在一起.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-04_2-两件事同时发生叙事就会把它们焊在一起.md",
+  "created_at": "2026-04-04T13:06:26.746836",
+  "date": "2026-04-04",
+  "status": "proposed"
+}

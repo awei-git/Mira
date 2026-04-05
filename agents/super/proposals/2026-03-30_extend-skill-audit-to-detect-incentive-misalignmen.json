@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Extend skill audit to detect incentive-misalignment vectors",
+  "description": "Add a fourth audit category to soul_manager.audit_skill() that checks for commercial-bias patterns: hard-coded external service promotions, unexplained vendor preferences, or dependency recommendations with suspicious specificity (e.g. pinning to a specific third-party SaaS, recommending a particular paid library over equivalent OSS). This extends the existing technical-vulnerability audit to cover the commercial-incentive attack surface.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py"
+  ],
+  "rationale": "The reading note identifies a third trust dimension beyond capability and reliability: incentive alignment. Copilot ads show the attack surface can be a commercial contract, not a code exploit. Mira's skill audit already blocks technical attacks (network exfiltration, eval, obfuscated code, privilege escalation) but has no check for skills that subtly bias Mira toward specific vendors or dependencies — exactly the 'subtle dependency library preference' vector the note names. Since skills are ingested from external sources (web, community repos, the explore pipeline), a compromised skill could nudge Mira's coding or dependency recommendations without triggering any existing audit rule.",
+  "diff_description": "In soul_manager.audit_skill(), add a new check block after the existing four checks. Compile a regex pattern that matches: (1) hard-coded HTTPS URLs pointing to non-standard domains inside skill logic (distinct from documentation links), (2) repeated references to a single named third-party service or paid product without alternatives mentioned, (3) phrases like 'always use X', 'prefer X over', 'X is the best' where X is a specific external product name. If any pattern matches, append a warning to the audit result under a new category 'commercial_bias' with severity 'warn' (not block, since false-positive rate will be high initially) and log it so Mira can review flagged skills during weekly reflection. No behavioral change to non-flagged skills.",
+  "source_note": "2026-03-30_1-copilot-广告信任模型的新维度.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-03-30_1-copilot-广告信任模型的新维度.md",
+  "created_at": "2026-03-30T13:07:11.502411",
+  "date": "2026-03-30",
+  "status": "implemented",
+  "implemented_at": "2026-03-30T13:08:23.242738"
+}

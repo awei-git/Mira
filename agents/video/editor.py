@@ -54,6 +54,38 @@ def _ts_to_seconds(ts: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+def _validate_clip_times(clip: dict) -> bool:
+    """Validate clip timing is sane."""
+    start = clip.get("start_time", "0:00")
+    end = clip.get("end_time", "0:00")
+
+    def parse_time(t):
+        parts = str(t).split(":")
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
+        elif len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        return float(t)
+
+    try:
+        start_s = parse_time(start)
+        end_s = parse_time(end)
+        if end_s <= start_s:
+            log.warning("Clip has end <= start: %s - %s", start, end)
+            return False
+        if end_s - start_s > 300:  # 5 minutes max per clip
+            log.warning("Clip duration > 5 min: %s - %s", start, end)
+            return False
+        return True
+    except (ValueError, TypeError) as e:
+        log.warning("Cannot parse clip times %s - %s: %s", start, end, e)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Per-clip rendering
 # ---------------------------------------------------------------------------
 
@@ -98,9 +130,11 @@ def render_clip(clip_spec: dict, idx: int, clips_dir: Path,
     if duration <= 0:
         duration = 4.0
 
-    # Speed
+    # Speed (validate range)
     speed = clip_spec.get("speed", 1.0)
-    if speed <= 0:
+    if not isinstance(speed, (int, float)) or speed <= 0 or speed > 10:
+        log.warning("Invalid speed %s for clip %d, defaulting to 1.0",
+                    speed if isinstance(speed, (int, float)) else repr(speed), idx)
         speed = 1.0
 
     # Build filter chain
@@ -516,6 +550,11 @@ def execute_edit_plan(edit_plan: dict, source_dir: Path, work_dir: Path,
 
     # Render each clip
     for i, clip_spec in enumerate(plan_clips):
+        # Validate clip timestamps before rendering
+        if clip_spec.get("end_time") and not _validate_clip_times(clip_spec):
+            log.warning("Skipping clip %d/%d — invalid timestamps", i + 1, len(plan_clips))
+            continue
+
         grade_type = clip_spec.get("grade_type", "mixed")
         clip_analysis = {"lighting_type": grade_type}
 

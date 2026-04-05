@@ -119,10 +119,11 @@ def _load_architecture_context() -> str:
     try:
         from agent_registry import AgentRegistry
         registry = AgentRegistry()
-        registry.scan()
         agents_summary = []
-        for name, manifest in registry.all_agents().items():
-            agents_summary.append(f"  - {name}: {manifest.description} (tier={manifest.tier})")
+        for name in registry.list_agents():
+            manifest = registry.get_manifest(name)
+            if manifest:
+                agents_summary.append(f"  - {name}: {manifest.description} (tier={manifest.tier})")
         sections.append("=== Agent Registry ===\n" + "\n".join(agents_summary))
     except Exception as e:
         log.warning("Could not load agent registry: %s", e)
@@ -290,6 +291,8 @@ def auto_implement(proposal: dict, proposal_path: Path) -> dict:
                 backups[str(fpath)] = fpath.read_text(encoding="utf-8")
             except OSError:
                 pass
+        else:
+            backups[str(fpath)] = None
 
     # Use claude_act to apply the change
     files_list = "\n".join(f"  - {f}" for f in files)
@@ -320,6 +323,11 @@ def auto_implement(proposal: dict, proposal_path: Path) -> dict:
         _revert_files(backups)
         return {"success": False, "reason": f"claude_act failed: {e}"}
 
+    changed = _changed_files(backups)
+    if not changed:
+        log.warning("Auto-implement produced no file changes for proposal %s", proposal_path.name)
+        return {"success": False, "reason": "No file changes detected after implementation attempt"}
+
     # Run tests
     test_passed = _run_tests()
     if not test_passed:
@@ -345,10 +353,35 @@ def _revert_files(backups: dict[str, str]):
     """Restore file contents from backup dict."""
     for path_str, content in backups.items():
         try:
-            Path(path_str).write_text(content, encoding="utf-8")
-            log.info("Reverted: %s", path_str)
+            path = Path(path_str)
+            if content is None:
+                if path.exists():
+                    path.unlink()
+                    log.info("Removed newly created file: %s", path_str)
+            else:
+                path.write_text(content, encoding="utf-8")
+                log.info("Reverted: %s", path_str)
         except OSError as e:
             log.error("Failed to revert %s: %s", path_str, e)
+
+
+def _changed_files(backups: dict[str, str | None]) -> list[str]:
+    """Return affected files whose content/existence changed."""
+    changed = []
+    for path_str, before in backups.items():
+        path = Path(path_str)
+        if before is None:
+            if path.exists():
+                changed.append(path_str)
+            continue
+        try:
+            after = path.read_text(encoding="utf-8")
+        except OSError:
+            changed.append(path_str)
+            continue
+        if after != before:
+            changed.append(path_str)
+    return changed
 
 
 def _run_tests() -> bool:

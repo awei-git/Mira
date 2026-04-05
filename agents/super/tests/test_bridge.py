@@ -2,12 +2,22 @@
 from __future__ import annotations
 import json, tempfile, sys
 from pathlib import Path
+import pytest
 
 _AGENTS = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS / "super"))
 sys.path.insert(0, str(_AGENTS / "shared"))
 
+try:
+    from mira import Mira
+    _HAS_BRIDGE = True
+except (ImportError, ModuleNotFoundError):
+    _HAS_BRIDGE = False
 
+_skip_no_bridge = pytest.mark.skipif(not _HAS_BRIDGE, reason="mira_bridge not available (CI)")
+
+
+@_skip_no_bridge
 def test_bridge_init():
     from mira import Mira
     from config import MIRA_BRIDGE_DIR
@@ -15,6 +25,7 @@ def test_bridge_init():
     assert bridge.bridge_dir.exists(), f"Bridge dir doesn't exist: {bridge.bridge_dir}"
 
 
+@_skip_no_bridge
 def test_bridge_create_item():
     from mira import Mira
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -30,6 +41,7 @@ def test_bridge_create_item():
         assert item["messages"][0]["content"] == "Test message content"
 
 
+@_skip_no_bridge
 def test_bridge_message_format():
     from mira import Mira
     with tempfile.TemporaryDirectory() as tmpdir:

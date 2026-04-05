@@ -374,6 +374,96 @@ def _fix_missing_manifest(finding: dict) -> dict | None:
     }
 
 
+def check_publish_pipeline() -> list[dict]:
+    """Check publish pipeline integrity — articles vs podcasts vs RSS sync."""
+    findings = []
+    try:
+        from config import ARTIFACTS_DIR
+        sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
+
+        audio_base = ARTIFACTS_DIR / "audio" / "podcast"
+
+        # 1. Check published articles have podcasts
+        try:
+            from substack import get_recent_posts
+            posts = get_recent_posts(limit=50)
+        except Exception:
+            posts = []
+
+        from publish_manifest import load_manifest
+        manifest = load_manifest()
+        skip_slugs = {slug for slug, e in manifest.get("articles", {}).items()
+                      if not e.get("auto_podcast", True)}
+
+        for post in posts:
+            substack_slug = post.get("slug", "")
+            title = post.get("title", "")
+
+            # Map Substack slug to local directory
+            # Try exact match, then search audio dirs
+            for lang in ["en", "zh"]:
+                lang_dir = audio_base / lang
+                if not lang_dir.exists():
+                    continue
+                # Find matching episode dir
+                found = False
+                for ep_dir in lang_dir.iterdir():
+                    if not ep_dir.is_dir():
+                        continue
+                    # Match by slug substring (Substack sometimes appends suffixes)
+                    if ep_dir.name in substack_slug or substack_slug.startswith(ep_dir.name):
+                        if (ep_dir / "episode.mp3").exists():
+                            found = True
+                        else:
+                            findings.append({
+                                "type": "incomplete_podcast",
+                                "severity": "warning",
+                                "description": f"'{title}' [{lang.upper()}]: directory exists but no episode.mp3",
+                            })
+                        break
+                if not found and substack_slug not in skip_slugs:
+                    # Check if any local slug matches
+                    local_match = any(
+                        d.name in substack_slug or substack_slug.startswith(d.name)
+                        for d in lang_dir.iterdir() if d.is_dir()
+                    )
+                    if not local_match:
+                        findings.append({
+                            "type": "missing_podcast",
+                            "severity": "warning",
+                            "description": f"Published article '{title}' has no {lang.upper()} podcast",
+                        })
+
+        # 2. Check manifest for stuck articles
+        from publish_manifest import get_stuck_articles
+        stuck = get_stuck_articles(timeout_minutes=240)
+        for entry in stuck:
+            findings.append({
+                "type": "stuck_pipeline",
+                "severity": "critical",
+                "description": f"Article '{entry.get('title', entry['slug'])}' stuck at '{entry.get('status')}' for >4h",
+            })
+
+        # 3. Check manifest for errors
+        for slug, entry in manifest.get("articles", {}).items():
+            if entry.get("error"):
+                findings.append({
+                    "type": "pipeline_error",
+                    "severity": "critical",
+                    "description": f"Article '{slug}' has error: {entry['error']}",
+                })
+
+    except Exception as e:
+        log.warning("Pipeline integrity check failed: %s", e)
+        findings.append({
+            "type": "audit_error",
+            "severity": "warning",
+            "description": f"Pipeline check itself failed: {e}",
+        })
+
+    return findings
+
+
 def _run_tests_quick() -> bool:
     """Run test suite, return True if all pass."""
     test_runner = _AGENTS_DIR / "run_tests.py"
@@ -537,6 +627,11 @@ def run_audit(logs_only: bool = False, tests_only: bool = False) -> list[dict]:
         manifest_findings = check_manifests()
         all_findings.extend(manifest_findings)
         log.info("  Found %d manifest issues", len(manifest_findings))
+
+        log.info("Step 4a: Checking publish pipeline integrity...")
+        pipeline_findings = check_publish_pipeline()
+        all_findings.extend(pipeline_findings)
+        log.info("  Found %d pipeline issues", len(pipeline_findings))
 
     # Step 4b: Attempt auto-fixes on low-risk issues
     auto_fixed, pending_fixes = [], []

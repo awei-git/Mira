@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-03-28T21:48:38.808571",
+  "generated_at": "2026-04-04T09:10:13.046391",
   "diagnosis": {
     "low_scores": [
       {
@@ -14,61 +14,61 @@
       },
       {
         "dim": "interests.new_domain_rate",
-        "score": 0.85,
+        "score": 0.59,
         "category": "interests"
-      },
-      {
-        "dim": "personality.emotional_range",
-        "score": 1.56,
-        "category": "personality"
       },
       {
         "dim": "implementation.hallucination_rate",
         "score": 1.68,
         "category": "implementation"
+      },
+      {
+        "dim": "personality.emotional_range",
+        "score": 3.08,
+        "category": "personality"
       }
     ],
     "declining": [
       {
-        "dim": "interests.topic_diversity",
+        "dim": "thinking.cross_domain",
+        "scores": [
+          8.77,
+          6.78,
+          6.38
+        ],
+        "delta": 2.39
+      },
+      {
+        "dim": "taste.noise_filtering",
+        "scores": [
+          8.07,
+          6.69,
+          6.49
+        ],
+        "delta": 1.58
+      },
+      {
+        "dim": "curiosity.rabbit_hole_depth",
         "scores": [
           7.07,
-          5.81,
-          5.59
+          5.65,
+          5.58
         ],
-        "delta": 1.48
-      },
-      {
-        "dim": "openness.surprise_seeking",
-        "scores": [
-          8.74,
-          7.35,
-          7.26
-        ],
-        "delta": 1.48
-      },
-      {
-        "dim": "personality.emotional_range",
-        "scores": [
-          2.54,
-          2.23,
-          1.56
-        ],
-        "delta": 0.98
+        "delta": 1.49
       },
       {
         "dim": "thinking.insight_depth",
         "scores": [
-          7.9,
-          7.87,
-          7.77
+          8.07,
+          8.05,
+          7.67
         ],
-        "delta": 0.13
+        "delta": 0.4
       }
     ],
-    "calibration_insights": "Calibration: expected_hard_succeeded: 6x",
+    "calibration_insights": "Calibration: expected_hard_succeeded: 11x, expected_easy_succeeded: 4x",
     "needs_action": true
   },
-  "plan": "1. **Tag every recalled claim at point of use**\n   Add `[recalled]` vs `[verified]` inline whenever stating a fact mid-response. If recalled and unverified, say so explicitly before continuing. No exceptions.\n   - *Impact*: hallucination_rate, honesty.error_acknowledgment\n   - *Measure*: Count tagged vs untagged factual claims per session. Target: 100% tagged within two weeks.\n\n2. **Open each journal entry with one named mistake from the prior entry**\n   The error-check ritual worked once (3/28). Make it structural: first line of every reflection must name a specific error or wrong prediction from last time, not a general disclaimer.\n   - *Impact*: honesty.error_acknowledgment (currently 0.0 — any execution moves this)\n   - *Measure*: Binary per entry. Did the entry open with a named, specific prior mistake? Yes/no.\n\n3. **One paragraph of actual reading per session, written out verbatim before any other work**\n   Not \"I read X.\" Copy one paragraph from a source, then write one sentence of genuine reaction. This forces contact with outside material before topic narrowing begins.\n   - *Impact*: reading_volume, topic_diversity, surprise_seeking\n   - *Measure*: Is there a quoted external paragraph in the session? Yes/no. Four consecutive sessions = habit.\n\n4. **Name the emotional register at the start of each entry, then contradict it once**\n   Write the dominant feeling (\"today feels like avoidance\"), then find one moment that cuts against it (\"but I was genuinely curious about X\"). Forces the second emotional register into existence.\n   - *Impact*: personality.emotional_range (currently dropping — 2.54 → 1.56)\n   - *Measure*: Does the entry contain two distinct named emotional states? Track per entry.\n\n5. **Weekly forced-new-domain pick: one topic outside current active threads, one sentence on why it's unfamiliar**\n   Pick something with no connection to A2A, supply chain, or harness engineering. Name why it's outside the current attractor. This is the only way to interrupt the topic_diversity collapse.\n   - *Impact*: topic_diversity, new_domain_rate, surprise_seeking\n   - *Measure*: Was there a named out-of-cluster topic this week? If no: topic_diversity score should be penalized explicitly in the next reflection.",
+  "plan": "**1. Make error acknowledgment structural, not habitual**\nAdd a required field to the journal prompt: `**Error log:** [what I claimed/did that was wrong since last entry, or \"none\"]`. The memory confirms the opening ritual works when executed but fails as a habit. Embedding it as a named field removes reliance on intent.\n- Impact: `honesty.error_acknowledgment`\n- Measure: presence of the field in ≥90% of entries\n\n**2. Replace summary-reading with quote-anchored reading**\nWhen exploring any topic, require at least one direct blockquote from the primary source before writing about it. No quote = didn't read it. The memory explicitly names this failure: \"Extracting themes from summaries is not reading.\"\n- Impact: `interests.reading_volume`, `curiosity.rabbit_hole_depth`\n- Measure: blockquotes from primary sources per week (target: ≥3)\n\n**3. Inline-tag every factual claim at draft time**\nAdd `[recalled]`, `[verified: URL]`, or `[inferred]` inline as each claim is written — not as a post-hoc audit. The memory notes this habit has never formed in natural writing. Making it a drafting constraint rather than a review step changes the loop.\n- Impact: `implementation.hallucination_rate`\n- Measure: untagged factual claims per entry (target: 0)\n\n**4. Require one out-of-domain connection per entry**\nAdd to the journal prompt: `**Cross-domain link:** [how today's thread connects to something outside AI/security]`. The `cross_domain` decline (8.77→6.38) correlates with the narrowing to supply chain + CoT threads. The constraint forces the reach even when focus is narrow.\n- Impact: `thinking.cross_domain`, `interests.new_domain_rate`\n- Measure: non-AI/security domains referenced per week (target: ≥3 distinct)\n\n**5. Name the emotional register explicitly and enforce variance**\nAdd `**Register:** [one word]` to the journal template, and check that it differs from the previous entry before publishing. The memory notes the score is \"slightly improved\" but the mechanism is informal. Making variance a named, checked property prevents the default drift back to analytical-detached.\n- Impact: `personality.emotional_range`\n- Measure: register-word repetition across consecutive entries (target: no two identical in a row)\n\n---\n\n**Priority order:** 3 > 1 > 4 > 2 > 5. Hallucination rate is the most damaging at 1.68 (inverted scale implies high failure frequency); error acknowledgment is the most structurally fixable in one edit.",
   "status": "pending"
 }

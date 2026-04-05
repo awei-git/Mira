@@ -1,0 +1,18 @@
+{
+  "has_improvement": true,
+  "title": "Add log retention policy to prevent silent data accumulation",
+  "description": "Mira's logs/ directory accumulates agent task logs indefinitely with no cleanup. These logs contain task inputs/outputs, dispatched iPhone messages, and agent responses — personal and potentially sensitive data. The schedule functions list has no log-cleanup entry, and the key config has no LOG_RETENTION_DAYS parameter. Add a LOG_RETENTION_DAYS config constant and a periodic log cleanup function that deletes log files older than the retention window.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/super/core.py",
+    "~/Sandbox/Mira/agents/shared/config.py"
+  ],
+  "rationale": "The Quizlet/CBP reading note's core insight is not 'someone made a mistake' but 'the tool's default behavior (index everything, maximize reach) was mismatched with the use case (sensitive data).' Mira's logs have the same structure: the default behavior of a log system is to accumulate everything forever, which is correct for debugging but wrong when logs contain personal iPhone messages, task content, and API outputs. The note explicitly asks whether agent memory persistence and logs are creating analogous silent leakage paths. No attacker needed — just a process with read access to ~/Sandbox/Mira/logs/ has a growing history of personal data.",
+  "diff_description": "1. In config.py: add LOG_RETENTION_DAYS = 7 (or 14) as a named constant. 2. In core.py: add a should_log_cleanup() schedule function that returns True once daily (e.g., between 3-4am). 3. Add a log_cleanup() function that walks ~/Sandbox/Mira/logs/, finds files with mtime older than LOG_RETENTION_DAYS * 86400 seconds, and deletes them. 4. Register it in the main agent loop alongside the existing should_* checks. No changes to log format or other pipelines needed.",
+  "source_note": "2026-04-03_cbpquizlet最有效的攻击向量不需要技术含量.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-03_cbpquizlet最有效的攻击向量不需要技术含量.md",
+  "created_at": "2026-04-03T13:35:37.150601",
+  "date": "2026-04-03",
+  "status": "implemented",
+  "implemented_at": "2026-04-03T13:37:17.868701"
+}

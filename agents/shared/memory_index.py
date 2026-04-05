@@ -24,6 +24,7 @@ from config import (
     SOUL_DIR, IDENTITY_FILE, MEMORY_FILE, INTERESTS_FILE, WORLDVIEW_FILE,
     READING_NOTES_DIR, SKILLS_DIR, SKILLS_INDEX, JOURNAL_DIR, SECRETS_FILE,
     CONVERSATIONS_DIR, EPISODES_DIR, CATALOG_FILE,
+    OPENAI_EMBEDDINGS_ENDPOINT,
 )
 
 log = logging.getLogger("mira.memory_index")
@@ -94,7 +95,7 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
     }).encode("utf-8")
 
     req = urllib.request.Request(
-        "https://api.openai.com/v1/embeddings",
+        OPENAI_EMBEDDINGS_ENDPOINT,
         data=body,
         headers={
             "Content-Type": "application/json",

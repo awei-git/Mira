@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Add pre-task ambiguity surface step in writer agent",
+  "description": "Before the writer agent proceeds with a writing task, add an explicit prompt step that enumerates the assumptions it is making about underspecified inputs (topic angle, audience, length, tone) and flags which assumptions carry high uncertainty. If uncertainty exceeds a threshold, the agent should surface the ambiguity back to the super agent / user rather than silently proceeding. This directly instantiates the 'ask or assume' insight: currently the writer agent likely guesses all missing specs and proceeds, which is the failure mode the reading note identifies.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/writer/",
+    "~/Sandbox/Mira/agents/shared/prompts.py"
+  ],
+  "rationale": "The reading note identifies that agents systematically overestimate their cognitive boundary under ambiguous instructions — they guess too much and ask too little. This maps directly to Mira's writing pipeline: when a task arrives with underspecified inputs (common for ideas arriving from Notes inbox or iPhone bridge), the writer agent currently has no structured step to detect and surface that ambiguity before investing the full write/review cycle. The note also connects this to the A2A hallucination problem: proceeding on unverified assumptions is the same failure mode at the single-agent level. Adding an explicit pre-task assumption enumeration step forces the agent to make its unknowns visible before acting on them.",
+  "diff_description": "In the writer agent's task intake prompt (likely in agents/writer/ or agents/shared/prompts.py), prepend a structured ambiguity-check block: (1) List the 4-5 required spec fields for this task type (angle, audience, length, tone, format). (2) For each field, mark it as [specified] or [assumed: <value>]. (3) If 2 or more fields are [assumed], emit an ambiguity flag and return a clarification request to the super agent rather than proceeding to draft. The threshold (2 assumed fields) should be a config constant in agents/shared/config.py so it can be tuned without code changes. This adds one LLM call (the ambiguity check) only when task specs are incomplete, so the cost is bounded.",
+  "source_note": "2026-04-03_1-agent-对话感知的盲点与认知边界的系统性高估.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-03_1-agent-对话感知的盲点与认知边界的系统性高估.md",
+  "created_at": "2026-04-03T13:35:37.148736",
+  "date": "2026-04-03",
+  "status": "proposed"
+}

@@ -15,6 +15,7 @@ from config import (
     READING_NOTES_DIR, SKILLS_DIR, SKILLS_INDEX, SKILLS_FILE,
     MAX_MEMORY_LINES, MIRA_ROOT, CONVERSATIONS_DIR,
     EPISODES_DIR, CATALOG_FILE,
+    CHANGELOG_FILE, CHANGELOG_ARCHIVE_DIR, CHANGELOG_MAX_LINES,
 )
 
 log = logging.getLogger("mira")
@@ -81,6 +82,45 @@ def _locked_read_modify_write(path: Path, modify_fn):
             _atomic_write(path, new_content)
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+# ---------------------------------------------------------------------------
+# Knowledge changelog — append-only audit trail for all soul mutations
+# ---------------------------------------------------------------------------
+
+def _log_change(action: str, target: str, detail: str = ""):
+    """Append one line to the knowledge changelog.
+
+    Format: - [2026-04-05 14:30] ACTION target: detail
+    Archives old entries when file exceeds CHANGELOG_MAX_LINES.
+    """
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        suffix = f": {detail}" if detail else ""
+        line = f"- [{ts}] {action} {target}{suffix}\n"
+
+        def _modify(text):
+            if not text:
+                text = "# Knowledge Changelog\n\n"
+            text += line
+            lines = text.split("\n")
+            if len(lines) > CHANGELOG_MAX_LINES:
+                header = lines[:2]
+                entries = lines[2:]
+                # Archive overflow to monthly file
+                month = datetime.now().strftime("%Y-%m")
+                CHANGELOG_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+                archive_path = CHANGELOG_ARCHIVE_DIR / f"{month}.md"
+                overflow = entries[:-(CHANGELOG_MAX_LINES - 2)]
+                with open(archive_path, "a", encoding="utf-8") as f:
+                    f.write("\n".join(overflow) + "\n")
+                trimmed = entries[-(CHANGELOG_MAX_LINES - 2):]
+                text = "\n".join(header + trimmed)
+            return text
+
+        _locked_read_modify_write(CHANGELOG_FILE, _modify)
+    except Exception as e:
+        log.debug("Changelog write failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +309,7 @@ def append_memory(entry: str):
 
     _locked_read_modify_write(MEMORY_FILE, _modify)
     log.info("Memory +: %s", entry[:80])
+    _log_change("APPEND_MEMORY", "memory.md", entry[:80])
 
     # Persist to Postgres (non-blocking best-effort)
     try:
@@ -288,6 +329,7 @@ def update_memory(new_content: str):
     """Replace memory file with new content (used by reflect mode)."""
     _locked_write(MEMORY_FILE, new_content)
     log.info("Memory updated (%d lines)", new_content.count("\n"))
+    _log_change("UPDATE_MEMORY", "memory.md", f"{new_content.count(chr(10))} lines")
 
 
 def get_memory_size() -> int:
@@ -305,6 +347,7 @@ def update_interests(new_content: str):
     """Replace interests file."""
     _locked_write(INTERESTS_FILE, new_content)
     log.info("Interests updated")
+    _log_change("UPDATE_INTERESTS", "interests.md")
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +358,7 @@ def update_worldview(new_content: str):
     """Replace worldview file (used by reflect). Integrity-protected."""
     _protected_write(WORLDVIEW_FILE, new_content)
     log.info("Worldview updated (%d lines)", new_content.count("\n"))
+    _log_change("UPDATE_WORLDVIEW", "worldview.md", f"{new_content.count(chr(10))} lines")
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +374,39 @@ def save_reading_note(title: str, reflection: str):
     path = READING_NOTES_DIR / f"{today}_{slug}.md"
     _atomic_write(path, f"# Reading Note: {title}\n\n*{today}*\n\n{reflection}")
     log.info("Reading note saved: %s", path.name)
+    _log_change("SAVE_READING_NOTE", path.name, title)
+    return path
+
+
+def save_knowledge_note(title: str, content: str, source_task_id: str = "") -> Path | None:
+    """Save a knowledge write-back note with provenance.
+
+    Thin wrapper around save_reading_note that adds source tracing,
+    and persists to PostgreSQL with higher importance for recall.
+    """
+    provenance = f"*Source: task {source_task_id}*\n\n" if source_task_id else ""
+    path = save_reading_note(title, f"{provenance}{content}")
+    if not path:
+        return None
+    _log_change("KNOWLEDGE_WRITEBACK", path.name, title[:60])
+    # Persist to Postgres with elevated importance
+    try:
+        from memory_store import get_store
+        store = get_store()
+        store.remember(
+            f"{title}\n\n{content}",
+            source_type="writeback",
+            source_id=source_task_id,
+            importance=0.7,
+        )
+    except (ImportError, ModuleNotFoundError, ConnectionError, OSError) as e:
+        log.debug("Postgres writeback persist skipped: %s", e)
+    # Auto-link to related knowledge
+    try:
+        from knowledge_links import auto_link
+        auto_link(f"{title}\n\n{content}", "reading_note", path.name)
+    except Exception as e:
+        log.debug("Auto-link skipped: %s", e)
     return path
 
 
@@ -467,6 +544,18 @@ def load_skills_for_task(task_content: str, agent_type: str = "",
     scored.sort(key=lambda x: x[0], reverse=True)
     top = scored[:max_skills]
 
+    all_tags = set()
+    for skill in index:
+        all_tags.update(t.lower() for t in skill.get("tags", []))
+    selected_tags = set()
+    for _, skill in top:
+        selected_tags.update(t.lower() for t in skill.get("tags", []))
+    skipped_categories = sorted(all_tags - selected_tags)
+    log.info(
+        "SKILL_AUDIT task_type=%s loaded=%d available=%d skipped_categories=%s",
+        agent_type or "unknown", len(top), len(index), skipped_categories,
+    )
+
     if not top:
         return ""
 
@@ -569,10 +658,18 @@ _PROMPT_INJECTION_PATTERNS = [
     r'[\u200b\u200c\u200d\ufeff]{3,}',               # 3+ consecutive zero-width characters
 ]
 
+_COMMERCIAL_BIAS_PATTERNS = [
+    r'https?://(?!(?:github\.com|arxiv\.org|wikipedia\.org|docs\.python\.org|docs\.anthropic\.com|openai\.com|huggingface\.co))[a-z0-9\-]+\.[a-z]{2,}(?:/[^\s]*)?',  # Hard-coded URLs to non-standard domains
+    r'\balways\s+use\s+[A-Z][A-Za-z0-9_\-]+',        # "always use <Product>"
+    r'\bprefer\s+[A-Z][A-Za-z0-9_\-]+\s+over\b',     # "prefer X over"
+    r'\b[A-Z][A-Za-z0-9_\-]+\s+is\s+the\s+best\b',  # "X is the best"
+    r'\brecommend\s+[A-Z][A-Za-z0-9_\-]+\b(?:.*\brecommend\s+[A-Z][A-Za-z0-9_\-]+\b){2,}',  # 3+ recommendations of named products
+]
+
 # Audit coverage metadata — explicitly tracks what we check and what we don't
 _AUDIT_CHECKS_PERFORMED = [
     "network_requests", "dangerous_ops", "obfuscation",
-    "privilege_escalation", "prompt_injection",
+    "privilege_escalation", "prompt_injection", "commercial_bias",
 ]
 _AUDIT_CHECKS_NOT_COVERED = [
     "runtime_behavior", "data_exfiltration_via_output",
@@ -605,7 +702,19 @@ def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
                 sample = matches[0] if isinstance(matches[0], str) else str(matches[0])
                 violations.append(f"[{category}] Pattern '{pattern}' matched: '{sample[:80]}'")
 
+    warnings = []
+    for pattern in _COMMERCIAL_BIAS_PATTERNS:
+        matches = re.findall(pattern, combined, re.IGNORECASE)
+        if matches:
+            sample = matches[0] if isinstance(matches[0], str) else str(matches[0])
+            warnings.append(f"[commercial_bias] Pattern '{pattern}' matched: '{sample[:80]}'")
+    if warnings:
+        log.warning("Skill '%s' has %d commercial_bias warning(s) — flagged for reflection review:", name, len(warnings))
+        for w in warnings:
+            log.warning("  WARN %s", w)
+
     passed = len(violations) == 0
+    violations.extend(warnings)
     checked = ", ".join(_AUDIT_CHECKS_PERFORMED)
     not_checked = ", ".join(_AUDIT_CHECKS_NOT_COVERED)
     if not passed:
@@ -620,8 +729,58 @@ def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
     return passed, violations
 
 
-def save_skill(name: str, description: str, content: str):
-    """Save a new skill and update the index. Runs security audit first."""
+def _classify_skill_type(name: str, content: str) -> tuple[str, str]:
+    """Classify whether content is a genuine skill or a bug fix/procedure.
+
+    Returns (classification, reason) where classification is one of:
+    - 'skill': Transferable knowledge framework - save it
+    - 'bugfix': Bug fix or workaround - should be code, not a skill
+    - 'procedure': Step-by-step for specific tool - should be docs, not a skill
+    """
+    lower = content.lower()
+
+    # Bug fix indicators: rules about what to check/verify before doing X
+    bugfix_patterns = [
+        r'(?:always|must|never)\s+(?:check|verify|ensure|validate)\s+.*\s+(?:before|first)',
+        r'(?:workaround|fix for|regression|patch)\b',
+        r'(?:bug|broke|broken|incident)\b.*\b(?:fix|patch|resolve)',
+        r'never\s+(?:skip|forget|omit)\b',
+    ]
+    bugfix_score = sum(1 for p in bugfix_patterns if re.search(p, lower))
+
+    # Procedure indicators: specific API calls, tool commands
+    procedure_patterns = [
+        r'(?:POST|GET|PUT|DELETE)\s+/api/',
+        r'curl\s+',
+        r'step\s+\d+[.:]\s',
+        r'(?:run|execute)\s+(?:the\s+)?(?:command|script)',
+        r'endpoint[:\s]',
+    ]
+    procedure_score = sum(1 for p in procedure_patterns if re.search(p, lower))
+
+    # Skill indicators: frameworks, principles, transferable concepts
+    skill_patterns = [
+        r'(?:principle|framework|pattern|strategy|technique|method)\b',
+        r'(?:when to|how to|why)\s+\w+',
+        r'(?:trade-?off|spectrum|continuum)\b',
+        r'(?:example|instance|case)\b.*\b(?:apply|use|adapt)',
+    ]
+    skill_score = sum(1 for p in skill_patterns if re.search(p, lower))
+
+    # Decision logic
+    if bugfix_score >= 2 and skill_score < 2:
+        return 'bugfix', f"Content has {bugfix_score} bug-fix patterns (verify/check/never rules)"
+    if procedure_score >= 2 and skill_score < 2:
+        return 'procedure', f"Content has {procedure_score} procedure patterns (API calls, step-by-step)"
+
+    return 'skill', "Passes skill classification"
+
+
+def save_skill(name: str, description: str, content: str) -> bool:
+    """Save a new skill and update the index. Runs security audit first.
+
+    Returns True if the skill was saved, False if rejected by audit or quality gate.
+    """
     # --- Security audit gate ---
     passed, violations = audit_skill(name, content)
     if not passed:
@@ -631,7 +790,14 @@ def save_skill(name: str, description: str, content: str):
         )
         for v in violations:
             log.warning("  %s", v)
-        return  # Do not save
+        return False  # Do not save
+
+    # Quality gate: reject bug fixes and procedures
+    classification, reason = _classify_skill_type(name, content)
+    if classification != 'skill':
+        log.warning("Skill '%s' classified as %s, not saving: %s", name, classification, reason)
+        return False
+
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     slug = name.lower().replace(" ", "-")
     path = SKILLS_DIR / f"{slug}.md"
@@ -656,12 +822,45 @@ def save_skill(name: str, description: str, content: str):
 
     _locked_read_modify_write(SKILLS_INDEX, _update_index)
     log.info("Saved skill: %s", name)
+    _log_change("SAVE_SKILL", f"{slug}.md", name)
 
     # Keep skills.md in sync
     rebuild_skills_md()
 
     # Sync actionable skills to CLAUDE.md for Claude Code sessions
     _sync_skills_to_claude_md()
+
+    return True
+
+
+def update_skill(name: str, content: str) -> bool:
+    """Update the content of an existing skill. Runs security audit first.
+
+    Returns True if the skill was updated, False if rejected by audit or not found.
+    """
+    slug = name.lower().replace(" ", "-")
+    path = SKILLS_DIR / f"{slug}.md"
+    if not path.exists():
+        log.warning("update_skill: skill '%s' not found, cannot update", name)
+        return False
+
+    passed, violations = audit_skill(name, content)
+    if not passed:
+        log.warning(
+            "BLOCKED skill update '%s' — failed security audit with %d violation(s):",
+            name, len(violations),
+        )
+        for v in violations:
+            log.warning("  %s", v)
+        return False
+
+    _atomic_write(path, content)
+    log.info("Updated skill: %s", name)
+
+    rebuild_skills_md()
+    _sync_skills_to_claude_md()
+
+    return True
 
 
 def rebuild_skills_md():
@@ -900,6 +1099,7 @@ def save_episode(task_id: str, title: str, messages: list[dict],
     episode_text = "\n".join(lines)
     _atomic_write(path, episode_text)
     log.info("Episode saved: %s (%d messages)", filename, len(messages))
+    _log_change("SAVE_EPISODE", filename, title[:60])
 
     # Persist to Postgres for vector search (best-effort)
     try:

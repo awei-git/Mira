@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config import ARTIFACTS_DIR, WRITINGS_OUTPUT_DIR, SUBSTACK_PUBLISHING_DISABLED, MIRA_ROOT
+from preflight import preflight_check
 from sub_agent import claude_think
 
 log = logging.getLogger("publisher")
@@ -28,6 +29,7 @@ _ERROR_KEYWORDS = [
 ]
 # Real articles are long; anything shorter than this is almost certainly not publishable
 _MIN_PUBLISH_CHARS = 200
+_PREFLIGHT_CACHE = ".socialmedia_preflight.json"
 
 
 def _content_looks_like_error(text: str) -> tuple[bool, str]:
@@ -67,7 +69,7 @@ PLATFORMS = {
 
 
 def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str) -> str | None:
+           sender: str, thread_id: str, **kwargs) -> str | None:
     """Handle a publish request. Returns summary or None on failure."""
 
     # Guard: Substack publishing disabled
@@ -77,7 +79,13 @@ def handle(workspace: Path, task_id: str, content: str,
         return msg
 
     # Step 1: Figure out what to publish and where
-    plan = _plan_publish(content)
+    cached = _load_preflight_cache(workspace)
+    if cached:
+        plan = cached.get("plan", {})
+        article_text = cached.get("article_text", "")
+    else:
+        plan = _plan_publish(content)
+        article_text = ""
     if not plan:
         return None
 
@@ -89,7 +97,8 @@ def handle(workspace: Path, task_id: str, content: str,
     log.info("Publishing to %s: title='%s' source='%s'", platform, title, source)
 
     # Step 2: Find the content to publish
-    article_text = _resolve_content(source, content)
+    if not article_text:
+        article_text = _resolve_content(source, content)
     if not article_text:
         msg = f"找不到要发布的内容: {source}"
         (workspace / "output.md").write_text(msg, encoding="utf-8")
@@ -149,6 +158,64 @@ def handle(workspace: Path, task_id: str, content: str,
     actual_result = result[len("NEEDS_APPROVAL:"):] if result.startswith("NEEDS_APPROVAL:") else result
     (workspace / "output.md").write_text(actual_result, encoding="utf-8")
     return result
+
+
+def preflight(workspace: Path, task_id: str, content: str,
+              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+    """Execution preflight for publish actions before side effects happen."""
+    plan = _plan_publish(content)
+    if not plan:
+        return False, "PREFLIGHT BLOCKED [publish]: could not determine publish target"
+
+    platform = plan.get("platform", "substack")
+    title = plan.get("title", "") or "untitled"
+    source = plan.get("source", "")
+    article_text = _resolve_content(source, content)
+    if not article_text:
+        return False, f"PREFLIGHT BLOCKED [publish]: 找不到要发布的内容: {source}"
+
+    is_error, error_reason = _content_looks_like_error(article_text)
+    if is_error:
+        return False, f"PREFLIGHT BLOCKED [publish]: {error_reason}"
+
+    action_type = "broadcast" if platform == "substack_note" else "publish"
+    result = preflight_check(
+        action_type,
+        {
+            "instruction": content,
+            "title": title,
+            "content": article_text,
+            "platform": platform,
+            "channel": platform,
+        },
+    )
+    if result.passed:
+        _write_preflight_cache(workspace, plan, article_text)
+        return True, ""
+    return False, result.summary()
+
+
+def _write_preflight_cache(workspace: Path, plan: dict, article_text: str) -> None:
+    cache_file = workspace / _PREFLIGHT_CACHE
+    cache_file.write_text(
+        json.dumps({"plan": plan, "article_text": article_text}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _load_preflight_cache(workspace: Path) -> dict | None:
+    cache_file = workspace / _PREFLIGHT_CACHE
+    if not cache_file.exists():
+        return None
+    try:
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    try:
+        cache_file.unlink()
+    except OSError:
+        pass
+    return data
 
 
 def _handle_note(content: str, inline_text: str | None,
@@ -292,3 +359,57 @@ def _resolve_content(source: str, original_msg: str) -> str | None:
         return original_msg
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Post-publish pipeline — hardcoded correct sequence
+# ---------------------------------------------------------------------------
+
+def post_publish_pipeline(slug: str, title: str, article_text: str):
+    """Hardcoded post-publish pipeline. No guessing allowed.
+
+    Correct sequence after publishing an article to Substack:
+    1. Generate podcast (conversation mode, BOTH zh and en)
+    2. Notify user to listen and confirm before RSS publish
+    3. Notes promotion is already queued by publish_to_substack()
+
+    This function handles step 1-2. Step 3 is automatic.
+    """
+    import sys
+    from pathlib import Path
+    podcast_dir = str(Path(__file__).resolve().parent.parent / "podcast")
+    shared_dir = str(Path(__file__).resolve().parent.parent / "shared")
+    if podcast_dir not in sys.path:
+        sys.path.insert(0, podcast_dir)
+    if shared_dir not in sys.path:
+        sys.path.insert(0, shared_dir)
+
+    from handler import generate_conversation_for_article  # podcast handler, NOT this file
+    from config import ARTIFACTS_DIR
+
+    results = {}
+
+    # Generate BOTH languages
+    for lang in ["en", "zh"]:
+        log.info("Post-publish: generating %s podcast for '%s'", lang, title)
+        try:
+            result = generate_conversation_for_article(
+                article_text=article_text,
+                title=title,
+                lang=lang,
+            )
+            results[lang] = result
+            log.info("Post-publish: %s podcast → %s", lang, result)
+        except Exception as e:
+            log.error("Post-publish: %s podcast failed: %s", lang, e)
+            results[lang] = None
+
+    # Notify user — do NOT auto-publish to RSS
+    summary_lines = ["Podcast 已生成，等待试听确认："]
+    for lang, path in results.items():
+        status = f"✅ {path}" if path else "❌ 生成失败"
+        summary_lines.append(f"  {lang.upper()}: {status}")
+    summary_lines.append(f"\n确认后回复 'publish podcast {slug}' 发布到 RSS。")
+
+    log.info("\n".join(summary_lines))
+    return results

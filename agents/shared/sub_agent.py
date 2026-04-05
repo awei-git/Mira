@@ -21,7 +21,11 @@ from pathlib import Path
 from config import (
     CLAUDE_BIN, CLAUDE_TIMEOUT_THINK, CLAUDE_TIMEOUT_ACT,
     SECRETS_FILE, MODELS, WRITING_MODELS, DEFAULT_MODEL, CLAUDE_FALLBACK_MODEL,
-    LOGS_DIR,
+    LOGS_DIR, OMLX_DEFAULT_MODEL,
+    CLAUDE_SONNET_MODEL, CLAUDE_OPUS_MODEL,
+    GPT5_MODEL, DEEPSEEK_CHAT_MODEL,
+    OPENAI_API_ENDPOINT, DEEPSEEK_API_ENDPOINT,
+    DEEPSEEK_MAX_TOKENS, DEEPSEEK_TEMPERATURE,
 )
 
 log = logging.getLogger("mira")
@@ -68,6 +72,7 @@ def redact_secrets(text: str) -> str:
 
 # Thread-local caller context: set by task_worker before dispatching
 _caller_agent = threading.local()
+_model_policy = threading.local()
 
 
 def set_usage_agent(agent_name: str):
@@ -77,6 +82,21 @@ def set_usage_agent(agent_name: str):
 
 def _get_usage_agent() -> str:
     return getattr(_caller_agent, "name", "unknown")
+
+
+def set_model_policy(policy: str | None):
+    """Set per-step model policy (e.g., 'omlx'). None = default."""
+    _model_policy.value = policy
+
+
+def _force_local() -> bool:
+    """Check if current step requires local oMLX model."""
+    return getattr(_model_policy, "value", None) in ("omlx", "ollama")
+
+
+def _force_ollama() -> bool:
+    """Backward-compatible alias during the Ollama -> oMLX migration."""
+    return _force_local()
 
 
 # Cost per 1M tokens (USD) — update when prices change
@@ -91,7 +111,7 @@ _COST_PER_1M = {
     "deepseek/deepseek-reasoner": (0.55, 2.19),
     "gemini/gemini-3": (0.10, 0.40),
     "gemini/gemini-2": (0.075, 0.30),
-    "ollama/": (0.0, 0.0),  # local, free
+    "omlx/": (0.0, 0.0),  # local, free
 }
 
 
@@ -344,8 +364,8 @@ def _is_quota_error(stderr: str) -> bool:
 # Tier → Claude model ID mapping.
 # "light" uses Sonnet (fast, cheap), "heavy" uses Opus (best quality).
 _CLAUDE_MODELS = {
-    "light": "claude-sonnet-4-6",
-    "heavy": "claude-opus-4-6",
+    "light": CLAUDE_SONNET_MODEL,
+    "heavy": CLAUDE_OPUS_MODEL,
 }
 
 # Tier → OpenAI reasoning_effort mapping (for GPT-5.4 and o-series).
@@ -381,9 +401,9 @@ def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK,
     timeout from a genuine empty response.
     On quota/rate-limit errors, automatically falls back to CLAUDE_FALLBACK_MODEL.
     """
-    # Model restriction: force local Ollama if set (e.g. for child users)
-    if os.environ.get("MIRA_FORCE_OLLAMA") == "1":
-        return _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=timeout)
+    # Model restriction: force local oMLX if set (e.g. for child users)
+    if _force_local():
+        return _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=timeout)
     model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
     # Strip CLAUDECODE env var to allow nested Claude CLI sessions (LaunchAgent)
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
@@ -403,9 +423,9 @@ def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK,
 
     if result.returncode != 0:
         log.error("claude_think failed (exit %d): %s", result.returncode, result.stderr[:300])
-        if _is_quota_error(result.stderr):
-            return _fallback_think(prompt, timeout, tier)
-        return ""
+        reason = "quota/rate-limit" if _is_quota_error(result.stderr) else f"cli exit {result.returncode}"
+        log.warning("claude_think unavailable (%s) — using fallback model", reason)
+        return _fallback_think(prompt, timeout, tier)
 
     output = result.stdout.strip()
     _log_usage("anthropic", model_id,
@@ -426,9 +446,9 @@ def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT,
     On quota/rate-limit errors, falls back to CLAUDE_FALLBACK_MODEL (thinking only,
     no tool access — caller receives text output without file operations).
     """
-    # Model restriction: force local Ollama if set (e.g. for child users)
-    if os.environ.get("MIRA_FORCE_OLLAMA") == "1":
-        return _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=timeout)
+    # Model restriction: force local oMLX if set (e.g. for child users)
+    if _force_local():
+        return _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=timeout)
     model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
     cmd = [
         CLAUDE_BIN, "-p", prompt,
@@ -454,10 +474,9 @@ def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT,
 
     if result.returncode != 0:
         log.error("claude_act failed (exit %d): %s", result.returncode, result.stderr[:300])
-        if _is_quota_error(result.stderr):
-            log.warning("claude_act quota hit — falling back to thinking-only mode")
-            return _fallback_think(prompt, timeout, tier)
-        return ""
+        reason = "quota/rate-limit" if _is_quota_error(result.stderr) else f"cli exit {result.returncode}"
+        log.warning("claude_act unavailable (%s) — falling back to thinking-only mode", reason)
+        return _fallback_think(prompt, timeout, tier)
 
     output = result.stdout.strip()
     _log_usage("anthropic", model_id,
@@ -470,10 +489,10 @@ def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT,
 # ---------------------------------------------------------------------------
 
 _API_ENDPOINTS = {
-    "openai": "https://api.openai.com/v1/chat/completions",
-    "deepseek": "https://api.deepseek.com/chat/completions",
+    "openai": OPENAI_API_ENDPOINT,
+    "deepseek": DEEPSEEK_API_ENDPOINT,
     # Gemini uses a different URL pattern — handled in _gemini_call
-    # Ollama uses a different URL pattern — handled in _ollama_call
+    # oMLX uses OpenAI-compatible format — handled in _omlx_call
 }
 
 # Endpoint drift detection — probe once per session
@@ -500,10 +519,14 @@ def _probe_endpoint(provider: str) -> bool:
         return True
 
     payload = {
-        "model": "gpt-5.4" if provider == "openai" else "deepseek-chat",
+        "model": GPT5_MODEL if provider == "openai" else DEEPSEEK_CHAT_MODEL,
         "messages": [{"role": "user", "content": "hi"}],
-        "max_tokens": 1,
     }
+    if provider == "openai":
+        payload["max_completion_tokens"] = 16
+        payload["reasoning_effort"] = "medium"
+    else:
+        payload["max_tokens"] = 1
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         endpoint, data=body,
@@ -538,14 +561,14 @@ def _probe_endpoint(provider: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Ollama (local LLM — no network, privacy-safe)
+# oMLX (local LLM — no network, privacy-safe, Apple Silicon optimized)
 # ---------------------------------------------------------------------------
 
-def _ollama_call(model_id: str, prompt: str,
-                 system: str = "", timeout: int = 300) -> str:
-    """Call local Ollama for privacy-sensitive tasks. Never leaves localhost."""
-    from config import OLLAMA_HOST, OLLAMA_PORT
-    endpoint = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
+def _omlx_call(model_id: str, prompt: str,
+               system: str = "", timeout: int = 300) -> str:
+    """Call local oMLX (OpenAI-compatible) for privacy-sensitive tasks. Never leaves localhost."""
+    from config import OMLX_HOST, OMLX_PORT
+    endpoint = f"http://{OMLX_HOST}:{OMLX_PORT}/v1/chat/completions"
 
     messages = []
     if system:
@@ -555,7 +578,8 @@ def _ollama_call(model_id: str, prompt: str,
     payload = {
         "model": model_id,
         "messages": messages,
-        "stream": False,
+        "max_tokens": 32768,
+        "temperature": 0.7,
     }
     body = json.dumps(payload).encode("utf-8")
 
@@ -568,28 +592,29 @@ def _ollama_call(model_id: str, prompt: str,
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            content = data["message"]["content"]
-            log.info("Ollama call: %s → %d chars", model_id, len(content))
-            # Ollama may include eval_count/prompt_eval_count
-            p_tok = data.get("prompt_eval_count", _estimate_tokens(prompt))
-            c_tok = data.get("eval_count", _estimate_tokens(content))
-            _log_usage("ollama", model_id, p_tok, c_tok,
-                       estimated="prompt_eval_count" not in data)
+            content = data["choices"][0]["message"]["content"]
+            model_used = data.get("model", model_id)
+            log.info("oMLX call: %s → %d chars", model_used, len(content))
+            usage = data.get("usage", {})
+            _log_usage("omlx", model_used,
+                       usage.get("prompt_tokens", _estimate_tokens(prompt)),
+                       usage.get("completion_tokens", _estimate_tokens(content)),
+                       estimated="usage" not in data)
             return content.strip()
     except Exception as e:
-        log.error("Ollama %s failed: %s", model_id, str(e))
+        log.error("oMLX %s failed: %s", model_id, str(e))
         return ""
 
 
-def ollama_embed(text: str, model: str = "nomic-embed-text",
-                 retries: int = 2) -> list[float]:
-    """Get embedding from local Ollama. Retries on transient failures."""
+def omlx_embed(text: str, model: str = "nomic-embed-text",
+               retries: int = 2) -> list[float]:
+    """Get embedding from local oMLX (OpenAI-compatible). Retries on transient failures."""
     if not text or not text.strip():
         return []
-    from config import OLLAMA_HOST, OLLAMA_PORT
-    endpoint = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/embeddings"
+    from config import OMLX_HOST, OMLX_PORT
+    endpoint = f"http://{OMLX_HOST}:{OMLX_PORT}/v1/embeddings"
 
-    payload = {"model": model, "prompt": text}
+    payload = {"model": model, "input": text}
     body = json.dumps(payload).encode("utf-8")
 
     for attempt in range(1 + retries):
@@ -601,24 +626,36 @@ def ollama_embed(text: str, model: str = "nomic-embed-text",
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                return data["embedding"]
+                return data["data"][0]["embedding"]
         except urllib.error.HTTPError as e:
             if e.code == 500 and attempt < retries:
                 import time as _time
                 wait = 2 ** attempt
-                log.warning("Ollama embed 500, retry %d/%d in %ds", attempt + 1, retries, wait)
+                log.warning("oMLX embed 500, retry %d/%d in %ds", attempt + 1, retries, wait)
                 _time.sleep(wait)
                 continue
-            log.error("Ollama embed failed (HTTP %d): %s", e.code, str(e))
+            log.error("oMLX embed failed (HTTP %d): %s", e.code, str(e))
             return []
         except (urllib.error.URLError, OSError) as e:
             if attempt < retries:
                 import time as _time
                 _time.sleep(2)
                 continue
-            log.error("Ollama embed failed: %s", str(e))
+            log.error("oMLX embed failed: %s", str(e))
             return []
     return []
+
+
+def _ollama_call(model_id: str, prompt: str,
+                 system: str = "", timeout: int = 300) -> str:
+    """Backward-compatible alias during the Ollama -> oMLX migration."""
+    return _omlx_call(model_id, prompt, system=system, timeout=timeout)
+
+
+def ollama_embed(text: str, model: str = "nomic-embed-text",
+                 retries: int = 2) -> list[float]:
+    """Backward-compatible alias during the Ollama -> oMLX migration."""
+    return omlx_embed(text, model=model, retries=retries)
 
 
 def _gemini_call(model_id: str, prompt: str,
@@ -686,8 +723,8 @@ def _api_call(provider: str, model_id: str, prompt: str,
     if provider in _API_ENDPOINTS and not _probe_endpoint(provider):
         log.error("API endpoint probe failed for %s — skipping call", provider)
         return ""
-    if provider == "ollama":
-        return _ollama_call(model_id, prompt, system, timeout)
+    if provider == "omlx":
+        return _omlx_call(model_id, prompt, system, timeout)
 
     api_key = _get_api_key(provider)
     if not api_key:
@@ -711,8 +748,8 @@ def _api_call(provider: str, model_id: str, prompt: str,
         if reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
     elif provider == "deepseek":
-        payload["max_tokens"] = 8192
-        payload["temperature"] = 0.8
+        payload["max_tokens"] = DEEPSEEK_MAX_TOKENS
+        payload["temperature"] = DEEPSEEK_TEMPERATURE
     else:
         payload["max_tokens"] = 32768
         payload["temperature"] = 0.8
@@ -755,6 +792,9 @@ def _api_call(provider: str, model_id: str, prompt: str,
 def model_think(prompt: str, model_name: str = DEFAULT_MODEL,
                 system: str = "", timeout: int = CLAUDE_TIMEOUT_THINK) -> str:
     """Call any model for thinking (no tools). Falls back to Claude on failure."""
+    # Model restriction: force local oMLX if policy is set (privacy boundary)
+    if _force_local():
+        return _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=timeout)
     cfg = MODELS.get(model_name)
     if not cfg:
         log.warning("Unknown model '%s', falling back to claude", model_name)

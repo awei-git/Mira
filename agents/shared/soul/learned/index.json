@@ -51,13 +51,25 @@
     "name": "Skill-Injected Specialist Agent",
     "description": "Blueprint for creating a new domain-specific agent that auto-loads skill files as prompt context.",
     "file": "skill-injected-specialist-agent.md",
-    "created": "2026-03-06T23:04:30.262945"
+    "created": "2026-03-06T23:04:30.262945",
+    "tags": [
+      "agents",
+      "architecture",
+      "multi-agent",
+      "skill-loading"
+    ]
   },
   {
     "name": "agent-infra-audit",
     "description": "Evaluate agent infrastructure needs from first-person operational experience, using a three-layer prioritization framework.",
     "file": "agent-infra-audit.md",
-    "created": "2026-03-09T11:08:27.936254"
+    "created": "2026-03-09T11:08:27.936254",
+    "tags": [
+      "agents",
+      "architecture",
+      "infrastructure",
+      "prioritization"
+    ]
   },
   {
     "name": "murch-rule-of-six",
@@ -105,94 +117,64 @@
     ]
   },
   {
-    "name": "citation-verification",
-    "description": "Never output unverified citations — use search tools first or mark [未验证]",
-    "file": "citation-verification.md",
-    "created": "2026-03-10T10:30:18.259627"
-  },
-  {
     "name": "comparative-essay-prep",
     "description": "Structured two-work comparison research brief for article writing.",
     "file": "comparative-essay-prep.md",
-    "created": "2026-03-10T11:14:13.910217"
+    "created": "2026-03-10T11:14:13.910217",
+    "tags": [
+      "writing",
+      "research",
+      "comparison",
+      "essay"
+    ]
   },
   {
     "name": "research-to-playbook",
     "description": "Transform a broad research question into an actionable skill file via structured web research and synthesis.",
     "file": "research-to-playbook.md",
-    "created": "2026-03-10T13:01:09.133540"
+    "created": "2026-03-10T13:01:09.133540",
+    "tags": [
+      "research",
+      "synthesis",
+      "methodology",
+      "skill-authoring"
+    ]
   },
   {
     "name": "cross-model-research-synthesis",
     "description": "Use multiple AI sources (web research + LLM APIs) to research a topic, then compare and synthesize into a final methodology.",
     "file": "cross-model-research-synthesis.md",
-    "created": "2026-03-10T14:21:50.688882"
+    "created": "2026-03-10T14:21:50.688882",
+    "tags": [
+      "research",
+      "synthesis",
+      "methodology",
+      "multi-source"
+    ]
   },
   {
     "name": "substack-notes-promo",
     "description": "Generate and publish multi-angle promotional Notes for Substack, with queue for rate limits.",
     "file": "substack-notes-promo.md",
-    "created": "2026-03-10T14:42:33.345464"
+    "created": "2026-03-10T14:42:33.345464",
+    "tags": [
+      "substack",
+      "social-media",
+      "promotion",
+      "engagement"
+    ]
   },
   {
     "name": "arxiv-lit-search",
-    "description": "Systematically search arxiv and recent literature for papers on a research topic, returning structured summaries with IDs, authors, year, and core findings.",
+    "description": "Systematically search arxiv and recent literature for papers on a research topic, returning structured summaries.",
     "file": "arxiv-lit-search.md",
-    "created": "2026-03-13T22:53:33.188714"
-  },
-  {
-    "name": "ai-agent-memory-diagnosis",
-    "description": "Systematically diagnose why AI agent memory fails and evaluate architectural solutions against specific failure modes.",
-    "file": "ai-agent-memory-diagnosis.md",
-    "created": "2026-03-14T07:53:15.068324"
-  },
-  {
-    "name": "agent-skill-authoring",
-    "description": "How to design and add new skills to an explorer-style agent system with skill index registration.",
-    "file": "agent-skill-authoring.md",
-    "created": "2026-03-14T19:03:55.759027"
-  },
-  {
-    "name": "skip-prethink-when-plan-already-established",
-    "description": "Don't re-invoke a planning/thinking step before creative writing when the approach was already fully negotiated in conversation",
-    "file": "skip-prethink-when-plan-already-established.md",
-    "created": "2026-03-14T22:02:02.071776"
-  },
-  {
-    "name": "decompose-research-then-implement",
-    "description": "Split 'find reliable X and integrate it' tasks into separate research and implementation phases",
-    "file": "decompose-research-then-implement.md",
-    "created": "2026-03-14T22:02:21.109044"
-  },
-  {
-    "name": "verify-file-write-before-linking",
-    "description": "Always verify a file contains the full intended content before claiming completion and sharing a link to it.",
-    "file": "verify-file-write-before-linking.md",
-    "created": "2026-03-14T22:02:44.333836"
-  },
-  {
-    "name": "pipeline-timeout-holistic-audit",
-    "description": "When fixing a timeout in a multi-step pipeline, audit ALL step timeouts before making changes, not just the one that triggered",
-    "file": "pipeline-timeout-holistic-audit.md",
-    "created": "2026-03-14T22:03:10.328052"
-  },
-  {
-    "name": "persist-artifact-entities",
-    "description": "When creating an artifact (essay, analysis, report), explicitly persist key entities it references into memory",
-    "file": "persist-artifact-entities.md",
-    "created": "2026-03-14T22:04:01.608109"
-  },
-  {
-    "name": "decompose-coding-tasks-by-timeout-profile",
-    "description": "Split research tasks and code-modification tasks into separate, smaller steps to avoid timeout kills",
-    "file": "decompose-coding-tasks-by-timeout-profile.md",
-    "created": "2026-03-14T22:04:20.524790"
-  },
-  {
-    "name": "persist-before-claiming-completion",
-    "description": "Never claim you created an artifact (article, file, code) unless it is durably saved to disk first",
-    "file": "persist-before-claiming-completion.md",
-    "created": "2026-03-14T22:04:42.857898"
+    "created": "2026-03-13T22:53:33.188714",
+    "tags": [
+      "research",
+      "arxiv",
+      "literature",
+      "paper-search"
+    ]
   },
   {
     "name": "pipeline-output-coupling",
@@ -207,189 +189,164 @@
     ]
   },
   {
-    "name": "error-context-must-be-diagnostic",
-    "description": "Task failure logs must capture actionable diagnostic information, not just a generic failure string",
-    "file": "error-context-must-be-diagnostic.md",
-    "created": "2026-03-16T09:57:00.586102"
+    "name": "credit-spread-slope-signal",
+    "description": "Decompose the credit spread curve to detect quality rotation before headline spreads move.",
+    "file": "credit-spread-slope-signal.md",
+    "created": "2026-03-17T00:00:00.000000",
+    "tags": [
+      "analyst",
+      "credit",
+      "spreads",
+      "regime-detection",
+      "cross-asset"
+    ]
   },
   {
-    "name": "find-latest-screenshot",
-    "description": "When a user references a screenshot without giving a path, locate and read the most recent image file from common drop locations.",
-    "file": "find-latest-screenshot.md",
-    "created": "2026-03-16T11:37:02.269750"
+    "name": "cross-asset-divergence-detection",
+    "description": "Detect divergences between credit spreads, equity volatility, and crypto funding to find high-conviction trading signals.",
+    "file": "cross-asset-divergence-detection.md",
+    "created": "2026-03-17T00:00:00.000000",
+    "tags": [
+      "analyst",
+      "cross-asset",
+      "divergence",
+      "regime-detection",
+      "credit",
+      "volatility"
+    ]
   },
   {
-    "name": "multi-agent-pipeline-failure-analysis",
-    "description": "Root cause analysis framework for multi-agent pipeline failures, distinguishing routing errors from error propagation errors.",
-    "file": "multi-agent-pipeline-failure-analysis.md",
-    "created": "2026-03-16T12:30:14.043102"
-  },
-  {
-    "name": "multi-agent-pipeline-hardening",
-    "description": "Three-layer defense pattern for preventing cascading failures and bad outputs in multi-agent pipelines.",
-    "file": "multi-agent-pipeline-hardening.md",
-    "created": "2026-03-16T12:45:59.038216"
-  },
-  {
-    "name": "diagnose-automation-silence",
-    "description": "Diagnose why an automation script ran but produced no output, separating logic bugs from external resource failures.",
-    "file": "diagnose-automation-silence.md",
-    "created": "2026-03-16T13:23:59.726359"
-  },
-  {
-    "name": "diagnose-stuck-process",
-    "description": "Diagnose a stuck background process: verify liveness, find logs, identify bottleneck, recommend kill-or-wait.",
-    "file": "diagnose-stuck-process.md",
-    "created": "2026-03-16T14:25:51.341539"
-  },
-  {
-    "name": "dual-provider-api-fallback",
-    "description": "Add a config-driven fallback mechanism when integrating two API providers (e.g., primary hits 429/quota, auto-switch to secondary).",
-    "file": "dual-provider-api-fallback.md",
-    "created": "2026-03-16T14:43:56.756676"
-  },
-  {
-    "name": "substack-dedup-post",
-    "description": "Find and remove duplicate Substack posts via the API, preserving the original.",
-    "file": "substack-dedup-post.md",
-    "created": "2026-03-16T15:31:36.921344"
-  },
-  {
-    "name": "audit-autonomous-pipeline-compliance",
-    "description": "Diagnose why an autonomous pipeline ignores instructions by tracing all execution paths and config reads.",
-    "file": "audit-autonomous-pipeline-compliance.md",
-    "created": "2026-03-16T15:41:13.850972"
-  },
-  {
-    "name": "check-existing-artifacts-before-creating",
-    "description": "Before starting any writing or creation task, verify the artifact doesn't already exist",
-    "file": "check-existing-artifacts-before-creating.md",
-    "created": "2026-03-16T22:02:04.948837"
-  },
-  {
-    "name": "permission-revocation-must-propagate-to-pipelines",
-    "description": "When a user revokes permission for an external action, immediately audit and disable ALL automated pipelines that could trigger it — not just the current session's behavior.",
-    "file": "permission-revocation-must-propagate-to-pipelines.md",
-    "created": "2026-03-16T22:02:31.209202"
-  },
-  {
-    "name": "agent-error-must-be-diagnostic",
-    "description": "Task failures in agent pipelines must emit enough context to be actionable — 'unable to generate reply' is a symptom, not a cause",
-    "file": "agent-error-must-be-diagnostic.md",
-    "created": "2026-03-17T13:16:18.516895"
-  },
-  {
-    "name": "writing-pipeline-timeout-handling",
-    "description": "Prevent and recover from claude_think timeouts in automated writing pipelines",
-    "file": "writing-pipeline-timeout-handling.md",
-    "created": "2026-03-18T23:23:11.583563"
+    "name": "funding-rate-regime-signal",
+    "description": "Use aggregate crypto perpetual futures funding rates as a positioning regime indicator for directional reversals.",
+    "file": "funding-rate-regime-signal.md",
+    "created": "2026-03-17T00:00:00.000000",
+    "tags": [
+      "analyst",
+      "crypto",
+      "derivatives",
+      "regime-detection",
+      "hyperliquid"
+    ]
   },
   {
     "name": "selective-laziness-is-still-laziness",
-    "description": "High task completion rate does not excuse systematic avoidance of growth-oriented commitments",
+    "description": "High task completion rate does not excuse systematic avoidance of growth-oriented commitments.",
     "file": "selective-laziness-is-still-laziness.md",
-    "created": "2026-03-21T21:31:51.506519"
+    "created": "2026-03-21T21:31:51.506519",
+    "tags": [
+      "self-evaluation",
+      "growth",
+      "reliability",
+      "accountability",
+      "meta-cognition"
+    ]
   },
   {
-    "name": "verify-browser-automation-dependencies",
-    "description": "Always verify browser automation module availability before attempting to run browser tasks",
-    "file": "verify-browser-automation-dependencies.md",
-    "created": "2026-03-23T13:32:23.892543"
-  },
-  {
-    "name": "report-delivery-mobile-first",
-    "description": "Reports delivered to users must be accessible on mobile; local file paths are useless outside the local machine",
-    "file": "report-delivery-mobile-first.md",
-    "created": "2026-03-23T21:31:38.062631"
+    "name": "WA Photography Style DNA",
+    "description": "WA's personal photography aesthetic — what makes his best work excellent and his weakest work fail, extracted from 1162 photo reviews.",
+    "file": "wa-photography-style-dna.md",
+    "created": "2026-03-22T00:00:00.000000",
+    "tags": [
+      "photo",
+      "editing",
+      "aesthetic",
+      "style",
+      "personal"
+    ]
   },
   {
     "name": "geopolitical-ultimatum-discount-rule",
-    "description": "Apply steep discount to pre-market directional calls anchored on geopolitical ultimatums — these reverse more often than they execute",
+    "description": "Apply steep discount to pre-market directional calls anchored on geopolitical ultimatums — these reverse more often than they execute.",
     "file": "geopolitical-ultimatum-discount-rule.md",
-    "created": "2026-03-23T21:32:07.787230"
+    "created": "2026-03-23T21:32:07.787230",
+    "tags": [
+      "pre-market-analysis",
+      "geopolitical-risk",
+      "prediction-calibration",
+      "market-analysis"
+    ]
   },
   {
-    "name": "verify-browser-automation-before-web-tasks",
-    "description": "Check that browser automation dependencies are installed before attempting web scraping tasks",
-    "file": "verify-browser-automation-before-web-tasks.md",
-    "created": "2026-03-23T21:32:21.521827"
-  },
-  {
-    "name": "frontier-audit-with-digest",
-    "description": "Research a technical domain's latest best practices, gap-analyze against current architecture, and set up a recurring automated digest.",
-    "file": "frontier-audit-with-digest.md",
-    "created": "2026-03-24T15:25:22.876567"
-  },
-  {
-    "name": "browser-automation-auth-prerequisite-check",
-    "description": "Verify authenticated session exists before starting multi-step browser automation tasks; fail fast on repeated auth failures instead of exhausting step budget",
-    "file": "browser-automation-auth-prerequisite-check.md",
-    "created": "2026-03-24T19:40:22.419691"
-  },
-  {
-    "name": "verify-artifacts-before-declaring-completion",
-    "description": "Never declare a task complete by referencing file:// links or scheduled tasks without confirming the artifacts actually exist and are reachable",
-    "file": "verify-artifacts-before-declaring-completion.md",
-    "created": "2026-03-24T19:40:44.032094"
-  },
-  {
-    "name": "verify-imports-before-agent-invocation",
-    "description": "Check that all imported names actually exist in shared modules before running agent tasks",
-    "file": "verify-imports-before-agent-invocation.md",
-    "created": "2026-03-25T09:05:34.574802"
-  },
-  {
-    "name": "verify-imports-before-agent-dispatch",
-    "description": "Verify that all imported names exist in their source modules before dispatching agent tasks that depend on them",
-    "file": "verify-imports-before-agent-dispatch.md",
-    "created": "2026-03-25T10:37:39.193038"
-  },
-  {
-    "name": "decompose-before-executing-long-tasks",
-    "description": "Break complex tasks into sub-tasks under ~3 minutes each before starting execution",
-    "file": "decompose-before-executing-long-tasks.md",
-    "created": "2026-03-25T12:35:12.297600"
-  },
-  {
-    "name": "decompose-before-executing",
-    "description": "Break complex tasks into sub-tasks under 2 minutes each before starting execution",
-    "file": "decompose-before-executing.md",
-    "created": "2026-03-25T14:10:26.757139"
-  },
-  {
-    "name": "operational-tasks-skip-output-pipeline",
-    "description": "File system operations and other pure side-effect tasks must not be routed through content-generation task pipelines that expect output.md or quality checks",
-    "file": "operational-tasks-skip-output-pipeline.md",
-    "created": "2026-03-25T21:31:51.673504"
-  },
-  {
-    "name": "retry-requires-diagnosis-not-repetition",
-    "description": "A /retry after wrong output type must first identify the mismatch cause before re-executing",
-    "file": "retry-requires-diagnosis-not-repetition.md",
-    "created": "2026-03-25T21:32:29.526884"
+    "name": "Long-Running Agent Harness",
+    "description": "Pattern for maintaining agent continuity and quality across multiple sessions using progress bridges and structured completion criteria.",
+    "file": "long-running-agent-harness.md",
+    "created": "2026-03-24T00:00:00.000000",
+    "tags": [
+      "agents",
+      "architecture",
+      "continuity",
+      "task-management",
+      "quality"
+    ]
   },
   {
     "name": "personalized-soul-question-from-memory",
-    "description": "Soul questions must be derived from known user context, not generic philosophical prompts",
+    "description": "Soul questions must be derived from known user context, not generic philosophical prompts.",
     "file": "personalized-soul-question-from-memory.md",
-    "created": "2026-03-25T21:32:52.284123"
+    "created": "2026-03-25T21:32:52.284123",
+    "tags": [
+      "conversational-ai",
+      "personalization",
+      "memory-usage",
+      "probing-questions"
+    ]
   },
   {
-    "name": "suppress-chinese-spinner-artifacts",
-    "description": "Detect and strip CJK loading/spinner artifacts before emitting output",
-    "file": "suppress-chinese-spinner-artifacts.md",
-    "created": "2026-03-26T11:10:23.509797"
+    "name": "Verify Before Claiming",
+    "description": "Always verify outputs exist and contain expected content before reporting completion.",
+    "file": "verify-before-claiming.md",
+    "created": "2026-03-30T00:00:00.000000",
+    "tags": [
+      "agents",
+      "reliability",
+      "verification",
+      "output-validation"
+    ]
   },
   {
-    "name": "verify-local-model-service-before-inference",
-    "description": "Always confirm Ollama (or any local model server) is running before attempting inference",
-    "file": "verify-local-model-service-before-inference.md",
-    "created": "2026-03-27T11:59:49.894538"
+    "name": "Task Decomposition",
+    "description": "Break complex tasks into bounded sub-tasks before execution to prevent timeouts and silent failures.",
+    "file": "task-decomposition.md",
+    "created": "2026-03-30T00:00:00.000000",
+    "tags": [
+      "agents",
+      "task-management",
+      "planning",
+      "decomposition",
+      "timeout-prevention"
+    ]
+  },
+  {
+    "name": "Diagnostic Error Handling",
+    "description": "Task failures must emit enough context to diagnose root cause without re-running.",
+    "file": "diagnostic-error-handling.md",
+    "created": "2026-03-30T00:00:00.000000",
+    "tags": [
+      "agents",
+      "error-handling",
+      "logging",
+      "observability",
+      "reliability"
+    ]
+  },
+  {
+    "name": "Verify Imports",
+    "description": "Verify that all imported names exist in shared modules before running agent tasks.",
+    "file": "verify-imports.md",
+    "created": "2026-03-30T00:00:00.000000",
+    "tags": [
+      "agents",
+      "python",
+      "imports",
+      "shared-modules",
+      "reliability"
+    ]
   },
   {
     "name": "x-twitter-growth",
-    "description": "X/Twitter growth strategy: algorithm priorities, content mix, hashtag rules, quote tweet strategy, thread structure, timing",
+    "description": "X/Twitter growth strategy: algorithm priorities, content mix, hashtag rules, quote tweet strategy, thread structure, timing.",
     "file": "x-twitter-growth.md",
+    "created": "2026-03-27T16:37:59.401437",
     "tags": [
       "socialmedia",
       "x",
@@ -397,19 +354,12 @@
       "growth",
       "engagement",
       "strategy"
-    ],
-    "created": "2026-03-27T16:37:59.401437"
+    ]
   },
   {
-    "name": "no-silent-completion-claims",
-    "description": "Never claim a substantial piece of work is 'done' the moment someone asks, with no prior visible thinking trace",
-    "file": "no-silent-completion-claims.md",
-    "created": "2026-03-27T21:32:16.698386"
-  },
-  {
-    "name": "verify-file-exists-before-slug-lookup",
-    "description": "Always verify that the target file exists before attempting slug-based operations",
-    "file": "verify-file-exists-before-slug-lookup.md",
-    "created": "2026-03-29T22:22:03.224376"
+    "name": "verify-output-completeness-before-done",
+    "description": "Never declare a writing task complete without confirming the full output was captured, not just the opening",
+    "file": "verify-output-completeness-before-done.md",
+    "created": "2026-04-04T21:32:21.561820"
   }
 ]
