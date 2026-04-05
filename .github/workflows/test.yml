@@ -18,10 +18,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
+        run: pip install pytest
+
+      - name: Create minimal runtime dirs
         run: |
-          pip install pytest
+          mkdir -p /tmp/mira-test/threads
+          mkdir -p /tmp/mira-test/users/ang/items
 
       - name: Run fast tests
-        run: |
-          cd $GITHUB_WORKSPACE
-          python -m pytest agents/ -m "not slow" -x -q --tb=short
+        run: python -m pytest agents/ -m "not slow" -x -q --tb=short
