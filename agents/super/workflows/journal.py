@@ -17,6 +17,7 @@ import health_monitor
 from config import (
     BRIEFINGS_DIR, JOURNAL_DIR, MIRA_DIR,
 )
+from user_paths import artifact_name_for_user, user_journal_dir
 try:
     from mira import Mira
 except (ImportError, ModuleNotFoundError):
@@ -50,10 +51,11 @@ def do_journal(user_id: str = "ang"):
     log.info("Starting daily journal")
 
     today = datetime.now().strftime("%Y-%m-%d")
-    JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+    journal_dir = user_journal_dir(user_id)
+    journal_dir.mkdir(parents=True, exist_ok=True)
 
     # Skip if already written today
-    journal_path = JOURNAL_DIR / f"{today}.md"
+    journal_path = journal_dir / f"{today}.md"
     if journal_path.exists():
         log.info("Journal already written for %s, skipping", today)
         return
@@ -74,9 +76,9 @@ def do_journal(user_id: str = "ang"):
         briefing_summary = content[:2000]  # truncate for prompt
 
     # --- Pick a 杂.md fragment as journal seed ---
-    state = load_state()
+    state = load_state(user_id=user_id)
     za_fragment = _mine_za_one(state)
-    save_state(state)
+    save_state(state, user_id=user_id)
 
     # 4. Publication stats (Substack reach data)
     stats_summary = ""
@@ -110,7 +112,7 @@ def do_journal(user_id: str = "ang"):
     # 6. Recent reading notes (insights extracted from briefings)
     reading_notes = ""
     try:
-        reading_notes = load_recent_reading_notes(days=3)
+        reading_notes = load_recent_reading_notes(days=3, user_id=user_id)
         if reading_notes:
             log.info("Loaded recent reading notes for journal context")
     except Exception as e:
@@ -210,7 +212,7 @@ def do_journal(user_id: str = "ang"):
     log.info("Journal saved: %s", journal_path.name)
 
     # Copy to briefings dir so iOS can read it (with verification)
-    _copy_to_briefings(f"{today}_journal.md", journal_content)
+    _copy_to_briefings(artifact_name_for_user(f"{today}_journal.md", user_id), journal_content)
 
     # Push journal as standalone feed item (visible in home)
     try:
@@ -277,7 +279,7 @@ def do_journal(user_id: str = "ang"):
 
         report_content = "\n".join(report_lines)
 
-        bridge = Mira()
+        bridge = Mira(MIRA_DIR, user_id=user_id)
         report_id = f"feed_social_report_{today.replace('-', '')}"
         if not bridge.item_exists(report_id):
             bridge.create_item(report_id, "feed",
@@ -293,7 +295,7 @@ def do_journal(user_id: str = "ang"):
     try:
         from evaluator import evaluate_journal, record_event
         recent = []
-        for p in sorted(JOURNAL_DIR.glob("*.md"))[-7:]:
+        for p in sorted(journal_dir.glob("*.md"))[-7:]:
             try:
                 recent.append(p.read_text(encoding="utf-8")[:2000])
             except OSError:
@@ -348,7 +350,7 @@ def do_journal(user_id: str = "ang"):
         log.warning("Wiki update failed: %s", e)
 
     # Mark done in state
-    state = load_state()
+    state = load_state(user_id=user_id)
     state[f"journal_{today}"] = datetime.now().isoformat()
     state[f"journal_{today}_actor"] = "journal/claude-think"
-    save_state(state)
+    save_state(state, user_id=user_id)

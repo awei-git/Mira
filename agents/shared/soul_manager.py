@@ -17,6 +17,7 @@ from config import (
     EPISODES_DIR, CATALOG_FILE,
     CHANGELOG_FILE, CHANGELOG_ARCHIVE_DIR, CHANGELOG_MAX_LINES,
 )
+from user_paths import user_journal_dir, user_reading_notes_dir
 
 log = logging.getLogger("mira")
 
@@ -365,13 +366,14 @@ def update_worldview(new_content: str):
 # Reading Notes
 # ---------------------------------------------------------------------------
 
-def save_reading_note(title: str, reflection: str):
+def save_reading_note(title: str, reflection: str, user_id: str = "ang"):
     """Save a personal reading reflection after deep dive."""
-    READING_NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    notes_dir = user_reading_notes_dir(user_id)
+    notes_dir.mkdir(parents=True, exist_ok=True)
     today = datetime.now().strftime("%Y-%m-%d")
     slug = title.lower().replace(" ", "-")[:40]
     slug = "".join(c for c in slug if c.isalnum() or c == "-")
-    path = READING_NOTES_DIR / f"{today}_{slug}.md"
+    path = notes_dir / f"{today}_{slug}.md"
     _atomic_write(path, f"# Reading Note: {title}\n\n*{today}*\n\n{reflection}")
     log.info("Reading note saved: %s", path.name)
     _log_change("SAVE_READING_NOTE", path.name, title)
@@ -386,7 +388,7 @@ def save_knowledge_note(title: str, content: str, source_task_id: str = "",
     and persists to PostgreSQL with higher importance for recall.
     """
     provenance = f"*Source: task {source_task_id}*\n\n" if source_task_id else ""
-    path = save_reading_note(title, f"{provenance}{content}")
+    path = save_reading_note(title, f"{provenance}{content}", user_id=user_id)
     if not path:
         return None
     _log_change("KNOWLEDGE_WRITEBACK", path.name, title[:60])
@@ -412,14 +414,15 @@ def save_knowledge_note(title: str, content: str, source_task_id: str = "",
     return path
 
 
-def load_recent_reading_notes(days: int = 14) -> str:
+def load_recent_reading_notes(days: int = 14, user_id: str = "ang") -> str:
     """Load recent reading notes for use in reflect/journal."""
-    if not READING_NOTES_DIR.exists():
+    notes_dir = user_reading_notes_dir(user_id)
+    if not notes_dir.exists():
         return ""
     from datetime import timedelta
     cutoff = datetime.now() - timedelta(days=days)
     texts = []
-    for path in sorted(READING_NOTES_DIR.glob("*.md")):
+    for path in sorted(notes_dir.glob("*.md")):
         try:
             date_str = path.stem[:10]
             file_date = datetime.strptime(date_str, "%Y-%m-%d")
@@ -442,7 +445,7 @@ def detect_recurring_themes(days: int = 7) -> list[str]:
 
     texts = []
     # Gather journal entries
-    journal_dir = WORLDVIEW_FILE.parent / "journal"
+    journal_dir = user_journal_dir("ang")
     if journal_dir.exists():
         from datetime import timedelta
         cutoff = datetime.now() - timedelta(days=days)

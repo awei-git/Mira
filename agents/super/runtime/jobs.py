@@ -156,6 +156,8 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger="time_window",
         trigger_name="should_soul_question",
         state_key_pattern="soul_question_{date}",
+        per_user=True,
+        bg_name_pattern="soul-question-{user_id}",
         description="Daily soul question for self-examination",
     ),
     JobSpec(
@@ -165,6 +167,8 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger_name="should_spark_check",
         cooldown_hours=2,
         state_key_pattern="last_spark_check",
+        per_user=True,
+        bg_name_pattern="spark-check-{user_id}",
         description="Check for new sparks from memory growth",
     ),
     JobSpec(

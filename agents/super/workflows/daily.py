@@ -26,6 +26,7 @@ from config import (
     SKILL_STUDY_SOURCE_GROUPS,
     EPISODES_DIR, LOG_RETENTION_DAYS,
 )
+from user_paths import artifact_name_for_user, user_journal_dir
 try:
     from mira import Mira
 except (ImportError, ModuleNotFoundError):
@@ -406,7 +407,7 @@ def handle_photo_feedback(item_id: str, user_message: str):
 # 每日哲思 — Daily Philosophical Thought
 # ---------------------------------------------------------------------------
 
-def do_zhesi():
+def do_zhesi(user_id: str = "ang"):
     """Write a daily philosophical thought based on a fragment from 杂.md."""
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
@@ -414,7 +415,7 @@ def do_zhesi():
     log.info("Starting daily 哲思")
     today = datetime.now().strftime("%Y-%m-%d")
 
-    state = load_state()
+    state = load_state(user_id=user_id)
     fragment = _mine_za_one(state)
     if not fragment:
         log.info("No fragments available from 杂.md, skipping 哲思")
@@ -425,7 +426,7 @@ def do_zhesi():
 
     recent_reading = ""
     try:
-        recent_reading = load_recent_reading_notes(days=7)
+        recent_reading = load_recent_reading_notes(days=7, user_id=user_id)
     except Exception as e:
         log.warning("Failed to load reading notes for zhesi: %s", e)
 
@@ -437,18 +438,19 @@ def do_zhesi():
         return
 
     # Save
-    JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
-    zhesi_path = JOURNAL_DIR / f"{today}_zhesi.md"
+    journal_dir = user_journal_dir(user_id)
+    journal_dir.mkdir(parents=True, exist_ok=True)
+    zhesi_path = journal_dir / f"{today}_zhesi.md"
     content = f"# 每日哲思 {today}\n\n> {fragment}\n\n{result}"
     atomic_write(zhesi_path, content)
     log.info("哲思 saved: %s", zhesi_path.name)
 
     # Copy to artifacts for iOS (with verification)
-    _copy_to_briefings(f"{today}_zhesi.md", content)
+    _copy_to_briefings(artifact_name_for_user(f"{today}_zhesi.md", user_id), content)
 
     # Create feed item for zhesi
     try:
-        bridge = Mira()
+        bridge = Mira(MIRA_DIR, user_id=user_id)
         bridge.create_feed(f"feed_zhesi_{datetime.now().strftime('%Y%m%d')}", f"每日哲思 {datetime.now().strftime('%m/%d')}", content[:2000], tags=["reflection", "philosophy"])
         log.info("哲思 feed item created")
     except Exception as e:
@@ -456,14 +458,14 @@ def do_zhesi():
 
     state[f"zhesi_{today}"] = datetime.now().isoformat()
     state[f"zhesi_{today}_actor"] = "zhesi/claude-think"
-    save_state(state)
+    save_state(state, user_id=user_id)
 
 
 # ---------------------------------------------------------------------------
 # SOUL QUESTION — daily philosophical question for WA
 # ---------------------------------------------------------------------------
 
-def do_soul_question():
+def do_soul_question(user_id: str = "ang"):
     """Generate and send the daily soul question."""
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
@@ -471,7 +473,7 @@ def do_soul_question():
     log.info("Starting daily soul question")
     today = datetime.now().strftime("%Y-%m-%d")
 
-    state = load_state()
+    state = load_state(user_id=user_id)
 
     import importlib.util
     spec = importlib.util.spec_from_file_location(
@@ -480,10 +482,10 @@ def do_soul_question():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    history = mod._load_history()
+    history = mod._load_history(user_id=user_id)
     log.info("Loaded %d historical soul questions", len(history))
 
-    question = mod.generate_soul_question(history)
+    question = mod.generate_soul_question(history, user_id=user_id)
     if not question:
         log.error("Failed to generate soul question — aborting")
         return
@@ -491,15 +493,15 @@ def do_soul_question():
     log.info("Generated soul question:\n%s", question)
 
     # Send to app feed as a discussion item
-    sent = mod.send_to_user(question)
+    sent = mod.send_to_user(question, user_id=user_id)
     if sent:
         history.append(question[:120])
-        mod._save_history(history)
+        mod._save_history(history, user_id=user_id)
         log.info("Soul question sent and saved")
 
     # Also create a feed spark for the Mira app
     try:
-        bridge = Mira()
+        bridge = Mira(MIRA_DIR, user_id=user_id)
         bridge.create_feed(
             f"feed_soul_question_{datetime.now().strftime('%Y%m%d')}",
             f"灵魂问题 {datetime.now().strftime('%m/%d')}",
@@ -512,7 +514,7 @@ def do_soul_question():
 
     state[f"soul_question_{today}"] = datetime.now().isoformat()
     state[f"soul_question_{today}_actor"] = "soul-question/claude-think"
-    save_state(state)
+    save_state(state, user_id=user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -810,10 +812,10 @@ def do_skill_study(group_idx: int = 0, user_id: str = "ang"):
         log.info("Skill study (%s): no new skills extracted this session", domain)
 
     # Mark as done
-    state = load_state()
+    state = load_state(user_id=user_id)
     state[f"skill_study_{today}_{domain}"] = datetime.now().isoformat()
     state["last_skill_study"] = datetime.now().isoformat()
-    save_state(state)
+    save_state(state, user_id=user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -939,8 +941,9 @@ def do_idle_think(user_id: str = "ang"):
 
     # Recent journal for grounding
     recent_journal = ""
-    if JOURNAL_DIR.exists():
-        journals = sorted(JOURNAL_DIR.glob("*.md"), reverse=True)[:1]
+    journal_dir = user_journal_dir(user_id)
+    if journal_dir.exists():
+        journals = sorted(journal_dir.glob("*.md"), reverse=True)[:1]
         if journals:
             recent_journal = journals[0].read_text(encoding="utf-8")[:600]
 
@@ -977,8 +980,8 @@ def do_idle_think(user_id: str = "ang"):
     after_think(user_id=user_id)
 
     # Save to journal
-    think_file = JOURNAL_DIR / f"{now.strftime('%Y-%m-%d')}_idle_{mode}_{now.strftime('%H%M')}.md"
-    JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+    think_file = journal_dir / f"{now.strftime('%Y-%m-%d')}_idle_{mode}_{now.strftime('%H%M')}.md"
+    journal_dir.mkdir(parents=True, exist_ok=True)
     think_file.write_text(
         f"# 自我唤醒思考 [{mode}] {now.strftime('%Y-%m-%d %H:%M')}\n\n{result}\n",
         encoding="utf-8",
@@ -1269,10 +1272,10 @@ def _handle_think_markers(result: str, user_id: str = "ang"):
         try:
             _append_to_daily_feed("mira", "Spark", thought,
                                  source="idle-think", tags=["mira", "spark"], user_id=user_id)
-            state = load_state()
+            state = load_state(user_id=user_id)
             today_key = datetime.now().strftime("%Y-%m-%d")
             state[f"sparks_{today_key}"] = state.get(f"sparks_{today_key}", 0) + 1
-            save_state(state)
+            save_state(state, user_id=user_id)
             log.info("idle-think shared: %s", thought[:60])
         except Exception as e:
             log.warning("idle-think share failed: %s", e)
@@ -1288,7 +1291,7 @@ def _handle_think_markers(result: str, user_id: str = "ang"):
     # Check if the full idle-think output could spark a spontaneous writing idea
     try:
         from workflows.helpers import _maybe_create_spontaneous_idea
-        _maybe_create_spontaneous_idea(result, source="idle-think")
+        _maybe_create_spontaneous_idea(result, source="idle-think", user_id=user_id)
     except Exception as e:
         log.debug("Spontaneous idea check from idle-think failed: %s", e)
 

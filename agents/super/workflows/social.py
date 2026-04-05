@@ -13,6 +13,7 @@ _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
 from config import JOURNAL_DIR, MIRA_DIR
+from user_paths import user_journal_dir
 try:
     from mira import Mira
 except (ImportError, ModuleNotFoundError):
@@ -158,22 +159,22 @@ def do_notes_cycle():
         log.error("Notes cycle failed: %s", e)
 
 
-def do_spark_check():
+def do_spark_check(user_id: str = "ang"):
     """Check if Mira has a thought worth proactively sharing with WA."""
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
 
-    state = load_state()
+    state = load_state(user_id=user_id)
     today = datetime.now().strftime("%Y-%m-%d")
 
     soul = load_soul()
     soul_ctx = format_soul(soul)
 
     # Gather recent context
-    recent_reading = load_recent_reading_notes(days=3)
+    recent_reading = load_recent_reading_notes(days=3, user_id=user_id)
     recent_journal = ""
     if JOURNAL_DIR.exists():
-        journals = sorted(JOURNAL_DIR.glob("*.md"), reverse=True)[:2]
+        journals = sorted(user_journal_dir(user_id).glob("*.md"), reverse=True)[:2]
         recent_journal = "\n---\n".join(
             j.read_text(encoding="utf-8")[:800] for j in journals
         )
@@ -184,7 +185,12 @@ def do_spark_check():
         history_file = MIRA_DIR / "tasks" / "history.jsonl"
         if history_file.exists():
             lines = history_file.read_text(encoding="utf-8").strip().split("\n")
-            recent = [json.loads(l) for l in lines[-5:] if l.strip()]
+            recent = [json.loads(l) for l in lines if l.strip()]
+            recent = [
+                r for r in recent
+                if r.get("user_id") == user_id or
+                (not r.get("user_id") and user_id == "ang")
+            ][-5:]
             recent_conversations = "\n".join(
                 f"- {r.get('content_preview', '')[:100]}" for r in recent
             )
@@ -198,7 +204,7 @@ def do_spark_check():
     # Update state regardless of result
     state["last_spark_check"] = datetime.now().isoformat()
     state["spark_memory_lines"] = get_memory_size()
-    save_state(state)
+    save_state(state, user_id=user_id)
 
     if not result:
         return
@@ -223,9 +229,9 @@ def do_spark_check():
 
     # Append spark to daily digest
     _append_to_daily_feed("mira", "Spark", thought[:2000],
-                         source="spark-check", tags=["mira", "spark"])
+                         source="spark-check", tags=["mira", "spark"], user_id=user_id)
 
     state[f"sparks_{today}"] = state.get(f"sparks_{today}", 0) + 1
-    save_state(state)
+    save_state(state, user_id=user_id)
 
     log.info("Spark sent to WA: %s", thought[:80])

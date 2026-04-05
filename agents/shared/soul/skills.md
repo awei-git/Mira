@@ -1194,5 +1194,3 @@ When a task requires producing a file output, the agent must verify the output f
 2. After writing, confirm the file exists at that exact absolute path.
 3. If the file does not exist post-write, treat it as a task failure — do not return success.
 4. In test contexts especially, use `tmp_path / 'task' / 'output.md'` style construction and verify each path segment exists.
-
----

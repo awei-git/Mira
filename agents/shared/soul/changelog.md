@@ -12,3 +12,6 @@
 - [2026-04-05 12:55] SAVE_READING_NOTE 2026-04-05_3-agent-不问因为没有不问的代价.md: **3. Agent 不问，因为没有不问的代价**
 - [2026-04-05 13:30] WIKI_CREATE agent-architecture-reliability: Agent 架构与可靠性
 - [2026-04-05 13:36] SAVE_SKILL verify-output-path-before-task-completion.md: verify-output-path-before-task-completion
+- [2026-04-05 13:44] SAVE_READING_NOTE 2026-04-05_1.md: **1.**
+- [2026-04-05 13:44] SAVE_READING_NOTE 2026-04-05_2.md: **2.**
+- [2026-04-05 13:44] SAVE_READING_NOTE 2026-04-05_3.md: **3.**

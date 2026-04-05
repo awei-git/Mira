@@ -19,6 +19,9 @@ from config import (
 )
 from sub_agent import claude_think
 from mira import Mira
+from user_paths import (
+    user_reading_notes_dir, user_soul_question_history_file, normalize_user_id,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,30 +37,41 @@ STATE_FILE = SOUL_DIR / "soul_questions_history.json"
 MAX_HISTORY = 60
 
 
-def _load_history() -> list[str]:
-    if not STATE_FILE.exists():
+def _history_file(user_id: str = "ang") -> Path:
+    uid = normalize_user_id(user_id)
+    if uid == "ang":
+        return STATE_FILE
+    return user_soul_question_history_file(uid)
+
+
+def _load_history(user_id: str = "ang") -> list[str]:
+    history_file = _history_file(user_id)
+    if not history_file.exists():
         return []
     try:
-        data = json.loads(STATE_FILE.read_text("utf-8"))
+        data = json.loads(history_file.read_text("utf-8"))
         return data.get("questions", [])
     except (json.JSONDecodeError, OSError):
         return []
 
 
-def _save_history(questions: list[str]):
+def _save_history(questions: list[str], user_id: str = "ang"):
     # Trim to max
     trimmed = questions[-MAX_HISTORY:]
-    STATE_FILE.write_text(
+    history_file = _history_file(user_id)
+    history_file.parent.mkdir(parents=True, exist_ok=True)
+    history_file.write_text(
         json.dumps({"questions": trimmed}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
 
-def _load_recent_reading_notes(max_notes: int = 5) -> str:
+def _load_recent_reading_notes(max_notes: int = 5, user_id: str = "ang") -> str:
     """Load the most recent reading notes for context."""
-    if not READING_NOTES_DIR.exists():
+    notes_dir = user_reading_notes_dir(user_id)
+    if not notes_dir.exists():
         return ""
-    notes = sorted(READING_NOTES_DIR.glob("*.md"), reverse=True)[:max_notes]
+    notes = sorted(notes_dir.glob("*.md"), reverse=True)[:max_notes]
     parts = []
     for note in notes:
         try:
@@ -86,9 +100,9 @@ def _load_memory_snippet() -> str:
         return ""
 
 
-def generate_soul_question(history: list[str]) -> str:
+def generate_soul_question(history: list[str], user_id: str = "ang") -> str:
     """Ask Claude to generate a deep, non-repetitive soul question."""
-    recent_notes = _load_recent_reading_notes()
+    recent_notes = _load_recent_reading_notes(user_id=user_id)
     worldview = _load_worldview_snippet()
     memory = _load_memory_snippet()
     history_block = "\n".join(f"- {q}" for q in history[-20:]) if history else "（暂无历史问题）"
@@ -133,9 +147,9 @@ def generate_soul_question(history: list[str]) -> str:
     return result.strip()
 
 
-def send_to_user(question_text: str):
+def send_to_user(question_text: str, user_id: str = "ang"):
     """Send the soul question to WA via the Mira bridge (as a discussion)."""
-    bridge = Mira(MIRA_DIR)
+    bridge = Mira(MIRA_DIR, user_id=user_id)
     today = datetime.now().strftime("%Y-%m-%d")
     disc_id = f"soul_question_{today.replace('-', '')}"
 

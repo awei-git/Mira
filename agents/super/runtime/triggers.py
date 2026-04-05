@@ -14,14 +14,14 @@ from pathlib import Path
 log = logging.getLogger("mira")
 
 
-def _load_state():
+def _load_state(user_id: str | None = None):
     from core import load_state
-    return load_state()
+    return load_state(user_id=user_id)
 
 
-def _save_state(state):
+def _save_state(state, user_id: str | None = None):
     from core import save_state
-    save_state(state)
+    save_state(state, user_id=user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ def should_explore() -> dict | None:
     return {"sources": chosen_sources, "label": label, "group_idx": chosen_idx}
 
 
-def should_journal() -> bool:
+def should_journal(user_id: str | None = None) -> bool:
     """Check if it's time for the daily journal (once per day, around JOURNAL_TIME)."""
     now = datetime.now()
     scheduled = datetime.combine(now.date(), JOURNAL_TIME)
@@ -117,7 +117,7 @@ def should_journal() -> bool:
     if delta < 0 or delta > 60:
         return False
 
-    state = _load_state()
+    state = _load_state(user_id=user_id)
     journal_key = f"journal_{now.strftime('%Y-%m-%d')}"
     return not state.get(journal_key)
 
@@ -136,7 +136,7 @@ def should_research() -> bool:
     return not state.get(key)
 
 
-def should_skill_study() -> dict | None:
+def should_skill_study(user_id: str | None = None) -> dict | None:
     """Check if it's time for daily skill study. Returns group info or None.
 
     Alternates between video and photo study sessions.
@@ -152,7 +152,7 @@ def should_skill_study() -> dict | None:
     if now < scheduled:
         return None
 
-    state = _load_state()
+    state = _load_state(user_id=user_id)
     today = now.strftime("%Y-%m-%d")
 
     # Check cooldown
@@ -199,7 +199,7 @@ def should_analyst() -> str | None:
     return None
 
 
-def should_reflect() -> bool:
+def should_reflect(user_id: str | None = None) -> bool:
     """Check if it's time for weekly reflection."""
     now = datetime.now()
     if now.weekday() != REFLECT_DAY:
@@ -210,7 +210,7 @@ def should_reflect() -> bool:
     if delta > 60:  # 1 hour window for reflect
         return False
 
-    state = _load_state()
+    state = _load_state(user_id=user_id)
     last = state.get("last_reflect", "")
     if last:
         last_dt = datetime.fromisoformat(last)
@@ -233,7 +233,7 @@ def should_zhesi() -> bool:
     return not state.get(f"zhesi_{now.strftime('%Y-%m-%d')}")
 
 
-def should_soul_question() -> bool:
+def should_soul_question(user_id: str | None = None) -> bool:
     """Check if it's time for the daily soul question."""
     now = datetime.now()
     scheduled = datetime.combine(now.date(), SOUL_QUESTION_TIME)
@@ -242,7 +242,7 @@ def should_soul_question() -> bool:
     if delta < 0 or delta > 60:
         return False
 
-    state = _load_state()
+    state = _load_state(user_id=user_id)
     return not state.get(f"soul_question_{now.strftime('%Y-%m-%d')}")
 
 
@@ -358,7 +358,7 @@ def should_post_notes() -> bool:
     return True
 
 
-def should_spark_check() -> bool:
+def should_spark_check(user_id: str | None = None) -> bool:
     """Decide whether to run a spark check this cycle.
 
     Not time-scheduled — runs based on accumulated input:
@@ -366,7 +366,7 @@ def should_spark_check() -> bool:
     - At least 1 new briefing or reading note since last check
     - Max 2 proactive messages per day (don't be annoying)
     """
-    state = _load_state()
+    state = _load_state(user_id=user_id)
     today = datetime.now().strftime("%Y-%m-%d")
 
     # Max 2 per day

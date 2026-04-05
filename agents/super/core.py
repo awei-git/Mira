@@ -118,7 +118,25 @@ def should_shutdown() -> bool:
 # State management (tracks when we last ran each mode)
 # ---------------------------------------------------------------------------
 
-def load_state() -> dict:
+_LEGACY_USER_STATE_EXACT_KEYS = {
+    "last_reflect",
+    "last_skill_study",
+    "last_spark_check",
+    "spark_memory_lines",
+    "last_comment_check",
+    "last_growth_cycle",
+    "last_notes_cycle",
+}
+
+_LEGACY_USER_STATE_PREFIXES = (
+    "journal_",
+    "skill_study_",
+    "sparks_",
+    "spontaneous_idea_",
+)
+
+
+def _load_state_raw() -> dict:
     if STATE_FILE.exists():
         try:
             return json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -127,19 +145,64 @@ def load_state() -> dict:
     return {}
 
 
-def save_state(state: dict):
+def _locked_state_write(update_fn):
     lock_file = STATE_FILE.with_suffix(".lock")
     try:
         with open(lock_file, "w") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
             try:
+                state = _load_state_raw()
+                new_state = update_fn(state)
                 STATE_FILE.write_text(
-                    json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
+                    json.dumps(new_state, indent=2, ensure_ascii=False), encoding="utf-8"
                 )
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
     except BlockingIOError:
         log.warning("State file locked by another process, skipping save")
+
+
+def _is_legacy_user_state_key(key: str) -> bool:
+    return key in _LEGACY_USER_STATE_EXACT_KEYS or any(
+        key.startswith(prefix) for prefix in _LEGACY_USER_STATE_PREFIXES
+    )
+
+
+def load_state(user_id: str | None = None) -> dict:
+    state = _load_state_raw()
+    if not user_id:
+        return state
+
+    users = state.get("users", {})
+    if isinstance(users, dict):
+        user_state = users.get(user_id)
+        if isinstance(user_state, dict):
+            return dict(user_state)
+
+    # Backward compatibility: first per-user read can still see migrated keys
+    # from the old flat state file until that user writes its own namespace.
+    if user_id != "ang":
+        return {}
+    return {
+        key: value for key, value in state.items()
+        if _is_legacy_user_state_key(key)
+    }
+
+
+def save_state(state: dict, user_id: str | None = None):
+    if not user_id:
+        _locked_state_write(lambda _old_state: state)
+        return
+
+    def _update(raw_state: dict) -> dict:
+        users = raw_state.get("users")
+        if not isinstance(users, dict):
+            users = {}
+        users[user_id] = state
+        raw_state["users"] = users
+        return raw_state
+
+    _locked_state_write(_update)
 
 
 # ---------------------------------------------------------------------------
@@ -290,14 +353,18 @@ def do_talk():
     all_bridges = Mira.for_all_users()
     bridge = all_bridges[0]  # default (ang) for legacy code paths
     bridges_by_user = {b.user_id: b for b in all_bridges}
+    default_bridge = bridges_by_user.get("ang", all_bridges[0])
     task_mgr = TaskManager()
 
-    # Heartbeat (global, shared across users)
-    bridge.heartbeat(agent_status=task_mgr.get_status_summary())
+    # Heartbeat is shared state, but publish it to every user bridge.
+    status_summary = task_mgr.get_status_summary()
+    for user_bridge in all_bridges:
+        user_bridge.heartbeat(agent_status=status_summary)
 
     # --- Phase A: Collect results from previously dispatched tasks ---
     completed = task_mgr.check_tasks()
     for rec in completed:
+        bridge = bridges_by_user.get(getattr(rec, "user_id", "ang"), default_bridge)
         content = task_mgr.get_reply_content(rec)
         footer = _status_footer(task_mgr)
         # Comment threads: reply is in .reply.json sidecar ONLY (written by task_worker).
@@ -505,117 +572,129 @@ def do_talk():
                               content=todo_title, thread_id=req_id)
                 _dispatch_or_requeue(task_mgr, user_bridge, msg, workspace)
 
-    # Reset bridge to default user for legacy code
-    bridge = bridges_by_user.get("ang", all_bridges[0])
-
     # --- Phase B2: Dispatch legacy inbox messages to background workers ---
-    messages = bridge.poll()
-    if not messages:
-        log.info("Mira: no new messages (active tasks: %d)", task_mgr.get_active_count())
-        return
-
-    # External input arrived — partial-reset emptiness (external takes priority)
-    try:
-        from emptiness import on_external_input
-        on_external_input()
-    except ImportError:
-        pass
-
-    for msg, msg_path in messages:
-        # Skip if already dispatched (e.g. from a previous cycle)
-        if task_mgr.is_dispatched(msg.id):
-            log.info("Mira [%s] already dispatched, skipping", msg.id)
-            bridge.mark_processed(msg_path)
+    legacy_messages_found = False
+    legacy_busy = False
+    for bridge in all_bridges:
+        if legacy_busy:
+            break
+        messages = bridge.poll()
+        if not messages:
             continue
+        legacy_messages_found = True
 
-        log.info("Mira [%s] from %s: %s", msg.id, msg.sender, msg.content[:80])
+        # External input arrived — partial-reset emptiness (external takes priority)
+        try:
+            from emptiness import on_external_input
+            on_external_input(user_id=bridge.user_id)
+        except ImportError:
+            pass
 
-        # Handle meta-commands (archive, status, etc.)
-        if _is_meta_command(msg.content):
-            _handle_meta_command(bridge, msg, msg_path, task_mgr=task_mgr)
-            continue
+        for msg, msg_path in messages:
+            # Ensure worker/runtime sees the correct user even on legacy inbox flows.
+            msg.user_id = getattr(msg, "user_id", bridge.user_id) or bridge.user_id
 
-        # --- Retry / follow-up on existing task ---
-        # When iOS sends a follow-up, thread_id = original task_id
-        if msg.thread_id:
-            old_rec = task_mgr.find_failed_task(msg.thread_id)
-            if old_rec:
-                log.info("Mira [%s] is a retry/follow-up for task %s", msg.id, msg.thread_id)
-                # Reuse the original workspace
-                msg_workspace = Path(old_rec.workspace) if old_rec.workspace else TASKS_DIR / _talk_slug(msg.content, msg.thread_id)
-                # Remove old record so dispatch() won't see it as busy
-                task_mgr.reset_for_retry(msg.thread_id)
-                bridge.ack(msg.id, "received")
-                bridge.update_task_status(msg.thread_id, "working")
-                # Use original task_id for dispatch (overwrite msg.id)
-                msg.id = msg.thread_id
-                task_id = task_mgr.dispatch(msg, msg_workspace)
-                if task_id:
-                    bridge.ack(msg.id, "processing")
-                    bridge.mark_processed(msg_path)
-                elif task_mgr.is_busy():
-                    log.info("Mira [%s] retry queued (agent busy)", msg.id)
-                    break
-                else:
-                    bridge.reply(msg.id, msg.sender, "重试分发失败，请稍后再试。",
-                                thread_id=msg.thread_id)
-                    bridge.mark_processed(msg_path)
+            # Skip if already dispatched (e.g. from a previous cycle)
+            if task_mgr.is_dispatched(msg.id):
+                log.info("Mira [%s] already dispatched, skipping", msg.id)
+                bridge.mark_processed(msg_path)
                 continue
 
-        # If iOS already created a task file for this thread, reuse it
-        # (thread_id can be "task_xxx" or a hex ID like "a189fed4")
-        if msg.thread_id and bridge.task_exists(msg.thread_id):
-            effective_task_id = msg.thread_id
-        else:
-            effective_task_id = msg.id
+            log.info("Mira [%s] from %s: %s", msg.id, msg.sender, msg.content[:80])
 
-        # Each message gets its own workspace under Mira/tasks/
-        slug = _talk_slug(msg.content, effective_task_id)
-        msg_workspace = TASKS_DIR / slug
+            # Handle meta-commands (archive, status, etc.)
+            if _is_meta_command(msg.content):
+                _handle_meta_command(bridge, msg, msg_path, task_mgr=task_mgr)
+                continue
 
-        bridge.ack(msg.id, "received")
+            # --- Retry / follow-up on existing task ---
+            # When iOS sends a follow-up, thread_id = original task_id
+            if msg.thread_id:
+                old_rec = task_mgr.find_failed_task(msg.thread_id)
+                if old_rec:
+                    log.info("Mira [%s] is a retry/follow-up for task %s", msg.id, msg.thread_id)
+                    # Reuse the original workspace
+                    msg_workspace = Path(old_rec.workspace) if old_rec.workspace else TASKS_DIR / _talk_slug(msg.content, msg.thread_id)
+                    # Remove old record so dispatch() won't see it as busy
+                    task_mgr.reset_for_retry(msg.thread_id)
+                    bridge.ack(msg.id, "received")
+                    bridge.update_task_status(msg.thread_id, "working")
+                    # Use original task_id for dispatch (overwrite msg.id)
+                    msg.id = msg.thread_id
+                    task_id = task_mgr.dispatch(msg, msg_workspace)
+                    if task_id:
+                        bridge.ack(msg.id, "processing")
+                        bridge.mark_processed(msg_path)
+                    elif task_mgr.is_busy():
+                        log.info("Mira [%s] retry queued (agent busy)", msg.id)
+                        legacy_busy = True
+                        break
+                    else:
+                        bridge.reply(msg.id, msg.sender, "重试分发失败，请稍后再试。",
+                                    thread_id=msg.thread_id)
+                        bridge.mark_processed(msg_path)
+                    continue
 
-        if effective_task_id == msg.id:
-            # No iOS task file — create one
-            task_title = msg.content[:50].strip()
-            bridge.create_task(
-                task_id=msg.id,
-                title=task_title,
-                first_message=msg.content,
-                sender=msg.sender,
-            )
-        else:
-            # Existing task — append the follow-up message and reopen
-            bridge.append_task_message(effective_task_id, msg.sender, msg.content)
-            bridge.update_task_status(effective_task_id, "queued")
+            # If iOS already created a task file for this thread, reuse it
+            # (thread_id can be "task_xxx" or a hex ID like "a189fed4")
+            if msg.thread_id and bridge.task_exists(msg.thread_id):
+                effective_task_id = msg.thread_id
+            else:
+                effective_task_id = msg.id
 
-        # Use the effective task_id for dispatch
-        msg.id = effective_task_id
+            # Each message gets its own workspace under Mira/tasks/
+            slug = _talk_slug(msg.content, effective_task_id)
+            msg_workspace = TASKS_DIR / slug
 
-        # Dispatch to background worker (returns immediately)
-        # Only one Claude Code instance at a time — if busy, leave message for next cycle
-        task_id = task_mgr.dispatch(msg, msg_workspace)
-        if task_id:
-            bridge.ack(msg.id, "processing")
-            bridge.update_task_status(effective_task_id, "working")
-            bridge.mark_processed(msg_path)
-        elif task_mgr.is_busy():
-            # Busy — don't mark processed, will retry next launchd cycle
-            log.info("Mira [%s] queued (agent busy)", msg.id)
-            break  # no point trying more messages
-        else:
-            # Actual dispatch failure
-            bridge.reply(msg.id, msg.sender, "任务分发失败，请稍后重试。",
-                        thread_id=msg.thread_id)
-            bridge.ack(msg.id, "error")
-            bridge.mark_processed(msg_path)
+            bridge.ack(msg.id, "received")
+
+            if effective_task_id == msg.id:
+                # No iOS task file — create one
+                task_title = msg.content[:50].strip()
+                bridge.create_task(
+                    task_id=msg.id,
+                    title=task_title,
+                    first_message=msg.content,
+                    sender=msg.sender,
+                )
+            else:
+                # Existing task — append the follow-up message and reopen
+                bridge.append_task_message(effective_task_id, msg.sender, msg.content)
+                bridge.update_task_status(effective_task_id, "queued")
+
+            # Use the effective task_id for dispatch
+            msg.id = effective_task_id
+
+            # Dispatch to background worker (returns immediately)
+            # Only one Claude Code instance at a time — if busy, leave message for next cycle
+            task_id = task_mgr.dispatch(msg, msg_workspace)
+            if task_id:
+                bridge.ack(msg.id, "processing")
+                bridge.update_task_status(effective_task_id, "working")
+                bridge.mark_processed(msg_path)
+            elif task_mgr.is_busy():
+                # Busy — don't mark processed, will retry next launchd cycle
+                log.info("Mira [%s] queued (agent busy)", msg.id)
+                legacy_busy = True
+                break  # no point trying more messages
+            else:
+                # Actual dispatch failure
+                bridge.reply(msg.id, msg.sender, "任务分发失败，请稍后重试。",
+                            thread_id=msg.thread_id)
+                bridge.ack(msg.id, "error")
+                bridge.mark_processed(msg_path)
+
+    if not legacy_messages_found:
+        log.info("Mira: no new messages (active tasks: %d)", task_mgr.get_active_count())
 
     # Periodic cleanup
-    bridge.cleanup_old(days=CLEANUP_DAYS)
+    for bridge in all_bridges:
+        bridge.cleanup_old(days=CLEANUP_DAYS)
     task_mgr.cleanup_old_records(max_age_days=7)
 
     # Sweep stuck items — safety net for all other bugs
-    _sweep_stuck_items(bridge, task_mgr)
+    for bridge in all_bridges:
+        _sweep_stuck_items(bridge, task_mgr)
 
 
 def _check_pending_publish():
@@ -1726,9 +1805,9 @@ def main():
     elif command == "research":
         do_research()
     elif command == "zhesi":
-        do_zhesi()
+        do_zhesi(user_id=flags.get("user", "ang"))
     elif command == "soul-question":
-        do_soul_question()
+        do_soul_question(user_id=flags.get("user", "ang"))
     elif command == "autowrite-check":
         do_autowrite_check()
     elif command == "autowrite-run":
@@ -1747,7 +1826,7 @@ def main():
     elif command == "notes-cycle":
         do_notes_cycle()
     elif command == "spark-check":
-        do_spark_check()
+        do_spark_check(user_id=flags.get("user", "ang"))
     elif command == "idle-think":
         do_idle_think(user_id=flags.get("user", "ang"))
     elif command == "daily-report":
