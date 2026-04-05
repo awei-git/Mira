@@ -392,7 +392,8 @@ function renderDetail(id, scrollToBottom) {
     let c = m.content;
     if(m.kind==='status_card'){try{c='⚙️ '+JSON.parse(c).text}catch(e){}}
     const t = m.timestamp ? new Date(m.timestamp).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '';
-    return `<div class="msg ${cls}">${renderMd(c)}<div class="msg-time">${t}</div></div>`;
+    const img = m.image_path ? `<img src="/api/${currentUser}/artifacts/${m.image_path}" style="max-width:100%;border-radius:8px;margin-bottom:6px;cursor:pointer" onclick="window.open(this.src)" onerror="this.style.display='none'">` : '';
+    return `<div class="msg ${cls}">${img}${renderMd(c)}<div class="msg-time">${t}</div></div>`;
   }).join('');
   // Only auto-scroll if: explicitly requested, first render, or new messages arrived
   const newCount = el.children.length;

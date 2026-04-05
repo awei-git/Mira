@@ -583,9 +583,8 @@ def _deliver_to_bridge(book: dict, report: str, day: int, angle_name: str):
         if book.get("author"):
             title += f" — {book['author']}"
 
-        bridge.create_discussion(
+        bridge.create_feed(
             item_id, title, report,
-            sender="agent",
             tags=["mira", "book-review", "reading", f"day-{day}"],
         )
         log.info("Report delivered to bridge: %s", item_id)

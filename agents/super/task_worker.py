@@ -28,7 +28,7 @@ import shutil
 
 from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR, MEMORY_FILE, WORLDVIEW_FILE
 from soul_manager import (load_soul, format_soul, append_memory, save_skill,
-                         save_episode, recall_context)
+                         save_episode, recall_context, save_knowledge_note)
 from sub_agent import claude_act, claude_think, ClaudeTimeoutError
 from prompts import respond_prompt
 from writing_workflow import run_full_pipeline
@@ -1066,6 +1066,73 @@ def _validate_completion(workspace: Path, task_id: str, summary: str) -> str | N
     return None
 
 
+# ---------------------------------------------------------------------------
+# Knowledge write-back — extract reusable knowledge from task outputs
+# ---------------------------------------------------------------------------
+
+_WRITEBACK_SKIP_TAGS = {"private", "status", "greeting", "podcast", "tts", "audio"}
+_WRITEBACK_MIN_OUTPUT_CHARS = 300
+
+_WRITEBACK_EXTRACTION_PROMPT = """\
+You are reviewing the output of a completed task. Determine if it contains
+reusable factual knowledge, a technique, a useful pattern, or a non-obvious insight
+that would be worth storing permanently.
+
+## Task output (truncated):
+{output}
+
+## Instructions:
+- If the output contains reusable knowledge, respond with a JSON object:
+  {{"title": "concise title", "content": "the extracted knowledge (2-5 paragraphs, focus on what's reusable)"}}
+- If the output is routine (status update, greeting, opinion, simple lookup, creative writing),
+  respond with exactly: NONE
+- Be selective — only extract knowledge that would help answer future questions.
+"""
+
+
+def _extract_knowledge_writeback(workspace: Path, task_id: str,
+                                 tags: list[str] | None = None):
+    """Extract and persist reusable knowledge from a completed task's output.
+
+    Runs a lightweight LLM call to judge whether the output contains
+    knowledge worth storing. If so, saves it as a reading note with provenance.
+    """
+    # Skip conditions
+    if tags and _WRITEBACK_SKIP_TAGS & set(tags):
+        return
+    output_path = workspace / "output.md"
+    if not output_path.exists():
+        return
+    try:
+        output_text = output_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if len(output_text) < _WRITEBACK_MIN_OUTPUT_CHARS:
+        return
+
+    try:
+        prompt = _WRITEBACK_EXTRACTION_PROMPT.format(output=output_text[:3000])
+        result = claude_think(prompt, timeout=60, tier="light")
+        if not result or "NONE" in result[:20]:
+            return
+        # Parse JSON from response
+        # Find the JSON object in the response
+        start = result.find("{")
+        end = result.rfind("}") + 1
+        if start < 0 or end <= start:
+            return
+        extracted = json.loads(result[start:end])
+        title = extracted.get("title", "").strip()
+        content = extracted.get("content", "").strip()
+        if title and content and len(content) > 50:
+            save_knowledge_note(title, content, source_task_id=task_id)
+            log.info("Knowledge writeback: '%s' from task %s", title[:60], task_id)
+    except (json.JSONDecodeError, ClaudeTimeoutError) as e:
+        log.debug("Knowledge writeback skipped for %s: %s", task_id, e)
+    except Exception as e:
+        log.warning("Knowledge writeback failed for %s: %s", task_id, e)
+
+
 def _write_result(workspace: Path, task_id: str, status: str, summary: str,
                   tags: list[str] | None = None, agent: str | None = None):
     """Write result JSON for TaskManager to collect."""
@@ -1113,6 +1180,13 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
                     save_episode(task_id, title, messages, tags=tags)
         except Exception as e:
             log.warning("Episode archival failed for %s: %s", task_id, e)
+
+    # --- Knowledge write-back: extract reusable knowledge from successful tasks ---
+    if status == "done":
+        try:
+            _extract_knowledge_writeback(workspace, task_id, tags=tags)
+        except Exception as e:
+            log.debug("Knowledge writeback skipped: %s", e)
 
     # --- Self-iteration: extract lessons from failures ---
     if status in ("error", "failed"):

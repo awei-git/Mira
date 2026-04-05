@@ -159,6 +159,11 @@ SKILLS_INDEX = SKILLS_DIR / "index.json"
 # Self-evaluation scores
 SCORES_FILE = SOUL_DIR / "scores.json"
 
+# Knowledge changelog — append-only audit trail for all soul mutations
+CHANGELOG_FILE = SOUL_DIR / "changelog.md"
+CHANGELOG_ARCHIVE_DIR = SOUL_DIR / "changelog_archive"
+CHANGELOG_MAX_LINES = 2000
+
 # State tracking
 STATE_FILE = MIRA_ROOT / ".agent_state.json"
 

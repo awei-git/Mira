@@ -21,7 +21,7 @@ except (ImportError, ModuleNotFoundError):
 from soul_manager import (
     load_soul, format_soul, append_memory, update_interests,
     update_worldview, load_recent_reading_notes,
-    _atomic_write as atomic_write,
+    _atomic_write as atomic_write, _log_change,
 )
 from sub_agent import claude_think, claude_act
 from prompts import reflect_prompt, worldview_evolution_prompt
@@ -138,6 +138,8 @@ def _prune_worldview_by_decay():
         update_worldview(new_content)
         log.info("Worldview pruned: removed %d section(s): %s",
                  len(pruned_headings), [h[:40] for h in pruned_headings])
+        _log_change("PRUNE_WORLDVIEW", "worldview.md",
+                     f"removed {len(pruned_headings)} section(s)")
 
     # Persist updated metadata
     try:
@@ -294,6 +296,26 @@ def do_reflect():
         rebuild_memory_index()
     except Exception as e:
         log.warning("Memory index rebuild after reflect failed: %s", e)
+
+    # --- Knowledge lint: check for contradictions, stale facts, orphans ---
+    try:
+        from knowledge_lint import lint_all, generate_lint_report
+        lint_results = lint_all()
+        total_issues = sum(len(v) for k, v in lint_results.items() if isinstance(v, list))
+        if total_issues > 0:
+            report_text = generate_lint_report(lint_results)
+            lint_dir = ARTIFACTS_DIR / "lint"
+            lint_dir.mkdir(parents=True, exist_ok=True)
+            lint_path = lint_dir / f"lint_{datetime.now().strftime('%Y%m%d')}.md"
+            atomic_write(lint_path, report_text)
+            _log_change("LINT", "knowledge_system",
+                        f"{total_issues} issues found")
+            log.info("Knowledge lint: %d issues, report saved to %s",
+                     total_issues, lint_path.name)
+        else:
+            log.info("Knowledge lint: all clean")
+    except Exception as e:
+        log.warning("Knowledge lint failed: %s", e)
 
     # --- Weekly self-evaluation report to WA ---
     try:

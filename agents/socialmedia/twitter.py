@@ -517,15 +517,15 @@ def _quote_interesting_tweets(soul_context: str = ""):
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
 
-    # Max 5 quote-tweets per day, max 1 per cycle (spread across the day)
+    # Max 7 quote-tweets per day, min 30 min between quotes
     qt_today = state.get(f"quotes_{today}", 0)
-    if qt_today >= 5:
+    if qt_today >= 7:
         return
     last_quote = state.get("last_quote_at", "")
     if last_quote:
         try:
-            if (now - datetime.fromisoformat(last_quote)).total_seconds() < 3600:
-                return  # At most 1 quote per hour
+            if (now - datetime.fromisoformat(last_quote)).total_seconds() < 1800:
+                return  # At most 1 quote per 30 min
         except ValueError:
             pass
 

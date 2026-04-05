@@ -15,6 +15,7 @@ from config import (
     READING_NOTES_DIR, SKILLS_DIR, SKILLS_INDEX, SKILLS_FILE,
     MAX_MEMORY_LINES, MIRA_ROOT, CONVERSATIONS_DIR,
     EPISODES_DIR, CATALOG_FILE,
+    CHANGELOG_FILE, CHANGELOG_ARCHIVE_DIR, CHANGELOG_MAX_LINES,
 )
 
 log = logging.getLogger("mira")
@@ -81,6 +82,45 @@ def _locked_read_modify_write(path: Path, modify_fn):
             _atomic_write(path, new_content)
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+# ---------------------------------------------------------------------------
+# Knowledge changelog — append-only audit trail for all soul mutations
+# ---------------------------------------------------------------------------
+
+def _log_change(action: str, target: str, detail: str = ""):
+    """Append one line to the knowledge changelog.
+
+    Format: - [2026-04-05 14:30] ACTION target: detail
+    Archives old entries when file exceeds CHANGELOG_MAX_LINES.
+    """
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        suffix = f": {detail}" if detail else ""
+        line = f"- [{ts}] {action} {target}{suffix}\n"
+
+        def _modify(text):
+            if not text:
+                text = "# Knowledge Changelog\n\n"
+            text += line
+            lines = text.split("\n")
+            if len(lines) > CHANGELOG_MAX_LINES:
+                header = lines[:2]
+                entries = lines[2:]
+                # Archive overflow to monthly file
+                month = datetime.now().strftime("%Y-%m")
+                CHANGELOG_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+                archive_path = CHANGELOG_ARCHIVE_DIR / f"{month}.md"
+                overflow = entries[:-(CHANGELOG_MAX_LINES - 2)]
+                with open(archive_path, "a", encoding="utf-8") as f:
+                    f.write("\n".join(overflow) + "\n")
+                trimmed = entries[-(CHANGELOG_MAX_LINES - 2):]
+                text = "\n".join(header + trimmed)
+            return text
+
+        _locked_read_modify_write(CHANGELOG_FILE, _modify)
+    except Exception as e:
+        log.debug("Changelog write failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +309,7 @@ def append_memory(entry: str):
 
     _locked_read_modify_write(MEMORY_FILE, _modify)
     log.info("Memory +: %s", entry[:80])
+    _log_change("APPEND_MEMORY", "memory.md", entry[:80])
 
     # Persist to Postgres (non-blocking best-effort)
     try:
@@ -288,6 +329,7 @@ def update_memory(new_content: str):
     """Replace memory file with new content (used by reflect mode)."""
     _locked_write(MEMORY_FILE, new_content)
     log.info("Memory updated (%d lines)", new_content.count("\n"))
+    _log_change("UPDATE_MEMORY", "memory.md", f"{new_content.count(chr(10))} lines")
 
 
 def get_memory_size() -> int:
@@ -305,6 +347,7 @@ def update_interests(new_content: str):
     """Replace interests file."""
     _locked_write(INTERESTS_FILE, new_content)
     log.info("Interests updated")
+    _log_change("UPDATE_INTERESTS", "interests.md")
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +358,7 @@ def update_worldview(new_content: str):
     """Replace worldview file (used by reflect). Integrity-protected."""
     _protected_write(WORLDVIEW_FILE, new_content)
     log.info("Worldview updated (%d lines)", new_content.count("\n"))
+    _log_change("UPDATE_WORLDVIEW", "worldview.md", f"{new_content.count(chr(10))} lines")
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +374,39 @@ def save_reading_note(title: str, reflection: str):
     path = READING_NOTES_DIR / f"{today}_{slug}.md"
     _atomic_write(path, f"# Reading Note: {title}\n\n*{today}*\n\n{reflection}")
     log.info("Reading note saved: %s", path.name)
+    _log_change("SAVE_READING_NOTE", path.name, title)
+    return path
+
+
+def save_knowledge_note(title: str, content: str, source_task_id: str = "") -> Path | None:
+    """Save a knowledge write-back note with provenance.
+
+    Thin wrapper around save_reading_note that adds source tracing,
+    and persists to PostgreSQL with higher importance for recall.
+    """
+    provenance = f"*Source: task {source_task_id}*\n\n" if source_task_id else ""
+    path = save_reading_note(title, f"{provenance}{content}")
+    if not path:
+        return None
+    _log_change("KNOWLEDGE_WRITEBACK", path.name, title[:60])
+    # Persist to Postgres with elevated importance
+    try:
+        from memory_store import get_store
+        store = get_store()
+        store.remember(
+            f"{title}\n\n{content}",
+            source_type="writeback",
+            source_id=source_task_id,
+            importance=0.7,
+        )
+    except (ImportError, ModuleNotFoundError, ConnectionError, OSError) as e:
+        log.debug("Postgres writeback persist skipped: %s", e)
+    # Auto-link to related knowledge
+    try:
+        from knowledge_links import auto_link
+        auto_link(f"{title}\n\n{content}", "reading_note", path.name)
+    except Exception as e:
+        log.debug("Auto-link skipped: %s", e)
     return path
 
 
@@ -745,6 +822,7 @@ def save_skill(name: str, description: str, content: str) -> bool:
 
     _locked_read_modify_write(SKILLS_INDEX, _update_index)
     log.info("Saved skill: %s", name)
+    _log_change("SAVE_SKILL", f"{slug}.md", name)
 
     # Keep skills.md in sync
     rebuild_skills_md()
@@ -1021,6 +1099,7 @@ def save_episode(task_id: str, title: str, messages: list[dict],
     episode_text = "\n".join(lines)
     _atomic_write(path, episode_text)
     log.info("Episode saved: %s (%d messages)", filename, len(messages))
+    _log_change("SAVE_EPISODE", filename, title[:60])
 
     # Persist to Postgres for vector search (best-effort)
     try:

@@ -358,6 +358,57 @@ def _save_feed(rss: ET.Element, feed_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# README helpers
+# ---------------------------------------------------------------------------
+
+def _update_readme(repo_dir: Path, title: str, description: str, lang: str = "zh") -> None:
+    """Append a new episode row to the README episode table and push."""
+    readme_path = repo_dir / "README.md"
+    if not readme_path.exists():
+        log.warning("README.md not found in %s, skipping update", repo_dir)
+        return
+
+    readme = readme_path.read_text(encoding="utf-8")
+
+    # Find the last episode number in the table
+    episode_nums = re.findall(r"^\|\s*(\d+)\s*\|", readme, re.MULTILINE)
+    if not episode_nums:
+        log.warning("No episode table found in README, skipping update")
+        return
+    next_num = max(int(n) for n in episode_nums) + 1
+
+    # Check if this title is already in the README
+    if title in readme:
+        log.info("Episode '%s' already in README, skipping", title)
+        return
+
+    # Truncate description to first sentence for the table
+    short_desc = description.split("。")[0] if lang == "zh" else description.split(". ")[0]
+    if len(short_desc) > 120:
+        short_desc = short_desc[:117] + "..."
+
+    # Append new row after the last table line
+    last_row_pattern = r"(\|\s*\d+\s*\|[^\n]+\|[^\n]+\|)(?![\s\S]*\|\s*\d+\s*\|)"
+    match = re.search(last_row_pattern, readme)
+    if not match:
+        log.warning("Could not find last table row in README")
+        return
+
+    new_row = f"\n| {next_num} | {title} | {short_desc} |"
+    readme = readme[:match.end()] + new_row + readme[match.end():]
+    readme_path.write_text(readme, encoding="utf-8")
+
+    # Commit and push the README update
+    _run(["git", "add", "README.md"], cwd=repo_dir)
+    _run(["git", "commit", "-m", f"update README: add episode {next_num}"], cwd=repo_dir)
+    result = _run(["git", "push"], cwd=repo_dir, check=False)
+    if result.returncode != 0:
+        log.warning("README push failed: %s", result.stderr)
+    else:
+        log.info("README updated with episode %d: %s", next_num, title)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -472,6 +523,9 @@ def publish_episode(
     if result.returncode != 0:
         log.error("git push failed: %s", result.stderr)
         return None
+
+    # 5. Update README episode table
+    _update_readme(repo_dir, title, description, lang)
 
     log.info("Published to %s feed: %s", lang.upper(), feed_url)
 

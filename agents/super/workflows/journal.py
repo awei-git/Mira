@@ -226,6 +226,69 @@ def do_journal():
     except Exception as e:
         log.warning("Failed to push journal feed item: %s", e)
 
+    # --- Social media daily report (standalone, NOT inside journal) ---
+    try:
+        import json as _json
+        _tw_state_file = _AGENTS_DIR / "socialmedia" / "twitter_state.json"
+        _ns_file = _AGENTS_DIR / "socialmedia" / "notes_state.json"
+        _gs_file = _AGENTS_DIR / "socialmedia" / "growth_state.json"
+
+        report_lines = [f"# Social Media Report {today}\n"]
+
+        # X/Twitter
+        if _tw_state_file.exists():
+            _tw = _json.loads(_tw_state_file.read_text())
+            tw_today = _tw.get(f"tweets_{today}", 0)
+            qt_today = _tw.get(f"quotes_{today}", 0)
+            follows_today = _tw.get(f"follows_{today}", 0)
+            report_lines.append(f"## X/Twitter")
+            report_lines.append(f"- Tweets: {tw_today}, Quotes: {qt_today}, Follows: {follows_today}")
+            try:
+                sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
+                from twitter import get_performance_summary
+                perf = get_performance_summary(_tw)
+                if perf and "No tweet metrics" not in perf:
+                    report_lines.append(f"- Performance: {perf}")
+            except Exception:
+                pass
+            # Last 3 tweets
+            history = _tw.get("tweet_history", [])[-3:]
+            if history:
+                report_lines.append("- Recent tweets:")
+                for t in history:
+                    report_lines.append(f"  - {t.get('text', '')[:100]}")
+
+        # Substack Notes
+        if _ns_file.exists():
+            _ns = _json.loads(_ns_file.read_text())
+            notes_today = _ns.get(f"notes_{today}", 0)
+            queue_left = len(_ns.get("queue", []))
+            report_lines.append(f"\n## Substack Notes")
+            report_lines.append(f"- Posted: {notes_today}, Queue: {queue_left}")
+
+        # Substack Comments
+        if _gs_file.exists():
+            _gs = _json.loads(_gs_file.read_text())
+            comments_today = _gs.get(f"comments_{today}", 0)
+            report_lines.append(f"\n## Substack Comments")
+            report_lines.append(f"- Posted: {comments_today}")
+
+        report_lines.append(f"\n目标: X 15条, Notes 8条, Comments 5+条")
+
+        report_content = "\n".join(report_lines)
+
+        bridge = Mira()
+        report_id = f"feed_social_report_{today.replace('-', '')}"
+        if not bridge.item_exists(report_id):
+            bridge.create_item(report_id, "feed",
+                              f"Social Media Report {today}",
+                              report_content,
+                              tags=["mira", "social", "report"])
+            bridge.update_status(report_id, "done")
+        log.info("Social media daily report pushed as feed item")
+    except Exception as e:
+        log.warning("Social media daily report failed: %s", e)
+
     # --- Self-evaluation: score this journal ---
     try:
         from evaluator import evaluate_journal, record_event
