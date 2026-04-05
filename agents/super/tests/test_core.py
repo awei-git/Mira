@@ -112,6 +112,14 @@ def test_writing_agent_run_command_uses_canonical_pipeline(monkeypatch, tmp_path
     assert advanced == [workspace]
 
 
+def test_writing_agent_cmd_run_delegates_to_canonical_pipeline(monkeypatch):
+    import writing_agent
+
+    monkeypatch.setattr(writing_agent, "_run_canonical_pipeline", lambda: 7)
+
+    assert writing_agent.cmd_run() == 7
+
+
 def test_writing_agent_auto_command_uses_canonical_runner(monkeypatch):
     import writing_agent
 
@@ -134,6 +142,29 @@ def test_writing_agent_auto_command_uses_canonical_runner(monkeypatch):
         "title": "Title",
         "writing_type": "essay",
         "idea": "Idea body",
+    }
+
+
+def test_writing_agent_cmd_auto_delegates_to_canonical_runner(monkeypatch):
+    import writing_agent
+
+    captured = {}
+    monkeypatch.setattr(
+        writing_agent,
+        "_run_canonical_autowrite",
+        lambda title, writing_type, idea_content: captured.update({
+            "title": title,
+            "writing_type": writing_type,
+            "idea_content": idea_content,
+        }),
+    )
+
+    writing_agent.cmd_auto("Title", "essay", "Idea body")
+
+    assert captured == {
+        "title": "Title",
+        "writing_type": "essay",
+        "idea_content": "Idea body",
     }
 
 
