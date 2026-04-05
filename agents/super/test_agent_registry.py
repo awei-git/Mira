@@ -93,6 +93,8 @@ def test_optional_preflight_hooks_load():
     podcast_pf = r.load_preflight("podcast")
     photo_pf = r.load_preflight("photo")
     video_pf = r.load_preflight("video")
+    secret_pf = r.load_preflight("secret")
+    health_pf = r.load_preflight("health")
     general_pf = r.load_preflight("general")
 
     assert callable(writer_pf)
@@ -100,6 +102,8 @@ def test_optional_preflight_hooks_load():
     assert callable(podcast_pf)
     assert callable(photo_pf)
     assert callable(video_pf)
+    assert callable(secret_pf)
+    assert callable(health_pf)
     assert general_pf is None
 
 

@@ -568,6 +568,73 @@ def test_photo_preflight_allows_style_learning_recovery_with_new_path(tmp_path):
     assert passed is True, msg
 
 
+def test_secret_preflight_blocks_missing_explicit_file_reference(tmp_path):
+    registry = AgentRegistry()
+    preflight = registry.load_preflight("secret")
+    assert preflight is not None
+
+    workspace = tmp_path / "secret_task"
+    workspace.mkdir()
+
+    passed, msg = preflight(workspace, "task137", '@file:/definitely/missing/file.pdf 帮我总结', "ang", "thread1")
+    assert passed is False
+    assert "PREFLIGHT BLOCKED [secret]" in msg
+
+
+def test_secret_preflight_allows_plain_private_question(tmp_path):
+    registry = AgentRegistry()
+    preflight = registry.load_preflight("secret")
+    assert preflight is not None
+
+    workspace = tmp_path / "secret_task"
+    workspace.mkdir()
+
+    passed, msg = preflight(workspace, "task138", "帮我算一下今年的税务影响", "ang", "thread1")
+    assert passed is True, msg
+
+
+def test_health_preflight_blocks_missing_checkup_dir(tmp_path):
+    registry = AgentRegistry()
+    preflight = registry.load_preflight("health")
+    assert preflight is not None
+
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+
+    passed, msg = preflight(
+        workspace,
+        "task139",
+        "体检报告上传\n路径: users/ang/health/checkups/missing",
+        "ang",
+        "thread1",
+    )
+    assert passed is False
+    assert "PREFLIGHT BLOCKED [health]" in msg
+
+
+def test_health_preflight_accepts_existing_checkup_dir(tmp_path, monkeypatch):
+    registry = AgentRegistry()
+    preflight = registry.load_preflight("health")
+    assert preflight is not None
+
+    bridge = tmp_path / "bridge"
+    checkup_dir = bridge / "users" / "ang" / "health" / "checkups" / "2026-04-05"
+    checkup_dir.mkdir(parents=True)
+    (checkup_dir / "report.jpg").write_text("fake image", encoding="utf-8")
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    monkeypatch.setenv("MIRA_DIR", str(bridge))
+
+    passed, msg = preflight(
+        workspace,
+        "task140",
+        "体检报告上传\n路径: users/ang/health/checkups/2026-04-05",
+        "ang",
+        "thread1",
+    )
+    assert passed is True, msg
+
+
 def test_autowrite_approval_prefers_metadata_file(tmp_path, monkeypatch):
     import handlers_legacy
 

@@ -1,7 +1,7 @@
 """Health agent — family health monitoring, privacy-first.
 
 Tracks weight, sleep, vitals, symptoms, and checkup reports.
-All data processing uses LOCAL LLM (Ollama) only — raw health data
+All data processing uses LOCAL LLM (oMLX) only — raw health data
 never leaves localhost.
 """
 import json
@@ -12,8 +12,9 @@ from pathlib import Path
 
 log = logging.getLogger("health_agent")
 
-from config import OLLAMA_DEFAULT_MODEL, DATABASE_URL
-from sub_agent import _ollama_call
+from config import OMLX_DEFAULT_MODEL, DATABASE_URL
+from preflight import preflight_check
+from sub_agent import _omlx_call
 
 
 def handle(workspace: Path, task_id: str, content: str,
@@ -23,7 +24,7 @@ def handle(workspace: Path, task_id: str, content: str,
     """Main entry point for the health agent."""
     # Force local LLM for all health data processing (privacy boundary)
     from sub_agent import set_model_policy
-    set_model_policy("ollama")
+    set_model_policy("omlx")
     log.info("Health agent: task=%s content=%s", task_id, content[:80])
 
     from health_store import HealthStore
@@ -53,6 +54,50 @@ def handle(workspace: Path, task_id: str, content: str,
         return _handle_checkup(store, workspace, task_id, content, person)
     else:
         return _handle_query(store, workspace, task_id, content, person)
+
+
+def _extract_checkup_dir(content: str, workspace: Path) -> Path | None:
+    """Resolve the uploaded checkup directory from message content."""
+    path_line = [line for line in content.split("\n") if "路径:" in line]
+    if not path_line:
+        return None
+
+    rel_path = path_line[0].split("路径:")[-1].strip()
+    if not rel_path:
+        return None
+
+    raw_path = Path(rel_path).expanduser()
+    if raw_path.is_absolute():
+        return raw_path
+
+    bridge_path = Path(os.environ.get("MIRA_DIR", str(workspace.parent.parent)))
+    return bridge_path / rel_path
+
+
+def preflight(workspace: Path, task_id: str, content: str,
+              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+    """Block malformed health tasks before we write to the DB or bridge files."""
+    result = preflight_check(
+        "file_write",
+        {
+            "instruction": content,
+            "path": str(workspace / "output.md"),
+            "content": content.strip(),
+        },
+    )
+    if not result.passed:
+        return False, result.summary()
+
+    if any(token in content.lower() for token in ("体检", "checkup", "report")):
+        checkup_dir = _extract_checkup_dir(content, workspace)
+        if checkup_dir is not None:
+            if not checkup_dir.exists():
+                return False, f"PREFLIGHT BLOCKED [health]: 体检报告目录不存在: {checkup_dir}"
+            images = list(checkup_dir.glob("*.jpg")) + list(checkup_dir.glob("*.jpeg")) + list(checkup_dir.glob("*.png"))
+            if not images:
+                return False, f"PREFLIGHT BLOCKED [health]: 体检报告目录里没有可解析图片: {checkup_dir}"
+
+    return True, ""
 
 
 def _resolve_user_id(workspace: Path, sender: str) -> str:
@@ -105,7 +150,7 @@ Rules:
 Return ONLY the JSON object, no explanation."""
 
     try:
-        result = _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=30)
+        result = _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=30)
         # Extract JSON from response
         text = result.strip()
         if "```" in text:
@@ -223,7 +268,7 @@ def _handle_query(store, workspace: Path, task_id: str,
 - 给出实用的建议，但声明你不是医生，重要问题请咨询专业医生
 - 如果有异常趋势，明确指出"""
 
-    response = _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=60)
+    response = _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=60)
     return _write_result(workspace, task_id, response)
 
 
@@ -242,12 +287,7 @@ def _handle_checkup(store, workspace: Path, task_id: str,
 
     # Extract image paths from content
     # Content format: "体检报告上传: checkup_xxx.jpg, ...\n备注: ...\n路径: users/.../health/checkups/"
-    path_line = [l for l in content.split("\n") if "路径:" in l]
-    checkup_dir = None
-    if path_line:
-        rel_path = path_line[0].split("路径:")[-1].strip()
-        bridge_path = Path(os.environ.get("MIRA_DIR", str(workspace.parent.parent)))
-        checkup_dir = bridge_path / rel_path
+    checkup_dir = _extract_checkup_dir(content, workspace)
 
     parsed = None
     if checkup_dir and checkup_dir.exists():
@@ -360,7 +400,7 @@ def _generate_on_demand_advice(store, person: str, input_text: str,
         try:
             result = model_think(prompt, model_name="gpt5", timeout=60)
         finally:
-            set_model_policy("ollama")  # restore
+            set_model_policy("omlx")  # restore
         if result and len(result.strip()) > 30:
             return result.strip()
     except Exception as e:

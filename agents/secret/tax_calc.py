@@ -1,7 +1,7 @@
 """Local tax calculation — PDF extraction + deterministic computation.
 
 Pipeline:
-1. Ollama extracts numbers from PDF text (local LLM)
+1. oMLX extracts numbers from PDF text (local LLM)
 2. taxcalc computes federal tax (deterministic, no LLM)
 3. Returns structured results
 

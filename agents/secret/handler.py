@@ -1,7 +1,7 @@
 """Secret agent — handles privacy-sensitive tasks using LOCAL LLM only.
 
 Nothing leaves localhost. No cloud API calls. No web requests.
-Uses Ollama (qwen2.5:32b) for reasoning.
+Uses oMLX (qwen3.5-27b) for reasoning.
 
 Capabilities:
 - Text Q&A (fully private)
@@ -16,8 +16,9 @@ import logging
 import re
 from pathlib import Path
 
-from config import OLLAMA_DEFAULT_MODEL, SECRET_MAX_FILE_CHARS, SECRET_MAX_FILES
-from sub_agent import _ollama_call
+from config import OMLX_DEFAULT_MODEL, SECRET_MAX_FILE_CHARS, SECRET_MAX_FILES
+from preflight import preflight_check
+from sub_agent import _omlx_call
 
 log = logging.getLogger("secret_agent")
 
@@ -47,6 +48,18 @@ _MAX_TOTAL_FILE_CHARS = SECRET_MAX_FILE_CHARS
 _MAX_FILES = SECRET_MAX_FILES
 
 
+def _has_explicit_file_reference(query: str) -> bool:
+    """Return True when the user explicitly referenced a concrete file/path."""
+    if re.search(r'@file:\S+', query):
+        return True
+    if re.search(r'(\S+\.(?:pdf|csv|txt|xlsx?|docx?|md|json))', query, re.IGNORECASE):
+        return True
+    for match in re.findall(r'["\']([^"\']+)["\']', query):
+        if "/" in match or match.startswith("~") or Path(match).suffix:
+            return True
+    return False
+
+
 def _parse_file_intent(query: str) -> dict:
     """Use local LLM to understand what files the user is referring to.
 
@@ -64,7 +77,7 @@ Extract file location info. Return JSON only:
 
 JSON only."""
 
-    result = _ollama_call(OLLAMA_DEFAULT_MODEL, parse_prompt,
+    result = _omlx_call(OMLX_DEFAULT_MODEL, parse_prompt,
                          system="Extract file paths from natural language. JSON only.",
                          timeout=30)
     if not result:
@@ -179,6 +192,28 @@ def _find_files(query: str) -> list[Path]:
     return found[:_MAX_FILES]
 
 
+def preflight(workspace: Path, task_id: str, content: str,
+              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+    """Block empty or explicitly broken private file-analysis requests."""
+    result = preflight_check(
+        "file_write",
+        {
+            "instruction": content,
+            "path": str(workspace / "output.md"),
+            "content": content.strip(),
+        },
+    )
+    if not result.passed:
+        return False, result.summary()
+
+    if _has_explicit_file_reference(content):
+        files = _find_files(content)
+        if not files:
+            return False, "PREFLIGHT BLOCKED [secret]: 找不到你明确引用的本地文件，请提供正确路径或文件名"
+
+    return True, ""
+
+
 def _read_file(path: Path, max_chars: int = 4000) -> str:
     """Read a file's content. Only reads text-safe formats."""
     suffix = path.suffix.lower()
@@ -220,7 +255,7 @@ def _read_file(path: Path, max_chars: int = 4000) -> str:
 def handle(workspace: Path, task_id: str, content: str,
            sender: str, thread_id: str,
            thread_history: str = "", thread_memory: str = "") -> str | None:
-    """Handle a privacy-sensitive request using only local Ollama.
+    """Handle a privacy-sensitive request using only local oMLX.
 
     If the message references files, uses local LLM to parse the description,
     then reads files locally and includes content in the prompt.
@@ -235,7 +270,7 @@ def handle(workspace: Path, task_id: str, content: str,
             log.info("Tax request detected with %d PDFs — using taxcalc pipeline", len(pdf_files))
             try:
                 from tax_calc import run_tax_pipeline
-                result = run_tax_pipeline(pdf_files, OLLAMA_DEFAULT_MODEL)
+                result = run_tax_pipeline(pdf_files, OMLX_DEFAULT_MODEL)
                 if result:
                     return result
             except (ImportError, OSError) as e:
@@ -247,6 +282,9 @@ def handle(workspace: Path, task_id: str, content: str,
 
     # Find and read referenced files — ALL LOCAL, no network
     files = _find_files(content)
+    if not files and _has_explicit_file_reference(content):
+        log.error("Secret agent: explicit file reference could not be resolved")
+        return None
     if files:
         file_sections = []
         total_chars = 0
@@ -266,15 +304,15 @@ def handle(workspace: Path, task_id: str, content: str,
     prompt = content + extra
     prompt_len = len(prompt)
     log.info("Secret agent: task %s, %d chars (incl. %d files), model=%s",
-             task_id, prompt_len, len(files), OLLAMA_DEFAULT_MODEL)
+             task_id, prompt_len, len(files), OMLX_DEFAULT_MODEL)
 
     # Adjust timeout based on prompt size
     timeout = min(600, max(120, prompt_len // 50))
 
-    result = _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, system=_SYSTEM_PROMPT, timeout=timeout)
+    result = _omlx_call(OMLX_DEFAULT_MODEL, prompt, system=_SYSTEM_PROMPT, timeout=timeout)
 
     if result:
         return result
 
-    log.error("Secret agent: Ollama returned empty for task %s", task_id)
+    log.error("Secret agent: oMLX returned empty for task %s", task_id)
     return None

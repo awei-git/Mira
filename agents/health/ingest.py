@@ -55,8 +55,8 @@ def parse_checkup_pdf(pdf_path: Path, person_id: str, store) -> dict:
 
     Returns the parsed JSON dict. Also stores results in the database.
     """
-    from config import OLLAMA_DEFAULT_MODEL
-    from sub_agent import _ollama_call
+    from config import OMLX_DEFAULT_MODEL
+    from sub_agent import _omlx_call
 
     # Extract text from PDF
     text = _extract_pdf_text(pdf_path)
@@ -84,7 +84,7 @@ Report text:
 {text[:8000]}"""
 
     try:
-        result = _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=120)
+        result = _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=120)
         # Extract JSON
         text_result = result.strip()
         if "```" in text_result:
@@ -165,8 +165,8 @@ def parse_checkup_images(image_paths: list[Path], person_id: str, store) -> dict
         return {"images": [p.name for p in image_paths]}
 
     # Parse extracted text into structured data
-    from config import OLLAMA_DEFAULT_MODEL
-    from sub_agent import _ollama_call
+    from config import OMLX_DEFAULT_MODEL
+    from sub_agent import _omlx_call
 
     prompt = f"""Extract all test results from this medical checkup report.
 For each test item, extract:
@@ -187,7 +187,7 @@ Report text:
 {combined_text[:8000]}"""
 
     try:
-        result = _ollama_call(OLLAMA_DEFAULT_MODEL, prompt, timeout=120)
+        result = _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=120)
         text_result = result.strip()
         if "```" in text_result:
             text_result = text_result.split("```")[1].strip()
