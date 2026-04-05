@@ -135,3 +135,59 @@ def test_writing_agent_auto_command_uses_canonical_runner(monkeypatch):
         "writing_type": "essay",
         "idea": "Idea body",
     }
+
+
+def test_writing_agent_iterate_prefers_canonical_project(monkeypatch, tmp_path, capsys):
+    import writing_agent
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    advanced = []
+    state = {"phase": "plan_ready"}
+
+    monkeypatch.setattr(
+        writing_agent,
+        "_find_canonical_project",
+        lambda slug: (project_dir, {"phase": state["phase"]}) if slug == "proj" else None,
+    )
+    monkeypatch.setattr(
+        writing_agent,
+        "_get_canonical_writing_ops",
+        lambda: (None, lambda workspace: advanced.append(workspace)),
+    )
+    monkeypatch.setattr(
+        writing_agent,
+        "_iter_canonical_projects",
+        lambda: [(project_dir, {"phase": "draft_ready"})],
+    )
+
+    writing_agent.cmd_iterate("proj")
+
+    output = capsys.readouterr().out
+    assert "Canonical project proj: phase=plan_ready" in output
+    assert "Advanced to: draft_ready" in output
+    assert advanced == [project_dir]
+
+
+def test_writing_agent_status_lists_canonical_and_legacy(monkeypatch, tmp_path, capsys):
+    import writing_agent
+
+    monkeypatch.setattr(
+        writing_agent,
+        "_iter_canonical_projects",
+        lambda: [(tmp_path / "proj", {"phase": "draft_ready", "version": 2, "updated_at": "2026-04-05T12:00:00"})],
+    )
+    monkeypatch.setattr(writing_agent, "IDEAS_DIR", tmp_path / "ideas")
+    writing_agent.IDEAS_DIR.mkdir()
+    (writing_agent.IDEAS_DIR / "legacy.md").write_text(
+        "# Legacy\n\n---\n<!-- AUTO-MANAGED BELOW -->\n## Status\n\n- **state**: new\n",
+        encoding="utf-8",
+    )
+
+    writing_agent.cmd_status()
+
+    output = capsys.readouterr().out
+    assert "proj" in output
+    assert "draft_ready" in output
+    assert "Legacy idea files still present:" in output
+    assert "legacy: new" in output

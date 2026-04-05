@@ -9,6 +9,7 @@ Usage:
 """
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -884,47 +885,40 @@ def cmd_run():
 
 
 def cmd_status():
-    """Show status of all ideas/projects."""
+    """Show canonical writing_workflow projects and any remaining legacy ideas."""
+    canonical_projects = _iter_canonical_projects()
+    if canonical_projects:
+        print(f"\n{'Project':<35} {'Phase':<18} {'Version':<8} {'Updated'}")
+        print("-" * 85)
+        for project_dir, project in canonical_projects:
+            phase = project.get("phase", "-")
+            version = project.get("version", "-")
+            updated = project.get("updated_at", "-")
+            print(f"{project_dir.name:<35} {phase:<18} {version!s:<8} {updated}")
+        print()
+    else:
+        print("No canonical writing_workflow projects found.")
+
     IDEAS_DIR.mkdir(exist_ok=True)
     idea_files = sorted(
         f for f in IDEAS_DIR.glob("*.md") if not f.name.startswith("_")
     )
 
     if not idea_files:
-        print("No idea files found in ideas/")
         return
 
-    print(f"\n{'Idea':<35} {'State':<22} {'Round':<6} {'Last Update'}")
-    print("-" * 85)
-
+    print("Legacy idea files still present:")
     for idea_path in idea_files:
         idea = parse_idea(idea_path)
         state = idea.get("state", "new")
-        round_num = idea.get("current_round", "0")
-
-        # Find most recent timestamp
-        timestamps = []
-        for key in [
-            "scaffolded", "round_1_draft", "round_1_critique",
-            "round_1_revision", "feedback_detected",
-            "round_2_draft", "round_2_critique", "round_2_revision",
-        ]:
-            val = idea.get(key, "")
-            if val:
-                timestamps.append(val)
-
-        last_update = max(timestamps) if timestamps else "-"
-        print(f"{idea['slug']:<35} {state:<22} {round_num:<6} {last_update}")
-
-    print()
+        print(f"  {idea['slug']}: {state}")
 
 
-def cmd_iterate(slug: str):
-    """Manually advance one idea by one step."""
+def _cmd_iterate_legacy(slug: str):
+    """Legacy idea-file iterator kept for backward compatibility."""
     idea_path = IDEAS_DIR / f"{slug}.md"
 
     if not idea_path.exists():
-        # Try matching by project_dir
         for f in IDEAS_DIR.glob("*.md"):
             if f.name.startswith("_"):
                 continue
@@ -934,23 +928,49 @@ def cmd_iterate(slug: str):
                 break
 
     if not idea_path.exists():
-        print(f"No idea file found for '{slug}'")
-        print(f"Available: {[f.stem for f in IDEAS_DIR.glob('*.md') if not f.name.startswith('_')]}")
+        print(f"[legacy] No idea file found for '{slug}'")
+        print(f"[legacy] Available: {[f.stem for f in IDEAS_DIR.glob('*.md') if not f.name.startswith('_')]}")
         return
 
     idea = parse_idea(idea_path)
     state = idea.get("state", "new")
-    print(f"Current state: {state}")
+    print(f"[legacy] Current state: {state}")
 
     if advance_idea(idea):
         idea = parse_idea(idea_path)
-        print(f"Advanced to: {idea.get('state', 'unknown')}")
+        print(f"[legacy] Advanced to: {idea.get('state', 'unknown')}")
     else:
-        print("No progress made (already done, error, or awaiting feedback)")
+        print("[legacy] No progress made (already done, error, or awaiting feedback)")
 
 
-def cmd_new():
-    """Show template for creating new ideas."""
+def cmd_iterate(slug: str):
+    """Advance canonical projects when available; otherwise fall back to legacy ideas."""
+    project_match = _find_canonical_project(slug)
+    if project_match:
+        project_dir, project = project_match
+        phase = project.get("phase", "unknown")
+        print(f"Canonical project {project_dir.name}: phase={phase}")
+        if phase == "plan_ready":
+            _, advance_project = _get_canonical_writing_ops()
+            advance_project(project_dir)
+            refreshed = {
+                workspace: latest_project
+                for workspace, latest_project in _iter_canonical_projects()
+            }
+            latest = refreshed.get(project_dir, project)
+            print(f"Advanced to: {latest.get('phase', 'unknown')}")
+        elif phase == "draft_ready":
+            print("Canonical project is waiting for feedback; not advancing automatically.")
+        else:
+            print("Canonical project is not in an advanceable phase.")
+        return
+
+    print(f"No canonical project found for '{slug}', falling back to legacy idea files.")
+    _cmd_iterate_legacy(slug)
+
+
+def _cmd_new_legacy():
+    """Show template for creating legacy idea files."""
     template_path = IDEAS_DIR / "_template.md"
 
     if template_path.exists():
@@ -965,18 +985,26 @@ def cmd_new():
     if existing:
         print(f"\nExisting ideas: {existing}")
 
+
+def cmd_new():
+    """Point users to the canonical workflow while keeping legacy guidance available."""
+    print("Canonical writing does not use idea-file scaffolds anymore.")
+    print("Use the main agent path or `core.py write-from-plan` for new canonical projects.")
+    _cmd_new_legacy()
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def cmd_sync():
-    """Manually sync Apple Notes → idea files."""
+    """Sync Apple Notes for the legacy idea-file workflow only."""
+    print("Apple Notes sync is legacy-only and not part of the canonical writing workflow.")
     from notes_sync import sync_notes
     synced = sync_notes()
     if synced:
-        print(f"Synced {len(synced)} notes: {synced}")
+        print(f"[legacy] Synced {len(synced)} notes: {synced}")
     else:
-        print("No changes from Apple Notes")
+        print("[legacy] No changes from Apple Notes")
 
 
 def _get_canonical_writing_ops():
@@ -1011,6 +1039,34 @@ def _run_canonical_autowrite(title: str, writing_type: str, idea_content: str,
     log.warning("writing_agent.py auto is deprecated; delegating to canonical autowrite")
     runner = _get_canonical_autowrite_runner()
     runner(task_id, title, writing_type, idea_content)
+
+
+def _iter_canonical_projects():
+    """Return canonical writing_workflow projects from the shared workspace."""
+    from config import WORKSPACE_DIR
+
+    projects = []
+    for project_dir in sorted(WORKSPACE_DIR.iterdir()):
+        if not project_dir.is_dir():
+            continue
+        project_file = project_dir / "project.json"
+        if not project_file.exists():
+            continue
+        try:
+            project = json.loads(project_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            log.warning("Skipping canonical project %s: %s", project_dir, exc)
+            continue
+        projects.append((project_dir, project))
+    return projects
+
+
+def _find_canonical_project(slug: str):
+    """Find a canonical writing_workflow project by directory name or title."""
+    for project_dir, project in _iter_canonical_projects():
+        if project_dir.name == slug or project.get("title") == slug:
+            return project_dir, project
+    return None
 
 
 def cmd_auto(title: str, writing_type: str, idea_content: str):
