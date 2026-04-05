@@ -33,7 +33,7 @@ from config import (
     MIRA_DIR, ARTIFACTS_DIR, CLEANUP_DAYS,
     JOURNAL_DIR, WRITINGS_OUTPUT_DIR, WRITINGS_DIR,
     validate_config,
-    get_user_config, is_agent_allowed, get_model_restriction, should_filter_content,
+    get_known_user_ids, get_user_config, is_agent_allowed, get_model_restriction, should_filter_content,
 )
 try:
     from mira import Mira, Message
@@ -41,7 +41,7 @@ except (ImportError, ModuleNotFoundError):
     Mira = None
     Message = None
 from task_manager import TaskManager, TASKS_DIR
-from soul_manager import load_soul, format_soul, append_memory
+from soul_manager import load_soul, format_soul, append_memory, check_prompt_injection
 from sub_agent import claude_think
 from writing_workflow import (
     check_writing_responses, advance_project, start_from_plan,
@@ -245,6 +245,40 @@ def _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd=None):
         return "failed"
 
 
+def _quarantine_inbound_command(bridge, cmd: dict, item_id: str, title: str,
+                                content: str, reason: str):
+    """Record and block a suspicious inbound command before task dispatch."""
+    log.warning("Inbound command quarantined: item=%s reason=%s", item_id or "-", reason)
+    quarantine_error = {
+        "code": "prompt_injection_blocked",
+        "message": f"Blocked suspicious input: {reason}",
+        "retryable": False,
+    }
+
+    if item_id:
+        if not bridge.item_exists(item_id):
+            bridge.create_task(
+                item_id,
+                title or item_id,
+                content or "",
+                sender=cmd.get("sender", "user"),
+                tags=["security", "quarantined"],
+                origin="user",
+            )
+        bridge.update_status(item_id, "failed", error=quarantine_error)
+        bridge.set_tags(item_id, ["security", "quarantined"])
+
+
+def _check_inbound_command_safety(bridge, cmd: dict, item_id: str, title: str,
+                                  content: str) -> bool:
+    """Return True when an inbound command is safe to dispatch."""
+    flagged, reason = check_prompt_injection(content)
+    if not flagged:
+        return True
+    _quarantine_inbound_command(bridge, cmd, item_id, title, content, reason)
+    return False
+
+
 def do_talk():
     """Process Mira messages: dispatch new tasks + collect completed results.
 
@@ -342,6 +376,8 @@ def do_talk():
             if cmd_type == "new_request":
                 task_id = cmd.get("item_id") or f"req_{uuid.uuid4().hex[:8]}"
                 quick = cmd.get("quick", False)
+                if not _check_inbound_command_safety(bridge, cmd, task_id, title, content):
+                    continue
                 if not bridge.item_exists(task_id):
                     bridge.create_task(task_id, title, content, sender=sender, tags=tags, origin="user")
                 workspace = TASKS_DIR / _talk_slug(content, task_id)
@@ -352,6 +388,8 @@ def do_talk():
                     break
             elif cmd_type == "new_discussion":
                 disc_id = cmd.get("item_id") or f"disc_{uuid.uuid4().hex[:8]}"
+                if not _check_inbound_command_safety(bridge, cmd, disc_id, title, content):
+                    continue
                 if not bridge.item_exists(disc_id):
                     bridge.create_discussion(disc_id, title, content, sender=sender, tags=tags)
                 workspace = TASKS_DIR / _talk_slug(content, disc_id)
@@ -361,6 +399,8 @@ def do_talk():
                 if result == "busy":
                     break
             elif cmd_type == "reply" and item_id:
+                if not _check_inbound_command_safety(bridge, cmd, item_id, title, content):
+                    continue
                 bridge.append_message(item_id, sender, content)
                 # Photo daily feedback — handle inline, no task dispatch needed
                 if item_id.startswith("photo_daily_"):
@@ -387,6 +427,8 @@ def do_talk():
             elif cmd_type == "recall":
                 query = cmd.get("query", content or "")
                 recall_id = f"req_recall_{uuid.uuid4().hex[:8]}"
+                if not _check_inbound_command_safety(bridge, cmd, recall_id, f"Recall: {query[:40]}", query):
+                    continue
                 bridge.create_task(recall_id, f"Recall: {query[:40]}", query,
                                    sender=sender, tags=["recall"], origin="user")
                 workspace = TASKS_DIR / _talk_slug(query, recall_id)
@@ -414,6 +456,9 @@ def do_talk():
             elif cmd_type == "todo_followup":
                 todo_id = cmd.get("todo_id", "") or cmd.get("item_id", "")
                 if todo_id and content:
+                    req_id = f"req_{todo_id}"
+                    if not _check_inbound_command_safety(bridge, cmd, req_id, f"Todo: {title}", content):
+                        continue
                     # Save user followup to todo
                     bridge.add_followup(todo_id, content, source="user")
                     bridge.update_todo(todo_id, status="working")
@@ -425,7 +470,6 @@ def do_talk():
                             for fu in todo.get("followups", [])
                         )
                         full_content = f"Todo: {todo['title']}\n\nConversation so far:\n{history}\n\nUser's latest message:\n{content}"
-                        req_id = f"req_{todo_id}"
                         if not bridge.item_exists(req_id):
                             bridge.create_task(req_id, f"Todo: {todo['title']}", full_content,
                                                sender=sender, tags=["todo"], origin="user")
@@ -1243,30 +1287,34 @@ def _run_inline_scheduled_job(job, payload):
 def _dispatch_scheduled_jobs(session_new: list[dict]):
     """Run the declarative background scheduler using runtime.jobs."""
     for job in sorted(get_jobs(), key=lambda item: item.priority):
-        payload = evaluate_job_payload(job)
-        if not payload:
-            continue
+        target_user_ids = get_known_user_ids() if getattr(job, "per_user", False) else [None]
+        for target_user_id in target_user_ids:
+            payload = evaluate_job_payload(job, user_id=target_user_id)
+            if not payload:
+                continue
 
-        if job.inline:
-            try:
-                _run_inline_scheduled_job(job, payload)
-            except Exception as e:
-                log.error("%s failed: %s", job.name, e)
-            continue
+            if job.inline:
+                try:
+                    _run_inline_scheduled_job(job, payload)
+                except Exception as e:
+                    log.error("%s failed: %s", job.name, e)
+                continue
 
-        bg_name, cmd = build_job_dispatch(
-            job,
-            payload,
-            python_executable=sys.executable,
-            core_path=str(Path(__file__).resolve()),
-        )
-        _dispatch_background(bg_name, cmd)
-
-        session_meta = build_job_session_record(job, payload)
-        if session_meta:
-            session_new.append(
-                session_record(session_meta["action"], session_meta.get("detail", ""))
+            bg_name, cmd = build_job_dispatch(
+                job,
+                payload,
+                python_executable=sys.executable,
+                core_path=str(Path(__file__).resolve()),
+                user_id=target_user_id,
             )
+            _dispatch_background(bg_name, cmd)
+
+            session_meta = build_job_session_record(job, payload)
+            if session_meta:
+                detail = session_meta.get("detail", "")
+                if target_user_id:
+                    detail = f"{target_user_id}:{detail}" if detail else target_user_id
+                session_new.append(session_record(session_meta["action"], detail))
 
 
 # ---------------------------------------------------------------------------
@@ -1670,9 +1718,9 @@ def main():
         slot = flags.get("slot", "")
         do_explore(source_names=sources, slot_name=slot)
     elif command == "reflect":
-        do_reflect()
+        do_reflect(user_id=flags.get("user", "ang"))
     elif command == "journal":
-        do_journal()
+        do_journal(user_id=flags.get("user", "ang"))
     elif command == "analyst":
         do_analyst(slot=flags.get("slot", ""))
     elif command == "research":
@@ -1701,7 +1749,7 @@ def main():
     elif command == "spark-check":
         do_spark_check()
     elif command == "idle-think":
-        do_idle_think()
+        do_idle_think(user_id=flags.get("user", "ang"))
     elif command == "daily-report":
         do_daily_report()
     elif command == "assess":
@@ -1722,7 +1770,7 @@ def main():
         do_daily_photo()
     elif command == "skill-study":
         group_idx = int(flags.get("group", "0"))
-        do_skill_study(group_idx=group_idx)
+        do_skill_study(group_idx=group_idx, user_id=flags.get("user", "ang"))
     elif command == "write-check":
         # List active writing projects
         responses = check_writing_responses()

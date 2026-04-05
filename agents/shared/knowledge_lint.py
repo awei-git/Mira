@@ -113,7 +113,7 @@ def _text_similarity(a: str, b: str) -> float:
     return len(intersection) / len(union) if union else 0.0
 
 
-def _check_contradictions_via_db() -> list[dict]:
+def _check_contradictions_via_db(user_id: str = "ang") -> list[dict]:
     """Find potential contradictions using vector similarity in PostgreSQL.
 
     Looks for entry pairs with high semantic similarity that may conflict.
@@ -128,17 +128,35 @@ def _check_contradictions_via_db() -> list[dict]:
 
         # Query for pairs with high cosine similarity
         cur = store.conn.cursor()
-        cur.execute("""
-            SELECT a.id, a.content, b.id, b.content,
-                   1 - (a.embedding <=> b.embedding) AS similarity
-            FROM episodic_memory a, episodic_memory b
-            WHERE a.id < b.id
-              AND a.embedding IS NOT NULL
-              AND b.embedding IS NOT NULL
-              AND 1 - (a.embedding <=> b.embedding) > 0.85
-            ORDER BY similarity DESC
-            LIMIT 20
-        """)
+        has_user_id = getattr(store, "_table_has_column", lambda *args, **kwargs: False)(
+            "episodic_memory", "user_id"
+        )
+        if has_user_id:
+            cur.execute("""
+                SELECT a.id, a.content, b.id, b.content,
+                       1 - (a.embedding <=> b.embedding) AS similarity
+                FROM episodic_memory a, episodic_memory b
+                WHERE a.id < b.id
+                  AND a.user_id = %s
+                  AND b.user_id = %s
+                  AND a.embedding IS NOT NULL
+                  AND b.embedding IS NOT NULL
+                  AND 1 - (a.embedding <=> b.embedding) > 0.85
+                ORDER BY similarity DESC
+                LIMIT 20
+            """, (user_id, user_id))
+        else:
+            cur.execute("""
+                SELECT a.id, a.content, b.id, b.content,
+                       1 - (a.embedding <=> b.embedding) AS similarity
+                FROM episodic_memory a, episodic_memory b
+                WHERE a.id < b.id
+                  AND a.embedding IS NOT NULL
+                  AND b.embedding IS NOT NULL
+                  AND 1 - (a.embedding <=> b.embedding) > 0.85
+                ORDER BY similarity DESC
+                LIMIT 20
+            """)
         rows = cur.fetchall()
         cur.close()
 
@@ -171,7 +189,7 @@ def _check_contradictions_via_db() -> list[dict]:
 # Main lint orchestrator
 # ---------------------------------------------------------------------------
 
-def lint_all() -> dict:
+def lint_all(user_id: str = "ang") -> dict:
     """Run all knowledge lint checks. Returns a structured report."""
     log.info("Running knowledge lint...")
 
@@ -180,7 +198,7 @@ def lint_all() -> dict:
         "stale": _check_stale_facts(),
         "orphans": _check_orphan_skills(),
         "duplicates": _check_duplicates_in_memory(),
-        "contradictions": _check_contradictions_via_db(),
+        "contradictions": _check_contradictions_via_db(user_id=user_id),
     }
 
     total = sum(len(v) for k, v in results.items() if isinstance(v, list))

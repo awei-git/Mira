@@ -37,7 +37,7 @@ from workflows.helpers import (
 log = logging.getLogger("mira")
 
 
-def do_journal():
+def do_journal(user_id: str = "ang"):
     """Write a daily journal entry: what happened, what was learned, self-reflection.
 
     Gathers today's completed tasks, new skills, and briefing,
@@ -93,7 +93,7 @@ def do_journal():
     # 5. Today's sparks (idle-think observations)
     sparks_summary = ""
     try:
-        bridge = Mira()
+        bridge = Mira(MIRA_DIR, user_id=user_id)
         mira_item_id = f"feed_mira_{today.replace('-', '')}"
         mira_item = bridge._read_item(mira_item_id)
         if mira_item and mira_item.get("messages"):
@@ -214,7 +214,7 @@ def do_journal():
 
     # Push journal as standalone feed item (visible in home)
     try:
-        bridge = Mira()
+        bridge = Mira(MIRA_DIR, user_id=user_id)
         item_id = f"feed_journal_{today.replace('-', '')}"
         if not bridge.item_exists(item_id):
             bridge.create_item(item_id, "feed",
@@ -315,7 +315,7 @@ def do_journal():
 
     # Harvest observations from journal (continuous thinking)
     try:
-        harvest_observations(journal_content[:2000], source="journal")
+        harvest_observations(journal_content[:2000], source="journal", user_id=user_id)
     except Exception as e:
         log.debug("Observation harvest from journal failed: %s", e)
 
@@ -329,7 +329,7 @@ def do_journal():
     # Rebuild memory index after journal
     try:
         from soul_manager import rebuild_memory_index
-        rebuild_memory_index()
+        rebuild_memory_index(user_id=user_id)
     except Exception as e:
         log.warning("Memory index rebuild after journal failed: %s", e)
 
@@ -343,7 +343,7 @@ def do_journal():
     # Update personal wiki with today's knowledge
     try:
         from workflows.wiki import do_wiki_update
-        do_wiki_update(trigger="journal", new_content=journal_text)
+        do_wiki_update(trigger="journal", new_content=journal_text, user_id=user_id)
     except Exception as e:
         log.warning("Wiki update failed: %s", e)
 

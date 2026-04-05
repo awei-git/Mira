@@ -385,6 +385,57 @@ def test_execute_plan_steps_falls_back_when_preflight_load_errors(tmp_path, monk
     assert called["handler"] is False
 
 
+def test_execute_plan_steps_blocks_when_required_preflight_load_fails(tmp_path, monkeypatch):
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    called = {"general": False, "handler": False}
+
+    class FakeRegistry:
+        def requires_preflight(self, name: str):
+            assert name == "writer"
+            return True
+
+        def load_preflight(self, name: str):
+            assert name == "writer"
+            raise ImportError("bad preflight import")
+
+        def load_handler(self, name: str):
+            called["handler"] = True
+            raise AssertionError("handler should not load after required preflight import error")
+
+    def fake_general(ws, task_id, instruction, sender, thread_id, **kwargs):
+        called["general"] = True
+        raise AssertionError("general fallback should not run for required-preflight agents")
+
+    monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
+    monkeypatch.setattr(task_worker, "_handle_general", fake_general)
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    task_worker._execute_plan_steps(
+        [{
+            "agent": "writer",
+            "instruction": "write it",
+            "tier": "light",
+            "prediction": {"difficulty": "easy", "failure_modes": [], "success_criteria": "blocked"},
+        }],
+        workspace,
+        "task128c",
+        "write it",
+        "ang",
+        "thread1",
+        None,
+        False,
+        1,
+    )
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert result["status"] == "error"
+    assert "preflight load failed" in result["summary"]
+    assert result["agent"] == "writer"
+    assert called["general"] is False
+    assert called["handler"] is False
+
+
 def test_socialmedia_handle_reuses_preflight_cache(tmp_path, monkeypatch):
     """Execution should use the exact plan/content that preflight approved."""
     registry = AgentRegistry()

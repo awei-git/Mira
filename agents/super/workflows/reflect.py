@@ -148,7 +148,7 @@ def _prune_worldview_by_decay():
         log.warning("Could not save worldview decay metadata: %s", e)
 
 
-def do_reflect():
+def do_reflect(user_id: str = "ang"):
     """Weekly reflection: consolidate memory, evolve interests, maybe self-initiate."""
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
@@ -185,7 +185,8 @@ def do_reflect():
         for line in memory_section.strip().splitlines():
             line = line.strip()
             if line.startswith("- ["):
-                append_memory(line)
+                append_memory(line, user_id=user_id)
+
         log.info("New memory insights appended from reflection")
 
     # Episode pruning — delete old episodes, preserve insights
@@ -258,7 +259,10 @@ def do_reflect():
                      len(diagnosis["low_scores"]), len(diagnosis["declining"]))
             plan = generate_improvement_plan(diagnosis)
             if plan:
-                append_memory(f"Self-improvement plan generated: {len(diagnosis['low_scores'])} weak areas identified")
+                append_memory(
+                    f"Self-improvement plan generated: {len(diagnosis['low_scores'])} weak areas identified",
+                    user_id=user_id,
+                )
                 log.info("Improvement plan saved to soul/improvement_plan.json")
 
             # Feed low scores into action backlog
@@ -293,14 +297,14 @@ def do_reflect():
     # Rebuild memory index after consolidation
     try:
         from soul_manager import rebuild_memory_index
-        rebuild_memory_index()
+        rebuild_memory_index(user_id=user_id)
     except Exception as e:
         log.warning("Memory index rebuild after reflect failed: %s", e)
 
     # --- Knowledge lint: check for contradictions, stale facts, orphans ---
     try:
         from knowledge_lint import lint_all, generate_lint_report
-        lint_results = lint_all()
+        lint_results = lint_all(user_id=user_id)
         total_issues = sum(len(v) for k, v in lint_results.items() if isinstance(v, list))
         if total_issues > 0:
             report_text = generate_lint_report(lint_results)
@@ -320,7 +324,7 @@ def do_reflect():
     # --- Wiki maintenance: prune stale pages, refresh cross-links ---
     try:
         from workflows.wiki import do_wiki_maintenance
-        do_wiki_maintenance()
+        do_wiki_maintenance(user_id=user_id)
     except Exception as e:
         log.warning("Wiki maintenance failed: %s", e)
 
@@ -329,7 +333,7 @@ def do_reflect():
         from evaluator import generate_weekly_report
         report = generate_weekly_report()
         if report:
-            bridge = Mira(MIRA_DIR)
+            bridge = Mira(MIRA_DIR, user_id=user_id)
             bridge.create_feed(f"feed_reflect_{datetime.now().strftime('%Y%m%d')}", "Weekly Reflection", report[:2000], tags=["reflection"])
             bridge.create_task(
                 task_id=f"weekly_eval_{datetime.now().strftime('%Y%m%d')}",

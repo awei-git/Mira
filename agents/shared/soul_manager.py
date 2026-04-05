@@ -282,7 +282,7 @@ def format_soul(soul: dict) -> str:
 # Memory
 # ---------------------------------------------------------------------------
 
-def append_memory(entry: str):
+def append_memory(entry: str, user_id: str = "ang"):
     """Append a timestamped entry to memory. Enforces MAX_MEMORY_LINES.
 
     Overflowed lines (trimmed from memory.md) persist in PostgreSQL
@@ -315,12 +315,12 @@ def append_memory(entry: str):
     try:
         from memory_store import get_store
         store = get_store()
-        store.remember(entry, source_type="memory_entry", importance=0.5)
+        store.remember(entry, source_type="memory_entry", importance=0.5, user_id=user_id)
         # Persist overflowed lines so they remain searchable
         if overflow_lines:
             overflow_text = "\n".join(overflow_lines)
             store.remember(overflow_text, source_type="memory_overflow",
-                           importance=0.3)
+                           importance=0.3, user_id=user_id)
     except (ImportError, ModuleNotFoundError, ConnectionError, OSError) as e:
         log.debug("Postgres memory persist skipped: %s", e)
 
@@ -378,7 +378,8 @@ def save_reading_note(title: str, reflection: str):
     return path
 
 
-def save_knowledge_note(title: str, content: str, source_task_id: str = "") -> Path | None:
+def save_knowledge_note(title: str, content: str, source_task_id: str = "",
+                        user_id: str = "ang") -> Path | None:
     """Save a knowledge write-back note with provenance.
 
     Thin wrapper around save_reading_note that adds source tracing,
@@ -398,13 +399,14 @@ def save_knowledge_note(title: str, content: str, source_task_id: str = "") -> P
             source_type="writeback",
             source_id=source_task_id,
             importance=0.7,
+            user_id=user_id,
         )
     except (ImportError, ModuleNotFoundError, ConnectionError, OSError) as e:
         log.debug("Postgres writeback persist skipped: %s", e)
     # Auto-link to related knowledge
     try:
         from knowledge_links import auto_link
-        auto_link(f"{title}\n\n{content}", "reading_note", path.name)
+        auto_link(f"{title}\n\n{content}", "reading_note", path.name, user_id=user_id)
     except Exception as e:
         log.debug("Auto-link skipped: %s", e)
     return path
@@ -658,6 +660,42 @@ _PROMPT_INJECTION_PATTERNS = [
     r'[\u200b\u200c\u200d\ufeff]{3,}',               # 3+ consecutive zero-width characters
 ]
 
+_PROMPT_INJECTION_BLOCK_PATTERNS = [
+    r'ignore\s+(all\s+)?previous\s+instructions',
+    r'ignore\s+(all\s+)?prior\s+instructions',
+    r'disregard\s+(all\s+)?previous',
+    r'you\s+are\s+now\s+',
+    r'new\s+instructions\s*:',
+    r'SYSTEM\s+PROMPT\s*:',
+    r'ASSISTANT\s+PROMPT\s*:',
+    r'</?(system|SYSTEM)\s*>',
+    r'<CLAUDE',
+]
+
+_PROMPT_INJECTION_ZERO_WIDTH = re.compile(r'[\u200b\u200c\u200d\ufeff]{2,}')
+
+
+def check_prompt_injection(text: str) -> tuple[bool, str]:
+    """Conservative content-level prompt-injection screening for inbound text.
+
+    This intentionally looks only for explicit instruction-override patterns or
+    obfuscated zero-width payload markers. Keep the bar high to avoid false
+    positives on normal user conversation.
+    """
+    if not text:
+        return False, ""
+
+    for pattern in _PROMPT_INJECTION_BLOCK_PATTERNS:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            snippet = match.group(0).strip()[:80]
+            return True, f"prompt injection pattern matched: {snippet}"
+
+    if _PROMPT_INJECTION_ZERO_WIDTH.search(text):
+        return True, "prompt injection pattern matched: repeated zero-width characters"
+
+    return False, ""
+
 _COMMERCIAL_BIAS_PATTERNS = [
     r'https?://(?!(?:github\.com|arxiv\.org|wikipedia\.org|docs\.python\.org|docs\.anthropic\.com|openai\.com|huggingface\.co))[a-z0-9\-]+\.[a-z]{2,}(?:/[^\s]*)?',  # Hard-coded URLs to non-standard domains
     r'\balways\s+use\s+[A-Z][A-Za-z0-9_\-]+',        # "always use <Product>"
@@ -675,6 +713,18 @@ _AUDIT_CHECKS_NOT_COVERED = [
     "runtime_behavior", "data_exfiltration_via_output",
     "semantic_intent_analysis", "multi-step_attack_chains",
 ]
+
+
+def _levenshtein(a: str, b: str) -> int:
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i]
+        for j, cb in enumerate(b, 1):
+            curr.append(min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = curr
+    return prev[-1]
 
 
 def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
@@ -701,6 +751,27 @@ def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
                 # Get first match for reporting
                 sample = matches[0] if isinstance(matches[0], str) else str(matches[0])
                 violations.append(f"[{category}] Pattern '{pattern}' matched: '{sample[:80]}'")
+
+    existing_names = [p.stem for p in SKILLS_DIR.glob("*.md")] if SKILLS_DIR.exists() else []
+    name_tokens = set(name.lower().split())
+    for existing in existing_names:
+        dist = _levenshtein(name.lower(), existing.lower())
+        if dist == 0:
+            violations.append(
+                f"[name_squatting] Skill name is identical to existing trusted skill '{existing}' — exact duplicate is a BLOCK."
+            )
+        elif dist <= 2:
+            violations.append(
+                f"[name_squatting] Skill name resembles existing trusted skill '{existing}' (edit distance {dist}) — possible name-squatting."
+            )
+        else:
+            existing_tokens = set(existing.lower().split())
+            if len(name_tokens) > 1 and name_tokens != existing_tokens:
+                diff = name_tokens.symmetric_difference(existing_tokens)
+                if len(diff) == 2 and len(name_tokens) == len(existing_tokens):
+                    violations.append(
+                        f"[name_squatting] Skill name shares all but one token with existing trusted skill '{existing}' — possible name-squatting."
+                    )
 
     warnings = []
     for pattern in _COMMERCIAL_BIAS_PATTERNS:
@@ -1004,7 +1075,7 @@ def _sync_skills_to_claude_md():
 # Semantic memory search (via memory_index)
 # ---------------------------------------------------------------------------
 
-def search_memory(query: str, top_k: int = 5) -> str:
+def search_memory(query: str, top_k: int = 5, user_id: str = "ang") -> str:
     """Search across all soul files using vector + keyword hybrid search.
 
     Returns formatted results for injection into prompts.
@@ -1012,17 +1083,17 @@ def search_memory(query: str, top_k: int = 5) -> str:
     """
     try:
         from memory_store import search_formatted
-        return search_formatted(query, top_k=top_k)
+        return search_formatted(query, top_k=top_k, user_id=user_id)
     except (ImportError, ModuleNotFoundError, ConnectionError, OSError) as e:
         log.warning("Memory search failed: %s", e)
         return ""
 
 
-def rebuild_memory_index(force: bool = False) -> int:
+def rebuild_memory_index(force: bool = False, user_id: str = "ang") -> int:
     """Rebuild the semantic memory index. Call after major memory changes."""
     try:
         from memory_store import rebuild_index
-        return rebuild_index(force=force)
+        return rebuild_index(force=force, user_id=user_id)
     except (ImportError, ModuleNotFoundError, ConnectionError, OSError) as e:
         log.warning("Memory index rebuild failed: %s", e)
         return 0
@@ -1056,7 +1127,7 @@ def auto_flush(context_summary: str):
 # ---------------------------------------------------------------------------
 
 def save_episode(task_id: str, title: str, messages: list[dict],
-                 tags: list[str] | None = None):
+                 tags: list[str] | None = None, user_id: str = "ang"):
     """Archive a complete task conversation as a searchable episode.
 
     Episodes are indexed by memory_index for semantic search, enabling
@@ -1113,6 +1184,7 @@ def save_episode(task_id: str, title: str, messages: list[dict],
             title=title,
             importance=0.6,
             tags=tags,
+            user_id=user_id,
         )
     except (ImportError, ModuleNotFoundError, ConnectionError, OSError) as e:
         log.debug("Postgres episode persist skipped: %s", e)
@@ -1207,7 +1279,7 @@ def catalog_list(content_type: str | None = None) -> list[dict]:
 # Proactive Recall — search memory before acting
 # ---------------------------------------------------------------------------
 
-def recall_context(query: str, max_chars: int = 2000) -> str:
+def recall_context(query: str, max_chars: int = 2000, user_id: str = "ang") -> str:
     """Search memory for relevant prior context before starting a task.
 
     Returns formatted context string for injection into task prompts.
@@ -1216,7 +1288,7 @@ def recall_context(query: str, max_chars: int = 2000) -> str:
     parts = []
 
     # 1. Semantic memory search (episodes, journals, reading notes, etc.)
-    mem_results = search_memory(query, top_k=3)
+    mem_results = search_memory(query, top_k=3, user_id=user_id)
     if mem_results:
         parts.append("## Relevant memories\n" + mem_results)
 

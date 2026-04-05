@@ -208,7 +208,8 @@ def _extract_topic_phrases(notes: list[dict]) -> Counter:
     return topics
 
 
-def detect_wiki_candidates(days: int = 14, min_count: int = 3) -> list[dict]:
+def detect_wiki_candidates(days: int = 14, min_count: int = 2,
+                           user_id: str = "ang") -> list[dict]:
     """Find topics appearing in 3+ reading notes without a wiki page.
 
     Uses both keyword frequency and vector similarity clustering.
@@ -235,6 +236,7 @@ def detect_wiki_candidates(days: int = 14, min_count: int = 3) -> list[dict]:
                 note["title"][:200],
                 top_k=5,
                 source_filter="reading_note",
+                user_id=user_id,
             )
             # If 3+ notes are very similar, they form a cluster
             similar = [r for r in results if r.get("score", 0) > 0.6]
@@ -288,7 +290,8 @@ def detect_wiki_candidates(days: int = 14, min_count: int = 3) -> list[dict]:
     return candidates[:10]  # Top 10
 
 
-def get_notes_for_topic(topic: str, days: int = 30) -> list[dict]:
+def get_notes_for_topic(topic: str, days: int = 30,
+                        user_id: str = "ang") -> list[dict]:
     """Find reading notes related to a topic via content search + vector."""
     notes = _load_recent_notes(days)
     matches = []
@@ -303,7 +306,7 @@ def get_notes_for_topic(topic: str, days: int = 30) -> list[dict]:
     try:
         from memory_store import get_store
         store = get_store()
-        results = store.recall(topic, top_k=10, source_filter="reading_note")
+        results = store.recall(topic, top_k=10, source_filter="reading_note", user_id=user_id)
         for r in results:
             if r.get("score", 0) > 0.5:
                 sid = r.get("source_id", "")

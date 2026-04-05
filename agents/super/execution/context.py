@@ -26,11 +26,21 @@ from sub_agent import claude_think
 
 log = logging.getLogger("task_worker")
 
-# Items on iCloud bridge (per-user, default to ang)
-ITEMS_DIR = MIRA_DIR / "users" / "ang" / "items"
+
+def _items_dir(user_id: str = "ang") -> Path:
+    return MIRA_DIR / "users" / user_id / "items"
 
 
-def load_task_conversation(task_id: str) -> str:
+def _legacy_thread_dirs(user_id: str) -> list[Path]:
+    return [
+        MIRA_DIR / "users" / user_id / "inbox",
+        MIRA_DIR / "users" / user_id / "outbox",
+        MIRA_DIR / "inbox",
+        MIRA_DIR / "outbox",
+    ]
+
+
+def load_task_conversation(task_id: str, user_id: str = "ang") -> str:
     """Load conversation history from an item (or legacy task) JSON.
 
     With the new protocol, all messages are in a single items/<id>.json file.
@@ -39,7 +49,7 @@ def load_task_conversation(task_id: str) -> str:
     all_msgs = []
 
     # Try new items/ first (single source of truth)
-    item_file = ITEMS_DIR / f"{task_id}.json"
+    item_file = _items_dir(user_id) / f"{task_id}.json"
     if item_file.exists():
         try:
             item = json.loads(item_file.read_text(encoding="utf-8"))
@@ -93,13 +103,21 @@ def load_task_conversation(task_id: str) -> str:
     return "\n".join(lines)
 
 
-def load_thread_history(thread_id: str, limit: int = 20) -> str:
+def load_thread_history(thread_id: str, limit: int = 20, user_id: str = "ang") -> str:
     """Load recent messages from a thread for context injection."""
     if not thread_id:
         return ""
 
     messages = []
-    for folder in [MIRA_DIR / "inbox", MIRA_DIR / "outbox"]:
+    item_file = _items_dir(user_id) / f"{thread_id}.json"
+    if item_file.exists():
+        try:
+            item = json.loads(item_file.read_text(encoding="utf-8"))
+            messages.extend(item.get("messages", []))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    for folder in _legacy_thread_dirs(user_id):
         if not folder.exists():
             continue
         for path in sorted(folder.glob("*.json")):
@@ -127,11 +145,13 @@ def load_thread_history(thread_id: str, limit: int = 20) -> str:
     return "\n".join(lines)
 
 
-def load_thread_memory(thread_id: str) -> str:
+def load_thread_memory(thread_id: str, user_id: str = "ang") -> str:
     """Load per-thread memory if it exists."""
     if not thread_id:
         return ""
-    mem_file = MIRA_DIR / "threads" / thread_id / "memory.md"
+    mem_file = MIRA_DIR / "users" / user_id / "threads" / thread_id / "memory.md"
+    if not mem_file.exists():
+        mem_file = MIRA_DIR / "threads" / thread_id / "memory.md"
     if mem_file.exists():
         return mem_file.read_text(encoding="utf-8")
     return ""

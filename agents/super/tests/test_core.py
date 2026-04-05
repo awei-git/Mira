@@ -57,11 +57,11 @@ def test_dispatch_scheduled_jobs_uses_registry(monkeypatch):
     session_new = []
 
     monkeypatch.setattr(core, "get_jobs", lambda: jobs)
-    monkeypatch.setattr(core, "evaluate_job_payload", lambda job: payloads.get(job.name))
+    monkeypatch.setattr(core, "evaluate_job_payload", lambda job, **kw: payloads.get(job.name))
     monkeypatch.setattr(
         core,
         "build_job_dispatch",
-        lambda job, payload, python_executable, core_path: {
+        lambda job, payload, python_executable, core_path, **kw: {
             "explore": ("explore-arxiv_hf", ["python", "core.py", "explore", "--sources", "arxiv,huggingface", "--slot", "arxiv_hf"]),
             "substack-growth": ("substack-growth", ["python", "core.py", "growth-cycle"]),
             "skill-study": ("skill-study-video", ["python", "core.py", "skill-study", "--group", "2"]),
@@ -103,7 +103,7 @@ def test_dispatch_scheduled_jobs_runs_inline_jobs(monkeypatch):
     ran = []
 
     monkeypatch.setattr(core, "get_jobs", lambda: jobs)
-    monkeypatch.setattr(core, "evaluate_job_payload", lambda job: True)
+    monkeypatch.setattr(core, "evaluate_job_payload", lambda job, **kw: True)
     monkeypatch.setattr(core, "_run_inline_scheduled_job", lambda job, payload: ran.append(job.name))
 
     core._dispatch_scheduled_jobs([])

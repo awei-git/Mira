@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from config import MIRA_DIR
+from preflight import preflight_check
 from soul_manager import load_soul, format_soul, load_skills_for_task
 from sub_agent import claude_act, claude_think
 from prompts import respond_prompt
@@ -20,6 +21,37 @@ _WEB_HINTS = re.compile(
     r"news|新闻|what\s+is|怎么样|how\s+does|网上|online|url|http|www\.",
     re.IGNORECASE,
 )
+_EFFECTFUL_HINTS = re.compile(
+    r"publish|post|tweet|send\s+email|email\s+this|delete|remove|rm\s|unlink|"
+    r"overwrite|save\s+to|write\s+to\s+file|edit\s+the\s+file|modify\s+the\s+file|"
+    r"发布|发帖|发推|发送邮件|删除|移除|覆盖|写入文件|修改文件|保存到",
+    re.IGNORECASE,
+)
+
+
+def preflight(workspace: Path, task_id: str, content: str,
+              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+    """General agent only handles low-risk tasks; effectful intents must route elsewhere."""
+    instruction = (content or "").strip()
+    if not instruction:
+        return False, "PREFLIGHT BLOCKED [general]: empty instruction"
+    if _EFFECTFUL_HINTS.search(instruction):
+        return (
+            False,
+            "PREFLIGHT BLOCKED [general]: effectful request should use a specialized agent",
+        )
+    if _WEB_HINTS.search(instruction):
+        result = preflight_check(
+            "external_api",
+            {
+                "instruction": instruction,
+                "endpoint": "auto:web_research",
+                "method": "search",
+            },
+        )
+        if not result.passed:
+            return False, result.summary()
+    return True, ""
 
 
 def _maybe_web_research(content: str, max_chars: int = 6000) -> str:

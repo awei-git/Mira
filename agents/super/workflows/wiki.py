@@ -108,7 +108,8 @@ Reply with ONLY the category name, nothing else.
 # Main workflow
 # ---------------------------------------------------------------------------
 
-def do_wiki_update(trigger: str = "journal", new_content: str = ""):
+def do_wiki_update(trigger: str = "journal", new_content: str = "",
+                   user_id: str = "ang"):
     """Update the wiki with today's knowledge.
 
     Called after journal (daily) or manually.
@@ -136,7 +137,7 @@ def do_wiki_update(trigger: str = "journal", new_content: str = ""):
                 title = page_info.get("title", slug)
 
                 # Find today's reading notes that relate
-                today_notes = get_notes_for_topic(title, days=1)
+                today_notes = get_notes_for_topic(title, days=1, user_id=user_id)
                 if not today_notes:
                     continue
 
@@ -158,17 +159,17 @@ def do_wiki_update(trigger: str = "journal", new_content: str = ""):
                         reason=f"updated with {len(today_notes)} new notes",
                     )
                     updates_done += 1
-                    _create_wiki_links(slug, today_notes)
+                    _create_wiki_links(slug, today_notes, user_id=user_id)
             except Exception as e:
                 log.warning("Wiki update failed for %s: %s", slug, e)
 
     # --- Phase 1 + 3: Detect candidates and create one new page ---
     if creates_done < MAX_CREATES_PER_CYCLE:
         try:
-            candidates = detect_wiki_candidates(days=14, min_count=3)
+            candidates = detect_wiki_candidates(days=14, min_count=3, user_id=user_id)
             if candidates:
                 top = candidates[0]
-                _create_new_page(top)
+                _create_new_page(top, user_id=user_id)
                 creates_done += 1
         except Exception as e:
             log.warning("Wiki candidate detection/creation failed: %s", e)
@@ -180,11 +181,11 @@ def do_wiki_update(trigger: str = "journal", new_content: str = ""):
     log.info("Wiki update done: %d updates, %d creates", updates_done, creates_done)
 
 
-def _create_new_page(candidate: dict):
+def _create_new_page(candidate: dict, user_id: str = "ang"):
     """Create a new wiki page from a candidate topic."""
     topic = candidate["topic"]
     slug = candidate["slug"]
-    source_notes = get_notes_for_topic(topic, days=30)
+    source_notes = get_notes_for_topic(topic, days=30, user_id=user_id)
 
     if len(source_notes) < 2:
         log.info("Wiki: skipping '%s' — only %d source notes", topic, len(source_notes))
@@ -231,7 +232,7 @@ def _create_new_page(candidate: dict):
                    reason=f"created from {len(source_notes)} notes")
 
     # Create knowledge links
-    _create_wiki_links(slug, source_notes)
+    _create_wiki_links(slug, source_notes, user_id=user_id)
     log.info("Wiki: created page '%s' (%s) from %d notes",
              topic, slug, len(source_notes))
 
@@ -252,13 +253,13 @@ def _categorize_topic(topic: str, description: str) -> str:
     return "general"
 
 
-def _create_wiki_links(slug: str, source_notes: list[dict]):
+def _create_wiki_links(slug: str, source_notes: list[dict], user_id: str = "ang"):
     """Create knowledge links between a wiki page and its source notes."""
     try:
         from knowledge_links import add_link
         for note in source_notes[:10]:
             add_link("wiki", slug, "reading_note", note.get("path", ""),
-                     "related", confidence=0.7, created_by="wiki")
+                     "related", confidence=0.7, created_by="wiki", user_id=user_id)
     except Exception as e:
         log.debug("Wiki link creation failed: %s", e)
 
@@ -267,7 +268,7 @@ def _create_wiki_links(slug: str, source_notes: list[dict]):
 # Weekly maintenance
 # ---------------------------------------------------------------------------
 
-def do_wiki_maintenance():
+def do_wiki_maintenance(user_id: str = "ang"):
     """Weekly wiki health check — run during reflect.
 
     - Refresh cross-links between pages
@@ -318,7 +319,8 @@ def do_wiki_maintenance():
                     from knowledge_links import add_link
                     for r_slug in related:
                         add_link("wiki", slug, "wiki", r_slug,
-                                 "related", confidence=0.5, created_by="wiki-maintenance")
+                                 "related", confidence=0.5, created_by="wiki-maintenance",
+                                 user_id=user_id)
                 except Exception:
                     pass
 

@@ -361,5 +361,11 @@
     "description": "Never declare a writing task complete without confirming the full output was captured, not just the opening",
     "file": "verify-output-completeness-before-done.md",
     "created": "2026-04-04T21:32:21.561820"
+  },
+  {
+    "name": "verify-output-path-before-task-completion",
+    "description": "Always confirm the exact output file path exists before marking a task as complete",
+    "file": "verify-output-path-before-task-completion.md",
+    "created": "2026-04-05T13:36:03.941911"
   }
 ]

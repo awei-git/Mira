@@ -168,10 +168,45 @@
 
 <script>
 let currentUser = null, currentTab = 'home', currentItemId = null, items = [], currentSection = null, pollTimer = null;
+let webToken = localStorage.getItem('mira_web_token') || '';
+
+function authHeaders(extra) {
+  const headers = {...(extra || {})};
+  if (webToken) headers['X-Mira-Token'] = webToken;
+  return headers;
+}
+
+function tokenizedUrl(url) {
+  if (!webToken) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(webToken)}`;
+}
+
+function promptForToken(force) {
+  if (webToken && !force) return true;
+  const value = window.prompt('Mira Web token', webToken || '');
+  if (value === null) return false;
+  webToken = value.trim();
+  if (webToken) localStorage.setItem('mira_web_token', webToken);
+  else localStorage.removeItem('mira_web_token');
+  return !!webToken;
+}
+
+async function apiFetch(url, options) {
+  const opts = {...(options || {})};
+  opts.headers = authHeaders(opts.headers);
+  let res = await fetch(url, opts);
+  if ((res.status === 401 || res.status === 403) && promptForToken(true)) {
+    opts.headers = authHeaders((options || {}).headers);
+    res = await fetch(url, opts);
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res;
+}
 
 // ===== Profiles =====
 async function loadProfiles() {
-  const res = await fetch('/api/profiles');
+  const res = await apiFetch('/api/profiles');
   const data = await res.json();
   document.getElementById('profileList').innerHTML = data.profiles.map(p => `
     <button class="profile-btn" onclick="selectProfile('${p.id}','${p.display_name}')">
@@ -241,9 +276,9 @@ async function refresh() {
   if (!currentUser) return;
   try {
     const [hb, its, tds] = await Promise.all([
-      fetch('/api/heartbeat').then(r=>r.json()),
-      fetch(`/api/${currentUser}/items`).then(r=>r.json()),
-      fetch(`/api/${currentUser}/todos`).then(r=>r.json()).catch(()=>[]),
+      apiFetch('/api/heartbeat').then(r=>r.json()),
+      apiFetch(`/api/${currentUser}/items`).then(r=>r.json()),
+      apiFetch(`/api/${currentUser}/todos`).then(r=>r.json()).catch(()=>[]),
     ]);
     todos = tds;
     const dot = document.getElementById('statusDot');
@@ -406,7 +441,7 @@ function renderDetail(id, scrollToBottom) {
 
 // ===== Artifacts =====
 async function loadArtifactList(section) {
-  const res = await fetch(`/api/${currentUser}/artifacts/${section}`);
+  const res = await apiFetch(`/api/${currentUser}/artifacts/${section}`);
   const files = await res.json();
   const el = document.getElementById('listContent');
   if(!files.length) { el.innerHTML='<div class="empty">No files</div>'; return; }
@@ -426,7 +461,7 @@ async function openArtifact(section, filename) {
   document.getElementById('replyBar').style.display = 'none';
   const el = document.getElementById('detailMessages');
   try {
-    const res = await fetch(`/api/${currentUser}/artifacts/${section}/${filename}`);
+    const res = await apiFetch(`/api/${currentUser}/artifacts/${section}/${filename}`);
     const text = await res.text();
     el.innerHTML = `<div class="artifact-content">${esc(text)}</div>`;
   } catch(e) { el.innerHTML = '<div class="empty">Cannot load file</div>'; }
@@ -435,14 +470,14 @@ async function openArtifact(section, filename) {
 // ===== Actions =====
 async function sendNew() {
   const inp=document.getElementById('newInput'); const t=inp.value.trim(); if(!t||!currentUser)return; inp.value='';
-  await fetch(`/api/${currentUser}/request`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t.substring(0,50),content:t})});
+  await apiFetch(`/api/${currentUser}/request`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t.substring(0,50),content:t})});
   refresh();
 }
 async function sendReply() {
   const inp=document.getElementById('replyInput'); const t=inp.value.trim(); if(!t||!currentUser)return; inp.value='';
   // Todo followup — server writes both followup + command for Mira to respond
   if (currentTab==='todos' && currentTodoId) {
-    await fetch(`/api/${currentUser}/todos/${currentTodoId}/followup`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:t,source:'user'})});
+    await apiFetch(`/api/${currentUser}/todos/${currentTodoId}/followup`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:t,source:'user'})});
     loadTodos();
     return;
   }
@@ -454,12 +489,12 @@ async function sendReply() {
     item.messages.push({id:Math.random().toString(36).slice(2,10), sender:currentUser, content:t, timestamp:now, kind:'text'});
     renderDetail(currentItemId);
   }
-  await fetch(`/api/${currentUser}/items/${currentItemId}/reply`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:t})});
+  await apiFetch(`/api/${currentUser}/items/${currentItemId}/reply`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:t})});
   refresh();
 }
-async function pinCurrent() { if(!currentUser||!currentItemId)return; await fetch(`/api/${currentUser}/items/${currentItemId}/pin`,{method:'POST'}); refresh(); }
-async function shareCurrent() { if(!currentUser||!currentItemId)return; await fetch(`/api/${currentUser}/items/${currentItemId}/share`,{method:'POST'}); alert('Shared!'); }
-async function archiveCurrent() { if(!currentUser||!currentItemId)return; await fetch(`/api/${currentUser}/items/${currentItemId}/archive`,{method:'POST'}); currentItemId=null; refresh(); }
+async function pinCurrent() { if(!currentUser||!currentItemId)return; await apiFetch(`/api/${currentUser}/items/${currentItemId}/pin`,{method:'POST'}); refresh(); }
+async function shareCurrent() { if(!currentUser||!currentItemId)return; await apiFetch(`/api/${currentUser}/items/${currentItemId}/share`,{method:'POST'}); alert('Shared!'); }
+async function archiveCurrent() { if(!currentUser||!currentItemId)return; await apiFetch(`/api/${currentUser}/items/${currentItemId}/archive`,{method:'POST'}); currentItemId=null; refresh(); }
 
 // ===== Todos =====
 let todos = [], currentTodoId = null;
@@ -470,7 +505,7 @@ async function navToTodos() {
   await loadTodos();
 }
 async function loadTodos() {
-  const res = await fetch(`/api/${currentUser}/todos`);
+  const res = await apiFetch(`/api/${currentUser}/todos`);
   todos = await res.json();
   renderTodos();
   if (currentTodoId) openTodoDetail(currentTodoId);
@@ -546,9 +581,9 @@ function openTodoDetail(id) {
   document.getElementById('replyBar').style.display = '';
   renderTodos(); // refresh selection highlight
 }
-async function completeTodo(id) { await fetch(`/api/${currentUser}/todos/${id}/done`,{method:'POST'}); loadTodos(); }
-async function deleteTodo(id) { if(currentTodoId===id) currentTodoId=null; await fetch(`/api/${currentUser}/todos/${id}`,{method:'DELETE'}); loadTodos(); }
-async function updateTodoPrio(id, prio) { await fetch(`/api/${currentUser}/todos/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({priority:prio})}); loadTodos(); }
+async function completeTodo(id) { await apiFetch(`/api/${currentUser}/todos/${id}/done`,{method:'POST'}); loadTodos(); }
+async function deleteTodo(id) { if(currentTodoId===id) currentTodoId=null; await apiFetch(`/api/${currentUser}/todos/${id}`,{method:'DELETE'}); loadTodos(); }
+async function updateTodoPrio(id, prio) { await apiFetch(`/api/${currentUser}/todos/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({priority:prio})}); loadTodos(); }
 
 // Override new input for todo tab
 const origSendNew = sendNew;
@@ -559,11 +594,11 @@ async function sendNew() {
     let priority='medium', title=t;
     const m=t.match(/^(high|medium|low)[:\s]+(.+)/i);
     if(m){priority=m[1].toLowerCase();title=m[2];}
-    await fetch(`/api/${currentUser}/todos`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,priority})});
+    await apiFetch(`/api/${currentUser}/todos`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,priority})});
     loadTodos();
   } else {
     const inp=document.getElementById('newInput'); const t=inp.value.trim(); if(!t||!currentUser)return; inp.value='';
-    await fetch(`/api/${currentUser}/request`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t.substring(0,50),content:t})});
+    await apiFetch(`/api/${currentUser}/request`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t.substring(0,50),content:t})});
     refresh();
   }
 }
@@ -577,7 +612,7 @@ function startSSE(userId) {
   if (!('Notification' in window)) return;
   if (Notification.permission === 'default') Notification.requestPermission();
 
-  eventSource = new EventSource(`/api/${userId}/events`);
+  eventSource = new EventSource(tokenizedUrl(`/api/${userId}/events`));
   eventSource.onmessage = (e) => {
     try {
       const item = JSON.parse(e.data);

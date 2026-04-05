@@ -40,8 +40,26 @@ from writing_workflow import run_full_pipeline
 
 log = logging.getLogger("task_worker")
 
-# Items on iCloud bridge (per-user, default to ang)
-ITEMS_DIR = MIRA_DIR / "users" / "ang" / "items"
+_ACTIVE_USER_ID = "ang"
+
+
+def _set_active_user(user_id: str):
+    global _ACTIVE_USER_ID
+    _ACTIVE_USER_ID = user_id or "ang"
+
+
+def _items_dir(user_id: str | None = None) -> Path:
+    return MIRA_DIR / "users" / (user_id or _ACTIVE_USER_ID) / "items"
+
+
+def _item_file(task_id: str, user_id: str | None = None) -> Path:
+    return _items_dir(user_id) / f"{task_id}.json"
+
+
+# Legacy compatibility for modules that still import ITEMS_DIR directly.
+ITEMS_DIR = _items_dir()
+
+
 # Task workspaces stored locally
 TASKS_DIR = MIRA_ROOT / "tasks"
 
@@ -74,7 +92,7 @@ def _emit_status(task_id: str, text: str, icon: str = "gear"):
         "kind": "status_card",
     }
     # Write to items/ (new protocol)
-    item_file = ITEMS_DIR / f"{task_id}.json"
+    item_file = _item_file(task_id)
     if item_file.exists():
         try:
             item = json.loads(item_file.read_text(encoding="utf-8"))
@@ -410,7 +428,7 @@ If no reusable skill can be extracted, just say "No new skill from this task."
         desc = match.group(2).strip()
         content = match.group(3).strip()
         save_skill(name, desc, content)
-        append_memory(f"Learned skill from TalkBridge task: {name}")
+        append_memory(f"Learned skill from TalkBridge task: {name}", user_id=_ACTIVE_USER_ID)
         log.info("Extracted skill: %s", name)
 
 
@@ -448,7 +466,7 @@ def _register_runtime_tools_created(workspace: Path) -> None:
         ok, msg = forge_tool(name, desc, code)
         if ok:
             log.info("Auto-registered runtime tool: %s", name)
-            append_memory(f"Created runtime tool: {name}")
+            append_memory(f"Created runtime tool: {name}", user_id=_ACTIVE_USER_ID)
         else:
             log.warning("Failed to register tool %s: %s", name, msg)
 
@@ -629,6 +647,7 @@ def main():
 
     # --- User access control context ---
     _user_id = msg_data.get("user_id", "ang")
+    _set_active_user(_user_id)
     _user_role = msg_data.get("user_role", "admin")
     _model_restriction = msg_data.get("model_restriction")
     _content_filter = msg_data.get("content_filter", False)
@@ -638,7 +657,7 @@ def main():
              ",".join(_allowed_agents) if _allowed_agents else "all")
 
     # Load conversation history and execution history for context
-    conversation = load_task_conversation(args.task_id)
+    conversation = load_task_conversation(args.task_id, user_id=_user_id)
     conversation = compress_conversation(conversation)
     exec_history = _load_exec_history(workspace)
 
@@ -708,7 +727,7 @@ def main():
     # --- Load full task data for thread context ---
     task_data = msg_data  # Contains messages array if available
     # Try items/ first, fallback to legacy tasks/
-    item_file = ITEMS_DIR / f"{args.task_id}.json"
+    item_file = _item_file(args.task_id, _user_id)
     task_file = MIRA_DIR / "tasks" / f"{args.task_id}.json"
     src_file = item_file if item_file.exists() else task_file
     if src_file.exists():
@@ -747,7 +766,7 @@ def main():
     # --- Proactive recall: search memory for relevant prior context ---
     prior_context = ""
     try:
-        prior_context = recall_context(msg_content)
+        prior_context = recall_context(msg_content, user_id=_user_id)
         if prior_context:
             log.info("Proactive recall found relevant context (%d chars)", len(prior_context))
     except Exception as e:
@@ -880,6 +899,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
         # Registry-based dispatch: load handler dynamically from manifest
         from agent_registry import get_registry
         registry = get_registry()
+        requires_preflight = getattr(registry, "requires_preflight", lambda name: False)(agent)
         set_usage_agent(agent)
 
         output_file = workspace / "output.md"
@@ -890,25 +910,51 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
             try:
                 preflight_fn = getattr(registry, "load_preflight", lambda name: None)(agent)
             except KeyError:
+                if requires_preflight:
+                    preflight_msg = f"{agent} preflight missing from registry"
+                    log.error("%s", preflight_msg)
+                    (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
+                    _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+                    return
                 log.warning("Agent '%s' not in registry during preflight load, falling back to general", agent)
                 handler_result = None
                 _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
                 continue
             except ImportError as e:
+                if requires_preflight:
+                    preflight_msg = f"{agent} preflight load failed: {e}"
+                    log.error("%s", preflight_msg)
+                    (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
+                    _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+                    return
                 log.error("ImportError loading preflight for agent '%s': %s — falling back to general", agent, e)
                 handler_result = None
                 _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
                 continue
             except Exception as e:
+                if requires_preflight:
+                    preflight_msg = f"{agent} preflight load failed: {e}"
+                    log.error("%s", preflight_msg)
+                    (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
+                    _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+                    return
                 log.error("Registry preflight for '%s' failed to load: %s — falling back to general", agent, e)
                 handler_result = None
                 _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
                 continue
 
+            if not preflight_fn and requires_preflight:
+                preflight_msg = f"{agent} preflight missing"
+                log.error("%s", preflight_msg)
+                (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
+                _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+                return
+
             if preflight_fn:
                 try:
                     passed, preflight_msg = _invoke_registry_preflight(
                         preflight_fn, workspace, task_id, instruction, sender, thread_id, tier,
+                        user_id=user_id,
                     )
                 except Exception as e:
                     preflight_msg = f"{agent} preflight failed: {e}"
@@ -925,17 +971,33 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                 handler_fn = registry.load_handler(agent)
                 handler_result = _invoke_registry_handler(
                     handler_fn, workspace, task_id, instruction, sender, thread_id, tier,
+                    user_id=user_id,
                 )
             except KeyError:
+                if requires_preflight:
+                    handler_msg = f"{agent} handler missing from registry"
+                    log.error("%s", handler_msg)
+                    _write_result(workspace, task_id, "error", handler_msg, agent=agent)
+                    return
                 log.warning("Agent '%s' not in registry, falling back to general", agent)
                 handler_result = None
                 _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
             except ImportError as e:
+                if requires_preflight:
+                    handler_msg = f"{agent} handler load failed: {e}"
+                    log.error("%s", handler_msg)
+                    _write_result(workspace, task_id, "error", handler_msg, agent=agent)
+                    return
                 log.error("ImportError loading agent '%s': %s — check module path and "
                           "handler function name in agent manifest", agent, e)
                 handler_result = None
                 _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
             except Exception as e:
+                if requires_preflight:
+                    handler_msg = f"{agent} handler failed to load: {e}"
+                    log.error("%s", handler_msg)
+                    _write_result(workspace, task_id, "error", handler_msg, agent=agent)
+                    return
                 log.error("Registry handler for '%s' failed: %s — falling back to general", agent, e)
                 handler_result = None
                 _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
@@ -1160,7 +1222,7 @@ def _extract_knowledge_writeback(workspace: Path, task_id: str,
         title = extracted.get("title", "").strip()
         content = extracted.get("content", "").strip()
         if title and content and len(content) > 50:
-            save_knowledge_note(title, content, source_task_id=task_id)
+            save_knowledge_note(title, content, source_task_id=task_id, user_id=_ACTIVE_USER_ID)
             log.info("Knowledge writeback: '%s' from task %s", title[:60], task_id)
     except (json.JSONDecodeError, ClaudeTimeoutError) as e:
         log.debug("Knowledge writeback skipped for %s: %s", task_id, e)
@@ -1204,7 +1266,7 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
     if status in ("done", "completed", "error", "failed"):
         try:
             # Try items/ first, fallback to legacy tasks/
-            item_file = ITEMS_DIR / f"{task_id}.json"
+            item_file = _item_file(task_id)
             task_file = TASKS_DIR / f"{task_id}.json"
             src = item_file if item_file.exists() else task_file
             if src.exists():
@@ -1212,7 +1274,7 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
                 messages = task_data.get("messages", [])
                 title = task_data.get("title", task_id)
                 if len(messages) >= 2:  # Only archive meaningful conversations
-                    save_episode(task_id, title, messages, tags=tags)
+                    save_episode(task_id, title, messages, tags=tags, user_id=_ACTIVE_USER_ID)
         except Exception as e:
             log.warning("Episode archival failed for %s: %s", task_id, e)
 
@@ -1274,7 +1336,8 @@ def _verify_step_artifact(workspace: Path, task_id: str, agent: str, status: str
 
 
 def _invoke_registry_handler(handler_fn, workspace: Path, task_id: str, instruction: str,
-                             sender: str, thread_id: str, tier: str):
+                             sender: str, thread_id: str, tier: str,
+                             user_id: str = "ang"):
     """Invoke a registry-loaded handler with optional runtime context kwargs.
 
     Registry handlers have drifted signatures: some support `tier`, some also
@@ -1287,19 +1350,28 @@ def _invoke_registry_handler(handler_fn, workspace: Path, task_id: str, instruct
 
     if accepts_kwargs or "tier" in params:
         kwargs["tier"] = tier
+    if accepts_kwargs or "user_id" in params:
+        kwargs["user_id"] = user_id
 
     needs_thread_history = accepts_kwargs or "thread_history" in params
     needs_thread_memory = accepts_kwargs or "thread_memory" in params
     if needs_thread_history:
-        kwargs["thread_history"] = load_thread_history(thread_id)
+        try:
+            kwargs["thread_history"] = load_thread_history(thread_id, user_id=user_id)
+        except TypeError:
+            kwargs["thread_history"] = load_thread_history(thread_id)
     if needs_thread_memory:
-        kwargs["thread_memory"] = load_thread_memory(thread_id)
+        try:
+            kwargs["thread_memory"] = load_thread_memory(thread_id, user_id=user_id)
+        except TypeError:
+            kwargs["thread_memory"] = load_thread_memory(thread_id)
 
     return handler_fn(workspace, task_id, instruction, sender, thread_id, **kwargs)
 
 
 def _invoke_registry_preflight(preflight_fn, workspace: Path, task_id: str, instruction: str,
-                               sender: str, thread_id: str, tier: str):
+                               sender: str, thread_id: str, tier: str,
+                               user_id: str = "ang"):
     """Invoke an optional registry preflight hook with matching runtime kwargs."""
     kwargs = {}
     params = inspect.signature(preflight_fn).parameters
@@ -1307,13 +1379,21 @@ def _invoke_registry_preflight(preflight_fn, workspace: Path, task_id: str, inst
 
     if accepts_kwargs or "tier" in params:
         kwargs["tier"] = tier
+    if accepts_kwargs or "user_id" in params:
+        kwargs["user_id"] = user_id
 
     needs_thread_history = accepts_kwargs or "thread_history" in params
     needs_thread_memory = accepts_kwargs or "thread_memory" in params
     if needs_thread_history:
-        kwargs["thread_history"] = load_thread_history(thread_id)
+        try:
+            kwargs["thread_history"] = load_thread_history(thread_id, user_id=user_id)
+        except TypeError:
+            kwargs["thread_history"] = load_thread_history(thread_id)
     if needs_thread_memory:
-        kwargs["thread_memory"] = load_thread_memory(thread_id)
+        try:
+            kwargs["thread_memory"] = load_thread_memory(thread_id, user_id=user_id)
+        except TypeError:
+            kwargs["thread_memory"] = load_thread_memory(thread_id)
 
     return preflight_fn(workspace, task_id, instruction, sender, thread_id, **kwargs)
 

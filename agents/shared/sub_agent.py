@@ -603,15 +603,22 @@ def _omlx_call(model_id: str, prompt: str,
             return content.strip()
     except Exception as e:
         log.error("oMLX %s failed: %s", model_id, str(e))
+        # Fallback to secondary local model
+        from config import OMLX_FALLBACK_MODEL
+        if model_id != OMLX_FALLBACK_MODEL:
+            log.info("oMLX falling back to %s", OMLX_FALLBACK_MODEL)
+            return _omlx_call(OMLX_FALLBACK_MODEL, prompt, system=system, timeout=timeout)
         return ""
 
 
-def omlx_embed(text: str, model: str = "nomic-embed-text",
+def omlx_embed(text: str, model: str = "",
                retries: int = 2) -> list[float]:
     """Get embedding from local oMLX (OpenAI-compatible). Retries on transient failures."""
     if not text or not text.strip():
         return []
-    from config import OMLX_HOST, OMLX_PORT
+    from config import OMLX_HOST, OMLX_PORT, OMLX_EMBED_MODEL
+    if not model:
+        model = OMLX_EMBED_MODEL
     endpoint = f"http://{OMLX_HOST}:{OMLX_PORT}/v1/embeddings"
 
     payload = {"model": model, "input": text}

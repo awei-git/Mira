@@ -215,8 +215,9 @@ SECRETS_FILE = _PROJECT_ROOT / "secrets.yml"
 _omlx_cfg = _cfg.get("omlx", {})
 OMLX_HOST = _omlx_cfg.get("host", "127.0.0.1")
 OMLX_PORT = _omlx_cfg.get("port", 8800)
-OMLX_DEFAULT_MODEL = _omlx_cfg.get("default_model", "qwen3.5-27b")
-OMLX_EMBED_MODEL = _omlx_cfg.get("embed_model", "nomic-embed-text")
+OMLX_DEFAULT_MODEL = _omlx_cfg.get("default_model", "gemma-4-31b-it-4bit")
+OMLX_FALLBACK_MODEL = _omlx_cfg.get("fallback_model", "Qwen3.5-27B-4bit")
+OMLX_EMBED_MODEL = _omlx_cfg.get("embed_model", "nomicai-modernbert-embed-base-4bit")
 
 # Backward-compatible aliases while runtime code still speaks "ollama".
 OLLAMA_HOST = OMLX_HOST
@@ -235,12 +236,19 @@ DATABASE_URL = _db_cfg.get("url", "postgresql://ai_admin:ai_admin@127.0.0.1:5432
 # ---------------------------------------------------------------------------
 _users_cfg = _cfg.get("users", {})
 
-# All known agents (used when role allows "all")
+# All known canonical agent names (used when role allows "all").
+# Keep this aligned with registry names, not planner aliases.
 ALL_AGENTS = [
-    "general", "discussion", "writing", "publish", "briefing",
+    "general", "discussion", "writer", "explorer",
     "analyst", "researcher", "video", "photo", "podcast",
-    "socialmedia", "surfer", "secret", "coder", "reader", "health",
+    "socialmedia", "surfer", "secret", "coder", "reader",
+    "health", "evaluator",
 ]
+AGENT_ALIASES = {
+    "writing": "writer",
+    "briefing": "explorer",
+    "publish": "socialmedia",
+}
 
 CHILD_SAFETY_PROMPT = """You are a helpful, safe AI assistant for a child. Follow these rules strictly:
 - Use age-appropriate language and concepts
@@ -267,14 +275,32 @@ def get_user_config(user_id: str) -> dict:
     # Normalize allowed_agents
     allowed = user_cfg.get("allowed_agents", ["general"])
     if allowed == "all":
-        user_cfg["allowed_agents"] = ALL_AGENTS
+        normalized_allowed = list(ALL_AGENTS)
+    elif isinstance(allowed, list):
+        normalized_allowed = []
+        for agent in allowed:
+            canonical = AGENT_ALIASES.get(agent, agent)
+            if canonical not in normalized_allowed:
+                normalized_allowed.append(canonical)
+    else:
+        normalized_allowed = ["general"]
     return {
         "role": user_cfg.get("role", "guest"),
         "display_name": user_cfg.get("display_name", user_id),
-        "allowed_agents": user_cfg.get("allowed_agents", ["general"]),
+        "allowed_agents": normalized_allowed,
         "model_restriction": user_cfg.get("model_restriction"),
         "content_filter": user_cfg.get("content_filter", False),
     }
+
+
+def get_known_user_ids() -> list[str]:
+    """Return configured user ids with dict-shaped configs only."""
+    return sorted(uid for uid, cfg in _users_cfg.items() if isinstance(cfg, dict))
+
+
+def is_known_user(user_id: str) -> bool:
+    """Return True when the user is explicitly configured."""
+    return user_id in _users_cfg and isinstance(_users_cfg.get(user_id), dict)
 
 
 def is_agent_allowed(user_id: str, agent: str) -> bool:
@@ -297,7 +323,10 @@ def should_filter_content(user_id: str) -> bool:
 # Services (ports — single source of truth)
 # ---------------------------------------------------------------------------
 _svc_cfg = _cfg.get("services", {})
+WEBGUI_HOST = _svc_cfg.get("webgui_host", "127.0.0.1")
 WEBGUI_PORT = _svc_cfg.get("webgui_port", 8384)
+WEBGUI_TOKEN = str(_svc_cfg.get("webgui_token", "") or "").strip()
+WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN = _svc_cfg.get("webgui_allow_loopback_without_token", True)
 TETRA_API_PORT = _svc_cfg.get("tetra_api_port", 8000)
 
 # ---------------------------------------------------------------------------

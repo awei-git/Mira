@@ -5,16 +5,26 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from secrets import compare_digest
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # Add agents to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "agents" / "shared"))
-from config import MIRA_DIR, WEBGUI_PORT
+from config import (
+    MIRA_DIR,
+    WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN,
+    WEBGUI_HOST,
+    WEBGUI_PORT,
+    WEBGUI_TOKEN,
+    get_known_user_ids,
+    get_user_config,
+    is_known_user,
+)
 
 BRIDGE = MIRA_DIR
 USERS_DIR = BRIDGE / "users"
@@ -44,6 +54,58 @@ def _atomic_write(path: Path, data):
 def _user_dir(user_id: str) -> Path:
     return USERS_DIR / user_id
 
+
+def _client_host(request: Request) -> str:
+    return (request.client.host if request.client else "").strip()
+
+
+def _is_loopback_client(host: str) -> bool:
+    return host in {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def _extract_webgui_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    header = request.headers.get("x-mira-token", "").strip()
+    if header:
+        return header
+    return request.query_params.get("token", "").strip()
+
+
+def _require_api_access(request: Request):
+    host = _client_host(request)
+    if WEBGUI_TOKEN:
+        token = _extract_webgui_token(request)
+        if token and compare_digest(token, WEBGUI_TOKEN):
+            return
+        raise HTTPException(401, "Missing or invalid Mira Web token")
+    if WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN and _is_loopback_client(host):
+        return
+    raise HTTPException(403, "Mira Web API is limited to loopback unless a token is configured")
+
+
+def _require_user_access(request: Request, user_id: str):
+    if not is_known_user(user_id):
+        raise HTTPException(404, "Unknown user")
+    _require_api_access(request)
+
+
+@app.middleware("http")
+async def _api_auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/"):
+        return await call_next(request)
+    parts = [part for part in path.split("/") if part]
+    try:
+        if len(parts) >= 3:
+            _require_user_access(request, parts[1])
+        else:
+            _require_api_access(request)
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
+
 # ---------------------------------------------------------------------------
 # API — Read
 # ---------------------------------------------------------------------------
@@ -51,12 +113,20 @@ def _user_dir(user_id: str) -> Path:
 @app.get("/api/profiles")
 def get_profiles():
     data = _read_json(BRIDGE / "profiles.json")
-    if data:
-        return data
-    return {"profiles": [
-        {"id": "ang", "display_name": "Ang", "agent_name": "Mira"},
-        {"id": "liquan", "display_name": "Liquan", "agent_name": "Mika"},
-    ]}
+    known = set(get_known_user_ids())
+    if data and isinstance(data, dict):
+        profiles = [p for p in data.get("profiles", []) if isinstance(p, dict) and p.get("id") in known]
+        if profiles:
+            return {"profiles": profiles}
+    profiles = []
+    for user_id in get_known_user_ids():
+        cfg = get_user_config(user_id)
+        profiles.append({
+            "id": user_id,
+            "display_name": cfg.get("display_name", user_id),
+            "agent_name": "Mira",
+        })
+    return {"profiles": profiles}
 
 @app.get("/api/heartbeat")
 def get_heartbeat():
@@ -348,6 +418,22 @@ _ICLOUD_ARTIFACTS = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/
 def _artifacts_dir(user_id: str) -> Path:
     return _ICLOUD_ARTIFACTS / user_id
 
+
+def _safe_join(base: Path, *parts: str) -> Path:
+    clean: list[str] = []
+    for part in parts:
+        if not part or part in {".", ".."}:
+            raise HTTPException(404)
+        if "/" in part or "\\" in part:
+            raise HTTPException(404)
+        clean.append(part)
+    path = base.joinpath(*clean).resolve()
+    try:
+        path.relative_to(base.resolve())
+    except ValueError as exc:
+        raise HTTPException(404) from exc
+    return path
+
 @app.get("/api/{user_id}/artifacts")
 def list_artifact_sections(user_id: str):
     base = _artifacts_dir(user_id)
@@ -370,7 +456,7 @@ def list_artifact_sections(user_id: str):
 
 @app.get("/api/{user_id}/artifacts/{section}")
 def list_artifacts(user_id: str, section: str):
-    base = _artifacts_dir(user_id) / section
+    base = _safe_join(_artifacts_dir(user_id), section)
     if not base.exists():
         return []
     return _list_dir(base)
@@ -378,7 +464,7 @@ def list_artifacts(user_id: str, section: str):
 @app.get("/api/{user_id}/artifacts/{section}/{subsection}")
 def list_artifacts_sub(user_id: str, section: str, subsection: str):
     """List files in a subdirectory (e.g. writings/project-name/)."""
-    base = _artifacts_dir(user_id) / section / subsection
+    base = _safe_join(_artifacts_dir(user_id), section, subsection)
     if not base.exists():
         raise HTTPException(404)
     if base.is_file():
@@ -387,7 +473,7 @@ def list_artifacts_sub(user_id: str, section: str, subsection: str):
 
 @app.get("/api/{user_id}/artifacts/{section}/{subsection}/{filename}")
 def read_artifact(user_id: str, section: str, subsection: str, filename: str):
-    path = _artifacts_dir(user_id) / section / subsection / filename
+    path = _safe_join(_artifacts_dir(user_id), section, subsection, filename)
     if not path.exists():
         raise HTTPException(404)
     return _read_file(path)
@@ -463,4 +549,4 @@ def index():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=WEBGUI_PORT)
+    uvicorn.run(app, host=WEBGUI_HOST, port=WEBGUI_PORT)

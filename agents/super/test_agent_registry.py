@@ -86,7 +86,7 @@ def test_handlers_importable():
 
 
 def test_optional_preflight_hooks_load():
-    """Agents may expose an optional preflight() hook in the same module."""
+    """Agents with effectful runtime contracts should expose preflight() hooks."""
     r = AgentRegistry()
     writer_pf = r.load_preflight("writer")
     social_pf = r.load_preflight("socialmedia")
@@ -104,7 +104,15 @@ def test_optional_preflight_hooks_load():
     assert callable(video_pf)
     assert callable(secret_pf)
     assert callable(health_pf)
-    assert general_pf is None
+    assert callable(general_pf)
+
+
+def test_required_preflight_policy_marks_effectful_agents():
+    r = AgentRegistry()
+    assert r.requires_preflight("writer") is True
+    assert r.requires_preflight("socialmedia") is True
+    assert r.requires_preflight("general") is True
+    assert r.requires_preflight("discussion") is False
 
 
 def test_descriptions_for_planner():

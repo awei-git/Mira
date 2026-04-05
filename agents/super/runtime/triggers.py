@@ -395,7 +395,7 @@ def should_spark_check() -> bool:
     return True
 
 
-def should_idle_think() -> bool:
+def should_idle_think(user_id: str = "ang") -> bool:
     """Returns True if emptiness has crossed the threshold and agent is idle.
 
     The emptiness value accumulates over time when Mira is idle. More pending
@@ -419,8 +419,8 @@ def should_idle_think() -> bool:
         log.debug("Active task count check failed: %s", e)
 
     # Advance emptiness value for this cycle, then check threshold
-    tick()
-    return check_threshold()
+    tick(user_id=user_id)
+    return check_threshold(user_id=user_id)
 
 
 def should_log_cleanup() -> bool:

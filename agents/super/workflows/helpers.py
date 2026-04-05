@@ -34,7 +34,8 @@ PUBLISH_COOLDOWN_DAYS = 2  # minimum days between Substack publications
 
 
 def _append_to_daily_feed(feed_type: str, section_title: str, content: str,
-                          source: str = "", tags: list[str] | None = None):
+                          source: str = "", tags: list[str] | None = None,
+                          user_id: str = "ang"):
     """Append content to a daily feed item (one item per type per day).
 
     feed_type: 'explore' or 'mira' — determines which daily item to append to.
@@ -43,7 +44,7 @@ def _append_to_daily_feed(feed_type: str, section_title: str, content: str,
     """
     today = datetime.now().strftime("%Y%m%d")
     date_str = datetime.now().strftime("%Y-%m-%d")
-    bridge = Mira(MIRA_DIR)
+    bridge = Mira(MIRA_DIR, user_id=user_id)
 
     if feed_type == "explore":
         feed_id = f"feed_explore_{today}"
@@ -608,7 +609,7 @@ def _days_since_last_publish() -> float:
         return 999.0
 
 
-def harvest_observations(output_text: str, source: str = ""):
+def harvest_observations(output_text: str, source: str = "", user_id: str = "ang"):
     """Extract observations, questions, and connections from output text.
 
     Uses Ollama (local, fast, free) to extract structured thoughts.
@@ -665,6 +666,7 @@ type 可以是:
                 content=content,
                 thought_type=ttype,
                 source_context=source[:200],
+                user_id=user_id,
             )
             stored += 1
 
@@ -672,7 +674,7 @@ type 可以是:
             if ttype == "question":
                 try:
                     from emptiness import add_question
-                    add_question(content, priority=3.0, source=f"harvest:{source[:50]}")
+                    add_question(content, priority=3.0, source=f"harvest:{source[:50]}", user_id=user_id)
                 except (ImportError, ModuleNotFoundError, OSError):
                     pass
 

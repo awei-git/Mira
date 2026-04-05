@@ -23,6 +23,16 @@ from typing import Callable
 log = logging.getLogger("mira.registry")
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent  # agents/
+_REQUIRED_PREFLIGHT_AGENTS = {
+    "general",
+    "writer",
+    "socialmedia",
+    "podcast",
+    "photo",
+    "video",
+    "secret",
+    "health",
+}
 
 
 class AgentManifest:
@@ -152,6 +162,10 @@ class AgentRegistry:
         module = self._load_module(name)
         preflight = getattr(module, "preflight", None)
         return preflight if callable(preflight) else None
+
+    def requires_preflight(self, name: str) -> bool:
+        """Return True when runtime must fail closed if preflight is unavailable."""
+        return name in _REQUIRED_PREFLIGHT_AGENTS
 
 
 # Singleton — created once at import time

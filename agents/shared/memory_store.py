@@ -104,6 +104,7 @@ class MemoryStore:
     def __init__(self, db_url: str):
         self._db_url = db_url
         self._conn = None
+        self._column_cache: dict[tuple[str, str], bool] = {}
 
     def _get_conn(self):
         """Lazy connection with auto-reconnect."""
@@ -112,6 +113,14 @@ class MemoryStore:
             self._conn = psycopg2.connect(self._db_url)
             self._conn.autocommit = False
         return self._conn
+
+    @property
+    def conn(self):
+        """Best-effort compatibility property for callers needing a raw connection."""
+        try:
+            return self._get_conn()
+        except Exception:
+            return None
 
     def _execute(self, sql: str, params: tuple = (), fetch: bool = False):
         """Execute SQL with auto-reconnect."""
@@ -131,6 +140,26 @@ class MemoryStore:
         finally:
             cur.close()
 
+    def _table_has_column(self, table: str, column: str) -> bool:
+        cache_key = (table, column)
+        if cache_key in self._column_cache:
+            return self._column_cache[cache_key]
+        try:
+            rows = self._execute(
+                """SELECT 1
+                   FROM information_schema.columns
+                   WHERE table_name = %s AND column_name = %s
+                   LIMIT 1""",
+                (table, column),
+                fetch=True,
+            )
+            present = bool(rows)
+        except Exception as e:
+            log.debug("Column check failed for %s.%s: %s", table, column, e)
+            present = False
+        self._column_cache[cache_key] = present
+        return present
+
     # ------------------------------------------------------------------
     # REMEMBER
     # ------------------------------------------------------------------
@@ -138,7 +167,8 @@ class MemoryStore:
     def remember(self, content: str, source_type: str, source_id: str = "",
                  title: str = "", importance: float = 0.5,
                  tags: list[str] | None = None,
-                 summary: str = "", table: str = "episodic") -> int | None:
+                 summary: str = "", table: str = "episodic",
+                 user_id: str = "ang") -> int | None:
         """Store a memory with vector embedding.
 
         Args:
@@ -161,25 +191,47 @@ class MemoryStore:
             emb_literal = f"[{','.join(str(x) for x in emb)}]" if emb else None
 
             if table == "episodic":
-                row = self._execute(
-                    """INSERT INTO episodic_memory
-                       (source_type, source_id, title, content, summary,
-                        embedding, tags, importance)
-                       VALUES (%s, %s, %s, %s, %s, %s::vector, %s, %s)
-                       RETURNING id""",
-                    (source_type, source_id, title, content, summary,
-                     emb_literal, tags or [], importance),
-                    fetch=True,
-                )
+                if self._table_has_column("episodic_memory", "user_id"):
+                    row = self._execute(
+                        """INSERT INTO episodic_memory
+                           (user_id, source_type, source_id, title, content, summary,
+                            embedding, tags, importance)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s)
+                           RETURNING id""",
+                        (user_id, source_type, source_id, title, content, summary,
+                         emb_literal, tags or [], importance),
+                        fetch=True,
+                    )
+                else:
+                    row = self._execute(
+                        """INSERT INTO episodic_memory
+                           (source_type, source_id, title, content, summary,
+                            embedding, tags, importance)
+                           VALUES (%s, %s, %s, %s, %s, %s::vector, %s, %s)
+                           RETURNING id""",
+                        (source_type, source_id, title, content, summary,
+                         emb_literal, tags or [], importance),
+                        fetch=True,
+                    )
             elif table == "thought":
-                row = self._execute(
-                    """INSERT INTO thought_stream
-                       (thought_type, content, embedding, source_context, tags)
-                       VALUES (%s, %s, %s::vector, %s, %s)
-                       RETURNING id""",
-                    (source_type, content, emb_literal, source_id, tags or []),
-                    fetch=True,
-                )
+                if self._table_has_column("thought_stream", "user_id"):
+                    row = self._execute(
+                        """INSERT INTO thought_stream
+                           (user_id, thought_type, content, embedding, source_context, tags)
+                           VALUES (%s, %s, %s, %s::vector, %s, %s)
+                           RETURNING id""",
+                        (user_id, source_type, content, emb_literal, source_id, tags or []),
+                        fetch=True,
+                    )
+                else:
+                    row = self._execute(
+                        """INSERT INTO thought_stream
+                           (thought_type, content, embedding, source_context, tags)
+                           VALUES (%s, %s, %s::vector, %s, %s)
+                           RETURNING id""",
+                        (source_type, content, emb_literal, source_id, tags or []),
+                        fetch=True,
+                    )
             else:
                 log.error("Unknown table: %s", table)
                 return None
@@ -212,7 +264,8 @@ class MemoryStore:
     def recall(self, query: str, top_k: int = 5,
                source_filter: str | None = None,
                table: str | None = None,
-               include_decay: bool = True) -> list[dict]:
+               include_decay: bool = True,
+               user_id: str = "ang") -> list[dict]:
         """Hybrid semantic + keyword search across memory tables.
 
         Searches episodic_memory and semantic_memory (unless table is specified).
@@ -235,6 +288,7 @@ class MemoryStore:
             try:
                 rows = self._search_table(tbl, query, query_emb,
                                           source_filter, include_decay,
+                                          user_id,
                                           top_k * 2)  # fetch extra, merge later
                 results.extend(rows)
             except Exception as e:
@@ -256,6 +310,7 @@ class MemoryStore:
 
     def _search_table(self, table: str, query: str, query_emb: list[float],
                       source_filter: str | None, include_decay: bool,
+                      user_id: str,
                       limit: int) -> list[dict]:
         """Search a single table with hybrid scoring."""
         # Build WHERE clause
@@ -264,6 +319,9 @@ class MemoryStore:
         if source_filter:
             where_parts.append("source_type = %s")
             params.append(source_filter)
+        if self._table_has_column(table, "user_id"):
+            where_parts.append("user_id = %s")
+            params.append(user_id)
 
         where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
@@ -338,9 +396,9 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def search_formatted(self, query: str, top_k: int = 5,
-                         max_chars: int = 3000) -> str:
+                         max_chars: int = 3000, user_id: str = "ang") -> str:
         """Search and return formatted results for prompt injection."""
-        results = self.recall(query, top_k=top_k)
+        results = self.recall(query, top_k=top_k, user_id=user_id)
         if not results:
             return ""
 
@@ -366,7 +424,7 @@ class MemoryStore:
     # REBUILD FROM SOUL FILES
     # ------------------------------------------------------------------
 
-    def rebuild_from_soul(self, force: bool = False) -> int:
+    def rebuild_from_soul(self, force: bool = False, user_id: str = "ang") -> int:
         """Re-index all soul files into semantic_memory.
 
         Replaces memory_index.rebuild_index(). Only re-embeds changed content
@@ -407,10 +465,17 @@ class MemoryStore:
         # Get existing hashes
         existing_hashes = {}
         if not force:
-            rows = self._execute(
-                "SELECT source_path, content_hash FROM semantic_memory",
-                fetch=True,
-            )
+            if self._table_has_column("semantic_memory", "user_id"):
+                rows = self._execute(
+                    "SELECT source_path, content_hash FROM semantic_memory WHERE user_id = %s",
+                    (user_id,),
+                    fetch=True,
+                )
+            else:
+                rows = self._execute(
+                    "SELECT source_path, content_hash FROM semantic_memory",
+                    fetch=True,
+                )
             if rows:
                 for sp, ch in rows:
                     existing_hashes[sp] = ch
@@ -440,34 +505,47 @@ class MemoryStore:
                 batch_meta.append((stype, fpath_str, i, chunk, ch))
 
                 if len(batch_texts) >= _EMBED_BATCH:
-                    embedded_count += self._flush_semantic_batch(batch_texts, batch_meta)
+                    embedded_count += self._flush_semantic_batch(batch_texts, batch_meta, user_id=user_id)
                     batch_texts = []
                     batch_meta = []
 
         # Flush remaining
         if batch_texts:
-            embedded_count += self._flush_semantic_batch(batch_texts, batch_meta)
+            embedded_count += self._flush_semantic_batch(batch_texts, batch_meta, user_id=user_id)
 
         # Clean up stale entries (files that no longer exist)
         all_paths = {str(fp) for fp, _ in sources}
-        stale = self._execute(
-            "SELECT DISTINCT source_path FROM semantic_memory",
-            fetch=True,
-        )
+        if self._table_has_column("semantic_memory", "user_id"):
+            stale = self._execute(
+                "SELECT DISTINCT source_path FROM semantic_memory WHERE user_id = %s",
+                (user_id,),
+                fetch=True,
+            )
+        else:
+            stale = self._execute(
+                "SELECT DISTINCT source_path FROM semantic_memory",
+                fetch=True,
+            )
         if stale:
             for (sp,) in stale:
                 # Extract base path (before :chunk_index)
                 base = sp.split(":")[0] if ":" in sp else sp
                 if base not in all_paths:
-                    self._execute(
-                        "DELETE FROM semantic_memory WHERE source_path LIKE %s",
-                        (f"{base}%",),
-                    )
+                    if self._table_has_column("semantic_memory", "user_id"):
+                        self._execute(
+                            "DELETE FROM semantic_memory WHERE user_id = %s AND source_path LIKE %s",
+                            (user_id, f"{base}%"),
+                        )
+                    else:
+                        self._execute(
+                            "DELETE FROM semantic_memory WHERE source_path LIKE %s",
+                            (f"{base}%",),
+                        )
 
         log.info("Rebuilt semantic memory: %d chunks embedded", embedded_count)
         return embedded_count
 
-    def _flush_semantic_batch(self, texts: list[str], meta: list[tuple]) -> int:
+    def _flush_semantic_batch(self, texts: list[str], meta: list[tuple], *, user_id: str = "ang") -> int:
         """Embed and insert a batch of semantic memory chunks."""
         embeddings = _embed_texts(texts)
         count = 0
@@ -478,17 +556,30 @@ class MemoryStore:
 
             try:
                 # Upsert: delete old, insert new
-                self._execute(
-                    "DELETE FROM semantic_memory WHERE source_path = %s AND chunk_index = %s",
-                    (fpath, idx),
-                )
-                self._execute(
-                    """INSERT INTO semantic_memory
-                       (source_type, source_path, chunk_index, content,
-                        content_hash, embedding)
-                       VALUES (%s, %s, %s, %s, %s, %s::vector)""",
-                    (stype, fpath, idx, content, ch, emb_literal),
-                )
+                if self._table_has_column("semantic_memory", "user_id"):
+                    self._execute(
+                        "DELETE FROM semantic_memory WHERE user_id = %s AND source_path = %s AND chunk_index = %s",
+                        (user_id, fpath, idx),
+                    )
+                    self._execute(
+                        """INSERT INTO semantic_memory
+                           (user_id, source_type, source_path, chunk_index, content,
+                            content_hash, embedding)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s::vector)""",
+                        (user_id, stype, fpath, idx, content, ch, emb_literal),
+                    )
+                else:
+                    self._execute(
+                        "DELETE FROM semantic_memory WHERE source_path = %s AND chunk_index = %s",
+                        (fpath, idx),
+                    )
+                    self._execute(
+                        """INSERT INTO semantic_memory
+                           (source_type, source_path, chunk_index, content,
+                            content_hash, embedding)
+                           VALUES (%s, %s, %s, %s, %s, %s::vector)""",
+                        (stype, fpath, idx, content, ch, emb_literal),
+                    )
                 count += 1
             except Exception as e:
                 log.warning("Failed to insert chunk %s: %s", chunk_path, e)
@@ -502,22 +593,35 @@ class MemoryStore:
     def store_thought(self, content: str, thought_type: str,
                       parent_id: int | None = None,
                       source_context: str = "",
-                      tags: list[str] | None = None) -> int | None:
+                      tags: list[str] | None = None,
+                      user_id: str = "ang") -> int | None:
         """Store a thought in the thought_stream table."""
         try:
             emb = _embed_texts([content[:2000]])[0]
             emb_literal = f"[{','.join(str(x) for x in emb)}]" if emb else None
 
-            row = self._execute(
-                """INSERT INTO thought_stream
-                   (thought_type, content, embedding, parent_id,
-                    source_context, tags)
-                   VALUES (%s, %s, %s::vector, %s, %s, %s)
-                   RETURNING id""",
-                (thought_type, content, emb_literal, parent_id,
-                 source_context, tags or []),
-                fetch=True,
-            )
+            if self._table_has_column("thought_stream", "user_id"):
+                row = self._execute(
+                    """INSERT INTO thought_stream
+                       (user_id, thought_type, content, embedding, parent_id,
+                        source_context, tags)
+                       VALUES (%s, %s, %s, %s::vector, %s, %s, %s)
+                       RETURNING id""",
+                    (user_id, thought_type, content, emb_literal, parent_id,
+                     source_context, tags or []),
+                    fetch=True,
+                )
+            else:
+                row = self._execute(
+                    """INSERT INTO thought_stream
+                       (thought_type, content, embedding, parent_id,
+                        source_context, tags)
+                       VALUES (%s, %s, %s::vector, %s, %s, %s)
+                       RETURNING id""",
+                    (thought_type, content, emb_literal, parent_id,
+                     source_context, tags or []),
+                    fetch=True,
+                )
             return row[0][0] if row else None
         except Exception as e:
             log.error("store_thought() failed: %s", e)
@@ -525,7 +629,8 @@ class MemoryStore:
 
     def recall_thoughts(self, query: str, top_k: int = 5,
                         min_maturity: float = 0.0,
-                        thought_type: str | None = None) -> list[dict]:
+                        thought_type: str | None = None,
+                        user_id: str = "ang") -> list[dict]:
         """Recall relevant thoughts from thought_stream."""
         try:
             query_emb = _embed_texts([query])[0]
@@ -534,6 +639,9 @@ class MemoryStore:
 
         where_parts = ["maturity >= %s"]
         params: list = [min_maturity]
+        if self._table_has_column("thought_stream", "user_id"):
+            where_parts.append("user_id = %s")
+            params.append(user_id)
         if thought_type:
             where_parts.append("thought_type = %s")
             params.append(thought_type)
@@ -628,12 +736,15 @@ class MemoryStore:
     # STATS
     # ------------------------------------------------------------------
 
-    def get_stats(self) -> dict:
+    def get_stats(self, user_id: str | None = None) -> dict:
         """Stats across all memory tables."""
         stats = {}
         for tbl in ("episodic_memory", "semantic_memory", "thought_stream"):
             try:
-                row = self._execute(f"SELECT count(*) FROM {tbl}", fetch=True)
+                if user_id and self._table_has_column(tbl, "user_id"):
+                    row = self._execute(f"SELECT count(*) FROM {tbl} WHERE user_id = %s", (user_id,), fetch=True)
+                else:
+                    row = self._execute(f"SELECT count(*) FROM {tbl}", fetch=True)
                 stats[tbl] = row[0][0] if row else 0
             except Exception:
                 stats[tbl] = -1
@@ -656,10 +767,11 @@ def get_store() -> MemoryStore:
     return _store
 
 
-def search_formatted(query: str, top_k: int = 5, max_chars: int = 3000) -> str:
+def search_formatted(query: str, top_k: int = 5, max_chars: int = 3000,
+                     user_id: str = "ang") -> str:
     """Drop-in replacement for memory_index.search_formatted()."""
     try:
-        return get_store().search_formatted(query, top_k, max_chars)
+        return get_store().search_formatted(query, top_k, max_chars, user_id=user_id)
     except Exception as e:
         log.warning("Postgres search failed, falling back to SQLite: %s", e)
         try:
@@ -669,10 +781,10 @@ def search_formatted(query: str, top_k: int = 5, max_chars: int = 3000) -> str:
             return ""
 
 
-def rebuild_index(force: bool = False) -> int:
+def rebuild_index(force: bool = False, user_id: str = "ang") -> int:
     """Drop-in replacement for memory_index.rebuild_index()."""
     try:
-        return get_store().rebuild_from_soul(force)
+        return get_store().rebuild_from_soul(force, user_id=user_id)
     except Exception as e:
         log.warning("Postgres rebuild failed, falling back to SQLite: %s", e)
         try:

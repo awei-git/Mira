@@ -83,12 +83,19 @@ def _run_registry_agent_legacy(agent: str, workspace: Path, task_id: str, conten
                                sender: str, thread_id: str, tier: str = "light") -> dict:
     """Run a registry agent through the canonical preflight/handler contract."""
     registry = get_registry()
+    requires_preflight = getattr(registry, "requires_preflight", lambda name: False)(agent)
     output_snapshot = _snapshot_file(workspace / "output.md")
 
     try:
         preflight_fn = registry.load_preflight(agent)
     except Exception as e:
         msg = f"{agent} preflight load failed: {e}"
+        (workspace / "output.md").write_text(msg, encoding="utf-8")
+        _write_result(workspace, task_id, "error", msg, agent=agent)
+        return _read_result_json(workspace)
+
+    if not preflight_fn and requires_preflight:
+        msg = f"{agent} preflight missing"
         (workspace / "output.md").write_text(msg, encoding="utf-8")
         _write_result(workspace, task_id, "error", msg, agent=agent)
         return _read_result_json(workspace)

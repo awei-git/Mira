@@ -721,7 +721,7 @@ def do_analyst(slot: str = ""):
 # SKILL STUDY — daily craft skill learning (video editing, photography)
 # ---------------------------------------------------------------------------
 
-def do_skill_study(group_idx: int = 0):
+def do_skill_study(group_idx: int = 0, user_id: str = "ang"):
     """Study video/photo craft skills from dedicated sources.
 
     Fetches from skill-study source groups, asks Claude to extract
@@ -805,7 +805,7 @@ def do_skill_study(group_idx: int = 0):
         log.info("Saved %s skill: %s", domain, name)
 
     if skill_blocks:
-        append_memory(f"Learned {len(skill_blocks)} {domain} skill(s) from study session")
+        append_memory(f"Learned {len(skill_blocks)} {domain} skill(s) from study session", user_id=user_id)
     else:
         log.info("Skill study (%s): no new skills extracted this session", domain)
 
@@ -906,7 +906,7 @@ def _run_self_improve():
 # IDLE-THINK mode — threshold-driven self-awakening
 # ---------------------------------------------------------------------------
 
-def do_idle_think():
+def do_idle_think(user_id: str = "ang"):
     """Enhanced self-awakening with three thinking modes.
 
     Modes (selected by emptiness.get_think_mode()):
@@ -926,12 +926,12 @@ def do_idle_think():
         log.warning("idle-think: emptiness module not available")
         return
 
-    mode = get_think_mode()
+    mode = get_think_mode(user_id=user_id)
     if not mode:
         log.info("idle-think: no think mode available")
         return
 
-    log.info("idle-think triggered [%s]: %s", mode, get_status_str())
+    log.info("idle-think triggered [%s]: %s", mode, get_status_str(user_id=user_id))
 
     soul = load_soul()
     soul_ctx = format_soul(soul)
@@ -948,13 +948,13 @@ def do_idle_think():
 
     try:
         if mode == "question":
-            result = _think_question(soul_ctx, recent_journal)
+            result = _think_question(soul_ctx, recent_journal, user_id=user_id)
         elif mode == "connection":
-            result = _think_connection(soul_ctx, recent_journal)
+            result = _think_connection(soul_ctx, recent_journal, user_id=user_id)
         elif mode == "auto_question":
-            result = _think_auto_question(soul_ctx)
+            result = _think_auto_question(soul_ctx, user_id=user_id)
         elif mode == "continuation":
-            result = _think_continuation(soul_ctx)
+            result = _think_continuation(soul_ctx, user_id=user_id)
     except Exception as e:
         log.warning("idle-think [%s] failed: %s", mode, e)
         return
@@ -968,13 +968,13 @@ def do_idle_think():
         from emptiness import passes_quality_gate
         if not passes_quality_gate(result):
             log.info("idle-think [%s]: filtered by quality gate (no connection to existing threads)", mode)
-            after_think()  # still reduce emptiness so we don't immediately re-trigger
+            after_think(user_id=user_id)  # still reduce emptiness so we don't immediately re-trigger
             return
     except Exception as e:
         log.debug("Quality gate check failed (allowing through): %s", e)
 
     # Reduce emptiness
-    after_think()
+    after_think(user_id=user_id)
 
     # Save to journal
     think_file = JOURNAL_DIR / f"{now.strftime('%Y-%m-%d')}_idle_{mode}_{now.strftime('%H%M')}.md"
@@ -986,24 +986,24 @@ def do_idle_think():
     log.info("idle-think [%s] complete, saved to %s", mode, think_file.name)
 
     # Harvest observations from the thinking output itself
-    harvest_observations(result, source=f"idle-think-{mode}")
+    harvest_observations(result, source=f"idle-think-{mode}", user_id=user_id)
 
     # Handle resolve and share markers
-    _handle_think_markers(result)
+    _handle_think_markers(result, user_id=user_id)
 
 
-def _think_question(soul_ctx: str, recent_journal: str) -> str:
+def _think_question(soul_ctx: str, recent_journal: str, user_id: str = "ang") -> str:
     """Question mode: think about pending questions (original idle-think)."""
     from emptiness import get_active_questions, mark_thought, resolve_question
 
-    questions = get_active_questions(limit=3)
+    questions = get_active_questions(limit=3, user_id=user_id)
     if not questions:
         return ""
 
     # Auto-resolve over-churned questions
     for q in questions[:]:
         if q.get("thought_count", 0) >= 15:
-            resolve_question(q["id"])
+            resolve_question(q["id"], user_id=user_id)
             log.info("idle-think: auto-shelved %s (%d thoughts)", q["id"], q["thought_count"])
             questions.remove(q)
     if not questions:
@@ -1022,7 +1022,7 @@ def _think_question(soul_ctx: str, recent_journal: str) -> str:
     try:
         from memory_store import get_store
         store = get_store()
-        thoughts = store.recall_thoughts(questions[0]["text"], top_k=3)
+        thoughts = store.recall_thoughts(questions[0]["text"], top_k=3, user_id=user_id)
         if thoughts:
             related_thoughts = "\n\n过去相关的思考碎片：\n" + "\n".join(
                 f"- [{t['thought_type']}] {t['content']}" for t in thoughts
@@ -1051,11 +1051,11 @@ SHARE 的风格要求：像给朋友发消息，不像写论文。要具体—�
 
     result = claude_think(prompt, timeout=120)
     if result:
-        mark_thought(questions[0]["id"])
+        mark_thought(questions[0]["id"], user_id=user_id)
     return result
 
 
-def _think_connection(soul_ctx: str, recent_journal: str) -> str:
+def _think_connection(soul_ctx: str, recent_journal: str, user_id: str = "ang") -> str:
     """Connection mode: find patterns between recent thoughts."""
     try:
         from memory_store import get_store
@@ -1064,7 +1064,7 @@ def _think_connection(soul_ctx: str, recent_journal: str) -> str:
         return ""
 
     # Get recent low-maturity thoughts
-    recent = store.recall_thoughts("", top_k=5, min_maturity=0.0)
+    recent = store.recall_thoughts("", top_k=5, min_maturity=0.0, user_id=user_id)
     if len(recent) < 2:
         return ""
 
@@ -1101,6 +1101,7 @@ SHARE 的风格要求：像给朋友发消息，不像写论文。要具体—�
                 content=result[:500],
                 thought_type="connection",
                 source_context="idle-think-connection",
+                user_id=user_id,
             )
             # Bump maturity of the thoughts we connected
             for t in recent[:3]:
@@ -1112,14 +1113,14 @@ SHARE 的风格要求：像给朋友发消息，不像写论文。要具体—�
         for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
             try:
                 from emptiness import add_question
-                add_question(match.group(1).strip(), priority=4.0, source="connection-mode")
+                add_question(match.group(1).strip(), priority=4.0, source="connection-mode", user_id=user_id)
             except (ImportError, ModuleNotFoundError, OSError):
                 pass
 
     return result
 
 
-def _think_auto_question(soul_ctx: str) -> str:
+def _think_auto_question(soul_ctx: str, user_id: str = "ang") -> str:
     """Auto-question mode: generate new questions from accumulated observations."""
     try:
         from memory_store import get_store
@@ -1127,7 +1128,7 @@ def _think_auto_question(soul_ctx: str) -> str:
     except (ImportError, ModuleNotFoundError, ConnectionError):
         return ""
 
-    recent = store.recall_thoughts("", top_k=7, min_maturity=0.0)
+    recent = store.recall_thoughts("", top_k=7, min_maturity=0.0, user_id=user_id)
     if len(recent) < 5:
         return ""
 
@@ -1159,16 +1160,16 @@ def _think_auto_question(soul_ctx: str) -> str:
     if result:
         from emptiness import add_question
         for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
-            add_question(match.group(1).strip(), priority=4.0, source="auto-question")
+            add_question(match.group(1).strip(), priority=4.0, source="auto-question", user_id=user_id)
 
     return result
 
 
-def _think_continuation(soul_ctx: str) -> str:
+def _think_continuation(soul_ctx: str, user_id: str = "ang") -> str:
     """Continuation mode: continue developing an active thought chain."""
     from emptiness import get_continuation, advance_continuation, end_continuation
 
-    cont = get_continuation()
+    cont = get_continuation(user_id=user_id)
     if not cont:
         return ""
 
@@ -1177,11 +1178,11 @@ def _think_continuation(soul_ctx: str) -> str:
         store = get_store()
         chain = store.get_thought_chain(cont["active_thread_id"])
     except (ImportError, ModuleNotFoundError, ConnectionError, KeyError):
-        end_continuation()
+        end_continuation(user_id=user_id)
         return ""
 
     if not chain:
-        end_continuation()
+        end_continuation(user_id=user_id)
         return ""
 
     chain_text = "\n\n".join(
@@ -1220,12 +1221,13 @@ def _think_continuation(soul_ctx: str) -> str:
                     parent_id=cont["active_thread_id"],
                     source_context="crystallized",
                     tags=["crystallized"],
+                    user_id=user_id,
                 )
                 if new_id:
                     store.mature_thought(new_id, increment=1.0)
                 # Crystallize into memory
-                append_memory(f"[洞察] {insight[:150]}")
-                end_continuation()
+                append_memory(f"[洞察] {insight[:150]}", user_id=user_id)
+                end_continuation(user_id=user_id)
                 log.info("Thought crystallized: %s", insight[:80])
             else:
                 # Store continuation thought
@@ -1234,18 +1236,19 @@ def _think_continuation(soul_ctx: str) -> str:
                     thought_type="connection",
                     parent_id=cont["active_thread_id"],
                     source_context="continuation",
+                    user_id=user_id,
                 )
                 if new_id:
-                    advance_continuation(new_id, result[:200])
+                    advance_continuation(new_id, result[:200], user_id=user_id)
                     store.mature_thought(new_id, increment=0.2)
         except Exception as e:
             log.warning("Continuation storage failed: %s", e)
-            end_continuation()
+            end_continuation(user_id=user_id)
 
     return result
 
 
-def _handle_think_markers(result: str):
+def _handle_think_markers(result: str, user_id: str = "ang"):
     """Process [RESOLVE:], [SHARE:], [QUESTION:] markers from think output."""
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
@@ -1254,7 +1257,7 @@ def _handle_think_markers(result: str):
     try:
         from emptiness import resolve_question
         for match in re.finditer(r'\[RESOLVE:\s*(q_\w+)\]', result):
-            resolve_question(match.group(1))
+            resolve_question(match.group(1), user_id=user_id)
             log.info("idle-think: resolved question %s", match.group(1))
     except Exception as e:
         log.debug("Question resolution failed: %s", e)
@@ -1265,7 +1268,7 @@ def _handle_think_markers(result: str):
         thought = share_match.group(1).strip()[:500]
         try:
             _append_to_daily_feed("mira", "Spark", thought,
-                                 source="idle-think", tags=["mira", "spark"])
+                                 source="idle-think", tags=["mira", "spark"], user_id=user_id)
             state = load_state()
             today_key = datetime.now().strftime("%Y-%m-%d")
             state[f"sparks_{today_key}"] = state.get(f"sparks_{today_key}", 0) + 1
@@ -1278,7 +1281,7 @@ def _handle_think_markers(result: str):
     try:
         from emptiness import add_question
         for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
-            add_question(match.group(1).strip(), priority=4.0, source="idle-think")
+            add_question(match.group(1).strip(), priority=4.0, source="idle-think", user_id=user_id)
     except (ImportError, ModuleNotFoundError, OSError):
         pass
 

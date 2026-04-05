@@ -42,6 +42,9 @@ class JobSpec:
     # Whether this runs inline (not as background process)
     inline: bool = False
 
+    # Whether the scheduler should evaluate and dispatch this job per configured user
+    per_user: bool = False
+
     # Inline jobs declare the runner name consumed by the orchestrator
     inline_runner: str = ""
 
@@ -170,6 +173,8 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger="conditional",
         trigger_name="should_idle_think",
         priority=90,
+        per_user=True,
+        bg_name_pattern="idle-think-{user_id}",
         description="Think when idle (low priority)",
     ),
 
@@ -362,7 +367,7 @@ def list_job_names() -> list[str]:
     return sorted(j.name for j in BACKGROUND_JOBS)
 
 
-def evaluate_job_payload(job: JobSpec):
+def evaluate_job_payload(job: JobSpec, user_id: str | None = None):
     """Evaluate the configured trigger for a job."""
     from runtime import triggers
 
@@ -370,18 +375,26 @@ def evaluate_job_payload(job: JobSpec):
         payload = True
     else:
         trigger = getattr(triggers, job.trigger_name)
-        payload = trigger()
+        if user_id is not None:
+            payload = trigger(user_id=user_id)
+        else:
+            payload = trigger()
 
     if job.payload_equals is not None and payload != job.payload_equals:
         return None
     return payload
 
 
-def build_job_dispatch(job: JobSpec, payload, python_executable: str, core_path: str) -> tuple[str, list[str]]:
+def build_job_dispatch(job: JobSpec, payload, python_executable: str, core_path: str,
+                       user_id: str | None = None) -> tuple[str, list[str]]:
     """Build background process name and command from a declarative job spec."""
     context = _payload_context(job, payload)
+    if user_id is not None:
+        context["user_id"] = user_id
     bg_name = job.bg_name_pattern.format(**context)
     formatted_args = [arg.format(**context) for arg in job.command]
+    if user_id is not None:
+        formatted_args.extend(["--user", user_id])
 
     if job.launcher == "script":
         script_path = str(Path(core_path).resolve().parent / job.script_path)

@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Tag ingestion-channel trust level to prevent parasitic amplification",
+  "description": "Add a trust_source field to every inbound message/task as it enters Mira's pipeline. Messages arriving from Apple Notes inbox and iCloud Mira-Bridge inherit the trust level of those channels — which are human-facing surfaces that can be injected into (malicious note, rogue iOS shortcut, compromised iCloud sync). High-blast-radius actions (publish, file delete, external API call) should require trust_source >= VERIFIED, blocking tasks that arrived via ambient/unverified channels unless the user explicitly elevated them.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/notes_bridge.py",
+    "~/Sandbox/Mira/agents/super/core.py"
+  ],
+  "rationale": "The reading note's core point: a parasitic agent inherits the trust of its host workflow, which means the host workflow IS the attack surface. Mira is parasitic on Apple Notes and the iCloud bridge — those are its 'Slack reaction' equivalents. An attacker who injects content into either channel doesn't need to compromise Mira itself; they just need to get a malicious task into the inbox. The note ends with the exact right question: 'is the agent an amplifier or a buffer when the host is attacked?' Right now Mira is an amplifier — it executes whatever arrives in the inbox. Adding trust_source tagging at ingestion makes it a buffer.",
+  "diff_description": "In notes_bridge.py (or wherever inbox messages are parsed into task dicts), add trust_source='notes_inbox' or trust_source='icloud_bridge' to the task metadata. In core.py's dispatch logic, before handing off to any agent that can publish, delete files, or call external APIs, check task.get('trust_source'). If trust_source is an ambient channel (not 'direct_api' or 'verified_user'), either (a) downgrade the permitted action set, or (b) emit a confirmation request back to the user before executing. This is a two-part change: annotation at ingestion, gating at dispatch. Start with annotation only (low-risk) and add gating in a second pass once you can audit which task types are actually arriving via each channel.",
+  "source_note": "2026-04-05_3-agent-落地的形态是寄生不是独立运行.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-05_3-agent-落地的形态是寄生不是独立运行.md",
+  "created_at": "2026-04-05T13:04:09.288845",
+  "date": "2026-04-05",
+  "status": "proposed"
+}

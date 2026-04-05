@@ -30,14 +30,18 @@ def handle(workspace: Path, task_id: str, content: str,
 
     tier = kwargs.get("tier", "light")
     persona = get_persona_context()
-    thread_history = load_thread_history(thread_id)
-    thread_memory = load_thread_memory(thread_id)
+    thread_history = kwargs.get("thread_history") or load_thread_history(
+        thread_id, user_id=kwargs.get("user_id", "ang")
+    )
+    thread_memory = kwargs.get("thread_memory") or load_thread_memory(
+        thread_id, user_id=kwargs.get("user_id", "ang")
+    )
     journals = _load_recent_journals(3)
     briefings = _load_recent_briefings(2)
 
     recalled = ""
     try:
-        recalled = recall_context(content)
+        recalled = recall_context(content, user_id=kwargs.get("user_id", "ang"))
     except Exception as exc:
         log.warning("Discussion recall failed: %s", exc)
 
@@ -79,7 +83,7 @@ def handle(workspace: Path, task_id: str, content: str,
 
     if thread_id:
         try:
-            manager = ThreadManager()
+            manager = ThreadManager(user_id=kwargs.get("user_id", "ang"))
             manager.update_last_active(thread_id)
             manager.append_thread_memory(
                 thread_id,

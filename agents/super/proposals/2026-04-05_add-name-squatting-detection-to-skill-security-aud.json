@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Add name-squatting detection to skill security audit",
+  "description": "Extend soul_manager.audit_skill() to check whether an incoming skill's name is suspiciously similar to any already-trusted skill in the soul/skills directory. Flag skills whose names are within edit-distance 2 of an existing skill name, or that share all but one token with an existing skill name.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py"
+  ],
+  "rationale": "The reading note observes that the Claude Code fork incident was not a technical exploit — it was a timing exploit. Forks that mimicked the legitimate tool's name and reputation spread faster than verification could catch them. Mira's current audit_skill() inspects code content (network calls, eval, obfuscation) but does not inspect the skill's identity: a malicious skill named 'Verify-Before-Claming' or 'Long-Running-Agent-Harnes' would pass all existing checks while impersonating a trusted skill. The attack surface is the name and the trust signal it inherits, not the payload alone.",
+  "diff_description": "In audit_skill(), after loading the incoming skill's metadata, load the list of existing skill names from soul/skills/. Compute Levenshtein distance between the incoming name and each existing name. If any distance is <= 2 (one typo away), add a WARN entry to the audit result: 'Skill name resembles existing trusted skill <name> (edit distance N) — possible name-squatting.' Treat distance == 0 (exact duplicate) as a BLOCK, not a warn, since silently overwriting a trusted skill is itself an attack vector. This requires adding a ~15-line helper (levenshtein or import difflib.SequenceMatcher) and a loop in the existing audit function — no new dependencies, no architectural change.",
+  "source_note": "2026-04-05_1-fork-速度即攻击窗口.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-05_1-fork-速度即攻击窗口.md",
+  "created_at": "2026-04-05T13:04:09.284505",
+  "date": "2026-04-05",
+  "status": "implemented",
+  "implemented_at": "2026-04-05T13:04:53.839861"
+}
