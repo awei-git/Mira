@@ -16,7 +16,10 @@ from config import (
     BRIEFINGS_DIR, ARTIFACTS_DIR, MIRA_DIR,
     EXPLORE_SOURCE_GROUPS, MAX_DEEP_DIVES,
 )
-from mira import Mira
+try:
+    from mira import Mira
+except (ImportError, ModuleNotFoundError):
+    Mira = None
 from soul_manager import (
     load_soul, format_soul, save_skill, save_reading_note,
     load_recent_reading_notes,

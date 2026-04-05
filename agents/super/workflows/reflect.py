@@ -14,7 +14,10 @@ sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 from config import (
     BRIEFINGS_DIR, ARTIFACTS_DIR, MIRA_DIR, WORKSPACE_DIR,
 )
-from mira import Mira
+try:
+    from mira import Mira
+except (ImportError, ModuleNotFoundError):
+    Mira = None
 from soul_manager import (
     load_soul, format_soul, append_memory, update_interests,
     update_worldview, load_recent_reading_notes,

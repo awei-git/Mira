@@ -17,7 +17,10 @@ from config import (
     MIRA_DIR, EPISODES_DIR, WRITINGS_DIR, LOGS_DIR,
     ZA_FILE,
 )
-from mira import Mira
+try:
+    from mira import Mira
+except (ImportError, ModuleNotFoundError):
+    Mira = None
 from soul_manager import (
     append_memory, catalog_list,
     _atomic_write as atomic_write,

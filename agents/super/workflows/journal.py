@@ -17,7 +17,10 @@ import health_monitor
 from config import (
     BRIEFINGS_DIR, JOURNAL_DIR, MIRA_DIR,
 )
-from mira import Mira
+try:
+    from mira import Mira
+except (ImportError, ModuleNotFoundError):
+    Mira = None
 from soul_manager import (
     load_soul, format_soul, load_recent_reading_notes,
     _atomic_write as atomic_write,

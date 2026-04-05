@@ -26,7 +26,10 @@ from config import (
     SKILL_STUDY_SOURCE_GROUPS,
     EPISODES_DIR, LOG_RETENTION_DAYS,
 )
-from mira import Mira
+try:
+    from mira import Mira
+except (ImportError, ModuleNotFoundError):
+    Mira = None
 from soul_manager import (
     load_soul, format_soul, append_memory, save_skill,
     load_recent_reading_notes,

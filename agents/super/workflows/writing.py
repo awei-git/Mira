@@ -15,7 +15,10 @@ _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
 from config import JOURNAL_DIR, WRITINGS_DIR
-from mira import Mira
+try:
+    from mira import Mira
+except (ImportError, ModuleNotFoundError):
+    Mira = None
 from soul_manager import (
     load_soul, format_soul, load_recent_reading_notes,
     detect_recurring_themes,
