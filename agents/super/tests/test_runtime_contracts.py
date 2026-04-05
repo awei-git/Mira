@@ -135,3 +135,52 @@ def test_execute_plan_steps_backfills_done_result(tmp_path, monkeypatch):
     assert result["status"] == "done"
     assert result["summary"] == "Draft ready"
     assert result["agent"] == "writer"
+
+
+def test_execute_plan_steps_passes_tier_and_thread_context(tmp_path, monkeypatch):
+    """Registry dispatch should pass supported runtime kwargs to handlers."""
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+
+    captured = {}
+
+    class FakeRegistry:
+        def load_handler(self, name: str):
+            assert name == "discussion"
+
+            def handler(ws, task_id, instruction, sender, thread_id, **kwargs):
+                captured["tier"] = kwargs.get("tier")
+                captured["thread_history"] = kwargs.get("thread_history")
+                captured["thread_memory"] = kwargs.get("thread_memory")
+                (ws / "output.md").write_text("Reply", encoding="utf-8")
+                (ws / "summary.txt").write_text("Reply", encoding="utf-8")
+                return "Reply"
+
+            return handler
+
+    monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
+    monkeypatch.setattr(task_worker, "load_thread_history", lambda thread_id: "history block")
+    monkeypatch.setattr(task_worker, "load_thread_memory", lambda thread_id: "memory block")
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    plan = [{
+        "agent": "discussion",
+        "instruction": "Think deeply",
+        "tier": "heavy",
+        "prediction": {"difficulty": "medium", "failure_modes": [], "success_criteria": "reply returned"},
+    }]
+    task_worker._execute_plan_steps(
+        plan,
+        workspace,
+        "task125",
+        "聊聊这个问题",
+        "ang",
+        "thread99",
+        None,
+        False,
+        1,
+    )
+
+    assert captured["tier"] == "heavy"
+    assert captured["thread_history"] == "history block"
+    assert captured["thread_memory"] == "memory block"
