@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Prompt injection guard on trust boundary inputs (iPhone bridge + Notes inbox)",
+  "description": "Mira already audits *skills* for malicious code via soul_manager.audit_skill(), but applies no analogous check to *incoming content* that reaches the LLM — specifically the iPhone/iCloud bridge messages and the Apple Notes inbox. These are legitimate, trusted channels (same as Stripe's emoji), but their content is externally authored and could carry prompt injection payloads. Add a soul_manager.check_prompt_injection(text) function that scans incoming text for canonical injection patterns ('ignore previous instructions', 'you are now', 'disregard', '###SYSTEM', etc.) before dispatch, and log + quarantine flagged messages rather than silently forwarding them to agents.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py",
+    "~/Sandbox/Mira/agents/super/core.py"
+  ],
+  "rationale": "The reading note's core insight: legitimate features and trust relationships ARE the attack surface — not just suspicious external tools. Stripe's emoji trigger is the trust boundary; the vulnerability is that the emoji content (e.g. an issue comment) could be attacker-controlled. Mira's analogous trust boundaries are the iPhone bridge and Notes inbox: Mira treats messages arriving there as user-authoritative, but their content could be crafted by a third party (a website Mira visited, a shared note, a forwarded message). The skill audit guards one input path; the message channels are unguarded.",
+  "diff_description": "1. In soul_manager.py: add check_prompt_injection(text: str) -> tuple[bool, str] that tests for a configurable blocklist of injection phrases (case-insensitive regex) plus heuristics like >3 consecutive instruction-style sentences from a non-user source. Returns (is_flagged, reason). 2. In core.py, in the iPhone message dispatch path and the Apple Notes inbox handler: call check_prompt_injection() on the raw message body before passing to agent dispatch. If flagged: log to logs/security.log with the full message and reason, send a notification back to the iPhone app (quarantine notice), and skip dispatch. Do not silently drop — the user should know a message was blocked.",
+  "source_note": "2026-04-04_2-slack-emoji-是一个-trust-boundary-的设计决.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-04_2-slack-emoji-是一个-trust-boundary-的设计决.md",
+  "created_at": "2026-04-04T13:06:26.746422",
+  "date": "2026-04-04",
+  "status": "proposed"
+}

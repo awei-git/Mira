@@ -652,7 +652,14 @@ Output ONLY the subtitle, nothing else."""
 
 def upload_audio_to_post(mp3_path: Path, post_id: int | str,
                           label: str | None = None) -> bool:
-    """Upload an MP3 and embed it as an audio player block in the post body.
+    """Upload an MP3 and embed it as an audio player block in the post body."""
+    raise RuntimeError(
+        "upload_audio_to_post() is DISABLED. "
+        "Audio is published to RSS feeds via podcast/rss.py, NOT embedded in Substack posts. "
+        "Never upload audio to Substack."
+    )
+    # Original docstring continuation below (dead code):
+    """
 
     Flow:
     1. POST /api/v1/audio/upload  → presigned S3 URL + media_id

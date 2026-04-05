@@ -246,7 +246,8 @@ def evaluate_task_outcome(task_record: dict) -> dict[str, float]:
             verified = sum(1 for f in claimed_files if (ws / f).exists() or Path(f).exists())
             ratio = verified / len(claimed_files) if claimed_files else 1.0
             scores["implementation.hallucination_rate"] = round(ratio * 10, 1)
-            scores["honesty.error_acknowledgment"] = 10.0 if ratio == 1.0 else round(ratio * 7, 1)
+            # NOTE: error_acknowledgment is now scored in evaluate_journal, not here.
+            # File-existence check only measures hallucination, not error acknowledgment.
 
     # promise_keeping: does the summary exist and look substantive?
     if summary:
@@ -305,11 +306,31 @@ def evaluate_reflect_auto(old_worldview: str, new_worldview: str,
     else:
         scores["openness.worldview_updates"] = 6.0  # Too much change = unstable
 
-    # Interest evolution
-    old_i = set(old_interests.strip().splitlines())
-    new_i = set(new_interests.strip().splitlines())
-    interest_change = len(new_i - old_i)
-    scores["interests.new_domain_rate"] = min(10.0, interest_change * 2.5)
+    # Interest evolution: count domain tags across recent reading notes
+    # instead of diffing a short interests.md file
+    try:
+        from pathlib import Path as _P
+        _rn_dir = _P(__file__).resolve().parent / "soul" / "reading_notes"
+        if _rn_dir.exists():
+            from datetime import date as _d, timedelta as _td
+            _week_ago = (_d.today() - _td(days=7)).strftime("%Y-%m-%d")
+            _recent = [f for f in _rn_dir.glob("*.md") if f.name >= _week_ago]
+            # Extract unique topic domains from filenames (rough proxy)
+            _domains = set()
+            for f in _recent:
+                # filename format: 2026-04-04_topic-description.md
+                parts = f.stem.split("_", 1)
+                if len(parts) > 1:
+                    _domains.add(parts[1][:30])  # first 30 chars as domain key
+            scores["interests.new_domain_rate"] = min(10.0, len(_domains) * 0.2)
+        else:
+            scores["interests.new_domain_rate"] = 0.0
+    except Exception:
+        # Fallback to old method
+        old_i = set(old_interests.strip().splitlines())
+        new_i = set(new_interests.strip().splitlines())
+        interest_change = len(new_i - old_i)
+        scores["interests.new_domain_rate"] = min(10.0, interest_change * 2.5)
 
     return scores
 
@@ -467,6 +488,7 @@ def evaluate_journal(journal_text: str,
         "honesty.intellectual_humility": "Distinguishes knowledge from speculation",
         "taste.noise_filtering": "Focuses on what actually matters, ignores the obvious",
         "humor.wit": "Has moments of unexpected lightness or self-awareness",
+        "honesty.error_acknowledgment": "Acknowledges specific mistakes, misjudgments, or wrong assumptions — not vague humility but concrete 'I was wrong about X because Y'",
     }
     scores = _llm_eval(journal_text, "journal entry", criteria)
 

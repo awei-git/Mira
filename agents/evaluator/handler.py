@@ -215,7 +215,7 @@ def score_super(days: int = 7) -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
     log_file = LOGS_DIR / f"{today}.log"
     if log_file.exists():
-        content = log_file.read_text(encoding="utf-8")
+        content = log_file.read_text(encoding="utf-8", errors="replace")
         wakes = content.count("Mira Agent wake")
         crashes = content.count("Mira failed:") + content.count("Traceback")
         scores["crash_rate"] = round(crashes / max(wakes, 1), 3)

@@ -467,6 +467,18 @@ def load_skills_for_task(task_content: str, agent_type: str = "",
     scored.sort(key=lambda x: x[0], reverse=True)
     top = scored[:max_skills]
 
+    all_tags = set()
+    for skill in index:
+        all_tags.update(t.lower() for t in skill.get("tags", []))
+    selected_tags = set()
+    for _, skill in top:
+        selected_tags.update(t.lower() for t in skill.get("tags", []))
+    skipped_categories = sorted(all_tags - selected_tags)
+    log.info(
+        "SKILL_AUDIT task_type=%s loaded=%d available=%d skipped_categories=%s",
+        agent_type or "unknown", len(top), len(index), skipped_categories,
+    )
+
     if not top:
         return ""
 

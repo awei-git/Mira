@@ -292,3 +292,57 @@ def _resolve_content(source: str, original_msg: str) -> str | None:
         return original_msg
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Post-publish pipeline — hardcoded correct sequence
+# ---------------------------------------------------------------------------
+
+def post_publish_pipeline(slug: str, title: str, article_text: str):
+    """Hardcoded post-publish pipeline. No guessing allowed.
+
+    Correct sequence after publishing an article to Substack:
+    1. Generate podcast (conversation mode, BOTH zh and en)
+    2. Notify user to listen and confirm before RSS publish
+    3. Notes promotion is already queued by publish_to_substack()
+
+    This function handles step 1-2. Step 3 is automatic.
+    """
+    import sys
+    from pathlib import Path
+    podcast_dir = str(Path(__file__).resolve().parent.parent / "podcast")
+    shared_dir = str(Path(__file__).resolve().parent.parent / "shared")
+    if podcast_dir not in sys.path:
+        sys.path.insert(0, podcast_dir)
+    if shared_dir not in sys.path:
+        sys.path.insert(0, shared_dir)
+
+    from handler import generate_conversation_for_article  # podcast handler, NOT this file
+    from config import ARTIFACTS_DIR
+
+    results = {}
+
+    # Generate BOTH languages
+    for lang in ["en", "zh"]:
+        log.info("Post-publish: generating %s podcast for '%s'", lang, title)
+        try:
+            result = generate_conversation_for_article(
+                article_text=article_text,
+                title=title,
+                lang=lang,
+            )
+            results[lang] = result
+            log.info("Post-publish: %s podcast → %s", lang, result)
+        except Exception as e:
+            log.error("Post-publish: %s podcast failed: %s", lang, e)
+            results[lang] = None
+
+    # Notify user — do NOT auto-publish to RSS
+    summary_lines = ["Podcast 已生成，等待试听确认："]
+    for lang, path in results.items():
+        status = f"✅ {path}" if path else "❌ 生成失败"
+        summary_lines.append(f"  {lang.upper()}: {status}")
+    summary_lines.append(f"\n确认后回复 'publish podcast {slug}' 发布到 RSS。")
+
+    log.info("\n".join(summary_lines))
+    return results

@@ -1092,7 +1092,11 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     # --- Self-evaluation: score this explore ---
     try:
         from evaluator import evaluate_explore, record_event
-        e_scores = evaluate_explore(briefing, source_names=source_names)
+        from datetime import date as _date
+        _today_str = _date.today().strftime("%Y-%m-%d")
+        _rn_dir = Path(__file__).resolve().parent.parent / "shared" / "soul" / "reading_notes"
+        _today_notes = [f.name for f in _rn_dir.glob(f"{_today_str}*")] if _rn_dir.exists() else []
+        e_scores = evaluate_explore(briefing, reading_notes=_today_notes, source_names=source_names)
         if e_scores:
             record_event("explore", e_scores, {"sources": src_label if 'src_label' in dir() else ""})
     except Exception as e:

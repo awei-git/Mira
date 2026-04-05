@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Skill Reputation Tracking in soul_manager",
+  "description": "Add a lightweight success/failure reputation tracker for learned skills in soul_manager.py. Currently, trust in skills is enforced only at load time via security audit (audit_skill). The reading note's Hawala insight suggests a second trust layer: track each skill's execution outcomes over time, so skills that repeatedly produce good results gain implicit trust, and skills that silently fail get flagged for review — without requiring external enforcement or rule changes.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py",
+    "~/Sandbox/Mira/agents/shared/soul/skill_reputation.json"
+  ],
+  "rationale": "The reading note's core claim: in Hawala, reputation IS the infrastructure — not a supplement to rules, but the mechanism itself. Mira currently has rule-based skill trust (security audit + hard rules), but zero reputation-based trust. The note's counterquestion (is Hawala's reliability due to reputation mechanics, or the closed community?) actually resolves in Mira's favor: all of Mira's agents ARE a closed community, so a reputation mechanism should work without the scaling problem. This maps directly to skills: a skill that has been used 40 times successfully should be trusted differently than one used once.",
+  "diff_description": "In soul_manager.py: (1) Add load_skill_reputation() that reads skill_reputation.json (dict of skill_name -> {uses: int, successes: int, failures: int, last_used: str}). (2) Add record_skill_outcome(skill_name, success: bool) that updates the JSON file. (3) Add get_skill_reputation_score(skill_name) -> float returning successes/uses (default 1.0 for new skills). (4) In the skill recommendation / skill-loading path, log a warning if a skill's reputation score drops below 0.6 after 5+ uses. The skill_reputation.json file starts empty and grows via normal usage. No existing behavior changes — this is additive instrumentation only.",
+  "source_note": "2026-04-04_哈瓦拉声誉作为基础设施.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-04_哈瓦拉声誉作为基础设施.md",
+  "created_at": "2026-04-04T13:06:26.749578",
+  "date": "2026-04-04",
+  "status": "proposed"
+}

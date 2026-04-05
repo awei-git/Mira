@@ -574,6 +574,11 @@ def generate_audio_for_article(article_text: str, title: str,
                                 output_dir: Path | None = None,
                                 lang: str = "en") -> Path | None:
     """Voiceover pipeline: article → spoken script → TTS → MP3."""
+    raise RuntimeError(
+        "generate_audio_for_article() is DISABLED. "
+        "Use generate_conversation_for_article() for podcast episodes. "
+        "Voiceover (single-speaker) is no longer used."
+    )
     import sys
     shared = str(Path(__file__).resolve().parent.parent / "shared")
     if shared not in sys.path:
@@ -845,6 +850,9 @@ def _clean_turn_text(text: str) -> str:
     text = re.sub(r'[\[\]【】「」『』""''《》]', '', text)  # remove brackets/quotes
     text = re.sub(r'[、·・･]', '，', text)            # Chinese stops → comma
     text = re.sub(r'[/\\*#@%^&+=|~`]', ' ', text)  # special symbols → space
+    # Space English acronyms so TTS spells them out (AI→A I, LLM→L L M)
+    text = re.sub(r'(?<![A-Za-z])([A-Z]{2,})(?![A-Za-z])',
+                  lambda m: ' '.join(m.group(1)), text)
     text = re.sub(r'\s{2,}', ' ', text)             # collapse spaces
     return text.strip()
 
