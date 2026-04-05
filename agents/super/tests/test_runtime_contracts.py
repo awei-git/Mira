@@ -429,6 +429,145 @@ def test_socialmedia_handle_reuses_preflight_cache(tmp_path, monkeypatch):
     assert result.startswith("NEEDS_APPROVAL:")
 
 
+def test_podcast_preflight_requires_real_article(tmp_path):
+    registry = AgentRegistry()
+    preflight = registry.load_preflight("podcast")
+    assert preflight is not None
+
+    workspace = tmp_path / "podcast"
+    workspace.mkdir()
+
+    passed, msg = preflight(workspace, "task130", "make a podcast", "ang", "thread1")
+    assert passed is False
+    assert "PREFLIGHT BLOCKED [podcast]" in msg
+
+
+def test_podcast_preflight_accepts_workspace_article(tmp_path):
+    registry = AgentRegistry()
+    preflight = registry.load_preflight("podcast")
+    assert preflight is not None
+
+    workspace = tmp_path / "podcast"
+    workspace.mkdir()
+    (workspace / "output.md").write_text("# Test Essay\n\n" + ("Body text. " * 20), encoding="utf-8")
+
+    passed, msg = preflight(workspace, "task131", "make a podcast from the current draft", "ang", "thread1")
+    assert passed is True, msg
+
+
+def test_video_preflight_allows_review_phase_with_saved_state(tmp_path):
+    registry = AgentRegistry()
+    preflight = registry.load_preflight("video")
+    assert preflight is not None
+
+    input_dir = tmp_path / "clips"
+    input_dir.mkdir()
+    output_dir = tmp_path / "render"
+    workspace = tmp_path / "video_task"
+    workspace.mkdir()
+    (workspace / "video_state.json").write_text(
+        json.dumps(
+            {
+                "phase": "screenplay_review",
+                "input_dir": str(input_dir),
+                "output_dir": str(output_dir),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    passed, msg = preflight(workspace, "task132", "revise the opening", "ang", "thread1")
+    assert passed is True, msg
+
+
+def test_video_preflight_allows_done_phase_follow_up(tmp_path):
+    registry = AgentRegistry()
+    preflight = registry.load_preflight("video")
+    assert preflight is not None
+
+    workspace = tmp_path / "video_task"
+    workspace.mkdir()
+    (workspace / "video_state.json").write_text(
+        json.dumps({"phase": "done", "output": "/tmp/final.mp4"}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    passed, msg = preflight(workspace, "task132b", "再给我看看结果", "ang", "thread1")
+    assert passed is True, msg
+
+
+def test_photo_preflight_requires_inputs_or_style_context(tmp_path):
+    registry = AgentRegistry()
+    preflight = registry.load_preflight("photo")
+    assert preflight is not None
+
+    workspace = tmp_path / "photo_task"
+    workspace.mkdir()
+
+    passed, msg = preflight(workspace, "task133", "修图", "ang", "thread1")
+    assert passed is False
+    assert "PREFLIGHT BLOCKED [photo]" in msg
+
+
+def test_photo_preflight_blocks_preset_without_style(tmp_path):
+    registry = AgentRegistry()
+    preflight = registry.load_preflight("photo")
+    assert preflight is not None
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setitem(preflight.__globals__, "_load_active_style", lambda: None)
+
+    workspace = tmp_path / "photo_task"
+    workspace.mkdir()
+
+    passed, msg = preflight(workspace, "task134", "导出preset", "ang", "thread1")
+    assert passed is False
+    assert "style profile" in msg
+    monkeypatch.undo()
+
+
+def test_photo_preflight_accepts_reference_dir_for_style_learning(tmp_path):
+    registry = AgentRegistry()
+    preflight = registry.load_preflight("photo")
+    assert preflight is not None
+
+    ref_dir = tmp_path / "refs"
+    ref_dir.mkdir()
+    (ref_dir / "sample.jpg").write_text("fake image", encoding="utf-8")
+    workspace = tmp_path / "photo_task"
+    workspace.mkdir()
+
+    passed, msg = preflight(workspace, "task135", f"学习风格 \"{ref_dir}\"", "ang", "thread1")
+    assert passed is True, msg
+
+
+def test_photo_preflight_allows_style_learning_recovery_with_new_path(tmp_path):
+    registry = AgentRegistry()
+    preflight = registry.load_preflight("photo")
+    assert preflight is not None
+
+    workspace = tmp_path / "photo_task"
+    workspace.mkdir()
+    (workspace / "photo_state.json").write_text(
+        json.dumps(
+            {
+                "phase": "style_learning",
+                "reference_dir": str(tmp_path / "missing_refs"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    new_ref_dir = tmp_path / "fresh_refs"
+    new_ref_dir.mkdir()
+    (new_ref_dir / "sample.jpg").write_text("fake image", encoding="utf-8")
+
+    passed, msg = preflight(workspace, "task136", f"学习风格 \"{new_ref_dir}\"", "ang", "thread1")
+    assert passed is True, msg
+
+
 def test_autowrite_approval_prefers_metadata_file(tmp_path, monkeypatch):
     import handlers_legacy
 

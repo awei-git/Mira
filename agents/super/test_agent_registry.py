@@ -90,10 +90,16 @@ def test_optional_preflight_hooks_load():
     r = AgentRegistry()
     writer_pf = r.load_preflight("writer")
     social_pf = r.load_preflight("socialmedia")
+    podcast_pf = r.load_preflight("podcast")
+    photo_pf = r.load_preflight("photo")
+    video_pf = r.load_preflight("video")
     general_pf = r.load_preflight("general")
 
     assert callable(writer_pf)
     assert callable(social_pf)
+    assert callable(podcast_pf)
+    assert callable(photo_pf)
+    assert callable(video_pf)
     assert general_pf is None
 
 

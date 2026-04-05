@@ -33,6 +33,7 @@ sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
 from sub_agent import claude_think, claude_act, model_think
 from config import MIRA_ROOT
+from preflight import preflight_check
 
 log = logging.getLogger("photo.handler")
 
@@ -67,6 +68,61 @@ _STATE_FILE = "photo_state.json"
 # ---------------------------------------------------------------------------
 # Main handler (called by task_worker)
 # ---------------------------------------------------------------------------
+
+def preflight(workspace: Path, task_id: str, instruction: str,
+              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+    """Block photo jobs that have no resolvable image inputs or style context."""
+    state = _load_state(workspace)
+    phase = state.get("phase", "")
+    preflight_text = instruction.strip() or phase or "photo task"
+    result = preflight_check(
+        "file_write",
+        {
+            "instruction": preflight_text,
+            "path": str(workspace / "output.md"),
+            "content": preflight_text,
+        },
+    )
+    if not result.passed:
+        return False, result.summary()
+
+    if phase == "edit_review":
+        if state.get("images"):
+            return True, ""
+        return False, "PREFLIGHT BLOCKED [photo]: review state is missing image list"
+
+    if phase == "style_learning":
+        ref_dir = _extract_path(instruction)
+        if not ref_dir and state.get("reference_dir"):
+            ref_dir = Path(state["reference_dir"])
+        if not ref_dir:
+            ref_dir = _REFERENCE_DIR
+        if ref_dir.exists() and _find_images(ref_dir):
+            return True, ""
+        return False, "PREFLIGHT BLOCKED [photo]: style-learning state is missing reference images"
+
+    intent = _classify_intent(instruction)
+    if intent == "generate_preset":
+        if _load_active_style():
+            return True, ""
+        return False, "PREFLIGHT BLOCKED [photo]: 还没有 style profile，不能生成 preset"
+
+    if intent == "learn_style":
+        ref_dir = _extract_path(instruction) or _REFERENCE_DIR
+        if ref_dir.exists() and _find_images(ref_dir):
+            return True, ""
+        return False, f"PREFLIGHT BLOCKED [photo]: 在 {ref_dir} 里没找到参考图片"
+
+    images = _extract_images(instruction)
+    if intent == "compare":
+        if len(images) >= 2:
+            return True, ""
+        return False, "PREFLIGHT BLOCKED [photo]: 对比模式需要两张图片"
+
+    if images:
+        return True, ""
+    return False, "PREFLIGHT BLOCKED [photo]: 找不到要处理的图片或目录"
+
 
 def handle(workspace: Path, task_id: str, instruction: str,
            sender: str, thread_id: str, **kwargs) -> str:

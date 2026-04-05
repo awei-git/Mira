@@ -31,6 +31,7 @@ sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 from config import (
     VIDEO_MAX_REVIEW_ITERATIONS, VIDEO_REVIEW_SCORE,
 )
+from preflight import preflight_check
 from sub_agent import claude_think, _get_api_key
 from scene_analyzer import analyze_all, analyze_all_v2
 from triage import triage_all
@@ -82,6 +83,44 @@ _STATE_FILE = "video_state.json"
 _TASTE_PROFILE_PATH = Path(__file__).parent / "editing_taste_profile.md"
 _MAX_REVIEW_ITERATIONS = VIDEO_MAX_REVIEW_ITERATIONS
 _REVIEW_THRESHOLD = VIDEO_REVIEW_SCORE
+
+
+def preflight(workspace: Path, task_id: str, instruction: str,
+              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+    """Block video jobs that have no resolvable input footage or review state."""
+    state = _load_state(workspace)
+    phase = state.get("phase", "")
+    preflight_text = instruction.strip() or phase or "video task"
+    result = preflight_check(
+        "file_write",
+        {
+            "instruction": preflight_text,
+            "path": str(workspace / "output.md"),
+            "content": preflight_text,
+        },
+    )
+    if not result.passed:
+        return False, result.summary()
+
+    if phase == "done":
+        return True, ""
+
+    if phase == "screenplay_review":
+        input_dir = Path(state.get("input_dir", "")) if state.get("input_dir") else None
+        output_dir = Path(state.get("output_dir", "")) if state.get("output_dir") else None
+        if not input_dir or not input_dir.exists():
+            return False, "PREFLIGHT BLOCKED [video]: review state is missing input footage"
+        if not output_dir:
+            return False, "PREFLIGHT BLOCKED [video]: review state is missing output directory"
+        if _is_approval(instruction) and not _check_disk_space(str(output_dir)):
+            return False, "PREFLIGHT BLOCKED [video]: 磁盘空间不足，无法开始渲染"
+        return True, ""
+
+    input_dir = _extract_path(instruction) or _extract_file_ref(instruction)
+    if not input_dir or not input_dir.exists():
+        return False, "PREFLIGHT BLOCKED [video]: 找不到视频目录或文件引用"
+
+    return True, ""
 
 
 def handle(workspace: Path, task_id: str, instruction: str,

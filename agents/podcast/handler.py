@@ -35,6 +35,7 @@ from config import (GEMINI_TTS_MODEL, GEMINI_TTS_TIMEOUT, GEMINI_TTS_MAX_RETRIES
                     GEMINI_TTS_BACKOFF_MULTIPLIER, MINIMAX_TTS_MAX_RETRIES,
                     MINIMAX_SAMPLE_RATE, GPT5_MODEL, PODCAST_FALLBACK_MAX_TOKENS,
                     GEMINI_AUTO_RETRIES, GEMINI_AUTO_RETRY_WAIT)
+from preflight import preflight_check
 
 GEMINI_MODEL_TTS      = GEMINI_TTS_MODEL  # Flash: free tier available
 GEMINI_MODEL_TTS_FALL = GEMINI_TTS_MODEL  # same (Pro has no free tier)
@@ -1525,6 +1526,30 @@ def _extract_article(workspace: Path, content: str) -> tuple[str | None, str]:
             title = m.group(1).strip()
 
     return article_text, title
+
+
+def preflight(workspace: Path, task_id: str, content: str,
+              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+    """Block podcast generation when there is no usable article to narrate."""
+    article_text, _title = _extract_article(workspace, content)
+    if not article_text:
+        return False, "PREFLIGHT BLOCKED [podcast]: 找不到要生成音频的文章内容"
+
+    article_text = article_text.strip()
+    if len(article_text) < 50:
+        return False, "PREFLIGHT BLOCKED [podcast]: 文章内容太短，不适合生成音频"
+
+    result = preflight_check(
+        "file_write",
+        {
+            "instruction": content,
+            "path": str(workspace / "output.md"),
+            "content": article_text,
+        },
+    )
+    if result.passed:
+        return True, ""
+    return False, result.summary()
 
 
 def handle(workspace: Path, task_id: str, content: str,
