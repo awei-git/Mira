@@ -477,6 +477,13 @@ def _should_health_check() -> bool:
     return True
 
 
+def should_health_check_or_pending_exports() -> bool:
+    """Run health check when its daily window opens or pending exports exist."""
+    from core import _has_pending_health_exports
+
+    return _should_health_check() or _has_pending_health_exports()
+
+
 def _should_health_weekly_report() -> bool:
     """Generate weekly health report on Mondays, 9-11 AM."""
     now = datetime.now()

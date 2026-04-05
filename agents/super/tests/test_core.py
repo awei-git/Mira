@@ -44,9 +44,9 @@ def test_dispatch_scheduled_jobs_uses_registry(monkeypatch):
     import core
 
     jobs = [
-        SimpleNamespace(name="explore", inline=False, command=["explore"], priority=5),
-        SimpleNamespace(name="substack-growth", inline=False, command=["growth-cycle"], priority=10),
-        SimpleNamespace(name="skill-study", inline=False, command=["skill-study"], priority=20),
+        SimpleNamespace(name="explore", inline=False, priority=5),
+        SimpleNamespace(name="substack-growth", inline=False, priority=10),
+        SimpleNamespace(name="skill-study", inline=False, priority=20),
     ]
     payloads = {
         "explore": {"label": "arxiv_hf", "sources": ["arxiv", "huggingface"]},
@@ -57,7 +57,25 @@ def test_dispatch_scheduled_jobs_uses_registry(monkeypatch):
     session_new = []
 
     monkeypatch.setattr(core, "get_jobs", lambda: jobs)
-    monkeypatch.setattr(core, "_scheduled_job_payload", lambda job: payloads.get(job.name))
+    monkeypatch.setattr(core, "evaluate_job_payload", lambda job: payloads.get(job.name))
+    monkeypatch.setattr(
+        core,
+        "build_job_dispatch",
+        lambda job, payload, python_executable, core_path: {
+            "explore": ("explore-arxiv_hf", ["python", "core.py", "explore", "--sources", "arxiv,huggingface", "--slot", "arxiv_hf"]),
+            "substack-growth": ("substack-growth", ["python", "core.py", "growth-cycle"]),
+            "skill-study": ("skill-study-video", ["python", "core.py", "skill-study", "--group", "2"]),
+        }[job.name],
+    )
+    monkeypatch.setattr(
+        core,
+        "build_job_session_record",
+        lambda job, payload: {
+            "explore": {"action": "explore", "detail": "arxiv_hf"},
+            "substack-growth": {"action": "growth_cycle", "detail": ""},
+            "skill-study": None,
+        }[job.name],
+    )
     monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd: dispatched.append((name, cmd)))
 
     core._dispatch_scheduled_jobs(session_new)
@@ -79,13 +97,13 @@ def test_dispatch_scheduled_jobs_runs_inline_jobs(monkeypatch):
     import core
 
     jobs = [
-        SimpleNamespace(name="health-check", inline=True, command=["health-check"], priority=1),
-        SimpleNamespace(name="log-cleanup", inline=True, command=["log-cleanup"], priority=2),
+        SimpleNamespace(name="health-check", inline=True, inline_runner="health-check", priority=1),
+        SimpleNamespace(name="log-cleanup", inline=True, inline_runner="log-cleanup", priority=2),
     ]
     ran = []
 
     monkeypatch.setattr(core, "get_jobs", lambda: jobs)
-    monkeypatch.setattr(core, "_scheduled_job_payload", lambda job: True)
+    monkeypatch.setattr(core, "evaluate_job_payload", lambda job: True)
     monkeypatch.setattr(core, "_run_inline_scheduled_job", lambda job, payload: ran.append(job.name))
 
     core._dispatch_scheduled_jobs([])

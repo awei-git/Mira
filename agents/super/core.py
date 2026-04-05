@@ -77,21 +77,18 @@ from workflows.writing import do_autowrite_check, run_autowrite_pipeline
 
 # Extracted modules — triggers decide "should we run X?", dispatcher spawns bg tasks
 from runtime.triggers import (
-    should_explore, should_journal, should_research, should_skill_study,
-    should_analyst, should_reflect, should_zhesi, should_soul_question,
-    should_book_review, should_check_writing, should_podcast,
-    should_check_comments, should_growth_cycle, should_post_notes,
-    should_spark_check, should_idle_think, should_log_cleanup,
-    should_daily_photo, should_daily_report,
-    _should_health_check, _should_health_weekly_report,
-    _should_self_audit, _should_self_evolve, _should_daily_assessment,
-    DAILY_PHOTO_TIME, DAILY_REPORT_TIME, GROWTH_COOLDOWN_HOURS, NOTES_COOLDOWN_HOURS,
+    _should_health_weekly_report,
 )
 from runtime.dispatcher import (
     _dispatch_background, _is_bg_running, _reap_stale_pids, _count_bg_running,
     MAX_CONCURRENT_BG,
 )
-from runtime.jobs import get_jobs
+from runtime.jobs import (
+    build_job_dispatch,
+    build_job_session_record,
+    evaluate_job_payload,
+    get_jobs,
+)
 
 log = logging.getLogger("mira")
 
@@ -1232,99 +1229,21 @@ def _run_health_weekly_report():
 # Schedule logic
 # ---------------------------------------------------------------------------
 
-def _scheduled_job_payload(job):
-    """Evaluate a declarative scheduler job and return its trigger payload."""
-    trigger_map = {
-        "writing-pipeline": lambda: True,
-        "explore": should_explore,
-        "reflect": should_reflect,
-        "journal": should_journal,
-        "daily-report": should_daily_report,
-        "daily-photo": should_daily_photo,
-        "analyst-pre": should_analyst,
-        "analyst-post": should_analyst,
-        "book-review": should_book_review,
-        "daily-research": should_research,
-        "zhesi": should_zhesi,
-        "soul-question": should_soul_question,
-        "autowrite-check": should_check_writing,
-        "skill-study": should_skill_study,
-        "substack-comments": should_check_comments,
-        "substack-growth": should_growth_cycle,
-        "substack-notes": should_post_notes,
-        "spark-check": should_spark_check,
-        "idle-think": should_idle_think,
-        "health-check": lambda: _should_health_check() or _has_pending_health_exports(),
-        "self-audit": _should_self_audit,
-        "self-evolve": _should_self_evolve,
-        "log-cleanup": should_log_cleanup,
-        "assessment": _should_daily_assessment,
-    }
-
-    trigger = trigger_map.get(job.name)
-    if trigger is None:
-        log.debug("No scheduler trigger registered for job '%s'", job.name)
-        return None
-
-    payload = trigger()
-    if job.name == "analyst-pre":
-        return payload if payload == "0700" else None
-    if job.name == "analyst-post":
-        return payload if payload == "1800" else None
-    return payload
-
-
-def _scheduled_job_background_spec(job, payload):
-    """Build the background process name and command for a scheduled job."""
-    core_path = str(Path(__file__).resolve())
-
-    if job.name == "explore":
-        label = payload["label"]
-        sources_arg = ",".join(payload["sources"])
-        return (
-            f"explore-{label}",
-            [sys.executable, core_path, "explore", "--sources", sources_arg, "--slot", label],
-        )
-
-    if job.name in {"analyst-pre", "analyst-post"}:
-        slot = str(payload)
-        return (
-            f"analyst-{slot}",
-            [sys.executable, core_path, "analyst", "--slot", slot],
-        )
-
-    if job.name == "skill-study":
-        domain = payload["domain"]
-        group_idx = str(payload["group_idx"])
-        return (
-            f"skill-study-{domain}",
-            [sys.executable, core_path, "skill-study", "--group", group_idx],
-        )
-
-    if job.name == "self-audit":
-        return (
-            "self-audit",
-            [sys.executable, str(Path(__file__).resolve().parent / "self_audit.py")],
-        )
-
-    return job.name, [sys.executable, core_path, *job.command]
-
-
 def _run_inline_scheduled_job(job, payload):
     """Execute an inline scheduled job immediately in-process."""
-    if job.name == "health-check":
+    if job.inline_runner == "health-check":
         _run_health_check()
         return
-    if job.name == "log-cleanup":
+    if job.inline_runner == "log-cleanup":
         log_cleanup()
         return
-    raise ValueError(f"No inline runner registered for job '{job.name}'")
+    raise ValueError(f"No inline runner registered for job '{job.inline_runner or job.name}'")
 
 
 def _dispatch_scheduled_jobs(session_new: list[dict]):
     """Run the declarative background scheduler using runtime.jobs."""
     for job in sorted(get_jobs(), key=lambda item: item.priority):
-        payload = _scheduled_job_payload(job)
+        payload = evaluate_job_payload(job)
         if not payload:
             continue
 
@@ -1335,13 +1254,19 @@ def _dispatch_scheduled_jobs(session_new: list[dict]):
                 log.error("%s failed: %s", job.name, e)
             continue
 
-        bg_name, cmd = _scheduled_job_background_spec(job, payload)
+        bg_name, cmd = build_job_dispatch(
+            job,
+            payload,
+            python_executable=sys.executable,
+            core_path=str(Path(__file__).resolve()),
+        )
         _dispatch_background(bg_name, cmd)
 
-        if job.name == "explore":
-            session_new.append(session_record("explore", payload["label"]))
-        elif job.name == "substack-growth":
-            session_new.append(session_record("growth_cycle"))
+        session_meta = build_job_session_record(job, payload)
+        if session_meta:
+            session_new.append(
+                session_record(session_meta["action"], session_meta.get("detail", ""))
+            )
 
 
 # ---------------------------------------------------------------------------

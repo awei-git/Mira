@@ -60,3 +60,41 @@ def test_inline_jobs():
     inline_names = {j.name for j in inline}
     assert "health-check" in inline_names
     assert "log-cleanup" in inline_names
+
+
+def test_evaluate_job_payload_filters_shared_trigger(monkeypatch):
+    from runtime.jobs import evaluate_job_payload, get_job
+
+    job = get_job("analyst-pre")
+    assert job is not None
+
+    monkeypatch.setattr("runtime.triggers.should_analyst", lambda: "0700")
+    assert evaluate_job_payload(job) == "0700"
+
+    monkeypatch.setattr("runtime.triggers.should_analyst", lambda: "1800")
+    assert evaluate_job_payload(job) is None
+
+
+def test_build_job_dispatch_formats_dynamic_templates():
+    from runtime.jobs import build_job_dispatch, get_job
+
+    job = get_job("explore")
+    assert job is not None
+
+    bg_name, cmd = build_job_dispatch(
+        job,
+        {"label": "arxiv_hf", "sources": ["arxiv", "huggingface"]},
+        python_executable="python3",
+        core_path="/tmp/core.py",
+    )
+
+    assert bg_name == "explore-arxiv_hf"
+    assert cmd == [
+        "python3",
+        "/tmp/core.py",
+        "explore",
+        "--sources",
+        "arxiv,huggingface",
+        "--slot",
+        "arxiv_hf",
+    ]
