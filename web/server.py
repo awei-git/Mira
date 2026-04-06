@@ -55,6 +55,18 @@ def _user_dir(user_id: str) -> Path:
     return USERS_DIR / user_id
 
 
+def _item_path(user_id: str, item_id: str) -> Path:
+    return _user_dir(user_id) / "items" / f"{item_id}.json"
+
+
+def _load_item_or_404(user_id: str, item_id: str) -> tuple[Path, dict]:
+    item_path = _item_path(user_id, item_id)
+    item = _read_json(item_path)
+    if not item:
+        raise HTTPException(404, "Item not found")
+    return item_path, item
+
+
 def _client_host(request: Request) -> str:
     return (request.client.host if request.client else "").strip()
 
@@ -319,6 +331,7 @@ def create_request(user_id: str, req: NewRequest):
 
 @app.post("/api/{user_id}/items/{item_id}/reply")
 def reply_to_item(user_id: str, item_id: str, reply: Reply):
+    item_path, item = _load_item_or_404(user_id, item_id)
     cmd_id = uuid.uuid4().hex[:8]
     cmd = {
         "id": cmd_id, "type": "reply", "timestamp": _utc_iso(),
@@ -330,15 +343,12 @@ def reply_to_item(user_id: str, item_id: str, reply: Reply):
     _atomic_write(cmd_dir / f"cmd_{ts}_{cmd_id}.json", cmd)
 
     # Optimistic: append message to item
-    item_path = _user_dir(user_id) / "items" / f"{item_id}.json"
-    item = _read_json(item_path)
-    if item:
-        item["messages"].append({
-            "id": cmd_id, "sender": user_id, "content": reply.content,
-            "timestamp": _utc_iso(), "kind": "text",
-        })
-        item["updated_at"] = _utc_iso()
-        _atomic_write(item_path, item)
+    item["messages"].append({
+        "id": cmd_id, "sender": user_id, "content": reply.content,
+        "timestamp": _utc_iso(), "kind": "text",
+    })
+    item["updated_at"] = _utc_iso()
+    _atomic_write(item_path, item)
     return {"status": "sent"}
 
 @app.post("/api/{user_id}/recall")
@@ -356,6 +366,7 @@ def recall(user_id: str, q: RecallQuery):
 
 @app.post("/api/{user_id}/items/{item_id}/share")
 def share_item(user_id: str, item_id: str):
+    _load_item_or_404(user_id, item_id)
     cmd_id = uuid.uuid4().hex[:8]
     cmd = {
         "id": cmd_id, "type": "share", "timestamp": _utc_iso(),
@@ -369,20 +380,14 @@ def share_item(user_id: str, item_id: str):
 
 @app.post("/api/{user_id}/items/{item_id}/pin")
 def pin_item(user_id: str, item_id: str):
-    item_path = _user_dir(user_id) / "items" / f"{item_id}.json"
-    item = _read_json(item_path)
-    if not item:
-        raise HTTPException(404)
+    item_path, item = _load_item_or_404(user_id, item_id)
     item["pinned"] = not item.get("pinned", False)
     _atomic_write(item_path, item)
     return {"pinned": item["pinned"]}
 
 @app.post("/api/{user_id}/items/{item_id}/archive")
 def archive_item(user_id: str, item_id: str):
-    item_path = _user_dir(user_id) / "items" / f"{item_id}.json"
-    item = _read_json(item_path)
-    if not item:
-        raise HTTPException(404)
+    item_path, item = _load_item_or_404(user_id, item_id)
     item["status"] = "archived"
     archive_dir = _user_dir(user_id) / "archive"
     archive_dir.mkdir(exist_ok=True)

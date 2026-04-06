@@ -39,6 +39,10 @@ def _make_client(monkeypatch, tmp_path: Path, *, token: str = "", allow_loopback
     return TestClient(server.app)
 
 
+def _command_files(tmp_path: Path, user_id: str = "ang") -> list[Path]:
+    return sorted((tmp_path / "bridge" / "users" / user_id / "commands").glob("*.json"))
+
+
 def test_web_api_rejects_unknown_user(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
     resp = client.get("/api/ghost/items")
@@ -125,3 +129,48 @@ def test_artifact_routes_allow_listed_shared_sections_only(monkeypatch, tmp_path
     assert blocked.json()["detail"] == "Artifact section not found"
     assert file_read.status_code == 200
     assert file_read.text == "shared briefing"
+
+
+def test_reply_requires_existing_item_and_does_not_enqueue_command(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+
+    resp = client.post("/api/ang/items/missing/reply", json={"content": "hello"})
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Item not found"
+    assert _command_files(tmp_path) == []
+
+
+def test_share_requires_existing_item_and_does_not_enqueue_command(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+
+    resp = client.post("/api/ang/items/missing/share")
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Item not found"
+    assert _command_files(tmp_path) == []
+
+
+def test_reply_enqueues_command_for_existing_item(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+    item_path = tmp_path / "bridge" / "users" / "ang" / "items" / "req_123.json"
+    item_path.write_text(
+        json.dumps(
+            {
+                "id": "req_123",
+                "title": "Existing item",
+                "messages": [],
+                "updated_at": "2026-04-05T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    resp = client.post("/api/ang/items/req_123/reply", json={"content": "hello"})
+
+    assert resp.status_code == 200
+    commands = _command_files(tmp_path)
+    assert len(commands) == 1
+    cmd = json.loads(commands[0].read_text(encoding="utf-8"))
+    assert cmd["type"] == "reply"
+    assert cmd["item_id"] == "req_123"
