@@ -20,21 +20,16 @@ import sys
 from pathlib import Path
 from typing import Callable
 
+_SUPER_DIR = Path(__file__).resolve().parent
+_SHARED_DIR = _SUPER_DIR.parent / "shared"
+if str(_SHARED_DIR) not in sys.path:
+    sys.path.insert(0, str(_SHARED_DIR))
+
+from capability_policy import get_capability_policy, resolve_capability_class
+
 log = logging.getLogger("mira.registry")
 
-_AGENTS_DIR = Path(__file__).resolve().parent.parent  # agents/
-_REQUIRED_PREFLIGHT_AGENTS = {
-    "general",
-    "writer",
-    "socialmedia",
-    "podcast",
-    "photo",
-    "video",
-    "secret",
-    "health",
-}
-
-
+_AGENTS_DIR = _SUPER_DIR.parent  # agents/
 class AgentManifest:
     """Parsed agent manifest."""
 
@@ -47,6 +42,10 @@ class AgentManifest:
         self.timeout_category: str = data.get("timeout_category", "short")
         self.entry_point: str = data.get("entry_point", "handler.py:handle")
         self.requires_workspace: bool = data.get("requires_workspace", True)
+        self.capability_class: str = resolve_capability_class(
+            self.name,
+            data.get("capability_class"),
+        )
         self.agent_dir: Path = agent_dir
 
     def handler_path(self) -> tuple[Path, str]:
@@ -165,7 +164,24 @@ class AgentRegistry:
 
     def requires_preflight(self, name: str) -> bool:
         """Return True when runtime must fail closed if preflight is unavailable."""
-        return name in _REQUIRED_PREFLIGHT_AGENTS
+        manifest = self._manifests.get(name)
+        policy = get_capability_policy(
+            name,
+            manifest.capability_class if manifest else None,
+        )
+        return policy.requires_preflight
+
+    def get_capability_class(self, name: str) -> str:
+        manifest = self._manifests.get(name)
+        return manifest.capability_class if manifest else resolve_capability_class(name)
+
+    def get_capability_policy(self, name: str) -> dict:
+        manifest = self._manifests.get(name)
+        policy = get_capability_policy(
+            name,
+            manifest.capability_class if manifest else None,
+        )
+        return policy.to_dict()
 
 
 # Singleton — created once at import time

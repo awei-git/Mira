@@ -73,7 +73,7 @@ class TaskRecord:
     sender: str
     content_preview: str   # first 80 chars of message
     pid: int
-    status: str            # dispatched | running | done | error | timeout
+    status: str            # dispatched | running | done | needs-input | blocked | error | timeout
     started_at: str
     user_id: str = "ang"
     completed_at: str = ""
@@ -215,7 +215,7 @@ class TaskManager:
         completed = []
 
         for rec in self._records:
-            if rec.status in ("done", "error", "timeout", "needs-input"):
+            if rec.status in ("done", "error", "timeout", "needs-input", "blocked"):
                 continue
 
             # Check if process is still alive
@@ -397,9 +397,9 @@ class TaskManager:
         return any(r.msg_id == msg_id for r in self._records)
 
     def find_failed_task(self, task_id: str) -> TaskRecord | None:
-        """Find a failed or needs-input task by task_id (for retry)."""
+        """Find a terminal task by task_id (for retry or inspection)."""
         for r in self._records:
-            if r.task_id == task_id and r.status in ("done", "error", "timeout", "needs-input"):
+            if r.task_id == task_id and r.status in ("done", "error", "timeout", "needs-input", "blocked"):
                 return r
         return None
 

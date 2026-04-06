@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 _AGENTS = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS / "super"))
 sys.path.insert(0, str(_AGENTS / "shared"))
@@ -207,6 +209,8 @@ def test_dispatch_scheduled_jobs_dispatches_per_user_jobs(monkeypatch):
 
 def test_do_talk_routes_completed_task_to_matching_user_bridge(monkeypatch):
     import core
+    if core.Mira is None:
+        pytest.skip("mira_bridge not available (CI)")
 
     class FakeBridge:
         def __init__(self, user_id):
@@ -286,6 +290,8 @@ def test_do_talk_routes_completed_task_to_matching_user_bridge(monkeypatch):
 def test_do_talk_stops_other_legacy_inboxes_when_busy(monkeypatch):
     import core
     import emptiness
+    if core.Mira is None:
+        pytest.skip("mira_bridge not available (CI)")
 
     class FakeMessage:
         def __init__(self, msg_id, content, user_id):

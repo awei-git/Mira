@@ -1,0 +1,156 @@
+name: PR Policy
+
+on:
+  pull_request:
+    branches: [dev, main]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    branches: [main]
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR policy
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const body = pr.body || "";
+            const prNumber = pr.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner,
+              repo,
+              pull_number: prNumber,
+              per_page: 100,
+            });
+            const changedFiles = files.map(f => f.filename);
+
+            const failures = [];
+
+            const touchesCode = changedFiles.some(path =>
+              path.startsWith("agents/") ||
+              path.startsWith("web/") ||
+              path.startsWith("scripts/") ||
+              path.startsWith("tasks/") ||
+              path === "config.yml" ||
+              path === "requirements.txt" ||
+              path === "sources.json"
+            );
+
+            const hasSection = (title) => body.includes(`## ${title}`);
+            const checked = (label) => new RegExp(`- \\[x\\] ${label}`, "i").test(body);
+            const sectionText = (title) => {
+              const marker = `## ${title}\n`;
+              const start = body.indexOf(marker);
+              if (start < 0) return "";
+              const after = body.slice(start + marker.length);
+              const nextHeader = after.indexOf("\n## ");
+              return (nextHeader >= 0 ? after.slice(0, nextHeader) : after).trim();
+            };
+
+            const lineValue = (prefix) => {
+              const line = body.split("\n").find((entry) => entry.trim().startsWith(prefix));
+              if (!line) return "";
+              return line.slice(line.indexOf(prefix) + prefix.length).trim();
+            };
+
+            const hasMeaningfulLineValue = (prefix) => {
+              const value = lineValue(prefix);
+              return Boolean(value) && !/^[-–—]*$/.test(value);
+            };
+
+            const designRefProvided =
+              /system-design\.md#\S+/i.test(body) ||
+              hasMeaningfulLineValue("- `docs/system-design.md` sections:");
+
+            const roadmapRefProvided =
+              /production-roadmap\.md#\S+/i.test(body) ||
+              hasMeaningfulLineValue("- `docs/production-roadmap.md` sections:");
+
+            const validationProvided =
+              hasMeaningfulLineValue("- Tests run:") ||
+              hasMeaningfulLineValue("- Manual verification:");
+
+            const noDocsUpdateChecked = checked("No canonical docs update needed");
+            const noDocsUpdateExplanation = (() => {
+              const marker = "If no doc update is needed, explain why:";
+              const after = body.split(marker)[1] || "";
+              const explanation = after.split("\n## ")[0].trim();
+              return Boolean(explanation);
+            })();
+
+            const temporaryExceptionChecked = checked("This PR introduces a temporary shim or exception");
+            const tempSection = sectionText("Temporary Exception");
+            const tempWhy = (() => {
+              const match = tempSection.match(/- Why it cannot be design-compliant immediately:\s*(.+)/);
+              return Boolean(match && match[1].trim());
+            })();
+            const tempOwner = (() => {
+              const match = tempSection.match(/- Cleanup owner:\s*(.+)/);
+              return Boolean(match && match[1].trim());
+            })();
+            const tempExpiry = (() => {
+              const match = tempSection.match(/- Expiry date or removal condition:\s*(.+)/);
+              return Boolean(match && match[1].trim());
+            })();
+
+            const selectedChangeTypes = [
+              checked("Implementation change"),
+              checked("Workflow change"),
+              checked("Design-boundary change"),
+            ].filter(Boolean).length;
+
+            if (!hasSection("Change Type")) failures.push("Missing `## Change Type` section.");
+            if (!hasSection("Design References")) failures.push("Missing `## Design References` section.");
+            if (!hasSection("Validation")) failures.push("Missing `## Validation` section.");
+            if (selectedChangeTypes < 1) failures.push("Select at least one change type checkbox.");
+
+            if (touchesCode && !designRefProvided) {
+              failures.push("Code-touching PRs must reference `docs/system-design.md` sections.");
+            }
+
+            if ((checked("Workflow change") || checked("Design-boundary change")) && !roadmapRefProvided) {
+              failures.push("Workflow or design-boundary PRs must reference `docs/production-roadmap.md` sections.");
+            }
+
+            if (!validationProvided) {
+              failures.push("PR must include non-empty validation details in `Tests run` or `Manual verification`.");
+            }
+
+            if (noDocsUpdateChecked && !noDocsUpdateExplanation) {
+              failures.push("`No canonical docs update needed` is checked, but no explanation was provided.");
+            }
+
+            if (checked("Design-boundary change")) {
+              if (!changedFiles.includes("docs/system-design.md")) {
+                failures.push("Design-boundary changes must update `docs/system-design.md`.");
+              }
+              if (!changedFiles.includes("docs/architecture-decisions.md")) {
+                failures.push("Design-boundary changes must update `docs/architecture-decisions.md`.");
+              }
+            }
+
+            if (checked("Workflow change") && !changedFiles.includes("docs/operations-handbook.md")) {
+              failures.push("Workflow changes must update `docs/operations-handbook.md`.");
+            }
+
+            if (temporaryExceptionChecked) {
+              if (!tempWhy || !tempOwner || !tempExpiry) {
+                failures.push("Temporary exceptions must include reason, cleanup owner, and expiry/removal condition.");
+              }
+            }
+
+            if (failures.length) {
+              core.setFailed("PR policy check failed:\n- " + failures.join("\n- "));
+            } else {
+              core.info("PR policy check passed.");
+            }

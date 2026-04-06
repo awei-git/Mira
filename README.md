@@ -1,5 +1,8 @@
 # Mira
 
+Canonical docs live under [`docs/`](./docs/README.md).
+If you are changing runtime behavior, workflow design, goals, or readiness gates, start there before relying on this README.
+
 A local, multi-user AI agent system that runs on your Mac, talks to you through an iPhone app, and autonomously explores, writes, publishes, and monitors health.
 
 ## What it does

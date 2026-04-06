@@ -367,6 +367,11 @@ from execution.context import (
     compress_conversation, _truncate_messages,
     _load_recent_journals, _load_recent_briefings,
 )
+from execution.plan_state import (
+    initialize_plan_artifacts,
+    mark_step_finished,
+    mark_step_running,
+)
 
 
 def smart_classify(content: str, summary: str = "") -> list[str]:
@@ -391,6 +396,78 @@ Example output: ["写作", "science-fiction", "自由意志"]"""
     except Exception as e:
         log.warning("Smart classification failed: %s", e)
     return []
+
+
+def _enrich_plan_with_runtime_policy(plan: list[dict]) -> list[dict]:
+    """Attach capability class + runtime policy to each validated plan step."""
+    from agent_registry import get_registry
+
+    registry = get_registry()
+    enriched = []
+    for step in plan:
+        normalized = dict(step)
+        normalized["capability_class"] = registry.get_capability_class(step["agent"])
+        normalized["policy"] = registry.get_capability_policy(step["agent"])
+        enriched.append(normalized)
+    return enriched
+
+
+def _result_metadata(step: dict, *, step_index: int, step_count: int,
+                     declared_agent: str, execution_agent: str) -> dict:
+    return {
+        "step_index": step_index,
+        "step_count": step_count,
+        "declared_agent": declared_agent,
+        "execution_agent": execution_agent,
+        "capability_class": step.get("capability_class", "read-only"),
+        "policy": step.get("policy", {}),
+    }
+
+
+def _safe_general_fallback(
+    workspace: Path,
+    task_id: str,
+    instruction: str,
+    sender: str,
+    thread_id: str,
+    *,
+    tier: str,
+    step: dict,
+    step_index: int,
+    step_count: int,
+    declared_agent: str,
+    execution_agent: str,
+) -> bool:
+    """Run general fallback and fail the current step cleanly if it crashes."""
+    try:
+        _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+        return True
+    except Exception as e:
+        fallback_msg = f"general fallback failed while handling {declared_agent}: {e}"
+        log.error("%s", fallback_msg)
+        _write_result(
+            workspace,
+            task_id,
+            "error",
+            fallback_msg,
+            agent=execution_agent,
+            metadata=_result_metadata(
+                step,
+                step_index=step_index,
+                step_count=step_count,
+                declared_agent=declared_agent,
+                execution_agent=execution_agent,
+            ),
+        )
+        mark_step_finished(
+            workspace,
+            step_index=step_index,
+            status="error",
+            declared_agent=declared_agent,
+            execution_agent=execution_agent,
+            failure_reason=fallback_msg,
+        )
+        return False
 
 
 def try_extract_skill(task_summary: str, msg_content: str) -> None:
@@ -667,6 +744,7 @@ def main():
         try:
             plan = json.loads(pending_plan_file.read_text(encoding="utf-8"))
             pending_plan_file.unlink()  # consumed
+            plan = _enrich_plan_with_runtime_policy(plan)
             log.info("Resuming pending plan (%d steps): %s", len(plan), plan)
             _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
                          user_id=_user_id, allowed_agents=_allowed_agents,
@@ -714,6 +792,7 @@ def main():
             try:
                 plan = json.loads(pending_plan_file.read_text(encoding="utf-8"))
                 pending_plan_file.unlink()
+                plan = _enrich_plan_with_runtime_policy(plan)
                 _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
                          user_id=_user_id, allowed_agents=_allowed_agents,
                          content_filter=_content_filter, model_restriction=_model_restriction)
@@ -784,6 +863,7 @@ def main():
                       prior_context=planning_context,
                       allowed_agents=_allowed_agents,
                       content_filter=_content_filter)
+    plan = _enrich_plan_with_runtime_policy(plan)
     log.info("Plan: %s", plan)
 
     _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
@@ -804,6 +884,13 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
                   user_id: str = "ang", allowed_agents: list | None = None,
                   content_filter: bool = False, model_restriction: str | None = None):
     """Execute a multi-step plan. Each step's output feeds into the next."""
+    initialize_plan_artifacts(
+        workspace,
+        task_id=task_id,
+        user_id=user_id,
+        request=content,
+        plan=plan,
+    )
     prev_output = None
     is_multi = len(plan) > 1
     round_num = _get_round_num(workspace)
@@ -828,20 +915,38 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
     """Inner loop extracted so heartbeat can be stopped in finally block."""
     # Set thread-local task_id so agents can emit progress via emit_progress()
     _set_streaming_task_id(task_id)
+    if not (workspace / "step_states.json").exists():
+        initialize_plan_artifacts(
+            workspace,
+            task_id=task_id,
+            user_id=user_id,
+            request=content,
+            plan=plan,
+        )
+    from agent_registry import get_registry
+
+    registry = get_registry()
+    step_count = len(plan)
 
     for i, step in enumerate(plan):
-        agent = step["agent"]
+        declared_agent = step["agent"]
+        execution_agent = declared_agent
+        step.setdefault("capability_class", registry.get_capability_class(declared_agent))
+        step.setdefault("policy", registry.get_capability_policy(declared_agent))
+        policy = step["policy"]
+        capability_class = step["capability_class"]
         instruction = step["instruction"]
         tier = step.get("tier", "light")
         prediction = step.get("prediction")
         is_last = (i == len(plan) - 1)
-        log.info("Step %d/%d: agent=%s tier=%s instruction=%s", i+1, len(plan), agent, tier, instruction[:80])
+        log.info("Step %d/%d: agent=%s tier=%s capability=%s instruction=%s",
+                 i + 1, len(plan), declared_agent, tier, capability_class, instruction[:80])
 
         # Record pre-mortem prediction before execution
-        _record_premortem(task_id, i, agent, instruction, prediction)
+        _record_premortem(task_id, i, declared_agent, instruction, prediction)
 
         # If previous step produced output, append it as context
-        if prev_output and agent != "clarify":
+        if prev_output and declared_agent != "clarify":
             instruction = f"{instruction}\n\n--- 上一步的输出 ---\n{prev_output[:3000]}"
 
         # Emit status card for current step
@@ -860,27 +965,77 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
             "secret": ("Private mode...", "lock.shield"),
             "clarify": ("Need your input", "questionmark.bubble"),
         }
-        status_text, status_icon = _step_icons.get(agent, ("Working...", "gear"))
+        status_text, status_icon = _step_icons.get(declared_agent, ("Working...", "gear"))
         if is_multi:
             status_text = f"Step {i+1}/{len(plan)}: {status_text}"
         _emit_status(task_id, status_text, status_icon)
+        mark_step_running(
+            workspace,
+            step_index=i,
+            declared_agent=declared_agent,
+            execution_agent=execution_agent,
+            input_summary=instruction,
+        )
 
         # Special case: clarify (not a real agent, just asks user)
-        if agent == "clarify":
+        if declared_agent == "clarify":
             (workspace / "output.md").write_text(instruction, encoding="utf-8")
-            _write_result(workspace, task_id, "needs-input", instruction,
-                          tags=["clarify"])
+            _write_result(
+                workspace,
+                task_id,
+                "needs-input",
+                instruction,
+                tags=["clarify"],
+                metadata=_result_metadata(
+                    step,
+                    step_index=i,
+                    step_count=step_count,
+                    declared_agent=declared_agent,
+                    execution_agent=execution_agent,
+                ),
+            )
+            mark_step_finished(
+                workspace,
+                step_index=i,
+                status="needs-input",
+                declared_agent=declared_agent,
+                execution_agent=execution_agent,
+                output_summary=instruction,
+            )
             _append_exec_log(workspace, round_num, "clarify", "needs-input", instruction)
             return
 
         # --- Access control: verify agent is allowed for this user ---
         # NOTE: allowed_agents is loaded fresh from get_user_config() at dispatch time
         # (in core.py), so permission revocation takes effect on next message cycle.
-        if allowed_agents and agent not in allowed_agents and agent not in ("clarify", "discussion"):
+        if allowed_agents and declared_agent not in allowed_agents and declared_agent not in ("clarify", "discussion"):
             log.warning("ACCESS DENIED: user=%s agent=%s not in allowed_agents=%s",
-                        user_id, agent, allowed_agents)
-            denied_msg = f"Sorry, you don't have access to the {agent} agent. Available: {', '.join(allowed_agents)}"
-            _write_result(workspace, task_id, "error", denied_msg)
+                        user_id, declared_agent, allowed_agents)
+            denied_msg = (
+                f"Sorry, you don't have access to the {declared_agent} agent. "
+                f"Available: {', '.join(allowed_agents)}"
+            )
+            _write_result(
+                workspace,
+                task_id,
+                "blocked",
+                denied_msg,
+                metadata=_result_metadata(
+                    step,
+                    step_index=i,
+                    step_count=step_count,
+                    declared_agent=declared_agent,
+                    execution_agent=execution_agent,
+                ),
+            )
+            mark_step_finished(
+                workspace,
+                step_index=i,
+                status="blocked",
+                declared_agent=declared_agent,
+                execution_agent=execution_agent,
+                failure_reason=denied_msg,
+            )
             return
 
         # --- Content filter: prepend safety prompt for child users ---
@@ -897,110 +1052,381 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
             set_model_policy(None)
 
         # Registry-based dispatch: load handler dynamically from manifest
-        from agent_registry import get_registry
-        registry = get_registry()
-        requires_preflight = getattr(registry, "requires_preflight", lambda name: False)(agent)
-        set_usage_agent(agent)
+        requires_preflight = bool(policy.get("requires_preflight"))
+        fail_closed = bool(policy.get("fail_closed"))
+        allow_fallback = bool(policy.get("allow_fallback_to_general"))
+        set_usage_agent(declared_agent)
 
         output_file = workspace / "output.md"
         result_file = workspace / "result.json"
         output_snapshot = _snapshot_file(output_file)
+        handler_result = None
+        used_fallback = False
+        preflight_fn = None
 
         try:
             try:
-                preflight_fn = getattr(registry, "load_preflight", lambda name: None)(agent)
+                preflight_fn = getattr(registry, "load_preflight", lambda name: None)(declared_agent)
             except KeyError:
-                if requires_preflight:
-                    preflight_msg = f"{agent} preflight missing from registry"
+                if requires_preflight or fail_closed:
+                    preflight_msg = f"{declared_agent} preflight missing from registry"
                     log.error("%s", preflight_msg)
                     (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
-                    _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+                    _write_result(
+                        workspace,
+                        task_id,
+                        "blocked",
+                        preflight_msg,
+                        agent=declared_agent,
+                        metadata=_result_metadata(
+                            step,
+                            step_index=i,
+                            step_count=step_count,
+                            declared_agent=declared_agent,
+                            execution_agent=execution_agent,
+                        ),
+                    )
+                    mark_step_finished(
+                        workspace,
+                        step_index=i,
+                        status="blocked",
+                        declared_agent=declared_agent,
+                        execution_agent=execution_agent,
+                        failure_reason=preflight_msg,
+                    )
                     return
-                log.warning("Agent '%s' not in registry during preflight load, falling back to general", agent)
-                handler_result = None
-                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
-                continue
+                log.warning("Agent '%s' not in registry during preflight load, falling back to general", declared_agent)
+                execution_agent = "general"
+                if not _safe_general_fallback(
+                    workspace,
+                    task_id,
+                    instruction,
+                    sender,
+                    thread_id,
+                    tier=tier,
+                    step=step,
+                    step_index=i,
+                    step_count=step_count,
+                    declared_agent=declared_agent,
+                    execution_agent=execution_agent,
+                ):
+                    return
+                used_fallback = True
             except ImportError as e:
-                if requires_preflight:
-                    preflight_msg = f"{agent} preflight load failed: {e}"
+                if fail_closed:
+                    preflight_msg = f"{declared_agent} preflight load failed: {e}"
                     log.error("%s", preflight_msg)
                     (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
-                    _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+                    _write_result(
+                        workspace,
+                        task_id,
+                        "blocked",
+                        preflight_msg,
+                        agent=declared_agent,
+                        metadata=_result_metadata(
+                            step,
+                            step_index=i,
+                            step_count=step_count,
+                            declared_agent=declared_agent,
+                            execution_agent=execution_agent,
+                        ),
+                    )
+                    mark_step_finished(
+                        workspace,
+                        step_index=i,
+                        status="blocked",
+                        declared_agent=declared_agent,
+                        execution_agent=execution_agent,
+                        failure_reason=preflight_msg,
+                    )
                     return
-                log.error("ImportError loading preflight for agent '%s': %s — falling back to general", agent, e)
-                handler_result = None
-                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
-                continue
+                log.error("ImportError loading preflight for agent '%s': %s — falling back to general", declared_agent, e)
+                execution_agent = "general"
+                if not _safe_general_fallback(
+                    workspace,
+                    task_id,
+                    instruction,
+                    sender,
+                    thread_id,
+                    tier=tier,
+                    step=step,
+                    step_index=i,
+                    step_count=step_count,
+                    declared_agent=declared_agent,
+                    execution_agent=execution_agent,
+                ):
+                    return
+                used_fallback = True
             except Exception as e:
-                if requires_preflight:
-                    preflight_msg = f"{agent} preflight load failed: {e}"
+                if fail_closed:
+                    preflight_msg = f"{declared_agent} preflight load failed: {e}"
                     log.error("%s", preflight_msg)
                     (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
-                    _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+                    _write_result(
+                        workspace,
+                        task_id,
+                        "blocked",
+                        preflight_msg,
+                        agent=declared_agent,
+                        metadata=_result_metadata(
+                            step,
+                            step_index=i,
+                            step_count=step_count,
+                            declared_agent=declared_agent,
+                            execution_agent=execution_agent,
+                        ),
+                    )
+                    mark_step_finished(
+                        workspace,
+                        step_index=i,
+                        status="blocked",
+                        declared_agent=declared_agent,
+                        execution_agent=execution_agent,
+                        failure_reason=preflight_msg,
+                    )
                     return
-                log.error("Registry preflight for '%s' failed to load: %s — falling back to general", agent, e)
-                handler_result = None
-                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
-                continue
+                log.error("Registry preflight for '%s' failed to load: %s — falling back to general", declared_agent, e)
+                execution_agent = "general"
+                if not _safe_general_fallback(
+                    workspace,
+                    task_id,
+                    instruction,
+                    sender,
+                    thread_id,
+                    tier=tier,
+                    step=step,
+                    step_index=i,
+                    step_count=step_count,
+                    declared_agent=declared_agent,
+                    execution_agent=execution_agent,
+                ):
+                    return
+                used_fallback = True
 
-            if not preflight_fn and requires_preflight:
-                preflight_msg = f"{agent} preflight missing"
+            if not used_fallback and not preflight_fn and requires_preflight:
+                preflight_msg = f"{declared_agent} preflight missing"
                 log.error("%s", preflight_msg)
                 (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
-                _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+                _write_result(
+                    workspace,
+                    task_id,
+                    "blocked",
+                    preflight_msg,
+                    agent=declared_agent,
+                    metadata=_result_metadata(
+                        step,
+                        step_index=i,
+                        step_count=step_count,
+                        declared_agent=declared_agent,
+                        execution_agent=execution_agent,
+                    ),
+                )
+                mark_step_finished(
+                    workspace,
+                    step_index=i,
+                    status="blocked",
+                    declared_agent=declared_agent,
+                    execution_agent=execution_agent,
+                    failure_reason=preflight_msg,
+                )
                 return
 
-            if preflight_fn:
+            if not used_fallback and preflight_fn:
                 try:
                     passed, preflight_msg = _invoke_registry_preflight(
                         preflight_fn, workspace, task_id, instruction, sender, thread_id, tier,
                         user_id=user_id,
                     )
                 except Exception as e:
-                    preflight_msg = f"{agent} preflight failed: {e}"
-                    log.error("Preflight for '%s' raised: %s", agent, e)
+                    preflight_msg = f"{declared_agent} preflight failed: {e}"
+                    log.error("Preflight for '%s' raised: %s", declared_agent, e)
                     (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
-                    _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+                    _write_result(
+                        workspace,
+                        task_id,
+                        "error",
+                        preflight_msg,
+                        agent=declared_agent,
+                        metadata=_result_metadata(
+                            step,
+                            step_index=i,
+                            step_count=step_count,
+                            declared_agent=declared_agent,
+                            execution_agent=execution_agent,
+                        ),
+                    )
+                    mark_step_finished(
+                        workspace,
+                        step_index=i,
+                        status="error",
+                        declared_agent=declared_agent,
+                        execution_agent=execution_agent,
+                        failure_reason=preflight_msg,
+                    )
                     return
                 if not passed:
-                    log.warning("Preflight blocked agent '%s': %s", agent, preflight_msg)
+                    log.warning("Preflight blocked agent '%s': %s", declared_agent, preflight_msg)
                     (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
-                    _write_result(workspace, task_id, "error", preflight_msg, agent=agent)
+                    _write_result(
+                        workspace,
+                        task_id,
+                        "blocked",
+                        preflight_msg,
+                        agent=declared_agent,
+                        metadata=_result_metadata(
+                            step,
+                            step_index=i,
+                            step_count=step_count,
+                            declared_agent=declared_agent,
+                            execution_agent=execution_agent,
+                        ),
+                    )
+                    mark_step_finished(
+                        workspace,
+                        step_index=i,
+                        status="blocked",
+                        declared_agent=declared_agent,
+                        execution_agent=execution_agent,
+                        failure_reason=preflight_msg,
+                    )
                     return
-            try:
-                handler_fn = registry.load_handler(agent)
-                handler_result = _invoke_registry_handler(
-                    handler_fn, workspace, task_id, instruction, sender, thread_id, tier,
-                    user_id=user_id,
-                )
-            except KeyError:
-                if requires_preflight:
-                    handler_msg = f"{agent} handler missing from registry"
-                    log.error("%s", handler_msg)
-                    _write_result(workspace, task_id, "error", handler_msg, agent=agent)
-                    return
-                log.warning("Agent '%s' not in registry, falling back to general", agent)
-                handler_result = None
-                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
-            except ImportError as e:
-                if requires_preflight:
-                    handler_msg = f"{agent} handler load failed: {e}"
-                    log.error("%s", handler_msg)
-                    _write_result(workspace, task_id, "error", handler_msg, agent=agent)
-                    return
-                log.error("ImportError loading agent '%s': %s — check module path and "
-                          "handler function name in agent manifest", agent, e)
-                handler_result = None
-                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
-            except Exception as e:
-                if requires_preflight:
-                    handler_msg = f"{agent} handler failed to load: {e}"
-                    log.error("%s", handler_msg)
-                    _write_result(workspace, task_id, "error", handler_msg, agent=agent)
-                    return
-                log.error("Registry handler for '%s' failed: %s — falling back to general", agent, e)
-                handler_result = None
-                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+
+            if not used_fallback:
+                try:
+                    handler_fn = registry.load_handler(declared_agent)
+                    handler_result = _invoke_registry_handler(
+                        handler_fn, workspace, task_id, instruction, sender, thread_id, tier,
+                        user_id=user_id,
+                    )
+                except KeyError as e:
+                    handler_msg = f"{declared_agent} handler missing from registry"
+                    if fail_closed or not allow_fallback:
+                        log.error("%s", handler_msg)
+                        _write_result(
+                            workspace,
+                            task_id,
+                            "error",
+                            handler_msg,
+                            agent=declared_agent,
+                            metadata=_result_metadata(
+                                step,
+                                step_index=i,
+                                step_count=step_count,
+                                declared_agent=declared_agent,
+                                execution_agent=execution_agent,
+                            ),
+                        )
+                        mark_step_finished(
+                            workspace,
+                            step_index=i,
+                            status="error",
+                            declared_agent=declared_agent,
+                            execution_agent=execution_agent,
+                            failure_reason=handler_msg,
+                        )
+                        return
+                    log.warning("Agent '%s' not in registry, falling back to general: %s", declared_agent, e)
+                    execution_agent = "general"
+                    if not _safe_general_fallback(
+                        workspace,
+                        task_id,
+                        instruction,
+                        sender,
+                        thread_id,
+                        tier=tier,
+                        step=step,
+                        step_index=i,
+                        step_count=step_count,
+                        declared_agent=declared_agent,
+                        execution_agent=execution_agent,
+                    ):
+                        return
+                except ImportError as e:
+                    handler_msg = f"{declared_agent} handler load failed: {e}"
+                    if fail_closed or not allow_fallback:
+                        log.error("%s", handler_msg)
+                        _write_result(
+                            workspace,
+                            task_id,
+                            "error",
+                            handler_msg,
+                            agent=declared_agent,
+                            metadata=_result_metadata(
+                                step,
+                                step_index=i,
+                                step_count=step_count,
+                                declared_agent=declared_agent,
+                                execution_agent=execution_agent,
+                            ),
+                        )
+                        mark_step_finished(
+                            workspace,
+                            step_index=i,
+                            status="error",
+                            declared_agent=declared_agent,
+                            execution_agent=execution_agent,
+                            failure_reason=handler_msg,
+                        )
+                        return
+                    log.error("ImportError loading agent '%s': %s — falling back to general", declared_agent, e)
+                    execution_agent = "general"
+                    if not _safe_general_fallback(
+                        workspace,
+                        task_id,
+                        instruction,
+                        sender,
+                        thread_id,
+                        tier=tier,
+                        step=step,
+                        step_index=i,
+                        step_count=step_count,
+                        declared_agent=declared_agent,
+                        execution_agent=execution_agent,
+                    ):
+                        return
+                except Exception as e:
+                    handler_msg = f"{declared_agent} handler failed to load: {e}"
+                    if fail_closed or not allow_fallback:
+                        log.error("%s", handler_msg)
+                        _write_result(
+                            workspace,
+                            task_id,
+                            "error",
+                            handler_msg,
+                            agent=declared_agent,
+                            metadata=_result_metadata(
+                                step,
+                                step_index=i,
+                                step_count=step_count,
+                                declared_agent=declared_agent,
+                                execution_agent=execution_agent,
+                            ),
+                        )
+                        mark_step_finished(
+                            workspace,
+                            step_index=i,
+                            status="error",
+                            declared_agent=declared_agent,
+                            execution_agent=execution_agent,
+                            failure_reason=handler_msg,
+                        )
+                        return
+                    log.error("Registry handler for '%s' failed: %s — falling back to general", declared_agent, e)
+                    execution_agent = "general"
+                    if not _safe_general_fallback(
+                        workspace,
+                        task_id,
+                        instruction,
+                        sender,
+                        thread_id,
+                        tier=tier,
+                        step=step,
+                        step_index=i,
+                        step_count=step_count,
+                        declared_agent=declared_agent,
+                        execution_agent=execution_agent,
+                    ):
+                        return
         finally:
             set_model_policy(None)  # always reset after step
 
@@ -1009,10 +1435,17 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
         _ensure_step_result(
             workspace,
             task_id,
-            agent,
+            execution_agent,
             content,
             handler_result,
             output_snapshot,
+            metadata=_result_metadata(
+                step,
+                step_index=i,
+                step_count=step_count,
+                declared_agent=declared_agent,
+                execution_agent=execution_agent,
+            ),
         )
         step_status = "done"
         step_output_preview = ""
@@ -1020,18 +1453,45 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
             try:
                 r = json.loads(result_file.read_text(encoding="utf-8"))
                 # Stamp agent name for evaluator tracking
+                changed = False
                 if "agent" not in r:
-                    r["agent"] = agent
+                    r["agent"] = execution_agent
+                    changed = True
+                if "declared_agent" not in r:
+                    r["declared_agent"] = declared_agent
+                    changed = True
+                if "execution_agent" not in r:
+                    r["execution_agent"] = execution_agent
+                    changed = True
+                if "capability_class" not in r:
+                    r["capability_class"] = capability_class
+                    changed = True
+                if "policy" not in r:
+                    r["policy"] = policy
+                    changed = True
+                if changed:
                     result_file.write_text(
                         json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")
+                execution_agent = r.get("agent", execution_agent)
                 step_status = r.get("status", "done")
                 step_output_preview = r.get("summary", "")[:200]
-                if step_status == "error":
-                    _record_postmortem(task_id, i, agent, prediction, "error",
+                if step_status in ("error", "blocked", "needs-input"):
+                    outcome = "error" if step_status == "error" else step_status
+                    _record_postmortem(task_id, i, declared_agent, prediction, outcome,
                                        step_output_preview)
-                    _append_exec_log(workspace, round_num, agent, "error",
+                    _append_exec_log(workspace, round_num, execution_agent, step_status,
                                      r.get("summary", ""))
-                    log.error("Step %d/%d failed, aborting plan: %s", i+1, len(plan), r.get("summary", ""))
+                    mark_step_finished(
+                        workspace,
+                        step_index=i,
+                        status=step_status,
+                        declared_agent=declared_agent,
+                        execution_agent=execution_agent,
+                        output_summary=step_output_preview,
+                        failure_reason=r.get("summary", "") if step_status != "needs-input" else "",
+                    )
+                    log.error("Step %d/%d stopped plan with status=%s: %s",
+                              i + 1, len(plan), step_status, r.get("summary", ""))
                     return
             except (json.JSONDecodeError, OSError):
                 pass
@@ -1045,14 +1505,14 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
             if verification:
                 log.warning("HALLUCINATION DETECTED: %s", verification)
                 prev_output += f"\n\n⚠️ VERIFICATION FAILED: {verification}"
-                _append_exec_log(workspace, round_num, agent, "unverified",
+                _append_exec_log(workspace, round_num, execution_agent, "unverified",
                                  f"HALLUCINATION: {verification}")
-                _record_postmortem(task_id, i, agent, prediction,
+                _record_postmortem(task_id, i, declared_agent, prediction,
                                    "hallucination", step_output_preview)
             else:
-                _append_exec_log(workspace, round_num, agent, "done",
+                _append_exec_log(workspace, round_num, execution_agent, "done",
                                  prev_output[:300])
-                _record_postmortem(task_id, i, agent, prediction,
+                _record_postmortem(task_id, i, declared_agent, prediction,
                                    "done", step_output_preview)
             # Emit intermediate result to iOS app (streaming progress)
             if not is_last and prev_output.strip():
@@ -1061,6 +1521,15 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
             # Save numbered copy so future rounds don't lose it
             numbered = workspace / f"output_r{round_num}.md"
             shutil.copy2(output_file, numbered)
+
+        mark_step_finished(
+            workspace,
+            step_index=i,
+            status="done",
+            declared_agent=declared_agent,
+            execution_agent=execution_agent,
+            output_summary=step_output_preview,
+        )
 
         # For multi-step plans, delete intermediate result.json so next step writes fresh
         if is_multi and not is_last and result_file.exists():
@@ -1230,8 +1699,19 @@ def _extract_knowledge_writeback(workspace: Path, task_id: str,
         log.warning("Knowledge writeback failed for %s: %s", task_id, e)
 
 
+_RESULT_RUNTIME_METADATA_KEYS = {
+    "step_index",
+    "step_count",
+    "declared_agent",
+    "execution_agent",
+    "capability_class",
+    "policy",
+}
+
+
 def _write_result(workspace: Path, task_id: str, status: str, summary: str,
-                  tags: list[str] | None = None, agent: str | None = None):
+                  tags: list[str] | None = None, agent: str | None = None,
+                  metadata: dict | None = None):
     """Write result JSON for TaskManager to collect."""
     result = {
         "task_id": task_id,
@@ -1243,6 +1723,10 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
         result["tags"] = tags
     if agent:
         result["agent"] = agent
+    if metadata:
+        for key in _RESULT_RUNTIME_METADATA_KEYS:
+            if key in metadata:
+                result[key] = metadata[key]
     result_path = workspace / "result.json"
     tmp_path = result_path.with_suffix(".tmp")
     tmp_path.write_text(
@@ -1400,7 +1884,8 @@ def _invoke_registry_preflight(preflight_fn, workspace: Path, task_id: str, inst
 
 def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
                         handler_result: str | None,
-                        output_snapshot: tuple[int, int] | None) -> None:
+                        output_snapshot: tuple[int, int] | None,
+                        metadata: dict | None = None) -> None:
     """Backfill result.json for handlers that only return text/output.md."""
     result_file = workspace / "result.json"
     if result_file.exists():
@@ -1408,12 +1893,27 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
             existing = json.loads(result_file.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             existing = {}
-        _verify_step_artifact(
+        verified = _verify_step_artifact(
             workspace,
             task_id,
             agent,
             existing.get("status", ""),
         )
+        if not verified:
+            return
+        if metadata:
+            changed = False
+            for key, value in metadata.items():
+                if key not in _RESULT_RUNTIME_METADATA_KEYS:
+                    continue
+                if key not in existing:
+                    existing[key] = value
+                    changed = True
+            if changed:
+                result_file.write_text(
+                    json.dumps(existing, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
         return
 
     output_file = workspace / "output.md"
@@ -1433,6 +1933,7 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
             summary,
             tags=[agent],
             agent=agent,
+            metadata=metadata,
         )
         return
 
@@ -1449,7 +1950,15 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
         tags = smart_classify(request, summary)
         if not _verify_step_artifact(workspace, task_id, agent, "done"):
             return
-        _write_result(workspace, task_id, "done", summary, tags=tags, agent=agent)
+        _write_result(
+            workspace,
+            task_id,
+            "done",
+            summary,
+            tags=tags,
+            agent=agent,
+            metadata=metadata,
+        )
         return
 
     _write_result(
@@ -1458,6 +1967,7 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
         "error",
         f"{agent} handler returned no result or output",
         agent=agent,
+        metadata=metadata,
     )
 
 
