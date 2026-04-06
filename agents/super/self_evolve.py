@@ -250,14 +250,37 @@ def save_proposal(proposal: dict, date: str) -> Path:
     # Add metadata
     proposal["created_at"] = datetime.now().isoformat()
     proposal["date"] = date
-    proposal["status"] = "proposed"  # proposed | implemented | failed | rejected
+    proposal["status"] = "proposed"  # proposal file status; backlog is source of execution truth
 
     filepath.write_text(
         json.dumps(proposal, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     log.info("Saved proposal: %s", filepath)
+    _enqueue_backlog_action(proposal, filepath)
     return filepath
+
+
+def _enqueue_backlog_action(proposal: dict, proposal_path: Path):
+    """Mirror actionable proposals into the governed action backlog."""
+    try:
+        from action_backlog import ActionBacklog, ActionItem
+
+        risk = str(proposal.get("risk_level", "medium"))
+        backlog = ActionBacklog()
+        backlog.add(
+            ActionItem(
+                title=proposal.get("title", proposal_path.stem),
+                description=proposal.get("description", "")[:500],
+                source="self_evolve",
+                status="approved" if risk == "low" else "proposed",
+                priority="high" if risk == "low" else "medium",
+                executor="self_evolve_proposal" if risk == "low" else "",
+                payload={"proposal_path": str(proposal_path)},
+            )
+        )
+    except Exception as exc:
+        log.warning("Failed to enqueue proposal into backlog: %s", exc)
 
 
 # ---------------------------------------------------------------------------

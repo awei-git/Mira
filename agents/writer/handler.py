@@ -9,12 +9,13 @@ writing_workflow.start_project(), whose signature did not match the runtime.
 from __future__ import annotations
 
 import logging
+import inspect
 import re
 import shutil
 from pathlib import Path
 
-from persona.persona_context import get_persona_context
 from preflight import preflight_check, verify_artifact
+from runtime_context import build_runtime_context
 from sub_agent import claude_think
 from writing_workflow import run_full_pipeline
 
@@ -46,9 +47,21 @@ def handle(workspace: Path, task_id: str, content: str,
            sender: str, thread_id: str, **kwargs) -> str | None:
     """Handle a writing request and return a short summary."""
     title = _extract_title(content)
+    bundle = build_runtime_context(
+        content,
+        user_id=kwargs.get("user_id", "ang") or "ang",
+        thread_id=thread_id,
+        persona_domains=["taste", "style", "writing"],
+        recall_top_k=5,
+    )
+    if kwargs.get("thread_history"):
+        bundle.thread_history = kwargs["thread_history"]
+    if kwargs.get("thread_memory"):
+        bundle.thread_memory = kwargs["thread_memory"]
+
     if _is_quick_write(content):
-        return _handle_quick_write(workspace, content, title)
-    return _handle_full_write(workspace, content, title)
+        return _handle_quick_write(workspace, content, title, bundle)
+    return _handle_full_write(workspace, content, title, bundle)
 
 
 def _extract_title(content: str) -> str:
@@ -71,9 +84,20 @@ def _is_quick_write(content: str) -> bool:
     return any(signal in lower for signal in _QUICK_WRITE_SIGNALS)
 
 
-def _handle_quick_write(workspace: Path, content: str, title: str) -> str | None:
-    persona = get_persona_context(domains=["taste", "style", "writing"])
-    prompt = f"""{persona.as_prompt(max_length=2200)}
+def _handle_quick_write(workspace: Path, content: str, title: str, bundle) -> str | None:
+    extra = []
+    if bundle.thread_history:
+        extra.append(f"## Conversation so far\n{bundle.thread_history}")
+    if bundle.thread_memory:
+        extra.append(f"## Thread memory\n{bundle.thread_memory}")
+    recall_block = bundle.recall_block(max_chars=1000)
+    if recall_block:
+        extra.append(recall_block)
+    extra_context = "\n\n".join(extra)
+
+    prompt = f"""{bundle.persona.as_prompt(max_length=2200)}
+
+{extra_context}
 
 ## Task
 {content}
@@ -96,8 +120,24 @@ def _handle_quick_write(workspace: Path, content: str, title: str) -> str | None
     return summary
 
 
-def _handle_full_write(workspace: Path, content: str, title: str) -> str | None:
-    project_dir, final_text = run_full_pipeline(title, content)
+def _handle_full_write(workspace: Path, content: str, title: str, bundle) -> str | None:
+    context_parts = []
+    if bundle.thread_history:
+        context_parts.append(f"Conversation so far:\n{bundle.thread_history}")
+    if bundle.thread_memory:
+        context_parts.append(f"Thread memory:\n{bundle.thread_memory}")
+    recall_block = bundle.recall_block(max_chars=1000)
+    if recall_block:
+        context_parts.append(recall_block)
+
+    call_kwargs = {}
+    signature = inspect.signature(run_full_pipeline)
+    if "persona_prompt" in signature.parameters:
+        call_kwargs["persona_prompt"] = bundle.persona.as_prompt(max_length=2600)
+    if "context_note" in signature.parameters:
+        call_kwargs["context_note"] = "\n\n".join(context_parts).strip()
+
+    project_dir, final_text = run_full_pipeline(title, content, **call_kwargs)
     final_file = project_dir / "final.md"
     if final_file.exists():
         shutil.copy2(final_file, workspace / "output.md")

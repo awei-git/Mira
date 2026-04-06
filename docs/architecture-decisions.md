@@ -1,7 +1,7 @@
 # Mira Architecture Decisions
 
-更新时间：2026-04-05
-状态：placeholder
+更新时间：2026-04-06
+状态：active
 
 ## 1. 这份文档是干什么的
 
@@ -115,8 +115,68 @@ References:
 
 那就应该同时新增或更新一条 decision log。
 
-## 7. 占位说明
+## 7. Decisions
 
-这份文档当前还是 placeholder。
+## DECISION-0001: Shared Runtime Context Bundle For Primary Paths
 
-下一步不需要先把它写满，只需要在第一次真正的架构级决策落地时，开始写第一条正式记录。
+Date: 2026-04-06
+Status: accepted
+
+Context:
+- discussion / general / researcher / writer 过去长期各自拼 persona 和 memory。
+- 这会导致 drift、retrieval provenance 丢失、主路径语义不一致。
+
+Decision:
+- 主路径统一使用 shared runtime context bundle。
+- bundle 至少包含 persona、thread history、thread memory、retrieval recall block、freshness、confidence、provenance。
+
+Consequences:
+- 主路径不允许继续维护多套长期上下文 contract。
+- 后续改 persona / memory 注入，必须同时更新 design 和 ADR。
+
+References:
+- docs/system-design.md
+- docs/production-roadmap.md
+
+## DECISION-0002: Operator Dashboard And Restore Drill Are Production Surfaces
+
+Date: 2026-04-06
+Status: accepted
+
+Context:
+- 仅靠日志无法支撑 production 运维。
+- 有 backup 但没有 restore drill，不能证明系统可恢复。
+
+Decision:
+- task / publish / health / backlog / restore 信号统一汇总到 operator dashboard。
+- restore dry-run 成为受控 job，结果进入 dashboard 与 runbook。
+
+Consequences:
+- operator diagnosis 的第一入口不再是散乱日志。
+- restore drill 结果必须留痕并进入可见 operator surface。
+
+References:
+- docs/system-design.md
+- docs/operations-handbook.md
+- docs/runbooks/operator-dashboard.md
+- docs/runbooks/restore-drill.md
+
+## DECISION-0003: Backlog Executor Must Stay Bounded
+
+Date: 2026-04-06
+Status: accepted
+
+Context:
+- reflect / self-evolve 能提出改进项，但自动执行风险高。
+
+Decision:
+- 当前 production scope 只允许 backlog executor 执行低风险、已批准、带 executor 的 action。
+- 当前唯一自动执行路径是 `self_evolve_proposal`。
+
+Consequences:
+- “会提建议”不再等于“能随便改系统”。
+- 更高风险 executor 必须单独设计 rollback、blast-radius control、verification。
+
+References:
+- docs/system-design.md
+- docs/production-roadmap.md

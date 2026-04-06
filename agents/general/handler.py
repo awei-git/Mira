@@ -7,9 +7,9 @@ import logging
 import re
 from pathlib import Path
 
-from config import MIRA_DIR
 from preflight import preflight_check
-from soul_manager import load_soul, format_soul, load_skills_for_task
+from runtime_context import build_runtime_context
+from soul_manager import load_skills_for_task
 from sub_agent import claude_act, claude_think
 from prompts import respond_prompt
 
@@ -79,14 +79,25 @@ def handle(workspace: Path, task_id: str, content: str,
            thread_history: str = "", thread_memory: str = "",
            tier: str = "light") -> str | None:
     """Handle a general request. Returns output text or None on failure."""
-    soul = load_soul()
-    soul_ctx = format_soul(soul)
+    bundle = build_runtime_context(
+        content,
+        user_id="ang",
+        thread_id=thread_id,
+    )
+    # Respect explicitly supplied thread state from the caller.
+    if thread_history:
+        bundle.thread_history = thread_history
+    if thread_memory:
+        bundle.thread_memory = thread_memory
 
     extra_context = ""
-    if thread_history:
-        extra_context += f"\n\n{thread_history}"
-    if thread_memory:
-        extra_context += f"\n\n## Thread Memory\n{thread_memory}"
+    if bundle.thread_history:
+        extra_context += f"\n\n{bundle.thread_history}"
+    if bundle.thread_memory:
+        extra_context += f"\n\n## Thread Memory\n{bundle.thread_memory}"
+    recall_block = bundle.recall_block(max_chars=1000)
+    if recall_block:
+        extra_context += f"\n\n{recall_block}"
 
     # Inject relevant skills for this task
     skills_ctx = load_skills_for_task(content, agent_type="general")
@@ -101,7 +112,7 @@ def handle(workspace: Path, task_id: str, content: str,
         log.info("Added web research context (%d chars)", len(web_ctx))
 
     prompt = respond_prompt(
-        soul_ctx,
+        bundle.persona.as_prompt(max_length=2600),
         f"Mira:{sender}",
         content + extra_context,
         str(workspace),

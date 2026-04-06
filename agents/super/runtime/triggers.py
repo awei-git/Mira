@@ -529,6 +529,59 @@ def _should_self_evolve() -> bool:
     return True
 
 
+def _should_backlog_executor() -> bool:
+    """Run when there is at least one approved executable backlog item."""
+    now = datetime.now()
+    if not (14 <= now.hour <= 18):
+        return False
+    state = _load_state()
+    stamp = state.get("last_backlog_executor", "")
+    if stamp:
+        try:
+            if (now - datetime.fromisoformat(stamp)).total_seconds() < 2 * 3600:
+                return False
+        except ValueError:
+            pass
+    try:
+        from action_backlog import ActionBacklog
+
+        backlog = ActionBacklog()
+        has_work = any(
+            item.status == "approved" and item.executor == "self_evolve_proposal"
+            for item in backlog.get_active()
+        )
+    except Exception:
+        return False
+    if not has_work:
+        return False
+    state["last_backlog_executor"] = now.isoformat()
+    _save_state(state)
+    return True
+
+
+def _should_restore_dry_run() -> bool:
+    """Run one restore dry-run per week when a backup manifest is available."""
+    now = datetime.now()
+    if now.weekday() != 0:  # Monday
+        return False
+    if not (12 <= now.hour <= 15):
+        return False
+    try:
+        from restore_drill import latest_backup_dir
+
+        if not latest_backup_dir():
+            return False
+    except Exception:
+        return False
+    state = _load_state()
+    week_key = f"restore_dry_run_{now.strftime('%Y-W%W')}"
+    if state.get(week_key):
+        return False
+    state[week_key] = now.isoformat()
+    _save_state(state)
+    return True
+
+
 def _should_daily_assessment() -> bool:
     """Run performance assessment once per day, evening."""
     now = datetime.now()

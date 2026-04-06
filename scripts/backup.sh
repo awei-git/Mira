@@ -84,6 +84,10 @@ log "Pruning old backups..."
 find "$BACKUP_ROOT" -maxdepth 1 -type d -name "20*" -mtime +30 -exec rm -rf {} \; 2>>"$LOCAL_LOG"
 
 # 9. Summary
+log "Writing backup manifest..."
+python3 "$HOME/Sandbox/Mira/scripts/backup_integrity.py" "$BACKUP_DIR" >>"$LOCAL_LOG" 2>&1 || \
+    log "WARNING: backup manifest generation failed"
+
 TOTAL=$(du -sh "$BACKUP_DIR" | cut -f1)
 log "Backup complete: $BACKUP_DIR ($TOTAL)"
 log "=== Backup finished ==="
