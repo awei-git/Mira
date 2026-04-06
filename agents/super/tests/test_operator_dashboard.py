@@ -1,6 +1,7 @@
 """Tests for operator dashboard summary."""
 from __future__ import annotations
 
+import tempfile
 import json
 import sys
 from pathlib import Path
@@ -36,8 +37,9 @@ def test_build_operator_summary_aggregates_runtime_signals(monkeypatch, tmp_path
         json.dumps(
             {
                 "task_id": "task-failed",
+                "workflow_id": "task-failed",
                 "user_id": "ang",
-                "status": "error",
+                "status": "failed",
                 "failure_class": "worker_crash",
                 "summary": "boom",
                 "completed_at": "2026-04-05T01:00:00Z",
@@ -77,6 +79,7 @@ def test_build_operator_summary_aggregates_runtime_signals(monkeypatch, tmp_path
     monkeypatch.setattr(od, "STATUS_FILE", status_file)
     monkeypatch.setattr(od, "HISTORY_FILE", history_file)
     monkeypatch.setattr(od, "_RESTORE_DRILL_LOG", restore_log)
+    monkeypatch.setattr(od, "_valid_restore_drill", lambda record: True)
     monkeypatch.setattr(
         od,
         "load_manifest",
@@ -117,7 +120,58 @@ def test_build_operator_summary_aggregates_runtime_signals(monkeypatch, tmp_path
 
     assert summary["tasks"]["active"][0]["task_id"] == "task-running"
     assert summary["tasks"]["failed_recent"][0]["task_id"] == "task-failed"
+    assert summary["tasks"]["failed_recent"][0]["workflow_id"] == "task-failed"
     assert summary["publish"]["queue"][0]["slug"] == "essay-1"
     assert summary["backlog"]["counts"]["approved"] == 1
     assert summary["recent_incidents"][0]["pipeline"] == "publish"
     assert summary["latest_restore_drill"]["ok"] is True
+
+
+def test_operator_dashboard_filters_ephemeral_restore_and_stale_processes(monkeypatch, tmp_path: Path):
+    import operator_dashboard as od
+
+    restore_log = tmp_path / "restore_drills.jsonl"
+    backup_dir = Path(tempfile.mkdtemp(prefix="operator-dashboard-backup-test-", dir="/tmp"))
+    restore_log.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-04-05T02:00:00Z",
+                        "ok": False,
+                        "backup_dir": "/private/var/folders/wh/test",
+                    }
+                ),
+                    json.dumps(
+                        {
+                            "timestamp": "2026-04-05T03:00:00Z",
+                            "ok": True,
+                            "backup_dir": str(backup_dir),
+                        }
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(od, "STATUS_FILE", tmp_path / "status.json")
+    monkeypatch.setattr(od, "HISTORY_FILE", tmp_path / "history.jsonl")
+    monkeypatch.setattr(od, "_RESTORE_DRILL_LOG", restore_log)
+    monkeypatch.setattr(od, "load_manifest", lambda: {"articles": {}})
+    monkeypatch.setattr(od, "get_stuck_articles", lambda: [])
+    monkeypatch.setattr(od, "load_recent_failures", lambda days=7, limit=50: [])
+    monkeypatch.setattr(od, "ActionBacklog", lambda: type("B", (), {"_items": [], "get_active": lambda self: []})())
+    monkeypatch.setattr(
+        od,
+        "_load_bg_health",
+        lambda: {
+            "daily_stats": {},
+            "failing_processes": 1,
+            "processes": [{"name": "analyst-1800", "consecutive_failures": 3}],
+        },
+    )
+
+    summary = od.build_operator_summary(user_id="ang")
+
+    assert summary["latest_restore_drill"]["backup_dir"] == str(backup_dir)
+    assert summary["health"]["processes"][0]["name"] == "analyst-1800"

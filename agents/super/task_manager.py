@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import MIRA_DIR, TASK_TIMEOUT, TASK_TIMEOUT_LONG, MAX_CONCURRENT_TASKS, TASK_MAX_RETRIES
+from execution.runtime_contract import derive_workflow_id, normalize_task_status
 
 # Timeout resolution: first check registry manifest, then fall back to tag keywords
 _LONG_TIMEOUT_TAGS = {"writing", "write", "novel", "essay", "blog", "research",
@@ -68,12 +69,13 @@ def _utc_iso() -> str:
 @dataclass
 class TaskRecord:
     task_id: str
+    workflow_id: str
     msg_id: str
     thread_id: str
     sender: str
     content_preview: str   # first 80 chars of message
     pid: int
-    status: str            # dispatched | running | done | needs-input | blocked | error | timeout
+    status: str            # dispatched | running | done | needs-input | blocked | failed | timeout
     started_at: str
     user_id: str = "ang"
     completed_at: str = ""
@@ -153,6 +155,11 @@ class TaskManager:
             return ""
 
         task_id = msg.id
+        workflow_id = derive_workflow_id(
+            task_id=task_id,
+            thread_id=getattr(msg, "thread_id", "") or "",
+            workflow_id=getattr(msg, "workflow_id", "") or "",
+        )
         workspace_dir.mkdir(parents=True, exist_ok=True)
 
         # Clean stale results from previous runs so worker doesn't skip execution
@@ -163,10 +170,10 @@ class TaskManager:
 
         # Write message to a temp file for the worker to read
         msg_file = workspace_dir / "message.json"
-        msg_file.write_text(
-            json.dumps(msg.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        msg_payload = dict(msg.to_dict())
+        msg_payload["workflow_id"] = workflow_id
+        msg_payload["user_id"] = getattr(msg, "user_id", "ang") or "ang"
+        msg_file.write_text(json.dumps(msg_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # Spawn worker as a detached process
         cmd = [
@@ -194,6 +201,7 @@ class TaskManager:
 
         record = TaskRecord(
             task_id=task_id,
+            workflow_id=workflow_id,
             msg_id=msg.id,
             thread_id=msg.thread_id,
             user_id=getattr(msg, "user_id", "ang") or "ang",
@@ -210,7 +218,14 @@ class TaskManager:
         self._records.append(record)
         self._save_status()
 
-        log.info("Dispatched task %s (PID %d): %s", task_id, proc.pid, msg.content[:60])
+        log.info(
+            "Dispatched task %s workflow=%s user=%s (PID %d): %s",
+            task_id,
+            workflow_id,
+            record.user_id,
+            proc.pid,
+            msg.content[:60],
+        )
         return task_id
 
     # ------------------------------------------------------------------
@@ -223,7 +238,7 @@ class TaskManager:
         changed = False
 
         for rec in self._records:
-            if rec.status in ("done", "error", "timeout", "needs-input", "blocked"):
+            if rec.status in ("done", "failed", "timeout", "needs-input", "blocked"):
                 continue
 
             # Check if process is still alive
@@ -312,10 +327,11 @@ class TaskManager:
         if result_file.exists():
             try:
                 data = json.loads(result_file.read_text(encoding="utf-8"))
-                rec.status = data.get("status", "done")
+                rec.status = normalize_task_status(data.get("status", "done"))
                 rec.summary = data.get("summary", "")
                 rec.completed_at = data.get("completed_at", _utc_iso())
                 rec.failure_class = data.get("failure_class", "")
+                rec.workflow_id = data.get("workflow_id", rec.workflow_id) or rec.workflow_id
                 if data.get("tags"):
                     rec.tags = data["tags"]
                 return True
@@ -331,7 +347,7 @@ class TaskManager:
             return True
 
         # Process died without producing output — check stderr for crash info
-        rec.status = "error"
+        rec.status = "failed"
         rec.completed_at = _utc_iso()
         rec.failure_class = "worker_crash"
         stderr_file = ws / "worker_stderr.log"
@@ -413,13 +429,13 @@ class TaskManager:
     def find_failed_task(self, task_id: str) -> TaskRecord | None:
         """Find a terminal task by task_id (for retry or inspection)."""
         for r in self._records:
-            if r.task_id == task_id and r.status in ("done", "error", "timeout", "needs-input", "blocked"):
+            if r.task_id == task_id and r.status in ("done", "failed", "timeout", "needs-input", "blocked"):
                 return r
         return None
 
     def can_retry(self, rec: TaskRecord) -> bool:
         """Return whether a terminal task still has retry budget."""
-        return rec.status in ("error", "timeout", "blocked") and rec.attempt_count < rec.max_attempts
+        return rec.status in ("failed", "timeout", "blocked") and rec.attempt_count < rec.max_attempts
 
     def reset_for_retry(self, task_id: str) -> TaskRecord | None:
         """Remove a completed/failed task record so it can be re-dispatched.
@@ -455,7 +471,7 @@ class TaskManager:
             "busy": len(active) > 0,
             "active_count": len(active),
             "active_tasks": [
-                {"task_id": r.task_id, "preview": r.content_preview,
+                {"task_id": r.task_id, "workflow_id": r.workflow_id, "preview": r.content_preview,
                  "started_at": r.started_at, "tags": r.tags}
                 for r in active
             ],
@@ -478,6 +494,11 @@ class TaskManager:
                     rec["tags"] = []
                 if "user_id" not in rec:
                     rec["user_id"] = "ang"
+                if "workflow_id" not in rec:
+                    rec["workflow_id"] = derive_workflow_id(
+                        task_id=rec.get("task_id", ""),
+                        thread_id=rec.get("thread_id", ""),
+                    )
                 if "attempt_count" not in rec:
                     rec["attempt_count"] = 1
                 if "max_attempts" not in rec:
@@ -486,6 +507,7 @@ class TaskManager:
                     rec["failure_class"] = ""
                 if "timeout_alerted_at" not in rec:
                     rec["timeout_alerted_at"] = ""
+                rec["status"] = normalize_task_status(rec.get("status", ""))
                 records.append(TaskRecord(**rec))
             return records
         except (json.JSONDecodeError, OSError, TypeError) as e:

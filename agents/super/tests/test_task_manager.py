@@ -44,6 +44,7 @@ def test_dispatch_records_message_user_id(monkeypatch, tmp_path):
 
     assert task_id == "req_123"
     assert mgr._records[0].user_id == "liquan"
+    assert mgr._records[0].workflow_id == "req_123"
     assert mgr._records[0].attempt_count == 1
     assert mgr._records[0].max_attempts >= 1
 
@@ -76,6 +77,7 @@ def test_load_status_backfills_missing_user_id(monkeypatch, tmp_path):
 
     assert len(mgr._records) == 1
     assert mgr._records[0].user_id == "ang"
+    assert mgr._records[0].workflow_id == "req_legacy"
     assert mgr._records[0].attempt_count == 1
     assert mgr._records[0].failure_class == ""
 
@@ -113,6 +115,7 @@ def test_dispatch_allows_explicit_retry_attempts(monkeypatch, tmp_path):
 
     assert mgr._records[0].attempt_count == 2
     assert mgr._records[0].max_attempts == 3
+    assert mgr._records[0].workflow_id == "req_retry"
 
 
 def test_can_retry_and_reset_for_retry_return_removed_record(monkeypatch, tmp_path):
@@ -125,12 +128,13 @@ def test_can_retry_and_reset_for_retry_return_removed_record(monkeypatch, tmp_pa
     mgr = task_manager.TaskManager()
     rec = task_manager.TaskRecord(
         task_id="req_fail",
+        workflow_id="req_fail",
         msg_id="req_fail",
         thread_id="req_fail",
         sender="user",
         content_preview="failed",
         pid=123,
-        status="error",
+        status="failed",
         started_at="2026-04-05T00:00:00Z",
         workspace=str(tmp_path / "workspace"),
         attempt_count=1,
@@ -157,12 +161,13 @@ def test_can_retry_respects_retry_ceiling(monkeypatch, tmp_path):
     mgr = task_manager.TaskManager()
     rec = task_manager.TaskRecord(
         task_id="req_fail",
+        workflow_id="req_fail",
         msg_id="req_fail",
         thread_id="req_fail",
         sender="user",
         content_preview="failed",
         pid=123,
-        status="error",
+        status="failed",
         started_at="2026-04-05T00:00:00Z",
         workspace=str(tmp_path / "workspace"),
         attempt_count=2,
@@ -200,6 +205,7 @@ def test_check_tasks_records_timeout_alert_once(monkeypatch, tmp_path):
     mgr = task_manager.TaskManager()
     rec = task_manager.TaskRecord(
         task_id="req_timeout",
+        workflow_id="req_timeout",
         msg_id="req_timeout",
         thread_id="req_timeout",
         sender="user",
@@ -220,6 +226,47 @@ def test_check_tasks_records_timeout_alert_once(monkeypatch, tmp_path):
     mgr.check_tasks()
     assert len(created) == 1
     assert mgr._records[0].timeout_alerted_at == first_alerted_at
+
+
+def test_collect_result_normalizes_error_status_to_failed(monkeypatch, tmp_path):
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "result.json").write_text(
+        json.dumps(
+            {
+                "task_id": "req_fail",
+                "workflow_id": "req_fail",
+                "status": "error",
+                "summary": "boom",
+                "completed_at": "2026-04-05T00:05:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mgr = task_manager.TaskManager()
+    rec = task_manager.TaskRecord(
+        task_id="req_fail",
+        workflow_id="req_fail",
+        msg_id="req_fail",
+        thread_id="req_fail",
+        sender="user",
+        content_preview="failed",
+        pid=123,
+        status="running",
+        started_at="2026-04-05T00:00:00Z",
+        workspace=str(workspace),
+    )
+
+    mgr._collect_result(rec)
+
+    assert rec.status == "failed"
 
 
 def test_check_tasks_wait_reply_keeps_running_status(monkeypatch, tmp_path):
@@ -250,6 +297,7 @@ def test_check_tasks_wait_reply_keeps_running_status(monkeypatch, tmp_path):
     mgr = task_manager.TaskManager()
     rec = task_manager.TaskRecord(
         task_id="req_timeout_wait",
+        workflow_id="req_timeout_wait",
         msg_id="req_timeout_wait",
         thread_id="req_timeout_wait",
         sender="user",

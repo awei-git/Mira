@@ -1,4 +1,4 @@
-# Skills (31 learned)
+# Skills (33 learned)
 
 ## Experience Self-Distillation
 *Convert raw task trajectories into reusable strategic principles, then retrieve and apply them to new tasks.*  
@@ -1194,3 +1194,69 @@ When a task requires producing a file output, the agent must verify the output f
 2. After writing, confirm the file exists at that exact absolute path.
 3. If the file does not exist post-write, treat it as a task failure — do not return success.
 4. In test contexts especially, use `tmp_path / 'task' / 'output.md'` style construction and verify each path segment exists.
+
+---
+
+## verify-output-path-existence-before-task-completion
+*Always confirm the exact output file path exists and is written before marking a task complete*  
+Learned: 2026-04-05  
+
+# verify-output-path-existence-before-task-completion
+
+Always confirm the exact output file path exists and is written before marking a task complete
+
+**Source**: Extracted from task failure (2026-04-05)
+**Tags**: file-output, verification, agent-reliability, task-completion
+
+---
+
+## Rule: Verify Output File Existence Before Task Completion
+
+When a task requires producing file output, the agent must explicitly confirm the file exists at the expected path before declaring success.
+
+**What went wrong:** The agent completed execution without verifying that `/private/var/.../task/output.md` was actually written. The verification step caught a missing file — meaning the agent either wrote to the wrong path, failed silently, or never wrote at all.
+
+**Actionable steps:**
+1. After any file-write operation, immediately read back or stat the file to confirm it exists.
+2. If the output path is constructed dynamically (temp dirs, pytest fixture dirs), log the resolved path before writing — never assume the path is what you intended.
+3. If writing fails silently (no error thrown but file absent), treat that as a hard failure, not a recoverable warning.
+4. When operating in temp directories (e.g. `/tmp`, `/var/folders`), be aware that paths can be session-scoped and may not persist across subprocess boundaries.
+
+**Pattern to watch for:** Task specs that reference files in OS temp directories or test fixture directories are especially prone to path resolution mismatches. Confirm the working directory context matches expectations before writing.
+
+---
+
+## verify-output-path-exists-before-claiming-success
+*Always confirm the output file was actually written to the expected path before marking a task complete*  
+Learned: 2026-04-06  
+
+# verify-output-path-exists-before-claiming-success
+
+Always confirm the output file was actually written to the expected path before marking a task complete
+
+**Source**: Extracted from task failure (2026-04-06)
+**Tags**: file-output, verification, agent-tasks, testing
+
+---
+
+When a task requires writing output to a file, the agent must verify the file exists at the exact expected path *before* reporting success.
+
+**The failure pattern:** Agent performs work, believes it wrote output, but the file either (a) was written to a different path, (b) was never written due to a silent error, or (c) was written inside a subprocess/temp context that did not persist.
+
+**Rule:** After any file-writing step that produces a required artifact, immediately confirm existence with a file check (`os.path.exists`, `stat`, or equivalent). Do not rely on the absence of an exception as proof of success.
+
+**Common causes in test environments:**
+- Working directory differs between planning and execution contexts
+- Relative paths resolve differently inside spawned subprocesses
+- Output was written to a temp dir that was cleaned up before verification
+- The `task/` subdirectory was not created before writing `output.md` into it
+
+**Actionable checklist:**
+1. Before writing: ensure parent directory exists (`mkdir -p` or equivalent)
+2. After writing: stat the file at the absolute path expected by the verifier
+3. If paths are constructed dynamically, log the resolved absolute path
+4. In test scaffolding: prefer absolute paths derived from a known fixture root, not relative paths from CWD
+
+**Why this matters:** The verifier checks a specific absolute path. Any mismatch — even one directory level — produces a "file does not exist" failure that looks like a complete task failure, obscuring that the work was actually done.
+
+---

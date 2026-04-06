@@ -89,6 +89,7 @@ from runtime.jobs import (
     evaluate_job_payload,
     get_jobs,
 )
+from execution.runtime_contract import normalize_task_status
 
 log = logging.getLogger("mira")
 
@@ -364,6 +365,7 @@ def do_talk():
     # --- Phase A: Collect results from previously dispatched tasks ---
     completed = task_mgr.check_tasks()
     for rec in completed:
+        rec.status = normalize_task_status(getattr(rec, "status", ""))
         bridge = bridges_by_user.get(getattr(rec, "user_id", "ang"), default_bridge)
         content = task_mgr.get_reply_content(rec)
         footer = _status_footer(task_mgr)
@@ -392,7 +394,7 @@ def do_talk():
                     bridge.update_todo(_todo_id, status="done")
                     log.info("Todo %s: agent reply written to followups", _todo_id)
             log.info("STATE %s: working -> done", rec.task_id)
-        elif rec.status in ("error", "timeout", "blocked"):
+        elif rec.status in ("failed", "timeout", "blocked"):
             retryable = task_mgr.can_retry(rec)
             if rec.status == "blocked":
                 error_msg = f"处理被阻止: {rec.summary}" if rec.summary else "处理被阻止。"

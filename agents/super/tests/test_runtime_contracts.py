@@ -216,7 +216,7 @@ def test_execute_plan_steps_rewrites_done_without_output_to_error(tmp_path, monk
     )
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
-    assert result["status"] == "error"
+    assert result["status"] == "failed"
     assert "no verifiable output" in result["summary"]
     assert result["failure_class"] == "verification_failed"
     assert result["next_action"] == "inspect-artifacts-and-retry"
@@ -421,7 +421,7 @@ def test_execute_plan_steps_fails_closed_on_preflight_exception(tmp_path, monkey
     )
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
-    assert result["status"] == "error"
+    assert result["status"] == "failed"
     assert "preflight failed" in result["summary"]
     assert called["handler"] is False
 
@@ -581,8 +581,10 @@ def test_execute_plan_steps_writes_plan_and_step_state_artifacts(tmp_path, monke
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
 
     assert plan_artifact["task_id"] == "task129a"
+    assert plan_artifact["workflow_id"] == "task129a"
     assert plan_artifact["steps"][0]["capability_class"] == "local-write"
     assert step_state["status"] == "done"
+    assert step_state["workflow_id"] == "task129a"
     assert step_state["steps"][0]["status"] == "done"
     assert step_state["steps"][0]["declared_agent"] == "writer"
     assert step_state["steps"][0]["execution_agent"] == "writer"
@@ -601,6 +603,7 @@ def test_write_result_backfills_canonical_contract_for_legacy_calls(tmp_path, mo
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
     assert result["status"] == "done"
+    assert result["workflow_id"] == "task129z"
     assert result["step_id"] == ""
     assert result["failure_class"] == ""
     assert result["next_action"] == "proceed-to-next-step"
@@ -646,6 +649,7 @@ def test_ensure_step_result_reuses_cached_verification(tmp_path, monkeypatch):
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
     assert calls["count"] == 1
     assert result["verification"]["status"] == "verified"
+    assert result["workflow_id"] == "task129za"
 
 
 def test_write_result_only_collects_declared_public_artifacts(tmp_path, monkeypatch):
@@ -671,9 +675,10 @@ def test_write_result_only_collects_declared_public_artifacts(tmp_path, monkeypa
     artifact_names = {Path(item["path"]).name for item in result["artifacts_produced"]}
     assert artifact_names == {"output.md", "summary.txt", "notes.txt"}
     assert "scratchpad.md" not in artifact_names
+    assert result["workflow_id"] == "task129zb"
 
 
-def test_execute_plan_steps_marks_fallback_exception_as_error(tmp_path, monkeypatch):
+def test_execute_plan_steps_marks_fallback_exception_as_failed(tmp_path, monkeypatch):
     workspace = tmp_path / "task"
     workspace.mkdir()
 
@@ -711,11 +716,11 @@ def test_execute_plan_steps_marks_fallback_exception_as_error(tmp_path, monkeypa
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
     step_state = json.loads((workspace / "step_states.json").read_text(encoding="utf-8"))
 
-    assert result["status"] == "error"
+    assert result["status"] == "failed"
     assert "general fallback failed" in result["summary"]
     assert result["agent"] == "general"
-    assert step_state["status"] == "error"
-    assert step_state["steps"][0]["status"] == "error"
+    assert step_state["status"] == "failed"
+    assert step_state["steps"][0]["status"] == "failed"
 
 
 def test_execute_plan_steps_initializes_artifacts_once(tmp_path, monkeypatch):
@@ -762,6 +767,7 @@ def test_mark_step_finished_preserves_terminal_plan_status(tmp_path):
     initialize_plan_artifacts(
         workspace,
         task_id="task129d",
+        workflow_id="task129d",
         user_id="ang",
         request="two step task",
         plan=plan,
@@ -784,7 +790,7 @@ def test_mark_step_finished_preserves_terminal_plan_status(tmp_path):
     )
 
     step_state = json.loads((workspace / "step_states.json").read_text(encoding="utf-8"))
-    assert step_state["status"] == "error"
+    assert step_state["status"] == "failed"
 
 
 def test_socialmedia_handle_reuses_preflight_cache(tmp_path, monkeypatch):
@@ -1093,7 +1099,7 @@ def test_legacy_secret_respects_registry_preflight_block(tmp_path, monkeypatch):
     handlers_legacy._handle_secret(workspace, "task142", "@file:/missing.pdf 帮我看", "ang", "thread1")
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
-    assert result["status"] == "error"
+    assert result["status"] == "failed"
     assert "PREFLIGHT BLOCKED [secret]" in result["summary"]
     assert result["agent"] == "secret"
     assert result["tags"] == ["private"]

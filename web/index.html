@@ -378,24 +378,24 @@ function renderOperator() {
       task.started_at ? `started ${relTime(task.started_at)}` : '',
       (task.tags || []).join(', ')
     ].filter(Boolean).join(' · '))
-  )));
+  ), 'No active tasks right now.'));
   listHtml.push(operatorSection('Stuck Tasks', (tasks.stuck || []).map(task =>
     operatorRow(task.task_id || 'task', task.preview || task.status || '', task.timeout_alerted_at ? `alerted ${relTime(task.timeout_alerted_at)}` : 'needs operator attention')
-  )));
+  ), 'No stuck tasks.'));
   listHtml.push(operatorSection('Publish Queue', (publish.queue || []).slice(0, 8).map(item =>
     operatorRow(item.slug || item.title || 'publish item', `${item.status || ''} · retry ${item.retry_count || 0}`, item.error || item.updated_at || '')
-  )));
+  ), 'No queued publish items.'));
   listHtml.push(operatorSection('Backlog Actions', (backlog.next_actions || []).map(item =>
     operatorRow(item.title || 'action', `${item.priority || ''} · ${item.status || ''}`, [item.source, item.executor, item.updated_at ? `updated ${relTime(item.updated_at)}` : ''].filter(Boolean).join(' · '))
-  )));
+  ), 'No approved backlog actions waiting.'));
   listHtml.push(operatorSection('Recent Incidents', incidents.slice(0, 8).map(item =>
-    operatorRow(item.pipeline || 'incident', `${item.step || ''} · ${item.error_type || ''}`, item.error_message || item.timestamp || '')
-  )));
-  document.getElementById('listContent').innerHTML = listHtml.filter(Boolean).join('') || '<div class="empty">No operator signals</div>';
+    operatorRow(item.pipeline || 'incident', `${item.step || ''} · ${item.error_type || ''}${item.count > 1 ? ` · x${item.count}` : ''}`, item.error_message || item.timestamp || '')
+  ), 'No recent incidents.'));
+  document.getElementById('listContent').innerHTML = listHtml.join('');
 
   const publishCounts = publish.counts || {};
   const backlogCounts = backlog.counts || {};
-  const dailyStats = health.daily_stats || {};
+  const failingProcesses = health.failing_processes || 0;
   const processSummary = (health.processes || []).slice(0, 8).map(proc =>
     operatorRow(proc.name || 'process', `failures ${proc.consecutive_failures || 0}`, [
       proc.last_success ? `last success ${relTime(proc.last_success)}` : '',
@@ -408,7 +408,7 @@ function renderOperator() {
       <div class="operator-card"><h4>Active Tasks</h4><div class="operator-value">${(tasks.active || []).length}</div><div class="operator-note">${(tasks.stuck || []).length} stuck</div></div>
       <div class="operator-card"><h4>Publish Queue</h4><div class="operator-value">${(publish.queue || []).length}</div><div class="operator-note">${Object.keys(publishCounts).length} states tracked</div></div>
       <div class="operator-card"><h4>Backlog</h4><div class="operator-value">${(backlog.next_actions || []).length}</div><div class="operator-note">${backlogCounts.approved || 0} approved</div></div>
-      <div class="operator-card"><h4>Incidents</h4><div class="operator-value">${incidents.length}</div><div class="operator-note">${dailyStats.failed || 0} failures today</div></div>
+      <div class="operator-card"><h4>Incidents</h4><div class="operator-value">${incidents.length}</div><div class="operator-note">${failingProcesses} failing processes</div></div>
     </div>
     <div class="operator-section">
       <h4>Publish Status</h4>
@@ -416,7 +416,7 @@ function renderOperator() {
     </div>
     <div class="operator-section">
       <h4>Background Processes</h4>
-      <div class="operator-list">${processSummary || '<div class="empty" style="padding:20px">No process health recorded</div>'}</div>
+      <div class="operator-list">${processSummary || '<div class="empty" style="padding:20px">No recent or failing processes</div>'}</div>
     </div>
     <div class="operator-section">
       <h4>Latest Restore Drill</h4>
@@ -429,9 +429,9 @@ function renderOperator() {
   `;
 }
 
-function operatorSection(title, rows) {
-  if (!rows.length) return '';
-  return `<div class="operator-section"><h4>${title}</h4><div class="operator-list">${rows.join('')}</div></div>`;
+function operatorSection(title, rows, emptyText) {
+  const body = rows.length ? rows.join('') : `<div class="empty" style="padding:20px">${esc(emptyText || 'No items')}</div>`;
+  return `<div class="operator-section"><h4>${title}</h4><div class="operator-list">${body}</div></div>`;
 }
 
 function operatorRow(title, subtitle, note) {

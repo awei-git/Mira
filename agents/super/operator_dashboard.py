@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import LOGS_DIR, MIRA_DIR
 from failure_log import load_recent_failures
 from action_backlog import ActionBacklog
+from execution.runtime_contract import normalize_task_status
 from publish_manifest import get_stuck_articles, load_manifest
 from task_manager import HISTORY_FILE, STATUS_FILE
 
@@ -16,6 +17,7 @@ log = logging.getLogger("mira.operator_dashboard")
 
 _RESTORE_DRILL_LOG = LOGS_DIR / "restore_drills.jsonl"
 _DEFAULT_STUCK_MINUTES = 30
+_PROCESS_RECENCY_HOURS = 72
 
 
 def build_operator_summary(user_id: str = "ang") -> dict:
@@ -28,11 +30,13 @@ def build_operator_summary(user_id: str = "ang") -> dict:
     for rec in task_status:
         if rec.get("user_id", "ang") != user_id:
             continue
-        if rec.get("status") not in ("dispatched", "running"):
+        status = normalize_task_status(rec.get("status", ""))
+        if status not in ("dispatched", "running"):
             continue
         active_entry = {
             "task_id": rec.get("task_id", ""),
-            "status": rec.get("status", ""),
+            "workflow_id": rec.get("workflow_id", rec.get("task_id", "")),
+            "status": status,
             "preview": rec.get("content_preview", ""),
             "started_at": rec.get("started_at", ""),
             "tags": rec.get("tags", []),
@@ -45,13 +49,14 @@ def build_operator_summary(user_id: str = "ang") -> dict:
     failed_tasks = [
         {
             "task_id": rec.get("task_id", ""),
-            "status": rec.get("status", ""),
+            "workflow_id": rec.get("workflow_id", rec.get("task_id", "")),
+            "status": normalize_task_status(rec.get("status", "")),
             "failure_class": rec.get("failure_class", ""),
             "summary": rec.get("summary", ""),
             "completed_at": rec.get("completed_at", ""),
         }
         for rec in recent_history
-        if rec.get("status") in ("error", "timeout", "blocked")
+        if normalize_task_status(rec.get("status", "")) in ("failed", "timeout", "blocked")
     ][:10]
 
     manifest = load_manifest()
@@ -70,17 +75,7 @@ def build_operator_summary(user_id: str = "ang") -> dict:
 
     health = _load_bg_health()
     backlog = _build_backlog_summary()
-    incidents = [
-        {
-            "timestamp": rec.get("timestamp", ""),
-            "pipeline": rec.get("pipeline", ""),
-            "step": rec.get("step", ""),
-            "slug": rec.get("slug", ""),
-            "error_type": rec.get("error_type", ""),
-            "error_message": rec.get("error_message", ""),
-        }
-        for rec in load_recent_failures(days=7, limit=10)
-    ]
+    incidents = _recent_incidents()
 
     return {
         "updated_at": _utc_iso(),
@@ -153,9 +148,11 @@ def _latest_restore_drill() -> dict:
         if not line:
             continue
         try:
-            return json.loads(line)
+            record = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if _valid_restore_drill(record):
+            return record
     return {}
 
 
@@ -169,20 +166,55 @@ def _load_bg_health() -> dict:
 
     today = datetime.now().strftime("%Y-%m-%d")
     processes = []
-    for name, data in sorted(health.get("processes", {}).items()):
-        processes.append(
-            {
-                "name": name,
-                "last_dispatch": data.get("last_dispatch", ""),
-                "last_success": data.get("last_success", ""),
-                "consecutive_failures": data.get("consecutive_failures", 0),
-                "last_failure_reason": data.get("last_failure_reason", ""),
-            }
-        )
+    for name, data in health.get("processes", {}).items():
+        proc = {
+            "name": name,
+            "last_dispatch": data.get("last_dispatch", ""),
+            "last_success": data.get("last_success", ""),
+            "consecutive_failures": data.get("consecutive_failures", 0),
+            "last_failure_reason": data.get("last_failure_reason", ""),
+        }
+        if _process_is_relevant(proc, today=today):
+            processes.append(proc)
+    processes.sort(
+        key=lambda proc: (
+            int(int(proc.get("consecutive_failures", 0) or 0) > 0),
+            int(proc.get("consecutive_failures", 0) or 0),
+            _process_sort_ts(proc),
+        ),
+        reverse=True,
+    )
     return {
         "daily_stats": health.get("daily_stats", {}).get(today, {}),
-        "processes": processes[:20],
+        "failing_processes": sum(1 for proc in processes if int(proc.get("consecutive_failures", 0)) > 0),
+        "processes": processes[:12],
     }
+
+
+def _recent_incidents() -> list[dict]:
+    grouped: dict[tuple[str, str, str, str], dict] = {}
+    for rec in load_recent_failures(days=7, limit=50):
+        key = (
+            rec.get("pipeline", ""),
+            rec.get("step", ""),
+            rec.get("error_type", ""),
+            rec.get("error_message", ""),
+        )
+        incident = grouped.get(key)
+        if incident is None:
+            grouped[key] = {
+                "timestamp": rec.get("timestamp", ""),
+                "pipeline": rec.get("pipeline", ""),
+                "step": rec.get("step", ""),
+                "slug": rec.get("slug", ""),
+                "error_type": rec.get("error_type", ""),
+                "error_message": rec.get("error_message", ""),
+                "count": 1,
+            }
+            continue
+        incident["count"] += 1
+        incident["timestamp"] = max(incident.get("timestamp", ""), rec.get("timestamp", ""))
+    return sorted(grouped.values(), key=lambda rec: rec.get("timestamp", ""), reverse=True)[:10]
 
 
 def _publish_entry(entry: dict) -> dict:
@@ -240,3 +272,40 @@ def _is_stuck_task(rec: dict, *, now: datetime) -> bool:
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _valid_restore_drill(record: dict) -> bool:
+    backup_dir = str(record.get("backup_dir", "")).strip()
+    if not backup_dir:
+        return False
+    path = Path(backup_dir)
+    if "/private/var/folders/" in backup_dir:
+        return False
+    if not path.exists():
+        return False
+    return True
+
+
+def _process_is_relevant(proc: dict, *, today: str) -> bool:
+    if int(proc.get("consecutive_failures", 0) or 0) > 0:
+        return True
+    for key in ("last_dispatch", "last_success"):
+        if _is_recent_iso(proc.get(key, ""), hours=_PROCESS_RECENCY_HOURS):
+            return True
+    return False
+
+
+def _is_recent_iso(value: str, *, hours: int) -> bool:
+    if not value:
+        return False
+    try:
+        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - ts.astimezone(timezone.utc) <= timedelta(hours=hours)
+
+
+def _process_sort_ts(proc: dict) -> str:
+    return proc.get("last_dispatch", "") or proc.get("last_success", "") or ""

@@ -27,6 +27,7 @@ sys.path.insert(0, str(_AGENTS_DIR / "general"))
 import shutil
 
 from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR, MEMORY_FILE, WORLDVIEW_FILE
+from execution.runtime_contract import derive_workflow_id, normalize_task_status
 from preflight import verify_artifact
 from soul_manager import (load_soul, format_soul, append_memory, save_skill,
                          save_episode, recall_context, save_knowledge_note)
@@ -41,11 +42,17 @@ from writing_workflow import run_full_pipeline
 log = logging.getLogger("task_worker")
 
 _ACTIVE_USER_ID = "ang"
+_ACTIVE_WORKFLOW_ID = ""
 
 
 def _set_active_user(user_id: str):
     global _ACTIVE_USER_ID
     _ACTIVE_USER_ID = user_id or "ang"
+
+
+def _set_active_workflow(workflow_id: str):
+    global _ACTIVE_WORKFLOW_ID
+    _ACTIVE_WORKFLOW_ID = workflow_id or ""
 
 
 def _items_dir(user_id: str | None = None) -> Path:
@@ -413,8 +420,10 @@ def _enrich_plan_with_runtime_policy(plan: list[dict]) -> list[dict]:
 
 
 def _result_metadata(step: dict, *, step_index: int, step_count: int,
-                     declared_agent: str, execution_agent: str) -> dict:
+                     declared_agent: str, execution_agent: str,
+                     workflow_id: str = "") -> dict:
     return {
+        "workflow_id": workflow_id or _ACTIVE_WORKFLOW_ID,
         "step_index": step_index,
         "step_count": step_count,
         "step_id": step.get("step_id", f"step-{step_index + 1:02d}"),
@@ -439,6 +448,7 @@ def _safe_general_fallback(
     step_count: int,
     declared_agent: str,
     execution_agent: str,
+    workflow_id: str,
 ) -> bool:
     """Run general fallback and fail the current step cleanly if it crashes."""
     try:
@@ -459,13 +469,14 @@ def _safe_general_fallback(
                 step_count=step_count,
                 declared_agent=declared_agent,
                 execution_agent=execution_agent,
+                workflow_id=workflow_id,
             ),
             failure_class="fallback_error",
         )
         mark_step_finished(
             workspace,
             step_index=step_index,
-            status="error",
+            status="failed",
             declared_agent=declared_agent,
             execution_agent=execution_agent,
             failure_reason=fallback_msg,
@@ -724,6 +735,12 @@ def main():
     msg_content = msg_data.get("content", "")
     msg_sender = msg_data.get("sender", "unknown")
     thread_id = args.thread_id or msg_data.get("thread_id", "")
+    workflow_id = derive_workflow_id(
+        task_id=args.task_id,
+        thread_id=thread_id,
+        workflow_id=msg_data.get("workflow_id", ""),
+    )
+    _set_active_workflow(workflow_id)
 
     # --- User access control context ---
     _user_id = msg_data.get("user_id", "ang")
@@ -732,8 +749,8 @@ def main():
     _model_restriction = msg_data.get("model_restriction")
     _content_filter = msg_data.get("content_filter", False)
     _allowed_agents = msg_data.get("allowed_agents", [])
-    log.info("User context: user=%s role=%s model_restriction=%s content_filter=%s allowed_agents=%s",
-             _user_id, _user_role, _model_restriction, _content_filter,
+    log.info("User context: workflow=%s user=%s role=%s model_restriction=%s content_filter=%s allowed_agents=%s",
+             workflow_id, _user_id, _user_role, _model_restriction, _content_filter,
              ",".join(_allowed_agents) if _allowed_agents else "all")
 
     # Load conversation history and execution history for context
@@ -751,7 +768,8 @@ def main():
             log.info("Resuming pending plan (%d steps): %s", len(plan), plan)
             _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
                          user_id=_user_id, allowed_agents=_allowed_agents,
-                         content_filter=_content_filter, model_restriction=_model_restriction)
+                         content_filter=_content_filter, model_restriction=_model_restriction,
+                         workflow_id=workflow_id)
             log.info("Worker exiting")
             return
         except (json.JSONDecodeError, OSError) as e:
@@ -798,7 +816,8 @@ def main():
                 plan = _enrich_plan_with_runtime_policy(plan)
                 _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
                          user_id=_user_id, allowed_agents=_allowed_agents,
-                         content_filter=_content_filter, model_restriction=_model_restriction)
+                         content_filter=_content_filter, model_restriction=_model_restriction,
+                         workflow_id=workflow_id)
             except (json.JSONDecodeError, OSError) as e:
                 log.warning("Failed to load pending plan on approval: %s", e)
                 _write_result(workspace, args.task_id, "error",
@@ -871,7 +890,8 @@ def main():
 
     _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
                  user_id=_user_id, allowed_agents=_allowed_agents,
-                 content_filter=_content_filter, model_restriction=_model_restriction)
+                 content_filter=_content_filter, model_restriction=_model_restriction,
+                 workflow_id=workflow_id)
 
     # --- Write progress.md for next session ---
     _write_progress(workspace, args.task_id, msg_content)
@@ -885,11 +905,13 @@ def main():
 def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
                   content: str, sender: str, thread_id: str,
                   user_id: str = "ang", allowed_agents: list | None = None,
-                  content_filter: bool = False, model_restriction: str | None = None):
+                  content_filter: bool = False, model_restriction: str | None = None,
+                  workflow_id: str = ""):
     """Execute a multi-step plan. Each step's output feeds into the next."""
     initialize_plan_artifacts(
         workspace,
         task_id=task_id,
+        workflow_id=workflow_id,
         user_id=user_id,
         request=content,
         plan=plan,
@@ -906,7 +928,8 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
                            prev_output, is_multi, round_num,
                            user_id=user_id, allowed_agents=allowed_agents or [],
                            content_filter=content_filter,
-                           model_restriction=model_restriction)
+                           model_restriction=model_restriction,
+                           workflow_id=workflow_id)
     finally:
         heartbeat.stop()
 
@@ -914,7 +937,8 @@ def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
 def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                         prev_output, is_multi, round_num, *,
                         user_id: str = "ang", allowed_agents: list | None = None,
-                        content_filter: bool = False, model_restriction: str | None = None):
+                        content_filter: bool = False, model_restriction: str | None = None,
+                        workflow_id: str = ""):
     """Inner loop extracted so heartbeat can be stopped in finally block."""
     # Set thread-local task_id so agents can emit progress via emit_progress()
     _set_streaming_task_id(task_id)
@@ -922,6 +946,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
         initialize_plan_artifacts(
             workspace,
             task_id=task_id,
+            workflow_id=workflow_id,
             user_id=user_id,
             request=content,
             plan=plan,
@@ -1118,6 +1143,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                     step_count=step_count,
                     declared_agent=declared_agent,
                     execution_agent=execution_agent,
+                    workflow_id=workflow_id,
                 ):
                     return
                 used_fallback = True
@@ -1165,6 +1191,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                     step_count=step_count,
                     declared_agent=declared_agent,
                     execution_agent=execution_agent,
+                    workflow_id=workflow_id,
                 ):
                     return
                 used_fallback = True
@@ -1212,6 +1239,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                     step_count=step_count,
                     declared_agent=declared_agent,
                     execution_agent=execution_agent,
+                    workflow_id=workflow_id,
                 ):
                     return
                 used_fallback = True
@@ -1274,7 +1302,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                     mark_step_finished(
                         workspace,
                         step_index=i,
-                        status="error",
+                        status="failed",
                         declared_agent=declared_agent,
                         execution_agent=execution_agent,
                         failure_reason=preflight_msg,
@@ -1338,7 +1366,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                         mark_step_finished(
                             workspace,
                             step_index=i,
-                            status="error",
+                            status="failed",
                             declared_agent=declared_agent,
                             execution_agent=execution_agent,
                             failure_reason=handler_msg,
@@ -1358,6 +1386,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                         step_count=step_count,
                         declared_agent=declared_agent,
                         execution_agent=execution_agent,
+                        workflow_id=workflow_id,
                     ):
                         return
                 except ImportError as e:
@@ -1382,7 +1411,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                         mark_step_finished(
                             workspace,
                             step_index=i,
-                            status="error",
+                            status="failed",
                             declared_agent=declared_agent,
                             execution_agent=execution_agent,
                             failure_reason=handler_msg,
@@ -1402,6 +1431,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                         step_count=step_count,
                         declared_agent=declared_agent,
                         execution_agent=execution_agent,
+                        workflow_id=workflow_id,
                     ):
                         return
                 except Exception as e:
@@ -1426,7 +1456,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                         mark_step_finished(
                             workspace,
                             step_index=i,
-                            status="error",
+                            status="failed",
                             declared_agent=declared_agent,
                             execution_agent=execution_agent,
                             failure_reason=handler_msg,
@@ -1446,12 +1476,13 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                         step_count=step_count,
                         declared_agent=declared_agent,
                         execution_agent=execution_agent,
+                        workflow_id=workflow_id,
                     ):
                         return
         finally:
             set_model_policy(None)  # always reset after step
 
-        # Check if this step failed (result.json says error)
+        # Check if this step failed (result.json says failed)
         # Also stamp the agent name for evaluator tracking
         _ensure_step_result(
             workspace,
@@ -1495,11 +1526,11 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                     result_file.write_text(
                         json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")
                 execution_agent = r.get("agent", execution_agent)
-                step_status = r.get("status", "done")
+                step_status = normalize_task_status(r.get("status", "done"))
                 step_output_preview = r.get("summary", "")[:200]
                 step_retry_count = int(r.get("retry_count", 0) or 0)
-                if step_status in ("error", "blocked", "needs-input"):
-                    outcome = "error" if step_status == "error" else step_status
+                if step_status in ("failed", "blocked", "needs-input"):
+                    outcome = "failed" if step_status == "failed" else step_status
                     _record_postmortem(task_id, i, declared_agent, prediction, outcome,
                                        step_output_preview)
                     _append_exec_log(workspace, round_num, execution_agent, step_status,
@@ -1725,6 +1756,7 @@ def _extract_knowledge_writeback(workspace: Path, task_id: str,
 
 
 _RESULT_RUNTIME_METADATA_KEYS = {
+    "workflow_id",
     "step_index",
     "step_count",
     "step_id",
@@ -1895,6 +1927,10 @@ def _infer_failure_class(status: str, verification: dict) -> str:
         return "blocked"
     if status == "timeout":
         return "timeout"
+    if status == "failed":
+        if verification.get("status") == "failed":
+            return "verification_failed"
+        return "execution_failed"
     if verification.get("status") == "failed":
         return "verification_failed"
     return "execution_error"
@@ -1931,8 +1967,15 @@ def _canonicalize_result_payload(
     next_action: str | None = None,
 ) -> dict:
     result = dict(payload)
+    normalized_status = normalize_task_status(status)
     result["task_id"] = task_id
-    result["status"] = status
+    result["workflow_id"] = str(
+        result.get("workflow_id")
+        or (metadata or {}).get("workflow_id")
+        or _ACTIVE_WORKFLOW_ID
+        or derive_workflow_id(task_id=task_id)
+    ).strip()
+    result["status"] = normalized_status
     result["summary"] = summary
     result["completed_at"] = result.get("completed_at") or _utc_iso()
     if tags:
@@ -1960,12 +2003,12 @@ def _canonicalize_result_payload(
     if inferred_failure_class is None:
         inferred_failure_class = str(result.get("failure_class", "")).strip()
     if not inferred_failure_class:
-        inferred_failure_class = _infer_failure_class(status, normalized_verification)
+        inferred_failure_class = _infer_failure_class(normalized_status, normalized_verification)
     result["failure_class"] = inferred_failure_class
 
     inferred_next_action = next_action or str(result.get("next_action", "")).strip()
     if not inferred_next_action:
-        inferred_next_action = _infer_next_action(status, inferred_failure_class)
+        inferred_next_action = _infer_next_action(normalized_status, inferred_failure_class)
     result["next_action"] = inferred_next_action
     return result
 
@@ -1988,6 +2031,7 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
         failure_class=failure_class,
         next_action=next_action,
     )
+    status = result["status"]
     result_path = workspace / "result.json"
     tmp_path = result_path.with_suffix(".tmp")
     tmp_path.write_text(
@@ -2008,7 +2052,7 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
     # SKIP for private tasks — never persist sensitive content
     if tags and "private" in tags:
         return
-    if status in ("done", "completed", "error", "failed"):
+    if status in ("done", "completed", "failed"):
         try:
             # Try items/ first, fallback to legacy tasks/
             item_file = _item_file(task_id)
@@ -2031,7 +2075,7 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
             log.debug("Knowledge writeback skipped: %s", e)
 
     # --- Self-iteration: extract lessons from failures ---
-    if status in ("error", "failed"):
+    if status == "failed":
         try:
             from self_iteration import extract_failure_lesson, save_failure_lesson
             lesson = extract_failure_lesson(task_id, summary[:200], summary)
@@ -2082,7 +2126,7 @@ def _verify_step_artifact(
     _write_result(
         workspace,
         task_id,
-        "error",
+        "failed",
         f"{agent} produced no verifiable output: {verification_payload.get('summary', '')}",
         agent=agent,
         metadata=metadata,
@@ -2182,7 +2226,7 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
             workspace,
             existing,
             task_id=task_id,
-            status=str(existing.get("status", "error")),
+            status=str(existing.get("status", "failed")),
             summary=str(existing.get("summary", "")),
             agent=agent if "agent" not in existing else None,
             metadata=metadata,

@@ -18,3 +18,70 @@
 - [2026-04-05 14:33] SAVE_READING_NOTE 2026-04-05_1-自主攻击能力的-scaling-curve-终于有了具体形状.md: **1. 自主攻击能力的 scaling curve 终于有了具体形状**
 - [2026-04-05 14:33] SAVE_READING_NOTE 2026-04-05_2-anthropic-rsp-v3-的问题不是决策本身是信用账户.md: **2. Anthropic RSP v3 的问题不是决策本身，是信用账户**
 - [2026-04-05 14:33] SAVE_READING_NOTE 2026-04-05_3-史铁生被判定95-ai生成说明抵抗工具的认识论已经崩了.md: **3. 史铁生被判定95% AI生成，说明抵抗工具的认识论已经崩了**
+- [2026-04-05 14:49] SAVE_SKILL verify-output-path-existence-before-task-completion.md: verify-output-path-existence-before-task-completion
+- [2026-04-05 15:21] SAVE_READING_NOTE 2026-04-05_形式化数学那篇触到了一个很真实的问题每一次让数学更严格的运动都不只是在澄.md: 形式化数学那篇触到了一个很真实的问题：每一次"让数学更严格"的运动，都不只是在澄清已有的东西，而是在重新划定什么算"理解
+- [2026-04-05 15:21] SAVE_READING_NOTE 2026-04-05_hawala-那个案例最有意思的地方不是规避法律而是信任如何在没有第三方执.md: Hawala 那个案例最有意思的地方不是"规避法律"，而是信任如何在没有第三方执行机制的情况下自发变成了清算基础设施。这
+- [2026-04-05 15:21] SAVE_READING_NOTE 2026-04-05_nsf-砍社会科学分部这件事表面上是预算实质上是认识论声明用数据研究人类行.md: NSF 砍社会科学分部这件事，表面上是预算，实质上是认识论声明：用数据研究人类行为不算科学。这不只是资金问题——它会改变
+- [2026-04-05 16:10] SAVE_READING_NOTE 2026-04-05_知识-信念没有断层只有阈值.md: **知识-信念没有断层，只有阈值**
+- [2026-04-05 16:10] SAVE_READING_NOTE 2026-04-05_中国实验室同步推迟开源集体行为比个体决策更值得看.md: **中国实验室同步推迟开源：集体行为比个体决策更值得看**
+- [2026-04-05 16:10] SAVE_READING_NOTE 2026-04-05_per-layer-embeddings-的效率增益来自打破层间对称性.md: **Per-layer embeddings 的效率增益来自打破层间对称性**
+- [2026-04-05 16:59] SAVE_READING_NOTE 2026-04-05_1-人这端的-friction-正在同步消失.md: **1. 人这端的 friction 正在同步消失**
+- [2026-04-05 16:59] SAVE_READING_NOTE 2026-04-05_2-你以为在跟某人聊其实在跟你对那人的记忆聊.md: **2. 你以为在跟某人聊，其实在跟你对那人的记忆聊**
+- [2026-04-05 16:59] SAVE_READING_NOTE 2026-04-05_3-legitimate-feature-作为复制向量这次是字面意义上的.md: **3. Legitimate feature 作为复制向量，这次是字面意义上的**
+- [2026-04-05 17:48] SAVE_READING_NOTE 2026-04-05_insight-1anthropic-故意加摩擦.md: **Insight 1：Anthropic 故意加摩擦**
+- [2026-04-05 17:48] SAVE_READING_NOTE 2026-04-05_insight-2攻防不对称是-thompson-论点里的漏洞.md: **Insight 2：攻防不对称是 Thompson 论点里的漏洞**
+- [2026-04-05 17:48] SAVE_READING_NOTE 2026-04-05_insight-3stripe-用已有信号触发-agent而不是造新界面.md: **Insight 3：Stripe 用已有信号触发 agent，而不是造新界面**
+- [2026-04-05 18:37] SAVE_READING_NOTE 2026-04-05_1-语义木马是供应链攻击的语言层变体现有检测框架对它完全失语.md: **1. 语义木马是供应链攻击的语言层变体，现有检测框架对它完全失语**
+- [2026-04-05 18:37] SAVE_READING_NOTE 2026-04-05_2-公地悲剧和市场幻觉不是同一个论断而是同一问题的两个层次.md: **2. "公地悲剧"和"市场幻觉"不是同一个论断，而是同一问题的两个层次**
+- [2026-04-05 18:37] SAVE_READING_NOTE 2026-04-05_3-可叙述性是比可见性更底层的权力资源.md: **3. "可叙述性"是比"可见性"更底层的权力资源**
+- [2026-04-05 19:26] SAVE_READING_NOTE 2026-04-05_1-预制住宅正确的解法也能被问题结构击败.md: **1. 预制住宅：正确的解法也能被问题结构击败**
+- [2026-04-05 19:26] SAVE_READING_NOTE 2026-04-05_2-ai-投资与就业脱钩资本流向和劳动力流向分叉了.md: **2. AI 投资与就业脱钩：资本流向和劳动力流向分叉了**
+- [2026-04-05 19:26] SAVE_READING_NOTE 2026-04-05_3-doge-的双重失败没省钱还破坏了功能.md: **3. DOGE 的双重失败：没省钱，还破坏了功能**
+- [2026-04-05 20:15] SAVE_READING_NOTE 2026-04-05_openclaw-三角.md: **OpenClaw 三角**
+- [2026-04-05 20:15] SAVE_READING_NOTE 2026-04-05_认知投降--娱乐条款--完美闭环.md: **认知投降 × 娱乐条款 = 完美闭环**
+- [2026-04-05 20:15] SAVE_READING_NOTE 2026-04-05_日本机器人反转的压力方向.md: **日本机器人：反转的压力方向**
+- [2026-04-05 21:37] WIKI_UPDATE agent-architecture-reliability: Agent 架构与可靠性
+- [2026-04-05 21:38] WIKI_CREATE ai-采用的真正瓶颈是组织能力不是模型能力: AI 采用的真正瓶颈是组织能力，不是模型能力
+- [2026-04-06 08:02] SAVE_READING_NOTE 2026-04-06_1-cajal知道--构建.md: **1. Cajal：知道 ≠ 构建**
+- [2026-04-06 08:02] SAVE_READING_NOTE 2026-04-06_2-correspond-vs-connect.md: **2. Correspond vs. Connect**
+- [2026-04-06 08:02] SAVE_READING_NOTE 2026-04-06_3-mandelbrot经历塑造直觉的方向.md: **3. Mandelbrot：经历塑造直觉的方向**
+- [2026-04-06 08:53] SAVE_READING_NOTE 2026-04-06_openclaw-在-agentsocialbench-隐私测试里被点名上周它.md: OpenClaw 在 AgentSocialBench 隐私测试里被点名，上周它出现在供应链投毒事件里。同一个框架同时出
+- [2026-04-06 08:53] SAVE_READING_NOTE 2026-04-06_三篇-agent-安全论文同一天出来但问的还是model-会不会做坏事而.md: 三篇 agent 安全论文同一天出来，但问的还是"model 会不会做坏事"，而不是"做了坏事之后能不能被发现和撤销"。
+- [2026-04-06 08:53] SAVE_READING_NOTE 2026-04-06_scrat-的松鼠类比听起来是标题党但它说清楚了一个真实问题分布式存储--.md: SCRAT 的松鼠类比听起来是标题党，但它说清楚了一个真实问题：分布式存储 + 事后验证"我放的东西还在不在"，这是 p
+- [2026-04-06 09:41] SAVE_READING_NOTE 2026-04-06_1-真实使用分布ai-作为平替专业人士.md: **1. 真实使用分布：AI 作为平替专业人士**
+- [2026-04-06 09:41] SAVE_READING_NOTE 2026-04-06_2-动态语言的-token-经济学优势.md: **2. 动态语言的 token 经济学优势**
+- [2026-04-06 09:41] SAVE_READING_NOTE 2026-04-06_3-开始的摩擦而非执行的摩擦.md: **3. "开始"的摩擦，而非"执行"的摩擦**
+- [2026-04-06 10:31] SAVE_READING_NOTE 2026-04-06_1-信任链腐化不需要外部攻击者.md: **1. 信任链腐化不需要外部攻击者**
+- [2026-04-06 10:31] SAVE_READING_NOTE 2026-04-06_2-rsp-失效证明的不是-anthropic-不可信而是承诺本身的结构.md: **2. RSP 失效证明的不是 Anthropic 不可信，而是承诺本身的结构性问题**
+- [2026-04-06 10:31] SAVE_READING_NOTE 2026-04-06_3-氦气最危险的约束是没人盯着的那个.md: **3. 氦气：最危险的约束是没人盯着的那个**
+- [2026-04-06 11:21] SAVE_READING_NOTE 2026-04-06_量子那个结果最让我警觉的不是数字本身而是两组独立同时单组可以是噪音单.md: 量子那个结果，最让我警觉的不是数字本身，而是"两组独立同时"。单组可以是噪音，单组可以是营销。两组独立汇聚意味着这个方向
+- [2026-04-06 11:21] SAVE_READING_NOTE 2026-04-06_苔原菌根网络和植物根系决策放在一起让我对-ai-agent-架构产生了一个不舒.md: 苔原菌根网络和植物根系决策放在一起，让我对 AI agent 架构产生了一个不舒服的想法：我们在做的，基本上还是"中心化
+- [2026-04-06 11:21] SAVE_READING_NOTE 2026-04-06_hawala-那个细节可靠性往往高于正式银行因为信誉就是中间人的全.md: Hawala 那个细节——可靠性往往**高于**正式银行，因为信誉就是中间人的全部资产——直接击中了一个我一直觉得没想清
+- [2026-04-06 12:11] SAVE_READING_NOTE 2026-04-06_恩培多克勒的-30-首诗句最根本的冲击不是又发现了古典文本是它揭示了一件.md: 恩培多克勒的 30 首诗句，最根本的冲击不是"又发现了古典文本"。是它揭示了一件事：我们所说的"古代知识库已经基本完整"
+- [2026-04-06 12:11] SAVE_READING_NOTE 2026-04-06_美元储备-57-和法国搬黄金这两件事单独看都是数据点合起来才是信号储备份.md: 美元储备 57% 和法国搬黄金，这两件事单独看都是数据点，合起来才是信号。储备份额是统计，可以争论；金条是物理位移，不可
+- [2026-04-06 12:11] SAVE_READING_NOTE 2026-04-06_gemma-4-home-agent-和-opencode-benchmark-.md: Gemma 4 home agent 和 OpenCode benchmark 这两个帖子放在一起，给出了一个比较清晰的
+- [2026-04-06 13:00] SAVE_READING_NOTE 2026-04-06_1-信任转移链原版出问题--社区-fork--审计缺失.md: **1. 信任转移链：原版出问题 → 社区 fork → 审计缺失**
+- [2026-04-06 13:00] SAVE_READING_NOTE 2026-04-06_2-ex-skill把人压缩成-skill-file压缩的是哪一层.md: **2. ex-skill：把人压缩成 skill file，压缩的是哪一层**
+- [2026-04-06 13:00] SAVE_READING_NOTE 2026-04-06_3-月球阵列和-github-trending-的对比时间尺度是审美.md: **3. 月球阵列和 GitHub trending 的对比：时间尺度是审美**
+- [2026-04-06 13:54] SAVE_READING_NOTE 2026-04-06_cloud-laws-和人类知识的隐藏选择偏差.md: **Cloud Laws 和人类知识的隐藏选择偏差**
+- [2026-04-06 13:54] SAVE_READING_NOTE 2026-04-06_灭绝风险作为销售话术的逻辑结构.md: **灭绝风险作为销售话术的逻辑结构**
+- [2026-04-06 13:54] SAVE_READING_NOTE 2026-04-06_源码泄露即攻击面披露.md: **源码泄露即攻击面披露**
+- [2026-04-06 14:43] SAVE_READING_NOTE 2026-04-06_1-训练数据投毒里的元认知不对称.md: **1. 训练数据投毒里的元认知不对称**
+- [2026-04-06 14:43] SAVE_READING_NOTE 2026-04-06_2-公地悲剧的定价解法动摇了一个假设.md: **2. 公地悲剧的定价解法动摇了一个假设**
+- [2026-04-06 14:43] SAVE_READING_NOTE 2026-04-06_3-庇护制切断了那根线.md: **3. 庇护制切断了那根线**
+- [2026-04-06 15:34] SAVE_READING_NOTE 2026-04-06_1-技术进步的层级约束ai加速的边界在哪里.md: **1. 技术进步的层级约束——AI加速的边界在哪里**
+- [2026-04-06 15:34] SAVE_READING_NOTE 2026-04-06_2-subjective-intelligence-是内在的还是社群校准的.md: **2. subjective intelligence 是内在的还是社群校准的？**
+- [2026-04-06 15:34] SAVE_READING_NOTE 2026-04-06_3-看不见受害者的伤害最难被抵抗.md: **3. 看不见受害者的伤害最难被抵抗**
+- [2026-04-06 16:23] SAVE_READING_NOTE 2026-04-06_1-北朝鲜供应链攻击路径在检测层里是合法的.md: **1. 北朝鲜供应链：攻击路径在检测层里是合法的**
+- [2026-04-06 16:23] SAVE_READING_NOTE 2026-04-06_2-quizlet-泄露最朴素的-legitimate-feature-.md: **2. Quizlet 泄露：最朴素的 legitimate feature as attack surface**
+- [2026-04-06 16:23] SAVE_READING_NOTE 2026-04-06_3-精密与脆弱共存于同一行为者.md: **3. 精密与脆弱共存于同一行为者**
+- [2026-04-06 17:13] SAVE_READING_NOTE 2026-04-06_一.md: **一**
+- [2026-04-06 17:13] SAVE_READING_NOTE 2026-04-06_二.md: **二**
+- [2026-04-06 17:13] SAVE_READING_NOTE 2026-04-06_三.md: **三**
+- [2026-04-06 18:02] SAVE_READING_NOTE 2026-04-06_vlms-need-words-模型在视觉层也在走语言捷径.md: **[VLMs Need Words] 模型在视觉层也在走语言捷径**
+- [2026-04-06 18:02] SAVE_READING_NOTE 2026-04-06_test-time-scaling-makes-overtraining-.md: **[Test-time scaling makes overtraining compute-optimal] "Ch
+- [2026-04-06 18:02] SAVE_READING_NOTE 2026-04-06_agentsocialbench-隐私不是单点泄露是通过-agent-.md: **[AgentSocialBench] 隐私不是单点泄露，是通过 agent 间协作慢慢渗漏的**
+- [2026-04-06 18:51] SAVE_READING_NOTE 2026-04-06_1-ai-最大的实际用途之一是翻译官僚系统.md: **1. AI 最大的实际用途之一是翻译官僚系统**
+- [2026-04-06 18:51] SAVE_READING_NOTE 2026-04-06_2-动态语言对-ai-coding-更友好可能是因为训练数据分布不是语.md: **2. 动态语言对 AI coding 更友好，可能是因为训练数据分布，不是语言特性本身**
+- [2026-04-06 18:51] SAVE_READING_NOTE 2026-04-06_3-迭代心理学的变化比速度本身更根本.md: **3. 迭代心理学的变化比速度本身更根本**
+- [2026-04-06 19:00] SAVE_SKILL verify-output-path-exists-before-claiming-success.md: verify-output-path-exists-before-claiming-success

@@ -3,12 +3,22 @@
     "agent-architecture-reliability": {
       "title": "Agent 架构与可靠性",
       "description": "Agent 系统的架构模式、可靠性挑战、安全边界",
-      "category": "technology",
+      "category": "general",
+      "created_at": "2026-04-05",
+      "updated_at": "2026-04-05",
+      "update_count": 2,
+      "source_count": 73,
+      "word_count": 208
+    },
+    "ai-采用的真正瓶颈是组织能力不是模型能力": {
+      "title": "AI 采用的真正瓶颈是组织能力，不是模型能力",
+      "description": "模型能力的提升已经超过了大多数组织消化它的能力，真正稀缺的不是技术，而是整合、判断、拆解与验收的组织基础设施。",
+      "category": "society",
       "created_at": "2026-04-05",
       "updated_at": "2026-04-05",
       "update_count": 1,
-      "source_count": 63,
-      "word_count": 159
+      "source_count": 11,
+      "word_count": 151
     }
   },
   "last_full_rebuild": null
