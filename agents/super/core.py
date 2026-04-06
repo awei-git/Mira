@@ -1407,7 +1407,10 @@ def _dispatch_scheduled_jobs(session_new: list[dict]):
                 core_path=str(Path(__file__).resolve()),
                 user_id=target_user_id,
             )
-            _dispatch_background(bg_name, cmd)
+            dispatched = _dispatch_background(bg_name, cmd)
+            if dispatched is False:
+                continue
+            _record_scheduled_job_dispatch(job, payload, user_id=target_user_id)
 
             session_meta = build_job_session_record(job, payload)
             if session_meta:
@@ -1415,6 +1418,17 @@ def _dispatch_scheduled_jobs(session_new: list[dict]):
                 if target_user_id:
                     detail = f"{target_user_id}:{detail}" if detail else target_user_id
                 session_new.append(session_record(session_meta["action"], detail))
+
+
+def _record_scheduled_job_dispatch(job, payload, user_id: str | None = None):
+    """Persist dispatch state for jobs whose triggers are pure checks."""
+    if job.name not in {"backlog-executor", "restore-dry-run"}:
+        return
+
+    now = datetime.now()
+    state = load_state(user_id=user_id)
+    state[job.state_key(today=now.strftime("%Y-%m-%d"))] = now.isoformat()
+    save_state(state, user_id=user_id)
 
 
 # ---------------------------------------------------------------------------

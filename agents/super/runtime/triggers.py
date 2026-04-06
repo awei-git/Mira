@@ -554,8 +554,6 @@ def _should_backlog_executor() -> bool:
         return False
     if not has_work:
         return False
-    state["last_backlog_executor"] = now.isoformat()
-    _save_state(state)
     return True
 
 
@@ -577,8 +575,6 @@ def _should_restore_dry_run() -> bool:
     week_key = f"restore_dry_run_{now.strftime('%Y-W%W')}"
     if state.get(week_key):
         return False
-    state[week_key] = now.isoformat()
-    _save_state(state)
     return True
 
 

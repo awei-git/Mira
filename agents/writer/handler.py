@@ -9,7 +9,6 @@ writing_workflow.start_project(), whose signature did not match the runtime.
 from __future__ import annotations
 
 import logging
-import inspect
 import re
 import shutil
 from pathlib import Path
@@ -130,14 +129,12 @@ def _handle_full_write(workspace: Path, content: str, title: str, bundle) -> str
     if recall_block:
         context_parts.append(recall_block)
 
-    call_kwargs = {}
-    signature = inspect.signature(run_full_pipeline)
-    if "persona_prompt" in signature.parameters:
-        call_kwargs["persona_prompt"] = bundle.persona.as_prompt(max_length=2600)
-    if "context_note" in signature.parameters:
-        call_kwargs["context_note"] = "\n\n".join(context_parts).strip()
-
-    project_dir, final_text = run_full_pipeline(title, content, **call_kwargs)
+    project_dir, final_text = run_full_pipeline(
+        title,
+        content,
+        persona_prompt=bundle.persona.as_prompt(max_length=2600),
+        context_note="\n\n".join(context_parts).strip(),
+    )
     final_file = project_dir / "final.md"
     if final_file.exists():
         shutil.copy2(final_file, workspace / "output.md")

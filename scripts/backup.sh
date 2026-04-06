@@ -11,8 +11,8 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOCAL_LOG"; }
 
 # Check NAS is mounted before doing anything
 BACKUP_ROOT="/Volumes/home/backup/mira"
-if [ ! -d "/Volumes/home" ]; then
-    log "ERROR: NAS not mounted (/Volumes/home), skipping backup"
+if [ ! -d "$BACKUP_ROOT" ]; then
+    log "ERROR: NAS backup root unavailable ($BACKUP_ROOT), skipping backup"
     exit 0
 fi
 

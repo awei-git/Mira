@@ -136,3 +136,20 @@ def test_finish_execution_records_verification():
     finally:
         tmp.unlink(missing_ok=True)
         tmp.with_suffix(".lock").unlink(missing_ok=True)
+
+
+def test_update_item_rejects_invalid_status():
+    from action_backlog import ActionItem
+
+    bl, tmp = _make_backlog()
+    try:
+        bl.add(ActionItem(title="Task", description="a", source="manual"))
+
+        assert not bl.update_item("Task", status="bogus")
+
+        active = bl.get_active()
+        assert len(active) == 1
+        assert active[0].status == "proposed"
+    finally:
+        tmp.unlink(missing_ok=True)
+        tmp.with_suffix(".lock").unlink(missing_ok=True)

@@ -177,6 +177,8 @@ class ActionBacklog:
 
     def update_item(self, title: str, **fields) -> bool:
         """Update arbitrary fields for one item."""
+        if "status" in fields and fields["status"] not in VALID_STATUSES:
+            return False
         updated = False
 
         def _update():
