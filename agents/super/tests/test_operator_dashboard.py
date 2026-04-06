@@ -1,6 +1,7 @@
 """Tests for operator dashboard summary."""
 from __future__ import annotations
 
+import tempfile
 import json
 import sys
 from pathlib import Path
@@ -130,8 +131,7 @@ def test_operator_dashboard_filters_ephemeral_restore_and_stale_processes(monkey
     import operator_dashboard as od
 
     restore_log = tmp_path / "restore_drills.jsonl"
-    backup_dir = Path("/Users/angwei/Sandbox/Mira/logs/operator-dashboard-backup-test")
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_dir = Path(tempfile.mkdtemp(prefix="operator-dashboard-backup-test-", dir="/tmp"))
     restore_log.write_text(
         "\n".join(
             [
