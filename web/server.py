@@ -277,6 +277,23 @@ def get_item(user_id: str, item_id: str):
         raise HTTPException(404, "Item not found")
     return item
 
+
+@app.get("/api/{user_id}/operator")
+def get_operator_dashboard(user_id: str):
+    cached = _read_json(_user_dir(user_id) / "operator" / "dashboard.json")
+    if isinstance(cached, dict) and cached:
+        return cached
+
+    import importlib.util
+
+    dashboard_path = Path(__file__).resolve().parent.parent / "agents" / "super" / "operator_dashboard.py"
+    spec = importlib.util.spec_from_file_location("mira_operator_dashboard", dashboard_path)
+    if not spec or not spec.loader:
+        raise HTTPException(500, "Operator dashboard unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build_operator_summary(user_id=user_id)
+
 # ---------------------------------------------------------------------------
 # API — Write (commands)
 # ---------------------------------------------------------------------------

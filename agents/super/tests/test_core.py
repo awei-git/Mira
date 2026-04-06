@@ -207,6 +207,65 @@ def test_dispatch_scheduled_jobs_dispatches_per_user_jobs(monkeypatch):
     assert "ts" in session_new[0]
 
 
+def test_dispatch_scheduled_jobs_records_state_only_after_success(monkeypatch):
+    import core
+
+    job = SimpleNamespace(
+        name="backlog-executor",
+        inline=False,
+        priority=5,
+        per_user=False,
+        state_key=lambda today="", slot="": "last_backlog_executor",
+    )
+    saved = []
+
+    monkeypatch.setattr(core, "get_jobs", lambda: [job])
+    monkeypatch.setattr(core, "evaluate_job_payload", lambda job, **kw: True)
+    monkeypatch.setattr(
+        core,
+        "build_job_dispatch",
+        lambda job, payload, python_executable, core_path, **kw: ("backlog-executor", ["python", "core.py", "backlog-executor"]),
+    )
+    monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd: True)
+    monkeypatch.setattr(core, "build_job_session_record", lambda job, payload: None)
+    monkeypatch.setattr(core, "load_state", lambda user_id=None: {})
+    monkeypatch.setattr(core, "save_state", lambda state, user_id=None: saved.append((state, user_id)))
+
+    core._dispatch_scheduled_jobs([])
+
+    assert len(saved) == 1
+    assert "last_backlog_executor" in saved[0][0]
+
+
+def test_dispatch_scheduled_jobs_does_not_record_state_when_dispatch_fails(monkeypatch):
+    import core
+
+    job = SimpleNamespace(
+        name="restore-dry-run",
+        inline=False,
+        priority=5,
+        per_user=False,
+        state_key=lambda today="", slot="": f"restore_dry_run_{today}",
+    )
+    saved = []
+
+    monkeypatch.setattr(core, "get_jobs", lambda: [job])
+    monkeypatch.setattr(core, "evaluate_job_payload", lambda job, **kw: True)
+    monkeypatch.setattr(
+        core,
+        "build_job_dispatch",
+        lambda job, payload, python_executable, core_path, **kw: ("restore-dry-run", ["python", "core.py", "restore-dry-run"]),
+    )
+    monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd: False)
+    monkeypatch.setattr(core, "build_job_session_record", lambda job, payload: None)
+    monkeypatch.setattr(core, "load_state", lambda user_id=None: {})
+    monkeypatch.setattr(core, "save_state", lambda state, user_id=None: saved.append((state, user_id)))
+
+    core._dispatch_scheduled_jobs([])
+
+    assert saved == []
+
+
 def test_do_talk_routes_completed_task_to_matching_user_bridge(monkeypatch):
     import core
     if core.Mira is None:

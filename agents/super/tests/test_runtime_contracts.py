@@ -59,7 +59,7 @@ def test_writer_handler_matches_production_contract(tmp_path, monkeypatch):
     final_file = project_dir / "final.md"
     final_file.write_text("# Test Title\n\nFinal draft body.", encoding="utf-8")
 
-    def fake_pipeline(title: str, body: str):
+    def fake_pipeline(title: str, body: str, *, persona_prompt: str = "", context_note: str = ""):
         return project_dir, final_file.read_text(encoding="utf-8")
 
     monkeypatch.setitem(handler.__globals__, "run_full_pipeline", fake_pipeline)

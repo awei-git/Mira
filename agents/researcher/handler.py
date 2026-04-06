@@ -110,33 +110,42 @@ def handle(workspace: Path, task_id: str, content: str,
     if shared_dir not in sys.path:
         sys.path.insert(0, shared_dir)
 
-    from soul_manager import load_soul, format_soul
+    from runtime_context import build_runtime_context
     from sub_agent import claude_think, claude_act
 
-    soul = load_soul()
-    soul_ctx = format_soul(soul)
+    bundle = build_runtime_context(
+        content,
+        user_id="ang",
+        thread_id=thread_id,
+        persona_domains=["research", "truth", "epistemics"],
+    )
+    if thread_history:
+        bundle.thread_history = thread_history
+    if thread_memory:
+        bundle.thread_memory = thread_memory
     skills_ctx = _load_skills()
 
     # Math tasks use single-pass deep thinking (proofs don't need web search)
     if _is_math_task(content):
-        return _handle_math(workspace, content, soul_ctx, skills_ctx,
-                           thread_history, thread_memory, claude_think)
+        return _handle_math(workspace, content, bundle, skills_ctx, claude_think)
 
     # General research: iterative plan → search → reflect loop
-    return _handle_research(workspace, task_id, content, soul_ctx, skills_ctx,
-                           thread_history, claude_think, claude_act)
+    return _handle_research(workspace, task_id, content, bundle, skills_ctx,
+                           claude_think, claude_act)
 
 
-def _handle_math(workspace, content, soul_ctx, skills_ctx,
-                 thread_history, thread_memory, claude_think) -> str | None:
+def _handle_math(workspace, content, bundle, skills_ctx, claude_think) -> str | None:
     """Single-pass deep math reasoning."""
     thread_ctx = ""
-    if thread_history:
-        thread_ctx = f"\n## Conversation so far\n{thread_history}\n"
-    if thread_memory:
-        thread_ctx += f"\n## Thread memory\n{thread_memory}\n"
+    if bundle.thread_history:
+        thread_ctx = f"\n## Conversation so far\n{bundle.thread_history}\n"
+    if bundle.thread_memory:
+        thread_ctx += f"\n## Thread memory\n{bundle.thread_memory}\n"
+    recall_block = bundle.recall_block(max_chars=900)
+    if recall_block:
+        thread_ctx += f"\n{recall_block}\n"
 
-    prompt = f"""{soul_ctx}
+    prompt = f"""{bundle.persona.as_prompt(max_length=2600)}
 
 ## Research Skills
 {skills_ctx}
@@ -154,8 +163,8 @@ flag gaps. Use LaTeX where appropriate."""
     return result
 
 
-def _handle_research(workspace, task_id, content, soul_ctx, skills_ctx,
-                     thread_history, claude_think, claude_act) -> str | None:
+def _handle_research(workspace, task_id, content, bundle, skills_ctx,
+                     claude_think, claude_act) -> str | None:
     """Iterative deep research loop."""
     start_time = time.monotonic()
     knowledge_base = []  # list of {question, findings, sources}
@@ -261,10 +270,20 @@ JSON or "DONE", nothing else."""
         for item in knowledge_base
     )
 
-    synth_prompt = f"""{soul_ctx}
+    synth_context = ""
+    if bundle.thread_history:
+        synth_context += f"\n## Conversation so far\n{bundle.thread_history}\n"
+    if bundle.thread_memory:
+        synth_context += f"\n## Thread memory\n{bundle.thread_memory}\n"
+    recall_block = bundle.recall_block(max_chars=1000)
+    if recall_block:
+        synth_context += f"\n{recall_block}\n"
+
+    synth_prompt = f"""{bundle.persona.as_prompt(max_length=2600)}
 
 ## Research Skills
 {skills_ctx}
+{synth_context}
 
 ## Original Query
 {content}

@@ -1,6 +1,6 @@
 # Mira Production Roadmap
 
-更新时间：2026-04-05
+更新时间：2026-04-06
 
 ## 1. 这份文档是干什么的
 
@@ -337,7 +337,21 @@
 
 1. 未验证改动不会进入系统真相。
 
-## 8. 测试与闸门
+## 8. 当前实现状态
+
+截至 `2026-04-06`，当前 supervised production scope 下的 roadmap 主体已落地：
+
+1. Phase 0：scope / policy / state artifact / preflight / verify / control-plane hardening / retry timeout ceiling 已落地。
+2. Phase 1：runtime contract、workflow tracking、persona/memory 主路径统一已落地。
+3. Phase 2：operator dashboard、failure aggregation、backup manifest、restore dry-run、restore runbook 已落地。
+4. Phase 3：bounded backlog executor 已落地，当前只对低风险 `self_evolve_proposal` 生效。
+
+当前闭环边界：
+
+1. self-improvement 只自动执行已批准、低风险、单 executor 路径。
+2. 更广的 rollback / multi-executor blast-radius control 仍属于后续扩展，不在当前 production promise 内。
+
+## 9. 测试与闸门
 
 每阶段都要补对应测试：
 
@@ -350,7 +364,7 @@
 7. retry ceiling behavior
 8. backup restore dry-run
 
-## 9. 90 天路线
+## 10. 90 天路线
 
 ### 前 30 天
 
@@ -377,7 +391,7 @@
 3. managed-beta connector 降级策略完善
 4. 事实表统一为 implemented / partial / planned
 
-## 10. 结论
+## 11. 结论
 
 Mira 的 readiness 不是靠“再加一个 agent”完成的。
 

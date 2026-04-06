@@ -780,7 +780,13 @@ from config import WRITINGS_OUTPUT_DIR
 _WRITINGS_ROOT = WRITINGS_OUTPUT_DIR
 
 
-def run_full_pipeline(title: str, body: str) -> tuple[Path, str]:
+def run_full_pipeline(
+    title: str,
+    body: str,
+    *,
+    persona_prompt: str = "",
+    context_note: str = "",
+) -> tuple[Path, str]:
     """Run the full writing pipeline end-to-end. Returns (workspace, final_text).
 
     Used by TalkBridge tasks — no Apple Notes interaction,
@@ -796,8 +802,12 @@ def run_full_pipeline(title: str, body: str) -> tuple[Path, str]:
 
     log.info("Full writing pipeline: '%s' → %s", title, ws)
 
+    plan_body = body
+    if context_note:
+        plan_body = f"{body}\n\n## Context\n{context_note}"
+
     # --- Analyze ---
-    analysis = _analyze(body)
+    analysis = _analyze(plan_body)
     (ws / "analysis.json").write_text(
         json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8",
     )
@@ -807,12 +817,12 @@ def run_full_pipeline(title: str, body: str) -> tuple[Path, str]:
     criteria = type_info["criteria"]
 
     # --- Plan (multi-agent) ---
-    soul_ctx = format_soul(load_soul())
+    soul_ctx = persona_prompt or format_soul(load_soul())
     vd = _vdir(ws, 1)
     plans_dir = vd / "plans"
     plans_dir.mkdir(parents=True, exist_ok=True)
 
-    plan = _plan(soul_ctx, analysis, body, plans_dir)
+    plan = _plan(soul_ctx, analysis, plan_body, plans_dir)
     (plans_dir / "merged.md").write_text(plan, encoding="utf-8")
 
     # Auto-approve the plan
@@ -835,7 +845,7 @@ def run_full_pipeline(title: str, body: str) -> tuple[Path, str]:
 
     # --- Write (3+ agents) ---
     writers = WRITING_MODELS[:max(3, len(WRITING_MODELS))]
-    drafts = _write_drafts(soul_ctx, plan, body, vd, writers)
+    drafts = _write_drafts(soul_ctx, plan, plan_body, vd, writers)
 
     # Filter out stub drafts
     drafts = {k: v for k, v in drafts.items() if len(v.strip()) >= WRITING_MIN_DRAFT_CHARS}

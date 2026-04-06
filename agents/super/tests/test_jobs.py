@@ -1,6 +1,7 @@
 """Tests for declarative job registry."""
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 _SUPER = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_SUPER))
@@ -143,3 +144,30 @@ def test_soul_question_job_is_per_user():
     assert job is not None
     assert job.per_user is True
     assert job.bg_name_pattern == "soul-question-{user_id}"
+
+
+def test_backlog_and_restore_triggers_do_not_write_state(monkeypatch):
+    from datetime import datetime as real_datetime
+    from runtime import triggers
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 4, 6, 14, 0, 0)
+
+    monkeypatch.setattr(triggers, "datetime", FakeDateTime)
+    monkeypatch.setattr(triggers, "_load_state", lambda user_id=None: {})
+    saves = []
+    monkeypatch.setattr(triggers, "_save_state", lambda state, user_id=None: saves.append((state, user_id)))
+
+    class FakeBacklog:
+        def get_active(self):
+            return [SimpleNamespace(status="approved", executor="self_evolve_proposal")]
+
+    monkeypatch.setitem(sys.modules, "action_backlog", SimpleNamespace(ActionBacklog=FakeBacklog))
+    assert triggers._should_backlog_executor() is True
+
+    monkeypatch.setitem(sys.modules, "restore_drill", SimpleNamespace(latest_backup_dir=lambda: "/tmp/backup"))
+    assert triggers._should_restore_dry_run() is True
+
+    assert saves == []

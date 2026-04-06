@@ -106,6 +106,18 @@
   .artifact-list li:hover { background:var(--card); }
   .artifact-list .size { color:var(--text3); font-size:13px; margin-left:auto; }
 
+  .operator-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; padding:16px; }
+  .operator-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px; }
+  .operator-card h4 { font-size:13px; color:var(--text2); text-transform:uppercase; letter-spacing:.4px; margin-bottom:8px; }
+  .operator-value { font-size:28px; font-weight:700; }
+  .operator-note { font-size:13px; color:var(--text2); margin-top:4px; }
+  .operator-section { padding:10px 16px 0; }
+  .operator-section h4 { font-size:12px; text-transform:uppercase; color:var(--text3); letter-spacing:.5px; margin-bottom:8px; }
+  .operator-list { display:flex; flex-direction:column; gap:8px; }
+  .operator-row { padding:10px 12px; border-radius:10px; background:var(--card); border:1px solid var(--border); }
+  .operator-row-title { font-size:14px; font-weight:600; }
+  .operator-row-sub { font-size:12px; color:var(--text2); margin-top:3px; white-space:pre-wrap; word-break:break-word; }
+
   .empty { text-align:center; padding:60px 20px; color:var(--text3); font-size:17px; }
 </style>
 </head>
@@ -169,6 +181,7 @@
 <script>
 let currentUser = null, currentTab = 'home', currentItemId = null, items = [], currentSection = null, pollTimer = null;
 let webToken = localStorage.getItem('mira_web_token') || '';
+let operatorSummary = null;
 
 function authHeaders(extra) {
   const headers = {...(extra || {})};
@@ -246,6 +259,7 @@ function buildSidebar() {
     <div class="nav-item" data-nav="requests" onclick="navTo('requests')">↑ Requests</div>
     <div class="nav-item" data-nav="pinned" onclick="navTo('pinned')">📌 Pinned</div>
     <div class="nav-item" data-nav="failed" onclick="navTo('failed')">⚠️ Failed</div>
+    <div class="nav-item" data-nav="operator" onclick="navTo('operator')">🛠️ Operator</div>
     <div class="nav-sep"></div>
     <div class="nav-item" data-nav="writings" onclick="navToArtifact('writings')">✍️ Writings</div>
     <div class="nav-item" data-nav="briefings" onclick="navToArtifact('briefings')">📰 Briefings</div>
@@ -258,11 +272,15 @@ function buildSidebar() {
 function navTo(tab) {
   currentTab = tab; currentSection = null;
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.nav === tab));
-  document.getElementById('listTitle').textContent = {home:'Home',timeline:'Timeline',requests:'Requests',pinned:'Pinned',failed:'Failed'}[tab] || tab;
-  renderList();
-  // Show messages panel
+  document.getElementById('listTitle').textContent = {home:'Home',timeline:'Timeline',requests:'Requests',pinned:'Pinned',failed:'Failed',operator:'Operator'}[tab] || tab;
+  if (tab === 'operator') {
+    currentItemId = null;
+    renderOperator();
+  } else {
+    renderList();
+    document.getElementById('replyBar').style.display = currentItemId ? '' : 'none';
+  }
   document.getElementById('detailMessages').parentElement.querySelector('.messages').style.display = '';
-  document.getElementById('replyBar').style.display = currentItemId ? '' : 'none';
 }
 function navToArtifact(section) {
   currentTab = 'artifacts'; currentSection = section;
@@ -275,12 +293,16 @@ function navToArtifact(section) {
 async function refresh() {
   if (!currentUser) return;
   try {
-    const [hb, its, tds] = await Promise.all([
+    const [hb, its, tds, op] = await Promise.all([
       apiFetch('/api/heartbeat').then(r=>r.json()),
       apiFetch(`/api/${currentUser}/items`).then(r=>r.json()),
       apiFetch(`/api/${currentUser}/todos`).then(r=>r.json()).catch(()=>[]),
+      currentTab === 'operator'
+        ? apiFetch(`/api/${currentUser}/operator`).then(r=>r.json()).catch(()=>null)
+        : Promise.resolve(operatorSummary),
     ]);
     todos = tds;
+    operatorSummary = op;
     const dot = document.getElementById('statusDot');
     const txt = document.getElementById('statusText');
     const age = (Date.now()-new Date(hb.timestamp).getTime())/1000;
@@ -291,8 +313,9 @@ async function refresh() {
     const ni = items.filter(i=>i.status==='needs-input').length;
     const badge = document.getElementById('badgeNeedsInput');
     if (ni > 0) { badge.style.display=''; badge.textContent=ni; } else { badge.style.display='none'; }
-    if (currentTab !== 'artifacts') renderList();
-    if (currentItemId) renderDetail(currentItemId);
+    if (currentTab === 'operator') renderOperator();
+    else if (currentTab !== 'artifacts') renderList();
+    if (currentItemId && currentTab !== 'operator') renderDetail(currentItemId);
   } catch(e) { console.error(e); }
 }
 
@@ -331,6 +354,88 @@ function renderList() {
   }
   if(!html.length) html.push('<div class="empty">No items</div>');
   document.getElementById('listContent').innerHTML = html.join('');
+}
+
+function renderOperator() {
+  document.getElementById('detailTitle').textContent = 'Operator Dashboard';
+  document.getElementById('replyBar').style.display = 'none';
+  if (!operatorSummary) {
+    document.getElementById('listContent').innerHTML = '<div class="empty">Loading operator dashboard...</div>';
+    document.getElementById('detailMessages').innerHTML = '<div class="empty">Loading operator dashboard...</div>';
+    return;
+  }
+
+  const tasks = operatorSummary.tasks || {};
+  const publish = operatorSummary.publish || {};
+  const backlog = operatorSummary.backlog || {};
+  const health = operatorSummary.health || {};
+  const incidents = operatorSummary.recent_incidents || [];
+  const restore = operatorSummary.latest_restore_drill || {};
+
+  const listHtml = [];
+  listHtml.push(operatorSection('Active Tasks', (tasks.active || []).map(task =>
+    operatorRow(task.task_id || 'task', `${task.status || ''} · ${task.preview || ''}`, [
+      task.started_at ? `started ${relTime(task.started_at)}` : '',
+      (task.tags || []).join(', ')
+    ].filter(Boolean).join(' · '))
+  )));
+  listHtml.push(operatorSection('Stuck Tasks', (tasks.stuck || []).map(task =>
+    operatorRow(task.task_id || 'task', task.preview || task.status || '', task.timeout_alerted_at ? `alerted ${relTime(task.timeout_alerted_at)}` : 'needs operator attention')
+  )));
+  listHtml.push(operatorSection('Publish Queue', (publish.queue || []).slice(0, 8).map(item =>
+    operatorRow(item.slug || item.title || 'publish item', `${item.status || ''} · retry ${item.retry_count || 0}`, item.error || item.updated_at || '')
+  )));
+  listHtml.push(operatorSection('Backlog Actions', (backlog.next_actions || []).map(item =>
+    operatorRow(item.title || 'action', `${item.priority || ''} · ${item.status || ''}`, [item.source, item.executor, item.updated_at ? `updated ${relTime(item.updated_at)}` : ''].filter(Boolean).join(' · '))
+  )));
+  listHtml.push(operatorSection('Recent Incidents', incidents.slice(0, 8).map(item =>
+    operatorRow(item.pipeline || 'incident', `${item.step || ''} · ${item.error_type || ''}`, item.error_message || item.timestamp || '')
+  )));
+  document.getElementById('listContent').innerHTML = listHtml.filter(Boolean).join('') || '<div class="empty">No operator signals</div>';
+
+  const publishCounts = publish.counts || {};
+  const backlogCounts = backlog.counts || {};
+  const dailyStats = health.daily_stats || {};
+  const processSummary = (health.processes || []).slice(0, 8).map(proc =>
+    operatorRow(proc.name || 'process', `failures ${proc.consecutive_failures || 0}`, [
+      proc.last_success ? `last success ${relTime(proc.last_success)}` : '',
+      proc.last_failure_reason || ''
+    ].filter(Boolean).join(' · '))
+  ).join('');
+
+  document.getElementById('detailMessages').innerHTML = `
+    <div class="operator-grid">
+      <div class="operator-card"><h4>Active Tasks</h4><div class="operator-value">${(tasks.active || []).length}</div><div class="operator-note">${(tasks.stuck || []).length} stuck</div></div>
+      <div class="operator-card"><h4>Publish Queue</h4><div class="operator-value">${(publish.queue || []).length}</div><div class="operator-note">${Object.keys(publishCounts).length} states tracked</div></div>
+      <div class="operator-card"><h4>Backlog</h4><div class="operator-value">${(backlog.next_actions || []).length}</div><div class="operator-note">${backlogCounts.approved || 0} approved</div></div>
+      <div class="operator-card"><h4>Incidents</h4><div class="operator-value">${incidents.length}</div><div class="operator-note">${dailyStats.failed || 0} failures today</div></div>
+    </div>
+    <div class="operator-section">
+      <h4>Publish Status</h4>
+      <div class="operator-list">${Object.keys(publishCounts).length ? Object.entries(publishCounts).map(([status, count]) => operatorRow(status, `${count} item(s)`, '')).join('') : '<div class="empty" style="padding:20px">No publish items</div>'}</div>
+    </div>
+    <div class="operator-section">
+      <h4>Background Processes</h4>
+      <div class="operator-list">${processSummary || '<div class="empty" style="padding:20px">No process health recorded</div>'}</div>
+    </div>
+    <div class="operator-section">
+      <h4>Latest Restore Drill</h4>
+      <div class="operator-list">${restore.timestamp ? operatorRow(restore.ok ? 'Restore drill passed' : 'Restore drill failed', restore.backup_dir || '', [
+        restore.timestamp ? `ran ${relTime(restore.timestamp)}` : '',
+        (restore.manifest_errors || []).join('; '),
+        (restore.required_errors || []).join('; ')
+      ].filter(Boolean).join(' · ')) : '<div class="empty" style="padding:20px">No restore drill recorded yet</div>'}</div>
+    </div>
+  `;
+}
+
+function operatorSection(title, rows) {
+  if (!rows.length) return '';
+  return `<div class="operator-section"><h4>${title}</h4><div class="operator-list">${rows.join('')}</div></div>`;
+}
+
+function operatorRow(title, subtitle, note) {
+  return `<div class="operator-row"><div class="operator-row-title">${esc(title || '')}</div><div class="operator-row-sub">${esc(subtitle || '')}${note ? `<br>${esc(note)}` : ''}</div></div>`;
 }
 function sec(t,c,cls) { return `<div class="section-label ${cls||''}">${t}${c?`<span class="cnt">${c}</span>`:''}</div>`; }
 function itemTypeColor(item) {

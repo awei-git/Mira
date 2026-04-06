@@ -1,6 +1,6 @@
 # Mira System Design
 
-更新时间：2026-04-05
+更新时间：2026-04-06
 状态：canonical
 
 ## 1. 目的
@@ -71,7 +71,7 @@ done 不能由模型口头声明，必须由 verifier 认证。
 
 ## 4. 系统分层
 
-Mira 应逐步收敛为 6 层。
+Mira 应逐步收敛为 7 层。
 
 ### 4.1 Persona Layer
 
@@ -160,6 +160,20 @@ step result contract。
 输出：
 
 bounded improvements，而不是未验证变更。
+
+### 4.7 Operator And Recovery Layer
+
+负责：
+
+1. operator dashboard
+2. failure aggregation
+3. publish queue visibility
+4. restore drill records
+5. recovery runbooks
+
+输出：
+
+可观察、可恢复的 operator surface。
 
 ## 5. 三个 Plane
 
@@ -380,6 +394,25 @@ retrieval 返回结果必须附带：
 ### 10.4 Injection Order
 
 主路径中 persona / memory / thread context 的注入顺序应一致，不允许每个 handler 自定义一套长期逻辑。
+
+### 10.5 Runtime Context Bundle
+
+discussion / general / researcher / writer 等主路径必须共享同一个 runtime context contract。
+
+至少包含：
+
+1. canonical persona prompt
+2. thread history
+3. thread memory
+4. retrieval recall block
+5. freshness / confidence / provenance
+6. optional journals / briefings
+
+不允许：
+
+1. 各 handler 自己拼长期上下文
+2. retrieval 没 provenance 就直接注入
+3. 同一类请求出现两套 persona / memory 结构
 
 ## 11. Canonical Workflows
 

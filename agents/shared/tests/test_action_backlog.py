@@ -44,8 +44,8 @@ def test_status_update():
     bl, tmp = _make_backlog()
     try:
         bl.add(ActionItem(title="Fix bug", description="test", source="reflect"))
-        assert bl.update_status("Fix bug", "implemented", "Fixed in PR #123")
-        items = bl.get_by_status("implemented")
+        assert bl.update_status("Fix bug", "verified", "Fixed in PR #123")
+        items = bl.get_by_status("verified")
         assert len(items) == 1
         assert items[0].resolution == "Fixed in PR #123"
     finally:
@@ -88,6 +88,68 @@ def test_add_reloads_latest_state_before_write():
 
         reloaded = ActionBacklog(path=tmp)
         assert sorted(item.title for item in reloaded.get_active()) == ["First", "Second", "Third"]
+    finally:
+        tmp.unlink(missing_ok=True)
+        tmp.with_suffix(".lock").unlink(missing_ok=True)
+
+
+def test_claim_next_approved_prefers_high_priority():
+    from action_backlog import ActionItem
+
+    bl, tmp = _make_backlog()
+    try:
+        bl.add(ActionItem(title="Low", description="a", source="reflect", status="approved", priority="low", executor="noop"))
+        bl.add(ActionItem(title="High", description="b", source="reflect", status="approved", priority="high", executor="noop"))
+
+        claimed = bl.claim_next_approved({"noop"})
+
+        assert claimed is not None
+        assert claimed.title == "High"
+        reloaded = bl.get_by_status("in_progress")
+        assert len(reloaded) == 1
+        assert reloaded[0].title == "High"
+    finally:
+        tmp.unlink(missing_ok=True)
+        tmp.with_suffix(".lock").unlink(missing_ok=True)
+
+
+def test_finish_execution_records_verification():
+    from action_backlog import ActionItem
+
+    bl, tmp = _make_backlog()
+    try:
+        bl.add(ActionItem(title="Task", description="a", source="manual", status="approved", executor="noop"))
+        claimed = bl.claim_next_approved({"noop"})
+        assert claimed is not None
+
+        assert bl.finish_execution(
+            "Task",
+            success=True,
+            resolution="Applied safely",
+            verification_summary="tests green",
+        )
+
+        verified = bl.get_by_status("verified")
+        assert len(verified) == 1
+        assert verified[0].verification_summary == "tests green"
+        assert verified[0].verified_at
+    finally:
+        tmp.unlink(missing_ok=True)
+        tmp.with_suffix(".lock").unlink(missing_ok=True)
+
+
+def test_update_item_rejects_invalid_status():
+    from action_backlog import ActionItem
+
+    bl, tmp = _make_backlog()
+    try:
+        bl.add(ActionItem(title="Task", description="a", source="manual"))
+
+        assert not bl.update_item("Task", status="bogus")
+
+        active = bl.get_active()
+        assert len(active) == 1
+        assert active[0].status == "proposed"
     finally:
         tmp.unlink(missing_ok=True)
         tmp.with_suffix(".lock").unlink(missing_ok=True)

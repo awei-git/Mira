@@ -174,3 +174,15 @@ def test_reply_enqueues_command_for_existing_item(monkeypatch, tmp_path: Path):
     cmd = json.loads(commands[0].read_text(encoding="utf-8"))
     assert cmd["type"] == "reply"
     assert cmd["item_id"] == "req_123"
+
+
+def test_operator_endpoint_prefers_cached_dashboard(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+    dashboard_path = tmp_path / "bridge" / "users" / "ang" / "operator" / "dashboard.json"
+    dashboard_path.parent.mkdir(parents=True, exist_ok=True)
+    dashboard_path.write_text(json.dumps({"user_id": "ang", "tasks": {"active": []}}), encoding="utf-8")
+
+    resp = client.get("/api/ang/operator")
+
+    assert resp.status_code == 200
+    assert resp.json()["user_id"] == "ang"

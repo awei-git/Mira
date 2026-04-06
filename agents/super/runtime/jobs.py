@@ -311,6 +311,23 @@ BACKGROUND_JOBS: list[JobSpec] = [
         description="Self-evolution proposals",
     ),
     JobSpec(
+        name="backlog-executor",
+        command=["backlog-executor"],
+        trigger="conditional",
+        trigger_name="_should_backlog_executor",
+        cooldown_hours=2,
+        state_key_pattern="last_backlog_executor",
+        description="Execute approved low-risk backlog actions",
+    ),
+    JobSpec(
+        name="restore-dry-run",
+        command=["restore-dry-run"],
+        trigger="conditional",
+        trigger_name="_should_restore_dry_run",
+        state_key_pattern="restore_dry_run_{date}",
+        description="Validate latest backup with a restore dry-run",
+    ),
+    JobSpec(
         name="assessment",
         command=["assess"],
         trigger="time_window",

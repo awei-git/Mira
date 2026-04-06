@@ -1407,7 +1407,10 @@ def _dispatch_scheduled_jobs(session_new: list[dict]):
                 core_path=str(Path(__file__).resolve()),
                 user_id=target_user_id,
             )
-            _dispatch_background(bg_name, cmd)
+            dispatched = _dispatch_background(bg_name, cmd)
+            if dispatched is False:
+                continue
+            _record_scheduled_job_dispatch(job, payload, user_id=target_user_id)
 
             session_meta = build_job_session_record(job, payload)
             if session_meta:
@@ -1415,6 +1418,17 @@ def _dispatch_scheduled_jobs(session_new: list[dict]):
                 if target_user_id:
                     detail = f"{target_user_id}:{detail}" if detail else target_user_id
                 session_new.append(session_record(session_meta["action"], detail))
+
+
+def _record_scheduled_job_dispatch(job, payload, user_id: str | None = None):
+    """Persist dispatch state for jobs whose triggers are pure checks."""
+    if job.name not in {"backlog-executor", "restore-dry-run"}:
+        return
+
+    now = datetime.now()
+    state = load_state(user_id=user_id)
+    state[job.state_key(today=now.strftime("%Y-%m-%d"))] = now.isoformat()
+    save_state(state, user_id=user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1733,6 +1747,10 @@ def cmd_run():
     _daily_task_status_report()
     _phase_times["self_repair"] = round((_time.monotonic() - _t0) * 1000)
 
+    _t0 = _time.monotonic()
+    _refresh_operator_dashboards()
+    _phase_times["operator_dashboard"] = round((_time.monotonic() - _t0) * 1000)
+
     # Save session context for next cycle
     if _session_new:
         save_session_context(_session_ctx + _session_new)
@@ -1755,6 +1773,21 @@ def cmd_run():
         log.debug("Timing log write failed: %s", _te)
 
     log.info("=== Mira Agent sleep ===")
+
+
+def _refresh_operator_dashboards():
+    """Persist operator dashboard snapshots for each configured user."""
+    try:
+        from operator_dashboard import write_operator_summary
+    except Exception as exc:
+        log.warning("Operator dashboard unavailable: %s", exc)
+        return
+
+    for user_id in get_known_user_ids():
+        try:
+            write_operator_summary(user_id=user_id)
+        except Exception as exc:
+            log.warning("Operator dashboard refresh failed for %s: %s", user_id, exc)
 
 
 
@@ -1859,6 +1892,16 @@ def main():
     elif command == "self-evolve":
         from self_evolve import run_evolve
         run_evolve(dry_run="--dry-run" in sys.argv)
+    elif command == "backlog-executor":
+        from backlog_executor import run_once
+        run_once(dry_run="--dry-run" in sys.argv)
+    elif command == "restore-dry-run":
+        from restore_drill import run_latest_restore_dry_run
+
+        report = run_latest_restore_dry_run()
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        if not report.get("ok"):
+            sys.exit(1)
     elif command == "podcast":
         lang  = flags.get("lang", "zh")
         slug  = flags.get("slug", "")

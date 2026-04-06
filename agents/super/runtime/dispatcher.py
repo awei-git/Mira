@@ -112,7 +112,7 @@ def _dispatch_background(name: str, cmd: list[str]):
     if running >= MAX_CONCURRENT_BG:
         log.debug("Background '%s' deferred — %d/%d slots occupied",
                   name, running, MAX_CONCURRENT_BG)
-        return
+        return False
 
     # Check if a previous run is still active or finished recently
     if pid_file.exists():
@@ -120,7 +120,7 @@ def _dispatch_background(name: str, cmd: list[str]):
             old_pid = int(pid_file.read_text().strip())
             os.kill(old_pid, 0)  # check if alive
             log.info("Background '%s' still running (PID %d), skipping", name, old_pid)
-            return
+            return False
         except (OSError, ValueError):
             pass  # process gone, safe to start new one
 
@@ -142,7 +142,7 @@ def _dispatch_background(name: str, cmd: list[str]):
             if age < cooldown:
                 log.debug("Background '%s' in cooldown (%ds since last run, cooldown=%ds)",
                           name, int(age), cooldown)
-                return
+                return False
         except OSError:
             pass
 
@@ -157,8 +157,10 @@ def _dispatch_background(name: str, cmd: list[str]):
         pid_file.write_text(str(proc.pid))
         health_monitor.record_dispatch(name, proc.pid)
         log.info("Background '%s' dispatched (PID %d)", name, proc.pid)
+        return True
     except Exception as e:
         log.error("Failed to dispatch background '%s': %s", name, e)
+        return False
 
 
 # Expose the PID directory getter as a module-level function.

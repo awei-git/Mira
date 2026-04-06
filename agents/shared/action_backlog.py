@@ -1,7 +1,7 @@
 """Action backlog — tracks improvement items from reflections and audits.
 
 Each reflect/audit cycle should produce concrete action items that get
-tracked through: proposed → approved → implemented → rejected → expired.
+tracked through: proposed → approved → in_progress → verified / rejected / expired.
 """
 from __future__ import annotations
 
@@ -17,7 +17,16 @@ log = logging.getLogger("mira")
 _SOUL_DIR = Path(__file__).resolve().parent / "soul"
 _BACKLOG_FILE = _SOUL_DIR / "action_backlog.json"
 
-VALID_STATUSES = {"proposed", "approved", "in_progress", "implemented", "rejected", "expired"}
+VALID_STATUSES = {
+    "proposed",
+    "approved",
+    "in_progress",
+    "verified",
+    "implemented",  # legacy alias kept for backward compatibility
+    "rejected",
+    "expired",
+}
+_PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
 def _utc_now() -> str:
@@ -38,6 +47,11 @@ class ActionItem:
     updated_at: str = field(default_factory=_utc_now)
     expires_at: str | None = None  # ISO date — None = no expiry
     resolution: str = ""  # how it was resolved
+    executor: str = ""  # registered execution path, if any
+    payload: dict = field(default_factory=dict)
+    verification_summary: str = ""
+    verified_at: str = ""
+    last_error: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -160,6 +174,86 @@ class ActionBacklog:
     def get_by_status(self, status: str) -> list[ActionItem]:
         self.load()
         return [i for i in self._items if i.status == status]
+
+    def update_item(self, title: str, **fields) -> bool:
+        """Update arbitrary fields for one item."""
+        if "status" in fields and fields["status"] not in VALID_STATUSES:
+            return False
+        updated = False
+
+        def _update():
+            nonlocal updated
+            items = self._read_items_unlocked()
+            for item in items:
+                if item.title != title:
+                    continue
+                for key, value in fields.items():
+                    if hasattr(item, key):
+                        setattr(item, key, value)
+                item.updated_at = _utc_now()
+                self._write_items_unlocked(items)
+                self._items = items
+                updated = True
+                return
+            self._items = items
+
+        self._with_lock(fcntl.LOCK_EX, _update)
+        if updated:
+            log.info("BACKLOG_PATCH: %s (%s)", title, ", ".join(sorted(fields)))
+        return updated
+
+    def claim_next_approved(self, executors: set[str] | None = None) -> ActionItem | None:
+        """Atomically move the next approved item into in_progress."""
+        claimed: ActionItem | None = None
+
+        def _claim():
+            nonlocal claimed
+            items = self._read_items_unlocked()
+            candidates = [
+                item for item in items
+                if item.status == "approved"
+                and not item.is_expired()
+                and (executors is None or item.executor in executors)
+            ]
+            candidates.sort(key=lambda item: (_PRIORITY_ORDER.get(item.priority, 99), item.created_at))
+            if not candidates:
+                self._items = items
+                return
+            target = candidates[0]
+            for item in items:
+                if item.title == target.title:
+                    item.status = "in_progress"
+                    item.updated_at = _utc_now()
+                    item.last_error = ""
+                    claimed = item
+                    break
+            self._write_items_unlocked(items)
+            self._items = items
+
+        self._with_lock(fcntl.LOCK_EX, _claim)
+        if claimed:
+            log.info("BACKLOG_CLAIM: %s", claimed.title)
+        return claimed
+
+    def finish_execution(
+        self,
+        title: str,
+        *,
+        success: bool,
+        resolution: str,
+        verification_summary: str = "",
+        error: str = "",
+    ) -> bool:
+        """Finalize an execution attempt as verified or rejected."""
+        status = "verified" if success else "rejected"
+        return self.update_item(
+            title,
+            status=status,
+            resolution=resolution,
+            verification_summary=verification_summary,
+            verified_at=_utc_now() if success else "",
+            last_error=error,
+        )
 
     def expire_stale(self, max_days: int = 30) -> int:
         """Mark old proposed items as expired. Returns count expired."""

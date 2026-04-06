@@ -1,6 +1,6 @@
 # Mira System Docs
 
-更新时间：2026-04-05
+更新时间：2026-04-06
 
 这套文档是 Mira 当前阶段的 canonical docs。
 
@@ -24,7 +24,11 @@
    从现状到 production readiness 的分阶段执行计划，具体到每一步解决什么问题、如何验收。
 6. [architecture-decisions.md](./architecture-decisions.md)
    关键架构与产品决策日志，记录为什么这样设计、为什么放弃另一种方案。
-7. [../CONTRIBUTING.md](../CONTRIBUTING.md)
+7. [runbooks/operator-dashboard.md](./runbooks/operator-dashboard.md)
+   operator dashboard 的查看顺序和排障手册。
+8. [runbooks/restore-drill.md](./runbooks/restore-drill.md)
+   backup / restore dry-run 的执行与恢复手册。
+9. [../CONTRIBUTING.md](../CONTRIBUTING.md)
    贡献与改动规则，约束后续 PR 如何对齐 design、验证和文档更新。
 
 使用规则：
@@ -33,6 +37,7 @@
 2. 想判断当前优先级，读 `objectives-and-metrics.md` 和 `production-roadmap.md`。
 3. 想改代码，先读 `system-design.md`，再看 `production-roadmap.md` 对应阶段。
 4. 想知道 Mira 平时怎么工作，读 `operations-handbook.md`。
+5. 想排障或恢复，读 `docs/runbooks/`。
 
 文档优先级：
 

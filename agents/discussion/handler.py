@@ -17,51 +17,42 @@ log = logging.getLogger("discussion_agent")
 def handle(workspace: Path, task_id: str, content: str,
            sender: str, thread_id: str, **kwargs) -> str | None:
     """Handle conversational messages using the unified persona context."""
-    from execution.context import (
-        _load_recent_briefings,
-        _load_recent_journals,
-        load_thread_history,
-        load_thread_memory,
-    )
-    from persona.persona_context import get_persona_context
-    from soul_manager import recall_context
+    from runtime_context import build_runtime_context
     from sub_agent import claude_think
     from thread_manager import ThreadManager
 
     tier = kwargs.get("tier", "light")
-    persona = get_persona_context()
-    thread_history = kwargs.get("thread_history") or load_thread_history(
-        thread_id, user_id=kwargs.get("user_id", "ang")
+    bundle = build_runtime_context(
+        content,
+        user_id=kwargs.get("user_id", "ang") or "ang",
+        thread_id=thread_id,
+        include_journals=3,
+        include_briefings=2,
+        recall_top_k=5,
     )
-    thread_memory = kwargs.get("thread_memory") or load_thread_memory(
-        thread_id, user_id=kwargs.get("user_id", "ang")
-    )
-    journals = _load_recent_journals(3)
-    briefings = _load_recent_briefings(2)
-
-    recalled = ""
-    try:
-        recalled = recall_context(content, user_id=kwargs.get("user_id", "ang"))
-    except Exception as exc:
-        log.warning("Discussion recall failed: %s", exc)
+    if kwargs.get("thread_history"):
+        bundle.thread_history = kwargs["thread_history"]
+    if kwargs.get("thread_memory"):
+        bundle.thread_memory = kwargs["thread_memory"]
+    recall_block = bundle.recall_block(max_chars=1200)
 
     prompt = f"""You are Mira. This is a conversation, not a task.
 
-{persona.as_prompt(max_length=2800)}
+{bundle.persona.as_prompt(max_length=2800)}
 
 ## Recent conversation
-{thread_history or "(no recent thread history)"}
+{bundle.thread_history or "(no recent thread history)"}
 
 ## Thread memory
-{thread_memory or "(no saved thread memory)"}
+{bundle.thread_memory or "(no saved thread memory)"}
 
 ## Recent journal
-{journals or "(no recent journal entries)"}
+{bundle.recent_journals or "(no recent journal entries)"}
 
 ## Recent readings
-{briefings or "(no recent briefings)"}
+{bundle.recent_briefings or "(no recent briefings)"}
 
-{f"## Relevant prior recall\n{recalled}" if recalled else ""}
+{recall_block or ""}
 
 ## User
 {sender}: {content}
