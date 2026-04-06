@@ -170,3 +170,100 @@ def test_can_retry_respects_retry_ceiling(monkeypatch, tmp_path):
     )
 
     assert mgr.can_retry(rec) is False
+
+
+def test_check_tasks_records_timeout_alert_once(monkeypatch, tmp_path):
+    import sys
+    import types
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+    monkeypatch.setattr(task_manager, "_resolve_timeout", lambda tags: 1)
+
+    created = []
+
+    class FakeBridge:
+        def __init__(self, root, user_id="ang"):
+            self.user_id = user_id
+
+        def create_item(self, *args, **kwargs):
+            created.append((args, kwargs))
+
+        def get_item(self, item_id):
+            return None
+
+    fake_mira = types.SimpleNamespace(Mira=FakeBridge)
+    monkeypatch.setitem(sys.modules, "mira", fake_mira)
+
+    mgr = task_manager.TaskManager()
+    rec = task_manager.TaskRecord(
+        task_id="req_timeout",
+        msg_id="req_timeout",
+        thread_id="req_timeout",
+        sender="user",
+        content_preview="long running",
+        pid=99999,
+        status="running",
+        started_at="2026-04-05T00:00:00Z",
+        workspace=str(tmp_path / "workspace"),
+    )
+    mgr._records = [rec]
+    monkeypatch.setattr(task_manager.os, "kill", lambda pid, sig: None)
+
+    mgr.check_tasks()
+    assert len(created) == 1
+    assert mgr._records[0].timeout_alerted_at
+    first_alerted_at = mgr._records[0].timeout_alerted_at
+
+    mgr.check_tasks()
+    assert len(created) == 1
+    assert mgr._records[0].timeout_alerted_at == first_alerted_at
+
+
+def test_check_tasks_wait_reply_keeps_running_status(monkeypatch, tmp_path):
+    import sys
+    import types
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+    monkeypatch.setattr(task_manager, "_resolve_timeout", lambda tags: 1)
+
+    class FakeBridge:
+        def __init__(self, root, user_id="ang"):
+            self.user_id = user_id
+
+        def create_item(self, *args, **kwargs):
+            pass
+
+        def get_item(self, item_id):
+            return {
+                "messages": [{"sender": "user", "content": "wait"}],
+            }
+
+    fake_mira = types.SimpleNamespace(Mira=FakeBridge)
+    monkeypatch.setitem(sys.modules, "mira", fake_mira)
+
+    mgr = task_manager.TaskManager()
+    rec = task_manager.TaskRecord(
+        task_id="req_timeout_wait",
+        msg_id="req_timeout_wait",
+        thread_id="req_timeout_wait",
+        sender="user",
+        content_preview="long running",
+        pid=99999,
+        status="running",
+        started_at="2026-04-05T00:00:00Z",
+        workspace=str(tmp_path / "workspace"),
+    )
+    mgr._records = [rec]
+    monkeypatch.setattr(task_manager.os, "kill", lambda pid, sig: None)
+
+    completed = mgr.check_tasks()
+
+    assert completed == []
+    assert mgr._records[0].status == "running"
+    assert mgr._records[0].timeout_alerted_at
