@@ -114,6 +114,12 @@ def test_execute_plan_steps_backfills_needs_input_result(tmp_path, monkeypatch):
     assert result["status"] == "needs-input"
     assert result["summary"] == "Confirm publish?"
     assert result["agent"] == "socialmedia"
+    assert result["step_id"] == "step-01"
+    assert result["failure_class"] == "approval_required"
+    assert result["next_action"] == "await-user-input"
+    assert result["retry_count"] == 0
+    assert result["verification"]["status"] == "verified"
+    assert any(Path(item["path"]).name == "output.md" for item in result["artifacts_produced"])
 
 
 def test_execute_plan_steps_backfills_done_result(tmp_path, monkeypatch):
@@ -157,6 +163,12 @@ def test_execute_plan_steps_backfills_done_result(tmp_path, monkeypatch):
     assert result["status"] == "done"
     assert result["summary"] == "Draft ready"
     assert result["agent"] == "writer"
+    assert result["step_id"] == "step-01"
+    assert result["failure_class"] == ""
+    assert result["next_action"] == "proceed-to-next-step"
+    assert result["verification"]["status"] == "verified"
+    assert any(Path(item["path"]).name == "output.md" for item in result["artifacts_produced"])
+    assert any(Path(item["path"]).name == "summary.txt" for item in result["artifacts_produced"])
 
 
 def test_execute_plan_steps_rewrites_done_without_output_to_error(tmp_path, monkeypatch):
@@ -206,6 +218,10 @@ def test_execute_plan_steps_rewrites_done_without_output_to_error(tmp_path, monk
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
     assert result["status"] == "error"
     assert "no verifiable output" in result["summary"]
+    assert result["failure_class"] == "verification_failed"
+    assert result["next_action"] == "inspect-artifacts-and-retry"
+    assert result["verification"]["status"] == "failed"
+    assert result["step_id"] == "step-01"
 
 
 def test_execute_plan_steps_passes_tier_and_thread_context(tmp_path, monkeypatch):
@@ -306,6 +322,10 @@ def test_execute_plan_steps_respects_registry_preflight(tmp_path, monkeypatch):
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
     assert result["status"] == "blocked"
     assert "PREFLIGHT BLOCKED" in result["summary"]
+    assert result["failure_class"] == "preflight_blocked"
+    assert result["next_action"] == "resolve-preflight-block"
+    assert result["verification"]["status"] == "not-run"
+    assert result["step_id"] == "step-01"
     assert called["handler"] is False
 
 
@@ -524,6 +544,25 @@ def test_execute_plan_steps_writes_plan_and_step_state_artifacts(tmp_path, monke
     assert step_state["steps"][0]["declared_agent"] == "writer"
     assert step_state["steps"][0]["execution_agent"] == "writer"
     assert result["capability_class"] == "local-write"
+    assert result["step_id"] == "step-01"
+    assert result["verification"]["status"] == "verified"
+
+
+def test_write_result_backfills_canonical_contract_for_legacy_calls(tmp_path, monkeypatch):
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    (workspace / "output.md").write_text("Legacy output", encoding="utf-8")
+    task_worker._write_result(workspace, "task129z", "done", "Legacy output", agent="general")
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert result["status"] == "done"
+    assert result["step_id"] == ""
+    assert result["failure_class"] == ""
+    assert result["next_action"] == "proceed-to-next-step"
+    assert result["verification"]["status"] == "not-run"
+    assert any(Path(item["path"]).name == "output.md" for item in result["artifacts_produced"])
 
 
 def test_execute_plan_steps_marks_fallback_exception_as_error(tmp_path, monkeypatch):

@@ -1449,6 +1449,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
         )
         step_status = "done"
         step_output_preview = ""
+        step_retry_count = 0
         if result_file.exists():
             try:
                 r = json.loads(result_file.read_text(encoding="utf-8"))
@@ -1475,6 +1476,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                 execution_agent = r.get("agent", execution_agent)
                 step_status = r.get("status", "done")
                 step_output_preview = r.get("summary", "")[:200]
+                step_retry_count = int(r.get("retry_count", 0) or 0)
                 if step_status in ("error", "blocked", "needs-input"):
                     outcome = "error" if step_status == "error" else step_status
                     _record_postmortem(task_id, i, declared_agent, prediction, outcome,
@@ -1489,6 +1491,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                         execution_agent=execution_agent,
                         output_summary=step_output_preview,
                         failure_reason=r.get("summary", "") if step_status != "needs-input" else "",
+                        retry_count=step_retry_count,
                     )
                     log.error("Step %d/%d stopped plan with status=%s: %s",
                               i + 1, len(plan), step_status, r.get("summary", ""))
@@ -1529,6 +1532,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
             declared_agent=declared_agent,
             execution_agent=execution_agent,
             output_summary=step_output_preview,
+            retry_count=step_retry_count,
         )
 
         # For multi-step plans, delete intermediate result.json so next step writes fresh
@@ -1702,31 +1706,235 @@ def _extract_knowledge_writeback(workspace: Path, task_id: str,
 _RESULT_RUNTIME_METADATA_KEYS = {
     "step_index",
     "step_count",
+    "step_id",
     "declared_agent",
     "execution_agent",
     "capability_class",
     "policy",
+    "retry_count",
 }
 
 
-def _write_result(workspace: Path, task_id: str, status: str, summary: str,
-                  tags: list[str] | None = None, agent: str | None = None,
-                  metadata: dict | None = None):
-    """Write result JSON for TaskManager to collect."""
-    result = {
-        "task_id": task_id,
-        "status": status,
-        "summary": summary,
-        "completed_at": _utc_iso(),
+_RESULT_INTERNAL_FILES = {
+    "result.json",
+    "result.tmp",
+    "plan.json",
+    "step_states.json",
+    "exec_log.jsonl",
+    "progress.md",
+}
+
+
+def _step_id_from_metadata(metadata: dict | None) -> str:
+    if not metadata:
+        return ""
+    step_id = str(metadata.get("step_id", "")).strip()
+    if step_id:
+        return step_id
+    step_index = metadata.get("step_index")
+    if isinstance(step_index, int) and step_index >= 0:
+        return f"step-{step_index + 1:02d}"
+    return ""
+
+
+def _serialize_checks(checks: list | None) -> list[dict]:
+    serialized = []
+    for check in checks or []:
+        serialized.append({
+            "name": str(getattr(check, "name", ""))[:120],
+            "passed": bool(getattr(check, "passed", False)),
+            "message": str(getattr(check, "message", ""))[:500],
+        })
+    return serialized
+
+
+def _verification_payload_from_verify(verify, *, target: str = "") -> dict:
+    return {
+        "status": "verified" if getattr(verify, "verified", False) else "failed",
+        "verified": bool(getattr(verify, "verified", False)),
+        "artifact_type": str(getattr(verify, "artifact_type", "")),
+        "target": target,
+        "summary": str(verify.summary())[:500],
+        "checks": _serialize_checks(getattr(verify, "checks", [])),
     }
+
+
+def _verification_not_run(reason: str) -> dict:
+    return {
+        "status": "not-run",
+        "verified": False,
+        "artifact_type": "",
+        "target": "",
+        "summary": reason[:500],
+        "checks": [],
+    }
+
+
+def _normalize_verification_payload(verification: dict | None) -> dict:
+    if not isinstance(verification, dict):
+        return _verification_not_run("verification not recorded")
+    normalized = {
+        "status": str(verification.get("status", "not-run"))[:50],
+        "verified": bool(verification.get("verified", False)),
+        "artifact_type": str(verification.get("artifact_type", ""))[:120],
+        "target": str(verification.get("target", ""))[:500],
+        "summary": str(verification.get("summary", ""))[:500],
+        "checks": [],
+    }
+    checks = verification.get("checks", [])
+    if isinstance(checks, list):
+        normalized["checks"] = [
+            {
+                "name": str(check.get("name", ""))[:120],
+                "passed": bool(check.get("passed", False)),
+                "message": str(check.get("message", ""))[:500],
+            }
+            for check in checks
+            if isinstance(check, dict)
+        ]
+    return normalized
+
+
+def _step_verification_payload(workspace: Path, status: str) -> dict:
+    if status not in ("done", "needs-input"):
+        return _verification_not_run("verification not required for this status")
+    output_file = workspace / "output.md"
+    verify = verify_artifact("file", str(output_file), {"min_size": 1})
+    return _verification_payload_from_verify(verify, target=str(output_file))
+
+
+def _collect_result_artifacts(workspace: Path) -> list[dict]:
+    artifacts = []
+    try:
+        for path in sorted(workspace.iterdir()):
+            if not path.is_file():
+                continue
+            if path.name in _RESULT_INTERNAL_FILES or path.suffix == ".tmp":
+                continue
+            stat = path.stat()
+            artifacts.append({
+                "type": "file",
+                "path": str(path),
+                "size_bytes": stat.st_size,
+            })
+    except OSError:
+        return []
+    return artifacts
+
+
+def _infer_failure_class(status: str, summary: str, verification: dict) -> str:
+    lowered = summary.lower()
+    if status == "done":
+        return ""
+    if status == "needs-input":
+        if "approval" in lowered or "confirm" in lowered:
+            return "approval_required"
+        return "needs_input"
+    if status == "blocked":
+        if "preflight blocked" in lowered or "preflight missing" in lowered:
+            return "preflight_blocked"
+        return "blocked"
+    if status == "timeout":
+        return "timeout"
+    if verification.get("status") == "failed":
+        return "verification_failed"
+    if "preflight failed" in lowered or "preflight load failed" in lowered:
+        return "preflight_error"
+    if "fallback" in lowered:
+        return "fallback_error"
+    if "handler" in lowered:
+        return "handler_error"
+    return "execution_error"
+
+
+def _infer_next_action(status: str, failure_class: str) -> str:
+    if status == "done":
+        return "proceed-to-next-step"
+    if status == "needs-input":
+        return "await-user-input"
+    if failure_class == "preflight_blocked":
+        return "resolve-preflight-block"
+    if failure_class == "verification_failed":
+        return "inspect-artifacts-and-retry"
+    if failure_class == "timeout":
+        return "retry-with-backoff-or-abort"
+    if status == "blocked":
+        return "unblock-and-retry"
+    return "inspect-error-and-retry"
+
+
+def _canonicalize_result_payload(
+    workspace: Path,
+    payload: dict,
+    *,
+    task_id: str,
+    status: str,
+    summary: str,
+    tags: list[str] | None = None,
+    agent: str | None = None,
+    metadata: dict | None = None,
+    verification: dict | None = None,
+    failure_class: str | None = None,
+    next_action: str | None = None,
+) -> dict:
+    result = dict(payload)
+    result["task_id"] = task_id
+    result["status"] = status
+    result["summary"] = summary
+    result["completed_at"] = result.get("completed_at") or _utc_iso()
     if tags:
         result["tags"] = tags
     if agent:
         result["agent"] = agent
     if metadata:
         for key in _RESULT_RUNTIME_METADATA_KEYS:
-            if key in metadata:
+            if key in metadata and key not in result:
                 result[key] = metadata[key]
+    result["step_id"] = str(result.get("step_id") or _step_id_from_metadata(metadata))
+    retry_count = result.get("retry_count", metadata.get("retry_count", 0) if metadata else 0)
+    try:
+        result["retry_count"] = int(retry_count or 0)
+    except (TypeError, ValueError):
+        result["retry_count"] = 0
+
+    normalized_verification = _normalize_verification_payload(
+        verification if verification is not None else result.get("verification")
+    )
+    result["verification"] = normalized_verification
+    result["artifacts_produced"] = _collect_result_artifacts(workspace)
+
+    inferred_failure_class = failure_class
+    if inferred_failure_class is None:
+        inferred_failure_class = str(result.get("failure_class", "")).strip()
+    if not inferred_failure_class:
+        inferred_failure_class = _infer_failure_class(status, summary, normalized_verification)
+    result["failure_class"] = inferred_failure_class
+
+    inferred_next_action = next_action or str(result.get("next_action", "")).strip()
+    if not inferred_next_action:
+        inferred_next_action = _infer_next_action(status, inferred_failure_class)
+    result["next_action"] = inferred_next_action
+    return result
+
+
+def _write_result(workspace: Path, task_id: str, status: str, summary: str,
+                  tags: list[str] | None = None, agent: str | None = None,
+                  metadata: dict | None = None, verification: dict | None = None,
+                  failure_class: str | None = None, next_action: str | None = None):
+    """Write result JSON for TaskManager to collect."""
+    result = _canonicalize_result_payload(
+        workspace,
+        {},
+        task_id=task_id,
+        status=status,
+        summary=summary,
+        tags=tags,
+        agent=agent,
+        metadata=metadata,
+        verification=verification,
+        failure_class=failure_class,
+        next_action=next_action,
+    )
     result_path = workspace / "result.json"
     tmp_path = result_path.with_suffix(".tmp")
     tmp_path.write_text(
@@ -1799,7 +2007,14 @@ def _snapshot_file(path: Path) -> tuple[int, int] | None:
     return (stat.st_mtime_ns, stat.st_size)
 
 
-def _verify_step_artifact(workspace: Path, task_id: str, agent: str, status: str) -> bool:
+def _verify_step_artifact(
+    workspace: Path,
+    task_id: str,
+    agent: str,
+    status: str,
+    *,
+    metadata: dict | None = None,
+) -> bool:
     """Require a real output artifact before claiming success or input-needed."""
     if status not in ("done", "needs-input"):
         return True
@@ -1815,6 +2030,10 @@ def _verify_step_artifact(workspace: Path, task_id: str, agent: str, status: str
         "error",
         f"{agent} produced no verifiable output: {verify.summary()}",
         agent=agent,
+        metadata=metadata,
+        verification=_verification_payload_from_verify(verify, target=str(output_file)),
+        failure_class="verification_failed",
+        next_action="inspect-artifacts-and-retry",
     )
     return False
 
@@ -1898,22 +2117,25 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
             task_id,
             agent,
             existing.get("status", ""),
+            metadata=metadata,
         )
         if not verified:
             return
-        if metadata:
-            changed = False
-            for key, value in metadata.items():
-                if key not in _RESULT_RUNTIME_METADATA_KEYS:
-                    continue
-                if key not in existing:
-                    existing[key] = value
-                    changed = True
-            if changed:
-                result_file.write_text(
-                    json.dumps(existing, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+        normalized = _canonicalize_result_payload(
+            workspace,
+            existing,
+            task_id=task_id,
+            status=str(existing.get("status", "error")),
+            summary=str(existing.get("summary", "")),
+            agent=agent if "agent" not in existing else None,
+            metadata=metadata,
+            verification=_step_verification_payload(workspace, str(existing.get("status", ""))),
+        )
+        if normalized != existing:
+            result_file.write_text(
+                json.dumps(normalized, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         return
 
     output_file = workspace / "output.md"
@@ -1924,7 +2146,13 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
         summary = result_text.split(":", 1)[1].strip()
         if not output_changed:
             output_file.write_text(summary, encoding="utf-8")
-        if not _verify_step_artifact(workspace, task_id, agent, "needs-input"):
+        if not _verify_step_artifact(
+            workspace,
+            task_id,
+            agent,
+            "needs-input",
+            metadata=metadata,
+        ):
             return
         _write_result(
             workspace,
@@ -1934,6 +2162,7 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
             tags=[agent],
             agent=agent,
             metadata=metadata,
+            verification=_step_verification_payload(workspace, "needs-input"),
         )
         return
 
@@ -1948,7 +2177,13 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
 
     if summary:
         tags = smart_classify(request, summary)
-        if not _verify_step_artifact(workspace, task_id, agent, "done"):
+        if not _verify_step_artifact(
+            workspace,
+            task_id,
+            agent,
+            "done",
+            metadata=metadata,
+        ):
             return
         _write_result(
             workspace,
@@ -1958,6 +2193,7 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
             tags=tags,
             agent=agent,
             metadata=metadata,
+            verification=_step_verification_payload(workspace, "done"),
         )
         return
 
