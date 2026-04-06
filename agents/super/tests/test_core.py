@@ -290,6 +290,8 @@ def test_do_talk_routes_completed_task_to_matching_user_bridge(monkeypatch):
 def test_do_talk_stops_other_legacy_inboxes_when_busy(monkeypatch):
     import core
     import emptiness
+    if core.Mira is None:
+        pytest.skip("mira_bridge not available (CI)")
 
     class FakeMessage:
         def __init__(self, msg_id, content, user_id):
