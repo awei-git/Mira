@@ -22,12 +22,15 @@ def _make_client(monkeypatch, tmp_path: Path, *, token: str = "", allow_loopback
     (users_dir / "ang" / "items").mkdir(parents=True)
     (users_dir / "ang" / "commands").mkdir(parents=True)
     (users_dir / "liquan" / "items").mkdir(parents=True)
+    icloud = tmp_path / "icloud"
     bridge.mkdir(exist_ok=True)
+    icloud.mkdir(exist_ok=True)
     if profiles is not None:
         (bridge / "profiles.json").write_text(json.dumps(profiles), encoding="utf-8")
 
     monkeypatch.setattr(server, "BRIDGE", bridge)
     monkeypatch.setattr(server, "USERS_DIR", users_dir)
+    monkeypatch.setattr(server, "_ICLOUD_ARTIFACTS", icloud)
     monkeypatch.setattr(server, "WEBGUI_TOKEN", token)
     monkeypatch.setattr(server, "WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN", allow_loopback)
     monkeypatch.setattr(server, "get_known_user_ids", lambda: ["ang", "liquan"])
@@ -81,3 +84,44 @@ def test_safe_join_rejects_parent_traversal(tmp_path: Path):
     base.mkdir()
     with pytest.raises(HTTPException):
         server._safe_join(base, "..")
+
+
+def test_artifact_routes_reject_unknown_top_level_sections(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+    secret_dir = tmp_path / "icloud" / "ang" / "secrets"
+    secret_dir.mkdir(parents=True)
+    (secret_dir / "notes.txt").write_text("classified", encoding="utf-8")
+
+    resp = client.get("/api/ang/artifacts/secrets")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Artifact section not found"
+
+
+def test_artifact_routes_allow_listed_shared_sections_only(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+    shared_briefing = tmp_path / "icloud" / "shared" / "briefings"
+    shared_briefing.mkdir(parents=True)
+    (shared_briefing / "daily.md").write_text("shared briefing", encoding="utf-8")
+    shared_secret = tmp_path / "icloud" / "shared" / "internal"
+    shared_secret.mkdir(parents=True)
+    (shared_secret / "ops.md").write_text("do not expose", encoding="utf-8")
+
+    shared_root = client.get("/api/ang/artifacts/shared")
+    allowed = client.get("/api/ang/artifacts/shared/briefings")
+    blocked = client.get("/api/ang/artifacts/shared/internal")
+    file_read = client.get("/api/ang/artifacts/shared/briefings/daily.md")
+
+    assert shared_root.status_code == 200
+    shared_entries = shared_root.json()
+    assert len(shared_entries) == 1
+    assert shared_entries[0]["name"] == "briefings/"
+    assert allowed.status_code == 200
+    data = allowed.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "daily.md"
+    assert data[0]["size"] == 15
+    assert isinstance(data[0]["modified"], str)
+    assert blocked.status_code == 404
+    assert blocked.json()["detail"] == "Artifact section not found"
+    assert file_read.status_code == 200
+    assert file_read.text == "shared briefing"
