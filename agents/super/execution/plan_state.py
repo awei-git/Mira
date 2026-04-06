@@ -10,6 +10,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from execution.runtime_contract import derive_workflow_id, normalize_task_status
+
 
 PLAN_ARTIFACT = "plan.json"
 STEP_STATE_ARTIFACT = "step_states.json"
@@ -58,8 +60,8 @@ def _step_stub(index: int, step: dict) -> dict:
 
 
 def _derive_plan_status(steps: list[dict]) -> str:
-    statuses = {step.get("status", "pending") for step in steps}
-    for terminal in ("error", "failed", "blocked", "needs-input"):
+    statuses = {normalize_task_status(step.get("status", "pending")) for step in steps}
+    for terminal in ("failed", "blocked", "needs-input"):
         if terminal in statuses:
             return terminal
     if statuses and statuses <= {"done", "skipped"}:
@@ -76,11 +78,14 @@ def initialize_plan_artifacts(
     user_id: str,
     request: str,
     plan: list[dict],
+    workflow_id: str | None = None,
 ) -> None:
     """Create or replace the canonical plan + step state artifacts."""
     created_at = _utc_iso()
+    resolved_workflow_id = derive_workflow_id(task_id=task_id, workflow_id=workflow_id or "")
     plan_payload = {
         "task_id": task_id,
+        "workflow_id": resolved_workflow_id,
         "user_id": user_id,
         "created_at": created_at,
         "updated_at": created_at,
@@ -103,6 +108,7 @@ def initialize_plan_artifacts(
     }
     state_payload = {
         "task_id": task_id,
+        "workflow_id": resolved_workflow_id,
         "user_id": user_id,
         "created_at": created_at,
         "updated_at": created_at,
@@ -116,12 +122,13 @@ def initialize_plan_artifacts(
 def update_plan_status(workspace: Path, status: str, *, summary: str = "") -> None:
     """Update the top-level plan and step-state status."""
     now = _utc_iso()
+    normalized_status = normalize_task_status(status)
     for artifact_name in (PLAN_ARTIFACT, STEP_STATE_ARTIFACT):
         path = workspace / artifact_name
         payload = _load_json(path)
         if not payload:
             continue
-        payload["status"] = status
+        payload["status"] = normalized_status
         payload["updated_at"] = now
         if summary:
             payload["summary"] = summary[:500]
@@ -173,7 +180,8 @@ def mark_step_finished(
     step = steps[step_index]
     step["declared_agent"] = declared_agent
     step["execution_agent"] = execution_agent
-    step["status"] = status
+    normalized_status = normalize_task_status(status)
+    step["status"] = normalized_status
     step["completed_at"] = _utc_iso()
     step["output_summary"] = output_summary[:500]
     step["failure_reason"] = failure_reason[:500]
@@ -185,5 +193,5 @@ def mark_step_finished(
     _atomic_write_json(state_path, payload)
     if payload["status"] == "done":
         update_plan_status(workspace, "done", summary=output_summary)
-    elif payload["status"] in {"failed", "error", "blocked", "needs-input"}:
+    elif payload["status"] in {"failed", "blocked", "needs-input"}:
         update_plan_status(workspace, payload["status"], summary=failure_reason or output_summary)

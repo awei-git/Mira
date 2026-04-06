@@ -511,7 +511,7 @@ def test_do_talk_stops_retry_when_retry_ceiling_reached(monkeypatch):
         workspace="",
         attempt_count=2,
         max_attempts=2,
-        status="error",
+        status="failed",
     )
 
     class FakeTaskManager:

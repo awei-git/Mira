@@ -24,11 +24,11 @@ _SOUL_DIR = Path(__file__).resolve().parent / "soul"
 EMPTINESS_FILE = _SOUL_DIR / "emptiness.json"
 
 # Default tuning constants
-DEFAULT_THRESHOLD = 150.0        # emptiness units to trigger question-mode self-awakening (raised from 100)
-CONNECTION_THRESHOLD = 80.0      # lower threshold for connection-mode thinking (raised from 50)
-DEFAULT_BASE_RATE = 0.8          # units per minute when idle, no pending questions
-DEFAULT_QUESTION_RATE = 0.4      # additional units per minute per pending question
-DEFAULT_DECAY_AFTER_THINK = 140.0 # emptiness reduction after one think session (doubled from 70)
+DEFAULT_THRESHOLD = 150.0        # emptiness units to trigger question-mode self-awakening
+CONNECTION_THRESHOLD = 80.0      # lower threshold for connection-mode thinking
+DEFAULT_BASE_RATE = 5.0          # units per minute when idle — targets ~30min cycle
+DEFAULT_QUESTION_RATE = 0.5      # additional units per minute per pending question
+DEFAULT_DECAY_AFTER_THINK = 500.0 # emptiness reduction after one think — ensures full 30min cooldown
 MAX_EMPTINESS = 500.0            # cap so it doesn't explode if agent is offline for days
 MAX_CONTINUATION = 5             # max rounds of continuing same thought chain
 

@@ -81,3 +81,7 @@
 - [2026-04-06 18:02] SAVE_READING_NOTE 2026-04-06_vlms-need-words-模型在视觉层也在走语言捷径.md: **[VLMs Need Words] 模型在视觉层也在走语言捷径**
 - [2026-04-06 18:02] SAVE_READING_NOTE 2026-04-06_test-time-scaling-makes-overtraining-.md: **[Test-time scaling makes overtraining compute-optimal] "Ch
 - [2026-04-06 18:02] SAVE_READING_NOTE 2026-04-06_agentsocialbench-隐私不是单点泄露是通过-agent-.md: **[AgentSocialBench] 隐私不是单点泄露，是通过 agent 间协作慢慢渗漏的**
+- [2026-04-06 18:51] SAVE_READING_NOTE 2026-04-06_1-ai-最大的实际用途之一是翻译官僚系统.md: **1. AI 最大的实际用途之一是翻译官僚系统**
+- [2026-04-06 18:51] SAVE_READING_NOTE 2026-04-06_2-动态语言对-ai-coding-更友好可能是因为训练数据分布不是语.md: **2. 动态语言对 AI coding 更友好，可能是因为训练数据分布，不是语言特性本身**
+- [2026-04-06 18:51] SAVE_READING_NOTE 2026-04-06_3-迭代心理学的变化比速度本身更根本.md: **3. 迭代心理学的变化比速度本身更根本**
+- [2026-04-06 19:00] SAVE_SKILL verify-output-path-exists-before-claiming-success.md: verify-output-path-exists-before-claiming-success

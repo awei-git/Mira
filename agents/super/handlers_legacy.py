@@ -863,7 +863,7 @@ def _handle_secret(workspace: Path, task_id: str, content: str,
         if output_file.exists():
             output_file.unlink()
     else:
-        if result.get("status") == "error":
+        if result.get("status") in {"failed", "error"}:
             _write_result(
                 workspace,
                 task_id,
@@ -957,7 +957,7 @@ def _handle_socialmedia(workspace: Path, task_id: str, content: str,
         return
     if result.get("status") == "needs-input":
         return
-    if result.get("status") == "error":
+    if result.get("status") in {"failed", "error"}:
         return
     _write_result(workspace, task_id, "error", "Socialmedia agent returned empty result")
 

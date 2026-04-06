@@ -9,6 +9,7 @@ from pathlib import Path
 from config import LOGS_DIR, MIRA_DIR
 from failure_log import load_recent_failures
 from action_backlog import ActionBacklog
+from execution.runtime_contract import normalize_task_status
 from publish_manifest import get_stuck_articles, load_manifest
 from task_manager import HISTORY_FILE, STATUS_FILE
 
@@ -29,11 +30,13 @@ def build_operator_summary(user_id: str = "ang") -> dict:
     for rec in task_status:
         if rec.get("user_id", "ang") != user_id:
             continue
-        if rec.get("status") not in ("dispatched", "running"):
+        status = normalize_task_status(rec.get("status", ""))
+        if status not in ("dispatched", "running"):
             continue
         active_entry = {
             "task_id": rec.get("task_id", ""),
-            "status": rec.get("status", ""),
+            "workflow_id": rec.get("workflow_id", rec.get("task_id", "")),
+            "status": status,
             "preview": rec.get("content_preview", ""),
             "started_at": rec.get("started_at", ""),
             "tags": rec.get("tags", []),
@@ -46,13 +49,14 @@ def build_operator_summary(user_id: str = "ang") -> dict:
     failed_tasks = [
         {
             "task_id": rec.get("task_id", ""),
-            "status": rec.get("status", ""),
+            "workflow_id": rec.get("workflow_id", rec.get("task_id", "")),
+            "status": normalize_task_status(rec.get("status", "")),
             "failure_class": rec.get("failure_class", ""),
             "summary": rec.get("summary", ""),
             "completed_at": rec.get("completed_at", ""),
         }
         for rec in recent_history
-        if rec.get("status") in ("error", "timeout", "blocked")
+        if normalize_task_status(rec.get("status", "")) in ("failed", "timeout", "blocked")
     ][:10]
 
     manifest = load_manifest()

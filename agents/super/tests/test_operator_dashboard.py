@@ -36,8 +36,9 @@ def test_build_operator_summary_aggregates_runtime_signals(monkeypatch, tmp_path
         json.dumps(
             {
                 "task_id": "task-failed",
+                "workflow_id": "task-failed",
                 "user_id": "ang",
-                "status": "error",
+                "status": "failed",
                 "failure_class": "worker_crash",
                 "summary": "boom",
                 "completed_at": "2026-04-05T01:00:00Z",
@@ -118,6 +119,7 @@ def test_build_operator_summary_aggregates_runtime_signals(monkeypatch, tmp_path
 
     assert summary["tasks"]["active"][0]["task_id"] == "task-running"
     assert summary["tasks"]["failed_recent"][0]["task_id"] == "task-failed"
+    assert summary["tasks"]["failed_recent"][0]["workflow_id"] == "task-failed"
     assert summary["publish"]["queue"][0]["slug"] == "essay-1"
     assert summary["backlog"]["counts"]["approved"] == 1
     assert summary["recent_incidents"][0]["pipeline"] == "publish"

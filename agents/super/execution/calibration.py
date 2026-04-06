@@ -135,7 +135,7 @@ def detect_quality_regression(agent: str, window: int = 10) -> str | None:
             return f"{agent}: output length dropped {second_half/first_half:.0%} vs earlier"
 
     # Check: are errors increasing?
-    errors = [1 for r in recent if r.get("status") == "error"]
+    errors = [1 for r in recent if r.get("status") in {"failed", "error"}]
     if len(errors) >= 3 and len(errors) / len(recent) > 0.4:
         return f"{agent}: {len(errors)}/{len(recent)} recent outputs failed"
 

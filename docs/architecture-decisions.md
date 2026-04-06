@@ -180,3 +180,66 @@ Consequences:
 References:
 - docs/system-design.md
 - docs/production-roadmap.md
+
+## DECISION-0004: Failed Is The Only Canonical Runtime Failure State
+
+Date: 2026-04-06
+Status: accepted
+
+Context:
+- runtime artifacts 里曾同时出现 `error` 和 `failed`。
+- 这会导致 task manager、plan state、operator dashboard、retry policy 对同一类失败使用不同术语。
+
+Decision:
+- 运行时唯一 canonical failure state 是 `failed`。
+- `error` 仅作为兼容旧结果文件的输入别名读取，不再作为新的持久化状态写出。
+
+Consequences:
+- `task_manager`、`plan_state`、`result.json`、operator surface 必须统一写 `failed`。
+- 任何 legacy handler 继续写 `error` 都必须在 canonicalization 阶段被归一化。
+
+References:
+- docs/system-design.md
+- docs/production-roadmap.md
+
+## DECISION-0005: Workflow Trace IDs Are Required Runtime Metadata
+
+Date: 2026-04-06
+Status: accepted
+
+Context:
+- 只有 `task_id` 和 `user_id` 时，跨重试、跨 step、跨 operator surface 的追踪不稳定。
+- 没有 `workflow_id`，无法明确区分“这一次执行”与“这条长期线程/工作流”。
+
+Decision:
+- runtime trace contract 至少包含 `workflow_id`、`task_id`、`user_id`。
+- `workflow_id` 默认取显式字段；若缺失，则回退到 `thread_id`；再缺失则回退到 `task_id`。
+
+Consequences:
+- dispatch、plan artifacts、result contract、status/history、operator dashboard 都必须带上 `workflow_id`。
+- 后续补 observability 时，新的日志字段和查询入口必须围绕这组三元 trace id 建。
+
+References:
+- docs/system-design.md
+- docs/production-roadmap.md
+
+## DECISION-0006: Canonical Runtime Contracts Override Legacy Handler Semantics
+
+Date: 2026-04-06
+Status: accepted
+
+Context:
+- 代码库里仍保留大量 legacy handlers，它们会写旧状态名、旧字段、旧结果格式。
+- 如果让 legacy 语义直接流进 production surfaces，design 很快会重新漂移。
+
+Decision:
+- legacy handlers 可以继续存在，但其输出必须在 runtime contract 层被 canonicalize 后再进入持久化和 operator surface。
+- canonical layer 的优先级高于单个 handler 的历史行为。
+
+Consequences:
+- 兼容层成为强约束，而不是“尽量适配”。
+- 后续重构 legacy handlers 时，可以逐步清理实现，但不能反向放松 contract。
+
+References:
+- docs/system-design.md
+- docs/production-roadmap.md
