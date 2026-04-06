@@ -395,6 +395,30 @@ def should_spark_check(user_id: str | None = None) -> bool:
     return True
 
 
+_IDLE_THINK_DAILY_COST_CAP = 5.0  # USD — stop idle-think when daily Claude cost exceeds this
+
+
+def _idle_think_cost_today() -> float:
+    """Sum today's idle-think Claude cost from usage log."""
+    from datetime import date
+    usage_file = Path(__file__).resolve().parents[2] / "logs" / f"usage_{date.today().isoformat()}.jsonl"
+    if not usage_file.exists():
+        return 0.0
+    total = 0.0
+    try:
+        import json as _json
+        for line in usage_file.read_text(encoding="utf-8").splitlines():
+            try:
+                d = _json.loads(line)
+                if d.get("agent", "").startswith("idle-think") and d.get("provider") == "anthropic":
+                    total += d.get("cost_usd", 0.0)
+            except (ValueError, KeyError):
+                continue
+    except OSError:
+        pass
+    return total
+
+
 def should_idle_think(user_id: str = "ang") -> bool:
     """Returns True if emptiness has crossed the threshold and agent is idle.
 
@@ -408,6 +432,13 @@ def should_idle_think(user_id: str = "ang") -> bool:
         from emptiness import tick, check_threshold
         from task_manager import TaskManager
     except ImportError:
+        return False
+
+    # Daily cost cap: stop burning Claude quota on idle thinking
+    cost = _idle_think_cost_today()
+    if cost >= _IDLE_THINK_DAILY_COST_CAP:
+        log.info("idle-think: daily Claude cost cap reached ($%.2f >= $%.2f), skipping",
+                 cost, _IDLE_THINK_DAILY_COST_CAP)
         return False
 
     # Don't self-awaken if there are active tasks (external input takes priority)
