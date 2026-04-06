@@ -329,6 +329,49 @@ def test_execute_plan_steps_respects_registry_preflight(tmp_path, monkeypatch):
     assert called["handler"] is False
 
 
+def test_execute_plan_steps_preflight_classification_does_not_depend_on_message_text(tmp_path, monkeypatch):
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+
+    class FakeRegistry(_RegistryPolicyMixin):
+        capability_class = "read-only"
+        def load_preflight(self, name: str):
+            assert name == "writer"
+            return lambda ws, task_id, instruction, sender, thread_id, **kwargs: (
+                False,
+                "missing source material",
+            )
+
+        def load_handler(self, name: str):
+            raise AssertionError("handler should not run when preflight blocks")
+
+    monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    task_worker._execute_plan_steps(
+        [{
+            "agent": "writer",
+            "instruction": "write it",
+            "tier": "light",
+            "prediction": {"difficulty": "easy", "failure_modes": [], "success_criteria": "blocked"},
+        }],
+        workspace,
+        "task127b",
+        "write it",
+        "ang",
+        "thread1",
+        None,
+        False,
+        1,
+    )
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert result["status"] == "blocked"
+    assert result["summary"] == "missing source material"
+    assert result["failure_class"] == "preflight_blocked"
+    assert result["next_action"] == "resolve-preflight-block"
+
+
 def test_execute_plan_steps_fails_closed_on_preflight_exception(tmp_path, monkeypatch):
     """Preflight exceptions must fail closed, not fall back to general."""
     workspace = tmp_path / "task"
@@ -563,6 +606,71 @@ def test_write_result_backfills_canonical_contract_for_legacy_calls(tmp_path, mo
     assert result["next_action"] == "proceed-to-next-step"
     assert result["verification"]["status"] == "not-run"
     assert any(Path(item["path"]).name == "output.md" for item in result["artifacts_produced"])
+
+
+def test_ensure_step_result_reuses_cached_verification(tmp_path, monkeypatch):
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    (workspace / "output.md").write_text("Cached output", encoding="utf-8")
+    (workspace / "result.json").write_text(
+        json.dumps({"task_id": "task129za", "status": "done", "summary": "Cached output"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    calls = {"count": 0}
+
+    class FakeVerify:
+        verified = True
+        artifact_type = "file"
+        checks = []
+
+        def summary(self):
+            return "VERIFY VERIFIED [file]: ok"
+
+    def fake_verify(*args, **kwargs):
+        calls["count"] += 1
+        return FakeVerify()
+
+    monkeypatch.setattr(task_worker, "verify_artifact", fake_verify)
+
+    task_worker._ensure_step_result(
+        workspace,
+        "task129za",
+        "writer",
+        "Write it",
+        "Cached output",
+        None,
+        metadata={"step_index": 0, "step_id": "step-01"},
+    )
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert calls["count"] == 1
+    assert result["verification"]["status"] == "verified"
+
+
+def test_write_result_only_collects_declared_public_artifacts(tmp_path, monkeypatch):
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    (workspace / "output.md").write_text("Public output", encoding="utf-8")
+    (workspace / "summary.txt").write_text("Summary", encoding="utf-8")
+    (workspace / "scratchpad.md").write_text("Private scratch", encoding="utf-8")
+    (workspace / "notes.txt").write_text("Explicit artifact", encoding="utf-8")
+
+    task_worker._write_result(
+        workspace,
+        "task129zb",
+        "done",
+        "Public output",
+        agent="writer",
+        metadata={"artifacts_expected": ["notes.txt"]},
+    )
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    artifact_names = {Path(item["path"]).name for item in result["artifacts_produced"]}
+    assert artifact_names == {"output.md", "summary.txt", "notes.txt"}
+    assert "scratchpad.md" not in artifact_names
 
 
 def test_execute_plan_steps_marks_fallback_exception_as_error(tmp_path, monkeypatch):
