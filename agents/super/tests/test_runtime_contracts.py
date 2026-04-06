@@ -279,7 +279,7 @@ def test_execute_plan_steps_respects_registry_preflight(tmp_path, monkeypatch):
     )
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
-    assert result["status"] == "error"
+    assert result["status"] == "blocked"
     assert "PREFLIGHT BLOCKED" in result["summary"]
     assert called["handler"] is False
 
@@ -429,11 +429,84 @@ def test_execute_plan_steps_blocks_when_required_preflight_load_fails(tmp_path, 
     )
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
-    assert result["status"] == "error"
+    assert result["status"] == "blocked"
     assert "preflight load failed" in result["summary"]
     assert result["agent"] == "writer"
     assert called["general"] is False
     assert called["handler"] is False
+
+
+def test_execute_plan_steps_writes_plan_and_step_state_artifacts(tmp_path, monkeypatch):
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+
+    class FakeRegistry:
+        def get_capability_class(self, name: str):
+            return "local-write"
+
+        def get_capability_policy(self, name: str):
+            return {
+                "capability_class": "local-write",
+                "requires_preflight": False,
+                "requires_approval": False,
+                "requires_verification": True,
+                "fail_closed": False,
+                "allow_fallback_to_general": True,
+                "auto_retry": True,
+            }
+
+        def load_handler(self, name: str):
+            assert name == "writer"
+
+            def handler(ws, task_id, instruction, sender, thread_id, **kwargs):
+                (ws / "output.md").write_text("# Draft\n\nBody", encoding="utf-8")
+                (ws / "summary.txt").write_text("Draft ready", encoding="utf-8")
+                return "Draft ready"
+
+            return handler
+
+    monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    plan = [{
+        "agent": "writer",
+        "instruction": "Write a draft",
+        "tier": "light",
+        "capability_class": "local-write",
+        "policy": {
+            "capability_class": "local-write",
+            "requires_preflight": False,
+            "requires_approval": False,
+            "requires_verification": True,
+            "fail_closed": False,
+            "allow_fallback_to_general": True,
+            "auto_retry": True,
+        },
+        "prediction": {"difficulty": "easy", "failure_modes": [], "success_criteria": "draft returned"},
+    }]
+    task_worker._execute_plan_steps(
+        plan,
+        workspace,
+        "task129a",
+        "写一篇短文",
+        "ang",
+        "thread1",
+        None,
+        False,
+        1,
+    )
+
+    plan_artifact = json.loads((workspace / "plan.json").read_text(encoding="utf-8"))
+    step_state = json.loads((workspace / "step_states.json").read_text(encoding="utf-8"))
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+
+    assert plan_artifact["task_id"] == "task129a"
+    assert plan_artifact["steps"][0]["capability_class"] == "local-write"
+    assert step_state["status"] == "done"
+    assert step_state["steps"][0]["status"] == "done"
+    assert step_state["steps"][0]["declared_agent"] == "writer"
+    assert step_state["steps"][0]["execution_agent"] == "writer"
+    assert result["capability_class"] == "local-write"
 
 
 def test_socialmedia_handle_reuses_preflight_cache(tmp_path, monkeypatch):

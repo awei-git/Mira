@@ -39,41 +39,119 @@ jobs:
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            async function allChecksPassing(ref) {
+              const combined = await github.rest.repos.getCombinedStatusForRef({
+                owner,
+                repo,
+                ref,
+              });
+              if (combined.data.state !== 'success') {
+                return { ok: false, reason: `combined status is \`${combined.data.state}\`` };
+              }
+
+              const checks = await github.rest.checks.listForRef({
+                owner,
+                repo,
+                ref,
+                filter: 'latest',
+                per_page: 100,
+              });
+              const blocking = checks.data.check_runs.filter(run =>
+                !['success', 'skipped', 'neutral'].includes(run.conclusion || '')
+              );
+              if (blocking.length) {
+                return {
+                  ok: false,
+                  reason: `non-passing checks: ${blocking.map(run => `${run.name}=${run.conclusion || run.status}`).join(', ')}`
+                };
+              }
+
+              return { ok: true };
+            }
+
+            async function hasRequiredApprovals(pullNumber, authorLogin) {
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner,
+                repo,
+                pull_number: pullNumber,
+                per_page: 100,
+              });
+              const latestByUser = new Map();
+              for (const review of reviews) {
+                if (!review.user?.login) continue;
+                latestByUser.set(review.user.login, review.state);
+              }
+              const count = Array.from(latestByUser.entries()).filter(
+                ([login, state]) => login !== authorLogin && state === 'APPROVED'
+              ).length;
+              return count >= 1;
+            }
+
+            const pr = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: prNumber,
+            });
+            if (pr.data.base.ref === 'main') {
+              const okApprovals = await hasRequiredApprovals(prNumber, pr.data.user.login);
+              if (!okApprovals) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: prNumber,
+                  body: '⏳ **[coordinator]** Auto-merge postponed: `main` requires at least 1 non-author approving review.'
+                });
+                return;
+              }
+            }
+            const gate = await allChecksPassing(pr.data.head.sha);
+            if (!gate.ok) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body: `⏳ **[coordinator]** Auto-merge postponed: ${gate.reason}.`
+              });
+              return;
+            }
 
             // Enable auto-merge
             try {
               await github.rest.pulls.merge({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                owner,
+                repo,
                 pull_number: prNumber,
                 merge_method: 'squash'
               });
 
               // Update labels
               await github.rest.issues.removeLabel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                owner,
+                repo,
                 issue_number: prNumber,
                 name: 'status/approved'
               }).catch(() => {});
 
               await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                owner,
+                repo,
                 issue_number: prNumber,
                 labels: ['status/merged']
               });
 
               await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                owner,
+                repo,
                 issue_number: prNumber,
                 body: '✅ **[coordinator]** PR merged automatically after approval + CI pass.'
               });
             } catch (e) {
               await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                owner,
+                repo,
                 issue_number: prNumber,
                 body: `⚠️ **[coordinator]** Auto-merge failed: ${e.message}\n\nCI may still be running. Will retry on check_suite completion.`
               });
@@ -91,9 +169,60 @@ jobs:
         with:
           script: |
             const sha = context.payload.check_suite.head_sha;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            async function allChecksPassing(ref) {
+              const combined = await github.rest.repos.getCombinedStatusForRef({
+                owner,
+                repo,
+                ref,
+              });
+              if (combined.data.state !== 'success') {
+                return { ok: false, reason: `combined status is \`${combined.data.state}\`` };
+              }
+
+              const checks = await github.rest.checks.listForRef({
+                owner,
+                repo,
+                ref,
+                filter: 'latest',
+                per_page: 100,
+              });
+              const blocking = checks.data.check_runs.filter(run =>
+                !['success', 'skipped', 'neutral'].includes(run.conclusion || '')
+              );
+              if (blocking.length) {
+                return {
+                  ok: false,
+                  reason: `non-passing checks: ${blocking.map(run => `${run.name}=${run.conclusion || run.status}`).join(', ')}`
+                };
+              }
+
+              return { ok: true };
+            }
+
+            async function hasRequiredApprovals(pullNumber, authorLogin) {
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner,
+                repo,
+                pull_number: pullNumber,
+                per_page: 100,
+              });
+              const latestByUser = new Map();
+              for (const review of reviews) {
+                if (!review.user?.login) continue;
+                latestByUser.set(review.user.login, review.state);
+              }
+              const count = Array.from(latestByUser.entries()).filter(
+                ([login, state]) => login !== authorLogin && state === 'APPROVED'
+              ).length;
+              return count >= 1;
+            }
+
             const prs = await github.rest.pulls.list({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner,
+              repo,
               state: 'open',
               sort: 'updated',
               direction: 'desc',
@@ -104,32 +233,45 @@ jobs:
               if (pr.head.sha !== sha) continue;
               const labels = pr.labels.map(l => l.name);
               if (!labels.includes('status/approved')) continue;
+              if (pr.base.ref === 'main') {
+                const okApprovals = await hasRequiredApprovals(pr.number, pr.user.login);
+                if (!okApprovals) {
+                  core.info(`Skipping PR #${pr.number}: main requires at least 1 non-author approving review`);
+                  continue;
+                }
+              }
+
+              const gate = await allChecksPassing(pr.head.sha);
+              if (!gate.ok) {
+                core.info(`Skipping PR #${pr.number}: ${gate.reason}`);
+                continue;
+              }
 
               try {
                 await github.rest.pulls.merge({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
+                  owner,
+                  repo,
                   pull_number: pr.number,
                   merge_method: 'squash'
                 });
 
                 await github.rest.issues.removeLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
+                  owner,
+                  repo,
                   issue_number: pr.number,
                   name: 'status/approved'
                 }).catch(() => {});
 
                 await github.rest.issues.addLabels({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
+                  owner,
+                  repo,
                   issue_number: pr.number,
                   labels: ['status/merged']
                 });
 
                 await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
+                  owner,
+                  repo,
                   issue_number: pr.number,
                   body: '✅ **[coordinator]** PR merged after CI passed.'
                 });

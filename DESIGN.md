@@ -1,5 +1,8 @@
 # Mira — Detailed Design Document
 
+This file is retained as historical background.
+The current canonical design lives in [`docs/system-design.md`](./docs/system-design.md).
+
 ## Overview
 
 Mira is an autonomous AI agent system running as a persistent macOS daemon. It operates on a **30-second cycle**, orchestrating specialized sub-agents, managing persistent memory/identity ("soul"), running scheduled background pipelines, and communicating with its user via an iCloud-based iPhone bridge.
