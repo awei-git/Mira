@@ -390,6 +390,120 @@ def test_do_talk_stops_other_legacy_inboxes_when_busy(monkeypatch):
     assert external_inputs == ["ang"]
 
 
+def test_do_talk_stops_retry_when_retry_ceiling_reached(monkeypatch):
+    import core
+    import emptiness
+    if core.Mira is None:
+        pytest.skip("mira_bridge not available (CI)")
+
+    class FakeMessage:
+        def __init__(self):
+            self.id = "followup_1"
+            self.thread_id = "req_old"
+            self.sender = "user"
+            self.content = "retry please"
+            self.user_id = "ang"
+
+    class FakeBridge:
+        def __init__(self):
+            self.user_id = "ang"
+            self.replies = []
+            self.status_updates = []
+            self.processed = []
+
+        def heartbeat(self, agent_status):
+            pass
+
+        def poll_commands(self):
+            return []
+
+        def poll(self):
+            return [(FakeMessage(), "legacy-msg")]
+
+        def task_exists(self, task_id):
+            return True
+
+        def ack(self, msg_id, status="received"):
+            pass
+
+        def create_task(self, task_id, title, first_message, sender="user", tags=None, origin="user"):
+            pass
+
+        def append_task_message(self, task_id, sender, content):
+            pass
+
+        def update_task_status(self, task_id, status, agent_message=""):
+            self.status_updates.append((task_id, status, agent_message))
+
+        def reply(self, msg_id, recipient, content, thread_id=""):
+            self.replies.append((msg_id, recipient, content, thread_id))
+
+        def mark_processed(self, msg_path):
+            self.processed.append(msg_path)
+
+        def cleanup_old(self, days=0):
+            pass
+
+        def get_next_todo(self):
+            return None
+
+    failed_rec = SimpleNamespace(
+        task_id="req_old",
+        workspace="",
+        attempt_count=2,
+        max_attempts=2,
+        status="error",
+    )
+
+    class FakeTaskManager:
+        def get_status_summary(self):
+            return {"busy": False, "active_count": 0, "active_tasks": [], "last_completed": ""}
+
+        def check_tasks(self):
+            return []
+
+        def get_active_count(self):
+            return 0
+
+        def cleanup_old_records(self, max_age_days=7):
+            pass
+
+        def is_dispatched(self, msg_id):
+            return False
+
+        def find_failed_task(self, task_id):
+            assert task_id == "req_old"
+            return failed_rec
+
+        def can_retry(self, rec):
+            return False
+
+        def reset_for_retry(self, task_id):
+            raise AssertionError("should not reset when retry ceiling is reached")
+
+        def dispatch(self, msg, workspace, **kwargs):
+            raise AssertionError("should not dispatch when retry ceiling is reached")
+
+        def is_busy(self):
+            return False
+
+    bridge = FakeBridge()
+    monkeypatch.setattr(core.Mira, "for_all_users", classmethod(lambda cls: [bridge]))
+    monkeypatch.setattr(core, "TaskManager", FakeTaskManager)
+    monkeypatch.setattr(core, "_sweep_stuck_items", lambda bridge, task_mgr: None)
+    monkeypatch.setattr(core, "_is_meta_command", lambda content: False)
+    monkeypatch.setattr(core, "_talk_slug", lambda content, task_id: task_id)
+    monkeypatch.setattr(emptiness, "on_external_input", lambda user_id: None)
+
+    core.do_talk()
+
+    assert bridge.processed == ["legacy-msg"]
+    assert bridge.status_updates == [("req_old", "failed", "")]
+    assert len(bridge.replies) == 1
+    assert "重试上限" in bridge.replies[0][2]
+    assert bridge.replies[0][3] == "req_old"
+
+
 def test_canonical_writing_pipeline_only_advances_plan_ready(monkeypatch, tmp_path):
     import core
 

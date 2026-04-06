@@ -15,7 +15,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import MIRA_DIR, TASK_TIMEOUT, TASK_TIMEOUT_LONG, MAX_CONCURRENT_TASKS
+from config import MIRA_DIR, TASK_TIMEOUT, TASK_TIMEOUT_LONG, MAX_CONCURRENT_TASKS, TASK_MAX_RETRIES
 
 # Timeout resolution: first check registry manifest, then fall back to tag keywords
 _LONG_TIMEOUT_TAGS = {"writing", "write", "novel", "essay", "blog", "research",
@@ -80,6 +80,9 @@ class TaskRecord:
     workspace: str = ""
     summary: str = ""
     tags: list[str] | None = None  # task type tags for classification
+    attempt_count: int = 1
+    max_attempts: int = TASK_MAX_RETRIES
+    failure_class: str = ""
 
     def __post_init__(self):
         if self.tags is None:
@@ -132,7 +135,8 @@ class TaskManager:
         """Check if all concurrent task slots are occupied."""
         return self.get_active_count() >= MAX_CONCURRENT_TASKS
 
-    def dispatch(self, msg, workspace_dir: Path) -> str:
+    def dispatch(self, msg, workspace_dir: Path, *, attempt_count: int = 1,
+                 max_attempts: int | None = None) -> str:
         """Spawn a background worker for a message. Returns task_id.
 
         Supports up to MAX_CONCURRENT_TASKS parallel workers.
@@ -199,6 +203,8 @@ class TaskManager:
             started_at=_utc_iso(),
             workspace=str(workspace_dir),
             tags=classify_task(msg.content),
+            attempt_count=attempt_count,
+            max_attempts=max_attempts or TASK_MAX_RETRIES,
         )
         self._records.append(record)
         self._save_status()
@@ -303,6 +309,7 @@ class TaskManager:
                 rec.status = data.get("status", "done")
                 rec.summary = data.get("summary", "")
                 rec.completed_at = data.get("completed_at", _utc_iso())
+                rec.failure_class = data.get("failure_class", "")
                 if data.get("tags"):
                     rec.tags = data["tags"]
                 return True
@@ -320,6 +327,7 @@ class TaskManager:
         # Process died without producing output — check stderr for crash info
         rec.status = "error"
         rec.completed_at = _utc_iso()
+        rec.failure_class = "worker_crash"
         stderr_file = ws / "worker_stderr.log"
         crash_info = ""
         if stderr_file.exists():
@@ -403,18 +411,22 @@ class TaskManager:
                 return r
         return None
 
-    def reset_for_retry(self, task_id: str) -> bool:
+    def can_retry(self, rec: TaskRecord) -> bool:
+        """Return whether a terminal task still has retry budget."""
+        return rec.status in ("error", "timeout", "blocked") and rec.attempt_count < rec.max_attempts
+
+    def reset_for_retry(self, task_id: str) -> TaskRecord | None:
         """Remove a completed/failed task record so it can be re-dispatched.
 
-        Returns True if the record was found and removed.
+        Returns the removed record if found.
         """
         for i, r in enumerate(self._records):
             if r.task_id == task_id:
-                self._records.pop(i)
+                removed = self._records.pop(i)
                 self._save_status()
                 log.info("Reset task %s for retry", task_id)
-                return True
-        return False
+                return removed
+        return None
 
     def get_active_count(self) -> int:
         """Number of currently running tasks."""
@@ -460,6 +472,12 @@ class TaskManager:
                     rec["tags"] = []
                 if "user_id" not in rec:
                     rec["user_id"] = "ang"
+                if "attempt_count" not in rec:
+                    rec["attempt_count"] = 1
+                if "max_attempts" not in rec:
+                    rec["max_attempts"] = TASK_MAX_RETRIES
+                if "failure_class" not in rec:
+                    rec["failure_class"] = ""
                 records.append(TaskRecord(**rec))
             return records
         except (json.JSONDecodeError, OSError, TypeError) as e:

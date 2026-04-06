@@ -629,6 +629,7 @@ SELF_EVOLVE_MAX_PER_DAY = _rate_limits.get("self_evolve_max_per_day", 1)
 # Retry & backoff (from config.yml retries: section)
 # ---------------------------------------------------------------------------
 _retries = _cfg.get("retries", {})
+TASK_MAX_RETRIES = _retries.get("task_max", 2)
 WRITER_MAX_RETRIES = _retries.get("writer_max", 2)
 PUBLISH_MAX_RETRIES = _retries.get("publish_max", 3)
 PUBLISH_RETRY_BACKOFF = _retries.get("publish_backoff", [900, 3600, 14400])

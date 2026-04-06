@@ -393,13 +393,14 @@ def do_talk():
                     log.info("Todo %s: agent reply written to followups", _todo_id)
             log.info("STATE %s: working -> done", rec.task_id)
         elif rec.status in ("error", "timeout", "blocked"):
+            retryable = getattr(task_mgr, "can_retry", lambda record: True)(rec)
             if rec.status == "blocked":
                 error_msg = f"处理被阻止: {rec.summary}" if rec.summary else "处理被阻止。"
             else:
                 error_msg = f"处理失败: {rec.summary}" if rec.summary else "处理失败，请稍后重试。"
             bridge.update_status(rec.task_id, "failed",
                                  error={"code": rec.status, "message": error_msg,
-                                        "retryable": True})
+                                        "retryable": retryable})
             log.warning("STATE %s: working -> failed (%s: %s)", rec.task_id, rec.status, rec.summary)
 
     # --- Score completed tasks (grounded metrics only) ---
@@ -616,15 +617,32 @@ def do_talk():
                 old_rec = task_mgr.find_failed_task(msg.thread_id)
                 if old_rec:
                     log.info("Mira [%s] is a retry/follow-up for task %s", msg.id, msg.thread_id)
+                    if not getattr(task_mgr, "can_retry", lambda record: True)(old_rec):
+                        retry_msg = "该任务已达到重试上限，请检查失败原因后重新发起新任务。"
+                        bridge.reply(msg.id, msg.sender, retry_msg, thread_id=msg.thread_id)
+                        bridge.update_task_status(msg.thread_id, "failed")
+                        bridge.mark_processed(msg_path)
+                        log.warning("Retry ceiling reached for task %s (%d/%d)",
+                                    old_rec.task_id,
+                                    getattr(old_rec, "attempt_count", 0),
+                                    getattr(old_rec, "max_attempts", 0))
+                        continue
                     # Reuse the original workspace
                     msg_workspace = Path(old_rec.workspace) if old_rec.workspace else TASKS_DIR / _talk_slug(msg.content, msg.thread_id)
                     # Remove old record so dispatch() won't see it as busy
-                    task_mgr.reset_for_retry(msg.thread_id)
+                    removed = task_mgr.reset_for_retry(msg.thread_id)
+                    attempt_count = getattr(removed, "attempt_count", getattr(old_rec, "attempt_count", 1)) + 1
+                    max_attempts = getattr(removed, "max_attempts", getattr(old_rec, "max_attempts", 1))
                     bridge.ack(msg.id, "received")
                     bridge.update_task_status(msg.thread_id, "working")
                     # Use original task_id for dispatch (overwrite msg.id)
                     msg.id = msg.thread_id
-                    task_id = task_mgr.dispatch(msg, msg_workspace)
+                    task_id = task_mgr.dispatch(
+                        msg,
+                        msg_workspace,
+                        attempt_count=attempt_count,
+                        max_attempts=max_attempts,
+                    )
                     if task_id:
                         bridge.ack(msg.id, "processing")
                         bridge.mark_processed(msg_path)
