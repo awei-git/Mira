@@ -4,14 +4,24 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 _HERE = Path(__file__).resolve().parent
 _SHARED = _HERE.parent
 sys.path.insert(0, str(_SHARED))
 
-
-def test_soul_question_history_is_user_scoped(tmp_path, monkeypatch):
+try:
     import soul_question
+    _HAS_SOUL_QUESTION = True
+except (ImportError, ModuleNotFoundError):
+    soul_question = None
+    _HAS_SOUL_QUESTION = False
 
+_skip_no_bridge = pytest.mark.skipif(not _HAS_SOUL_QUESTION, reason="mira_bridge not available (CI)")
+
+
+@_skip_no_bridge
+def test_soul_question_history_is_user_scoped(tmp_path, monkeypatch):
     monkeypatch.setattr(soul_question, "STATE_FILE", tmp_path / "legacy_history.json")
     monkeypatch.setattr(
         soul_question,
@@ -26,9 +36,8 @@ def test_soul_question_history_is_user_scoped(tmp_path, monkeypatch):
     assert soul_question._load_history(user_id="liquan") == ["q2"]
 
 
+@_skip_no_bridge
 def test_soul_question_send_to_user_uses_requested_bridge(monkeypatch):
-    import soul_question
-
     captured = {}
 
     class FakeBridge:
