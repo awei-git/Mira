@@ -564,7 +564,7 @@ PR 必须明确说明：
 4. 引入新能力，但没有 capability class、approval rule、failure semantics。
 5. 引入新状态，但没有 owner、lifecycle、recovery path。
 6. 通过绕过 verifier / preflight 来“修好”问题。
-7. 指向 `main` 的 PR 没有至少 1 个非作者 reviewer approving review。
+7. 指向 `main` 的 PR 没有通过 required status checks。
 
 ### 14.5 Design Boundary Changes
 

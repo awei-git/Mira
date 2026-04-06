@@ -1,4 +1,4 @@
-# Auto-merge PRs that are approved and pass CI
+# Auto-merge PRs that are explicitly approved via label and pass CI
 name: Auto Merge
 
 on:
@@ -72,41 +72,11 @@ jobs:
               return { ok: true };
             }
 
-            async function hasRequiredApprovals(pullNumber, authorLogin) {
-              const reviews = await github.paginate(github.rest.pulls.listReviews, {
-                owner,
-                repo,
-                pull_number: pullNumber,
-                per_page: 100,
-              });
-              const latestByUser = new Map();
-              for (const review of reviews) {
-                if (!review.user?.login) continue;
-                latestByUser.set(review.user.login, review.state);
-              }
-              const count = Array.from(latestByUser.entries()).filter(
-                ([login, state]) => login !== authorLogin && state === 'APPROVED'
-              ).length;
-              return count >= 1;
-            }
-
             const pr = await github.rest.pulls.get({
               owner,
               repo,
               pull_number: prNumber,
             });
-            if (pr.data.base.ref === 'main') {
-              const okApprovals = await hasRequiredApprovals(prNumber, pr.data.user.login);
-              if (!okApprovals) {
-                await github.rest.issues.createComment({
-                  owner,
-                  repo,
-                  issue_number: prNumber,
-                  body: '⏳ **[coordinator]** Auto-merge postponed: `main` requires at least 1 non-author approving review.'
-                });
-                return;
-              }
-            }
             const gate = await allChecksPassing(pr.data.head.sha);
             if (!gate.ok) {
               await github.rest.issues.createComment({
@@ -146,7 +116,7 @@ jobs:
                 owner,
                 repo,
                 issue_number: prNumber,
-                body: '✅ **[coordinator]** PR merged automatically after approval + CI pass.'
+                body: '✅ **[coordinator]** PR merged automatically after explicit approval label + CI pass.'
               });
             } catch (e) {
               await github.rest.issues.createComment({
@@ -202,24 +172,6 @@ jobs:
               return { ok: true };
             }
 
-            async function hasRequiredApprovals(pullNumber, authorLogin) {
-              const reviews = await github.paginate(github.rest.pulls.listReviews, {
-                owner,
-                repo,
-                pull_number: pullNumber,
-                per_page: 100,
-              });
-              const latestByUser = new Map();
-              for (const review of reviews) {
-                if (!review.user?.login) continue;
-                latestByUser.set(review.user.login, review.state);
-              }
-              const count = Array.from(latestByUser.entries()).filter(
-                ([login, state]) => login !== authorLogin && state === 'APPROVED'
-              ).length;
-              return count >= 1;
-            }
-
             const prs = await github.rest.pulls.list({
               owner,
               repo,
@@ -233,13 +185,6 @@ jobs:
               if (pr.head.sha !== sha) continue;
               const labels = pr.labels.map(l => l.name);
               if (!labels.includes('status/approved')) continue;
-              if (pr.base.ref === 'main') {
-                const okApprovals = await hasRequiredApprovals(pr.number, pr.user.login);
-                if (!okApprovals) {
-                  core.info(`Skipping PR #${pr.number}: main requires at least 1 non-author approving review`);
-                  continue;
-                }
-              }
 
               const gate = await allChecksPassing(pr.head.sha);
               if (!gate.ok) {

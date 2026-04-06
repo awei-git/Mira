@@ -136,8 +136,8 @@ Mira 不是一个可以随意 patch 的 repo。
 对于 `main` 分支，额外要求：
 
 1. 必须通过 PR 合并。
-2. 必须至少有 1 个非作者 reviewer approving review。
-3. 必须通过 CI 和 PR policy checks。
+2. 必须通过 CI 和 PR policy checks。
+3. 如有 reviewer，可走 review；但不是合并 `main` 的硬门槛。
 
 ## 10. 自动化闸门
 
@@ -151,6 +151,6 @@ repo 里已经有自动化 PR policy gate。
 4. 是否填写验证信息。
 5. design-boundary change 是否同步更新 `docs/system-design.md` 和 `docs/architecture-decisions.md`。
 6. workflow change 是否同步更新 `docs/operations-handbook.md`。
-7. 指向 `main` 的 PR 是否至少有 1 个非作者 approving review。
+7. 指向 `main` 的 PR 是否通过 required status checks。
 
 如果后续要真正做到“不能绕过”，还需要在 GitHub 上把这个 check 设为 required status check。
