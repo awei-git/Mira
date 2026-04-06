@@ -83,6 +83,7 @@ class TaskRecord:
     attempt_count: int = 1
     max_attempts: int = TASK_MAX_RETRIES
     failure_class: str = ""
+    timeout_alerted_at: str = ""
 
     def __post_init__(self):
         if self.tags is None:
@@ -219,6 +220,7 @@ class TaskManager:
     def check_tasks(self) -> list[TaskRecord]:
         """Check all running tasks. Returns list of newly completed records."""
         completed = []
+        changed = False
 
         for rec in self._records:
             if rec.status in ("done", "error", "timeout", "needs-input", "blocked"):
@@ -245,8 +247,9 @@ class TaskManager:
                     log.warning("Task %s exceeded timeout (PID %d, %ds/%ds) — notifying user",
                                 rec.task_id, rec.pid, int(elapsed), int(timeout))
                     # Only notify once (check if already notified)
-                    if rec.status != "timeout_pending":
-                        rec.status = "timeout_pending"
+                    if not rec.timeout_alerted_at:
+                        rec.timeout_alerted_at = _utc_iso()
+                        changed = True
                         try:
                             from mira import Mira
                             bridge = Mira(MIRA_DIR, user_id=rec.user_id)
@@ -285,10 +288,13 @@ class TaskManager:
                     except Exception:
                         pass
                 else:
-                    rec.status = "running"
+                    if rec.status != "running":
+                        rec.status = "running"
+                        changed = True
 
-        if completed:
+        if completed or changed:
             self._save_status()
+        if completed:
             self._append_history(completed)
 
         return completed
@@ -478,6 +484,8 @@ class TaskManager:
                     rec["max_attempts"] = TASK_MAX_RETRIES
                 if "failure_class" not in rec:
                     rec["failure_class"] = ""
+                if "timeout_alerted_at" not in rec:
+                    rec["timeout_alerted_at"] = ""
                 records.append(TaskRecord(**rec))
             return records
         except (json.JSONDecodeError, OSError, TypeError) as e:
