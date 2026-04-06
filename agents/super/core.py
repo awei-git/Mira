@@ -393,7 +393,7 @@ def do_talk():
                     log.info("Todo %s: agent reply written to followups", _todo_id)
             log.info("STATE %s: working -> done", rec.task_id)
         elif rec.status in ("error", "timeout", "blocked"):
-            retryable = getattr(task_mgr, "can_retry", lambda record: True)(rec)
+            retryable = task_mgr.can_retry(rec)
             if rec.status == "blocked":
                 error_msg = f"处理被阻止: {rec.summary}" if rec.summary else "处理被阻止。"
             else:
@@ -617,7 +617,7 @@ def do_talk():
                 old_rec = task_mgr.find_failed_task(msg.thread_id)
                 if old_rec:
                     log.info("Mira [%s] is a retry/follow-up for task %s", msg.id, msg.thread_id)
-                    if not getattr(task_mgr, "can_retry", lambda record: True)(old_rec):
+                    if not task_mgr.can_retry(old_rec):
                         retry_msg = "该任务已达到重试上限，请检查失败原因后重新发起新任务。"
                         bridge.reply(msg.id, msg.sender, retry_msg, thread_id=msg.thread_id)
                         bridge.update_task_status(msg.thread_id, "failed")
