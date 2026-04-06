@@ -424,6 +424,52 @@ def _result_metadata(step: dict, *, step_index: int, step_count: int,
     }
 
 
+def _safe_general_fallback(
+    workspace: Path,
+    task_id: str,
+    instruction: str,
+    sender: str,
+    thread_id: str,
+    *,
+    tier: str,
+    step: dict,
+    step_index: int,
+    step_count: int,
+    declared_agent: str,
+    execution_agent: str,
+) -> bool:
+    """Run general fallback and fail the current step cleanly if it crashes."""
+    try:
+        _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+        return True
+    except Exception as e:
+        fallback_msg = f"general fallback failed while handling {declared_agent}: {e}"
+        log.error("%s", fallback_msg)
+        _write_result(
+            workspace,
+            task_id,
+            "error",
+            fallback_msg,
+            agent=execution_agent,
+            metadata=_result_metadata(
+                step,
+                step_index=step_index,
+                step_count=step_count,
+                declared_agent=declared_agent,
+                execution_agent=execution_agent,
+            ),
+        )
+        mark_step_finished(
+            workspace,
+            step_index=step_index,
+            status="error",
+            declared_agent=declared_agent,
+            execution_agent=execution_agent,
+            failure_reason=fallback_msg,
+        )
+        return False
+
+
 def try_extract_skill(task_summary: str, msg_content: str) -> None:
     """Ask Claude to consider extracting a skill from the completed task."""
     if not task_summary or len(task_summary) < 100:
@@ -699,13 +745,6 @@ def main():
             plan = json.loads(pending_plan_file.read_text(encoding="utf-8"))
             pending_plan_file.unlink()  # consumed
             plan = _enrich_plan_with_runtime_policy(plan)
-            initialize_plan_artifacts(
-                workspace,
-                task_id=args.task_id,
-                user_id=_user_id,
-                request=msg_content,
-                plan=plan,
-            )
             log.info("Resuming pending plan (%d steps): %s", len(plan), plan)
             _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
                          user_id=_user_id, allowed_agents=_allowed_agents,
@@ -753,6 +792,7 @@ def main():
             try:
                 plan = json.loads(pending_plan_file.read_text(encoding="utf-8"))
                 pending_plan_file.unlink()
+                plan = _enrich_plan_with_runtime_policy(plan)
                 _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
                          user_id=_user_id, allowed_agents=_allowed_agents,
                          content_filter=_content_filter, model_restriction=_model_restriction)
@@ -824,13 +864,6 @@ def main():
                       allowed_agents=_allowed_agents,
                       content_filter=_content_filter)
     plan = _enrich_plan_with_runtime_policy(plan)
-    initialize_plan_artifacts(
-        workspace,
-        task_id=args.task_id,
-        user_id=_user_id,
-        request=msg_content,
-        plan=plan,
-    )
     log.info("Plan: %s", plan)
 
     _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
@@ -898,22 +931,8 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
     for i, step in enumerate(plan):
         declared_agent = step["agent"]
         execution_agent = declared_agent
-        get_capability_class = getattr(registry, "get_capability_class", lambda name: "read-only")
-        get_capability_policy = getattr(
-            registry,
-            "get_capability_policy",
-            lambda name: {
-                "capability_class": get_capability_class(name),
-                "requires_preflight": getattr(registry, "requires_preflight", lambda _: False)(name),
-                "requires_approval": False,
-                "requires_verification": True,
-                "fail_closed": getattr(registry, "requires_preflight", lambda _: False)(name),
-                "allow_fallback_to_general": not getattr(registry, "requires_preflight", lambda _: False)(name),
-                "auto_retry": True,
-            },
-        )
-        step.setdefault("capability_class", get_capability_class(declared_agent))
-        step.setdefault("policy", get_capability_policy(declared_agent))
+        step.setdefault("capability_class", registry.get_capability_class(declared_agent))
+        step.setdefault("policy", registry.get_capability_policy(declared_agent))
         policy = step["policy"]
         capability_class = step["capability_class"]
         instruction = step["instruction"]
@@ -1078,7 +1097,20 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                     return
                 log.warning("Agent '%s' not in registry during preflight load, falling back to general", declared_agent)
                 execution_agent = "general"
-                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+                if not _safe_general_fallback(
+                    workspace,
+                    task_id,
+                    instruction,
+                    sender,
+                    thread_id,
+                    tier=tier,
+                    step=step,
+                    step_index=i,
+                    step_count=step_count,
+                    declared_agent=declared_agent,
+                    execution_agent=execution_agent,
+                ):
+                    return
                 used_fallback = True
             except ImportError as e:
                 if fail_closed:
@@ -1110,7 +1142,20 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                     return
                 log.error("ImportError loading preflight for agent '%s': %s — falling back to general", declared_agent, e)
                 execution_agent = "general"
-                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+                if not _safe_general_fallback(
+                    workspace,
+                    task_id,
+                    instruction,
+                    sender,
+                    thread_id,
+                    tier=tier,
+                    step=step,
+                    step_index=i,
+                    step_count=step_count,
+                    declared_agent=declared_agent,
+                    execution_agent=execution_agent,
+                ):
+                    return
                 used_fallback = True
             except Exception as e:
                 if fail_closed:
@@ -1142,7 +1187,20 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                     return
                 log.error("Registry preflight for '%s' failed to load: %s — falling back to general", declared_agent, e)
                 execution_agent = "general"
-                _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+                if not _safe_general_fallback(
+                    workspace,
+                    task_id,
+                    instruction,
+                    sender,
+                    thread_id,
+                    tier=tier,
+                    step=step,
+                    step_index=i,
+                    step_count=step_count,
+                    declared_agent=declared_agent,
+                    execution_agent=execution_agent,
+                ):
+                    return
                 used_fallback = True
 
             if not used_fallback and not preflight_fn and requires_preflight:
@@ -1269,7 +1327,20 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                         return
                     log.warning("Agent '%s' not in registry, falling back to general: %s", declared_agent, e)
                     execution_agent = "general"
-                    _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+                    if not _safe_general_fallback(
+                        workspace,
+                        task_id,
+                        instruction,
+                        sender,
+                        thread_id,
+                        tier=tier,
+                        step=step,
+                        step_index=i,
+                        step_count=step_count,
+                        declared_agent=declared_agent,
+                        execution_agent=execution_agent,
+                    ):
+                        return
                 except ImportError as e:
                     handler_msg = f"{declared_agent} handler load failed: {e}"
                     if fail_closed or not allow_fallback:
@@ -1299,7 +1370,20 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                         return
                     log.error("ImportError loading agent '%s': %s — falling back to general", declared_agent, e)
                     execution_agent = "general"
-                    _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+                    if not _safe_general_fallback(
+                        workspace,
+                        task_id,
+                        instruction,
+                        sender,
+                        thread_id,
+                        tier=tier,
+                        step=step,
+                        step_index=i,
+                        step_count=step_count,
+                        declared_agent=declared_agent,
+                        execution_agent=execution_agent,
+                    ):
+                        return
                 except Exception as e:
                     handler_msg = f"{declared_agent} handler failed to load: {e}"
                     if fail_closed or not allow_fallback:
@@ -1329,7 +1413,20 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
                         return
                     log.error("Registry handler for '%s' failed: %s — falling back to general", declared_agent, e)
                     execution_agent = "general"
-                    _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
+                    if not _safe_general_fallback(
+                        workspace,
+                        task_id,
+                        instruction,
+                        sender,
+                        thread_id,
+                        tier=tier,
+                        step=step,
+                        step_index=i,
+                        step_count=step_count,
+                        declared_agent=declared_agent,
+                        execution_agent=execution_agent,
+                    ):
+                        return
         finally:
             set_model_policy(None)  # always reset after step
 
@@ -1602,6 +1699,16 @@ def _extract_knowledge_writeback(workspace: Path, task_id: str,
         log.warning("Knowledge writeback failed for %s: %s", task_id, e)
 
 
+_RESULT_RUNTIME_METADATA_KEYS = {
+    "step_index",
+    "step_count",
+    "declared_agent",
+    "execution_agent",
+    "capability_class",
+    "policy",
+}
+
+
 def _write_result(workspace: Path, task_id: str, status: str, summary: str,
                   tags: list[str] | None = None, agent: str | None = None,
                   metadata: dict | None = None):
@@ -1617,7 +1724,9 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
     if agent:
         result["agent"] = agent
     if metadata:
-        result.update(metadata)
+        for key in _RESULT_RUNTIME_METADATA_KEYS:
+            if key in metadata:
+                result[key] = metadata[key]
     result_path = workspace / "result.json"
     tmp_path = result_path.with_suffix(".tmp")
     tmp_path.write_text(
@@ -1795,6 +1904,8 @@ def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
         if metadata:
             changed = False
             for key, value in metadata.items():
+                if key not in _RESULT_RUNTIME_METADATA_KEYS:
+                    continue
                 if key not in existing:
                     existing[key] = value
                     changed = True

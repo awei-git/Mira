@@ -57,6 +57,18 @@ def _step_stub(index: int, step: dict) -> dict:
     }
 
 
+def _derive_plan_status(steps: list[dict]) -> str:
+    statuses = {step.get("status", "pending") for step in steps}
+    for terminal in ("error", "failed", "blocked", "needs-input"):
+        if terminal in statuses:
+            return terminal
+    if statuses and statuses <= {"done", "skipped"}:
+        return "done"
+    if "running" in statuses:
+        return "running"
+    return "pending"
+
+
 def initialize_plan_artifacts(
     workspace: Path,
     *,
@@ -168,15 +180,7 @@ def mark_step_finished(
     step["retry_count"] = retry_count
 
     payload["updated_at"] = _utc_iso()
-    terminal_statuses = {s.get("status") for s in steps}
-    if status in {"failed", "error", "blocked", "needs-input"}:
-        payload["status"] = status
-    elif terminal_statuses <= {"done", "skipped"}:
-        payload["status"] = "done"
-    elif "running" in terminal_statuses:
-        payload["status"] = "running"
-    else:
-        payload["status"] = "pending"
+    payload["status"] = _derive_plan_status(steps)
 
     _atomic_write_json(state_path, payload)
     if payload["status"] == "done":

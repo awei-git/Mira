@@ -218,7 +218,7 @@ bounded improvements，而不是未验证变更。
 3. `blocked`
 4. `needs-input`
 5. `failed`
-6. `timed-out`
+6. `timeout`
 7. `done`
 
 不允许：

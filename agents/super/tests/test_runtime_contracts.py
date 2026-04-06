@@ -14,6 +14,7 @@ sys.path.insert(0, str(_AGENTS / "shared"))
 
 from agent_registry import AgentRegistry
 import task_worker
+from execution.plan_state import initialize_plan_artifacts, mark_step_finished
 
 
 def _patch_task_worker_test_side_effects(monkeypatch):
@@ -26,6 +27,27 @@ def _patch_task_worker_test_side_effects(monkeypatch):
     monkeypatch.setattr(task_worker, "_verify_output", lambda *args, **kwargs: None)
     monkeypatch.setattr(task_worker, "save_episode", lambda *args, **kwargs: None)
     monkeypatch.setattr(soul_manager, "auto_flush", lambda *args, **kwargs: None)
+
+
+class _RegistryPolicyMixin:
+    capability_class = "local-write"
+    policy_requires_preflight = False
+    policy_fail_closed = False
+    policy_allow_fallback_to_general = True
+
+    def get_capability_class(self, name: str):
+        return self.capability_class
+
+    def get_capability_policy(self, name: str):
+        return {
+            "capability_class": self.capability_class,
+            "requires_preflight": self.policy_requires_preflight,
+            "requires_approval": False,
+            "requires_verification": True,
+            "fail_closed": self.policy_fail_closed,
+            "allow_fallback_to_general": self.policy_allow_fallback_to_general,
+            "auto_retry": True,
+        }
 
 
 def test_writer_handler_matches_production_contract(tmp_path, monkeypatch):
@@ -57,7 +79,7 @@ def test_execute_plan_steps_backfills_needs_input_result(tmp_path, monkeypatch):
     workspace = tmp_path / "task"
     workspace.mkdir()
 
-    class FakeRegistry:
+    class FakeRegistry(_RegistryPolicyMixin):
         def load_handler(self, name: str):
             assert name == "socialmedia"
 
@@ -99,7 +121,7 @@ def test_execute_plan_steps_backfills_done_result(tmp_path, monkeypatch):
     workspace = tmp_path / "task"
     workspace.mkdir()
 
-    class FakeRegistry:
+    class FakeRegistry(_RegistryPolicyMixin):
         def load_handler(self, name: str):
             assert name == "writer"
 
@@ -142,7 +164,8 @@ def test_execute_plan_steps_rewrites_done_without_output_to_error(tmp_path, monk
     workspace = tmp_path / "task"
     workspace.mkdir()
 
-    class FakeRegistry:
+    class FakeRegistry(_RegistryPolicyMixin):
+        capability_class = "read-only"
         def load_handler(self, name: str):
             assert name == "general"
 
@@ -192,7 +215,8 @@ def test_execute_plan_steps_passes_tier_and_thread_context(tmp_path, monkeypatch
 
     captured = {}
 
-    class FakeRegistry:
+    class FakeRegistry(_RegistryPolicyMixin):
+        capability_class = "read-only"
         def load_handler(self, name: str):
             assert name == "discussion"
 
@@ -240,7 +264,8 @@ def test_execute_plan_steps_respects_registry_preflight(tmp_path, monkeypatch):
     workspace.mkdir()
     called = {"handler": False}
 
-    class FakeRegistry:
+    class FakeRegistry(_RegistryPolicyMixin):
+        capability_class = "read-only"
         def load_preflight(self, name: str):
             assert name == "writer"
             return lambda ws, task_id, instruction, sender, thread_id, **kwargs: (
@@ -290,7 +315,10 @@ def test_execute_plan_steps_fails_closed_on_preflight_exception(tmp_path, monkey
     workspace.mkdir()
     called = {"handler": False}
 
-    class FakeRegistry:
+    class FakeRegistry(_RegistryPolicyMixin):
+        policy_requires_preflight = True
+        policy_fail_closed = True
+        policy_allow_fallback_to_general = False
         def load_preflight(self, name: str):
             assert name == "writer"
 
@@ -341,7 +369,7 @@ def test_execute_plan_steps_falls_back_when_preflight_load_errors(tmp_path, monk
     workspace.mkdir()
     called = {"general": False, "handler": False}
 
-    class FakeRegistry:
+    class FakeRegistry(_RegistryPolicyMixin):
         def load_preflight(self, name: str):
             assert name == "writer"
             raise ImportError("bad preflight import")
@@ -390,7 +418,10 @@ def test_execute_plan_steps_blocks_when_required_preflight_load_fails(tmp_path, 
     workspace.mkdir()
     called = {"general": False, "handler": False}
 
-    class FakeRegistry:
+    class FakeRegistry(_RegistryPolicyMixin):
+        policy_requires_preflight = True
+        policy_fail_closed = True
+        policy_allow_fallback_to_general = False
         def requires_preflight(self, name: str):
             assert name == "writer"
             return True
@@ -440,21 +471,7 @@ def test_execute_plan_steps_writes_plan_and_step_state_artifacts(tmp_path, monke
     workspace = tmp_path / "task"
     workspace.mkdir()
 
-    class FakeRegistry:
-        def get_capability_class(self, name: str):
-            return "local-write"
-
-        def get_capability_policy(self, name: str):
-            return {
-                "capability_class": "local-write",
-                "requires_preflight": False,
-                "requires_approval": False,
-                "requires_verification": True,
-                "fail_closed": False,
-                "allow_fallback_to_general": True,
-                "auto_retry": True,
-            }
-
+    class FakeRegistry(_RegistryPolicyMixin):
         def load_handler(self, name: str):
             assert name == "writer"
 
@@ -507,6 +524,120 @@ def test_execute_plan_steps_writes_plan_and_step_state_artifacts(tmp_path, monke
     assert step_state["steps"][0]["declared_agent"] == "writer"
     assert step_state["steps"][0]["execution_agent"] == "writer"
     assert result["capability_class"] == "local-write"
+
+
+def test_execute_plan_steps_marks_fallback_exception_as_error(tmp_path, monkeypatch):
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+
+    class FakeRegistry(_RegistryPolicyMixin):
+        def load_preflight(self, name: str):
+            raise ImportError("bad preflight import")
+
+        def load_handler(self, name: str):
+            raise AssertionError("handler should not load after preflight import error")
+
+    def fake_general(ws, task_id, instruction, sender, thread_id, **kwargs):
+        raise RuntimeError("fallback exploded")
+
+    monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
+    monkeypatch.setattr(task_worker, "_handle_general", fake_general)
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    task_worker._execute_plan_steps(
+        [{
+            "agent": "writer",
+            "instruction": "write it",
+            "tier": "light",
+            "prediction": {"difficulty": "easy", "failure_modes": [], "success_criteria": "error"},
+        }],
+        workspace,
+        "task129b",
+        "write it",
+        "ang",
+        "thread1",
+        None,
+        False,
+        1,
+    )
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    step_state = json.loads((workspace / "step_states.json").read_text(encoding="utf-8"))
+
+    assert result["status"] == "error"
+    assert "general fallback failed" in result["summary"]
+    assert result["agent"] == "general"
+    assert step_state["status"] == "error"
+    assert step_state["steps"][0]["status"] == "error"
+
+
+def test_execute_plan_steps_initializes_artifacts_once(tmp_path, monkeypatch):
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    calls = []
+
+    original_initialize = task_worker.initialize_plan_artifacts
+
+    def tracked_initialize(*args, **kwargs):
+        calls.append(kwargs["task_id"])
+        return original_initialize(*args, **kwargs)
+
+    class FakeRegistry(_RegistryPolicyMixin):
+        def load_handler(self, name: str):
+            def handler(ws, task_id, instruction, sender, thread_id, **kwargs):
+                (ws / "output.md").write_text("done", encoding="utf-8")
+                return "done"
+
+            return handler
+
+    monkeypatch.setattr(task_worker, "initialize_plan_artifacts", tracked_initialize)
+    monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    plan = [{
+        "agent": "writer",
+        "instruction": "Write a draft",
+        "tier": "light",
+        "prediction": {"difficulty": "easy", "failure_modes": [], "success_criteria": "draft returned"},
+    }]
+    task_worker._execute_plan(plan, workspace, "task129c", "写一篇短文", "ang", "thread1")
+
+    assert calls == ["task129c"]
+
+
+def test_mark_step_finished_preserves_terminal_plan_status(tmp_path):
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    plan = [
+        {"agent": "writer", "instruction": "step one", "prediction": {}},
+        {"agent": "writer", "instruction": "step two", "prediction": {}},
+    ]
+    initialize_plan_artifacts(
+        workspace,
+        task_id="task129d",
+        user_id="ang",
+        request="two step task",
+        plan=plan,
+    )
+
+    mark_step_finished(
+        workspace,
+        step_index=0,
+        status="error",
+        declared_agent="writer",
+        execution_agent="writer",
+        failure_reason="boom",
+    )
+    mark_step_finished(
+        workspace,
+        step_index=1,
+        status="pending",
+        declared_agent="writer",
+        execution_agent="writer",
+    )
+
+    step_state = json.loads((workspace / "step_states.json").read_text(encoding="utf-8"))
+    assert step_state["status"] == "error"
 
 
 def test_socialmedia_handle_reuses_preflight_cache(tmp_path, monkeypatch):

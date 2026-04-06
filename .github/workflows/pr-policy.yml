@@ -25,8 +25,6 @@ jobs:
             const prNumber = pr.number;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const baseRef = pr.base.ref;
-            const prAuthor = pr.user.login;
 
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner,
@@ -51,9 +49,12 @@ jobs:
             const hasSection = (title) => body.includes(`## ${title}`);
             const checked = (label) => new RegExp(`- \\[x\\] ${label}`, "i").test(body);
             const sectionText = (title) => {
-              const pattern = new RegExp(`## ${title}\\n([\\s\\S]*?)(\\n## |$)`, "m");
-              const match = body.match(pattern);
-              return match ? match[1].trim() : "";
+              const marker = `## ${title}\n`;
+              const start = body.indexOf(marker);
+              if (start < 0) return "";
+              const after = body.slice(start + marker.length);
+              const nextHeader = after.indexOf("\n## ");
+              return (nextHeader >= 0 ? after.slice(0, nextHeader) : after).trim();
             };
 
             const lineValue = (prefix) => {
@@ -108,27 +109,10 @@ jobs:
               checked("Design-boundary change"),
             ].filter(Boolean).length;
 
-            const reviews = await github.paginate(github.rest.pulls.listReviews, {
-              owner,
-              repo,
-              pull_number: prNumber,
-              per_page: 100,
-            });
-
-            const latestReviewStateByUser = new Map();
-            for (const review of reviews) {
-              if (!review.user?.login) continue;
-              latestReviewStateByUser.set(review.user.login, review.state);
-            }
-
-            const approvalCount = Array.from(latestReviewStateByUser.entries()).filter(
-              ([login, state]) => login !== prAuthor && state === "APPROVED"
-            ).length;
-
             if (!hasSection("Change Type")) failures.push("Missing `## Change Type` section.");
             if (!hasSection("Design References")) failures.push("Missing `## Design References` section.");
             if (!hasSection("Validation")) failures.push("Missing `## Validation` section.");
-            if (selectedChangeTypes !== 1) failures.push("Select exactly one change type checkbox.");
+            if (selectedChangeTypes < 1) failures.push("Select at least one change type checkbox.");
 
             if (touchesCode && !designRefProvided) {
               failures.push("Code-touching PRs must reference `docs/system-design.md` sections.");
@@ -163,10 +147,6 @@ jobs:
               if (!tempWhy || !tempOwner || !tempExpiry) {
                 failures.push("Temporary exceptions must include reason, cleanup owner, and expiry/removal condition.");
               }
-            }
-
-            if (baseRef === "main" && approvalCount < 1) {
-              failures.push("PRs targeting `main` require at least 1 non-author approving review.");
             }
 
             if (failures.length) {

@@ -5,6 +5,8 @@
 
 ## Change Type
 
+Select all that apply:
+
 - [ ] Implementation change
 - [ ] Workflow change
 - [ ] Design-boundary change
@@ -23,6 +25,8 @@
 - Does this change persona / memory / approval / verification behavior?
 
 ## Capability / Policy
+
+If this PR changes runtime behavior or side effects:
 
 - Capability class:
 - Approval rule:
@@ -49,6 +53,7 @@ If no doc update is needed, explain why:
 ## Temporary Exception
 
 - [ ] This PR introduces a temporary shim or exception
+- [ ] This PR is a small emergency fix with the minimum required template fields completed
 
 If checked, explain:
 

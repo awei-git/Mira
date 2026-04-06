@@ -215,7 +215,7 @@ class TaskManager:
         completed = []
 
         for rec in self._records:
-            if rec.status in ("done", "error", "timeout", "needs-input", "blocked", "timed-out"):
+            if rec.status in ("done", "error", "timeout", "needs-input", "blocked"):
                 continue
 
             # Check if process is still alive
@@ -399,7 +399,7 @@ class TaskManager:
     def find_failed_task(self, task_id: str) -> TaskRecord | None:
         """Find a terminal task by task_id (for retry or inspection)."""
         for r in self._records:
-            if r.task_id == task_id and r.status in ("done", "error", "timeout", "needs-input", "blocked", "timed-out"):
+            if r.task_id == task_id and r.status in ("done", "error", "timeout", "needs-input", "blocked"):
                 return r
         return None
 

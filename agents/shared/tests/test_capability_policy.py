@@ -35,3 +35,22 @@ def test_registry_exposes_capability_policy():
     social_policy = registry.get_capability_policy("socialmedia")
     assert social_policy["capability_class"] == "external-publish"
     assert social_policy["requires_approval"] is True
+
+
+def test_capability_policy_rejects_invalid_class():
+    from capability_policy import CapabilityPolicy
+
+    try:
+        CapabilityPolicy(
+            capability_class="bogus",
+            requires_preflight=False,
+            requires_approval=False,
+            requires_verification=True,
+            fail_closed=False,
+            allow_fallback_to_general=True,
+            auto_retry=True,
+        )
+    except ValueError as exc:
+        assert "Invalid capability class" in str(exc)
+    else:
+        raise AssertionError("CapabilityPolicy should reject invalid capability classes")

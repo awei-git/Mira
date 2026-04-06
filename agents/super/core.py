@@ -392,7 +392,7 @@ def do_talk():
                     bridge.update_todo(_todo_id, status="done")
                     log.info("Todo %s: agent reply written to followups", _todo_id)
             log.info("STATE %s: working -> done", rec.task_id)
-        elif rec.status in ("error", "timeout", "blocked", "timed-out"):
+        elif rec.status in ("error", "timeout", "blocked"):
             if rec.status == "blocked":
                 error_msg = f"处理被阻止: {rec.summary}" if rec.summary else "处理被阻止。"
             else:

@@ -28,6 +28,13 @@ class CapabilityPolicy:
     allow_fallback_to_general: bool
     auto_retry: bool
 
+    def __post_init__(self) -> None:
+        if self.capability_class not in VALID_CAPABILITY_CLASSES:
+            raise ValueError(
+                f"Invalid capability class: {self.capability_class!r}. "
+                f"Expected one of {sorted(VALID_CAPABILITY_CLASSES)}."
+            )
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -135,9 +142,9 @@ def get_capability_policy(agent_name: str, manifest_value: str | None = None) ->
         or agent_name in _REQUIRED_PREFLIGHT_AGENTS
     )
     fail_closed = base.fail_closed or agent_name in _REQUIRED_PREFLIGHT_AGENTS
-    allow_fallback_to_general = (
-        base.allow_fallback_to_general and not fail_closed
-    )
+    # The compatibility shim keeps historically sensitive agents fail-closed
+    # even if they sit in a broader capability class like `local-write`.
+    allow_fallback_to_general = base.allow_fallback_to_general and not fail_closed
 
     return CapabilityPolicy(
         capability_class=capability_class,
