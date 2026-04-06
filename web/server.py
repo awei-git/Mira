@@ -414,9 +414,15 @@ def _rebuild_manifest(user_id: str):
 
 # All data from iCloud Drive only — accessible from any network
 _ICLOUD_ARTIFACTS = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Artifacts"
+_USER_ARTIFACT_SECTIONS = ("writings", "briefings", "audio", "video", "photos", "research")
+_SHARED_ARTIFACT_SECTIONS = ("briefings", "writings", "research")
 
 def _artifacts_dir(user_id: str) -> Path:
     return _ICLOUD_ARTIFACTS / user_id
+
+
+def _shared_artifacts_dir() -> Path:
+    return _ICLOUD_ARTIFACTS / "shared"
 
 
 def _safe_join(base: Path, *parts: str) -> Path:
@@ -434,19 +440,47 @@ def _safe_join(base: Path, *parts: str) -> Path:
         raise HTTPException(404) from exc
     return path
 
+
+def _resolve_artifact_path(user_id: str, section: str, *parts: str) -> Path:
+    if section == "shared":
+        if not parts:
+            return _shared_artifacts_dir()
+        subsection, *rest = parts
+        if subsection not in _SHARED_ARTIFACT_SECTIONS:
+            raise HTTPException(404, "Artifact section not found")
+        return _safe_join(_shared_artifacts_dir(), subsection, *rest)
+    if section not in _USER_ARTIFACT_SECTIONS:
+        raise HTTPException(404, "Artifact section not found")
+    return _safe_join(_artifacts_dir(user_id), section, *parts)
+
+
+def _list_shared_sections() -> list[dict[str, str | int]]:
+    shared = _shared_artifacts_dir()
+    files = []
+    for name in _SHARED_ARTIFACT_SECTIONS:
+        path = shared / name
+        if not path.exists():
+            continue
+        files.append({
+            "name": f"{name}/",
+            "size": 0,
+            "modified": datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
+        })
+    return files
+
 @app.get("/api/{user_id}/artifacts")
 def list_artifact_sections(user_id: str):
     base = _artifacts_dir(user_id)
     sections = []
-    for name in ["writings", "briefings", "audio", "video", "photos", "research"]:
+    for name in _USER_ARTIFACT_SECTIONS:
         d = base / name
         if d.exists():
             count = len(list(d.glob("*")))
             sections.append({"name": name, "count": count})
     # Also check shared
-    shared = _ICLOUD_ARTIFACTS / "shared"
+    shared = _shared_artifacts_dir()
     if shared.exists():
-        for name in ["briefings", "writings", "research"]:
+        for name in _SHARED_ARTIFACT_SECTIONS:
             d = shared / name
             if d.exists():
                 count = len(list(d.glob("*")))
@@ -456,7 +490,9 @@ def list_artifact_sections(user_id: str):
 
 @app.get("/api/{user_id}/artifacts/{section}")
 def list_artifacts(user_id: str, section: str):
-    base = _safe_join(_artifacts_dir(user_id), section)
+    if section == "shared":
+        return _list_shared_sections()
+    base = _resolve_artifact_path(user_id, section)
     if not base.exists():
         return []
     return _list_dir(base)
@@ -464,7 +500,7 @@ def list_artifacts(user_id: str, section: str):
 @app.get("/api/{user_id}/artifacts/{section}/{subsection}")
 def list_artifacts_sub(user_id: str, section: str, subsection: str):
     """List files in a subdirectory (e.g. writings/project-name/)."""
-    base = _safe_join(_artifacts_dir(user_id), section, subsection)
+    base = _resolve_artifact_path(user_id, section, subsection)
     if not base.exists():
         raise HTTPException(404)
     if base.is_file():
@@ -473,7 +509,7 @@ def list_artifacts_sub(user_id: str, section: str, subsection: str):
 
 @app.get("/api/{user_id}/artifacts/{section}/{subsection}/{filename}")
 def read_artifact(user_id: str, section: str, subsection: str, filename: str):
-    path = _safe_join(_artifacts_dir(user_id), section, subsection, filename)
+    path = _resolve_artifact_path(user_id, section, subsection, filename)
     if not path.exists():
         raise HTTPException(404)
     return _read_file(path)
