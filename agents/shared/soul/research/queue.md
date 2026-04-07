@@ -16,7 +16,8 @@ Each item must include source (which worldview entry or external trigger), hypot
 - **Smallest experiment:** 30 prompts × {independent, paired} × {Sonnet+Sonnet, Sonnet+Haiku, Sonnet+gpt-4o-mini}. Measure pairwise semantic similarity and answer agreement before/after mutual review.
 - **Cost ceiling:** $20
 - **Priority:** P0 (this is the first concrete experiment)
-- **Status:** next
+- **Status:** in_progress
+- **Last cycle:** 2026-04-07 07:47 — Sharpen the hypothesis to drop the human comparison (unanchored baseline) and restate as 'same-family pairs converge more than cross-family pairs'; then move directly to experiment_design with SBERT as the similarity metric.
 
 ## Q2 — Trust decays measurably along agent chains
 

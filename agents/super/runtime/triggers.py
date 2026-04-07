@@ -138,21 +138,49 @@ def should_research() -> bool:
 
 
 def should_research_log(user_id: str | None = None) -> bool:
-    """Check if it's time to write today's research log (once per day, around RESEARCH_LOG_TIME).
+    """Check if today's research log has been written; if not and we're past
+    RESEARCH_LOG_TIME, run it.
 
-    Mirrors should_journal but with its own state key and time. The research log
-    is the daily contract between Mira and WA for the research-build loop and
-    must run every day, even if other workflows fail.
+    Catch-up semantics: if Mira misses the scheduled minute (deploy late, reboot,
+    crash), this trigger will fire any time later that day until the log is
+    written. The log itself is idempotent on the date, so repeated triggers
+    after success are no-ops.
     """
     now = datetime.now()
     scheduled = datetime.combine(now.date(), RESEARCH_LOG_TIME)
-    delta = (now - scheduled).total_seconds() / 60
-    # 90-minute window so a brief outage doesn't kill the daily contract
-    if delta < 0 or delta > 90:
+    if now < scheduled:
         return False
     state = _load_state(user_id=user_id)
     key = f"research_log_{now.strftime('%Y-%m-%d')}"
     return not state.get(key)
+
+
+def should_research_cycle() -> bool:
+    """Check if it's time to advance the research queue.
+
+    Cooldown-based: every 3 hours during waking hours (8:00-23:00). The cycle
+    itself picks the highest-priority actionable question and advances it by
+    one step. This is the actual research engine — without this, research_log
+    has nothing to report.
+
+    The state key `last_research_cycle` is written by the dispatch loop after
+    dispatch, not here, matching the convention used by should_growth_cycle.
+    """
+    now = datetime.now()
+    if now.hour < 8 or now.hour >= 23:
+        return False
+
+    state = _load_state()
+    last = state.get("last_research_cycle", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            if (now - last_dt).total_seconds() < 3 * 3600:
+                return False
+        except ValueError:
+            pass
+
+    return True
 
 
 def should_skill_study(user_id: str | None = None) -> dict | None:

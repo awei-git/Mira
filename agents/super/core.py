@@ -65,6 +65,7 @@ from workflows.explore import do_explore
 from workflows.reflect import do_reflect
 from workflows.journal import do_journal
 from workflows.research_log import do_research_log
+from workflows.research_cycle import do_research_cycle
 from workflows.daily import (
     do_daily_report, do_daily_photo, handle_photo_feedback,
     do_zhesi, do_soul_question, do_research, do_book_review,
@@ -1859,6 +1860,8 @@ def main():
         do_journal(user_id=flags.get("user", "ang"))
     elif command == "research-log":
         do_research_log(user_id=flags.get("user", "ang"))
+    elif command == "research-cycle":
+        do_research_cycle(user_id=flags.get("user", "ang"))
     elif command == "analyst":
         do_analyst(slot=flags.get("slot", ""))
     elif command == "research":

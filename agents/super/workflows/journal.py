@@ -211,6 +211,20 @@ def do_journal(user_id: str = "ang"):
     atomic_write(journal_path, journal_content)
     log.info("Journal saved: %s", journal_path.name)
 
+    # Mark done in state RIGHT AFTER the file is saved, not at the end of the
+    # workflow. Downstream steps (wiki update, semantic-memory rebuild, social
+    # report) can take 5-10 minutes; if we wait until they all finish, the
+    # scheduler's verifier sees no state key, decides the journal failed, and
+    # re-dispatches it on top of itself. (Observed 2026-04-06: 6+ duplicate
+    # journal dispatches between 21:00 and 23:32.)
+    try:
+        state = load_state(user_id=user_id)
+        state[f"journal_{today}"] = datetime.now().isoformat()
+        state[f"journal_{today}_actor"] = "journal/claude-think"
+        save_state(state, user_id=user_id)
+    except Exception as e:
+        log.warning("Failed to mark journal_%s in state: %s", today, e)
+
     # Copy to briefings dir so iOS can read it (with verification)
     _copy_to_briefings(artifact_name_for_user(f"{today}_journal.md", user_id), journal_content)
 
@@ -349,8 +363,6 @@ def do_journal(user_id: str = "ang"):
     except Exception as e:
         log.warning("Wiki update failed: %s", e)
 
-    # Mark done in state
-    state = load_state(user_id=user_id)
-    state[f"journal_{today}"] = datetime.now().isoformat()
-    state[f"journal_{today}_actor"] = "journal/claude-think"
-    save_state(state, user_id=user_id)
+    # State key for journal_<today> was already written immediately after the
+    # journal file was saved (see start of this function). Re-marking here is
+    # unnecessary and used to be the source of self-repair retry storms.

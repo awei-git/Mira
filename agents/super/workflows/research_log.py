@@ -329,6 +329,19 @@ def _extract_needs(log_text: str) -> list[dict]:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _mark_run_in_global_state(today: str, user_id: str = "ang") -> None:
+    """Set research_log_<date>=true in scheduler state so the trigger
+    stops re-firing after success.
+    """
+    try:
+        from core import load_state, save_state  # lazy: avoid circular import at module load
+    except ImportError:
+        return
+    state = load_state(user_id=user_id)
+    state[f"research_log_{today}"] = datetime.now().isoformat(timespec="seconds")
+    save_state(state, user_id=user_id)
+
+
 def do_research_log(user_id: str = "ang") -> None:
     """Generate and push today's research log.
 
@@ -344,6 +357,7 @@ def do_research_log(user_id: str = "ang") -> None:
 
     if log_path.exists():
         log.info("Research log already exists for %s, skipping", today)
+        _mark_run_in_global_state(today, user_id=user_id)
         return
 
     state = _load_state()
@@ -443,6 +457,9 @@ def do_research_log(user_id: str = "ang") -> None:
 
     state["last_research_log_date"] = today
     _save_state(state)
+
+    # Mark in scheduler global state so the trigger stops re-firing today.
+    _mark_run_in_global_state(today, user_id=user_id)
 
     # --- push to bridge as feed item ---
     if Mira is None:
