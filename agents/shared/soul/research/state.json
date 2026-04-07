@@ -22,9 +22,9 @@
   "last_cycle": {
     "qid": "Q5",
     "step_type": "experiment_design",
-    "timestamp": "2026-04-07T19:10:05",
+    "timestamp": "2026-04-07T19:11:28",
     "new_status": "in_progress",
-    "cost_usd": 0.02,
-    "worldview_delta": "Refines worldview #5: the bidirectional corruption mechanism now has a testable cross-family vs same-family gradient, suggesting the effect is partially mediated by shared training distribution rather than pure interaction dynamics."
+    "cost_usd": 0.003,
+    "worldview_delta": "Refines worldview #5: the bidirectional corruption mechanism is now specified as context-window contamination (recency bias in rubric application), not a persistent belief update — which narrows the claim but makes it testable."
   }
 }
