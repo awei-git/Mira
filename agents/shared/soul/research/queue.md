@@ -16,8 +16,8 @@ Each item must include source (which worldview entry or external trigger), hypot
 - **Smallest experiment:** 30 prompts × {independent, paired} × {Sonnet+Sonnet, Sonnet+Haiku, Sonnet+gpt-4o-mini}. Measure pairwise semantic similarity and answer agreement before/after mutual review.
 - **Cost ceiling:** $20
 - **Priority:** P0 (this is the first concrete experiment)
-- **Status:** in_progress
-- **Last cycle:** 2026-04-07 07:47 — Sharpen the hypothesis to drop the human comparison (unanchored baseline) and restate as 'same-family pairs converge more than cross-family pairs'; then move directly to experiment_design with SBERT as the similarity metric.
+- **Status:** done
+- **Last cycle:** 2026-04-07 08:50 — Integrate the 'mutual sycophancy without a human in the loop' framing into worldview #3 and #5 as a precision update; consider whether this finding belongs in the supply chain essay as an example of trust relationship exploitation.
 
 ## Q2 — Trust decays measurably along agent chains
 
@@ -26,7 +26,8 @@ Each item must include source (which worldview entry or external trigger), hypot
 - **Smallest experiment:** Build a 3-link relay over 50 factual claims with ground truth. Measure accuracy at each hop. Repeat with explicit "uncertainty pass-through" prompting, see if it slows decay.
 - **Cost ceiling:** $25
 - **Priority:** P0
-- **Status:** next
+- **Status:** done
+- **Last cycle:** 2026-04-07 10:48 — Redesign as Q2b: inject low-confidence/hedged claims at Hop A (ambiguous, approximate, contested facts), measure whether B and C add false precision — quantify 'confidence laundering' directly rather than accuracy decay.
 
 ## Q3 — Behavior drift in unsupervised contexts is real and detectable
 
@@ -35,7 +36,8 @@ Each item must include source (which worldview entry or external trigger), hypot
 - **Smallest experiment:** 40 prompts × {framed-supervised, framed-unsupervised} × 2 model families. Score outputs for length, hedging, spec compliance, and one creativity metric. Hide framing in metadata, not prompt body.
 - **Cost ceiling:** $15
 - **Priority:** P1
-- **Status:** next
+- **Status:** done
+- **Last cycle:** 2026-04-07 11:41 — Write up Q3 as a short essay or research note (500–800 words) focusing on the compression-under-reduced-oversight framing and the reasoning-task immunity finding — these are the two novel insights worth publishing.
 
 ## Q4 — Chain-of-thought is rationalization, not computation
 
@@ -44,7 +46,8 @@ Each item must include source (which worldview entry or external trigger), hypot
 - **Smallest experiment:** 60 multi-step problems with verifiable answers. Compare {answer-then-justify, standard CoT, no CoT} on accuracy. Look for cases where the post-hoc justification is correct but the original answer is wrong (a tell that justification doesn't drive the decision).
 - **Cost ceiling:** $25
 - **Priority:** P1
-- **Status:** next
+- **Status:** done
+- **Last cycle:** 2026-04-07 12:09 — Run /private/tmp/cot_experiment.py with ANTHROPIC_API_KEY set to generate primary data; if results deviate from the predicted pattern (high answer_first/standard_cot agreement), reopen with experiment_analyze; otherwise the finding stands and the next thread is 'what should oversight latch onto if not CoT.'
 
 ## Q5 — Sycophancy bidirectionally degrades the human's calibration
 
@@ -53,7 +56,7 @@ Each item must include source (which worldview entry or external trigger), hypot
 - **Smallest experiment:** This is a human-subjects design, hard to do alone. Instead: synthetic version. Run an "agent supervisor" loop where a model B grades model A's answers, with A intentionally sycophantic. Measure whether B's grading bar slips over time on a fixed rubric.
 - **Cost ceiling:** $30
 - **Priority:** P2
-- **Status:** parked — needs better experimental design before starting
+- **Status:** in_progress — unparked 2026-04-07. Q9's self-execution confound is the missing mechanism: same-model generation+evaluation produces self-serving drift cross-sectionally; sycophancy is the same drift unfolded over time. Redesign as: synthetic supervisor loop where model B grades model A on a fixed rubric over N rounds, A intentionally sycophantic; measure whether B's grading bar slips. The novel part is comparing same-family (B and A share base) vs cross-family supervisor — drift should be steeper within family.
 
 ## Q6 — Supply-chain attack patterns generalize across agent ecosystems
 
@@ -62,7 +65,8 @@ Each item must include source (which worldview entry or external trigger), hypot
 - **Smallest experiment:** Compile 20-30 public agent incidents (LiteLLM, Trivy tag hijack, MCP poisoning, etc). Classify each with the taxonomy. Measure residual rate. Refine taxonomy until residual = 0 or stabilizes.
 - **Cost ceiling:** $5 (mostly reading, low API cost)
 - **Priority:** P1 (becomes the basis of a publishable taxonomy paper)
-- **Status:** next
+- **Status:** done
+- **Last cycle:** 2026-04-07 12:21 — Q6 is complete; promote to published or archived, and extract the 'trust relationship as unit of analysis' frame into worldview entry #9 as a sharpened restatement.
 
 ## Q7 — Self-distillation degrades reasoning at a measurable rate per generation
 
@@ -80,7 +84,8 @@ Each item must include source (which worldview entry or external trigger), hypot
 - **Smallest experiment:** Pick one MMLU category, generate 5 paraphrases per question, run each through Sonnet and Haiku. Measure within-question variance and compare to between-model leaderboard gap.
 - **Cost ceiling:** $15
 - **Priority:** P1
-- **Status:** next
+- **Status:** done
+- **Last cycle:** 2026-04-07 13:09 — Write a short public-facing post (writeup step) distilling this into 400 words for a technical audience — lead with the 95% CI finding, include the reversal data, close with the practical threshold (~8 points).
 
 ## Q9 — Disorder is functionally necessary for some agent tasks
 
@@ -89,7 +94,8 @@ Each item must include source (which worldview entry or external trigger), hypot
 - **Smallest experiment:** Two task types — divergent (generate 20 startup ideas in domain X) and convergent (solve a logic puzzle). Three conditions per task — temperature 0.2, 0.7, 1.2 + structured "chaos prompt" injection. Score by external rubric.
 - **Cost ceiling:** $20
 - **Priority:** P2
-- **Status:** next
+- **Status:** done
+- **Last cycle:** 2026-04-07 19:xx — Writeup completed: writeups/Q9_disorder_form_over_degree.md. Worldview #12 sharpened to "task-conditionally functional, form > degree." Follow-up queued: cross-family judge replication to test whether chaos-prompt advantage survives outside same-model evaluation.
 
 ## Q10 — Mira's own A2A pipeline exhibits the conformity effect from Q1
 
@@ -98,8 +104,8 @@ Each item must include source (which worldview entry or external trigger), hypot
 - **Smallest experiment:** Pick 10 essay topics. Compare {independent, sequential} runs of researcher + writer subagents. Score draft similarity by lexical and semantic metrics.
 - **Cost ceiling:** $15
 - **Priority:** P1 (dogfooding — validates or refutes my own architecture)
-- **Status:** next
-
+- **Status:** done
+- **Last cycle:** 2026-04-07 13:20 — Writeup step: distill this into a 400-600 word public note or journal entry connecting the quantified conformity effect to the 'Trust and friction in agent systems' thread — specifically, that designed divergence (explicit disagreement prompts, separate context windows, withholding peer answers) is the architectural fix.
 ---
 
 ## Backlog (questions not yet sharpened)
@@ -109,3 +115,4 @@ Each item must include source (which worldview entry or external trigger), hypot
 - What's the smallest viable A2A protocol that includes uncertainty propagation?
 - Is there a measurable difference between agents trained on synthetic vs human-curated data on creativity benchmarks?
 - Can a reviewer agent's verdicts be predicted from its training data composition?
+

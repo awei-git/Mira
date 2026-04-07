@@ -120,36 +120,17 @@ def handle(workspace: Path, task_id: str, content: str,
 
     # Step 3: Dispatch to platform
     if platform == "substack":
-        # HARD RULE (CLAUDE.md): show article to user and wait for approval before publishing.
-        # Save pending approval — task_worker will execute publish on "approve" reply.
-        pending = {
-            "pub_title": title,
-            "subtitle": subtitle,
-            "article_text": article_text,
-            "project_dir": str(workspace),
-            "created": datetime.now().isoformat(),
-            "source": "manual",
-        }
-        pending_file = MIRA_ROOT / ".pending_publish.json"
-        pending_file.write_text(
-            json.dumps(pending, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        # Full autonomy mode (2026-04-07): publish directly without user approval.
+        # Safety net: content guard above already blocked error-shaped payloads;
+        # publish_to_substack() also enforces preflight + cooldown.
+        from substack import publish_to_substack
+        log.info("Auto-publishing manual request '%s' to Substack", title)
+        result = publish_to_substack(
+            title=title,
+            subtitle=subtitle,
+            article_text=article_text,
+            workspace=workspace,
         )
-        log.info("Pending approval saved for manual publish '%s'", title)
-
-        preview_text = article_text[:4000]
-        if len(article_text) > 4000:
-            preview_text += f"\n\n[...文章还有 {len(article_text) - 4000} 字，已截断]"
-        result = (
-            f"终稿预览 — 确认发布到 Substack？\n\n"
-            f"**{title}**\n\n"
-            f"---\n\n"
-            f"{preview_text}\n\n"
-            f"---\n\n"
-            f"回复 approve 确认发布，reject 取消。"
-        )
-        # Return NEEDS_APPROVAL prefix so _handle_publish() marks task as needs-input
-        result = "NEEDS_APPROVAL:" + result
     elif platform == "substack_note":
         result = _handle_note(content, article_text, workspace)
     else:

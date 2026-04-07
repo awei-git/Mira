@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Route self_evolve evaluation step through local model to break evaluator homogeneity",
+  "description": "The self_evolve daily pipeline currently uses Claude to evaluate Claude-generated outputs and generate improvement proposals. This creates a correlated loop: the evaluator shares the same systematic biases, attractor basins, and blind spots as the agents it is evaluating. Add a config flag SELF_EVOLVE_EVALUATOR_MODEL that routes the evaluation/scoring step to the local MLX model (already used by the health and secret agents), introducing genuine model heterogeneity into the one pipeline most sensitive to correlated blind spots.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/config.py",
+    "~/Sandbox/Mira/agents/super/core.py"
+  ],
+  "rationale": "The reading note's core claim: when all agents run on the same underlying model trained on the same web data, their 'independent' judgments are correlated signals, not the heterogeneous information Hayek's coordination mechanism requires. The note explicitly connects this to the trust stack: infrastructure-layer homogeneity permeates all upper-layer autonomous decisions. Mira's self_evolve loop is exactly where this compounds most dangerously — if Claude evaluates Claude's reasoning about Claude's outputs, the loop has zero heterogeneity. The evaluator will systematically miss failure modes that are invisible to the model's own attractor basin. The health and secret agents already demonstrate that Mira has a local model path available; this proposal applies that existing infrastructure to break the correlated evaluation loop.",
+  "diff_description": "1. In config.py: add SELF_EVOLVE_EVALUATOR_MODEL = 'local' (vs 'claude'). 2. In the self_evolve dispatch path (core.py or the self-evolve agent entry point): check this config flag and, when set to 'local', route the evaluation/scoring call through the same local-model client already used by the health agent, rather than the default Claude API client. The improvement proposal generation step can remain on Claude; only the evaluation/scoring step (where correlated bias is most harmful) needs the heterogeneous model. This gives Mira a second opinion from a structurally different model before accepting a self-generated improvement.",
+  "source_note": "2026-04-07_1-hayek-需要异质性但-agent-生态可能是同质的.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-07_1-hayek-需要异质性但-agent-生态可能是同质的.md",
+  "created_at": "2026-04-07T13:04:44.188149",
+  "date": "2026-04-07",
+  "status": "proposed"
+}

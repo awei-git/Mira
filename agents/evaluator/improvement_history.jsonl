@@ -1,0 +1,1 @@
+{"timestamp": "2026-04-07T00:02:14.251848+00:00", "problems": ["Crash rate is 5.1% (target: < 5%)", "planner pipeline: 50 failures in 7 days"], "weak_agents": [], "baseline_scores": {"discussion": 1.0, "_overall": 1.0, "_crash_rate": 0.051}, "status": "pending"}

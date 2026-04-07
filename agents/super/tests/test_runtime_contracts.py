@@ -814,6 +814,17 @@ def test_socialmedia_handle_reuses_preflight_cache(tmp_path, monkeypatch):
     monkeypatch.setitem(module_globals, "_resolve_content", lambda source, content: "# Approved\n\nBody" * 40)
     monkeypatch.setitem(module_globals, "MIRA_ROOT", tmp_path)
 
+    # Mock publish_to_substack so test never hits the real API.
+    # 2026-04-07: full autonomy means handler calls publish_to_substack directly;
+    # any unmocked test that reaches this path would actually publish to Substack.
+    import substack as _substack_mod
+    publish_calls = []
+    def _fake_publish(title, subtitle, article_text, workspace):
+        publish_calls.append({"title": title, "subtitle": subtitle,
+                              "chars": len(article_text)})
+        return f"[TEST] Would publish '{title}'"
+    monkeypatch.setattr(_substack_mod, "publish_to_substack", _fake_publish)
+
     workspace = tmp_path / "task"
     workspace.mkdir()
 
@@ -834,7 +845,10 @@ def test_socialmedia_handle_reuses_preflight_cache(tmp_path, monkeypatch):
     result = handler(workspace, "task129", "publish it", "ang", "thread1")
 
     assert result is not None
-    assert result.startswith("NEEDS_APPROVAL:")
+    # Full autonomy: handler auto-publishes via publish_to_substack (mocked).
+    assert publish_calls, "handler should have called publish_to_substack"
+    assert publish_calls[0]["title"] == "Approved Title"
+    assert result.startswith("[TEST] Would publish")
 
 
 def test_podcast_preflight_requires_real_article(tmp_path):

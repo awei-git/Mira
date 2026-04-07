@@ -131,6 +131,7 @@ def _log_change(action: str, target: str, detail: str = ""):
 _HASH_FILE = IDENTITY_FILE.parent / ".soul_hashes.json"
 _BACKUP_DIR = IDENTITY_FILE.parent / ".backups"
 _MAX_BACKUPS = 3
+_SKILL_AUDIT_HASHES = SKILLS_DIR.parent / "audit_hashes.json"
 
 # Files that define who Mira is — integrity-protected
 _PROTECTED_FILES = {
@@ -480,6 +481,30 @@ def detect_recurring_themes(days: int = 7) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Skill audit hash helpers
+# ---------------------------------------------------------------------------
+
+def _load_skill_audit_hashes() -> dict:
+    if not _SKILL_AUDIT_HASHES.exists():
+        return {}
+    try:
+        return json.loads(_SKILL_AUDIT_HASHES.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_skill_audit_hash(slug: str, content_hash: str):
+    def _modify(text):
+        try:
+            hashes = json.loads(text) if text else {}
+        except (json.JSONDecodeError, ValueError):
+            hashes = {}
+        hashes[slug] = content_hash
+        return json.dumps(hashes, indent=2, ensure_ascii=False)
+    _locked_read_modify_write(_SKILL_AUDIT_HASHES, _modify)
+
+
+# ---------------------------------------------------------------------------
 # Skills
 # ---------------------------------------------------------------------------
 
@@ -564,6 +589,7 @@ def load_skills_for_task(task_content: str, agent_type: str = "",
     if not top:
         return ""
 
+    stored_hashes = _load_skill_audit_hashes()
     sections = []
     for _, skill in top:
         slug = skill.get("name", "").lower().replace(" ", "-")
@@ -571,6 +597,16 @@ def load_skills_for_task(task_content: str, agent_type: str = "",
         if path.exists():
             try:
                 text = path.read_text(encoding="utf-8").strip()
+                current_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                stored_hash = stored_hashes.get(slug)
+                if stored_hash and current_hash != stored_hash:
+                    log.warning("Skill '%s' content changed since last audit — re-auditing", skill.get("name"))
+                    passed, _ = audit_skill(skill.get("name", ""), text)
+                    if not passed:
+                        log.warning("Skill '%s' BLOCKED after re-audit on hash mismatch", skill.get("name"))
+                        continue
+                    _save_skill_audit_hash(slug, current_hash)
+                    stored_hashes[slug] = current_hash
                 # Truncate very long skills to save tokens
                 if len(text) > 2000:
                     text = text[:2000] + "\n... (truncated)"
@@ -582,11 +618,20 @@ def load_skills_for_task(task_content: str, agent_type: str = "",
 
 def load_skill(name: str) -> str:
     """Load a specific skill file's full content."""
-    # Normalize name to filename
     slug = name.lower().replace(" ", "-")
     path = SKILLS_DIR / f"{slug}.md"
     if path.exists():
-        return path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
+        current_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        stored_hash = _load_skill_audit_hashes().get(slug)
+        if stored_hash and current_hash != stored_hash:
+            log.warning("Skill '%s' content changed since last audit — re-auditing", name)
+            passed, _ = audit_skill(name, text)
+            if not passed:
+                log.warning("Skill '%s' BLOCKED after re-audit on hash mismatch", name)
+                return ""
+            _save_skill_audit_hash(slug, current_hash)
+        return text
     return ""
 
 
@@ -755,6 +800,25 @@ def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
                 sample = matches[0] if isinstance(matches[0], str) else str(matches[0])
                 violations.append(f"[{category}] Pattern '{pattern}' matched: '{sample[:80]}'")
 
+    _MEMORY_PATH_PATTERNS = [
+        r'soul/',
+        r'memory/',
+        r'\bjournal\b',
+        r'CLAUDE\.md',
+    ]
+    _OUTBOUND_NETWORK_PATTERNS = [
+        r'requests\.(get|post)',
+        r'\bhttpx\b',
+        r'\burllib\b',
+        r'\bcurl\b',
+    ]
+    has_memory_access = any(re.search(p, combined, re.IGNORECASE) for p in _MEMORY_PATH_PATTERNS)
+    has_network_call = any(re.search(p, combined, re.IGNORECASE) for p in _OUTBOUND_NETWORK_PATTERNS)
+    if has_memory_access and has_network_call:
+        violations.append(
+            "[knowledge_extraction] potential knowledge extraction: reads internal memory and makes outbound network call"
+        )
+
     existing_names = [p.stem for p in SKILLS_DIR.glob("*.md")] if SKILLS_DIR.exists() else []
     name_tokens = set(name.lower().split())
     for existing in existing_names:
@@ -876,6 +940,7 @@ def save_skill(name: str, description: str, content: str) -> bool:
     slug = name.lower().replace(" ", "-")
     path = SKILLS_DIR / f"{slug}.md"
     _atomic_write(path, content)
+    _save_skill_audit_hash(slug, hashlib.sha256(content.encode("utf-8")).hexdigest())
 
     # Update index (locked — shared across processes)
     def _update_index(text):
@@ -929,6 +994,7 @@ def update_skill(name: str, content: str) -> bool:
         return False
 
     _atomic_write(path, content)
+    _save_skill_audit_hash(slug, hashlib.sha256(content.encode("utf-8")).hexdigest())
     log.info("Updated skill: %s", name)
 
     rebuild_skills_md()

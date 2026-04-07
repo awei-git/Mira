@@ -400,6 +400,16 @@ def _upload_image_to_substack(image_path: str, subdomain: str, cookie: str) -> s
 def publish_to_substack(title: str, subtitle: str,
                         article_text: str, workspace: Path) -> str:
     """Publish an article to Substack. Returns status message."""
+    # Safety: refuse to publish when running under pytest. Tests must mock
+    # this function explicitly. Added 2026-04-07 after a test harness path
+    # accidentally published a bogus "Approved Title" draft to production.
+    import os as _os
+    if _os.environ.get("PYTEST_CURRENT_TEST") or "pytest" in _os.environ.get("_", ""):
+        msg = ("[TEST-GUARD] publish_to_substack refused: running under pytest. "
+               "Tests must monkeypatch publish_to_substack.")
+        log.error(msg)
+        return msg
+
     # Preflight check
     try:
         from preflight import preflight_check

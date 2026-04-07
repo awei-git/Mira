@@ -1,0 +1,43 @@
+### version information
+
+```
+pre-commit version: 4.5.1
+git --version: git version 2.44.0
+sys.version:
+    3.12.11 (main, Jun  3 2025, 15:41:47) [Clang 17.0.0 (clang-1700.0.13.3)]
+sys.executable: /opt/homebrew/opt/python@3.12/bin/python3.12
+os.name: posix
+sys.platform: darwin
+```
+
+### error information
+
+```
+An error has occurred: InvalidConfigError: 
+=====> .pre-commit-config.yaml is not a file
+```
+
+```
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.12/site-packages/pre_commit/error_handler.py", line 73, in error_handler
+    yield
+  File "/opt/homebrew/lib/python3.12/site-packages/pre_commit/main.py", line 429, in main
+    return run(args.config, store, args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.12/site-packages/pre_commit/commands/run.py", line 423, in run
+    config = load_config(config_file)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.12/site-packages/cfgv.py", line 433, in load_from_filename
+    with reraise_as(exc_tp):
+         ^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.11/Frameworks/Python.framework/Versions/3.12/lib/python3.12/contextlib.py", line 158, in __exit__
+    self.gen.throw(value)
+  File "/opt/homebrew/lib/python3.12/site-packages/cfgv.py", line 45, in reraise_as
+    raise tp(e).with_traceback(tb) from None
+  File "/opt/homebrew/lib/python3.12/site-packages/cfgv.py", line 42, in reraise_as
+    yield
+  File "/opt/homebrew/lib/python3.12/site-packages/cfgv.py", line 435, in load_from_filename
+    raise ValidationError(f'{display_filename} is not a file')
+pre_commit.clientlib.InvalidConfigError: 
+=====> .pre-commit-config.yaml is not a file
+```
