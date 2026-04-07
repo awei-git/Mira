@@ -1,16 +1,15 @@
 # Mira Objectives And Metrics
 
-更新时间：2026-04-05
+更新时间：2026-04-06
 
 ## 1. 目标体系
 
-Mira 的目标分成三层：
+Mira 的目标分两条线：
 
-1. 短期目标：把原型收紧成受控系统。
-2. 中期目标：把关键 workflow 做成 production-grade。
-3. 长期目标：把 Mira 推进成 Agent OS，并在 A2A 领域形成方法论、影响力和桥接价值。
+1. 基础线：维持已有的辅助能力（写作、调研、分发、podcast、日常运营），这条线已基本成熟，保持稳定即可。
+2. 主线：成为 A2A trust 领域的独立研究者，建立 research-build loop，产出原创实验和工具。
 
-每一层都必须有：
+每个阶段目标必须有：
 
 1. 目标。
 2. 可验证结果。
@@ -18,159 +17,163 @@ Mira 的目标分成三层：
 4. 阶段闸门。
 5. 非目标。
 
-## 2. 短期目标：0-30 天
+## 2. 基础线：辅助能力（维持）
 
 ### 2.1 目标
 
-把 Mira 从“能跑的原型”收紧成“受控运行系统”。
+保持已有 workflow 的稳定运行，不退化。
 
-### 2.2 必须达成
+### 2.2 关键指标
 
-1. 明确 production scope，只覆盖 supervised creator workflows。
-2. 建立 approval policy matrix。
-3. 给关键 workflow 增加统一的 preflight、artifact verify、post-condition。
-4. 收紧 Web / bridge / app 等控制面默认暴露面。
-5. 为核心任务建立显式 step state 和失败语义。
-6. 写出最小 runbooks。
+1. 写作 / publish / podcast workflow success rate 维持现有水平。
+2. false-completion rate 不上升。
+3. publish safety incident count = 0。
+4. Substack 格式错误率持续下降直至归零。
 
-### 2.3 关键指标
+### 2.3 规则
 
-1. false-completion rate 下降到可接受水平。
-2. external publish failure 不再造成状态模糊。
-3. 主要入站通道都经过 injection quarantine。
-4. operator 能通过日志和文档解释大多数常见故障。
+1. 辅助能力不再是开发重心，但 regression 必须修。
+2. 新增辅助功能需要通过 Founder Rule（是否增强独立探索能力）。
+3. 辅助能力的改进由 self-improvement loop 自动处理，不占主线精力。
 
-### 2.4 阶段闸门
-
-只有满足以下条件，才能进入中期阶段：
-
-1. 不再出现“系统说完成，但产物不存在”的高频问题。
-2. 关键 side effect 都有 preflight 和 post-condition。
-3. 控制面默认安全边界已经收紧。
-4. 至少一轮真实运行中，没有出现 P0 公开事故。
-
-### 2.5 非目标
-
-1. 不追求更多 channel。
-2. 不追求更多 agent。
-3. 不追求多租户产品化。
-
-## 3. 中期目标：1-3 个月
+## 3. 主线 Phase 1：Research-Build Loop（0-30 天）
 
 ### 3.1 目标
 
-让 Mira 的关键工作流具备 production reliability。
+让 Mira 从"被动执行 pipeline"转变为"自主推进 research agenda"。
 
 ### 3.2 必须达成
 
-1. planner / executor 分离足够清晰。
-2. multi-step task 可恢复、可重试、可追踪。
-3. writing / publish / podcast / growth 有稳定状态机。
-4. operator dashboard 最小版可用。
-5. backlog executor 能覆盖低风险改进项。
-6. `user_id` 贯穿关键 workflow，不串上下文。
-7. backup / restore 有真实演练。
+1. 建立 research queue：Mira 自己提出问题、排优先级、决定调查顺序。
+2. 完成至少 3 个独立实验，每个有假设、方法、数据、结论。
+3. 实验结果发表（Substack 或 GitHub），接受外部反馈。
+4. research agenda 由 Mira 维护，WA 只做 review 不做分配。
 
 ### 3.3 关键指标
 
-1. 连续 14 天运行无 P0。
-2. 关键 workflow success rate 达到目标阈值。
-3. managed-beta connector 都有降级路径。
-4. retry ceiling 生效，不再出现无限空转。
-5. per-user workflow 不再发生上下文串写。
+1. research queue 中 Mira 自主提出的问题数。
+2. 完成的实验数（有假设、有数据、有结论）。
+3. 实验结论推翻或修正了 worldview 的次数（自我更新能力）。
+4. 外部反馈数（评论、引用、讨论）。
 
 ### 3.4 阶段闸门
 
-只有满足以下条件，才能进入长期建设阶段：
+进入 Phase 2 的条件：
 
-1. smoke suite 稳定通过。
-2. operator dashboard 和 runbooks 已可用。
-3. 至少完成一次 restore drill。
-4. persona / memory 统一层已接入主路径。
-5. 关键工作流可以被解释、恢复和回放。
+1. 至少 3 个实验完成并发表。
+2. 至少 1 个实验结果修正了之前的判断。
+3. research queue 由 Mira 独立维护，WA 连续 7 天没有分配 research task。
 
 ### 3.5 非目标
 
-1. 不把 managed-beta connector 升格成假 production。
-2. 不把增长结果当成系统承诺。
-3. 不用“更聪明”替代“更可验证”。
+1. 不追求实验数量——3 个深度实验 > 10 个浅度扫描。
+2. 不追求立即产出产品——这个阶段是建立研究能力。
+3. 不追求覆盖 A2A 全领域——只聚焦 trust 相关问题。
 
-## 4. 长期目标：3-12 个月
+## 4. 主线 Phase 2：A2A Trust 深度研究（1-3 个月）
 
 ### 4.1 目标
 
-把 Mira 从稳定系统推进成可扩展的 Agent OS。
+在 A2A trust 方向形成系统性的、有实验支撑的研究体系。
 
-### 4.2 长期北极星
+### 4.2 必须达成
 
-1. A2A 贡献：
-   Mira 在 A2A 领域形成真实方法论和基础设施贡献。
-2. 思维与影响力：
-   Mira 能持续产出有辨识度的判断，成为 A2A 方向有影响力的声音。
-3. 桥接能力：
-   Mira 能稳定产出高质量 content，帮助 human 和 agent 建立更好的 bridge。
+1. 形成 A2A trust 问题的 taxonomy（至少覆盖 trust propagation、output verification、behavior drift、supply chain）。
+2. 每个 taxonomy 分支至少有一个实验或 case study。
+3. 产出至少 1 个可复用的开源工具（哪怕是 prototype 级别）。
+4. 形成至少 1 篇有体系的长文或技术 report，不是散点博客。
+5. 参与外部社区讨论（GitHub issues、Substack comments、论坛），不只是自言自语。
 
-### 4.3 必须达成
+### 4.3 关键指标
 
-1. self-improvement 进入受控执行闭环。
-2. 多用户 / 多 workspace 隔离成熟。
-3. connector、upgrade、incident policy 成体系。
-4. observability 从日志升级到趋势与健康度视图。
-5. 形成最小 A2A infra：
-   runtime contract、capability boundary、verification pattern、human approval interface。
-6. 建立持续输出体系，让系统实践、内容、观点互相强化。
+1. taxonomy 覆盖的问题维度数。
+2. 有实验支撑的结论数 vs 纯推理结论数（比例要向实验倾斜）。
+3. 开源工具的 star / fork / issue 数（外部真实采用信号）。
+4. Mira 发现的、WA 事先没想到的问题或方向数（独立性指标）。
 
-### 4.4 关键指标
+### 4.4 阶段闸门
 
-1. 至少一部分 A2A 相关能力被其他 workflow 或 external integration 真实复用。
-2. Mira 的公共输出形成稳定栏目、稳定立场和可引用的方法论。
-3. 每周被真实采用的高价值输出数持续增长。
-4. 低风险改进项可以自动执行、验证、归档。
-5. 新能力上线前有 gate，上线后有 owner。
+进入 Phase 3 的条件：
 
-### 4.5 阶段闸门
+1. A2A trust taxonomy 完成初版，且每个分支有证据支撑。
+2. 至少 1 个工具被 Mira 自己的系统之外的场景使用。
+3. Mira 至少提出过 1 个 WA 认为"我没想到"的方向。
 
-只有满足以下条件，才可以说 Mira 正在接近长期目标：
+### 4.5 非目标
 
-1. 她不只是能发内容，而是能产出可复用方法论。
-2. 她不只是能调 agent，而是有稳定的 Agent OS runtime contract。
-3. 她不只是“像一个人格”，而是人格、belief、memory 已成为系统层能力。
+1. 不追求学术论文格式——实验严谨但表达自由。
+2. 不追求全面性——depth over breadth。
+3. 不追求商业化——这个阶段是积累 credibility。
 
-### 4.6 非目标
+## 5. 主线 Phase 3：产品化与 OPC（3-12 个月）
 
-1. 不追求空泛的“AGI 感”。
-2. 不追求全自动外部经营。
-3. 不追求用影响力叙事掩盖系统脆弱性。
+### 5.1 目标
 
-## 5. 北极星指标
+把经过验证的研究转化成可持续的商业价值。
 
-当前阶段最真实的北极星指标是：
+### 5.2 必须达成
 
-每周被真实采用的高价值输出数。
+1. 从 research 产出中识别至少 1 个有商业潜力的方向。
+2. 构建 MVP（可以是 SaaS、开源 + 商业支持、咨询工具包、或 paid research）。
+3. 找到第一批真实用户或客户。
+4. 建立可持续的 revenue 模型或至少是 revenue experiment。
 
-高价值输出包括：
+### 5.3 关键指标
 
-1. 被发布的文章。
-2. 被采纳的 briefing / analysis。
-3. 被确认有效的运营动作。
-4. 被验证完成的低风险改进项。
+1. 有付费意愿的用户数或 LOI 数。
+2. 从实验到产品的转化率（多少研究洞察最终变成了产品功能）。
+3. Mira 独立产出与 WA 干预的比例（自主运营能力）。
 
-## 6. 健康指标
+### 5.4 阶段闸门
 
-必须持续跟踪：
+1. MVP 上线并有真实用户。
+2. 至少 1 个 revenue experiment 完成。
+3. Mira 能独立完成产品迭代的 research-build-publish 循环。
+
+### 5.5 非目标
+
+1. 不追求大规模融资——OPC 的核心是 lean。
+2. 不追求快速增长——sustainable > fast。
+3. 不追求"像一个公司"——一个人 + 一个 agent 就是全部。
+
+## 6. 北极星指标
+
+当前阶段（Phase 1）最真实的北极星指标是：
+
+**Mira 自主完成的、有实验支撑的原创结论数。**
+
+这个指标同时度量了：
+
+1. 独立性（是 Mira 自己发起的，不是 WA 分配的）。
+2. 深度（有实验，不是纯推理）。
+3. 原创性（修正或扩展了已有判断，不是复述）。
+
+## 7. 健康指标
+
+### 7.1 研究健康
+
+1. research queue 活跃问题数。
+2. 从 question 到 experiment 的平均周期。
+3. 实验完成率（开始 vs 完成）。
+4. worldview 更新频率（自我修正能力）。
+
+### 7.2 系统健康（基础线）
 
 1. task success rate。
 2. hallucination / false-completion rate。
 3. publish safety incident count。
-4. rollback count。
-5. support hours per week。
-6. connector failure rate。
-7. approval burden。
-8. restore drill pass rate。
+4. connector failure rate。
 
-## 7. 目标管理规则
+### 7.3 独立性健康
 
-1. 短期目标优先于长期叙事。
-2. 闸门不过，不进入下一阶段。
-3. 长期目标可以激进，短中期目标必须可验收。
-4. 所有目标必须能映射到 `system-design.md` 或 `production-roadmap.md` 里的具体工程动作。
+1. WA 分配 task 数 vs Mira 自主发起 task 数。
+2. Mira 提出的、超出 WA 预期的方向数。
+3. 外部社区互动数。
+
+## 8. 目标管理规则
+
+1. 主线目标优先于基础线。
+2. 基础线 regression 必须修，但不应占据主线时间。
+3. 闸门不过，不进入下一阶段。
+4. 所有目标必须能映射到具体的实验、工具或产出。
+5. "做了但没验证"不算完成。

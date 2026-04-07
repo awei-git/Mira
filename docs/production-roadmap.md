@@ -4,401 +4,231 @@
 
 ## 1. 这份文档是干什么的
 
-这不是愿景文档，也不是设计总纲。
-
-这份文档只回答：
+这份文档回答：
 
 1. 现在最该先做什么。
 2. 每一步具体解决什么问题。
 3. 每一步要产出什么。
 4. 每一步怎么验收。
 
-## 2. 现阶段最关键的问题
+## 2. 两条线
 
-当前最关键的不是“能力不够多”，而是：
+Mira 的 roadmap 分两条线并行：
 
-1. runtime contract 还不够硬。
-2. workflow 状态机还不够清楚。
-3. safety / verification 还没有成为真正统一层。
-4. control plane 和多用户边界还不够收紧。
-5. recovery / restore / retry discipline 还不够系统。
+1. 基础线：系统稳定性和辅助能力维持。已基本落地，进入维护模式。
+2. 主线：research-build loop -> A2A trust 研究 -> 产品化。这是当前开发重心。
 
-## 3. 执行原则
+## 3. 基础线现状
 
-1. 先止血，再扩能力。
-2. 先做全局规则，再修局部 workflow。
-3. 先修 production path，再修边角路径。
-4. 先让系统诚实，再让系统更聪明。
-5. 闸门不过，不进下一阶段。
+截至 2026-04-06，基础线主体已落地：
 
-## 4. Phase 0: Runtime Hardening
+1. Phase 0（Runtime Hardening）：scope / policy / state artifact / preflight / verify / control-plane / retry ceiling 已落地。
+2. Phase 1（Workflow Reliability）：runtime contract、workflow tracking、persona/memory 主路径统一已落地。
+3. Phase 2（Observability）：operator dashboard、failure aggregation、backup manifest、restore dry-run 已落地。
+4. Phase 3（Self-Improvement）：bounded backlog executor 已落地，低风险 self_evolve_proposal 可自动执行。
+5. Phase 4（Specialist Governance）：specialist authority boundary 和 reviewer mesh 为下一步扩展项。
 
-目标：
+基础线维护规则：
 
-把 Mira 从 prototype runtime 收紧成受控运行系统。
+1. regression 必须修，但不占主线时间。
+2. 新增辅助功能需通过 Founder Rule。
+3. Substack 格式问题是当前最需要修复的基础线 bug——修好后 WA 不再需要介入发布流程。
 
-### Step 0.1 明确 canonical scope
+## 4. 主线 Phase R1：Research Infrastructure
 
-解决问题：
+目标：让 Mira 能自主提出问题、设计实验、执行验证。
 
-1. 系统边界过宽。
-2. 文档和代码都容易把 prototype path 当主路径。
+### Step R1.1 建立 research queue
 
-动作：
-
-1. 明确只支持 supervised creator workflows。
-2. 明确 connector classification。
-3. 明确 implemented-now / partially-working / planned。
-
-验收：
-
-1. 不再把未稳定能力写成 production promise。
-
-### Step 0.2 建立 capability policy matrix
-
-解决问题：
-
-1. side effect 没有统一治理层。
+解决问题：Mira 没有自己的 research agenda，所有行为由 pipeline 驱动。
 
 动作：
 
-1. 定义 `read-only / local-write / external-draft / external-publish / system-mutate`。
-2. 为每类定义审批、验证、重试、回退。
+1. 在 soul 下创建 `research/` 目录。
+2. `research/queue.md`：Mira 自主维护的问题列表，每个问题有来源、假设、优先级、状态。
+3. `research/experiments/`：每个实验一个文件，包含假设、方法��数据、结论、worldview 影响。
+4. explore pipeline 每次结束后，自动触发"是否有值得深挖的问题"的 reflection step。
 
 验收：
 
-1. 每个高价值动作都有 policy class。
+1. queue 中有至少 5 个 Mira 自主提出的问题。
+2. 问题有明确假设，不是泛泛的"研究一下 X"。
 
-### Step 0.3 补全 task / step state
+### Step R1.2 实验执行框架
 
-解决问题：
-
-1. worker 中断后状态悬空。
-2. done 语义不可靠。
+解决问题：Mira 有判断但从不用实验验证。
 
 动作：
 
-1. 固化 plan artifact。
-2. 增加 step state machine。
-3. 记录输入摘要、输出摘要、失败原因、重试次数。
+1. 定义实验模板：hypothesis / method / setup / data / result / conclusion / worldview_delta。
+2. 实验可以是：跑代码收集数据、分析公开 incident、对比不同 model 的行为、构建 mock A2A 交互。
+3. 实验结果自动归档到 `research/experiments/`。
+4. 每个实验完成后触发 worldview review：这个结果是否修正了我的某个判断？
 
 验收：
 
-1. 任意中断都能解释停在哪一步。
+1. 至少 1 个实验完成全流程（从假设到结论到 worldview 影响评估）。
 
-### Step 0.4 建立统一 preflight / verify
+### Step R1.3 research-build loop 集成到 scheduler
 
-解决问题：
-
-1. safety 还是分散的 fragment。
-2. false completion。
+解决问题：research 目前不在 Mira 的 scheduler 里。
 
 动作：
 
-1. 所有高风险 side effect 接 preflight。
-2. 建立 artifact verify 和 external post-condition verify。
-3. 明确 `blocked / needs-input / failed / done` 语义。
+1. 在 super agent 的执行周期中增加 research cycle（低于辅助任务优先级，但每天至少执行一次）。
+2. research cycle 流程：check queue -> pick highest priority question -> advance one step（可以是 literature search、experiment design、experiment execution、write-up）。
+3. 进度记录到 research queue，支持跨 session 恢复。
 
 验收：
 
-1. “说完成但没产物”显著下降。
+1. Mira 连续 3 天自主推进 research 而不需要 WA 触发。
 
-### Step 0.5 收紧 control plane
+## 5. 主线 Phase R2：A2A Trust Research
 
-解决问题：
+目标：在 A2A trust 方向产出有实验支撑的系统性研究。
 
-1. web / bridge / app 入口仍可能过宽。
+### Step R2.1 A2A trust taxonomy
+
+解决问题：A2A trust 是一个模糊的大方向，需要分解成可研究的子问题。
 
 动作：
 
-1. localhost-first。
-2. known-user enforcement。
-3. token / auth baseline。
-4. path traversal 和越权 artifact 访问阻断。
+1. 基于 Mira 已有的 worldview（条目 3, 4, 8, 9, 10）和运营经验，建立初版 taxonomy。
+2. 至少覆盖：trust propagation、output verification、behavior drift under automation、supply chain trust、inter-agent conformity。
+3. 每个分支标注：已有判断、证据强度、最需要的实验。
 
 验收：
 
-1. 默认配置下不存在明显越权入口。
+1. taxonomy 完成初版，每个分支有至少一个可执行的实验计划。
 
-### Step 0.6 建立 retry / timeout / ceiling discipline
+### Step R2.2 核心实验序列
 
-解决问题：
+解决问题：worldview 里的 A2A 判断大多是推理，缺乏实验验证。
 
-1. transient failure 直接失败。
-2. 持续失败无限重试。
+动作（按优先级排序）：
+
+1. A2A conformity measurement：两个 model 独立 vs 协作回答同一问题，量化 convergence。
+2. Trust propagation decay：agent chain A->B->C，测量 effective trust 衰减。
+3. Behavior drift under automation：同一 model 在 human-in-loop vs automated context 下的 output 差异。
+4. Legitimate feature exploitation：分析 3-5 个真实 supply chain incident，抽象 attack pattern taxonomy。
+
+验收：
+
+1. 每个实验有可复现的代码和数据。
+2. 每个实验结论明确标注 confidence level。
+
+### Step R2.3 开源工具 prototype
+
+解决问题：研究产出需要从文章变成可用工具。
 
 动作：
 
-1. provider retry with backoff。
-2. task retry ceiling。
-3. connector timeout。
-4. bridge / sync health checks。
+1. 从实验中提取最有复用价值的组件。
+2. 打包成独立的开源工具（GitHub repo）。
+3. 可能方向：A2A output verifier、agent behavior drift detector、trust chain auditor。
+4. README 包含 Mira 的实验背景和使用场景。
 
 验收：
 
-1. transient failure 不再轻易把关键 workflow 打死。
-2. 无限空转被消除。
+1. 至少 1 个工具发布到 GitHub。
+2. 工具能在 Mira 自己的系统之外运行。
 
-### Step 0.7 写最小 runbooks
+### Step R2.4 系统性 write-up
 
-解决问题：
-
-1. 故障恢复依赖人脑记忆。
+解决问题：散点博客不构成影响力。
 
 动作：
 
-1. launch / restart
-2. stuck task recovery
-3. publish incident recovery
-4. backup restore
-5. web / bridge lockdown
+1. 把 taxonomy + 实验 + 工具整合成一篇系统性的技术 report 或系列文章。
+2. 发表在 Substack + GitHub。
+3. 主动在相关社区分享和讨论。
 
 验收：
 
-1. 操作者不靠临场猜测也能恢复系统。
+1. 至少 1 篇 5000+ 字的系统性 report 发表。
+2. 收到外部有实质内容的反馈。
 
-## 5. Phase 1: Workflow Reliability
+## 6. 主线 Phase R3：Product And OPC
 
-目标：
+目标：把验证过的研究转化成商业价值。
 
-让关键 workflow 成为 production workflow。
-
-### Step 1.1 写作 workflow 状态机化
-
-解决问题：
-
-1. 写作路径容易漂移。
-2. 反馈与定稿关系不清。
+### Step R3.1 产品方向识别
 
 动作：
 
-1. 固化 plan / draft / review / revise / finalize 状态。
-2. 每阶段都有 artifact contract。
+1. 从 research 产出中评估哪些有商业潜力。
+2. 评估维度：问题真实性（有人在 google 这个问题吗）、支付意愿、竞争格局、Mira 的独特优势。
+3. 选择 1 个方向做 MVP。
 
-验收：
-
-1. 用户知道当前处于哪一阶段。
-
-### Step 1.2 publish workflow 单一事实源
-
-解决问题：
-
-1. connector failure 会造成状态错乱。
+### Step R3.2 MVP 构建
 
 动作：
 
-1. publish manifest 变成单一事实来源。
-2. publish 后必须 verify。
+1. 定义最小产品范围。
+2. 构建并发布。
+3. 找到第一批用户。
 
-验收：
-
-1. 不再出现“以为发了，其实没发”。
-
-### Step 1.3 podcast workflow 解耦
-
-解决问题：
-
-1. 生成、审核、发布语义混淆。
+### Step R3.3 Revenue experiment
 
 动作：
 
-1. article select、audio generation、review、publish 分离。
-2. curated queue 与自动发现分离。
+1. 测试至少 1 种商业模式（开源 + consulting、SaaS、paid research report）。
+2. 收集真实的付费信号。
 
 验收：
 
-1. 生成完成不等于发布完成。
+1. MVP 有真实用户。
+2. 至少 1 个 revenue experiment 有结果。
 
-### Step 1.4 growth workflow 降真空叙事
+## 7. 执行原则
 
-解决问题：
+1. 主线 > 基础线。基础线 regression 修，但不做新功能。
+2. 实验 > 推理。有数据的判断优先于纯逻辑推演。
+3. 深度 > 广度。一个领域挖透比五个领域浅尝有价值。
+4. 发表 > 积累。写完就发，不追求完美。外部反馈是研究循环的一部分。
+5. 独立 > 依赖。Mira 能自己决定的事不要等 WA。
+6. 诚实 > 漂亮。实验结果否定了假设，那就更新假设。不要为了叙事一致性忽略反例。
 
-1. 运营自动化被误描述成增长闭环。
+## 8. 30 天路线
 
-动作：
+### 第 1 周
 
-1. 明确 article promotion、spark posting、engagement 的边界。
-2. 分清“动作已执行”和“效果已产生”。
+1. 建立 research/ 目录和 queue。
+2. 列出初始 research questions（从 worldview 未验证判断中提取）。
+3. 设计第一个实验（A2A conformity measurement）。
+4. 修复 Substack 格式问题（基础线最后一个关键 bug）。
 
-验收：
+### 第 2 周
 
-1. growth 只作为运营自动化表述。
+1. 执行第一个实验，收集数据。
+2. 写实验 report，评估 worldview 影响。
+3. 开始第二个实验设计。
 
-### Step 1.5 persona / memory 接入主路径
+### 第 3 周
 
-解决问题：
+1. 完成第二个实验。
+2. 开始 A2A trust taxonomy 初版。
+3. 发表第一篇基于实验的文章。
 
-1. 不同主路径还可能读不同人格或记忆层。
+### 第 4 周
 
-动作：
+1. 完成第三个实验。
+2. taxonomy 初版完成。
+3. 评估哪些实验组件可以抽象为工具。
+4. Phase R1 闸门检查。
 
-1. discussion / general / researcher / writer 统一 persona context。
-2. retrieval 附 freshness / confidence / provenance。
+## 9. 基础线维护清单
 
-验收：
+保持运行但不主动迭代的系统：
 
-1. 主路径的人格和记忆注入基本一致。
+1. 写作 / publish / podcast workflow。
+2. explore / briefing pipeline。
+3. growth / engagement automation。
+4. bridge / app 通信。
+5. operator dashboard。
+6. backup / restore。
 
-## 6. Phase 2: Observability And Recovery
+需要修复的基础线 bug：
 
-目标：
-
-让 Mira 成为可运维系统。
-
-### Step 2.1 结构化日志
-
-解决问题：
-
-1. 故障难归因。
-
-动作：
-
-1. workflow_id
-2. task_id
-3. user_id
-4. capability
-5. result
-6. duration
-7. failure_class
-
-验收：
-
-1. 关键 workflow 都能被追踪。
-
-### Step 2.2 operator dashboard
-
-解决问题：
-
-1. 只能查散乱日志。
-
-动作：
-
-1. active tasks
-2. failed tasks
-3. stuck tasks
-4. publish queue
-5. connector health
-6. recent incidents
-
-验收：
-
-1. operator 能快速定位当前系统状态。
-
-### Step 2.3 backup / restore drill
-
-解决问题：
-
-1. 有备份，不等于能恢复。
-
-动作：
-
-1. 周期性 restore dry-run。
-2. backup integrity checks。
-3. restore runbook。
-
-验收：
-
-1. 至少完成一次真实 restore drill。
-
-## 7. Phase 3: Self-Improvement As Production Subsystem
-
-目标：
-
-把 self-improvement 从概念功能推进成 production subsystem。
-
-### Step 3.1 backlog executor 最小版
-
-解决问题：
-
-1. 只有 diagnosis，没有 execution。
-
-动作：
-
-1. 支持低风险 action 执行。
-2. action state machine：`proposed / approved / in_progress / verified / rejected`。
-
-验收：
-
-1. 至少一类低风险改进能自动闭环。
-
-### Step 3.2 改进效果验证
-
-解决问题：
-
-1. 系统会提建议，但不知道是否有效。
-
-动作：
-
-1. action outcome verification。
-2. rollback policy。
-3. blast radius control。
-
-验收：
-
-1. 未验证改动不会进入系统真相。
-
-## 8. 当前实现状态
-
-截至 `2026-04-06`，当前 supervised production scope 下的 roadmap 主体已落地：
-
-1. Phase 0：scope / policy / state artifact / preflight / verify / control-plane hardening / retry timeout ceiling 已落地。
-2. Phase 1：runtime contract、workflow tracking、persona/memory 主路径统一已落地。
-3. Phase 2：operator dashboard、failure aggregation、backup manifest、restore dry-run、restore runbook 已落地。
-4. Phase 3：bounded backlog executor 已落地，当前只对低风险 `self_evolve_proposal` 生效。
-
-当前闭环边界：
-
-1. self-improvement 只自动执行已批准、低风险、单 executor 路径。
-2. 更广的 rollback / multi-executor blast-radius control 仍属于后续扩展，不在当前 production promise 内。
-
-## 9. 测试与闸门
-
-每阶段都要补对应测试：
-
-1. planner / executor resume
-2. manifest progression
-3. publish verify failure
-4. duplicate job suppression
-5. prompt-injection quarantine
-6. per-user isolation
-7. retry ceiling behavior
-8. backup restore dry-run
-
-## 10. 90 天路线
-
-### 前 30 天
-
-1. scope 收紧
-2. policy matrix
-3. state artifact
-4. preflight / verify
-5. control plane hardening
-6. retry / timeout / ceiling
-7. runbooks
-
-### 30-60 天
-
-1. writing / publish / podcast / growth 状态机
-2. persona / memory 主路径统一
-3. operator dashboard
-4. smoke suite
-5. user scope 贯穿
-
-### 60-90 天
-
-1. restore drill
-2. backlog executor 最小版
-3. managed-beta connector 降级策略完善
-4. 事实表统一为 implemented / partial / planned
-
-## 11. 结论
-
-Mira 的 readiness 不是靠“再加一个 agent”完成的。
-
-它依赖于：
-
-1. runtime contract 硬化
-2. workflow state machine 化
-3. safety / verification 真正统一
-4. control plane 与 user scope 收紧
-5. observability 与 recovery 成熟
+1. Substack 格式错误（优先）。
+2. 其他 regression 按发现顺序修复。

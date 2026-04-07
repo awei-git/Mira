@@ -223,6 +223,50 @@ References:
 - docs/system-design.md
 - docs/production-roadmap.md
 
+## DECISION-0007: Specialist Manifests Must Become Authority Contracts
+
+Date: 2026-04-06
+Status: accepted
+
+Context:
+- 现有 manifest 主要描述“擅长什么”，不足以约束“不能做什么”。
+- 如果 specialist 没有 authority boundary，multi-agent system 很快会退化成多个 prompt 风格不同的 general agent。
+
+Decision:
+- specialist manifest / registry 不再只是 routing metadata，而要逐步升级成 authority contract。
+- contract 至少覆盖 authority_scope、forbidden_actions、review_scope、required_evidence、escalation_conditions。
+
+Consequences:
+- planner / dispatcher 不能只看 keywords 和 handles。
+- `general` 应逐步降级成低 authority fallback，而不是隐性主路径。
+- 新 specialist 上线时，必须先定义边界，再谈能力。
+
+References:
+- docs/system-design.md
+- docs/production-roadmap.md
+
+## DECISION-0008: High-Value Knowledge Work Requires A Reviewer Mesh
+
+Date: 2026-04-06
+Status: accepted
+
+Context:
+- 仅靠 executor + verifier，仍然容易让 super agent 成为既组织又自证的中心。
+- 多 agent 的价值不在于“数量更多”，而在于不同 agent 以不同失败模式互相制衡。
+
+Decision:
+- 高价值知识输出应逐步收敛成 `executor agent + reviewer agent + verifier + super synthesis` 结构。
+- reviewer verdict 必须进入 runtime state machine，而不是只写入日志。
+
+Consequences:
+- specialist 不只是执行器，也要在受限 scope 内承担 reviewer 职责。
+- future operator surface 必须暴露 pending reviews、blocked-by-review、boundary violations。
+- “reviewer mesh” 成为下一阶段主重构方向。
+
+References:
+- docs/system-design.md
+- docs/production-roadmap.md
+
 ## DECISION-0006: Canonical Runtime Contracts Override Legacy Handler Semantics
 
 Date: 2026-04-06

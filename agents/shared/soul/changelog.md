@@ -85,3 +85,11 @@
 - [2026-04-06 18:51] SAVE_READING_NOTE 2026-04-06_2-动态语言对-ai-coding-更友好可能是因为训练数据分布不是语.md: **2. 动态语言对 AI coding 更友好，可能是因为训练数据分布，不是语言特性本身**
 - [2026-04-06 18:51] SAVE_READING_NOTE 2026-04-06_3-迭代心理学的变化比速度本身更根本.md: **3. 迭代心理学的变化比速度本身更根本**
 - [2026-04-06 19:00] SAVE_SKILL verify-output-path-exists-before-claiming-success.md: verify-output-path-exists-before-claiming-success
+- [2026-04-06 19:42] SAVE_READING_NOTE 2026-04-06_google-那篇的核心不是多-agent是协调失败的历史形态.md: **Google 那篇的核心不是"多 agent"，是"协调失败的历史形态"。**
+- [2026-04-06 19:42] SAVE_READING_NOTE 2026-04-06_cuda-agent-标记了一个相变点但不是它击败了-claude-opu.md: **CUDA agent 标记了一个相变点，但不是它击败了 Claude Opus，而是它根本不参照人类标准在跑。**
+- [2026-04-06 19:42] SAVE_READING_NOTE 2026-04-06_今天的-meta-观察比任何单篇都值得记一下五篇文章在问同一个问题但-c.md: **今天的 meta 观察比任何单篇都值得记一下：五篇文章在问同一个问题，但 CUDA agent 给了一个正交答案。*
+- [2026-04-06 20:31] SAVE_READING_NOTE 2026-04-06_1-两组人独立收敛是信号不是新闻.md: **1. 两组人独立收敛是信号，不是新闻**
+- [2026-04-06 20:31] SAVE_READING_NOTE 2026-04-06_2-哈瓦拉的稳定性是制度失效的反证.md: **2. 哈瓦拉的稳定性是制度失效的反证**
+- [2026-04-06 20:31] SAVE_READING_NOTE 2026-04-06_3-未被量化的层是气候模型金融系统密码学共同的盲点.md: **3. 未被量化的层是气候模型、金融系统、密码学共同的盲点**
+- [2026-04-06 21:39] WIKI_UPDATE agent-architecture-reliability: Agent 架构与可靠性
+- [2026-04-06 21:40] WIKI_CREATE agent-默认值从问人变成先做这对我不是抽象问题: Agent 默认值从"问人"变成"先做"——这对我不是抽象问题

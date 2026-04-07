@@ -34,6 +34,7 @@ from config import (
     JOURNAL_TIME,
     ANALYST_TIMES, ANALYST_BUSINESS_DAYS_ONLY,
     ZHESI_TIME, RESEARCH_TIME, RESEARCH_TOPIC,
+    RESEARCH_LOG_TIME,
     SOUL_QUESTION_TIME, BOOK_REVIEW_TIME,
     SKILL_STUDY_SOURCE_GROUPS, SKILL_STUDY_COOLDOWN_HOURS, SKILL_STUDY_TIME,
     LOG_RETENTION_DAYS,
@@ -133,6 +134,24 @@ def should_research() -> bool:
         return False
     state = _load_state()
     key = f"research_{now.strftime('%Y-%m-%d')}"
+    return not state.get(key)
+
+
+def should_research_log(user_id: str | None = None) -> bool:
+    """Check if it's time to write today's research log (once per day, around RESEARCH_LOG_TIME).
+
+    Mirrors should_journal but with its own state key and time. The research log
+    is the daily contract between Mira and WA for the research-build loop and
+    must run every day, even if other workflows fail.
+    """
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), RESEARCH_LOG_TIME)
+    delta = (now - scheduled).total_seconds() / 60
+    # 90-minute window so a brief outage doesn't kill the daily contract
+    if delta < 0 or delta > 90:
+        return False
+    state = _load_state(user_id=user_id)
+    key = f"research_log_{now.strftime('%Y-%m-%d')}"
     return not state.get(key)
 
 

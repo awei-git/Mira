@@ -141,6 +141,16 @@ BACKGROUND_JOBS: list[JobSpec] = [
         description="Daily journal entry",
     ),
     JobSpec(
+        name="research-log",
+        command=["research-log"],
+        trigger="time_window",
+        trigger_name="should_research_log",
+        window_start=21, window_end=23,
+        state_key_pattern="research_log_{date}",
+        priority=25,
+        description="Daily research progress report (autonomous research-build loop contract with WA)",
+    ),
+    JobSpec(
         name="reflect",
         command=["reflect"],
         trigger="time_window",

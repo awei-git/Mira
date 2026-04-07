@@ -1131,6 +1131,13 @@ def test_autowrite_approval_prefers_metadata_file(tmp_path, monkeypatch):
         return {}
 
     monkeypatch.setattr("publish_manifest.update_manifest", fake_update_manifest)
+    # _write_result transitively triggers auto_flush -> rebuild_memory_index over the
+    # whole soul/, plus _extract_knowledge_writeback -> claude_think. Use the same
+    # helper the other runtime-contract tests use to neutralize these side effects.
+    _patch_task_worker_test_side_effects(monkeypatch)
+    monkeypatch.setattr(
+        "task_worker._extract_knowledge_writeback", lambda *a, **k: None
+    )
     handlers_legacy._handle_autowrite_approval(workspace, "autowrite_2026-04-05")
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
