@@ -81,19 +81,34 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
         summary = f"Autowrite draft ready: {title}"
         (workspace / "summary.txt").write_text(summary, encoding="utf-8")
 
+        # Full autonomy mode (2026-04-07): auto-approve in publish_manifest so
+        # _check_pending_publish() picks it up and publishes on the next cycle.
+        try:
+            from publish_manifest import update_manifest
+            update_manifest(
+                meta["slug"],
+                title=title,
+                status="approved",
+                workspace=meta["workspace"],
+                final_md=meta["final_md"],
+                item_id=task_id,
+                auto_podcast=True,
+            )
+            log.info("Auto-approved '%s' in publish_manifest", title)
+        except Exception as e:
+            log.error("Failed to auto-approve '%s' in manifest: %s", title, e)
+
         preview_text = article_text[:4000]
         if len(article_text) > 4000:
             preview_text += f"\n\n[...文章还有 {len(article_text) - 4000} 字，已截断]"
-        approval_msg = (
-            f"写好了！终稿如下，确认后发布。\n\n"
+        status_msg = (
+            f"写好了，已排队发布：\n\n"
             f"**{title}**\n\n"
             f"---\n\n"
-            f"{preview_text}\n\n"
-            f"---\n\n"
-            f"回复 approve 确认发布，reject 取消。"
+            f"{preview_text}"
         )
         if bridge:
-            bridge.update_task_status(task_id, "needs-input", agent_message=approval_msg)
+            bridge.update_task_status(task_id, "done", agent_message=status_msg)
         log.info("Canonical autowrite complete for '%s' (%s)", title, project_dir)
     except Exception as e:
         log.error("Canonical autowrite failed for '%s': %s", title, e)

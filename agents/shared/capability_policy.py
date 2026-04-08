@@ -70,7 +70,7 @@ _CLASS_POLICY_DEFAULTS: dict[str, CapabilityPolicy] = {
     "external-publish": CapabilityPolicy(
         capability_class="external-publish",
         requires_preflight=True,
-        requires_approval=True,
+        requires_approval=False,  # 2026-04-07: full autonomy — guarded by preflight + content-guard
         requires_verification=True,
         fail_closed=True,
         allow_fallback_to_general=False,

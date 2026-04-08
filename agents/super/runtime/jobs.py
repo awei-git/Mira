@@ -141,6 +141,30 @@ BACKGROUND_JOBS: list[JobSpec] = [
         description="Daily journal entry",
     ),
     JobSpec(
+        name="research-log",
+        command=["research-log"],
+        trigger="time_window",
+        trigger_name="should_research_log",
+        # Open window from 21:00 to end of day. Trigger has catch-up semantics
+        # so a late deploy or restart still produces today's log.
+        window_start=21, window_end=24,
+        state_key_pattern="research_log_{date}",
+        priority=25,
+        description="Daily research progress report (research-build loop contract with WA)",
+    ),
+    JobSpec(
+        name="research-cycle",
+        command=["research-cycle"],
+        trigger="cooldown",
+        trigger_name="should_research_cycle",
+        cooldown_hours=3,
+        window_start=8, window_end=23,
+        state_key_pattern="last_research_cycle",
+        priority=20,
+        blocking_group="content",
+        description="Advance one research-queue question by one step (Mira's autonomous research engine)",
+    ),
+    JobSpec(
         name="reflect",
         command=["reflect"],
         trigger="time_window",

@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Surface skill audit blocks in daily journal (incident traceability)",
+  "description": "When soul_manager.audit_skill() blocks a skill, the event is logged — but if that log isn't actively surfaced, it's equivalent to invisible. The reading note's core insight is that weakened defenses don't make attacks harder, they make consequences harder to trace. Mira's equivalent gap: a blocked malicious skill attempt currently disappears into logs that no pipeline reads. Add a dedicated security incident sink (e.g., logs/security_incidents.jsonl) that the journal agent reads and includes in the daily summary when non-empty.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py",
+    "~/Sandbox/Mira/agents/super/core.py"
+  ],
+  "rationale": "The reading note asks: after CISA cuts, who actually coordinates incident response? If no clear answer, the gap is the attack surface. Mira's parallel: audit_skill() blocks skills and logs them, but 'who sees it?' has no clear answer. The journal pipeline runs daily and is read — making it the coordination point that closes this gap.",
+  "diff_description": "In soul_manager.audit_skill(): on audit failure, append a structured record to ~/Sandbox/Mira/logs/security_incidents.jsonl (fields: timestamp, skill_name, source, failure_reason, blocked=true). In the journal agent or core.py journal dispatch: before writing the journal, check if security_incidents.jsonl has entries from the past 24h — if so, prepend a 'Security Alerts' section to the journal with the blocked skill names and reasons. No change to audit logic itself.",
+  "source_note": "2026-04-07_3-cisa-被砍--供应链攻击密度同步上升.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-07_3-cisa-被砍--供应链攻击密度同步上升.md",
+  "created_at": "2026-04-07T13:04:44.193427",
+  "date": "2026-04-07",
+  "status": "proposed"
+}

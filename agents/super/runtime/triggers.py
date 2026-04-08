@@ -34,6 +34,7 @@ from config import (
     JOURNAL_TIME,
     ANALYST_TIMES, ANALYST_BUSINESS_DAYS_ONLY,
     ZHESI_TIME, RESEARCH_TIME, RESEARCH_TOPIC,
+    RESEARCH_LOG_TIME,
     SOUL_QUESTION_TIME, BOOK_REVIEW_TIME,
     SKILL_STUDY_SOURCE_GROUPS, SKILL_STUDY_COOLDOWN_HOURS, SKILL_STUDY_TIME,
     LOG_RETENTION_DAYS,
@@ -134,6 +135,52 @@ def should_research() -> bool:
     state = _load_state()
     key = f"research_{now.strftime('%Y-%m-%d')}"
     return not state.get(key)
+
+
+def should_research_log(user_id: str | None = None) -> bool:
+    """Check if today's research log has been written; if not and we're past
+    RESEARCH_LOG_TIME, run it.
+
+    Catch-up semantics: if Mira misses the scheduled minute (deploy late, reboot,
+    crash), this trigger will fire any time later that day until the log is
+    written. The log itself is idempotent on the date, so repeated triggers
+    after success are no-ops.
+    """
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), RESEARCH_LOG_TIME)
+    if now < scheduled:
+        return False
+    state = _load_state(user_id=user_id)
+    key = f"research_log_{now.strftime('%Y-%m-%d')}"
+    return not state.get(key)
+
+
+def should_research_cycle() -> bool:
+    """Check if it's time to advance the research queue.
+
+    Cooldown-based: every 3 hours during waking hours (8:00-23:00). The cycle
+    itself picks the highest-priority actionable question and advances it by
+    one step. This is the actual research engine — without this, research_log
+    has nothing to report.
+
+    The state key `last_research_cycle` is written by the dispatch loop after
+    dispatch, not here, matching the convention used by should_growth_cycle.
+    """
+    now = datetime.now()
+    if now.hour < 8 or now.hour >= 23:
+        return False
+
+    state = _load_state()
+    last = state.get("last_research_cycle", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            if (now - last_dt).total_seconds() < 3 * 3600:
+                return False
+        except ValueError:
+            pass
+
+    return True
 
 
 def should_skill_study(user_id: str | None = None) -> dict | None:

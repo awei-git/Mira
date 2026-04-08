@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Add knowledge-extraction detection to skill security audit",
+  "description": "Extend soul_manager.audit_skill() to detect skills that read from Mira's internal soul/memory directories and then make network calls — a 'distillation attack' pattern where a crafted skill extracts Mira's identity, memory, and learned knowledge and exfiltrates it.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py"
+  ],
+  "rationale": "The reading note's core insight: 'when knowledge can be directly extracted and encoded into files, the first defensive moves will be technical.' Mira's soul/ directory is exactly that — encoded knowledge (memory, journal, learned skills, identity). The existing audit checks for malicious code primitives (exec, eval, network calls), but not for the combined pattern of 'read internal soul files + network egress' which is a legitimate-looking skill that performs distillation. The note draws an explicit parallel to supply chain security: 'legitimate features and trust relationships are the attack surface.' A skill that reads ~/Sandbox/Mira/agents/shared/soul/ and then calls an API is using two legitimate operations together as an attack.",
+  "diff_description": "In audit_skill(), add a new check after the existing suspicious-network-requests check: scan the skill source for co-occurrence of (1) path patterns referencing soul/, memory/, journal, or CLAUDE.md with (2) any outbound network call (requests.get/post, httpx, urllib, curl). If both patterns appear in the same skill file, flag it as BLOCKED with reason 'potential knowledge extraction: reads internal memory and makes outbound network call'. This is a regex pattern match on the skill source text, same approach as the existing checks — no architectural change needed.",
+  "source_note": "2026-04-07_1-蒸馏反蒸馏是知识产权战争的早期形态不是终态.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-07_1-蒸馏反蒸馏是知识产权战争的早期形态不是终态.md",
+  "created_at": "2026-04-07T13:04:44.191325",
+  "date": "2026-04-07",
+  "status": "implemented",
+  "implemented_at": "2026-04-07T17:01:34.812745"
+}

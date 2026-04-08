@@ -64,6 +64,8 @@ from workflows.helpers import (
 from workflows.explore import do_explore
 from workflows.reflect import do_reflect
 from workflows.journal import do_journal
+from workflows.research_log import do_research_log
+from workflows.research_cycle import do_research_cycle
 from workflows.daily import (
     do_daily_report, do_daily_photo, handle_photo_feedback,
     do_zhesi, do_soul_question, do_research, do_book_review,
@@ -831,50 +833,113 @@ def _check_pending_publish():
 
 
 def _check_pending_podcast():
-    """Trigger podcast generation for published articles."""
-    from publish_manifest import get_next_pending, update_manifest
+    """Trigger podcast generation for published articles.
 
-    # EN podcast
-    # EN podcast — dispatch if published and not yet started
-    entry = get_next_pending("podcast_en")  # finds status="published"
-    if entry and entry.get("auto_podcast"):
-        final = Path(entry["final_md"])
-        slug = entry["slug"]
-        bg_name = f"podcast-en-{slug}"
-        if final.exists():
-            # _dispatch_background deduplicates by name (PID file check)
-            log.info("Triggering EN podcast for '%s'", entry["title"])
-            _dispatch_background(bg_name, [
-                sys.executable, str(_AGENTS_DIR / "podcast" / "handler.py"),
-                "--run", "conversation",
-                "--title", entry["title"],
-                "--file", str(final),
-                "--lang", "en",
-                "--slug", slug,
-            ])
-            # Don't update manifest here — podcast CLI updates it on completion
-        else:
-            update_manifest(slug, error=f"Podcast: final_md not found: {final}")
+    Cost control (2026-04-07): at most 1 EN + 1 ZH episode per ISO week.
+    When multiple candidates are eligible, Mira ranks them by LLM judgment
+    and picks the strongest one to podcast this week.
+    """
+    from publish_manifest import get_next_pending, update_manifest, load_manifest
 
-    # ZH podcast — dispatch if EN done
-    entry_zh = get_next_pending("podcast_zh")  # finds status="podcast_en"
-    if entry_zh and entry_zh.get("auto_podcast"):
-        final = Path(entry_zh["final_md"])
-        slug = entry_zh["slug"]
-        bg_name = f"podcast-zh-{slug}"
-        if final.exists():
-            log.info("Triggering ZH podcast for '%s'", entry_zh["title"])
-            _dispatch_background(bg_name, [
-                sys.executable, str(_AGENTS_DIR / "podcast" / "handler.py"),
-                "--run", "conversation",
-                "--title", entry_zh["title"],
-                "--file", str(final),
-                "--lang", "zh",
-                "--slug", slug,
-            ])
-            # Don't update manifest here — podcast CLI updates it on completion
-        else:
-            update_manifest(slug, error=f"Podcast: final_md not found: {final}")
+    state = load_state()
+    current_week = datetime.now().strftime("%Y-W%W")
+    done_en_week = state.get("podcast_en_week")
+    done_zh_week = state.get("podcast_zh_week")
+
+    def _eligible(target_status: str) -> list[dict]:
+        """All manifest entries eligible for the given podcast step, with auto_podcast enabled."""
+        manifest = load_manifest()
+        # Use get_next_pending semantics: find entries where source_status is set.
+        src_status = "published" if target_status == "podcast_en" else "podcast_en"
+        out = []
+        for entry in manifest.get("articles", {}).values():
+            if entry.get("status") == src_status and entry.get("auto_podcast"):
+                out.append(entry)
+        return out
+
+    def _pick_best(candidates: list[dict], lang: str) -> dict | None:
+        """Rank candidates by Mira's judgment; return the best one."""
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        # Multiple candidates: ask Claude to rank.
+        try:
+            from sub_agent import claude_think
+            lines = [f"{i+1}. {c.get('title','')} [{c.get('slug','')}]"
+                     for i, c in enumerate(candidates)]
+            prompt = (
+                f"Pick the single article best suited for a {lang.upper()} podcast episode this week. "
+                "Criteria: (1) thought density — has a real argument, not a list; (2) oral readability — "
+                "doesn't depend on inline code/tables; (3) emotional or narrative hook; (4) "
+                "prefers articles that pair well with spoken delivery.\n\n"
+                "Candidates:\n" + "\n".join(lines) +
+                "\n\nOutput ONLY the number of the pick."
+            )
+            resp = (claude_think(prompt, timeout=30) or "").strip()
+            m = re.search(r"\d+", resp)
+            if m:
+                idx = int(m.group()) - 1
+                if 0 <= idx < len(candidates):
+                    return candidates[idx]
+        except Exception as e:
+            log.warning("Podcast pick ranking failed: %s", e)
+        # Fallback: oldest first (FIFO)
+        return candidates[0]
+
+    # EN podcast — weekly rate limit
+    if done_en_week != current_week:
+        en_candidates = _eligible("podcast_en")
+        entry = _pick_best(en_candidates, "en")
+        if entry:
+            final = Path(entry["final_md"])
+            slug = entry["slug"]
+            bg_name = f"podcast-en-{slug}"
+            if final.exists():
+                log.info("Triggering EN podcast for '%s' (week %s, %d candidates)",
+                         entry["title"], current_week, len(en_candidates))
+                _dispatch_background(bg_name, [
+                    sys.executable, str(_AGENTS_DIR / "podcast" / "handler.py"),
+                    "--run", "conversation",
+                    "--title", entry["title"],
+                    "--file", str(final),
+                    "--lang", "en",
+                    "--slug", slug,
+                ])
+                # Mark the week as spent (optimistic — avoids double-dispatch
+                # if dispatch succeeds but generation fails mid-week).
+                state["podcast_en_week"] = current_week
+                save_state(state)
+            else:
+                update_manifest(slug, error=f"Podcast: final_md not found: {final}")
+    else:
+        log.debug("EN podcast weekly quota already used for %s", current_week)
+
+    # ZH podcast — weekly rate limit
+    if done_zh_week != current_week:
+        zh_candidates = _eligible("podcast_zh")
+        entry_zh = _pick_best(zh_candidates, "zh")
+        if entry_zh:
+            final = Path(entry_zh["final_md"])
+            slug = entry_zh["slug"]
+            bg_name = f"podcast-zh-{slug}"
+            if final.exists():
+                log.info("Triggering ZH podcast for '%s' (week %s, %d candidates)",
+                         entry_zh["title"], current_week, len(zh_candidates))
+                _dispatch_background(bg_name, [
+                    sys.executable, str(_AGENTS_DIR / "podcast" / "handler.py"),
+                    "--run", "conversation",
+                    "--title", entry_zh["title"],
+                    "--file", str(final),
+                    "--lang", "zh",
+                    "--slug", slug,
+                ])
+                state["podcast_zh_week"] = current_week
+                save_state(state)
+            else:
+                update_manifest(slug, error=f"Podcast: final_md not found: {final}")
+    else:
+        log.debug("ZH podcast weekly quota already used for %s", current_week)
 
     # Check if both podcasts done → mark complete
     from publish_manifest import load_manifest
@@ -1856,6 +1921,10 @@ def main():
         do_reflect(user_id=flags.get("user", "ang"))
     elif command == "journal":
         do_journal(user_id=flags.get("user", "ang"))
+    elif command == "research-log":
+        do_research_log(user_id=flags.get("user", "ang"))
+    elif command == "research-cycle":
+        do_research_cycle(user_id=flags.get("user", "ang"))
     elif command == "analyst":
         do_analyst(slot=flags.get("slot", ""))
     elif command == "research":

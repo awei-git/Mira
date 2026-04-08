@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "initialized": "2026-04-06",
+  "current_focus": "Q5",
+  "in_flight_experiments": [],
+  "last_research_log_date": "2026-04-07",
+  "last_reflection_date": null,
+  "pending_needs": [
+    "writeups for Q3, Q6, Q8, Q10 — debt from rapid experimentation cycle"
+  ],
+  "completed_questions": [
+    "Q1",
+    "Q2",
+    "Q3",
+    "Q4",
+    "Q6",
+    "Q8",
+    "Q10",
+    "Q9"
+  ],
+  "dropped_questions": [],
+  "last_cycle": {
+    "qid": "Q5",
+    "step_type": "experiment_design",
+    "timestamp": "2026-04-07T22:06:14",
+    "new_status": "in_progress",
+    "cost_usd": 0.015,
+    "worldview_delta": "Refines worldview #5: the bidirectional corruption mechanism is now operationalized as grading-bar drift measured by an anchor rubric, with family-membership as the amplification variable — a more specific and falsifiable claim than the original."
+  }
+}

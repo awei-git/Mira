@@ -584,8 +584,10 @@ def test_canonical_writing_pipeline_only_advances_plan_ready(monkeypatch, tmp_pa
     assert advanced == [workspace_a]
 
 
-def test_run_autowrite_pipeline_writes_metadata_and_requests_approval(monkeypatch, tmp_path):
+def test_run_autowrite_pipeline_auto_approves_and_marks_done(monkeypatch, tmp_path):
+    """Full autonomy (2026-04-07): autowrite auto-marks manifest approved and task done."""
     from workflows import writing
+    import publish_manifest
 
     project_dir = tmp_path / "project"
     project_dir.mkdir()
@@ -600,9 +602,16 @@ def test_run_autowrite_pipeline_writes_metadata_and_requests_approval(monkeypatc
             self.calls.append((task_id, status, agent_message))
 
     bridge = FakeBridge()
+    manifest_updates = []
+
+    def fake_update_manifest(slug, **fields):
+        manifest_updates.append((slug, fields))
+        return {"slug": slug, **fields}
+
     monkeypatch.setattr(writing, "_TASKS_DIR", tmp_path / "tasks")
     monkeypatch.setattr(writing, "Mira", lambda: bridge)
     monkeypatch.setattr(writing, "run_full_pipeline", lambda title, body: (project_dir, final_file.read_text(encoding="utf-8")))
+    monkeypatch.setattr(publish_manifest, "update_manifest", fake_update_manifest)
 
     writing.run_autowrite_pipeline("autowrite_2026-04-05", "Test Essay", "essay", "idea body")
 
@@ -610,8 +619,12 @@ def test_run_autowrite_pipeline_writes_metadata_and_requests_approval(monkeypatc
     meta = json.loads((task_ws / "autowrite_meta.json").read_text(encoding="utf-8"))
     assert meta["slug"] == project_dir.name
     assert meta["final_md"] == str(final_file)
+    # Bridge task marked done (not needs-input) — no approval gate
     assert bridge.calls
-    assert bridge.calls[-1][1] == "needs-input"
+    assert bridge.calls[-1][1] == "done"
+    # Manifest auto-approved so _check_pending_publish will pick it up
+    assert manifest_updates, "expected update_manifest to be called"
+    assert manifest_updates[-1][1].get("status") == "approved"
 
 
 def test_writing_agent_run_command_uses_canonical_pipeline(monkeypatch, tmp_path):

@@ -13,7 +13,7 @@ def test_capability_policy_defaults_for_socialmedia():
     policy = get_capability_policy("socialmedia")
     assert policy.capability_class == "external-publish"
     assert policy.requires_preflight is True
-    assert policy.requires_approval is True
+    assert policy.requires_approval is False  # 2026-04-07: full autonomy
     assert policy.fail_closed is True
     assert policy.allow_fallback_to_general is False
 
@@ -34,7 +34,7 @@ def test_registry_exposes_capability_policy():
     assert registry.get_capability_class("writer") == "local-write"
     social_policy = registry.get_capability_policy("socialmedia")
     assert social_policy["capability_class"] == "external-publish"
-    assert social_policy["requires_approval"] is True
+    assert social_policy["requires_approval"] is False  # 2026-04-07: full autonomy
 
 
 def test_capability_policy_rejects_invalid_class():

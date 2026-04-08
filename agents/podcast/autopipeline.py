@@ -246,22 +246,21 @@ def run_podcast_episode(lang: str, slug: str, title: str) -> Path | None:
         _save_state(state)
         log.info("Podcast: episode done → %s", result_path)
 
-        # Do NOT auto-publish to RSS — user must listen and sign off first.
-        # Notify user and wait for approval.
+        # Full autonomy mode (2026-04-07): auto-publish to RSS.
+        # The podcast handler.py CLI already calls publish_episode() after
+        # generation in the manifest-driven flow. This legacy autopipeline
+        # path is rarely hit; auto-publish here too for parity.
         try:
-            bridge = Mira()
-            size_mb = result_path.stat().st_size / 1024 / 1024
-            summary = (f"Podcast 已生成，等待你试听确认：「{title}」\n"
-                       f"大小：{size_mb:.1f} MB\n"
-                       f"路径：{result_path}\n"
-                       f"确认后回复 'publish podcast {slug}' 发布到 RSS。")
-            bridge.create_item(
-                f"podcast-review-{slug}", "request",
-                f"Podcast 待审核: {title}",
-                summary, sender="agent", tags=["podcast", "review"], origin="agent",
+            from rss import publish_episode
+            rss_url = publish_episode(
+                mp3_path=result_path,
+                title=title,
+                description=f"Podcast episode for: {title}",
+                lang=lang,
             )
+            log.info("Podcast auto-published to RSS: %s", rss_url)
         except Exception as e:
-            log.warning("Podcast notification failed: %s", e)
+            log.warning("Podcast RSS auto-publish failed: %s", e)
 
         return result_path
 

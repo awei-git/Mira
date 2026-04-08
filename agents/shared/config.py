@@ -533,6 +533,9 @@ BOOK_REVIEW_TIME = _parse_times([_sched.get("book_review_time", "09:00")])[0]
 RESEARCH_TIME = _parse_times([_sched.get("research_time", "14:00")])[0]
 RESEARCH_TOPIC = _sched.get("research_topic", "")
 
+# Daily research log — autonomous research progress report sent to iOS app
+RESEARCH_LOG_TIME = _parse_times([_sched.get("research_log_time", "21:00")])[0]
+
 # 杂.md — philosophical fragments for mining
 ZA_FILE = WRITINGS_DIR / "ideas" / "_杂.md"
 
