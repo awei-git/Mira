@@ -22,9 +22,9 @@
   "last_cycle": {
     "qid": "Q5",
     "step_type": "experiment_design",
-    "timestamp": "2026-04-07T19:11:28",
+    "timestamp": "2026-04-07T22:06:14",
     "new_status": "in_progress",
-    "cost_usd": 0.003,
-    "worldview_delta": "Refines worldview #5: the bidirectional corruption mechanism is now specified as context-window contamination (recency bias in rubric application), not a persistent belief update — which narrows the claim but makes it testable."
+    "cost_usd": 0.015,
+    "worldview_delta": "Refines worldview #5: the bidirectional corruption mechanism is now operationalized as grading-bar drift measured by an anchor rubric, with family-membership as the amplification variable — a more specific and falsifiable claim than the original."
   }
 }
