@@ -143,13 +143,19 @@ def do_daily_report():
 
     report = "\n".join(sections)
 
-    # Append daily report to daily digest
+    # Push daily report as its own standalone feed item so it doesn't get
+    # buried under hundreds of idle-think sparks in the shared daily digest.
     try:
-        _append_to_daily_feed("mira", "Daily Report", report,
-                             source="report", tags=["mira", "report"])
-        log.info("Daily report appended to daily digest")
+        bridge = Mira(MIRA_ROOT, user_id="ang")
+        report_id = f"daily_report_{today.replace('-', '')}"
+        if not bridge.item_exists(report_id):
+            bridge.create_feed(report_id, f"Daily Report {today}", report,
+                               tags=["mira", "report", "daily"])
+        else:
+            bridge.append_message(report_id, "agent", report)
+        log.info("Daily report pushed as standalone feed item: %s", report_id)
     except Exception as e:
-        log.error("Failed to append daily report to digest: %s", e)
+        log.error("Failed to push daily report: %s", e)
 
     # Mark done
     state = load_state()

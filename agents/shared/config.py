@@ -327,6 +327,7 @@ WEBGUI_HOST = _svc_cfg.get("webgui_host", "127.0.0.1")
 WEBGUI_PORT = _svc_cfg.get("webgui_port", 8384)
 WEBGUI_TOKEN = str(_svc_cfg.get("webgui_token", "") or "").strip()
 WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN = _svc_cfg.get("webgui_allow_loopback_without_token", True)
+WEBGUI_ALLOW_LAN_WITHOUT_TOKEN = _svc_cfg.get("webgui_allow_lan_without_token", True)
 TETRA_API_PORT = _svc_cfg.get("tetra_api_port", 8000)
 
 # ---------------------------------------------------------------------------

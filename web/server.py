@@ -17,6 +17,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent.parent / "agents" / "shared"))
 from config import (
     MIRA_DIR,
+    WEBGUI_ALLOW_LAN_WITHOUT_TOKEN,
     WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN,
     WEBGUI_HOST,
     WEBGUI_PORT,
@@ -75,6 +76,16 @@ def _is_loopback_client(host: str) -> bool:
     return host in {"127.0.0.1", "::1", "localhost", "testclient"}
 
 
+def _is_lan_client(host: str) -> bool:
+    """Check if host is a private/LAN IP (RFC 1918)."""
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(host)
+        return addr.is_private and not addr.is_loopback
+    except ValueError:
+        return False
+
+
 def _extract_webgui_token(request: Request) -> str:
     auth = request.headers.get("authorization", "").strip()
     if auth.lower().startswith("bearer "):
@@ -93,6 +104,8 @@ def _require_api_access(request: Request):
             return
         raise HTTPException(401, "Missing or invalid Mira Web token")
     if WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN and _is_loopback_client(host):
+        return
+    if WEBGUI_ALLOW_LAN_WITHOUT_TOKEN and _is_lan_client(host):
         return
     raise HTTPException(403, "Mira Web API is limited to loopback unless a token is configured")
 

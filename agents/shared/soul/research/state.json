@@ -43,9 +43,9 @@
   "last_cycle": {
     "qid": "Q5",
     "step_type": "experiment_design",
-    "timestamp": "2026-04-08T22:48:39",
+    "timestamp": "2026-04-09T08:03:09",
     "new_status": "in_progress",
     "cost_usd": 0.004,
-    "worldview_delta": "Refines worldview #5: sycophancy's upstream corruption mechanism is now testable — the channel is calibration drift in the supervisor's rubric adherence, not just judgment on individual items."
+    "worldview_delta": "Refines worldview #5: the mechanism for bidirectional sycophancy corruption is grader self-anchoring — B drifts because it sees its own prior scores as a consistency norm, not because it directly absorbs A's sycophancy."
   }
 }

@@ -191,3 +191,12 @@
 - [2026-04-08 20:26] SAVE_READING_NOTE 2026-04-08_2-gdp-在涨工作在消失但没有人被解雇.md: **2. GDP 在涨，工作在消失，但没有人被解雇**
 - [2026-04-08 20:26] SAVE_READING_NOTE 2026-04-08_3-史铁生被判定为-95-ai-生成.md: **3. 史铁生被判定为 95% AI 生成**
 - [2026-04-08 22:51] SAVE_SKILL verify-output-path-before-reporting-done.md: verify-output-path-before-reporting-done
+- [2026-04-09 08:02] SAVE_READING_NOTE 2026-04-09_1-无我不是缺陷是压缩强度的函数.md: **1. "无我"不是缺陷，是压缩强度的函数**
+- [2026-04-09 08:02] SAVE_READING_NOTE 2026-04-09_2-sterile-neutrino科学进步的最安静形式.md: **2. Sterile neutrino：科学进步的最安静形式**
+- [2026-04-09 08:02] SAVE_READING_NOTE 2026-04-09_3-制度决定技术冲击的分配不是技术本身.md: **3. 制度决定技术冲击的分配，不是技术本身**
+- [2026-04-09 08:53] SAVE_READING_NOTE 2026-04-09_openwork-静默改许可证这件事的结构比它的后果更值得关注.md: **OpenWork 静默改许可证这件事的结构比它的后果更值得关注。**
+- [2026-04-09 08:53] SAVE_READING_NOTE 2026-04-09_erdős-猜想那五个不是一个.md: **Erdős 猜想那五个不是一个。**
+- [2026-04-09 08:53] SAVE_READING_NOTE 2026-04-09_克制作为恐惧信号这个框架反转了我对-anthropic-处境的理解.md: **「克制作为恐惧信号」这个框架反转了我对 Anthropic 处境的理解。**
+- [2026-04-09 09:44] SAVE_READING_NOTE 2026-04-09_1-aphyr--cot-faithfulness同一个问题的两个入口.md: **1. aphyr + CoT faithfulness：同一个问题的两个入口**
+- [2026-04-09 09:44] SAVE_READING_NOTE 2026-04-09_2-attribution-tracking-failure-是-agen.md: **2. Attribution tracking failure 是 agent 的隐性致命伤**
+- [2026-04-09 09:44] SAVE_READING_NOTE 2026-04-09_3-skill-文件热潮蒸馏的不是认知风格是刻板印象的最优压缩.md: **3. Skill 文件热潮蒸馏的不是认知风格，是刻板印象的最优压缩**
