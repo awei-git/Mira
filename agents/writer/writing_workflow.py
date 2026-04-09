@@ -39,7 +39,7 @@ from config import (
     WRITING_MIN_DRAFT_CHARS, WRITING_MIN_SCORE_3RD_ROUND,
 )
 from sub_agent import model_think, claude_think
-from soul_manager import load_soul, format_soul
+from soul_manager import load_soul, format_soul, recall_context
 from prompts import (
     analyze_writing_prompt, plan_propose_prompt, plan_critique_prompt,
     plan_synthesize_prompt, write_draft_prompt, review_draft_prompt,
@@ -105,6 +105,16 @@ def start_project(title: str, body: str, workspace: Path):
 
     # --- Plan (multi-agent: propose -> critique -> synthesize) ---
     soul_ctx = format_soul(load_soul())
+
+    # RAG: retrieve related past writings, briefings, research for richer planning
+    try:
+        related = recall_context(body[:500], max_chars=2000)
+        if related:
+            soul_ctx = soul_ctx + "\n\n" + related
+            log.info("Writing RAG: injected %d chars of related context", len(related))
+    except Exception as e:
+        log.warning("Writing RAG recall failed: %s", e)
+
     vd = _vdir(workspace, 1)
     plans_dir = vd / "plans"
     plans_dir.mkdir(parents=True, exist_ok=True)
@@ -818,6 +828,16 @@ def run_full_pipeline(
 
     # --- Plan (multi-agent) ---
     soul_ctx = persona_prompt or format_soul(load_soul())
+
+    # RAG: retrieve related past writings, briefings, research
+    try:
+        related = recall_context(body[:500], max_chars=2000)
+        if related:
+            soul_ctx = soul_ctx + "\n\n" + related
+            log.info("Writing RAG: injected %d chars of related context", len(related))
+    except Exception as e:
+        log.warning("Writing RAG recall failed: %s", e)
+
     vd = _vdir(ws, 1)
     plans_dir = vd / "plans"
     plans_dir.mkdir(parents=True, exist_ok=True)

@@ -433,7 +433,8 @@ class MemoryStore:
         from config import (SOUL_DIR, IDENTITY_FILE, MEMORY_FILE,
                             INTERESTS_FILE, WORLDVIEW_FILE,
                             JOURNAL_DIR, READING_NOTES_DIR, SKILLS_DIR,
-                            CONVERSATIONS_DIR, EPISODES_DIR, CATALOG_FILE)
+                            CONVERSATIONS_DIR, EPISODES_DIR, CATALOG_FILE,
+                            BRIEFINGS_DIR, WRITINGS_OUTPUT_DIR, RESEARCH_DIR)
 
         sources = []
         # Core soul files
@@ -446,16 +447,26 @@ class MemoryStore:
             if fpath.exists():
                 sources.append((fpath, stype))
 
-        # Directory-based sources
+        # Directory-based sources (flat — *.md in top level only)
         for dirpath, stype in [
             (JOURNAL_DIR, "journal"),
             (READING_NOTES_DIR, "reading_note"),
             (SKILLS_DIR, "skill"),
             (CONVERSATIONS_DIR, "conversation"),
             (EPISODES_DIR, "episode"),
+            (BRIEFINGS_DIR, "briefing"),
         ]:
             if dirpath.exists():
                 for f in sorted(dirpath.glob("*.md")):
+                    sources.append((f, stype))
+
+        # Directory-based sources (recursive — *.md in subdirs too)
+        for dirpath, stype in [
+            (WRITINGS_OUTPUT_DIR, "writing"),
+            (RESEARCH_DIR, "research"),
+        ]:
+            if dirpath.exists():
+                for f in sorted(dirpath.rglob("*.md")):
                     sources.append((f, stype))
 
         # Catalog

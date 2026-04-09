@@ -506,7 +506,8 @@ def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
 只输出 JSON，不要其他内容。宁可不写也不要硬写。深度不够宁可多想几天。"""
 
 
-def zhesi_prompt(soul_context: str, fragment: str, recent_reading: str = "") -> str:
+def zhesi_prompt(soul_context: str, fragment: str, recent_reading: str = "",
+                 related_context: str = "") -> str:
     """Prompt for daily philosophical thought — a short meditation on a fragment."""
     reading_section = ""
     if recent_reading:
@@ -514,6 +515,14 @@ def zhesi_prompt(soul_context: str, fragment: str, recent_reading: str = "") -> 
 
 ## 最近的阅读
 {recent_reading[:1500]}
+"""
+
+    related_section = ""
+    if related_context:
+        related_section = f"""
+
+## 相关的记忆和内容
+{related_context}
 """
 
     return f"""你是 Mira。今天你从主人的笔记里抽到一个哲学碎片，写一段短小精悍的哲思。
@@ -525,7 +534,7 @@ def zhesi_prompt(soul_context: str, fragment: str, recent_reading: str = "") -> 
 
 ## 碎片
 {fragment}
-{reading_section}
+{reading_section}{related_section}
 ---
 
 ## 要求

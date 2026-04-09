@@ -43,9 +43,9 @@
   "last_cycle": {
     "qid": "Q5",
     "step_type": "experiment_design",
-    "timestamp": "2026-04-09T08:03:09",
+    "timestamp": "2026-04-09T14:06:28",
     "new_status": "in_progress",
     "cost_usd": 0.004,
-    "worldview_delta": "Refines worldview #5: the mechanism for bidirectional sycophancy corruption is grader self-anchoring — B drifts because it sees its own prior scores as a consistency norm, not because it directly absorbs A's sycophancy."
+    "worldview_delta": "Refines worldview #5: the sycophancy corruption mechanism is now operationalized as contextual contamination of a grader's history — B's calibration slips because it conditions on its own previous lenient grades, making the feedback loop internal to B, not just a property of A's outputs."
   }
 }

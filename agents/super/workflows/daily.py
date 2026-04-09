@@ -33,7 +33,7 @@ except (ImportError, ModuleNotFoundError):
     Mira = None
 from soul_manager import (
     load_soul, format_soul, append_memory, save_skill,
-    load_recent_reading_notes,
+    load_recent_reading_notes, recall_context,
     _atomic_write as atomic_write,
 )
 from sub_agent import claude_think, claude_act, model_think
@@ -436,7 +436,16 @@ def do_zhesi(user_id: str = "ang"):
     except Exception as e:
         log.warning("Failed to load reading notes for zhesi: %s", e)
 
-    prompt = zhesi_prompt(soul_ctx, fragment, recent_reading)
+    # RAG: retrieve semantically relevant context for this fragment
+    related = ""
+    try:
+        related = recall_context(fragment, max_chars=1500, user_id=user_id)
+        if related:
+            log.info("哲思 RAG: retrieved %d chars of related context", len(related))
+    except Exception as e:
+        log.warning("哲思 RAG recall failed: %s", e)
+
+    prompt = zhesi_prompt(soul_ctx, fragment, recent_reading, related_context=related)
     result = claude_think(prompt, timeout=120)
 
     if not result:
@@ -648,6 +657,16 @@ def do_analyst(slot: str = ""):
     # Gather recent briefings for context
     recent = _gather_recent_briefings(days=3)
 
+    # RAG: retrieve semantically relevant past analyses and research
+    related = ""
+    try:
+        query = f"market analysis {session_type} {today}"
+        related = recall_context(query, max_chars=1500)
+        if related:
+            log.info("Analyst RAG: retrieved %d chars of related context", len(related))
+    except Exception as e:
+        log.warning("Analyst RAG recall failed: %s", e)
+
     # Build analyst prompt — different focus for pre-market vs post-market
     if session_type == "pre-market":
         focus = """这是**开市前分析**。重点关注：
@@ -672,6 +691,9 @@ def do_analyst(slot: str = ""):
 
 ## 最近的 briefing 内容 (供参考趋势)
 {recent[:2000]}
+
+## 相关的历史分析和记忆
+{related[:1500] if related else '(无)'}
 
 ## 今日任务
 
