@@ -612,6 +612,9 @@ def test_run_autowrite_pipeline_auto_approves_and_marks_done(monkeypatch, tmp_pa
     monkeypatch.setattr(writing, "Mira", lambda: bridge)
     monkeypatch.setattr(writing, "run_full_pipeline", lambda title, body: (project_dir, final_file.read_text(encoding="utf-8")))
     monkeypatch.setattr(publish_manifest, "update_manifest", fake_update_manifest)
+    # Belt-and-suspenders: redirect any unmocked manifest writes to a tmp file
+    # so they can never leak into the real iCloud manifest.
+    monkeypatch.setenv("MIRA_PUBLISH_MANIFEST_PATH", str(tmp_path / "publish_manifest.json"))
 
     writing.run_autowrite_pipeline("autowrite_2026-04-05", "Test Essay", "essay", "idea body")
 

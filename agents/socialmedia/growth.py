@@ -1106,7 +1106,12 @@ def _twitter_promotion(soul_context: str = ""):
 
     today = datetime.now().strftime("%Y-%m-%d")
     sparks_tweeted_today = state.get(f"sparks_tweeted_{today}", 0)
-    if sparks_tweeted_today >= 8:  # Max 8 spark tweets per day (spread across cycles)
+    # Spark sub-cap matches the overall daily tweet budget so growth cycles can
+    # actually fill the day. Earlier this was hardcoded to 8, capping us at
+    # 8/15 even though `can_tweet_now` would still allow more — the gap left
+    # X dead for half the day. Final ceiling is still enforced by can_tweet_now.
+    from twitter import MAX_TWEETS_PER_DAY as _DAILY_TWEET_CAP
+    if sparks_tweeted_today >= _DAILY_TWEET_CAP:
         return
 
     try:

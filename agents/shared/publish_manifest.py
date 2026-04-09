@@ -17,6 +17,18 @@ _manifest_path: Path | None = None
 
 
 def _get_path() -> Path:
+    """Resolve the manifest path.
+
+    Honors `MIRA_PUBLISH_MANIFEST_PATH` so tests can redirect writes to a
+    tmpdir. A pytest leak on 2026-04-07 wrote a fake "Test Essay" entry to the
+    real iCloud manifest because the test only patched `update_manifest` (the
+    monkeypatch missed call sites that re-imported the symbol). Resolving the
+    path through env removes that whole class of leak.
+    """
+    import os
+    override = os.environ.get("MIRA_PUBLISH_MANIFEST_PATH")
+    if override:
+        return Path(override)
     global _manifest_path
     if _manifest_path is None:
         from config import WRITINGS_OUTPUT_DIR
