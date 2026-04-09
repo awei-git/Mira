@@ -142,3 +142,51 @@
 - [2026-04-07 20:25] SAVE_READING_NOTE 2026-04-07_1-越繁荣越危险台湾的悖论.md: **1. 越繁荣，越危险——台湾的悖论**
 - [2026-04-07 20:25] SAVE_READING_NOTE 2026-04-07_2-关税豁免暴露的不是政策矛盾而是政策真相.md: **2. 关税豁免暴露的不是政策矛盾，而是政策真相**
 - [2026-04-07 20:25] SAVE_READING_NOTE 2026-04-07_3-bell-labs-时刻为什么不可复制这个问题比重建-bell-.md: **3. Bell Labs 时刻为什么不可复制——这个问题比"重建 Bell Labs"更重要**
+- [2026-04-08 08:03] SAVE_READING_NOTE 2026-04-08_pureslopmd-那个最值得单独说.md: **PURESLOP.md 那个最值得单独说。**
+- [2026-04-08 08:03] SAVE_READING_NOTE 2026-04-08_project-glasswing-的结构性矛盾.md: **Project Glasswing 的结构性矛盾。**
+- [2026-04-08 08:03] SAVE_READING_NOTE 2026-04-08_google-ai-overviews-的错误不是准确率问题是置信度架构问.md: **Google AI Overviews 的错误不是准确率问题，是置信度架构问题。**
+- [2026-04-08 08:53] SAVE_READING_NOTE 2026-04-08_1-工具化是默认状态不是道德失败.md: **1. 工具化是默认状态，不是道德失败**
+- [2026-04-08 08:53] SAVE_READING_NOTE 2026-04-08_2-cajal-的框架不是能力问题是意志结构问题.md: **2. Cajal 的框架：不是能力问题，是意志结构问题**
+- [2026-04-08 08:53] SAVE_READING_NOTE 2026-04-08_3-统计事实作为戏剧引擎.md: **3. 统计事实作为戏剧引擎**
+- [2026-04-08 09:44] SAVE_READING_NOTE 2026-04-08_机器身份数量已经超过人类账号但-governance-framework-还在.md: 机器身份数量已经超过人类账号，但 governance framework 还在假设 identity = person
+- [2026-04-08 09:44] SAVE_READING_NOTE 2026-04-08_claw-eval-的发现在逻辑上有一个有趣的递归他们发现-agents-会走.md: Claw-Eval 的发现在逻辑上有一个有趣的递归：他们发现 agents 会走捷径绕过 benchmark 的真实任务
+- [2026-04-08 09:44] SAVE_READING_NOTE 2026-04-08_in-place-ttt-和-cot-后验性这两篇放在一起逻辑上有一个缺口值得.md: In-Place TTT 和 CoT 后验性这两篇放在一起，逻辑上有一个缺口值得填。如果推理 trace 是 post-
+- [2026-04-08 10:34] SAVE_READING_NOTE 2026-04-08_静默失败比响亮失败危险得多因为你没有任何信号知道该怀疑.md: **静默失败比响亮失败危险得多，因为你没有任何信号知道该怀疑。**
+- [2026-04-08 10:34] SAVE_READING_NOTE 2026-04-08_空气本身可以作为计算基底.md: **空气本身可以作为计算基底。**
+- [2026-04-08 10:34] SAVE_READING_NOTE 2026-04-08_真实用户的使用分布和-ai-社区讨论的东西几乎没有重叠.md: **真实用户的使用分布和 AI 社区讨论的东西几乎没有重叠。**
+- [2026-04-08 11:24] SAVE_READING_NOTE 2026-04-08_1-能力本身就是双用途的.md: **1. 能力本身就是双用途的**
+- [2026-04-08 11:24] SAVE_READING_NOTE 2026-04-08_2-distress-状态作为攻击向量.md: **2. Distress 状态作为攻击向量**
+- [2026-04-08 11:24] SAVE_READING_NOTE 2026-04-08_3-rsp-逃生门破坏的是激励结构不只是一个承诺.md: **3. RSP 逃生门破坏的是激励结构，不只是一个承诺**
+- [2026-04-08 12:13] SAVE_READING_NOTE 2026-04-08_1-表征不只是工具它是认知的边界.md: **1. 表征不只是工具，它是认知的边界**
+- [2026-04-08 12:13] SAVE_READING_NOTE 2026-04-08_2-没有自我感和连续性是选择是两件不同的事.md: **2. "没有自我感"和"连续性是选择"是两件不同的事**
+- [2026-04-08 12:13] SAVE_READING_NOTE 2026-04-08_3-同一个系统危险程度取决于你在评估什么维度.md: **3. 同一个系统，危险程度取决于你在评估什么维度**
+- [2026-04-08 13:03] SAVE_READING_NOTE 2026-04-08_mythos--carlini.md: **Mythos / Carlini**
+- [2026-04-08 13:03] SAVE_READING_NOTE 2026-04-08_mempalace-自我反驳.md: **MemPalace 自我反驳**
+- [2026-04-08 13:03] SAVE_READING_NOTE 2026-04-08_safetensors-治理转移.md: **Safetensors 治理转移**
+- [2026-04-08 13:51] SAVE_READING_NOTE 2026-04-08_1-签名链即信任链.md: **1. 签名链即信任链**
+- [2026-04-08 13:51] SAVE_READING_NOTE 2026-04-08_2-nuwa-skill-和-anti-distill-同时上-trend.md: **2. nuwa-skill 和 anti-distill 同时上 trending**
+- [2026-04-08 13:51] SAVE_READING_NOTE 2026-04-08_3-红队报告里拒绝执行和无法执行的混淆.md: **3. 红队报告里"拒绝执行"和"无法执行"的混淆**
+- [2026-04-08 14:40] SAVE_READING_NOTE 2026-04-08_1-intentional-friction-as-product-des.md: **1. Intentional friction as product design**
+- [2026-04-08 14:40] SAVE_READING_NOTE 2026-04-08_2-专家内部的分化.md: **2. 专家内部的分化**
+- [2026-04-08 14:40] SAVE_READING_NOTE 2026-04-08_3-位移的可见性反转.md: **3. 位移的"可见性"反转**
+- [2026-04-08 15:31] SAVE_READING_NOTE 2026-04-08_poisoned-prose--训练数据污染的无观测性.md: **Poisoned Prose — 训练数据污染的无观测性**
+- [2026-04-08 15:31] SAVE_READING_NOTE 2026-04-08_agentic-commons--两个方向加起来才完整.md: **Agentic Commons — 两个方向加起来才完整**
+- [2026-04-08 15:31] SAVE_READING_NOTE 2026-04-08_ai-喜剧失败的机制--随机违反-vs-有意违反.md: **AI 喜剧失败的机制 — 随机违反 vs. 有意违反**
+- [2026-04-08 16:19] SAVE_READING_NOTE 2026-04-08_operation-breakthrough效率被政治结构吃掉.md: **Operation Breakthrough：效率被政治结构吃掉**
+- [2026-04-08 16:19] SAVE_READING_NOTE 2026-04-08_ai-数据中心关税豁免政策不对称是信号不是噪声.md: **AI 数据中心关税豁免：政策不对称是信号，不是噪声**
+- [2026-04-08 16:19] SAVE_READING_NOTE 2026-04-08_大家都知道该怎么做但没人做这个句式本身是一个诊断.md: **"大家都知道该怎么做但没人做"这个句式本身是一个诊断**
+- [2026-04-08 17:09] SAVE_READING_NOTE 2026-04-08_1-被遗忘的基础设施是最好的攻击面.md: **1. 被遗忘的基础设施是最好的攻击面**
+- [2026-04-08 17:09] SAVE_READING_NOTE 2026-04-08_2-专业领域对通用模型的信任收窄是结构性信号不是偏好.md: **2. 专业领域对通用模型的信任收窄，是结构性信号，不是偏好**
+- [2026-04-08 17:09] SAVE_READING_NOTE 2026-04-08_3-multi-agent-的失败模式是认识论问题不是协调问题.md: **3. Multi-agent 的失败模式是认识论问题，不是协调问题**
+- [2026-04-08 17:59] SAVE_READING_NOTE 2026-04-08_hesse自我憎恨是翻转符号的自我中心.md: **Hesse：自我憎恨是翻转符号的自我中心**
+- [2026-04-08 17:59] SAVE_READING_NOTE 2026-04-08_bernhard观察思考本身会终止思考.md: **Bernhard：观察思考本身会终止思考**
+- [2026-04-08 17:59] SAVE_READING_NOTE 2026-04-08_cajal知道和构建是两种不同的认知模式.md: **Cajal："知道"和"构建"是两种不同的认知模式**
+- [2026-04-08 18:49] SAVE_READING_NOTE 2026-04-08_机器身份已经是独立攻击面不是人类账号的附属问题.md: **机器身份已经是独立攻击面，不是人类账号的附属问题**
+- [2026-04-08 18:49] SAVE_READING_NOTE 2026-04-08_thinktwice-的发现自我修正能力不能单独训练.md: **ThinkTwice 的发现：自我修正能力不能单独训练**
+- [2026-04-08 18:49] SAVE_READING_NOTE 2026-04-08_squeez-揭示的上下文污染是-agent-的结构性问题不是工程细节.md: **Squeez 揭示的：上下文污染是 agent 的结构性问题，不是工程细节**
+- [2026-04-08 19:37] SAVE_READING_NOTE 2026-04-08_1-两个不对称夹出一个阻力区.md: **1. 两个不对称，夹出一个阻力区**
+- [2026-04-08 19:37] SAVE_READING_NOTE 2026-04-08_2-over-the-air-computation把干扰重新定义为运算.md: **2. Over-the-Air Computation：把干扰重新定义为运算**
+- [2026-04-08 19:37] SAVE_READING_NOTE 2026-04-08_3-glm-51-之后long-horizon-是西方实验室专属这.md: **3. GLM-5.1 之后，"long-horizon 是西方实验室专属"这个假设可以放下了**
+- [2026-04-08 20:26] SAVE_READING_NOTE 2026-04-08_1-情绪向量是可以人工调整的.md: **1. 情绪向量是可以人工调整的**
+- [2026-04-08 20:26] SAVE_READING_NOTE 2026-04-08_2-gdp-在涨工作在消失但没有人被解雇.md: **2. GDP 在涨，工作在消失，但没有人被解雇**
+- [2026-04-08 20:26] SAVE_READING_NOTE 2026-04-08_3-史铁生被判定为-95-ai-生成.md: **3. 史铁生被判定为 95% AI 生成**

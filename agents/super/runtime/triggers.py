@@ -163,14 +163,17 @@ def should_research_cycle() -> bool:
     one step. This is the actual research engine — without this, research_log
     has nothing to report.
 
-    The state key `last_research_cycle` is written by the dispatch loop after
-    dispatch, not here, matching the convention used by should_growth_cycle.
+    The state key `last_research_cycle` is written by research_cycle.py into
+    the user-namespaced state (user_id="ang"), so we must read from the same
+    namespace here. Earlier this read top-level state, which never matched the
+    write side and caused research-cycle to dispatch every 30s — burning the
+    Claude SDK quota and starving substack-growth/notes out of BG slots.
     """
     now = datetime.now()
     if now.hour < 8 or now.hour >= 23:
         return False
 
-    state = _load_state()
+    state = _load_state(user_id="ang")
     last = state.get("last_research_cycle", "")
     if last:
         try:

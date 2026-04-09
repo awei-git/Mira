@@ -15,7 +15,7 @@ sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 import health_monitor
 
 from config import (
-    BRIEFINGS_DIR, JOURNAL_DIR, MIRA_DIR,
+    BRIEFINGS_DIR, JOURNAL_DIR, MIRA_DIR, LOGS_DIR,
 )
 from user_paths import artifact_name_for_user, user_journal_dir
 try:
@@ -198,6 +198,31 @@ def do_journal(user_id: str = "ang"):
     except Exception as e:
         log.warning("Failed to gather social media stats for journal: %s", e)
 
+    # Security alerts: blocked skill attempts in the past 24h
+    security_alerts = ""
+    try:
+        incidents_path = LOGS_DIR / "security_incidents.jsonl"
+        if incidents_path.exists():
+            cutoff = datetime.now().timestamp() - 86400
+            alerts = []
+            for line in incidents_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    ts = datetime.fromisoformat(rec["timestamp"].rstrip("Z"))
+                    if ts.timestamp() >= cutoff and rec.get("blocked"):
+                        alerts.append(rec)
+                except Exception:
+                    pass
+            if alerts:
+                alert_lines = [f"- **{a['skill_name']}**: {a['failure_reason']}" for a in alerts]
+                security_alerts = "## Security Alerts\n" + "\n".join(alert_lines)
+                log.warning("Journal: %d blocked skill incident(s) in past 24h", len(alerts))
+    except Exception as e:
+        log.warning("Failed to read security incidents for journal: %s", e)
+
     prompt = journal_prompt(soul_ctx, tasks_summary, skills_summary, briefing_summary,
                             za_fragment=za_fragment)
     journal_text = claude_think(prompt, timeout=120)
@@ -207,7 +232,8 @@ def do_journal(user_id: str = "ang"):
         return
 
     # Save journal
-    journal_content = f"# Journal {today}\n\n{journal_text}"
+    security_prefix = f"{security_alerts}\n\n" if security_alerts else ""
+    journal_content = f"# Journal {today}\n\n{security_prefix}{journal_text}"
     atomic_write(journal_path, journal_content)
     log.info("Journal saved: %s", journal_path.name)
 

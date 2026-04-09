@@ -16,6 +16,7 @@ from config import (
     MAX_MEMORY_LINES, MIRA_ROOT, CONVERSATIONS_DIR,
     EPISODES_DIR, CATALOG_FILE,
     CHANGELOG_FILE, CHANGELOG_ARCHIVE_DIR, CHANGELOG_MAX_LINES,
+    LOGS_DIR,
 )
 from user_paths import user_journal_dir, user_reading_notes_dir
 
@@ -860,6 +861,20 @@ def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
                     name, checked, not_checked, len(violations))
         for v in violations:
             log.warning("  - %s", v)
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            incident = {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "skill_name": name,
+                "source": "audit_skill",
+                "failure_reason": violations[0] if violations else "unknown",
+                "blocked": True,
+            }
+            incidents_path = LOGS_DIR / "security_incidents.jsonl"
+            with open(incidents_path, "a", encoding="utf-8") as _f:
+                _f.write(json.dumps(incident) + "\n")
+        except Exception as _e:
+            log.warning("Failed to write security incident record: %s", _e)
     else:
         log.info("Skill '%s' PASSED (checked: %s | NOT checked: %s)",
                  name, checked, not_checked)

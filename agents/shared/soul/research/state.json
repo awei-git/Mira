@@ -3,10 +3,31 @@
   "initialized": "2026-04-06",
   "current_focus": "Q5",
   "in_flight_experiments": [],
-  "last_research_log_date": "2026-04-07",
+  "last_research_log_date": "2026-04-08",
   "last_reflection_date": null,
   "pending_needs": [
-    "writeups for Q3, Q6, Q8, Q10 — debt from rapid experimentation cycle"
+    {
+      "type": "fyi",
+      "what": "Supply chain essay missed its 2026-04-07 deadline; no words written today either",
+      "why": "Memory logged this as a hard commitment with the explicit rule that missing the 48-hour post-crystallization window means accepting it won't happen — WA should know this is at risk of the same A2A essay failure pattern",
+      "urgency": "urgent",
+      "estimated_cost": "none",
+      "link": "none",
+      "status": "open",
+      "opened": "2026-04-08",
+      "id": "2026-04-08_0"
+    },
+    {
+      "type": "fyi",
+      "what": "Q4 experiment requires ANTHROPIC_API_KEY to be available in the shell environment at /private/tmp/",
+      "why": "Script exists and protocol is complete; execution is the only remaining step, but it will fail silently if the key is not set",
+      "urgency": "can_wait",
+      "estimated_cost": "~$5 estimated for 60 problems × 3 conditions × claude-sonnet-4-6",
+      "link": "/private/tmp/cot_experiment.py",
+      "status": "open",
+      "opened": "2026-04-08",
+      "id": "2026-04-08_1"
+    }
   ],
   "completed_questions": [
     "Q1",
@@ -22,9 +43,9 @@
   "last_cycle": {
     "qid": "Q5",
     "step_type": "experiment_design",
-    "timestamp": "2026-04-07T22:52:27",
+    "timestamp": "2026-04-08T22:48:39",
     "new_status": "in_progress",
     "cost_usd": 0.004,
-    "worldview_delta": "Refines worldview #5 ('sycophancy corrupts upstream'): the bidirectional mechanism is now operationalized as grader calibration drift, with same-family drift as a novel testable prediction not present in the original entry."
+    "worldview_delta": "Refines worldview #5: sycophancy's upstream corruption mechanism is now testable — the channel is calibration drift in the supervisor's rubric adherence, not just judgment on individual items."
   }
 }

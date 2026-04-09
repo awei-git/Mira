@@ -189,8 +189,19 @@ def _gather_cost_today() -> dict:
 
 
 def _gather_pending_needs(state: dict) -> list[dict]:
-    """Return needs from yesterday/older that are still unresolved."""
-    return [n for n in state.get("pending_needs", []) if n.get("status") != "done"]
+    """Return needs from yesterday/older that are still unresolved.
+
+    Defensively skips entries that aren't dicts — earlier LLM-driven writes
+    occasionally appended bare strings, which crashed the whole research_log run.
+    """
+    out: list[dict] = []
+    for n in state.get("pending_needs", []) or []:
+        if not isinstance(n, dict):
+            log.warning("pending_needs: skipping non-dict entry: %r", n)
+            continue
+        if n.get("status") != "done":
+            out.append(n)
+    return out
 
 
 # ---------------------------------------------------------------------------
