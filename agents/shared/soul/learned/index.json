@@ -385,5 +385,11 @@
     "description": "Agents must create the expected output file at the exact verified path before declaring success",
     "file": "verify-output-path-exists-before-task-completion.md",
     "created": "2026-04-06T23:22:42.121286"
+  },
+  {
+    "name": "verify-output-path-before-reporting-done",
+    "description": "Always confirm the output file was written to the expected path before declaring task complete",
+    "file": "verify-output-path-before-reporting-done.md",
+    "created": "2026-04-08T22:51:31.366663"
   }
 ]

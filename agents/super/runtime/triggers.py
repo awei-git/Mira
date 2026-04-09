@@ -150,7 +150,11 @@ def should_research_log(user_id: str | None = None) -> bool:
     scheduled = datetime.combine(now.date(), RESEARCH_LOG_TIME)
     if now < scheduled:
         return False
-    state = _load_state(user_id=user_id)
+    # research_log writes its completion marker into the user-namespaced state
+    # (user_id="ang"), so default to that namespace when the dispatcher calls
+    # us without a user_id. Without this, the trigger keeps firing after the
+    # log is already written.
+    state = _load_state(user_id=user_id or "ang")
     key = f"research_log_{now.strftime('%Y-%m-%d')}"
     return not state.get(key)
 
