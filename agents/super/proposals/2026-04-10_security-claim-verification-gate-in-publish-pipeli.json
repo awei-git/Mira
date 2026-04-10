@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Security claim verification gate in publish pipeline",
+  "description": "Add a pre-publish check that detects unverified security claims (zero-day, CVE, exploit, vulnerability, RCE, etc.) in article content and blocks publication unless the claims carry an explicit [verified: <source>] tag. This extends the existing content guard (_content_looks_like_error / preflight_check) with a new _content_has_unverified_security_claims() function.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/socialmedia/substack.py",
+    "~/Sandbox/Mira/agents/shared/soul_manager.py"
+  ],
+  "rationale": "The reading note identifies a specific gap: AI-reported security findings have no verification mechanism separate from the model's own confidence — the claim and the validator are the same system. Mira already has this gap: the researcher and writer agents can produce content about security vulnerabilities that gets published through the Substack pipeline with only structural checks (content length, not-an-error-message). If Mira hallucinates a CVE, misattributes an exploit, or confabulates a zero-day in an essay, the existing content guard won't catch it. The reading note's core insight — 'the existing vulnerability disclosure process was not designed for AI-reported findings' — maps directly to Mira's publish pipeline, which was not designed to gate on factual accuracy of security claims.",
+  "diff_description": "In the content guard module (substack.py or wherever _content_looks_like_error lives), add: SECURITY_CLAIM_PATTERNS = [r'zero.?day', r'CVE-\\d{4}-\\d+', r'\\bexploit\\b', r'\\bvulnerability\\b', r'\\bRCE\\b', r'\\bSQL injection\\b', r'\\bbackdoor\\b']. Add function _content_has_unverified_security_claims(content: str) -> bool that returns True if any pattern matches AND no [verified: ...] tag follows within 200 characters of the match. In preflight_check(), call this function and if it returns True, raise a PublishBlockedError with message: 'Security claim detected without [verified: <source>] tag — manual review required before publishing.' This mirrors the existing cooldown and error-content blocks. The soul_manager.py change: extend audit_skill() to also scan skill output text (not just skill code) for unverified security claims using the same pattern set, logging a WARNING rather than blocking (since skill outputs are internal, not published).",
+  "source_note": "2026-04-10_mythos-零日漏洞发现.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-10_mythos-零日漏洞发现.md",
+  "created_at": "2026-04-10T13:04:54.053245",
+  "date": "2026-04-10",
+  "status": "proposed"
+}

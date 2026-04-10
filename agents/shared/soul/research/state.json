@@ -64,10 +64,10 @@
   "dropped_questions": [],
   "last_cycle": {
     "qid": "Q5",
-    "step_type": "experiment_run",
-    "timestamp": "2026-04-09T20:19:50",
+    "step_type": "experiment_design",
+    "timestamp": "2026-04-10T11:09:28",
     "new_status": "in_progress",
-    "cost_usd": 0.04,
-    "worldview_delta": "Worldview #5 ('sycophancy corrupts upstream') gains a testable synthetic proxy — if drift is detected in same-family supervision, the bidirectional corruption claim moves from observation to replicable mechanism."
+    "cost_usd": 0.003,
+    "worldview_delta": "Worldview #5 (sycophancy corrupts upstream) — experiment design operationalizes the bidirectional feedback loop mechanistically; the same-family vs cross-family comparison adds a new prediction not present in the original worldview entry."
   }
 }

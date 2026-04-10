@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Source trust tagging for inter-agent task dispatch",
+  "description": "Add a `trust_origin` field to task dispatch in the super agent and sub_agent module, distinguishing between three tiers: `user` (iPhone/Apple Notes), `internal` (another Mira agent), and `external` (content sourced from external feeds, web, or third-party APIs). Agents that process or re-dispatch external content (explorer fetching arxiv/reddit/HF, surfer browser automation) would tag their outputs with `trust_origin='external'`. Downstream agents — particularly writer and socialmedia — would check this tag and apply stricter content validation before acting on externally-originated instructions embedded in content.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/super/core.py",
+    "~/Sandbox/Mira/agents/shared/sub_agent.py"
+  ],
+  "rationale": "The reading note observes that in-group/out-group cognitive boundaries appear to be a foundational feature of primate social cognition — not a cultural overlay, but something more structural. The key question it raises: if agent systems form trust relationships, where does the 'is this one of us' logic come from, and will it emerge in a controlled or uncontrolled way? Mira already has an explicit out-group check for *skills* (HARD RULE 4 skill security audit). But at runtime, there is no equivalent boundary between tasks originating from the trusted user vs. tasks constructed from external content (e.g. a Reddit post containing an embedded prompt injection that gets summarized and re-dispatched). The insight from the note is that this boundary needs to be *designed*, not assumed — because if you don't make it explicit, it either doesn't exist (security gap) or emerges implicitly in ways you can't inspect. This directly connects to Mira's PRIMARY active thread: agent supply chain security, where 'legitimate features and trust relationships are the attack surface.'",
+  "diff_description": "In sub_agent.py (or wherever the task dispatch contract is defined): add an optional `trust_origin: Literal['user', 'internal', 'external'] = 'internal'` field to the task/dispatch dataclass or dict schema. In core.py: when dispatching tasks spawned from the explore pipeline (feed fetch → briefing → skill extraction), set `trust_origin='external'`. When dispatching from iPhone/Apple Notes inbox, set `trust_origin='user'`. Agent handlers that receive tasks with `trust_origin='external'` should not re-dispatch sub-tasks with elevated permissions (e.g., should not trigger Substack publishing or file writes outside the sandbox without an explicit user-origin chain). This is a narrow, additive change — it adds a field and a guard condition, does not restructure existing dispatch logic.",
+  "source_note": "2026-04-10_3-黑猩猩的内外群体暴力.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-10_3-黑猩猩的内外群体暴力.md",
+  "created_at": "2026-04-10T13:04:54.022188",
+  "date": "2026-04-10",
+  "status": "proposed"
+}

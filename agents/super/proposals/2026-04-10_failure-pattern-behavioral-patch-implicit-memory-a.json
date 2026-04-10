@@ -1,0 +1,18 @@
+{
+  "has_improvement": true,
+  "title": "Failure Pattern Behavioral Patch (Implicit Memory Analog)",
+  "description": "Add a failure-pattern counter that, when a task type fails N times, directly mutates a config or parameter file rather than only logging the failure into text memory. This is the closest analog to implicit memory available in a retrieval-based agent: instead of writing 'I failed at X' into MEMORY.md (which requires retrieval + conscious application each run), the behavior itself changes by modifying a persistent parameter. Example: if writer agent times out on long drafts 3 times, automatically lower the max-word-count config; if a specific feed URL fails 5 consecutive fetches, auto-append it to a dead-feed blocklist file.",
+  "risk_level": "medium",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/shared/soul_manager.py",
+    "~/Sandbox/Mira/agents/super/core.py",
+    "~/Sandbox/Mira/agents/shared/config.py"
+  ],
+  "rationale": "The reading note identifies the core failure mode precisely: 'if an agent repeats a failure pattern five times and is still repeating it, it has text about the failure, not the experience itself.' Mira's current failure path is exactly this — failures go to logs and eventually MEMORY.md, both of which require retrieval and explicit application on the next run. An agent that crashed its context budget three times in a row while 'knowing' about the risk has explicit memory of the risk, not implicit memory of it. The implicit-memory analog for a retrieval-based system is direct config mutation: when the failure count crosses a threshold, the behavioral parameter changes in place, so no future run needs to 'remember' to apply the lesson. The lesson is baked into the environment.",
+  "diff_description": "In soul_manager.py: add a `record_failure(task_type: str, error_tag: str) -> dict | None` function that (1) increments a counter in a lightweight JSON file (e.g., soul/failure_counts.json), (2) checks if count >= IMPLICIT_THRESHOLD (default 3), and (3) if threshold crossed, returns a structured 'patch proposal' dict specifying which config key to mutate and in which direction (e.g., {\"config_key\": \"WRITER_MAX_WORDS\", \"delta\": -500, \"reason\": \"repeated timeout\"}). In core.py: after each failed task dispatch, call record_failure() and, if a patch proposal is returned, apply it directly to the relevant config file and log the mutation to soul/behavioral_patches.jsonl. In config.py: add IMPLICIT_THRESHOLD = 3 and document the pattern. This creates a two-tier failure response: (a) text logging as before for human review, (b) automatic config mutation after threshold, which changes behavior without requiring retrieval.",
+  "source_note": "2026-04-10_隐式记忆-vs-显式记忆的区分.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-10_隐式记忆-vs-显式记忆的区分.md",
+  "created_at": "2026-04-10T13:04:54.056575",
+  "date": "2026-04-10",
+  "status": "proposed"
+}

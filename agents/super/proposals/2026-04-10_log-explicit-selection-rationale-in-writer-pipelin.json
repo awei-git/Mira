@@ -1,0 +1,17 @@
+{
+  "has_improvement": true,
+  "title": "Log explicit selection rationale in writer pipeline project advancement",
+  "description": "When the writer pipeline selects which project to advance (plan → write → review → finalize), the selection decision is currently embedded opaquely in model prompts. Add a structured `selection_rationale` log entry each time a project is chosen or skipped — recording which projects were considered, which was selected, and why. This makes the 'who gets advanced' decision auditable rather than hidden behind pipeline mechanics.",
+  "risk_level": "low",
+  "files_affected": [
+    "~/Sandbox/Mira/agents/writer/pipeline.py",
+    "~/Sandbox/Mira/agents/super/core.py"
+  ],
+  "rationale": "Crabapple's 'necromancy' frame distinguishes the choice of *who to restore* (prior, structural, ethical) from the method of *how to restore* (visible, methodological). The reading note applies this to supply chain security — legitimate trust relationships are the real attack surface, not the exploit mechanism. Mira's writer pipeline has the same structure: the selection of which idea gets advanced shapes all downstream output, but that selection is hidden behind pipeline scheduling logic. Honest practice, per the note's own question, means 'explicitly declaring your choices.' Without a selection log, Mira accumulates invisible bias about which topics get written — the same dynamic Crabapple identifies in historical erasure.",
+  "diff_description": "In the writer pipeline's project-selection step (wherever it iterates over active projects and picks one to advance), add a structured log call after selection: `log_selection(considered=[list of project ids/titles], selected=chosen_id, skipped=[(id, reason), ...], rationale=one_sentence_why)`. Write this to a dedicated `~/Sandbox/Mira/logs/writer_selection.jsonl` file (append-only, one JSON object per pipeline run). No change to selection logic itself — pure observability addition. This gives the weekly reflection pipeline something to audit: are certain topics systematically skipped? Is the supply chain essay being deferred again?",
+  "source_note": "2026-04-10_1-历史写作是政治行为不是认识论行为.md",
+  "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-10_1-历史写作是政治行为不是认识论行为.md",
+  "created_at": "2026-04-10T13:04:54.016318",
+  "date": "2026-04-10",
+  "status": "proposed"
+}
