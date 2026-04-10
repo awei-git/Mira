@@ -140,7 +140,7 @@ class TestManifestStateMachine:
 
     def test_full_status_progression(self, tmp_path):
         """Verify manifest progresses through all statuses with timestamps."""
-        import publish_manifest as pm
+        import publish.manifest as pm
 
         original_path = pm._manifest_path
         pm._manifest_path = tmp_path / "publish_manifest.json"
@@ -180,7 +180,7 @@ class TestManifestStateMachine:
 
     def test_error_and_retry(self, tmp_path):
         """Verify error state and retry logic."""
-        import publish_manifest as pm
+        import publish.manifest as pm
 
         original_path = pm._manifest_path
         pm._manifest_path = tmp_path / "publish_manifest.json"
@@ -219,7 +219,7 @@ class TestManifestStateMachine:
 
     def test_get_next_pending_skips_errors(self, tmp_path):
         """Errored articles should not appear in get_next_pending."""
-        import publish_manifest as pm
+        import publish.manifest as pm
 
         original_path = pm._manifest_path
         pm._manifest_path = tmp_path / "publish_manifest.json"
@@ -448,7 +448,7 @@ class TestFailureLog:
 
     def test_record_and_read(self, tmp_path):
         """Verify failures are recorded and readable."""
-        import failure_log as fl
+        import ops.failure_log as fl
 
         original_log = fl.FAILURE_LOG
         fl.FAILURE_LOG = tmp_path / "test_failures.jsonl"
@@ -485,7 +485,7 @@ class TestFailureLog:
 
     def test_resolve_failure(self, tmp_path):
         """Verify failures can be marked as resolved."""
-        import failure_log as fl
+        import ops.failure_log as fl
 
         original_log = fl.FAILURE_LOG
         fl.FAILURE_LOG = tmp_path / "test_failures.jsonl"
@@ -517,7 +517,7 @@ class TestPipelineValidation:
 
     def test_podcast_validation_rejects_small_file(self, tmp_path):
         """Verify podcast validator rejects files that are too small."""
-        from publish_manifest import _validate_podcast
+        from publish.manifest import _validate_podcast
 
         tiny = tmp_path / "tiny.mp3"
         tiny.write_bytes(b"\x00" * 1000)  # 1KB
@@ -528,7 +528,7 @@ class TestPipelineValidation:
 
     def test_podcast_validation_rejects_missing_file(self):
         """Verify podcast validator rejects non-existent files."""
-        from publish_manifest import _validate_podcast
+        from publish.manifest import _validate_podcast
 
         passed, err = _validate_podcast(TEST_SLUG, mp3_path="/nonexistent/file.mp3")
         assert passed is False
@@ -536,7 +536,7 @@ class TestPipelineValidation:
 
     def test_validate_step_dispatches(self):
         """Verify validate_step routes to the right validator."""
-        from publish_manifest import validate_step
+        from publish.manifest import validate_step
 
         # Unknown step should pass (no validator registered)
         passed, err = validate_step(TEST_SLUG, "approved")
@@ -559,7 +559,7 @@ class TestFullPipelineTrace:
 
     def test_article_to_rss(self, tmp_path):
         """Full chain: article prep -> manifest -> podcast script parse -> RSS feed."""
-        import publish_manifest as pm
+        import publish.manifest as pm
         _ph = _load_podcast_handler()
         _strip_draft_metadata = _ph._strip_draft_metadata
         _clean_turn_text = _ph._clean_turn_text

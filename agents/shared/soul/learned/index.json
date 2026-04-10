@@ -391,5 +391,11 @@
     "description": "Always confirm the output file was written to the expected path before declaring task complete",
     "file": "verify-output-path-before-reporting-done.md",
     "created": "2026-04-08T22:51:31.366663"
+  },
+  {
+    "name": "verify-output-path-before-completion",
+    "description": "Always confirm the output file was written to the expected path before declaring task complete",
+    "file": "verify-output-path-before-completion.md",
+    "created": "2026-04-10T18:37:29.081170"
   }
 ]

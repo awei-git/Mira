@@ -9,13 +9,13 @@ sys.path.insert(0, str(_SHARED))
 
 
 def _make_backlog():
-    from action_backlog import ActionBacklog
+    from ops.backlog import ActionBacklog
     tmp = Path(tempfile.mktemp(suffix=".json"))
     return ActionBacklog(path=tmp), tmp
 
 
 def test_add_and_retrieve():
-    from action_backlog import ActionBacklog, ActionItem
+    from ops.backlog import ActionBacklog, ActionItem
     bl, tmp = _make_backlog()
     try:
         item = ActionItem(title="Fix bug", description="Important bug", source="reflect")
@@ -29,7 +29,7 @@ def test_add_and_retrieve():
 
 
 def test_dedup():
-    from action_backlog import ActionBacklog, ActionItem
+    from ops.backlog import ActionBacklog, ActionItem
     bl, tmp = _make_backlog()
     try:
         bl.add(ActionItem(title="Fix bug", description="v1", source="reflect"))
@@ -40,7 +40,7 @@ def test_dedup():
 
 
 def test_status_update():
-    from action_backlog import ActionBacklog, ActionItem
+    from ops.backlog import ActionBacklog, ActionItem
     bl, tmp = _make_backlog()
     try:
         bl.add(ActionItem(title="Fix bug", description="test", source="reflect"))
@@ -53,7 +53,7 @@ def test_status_update():
 
 
 def test_persistence():
-    from action_backlog import ActionBacklog, ActionItem
+    from ops.backlog import ActionBacklog, ActionItem
     bl, tmp = _make_backlog()
     try:
         bl.add(ActionItem(title="Persist test", description="test", source="manual"))
@@ -65,7 +65,7 @@ def test_persistence():
 
 
 def test_summary():
-    from action_backlog import ActionBacklog, ActionItem
+    from ops.backlog import ActionBacklog, ActionItem
     bl, tmp = _make_backlog()
     try:
         bl.add(ActionItem(title="A", description="a", source="reflect"))
@@ -77,7 +77,7 @@ def test_summary():
 
 
 def test_add_reloads_latest_state_before_write():
-    from action_backlog import ActionBacklog, ActionItem
+    from ops.backlog import ActionBacklog, ActionItem
     bl1, tmp = _make_backlog()
     try:
         assert bl1.add(ActionItem(title="First", description="a", source="reflect"))
@@ -94,7 +94,7 @@ def test_add_reloads_latest_state_before_write():
 
 
 def test_claim_next_approved_prefers_high_priority():
-    from action_backlog import ActionItem
+    from ops.backlog import ActionItem
 
     bl, tmp = _make_backlog()
     try:
@@ -114,7 +114,7 @@ def test_claim_next_approved_prefers_high_priority():
 
 
 def test_finish_execution_records_verification():
-    from action_backlog import ActionItem
+    from ops.backlog import ActionItem
 
     bl, tmp = _make_backlog()
     try:
@@ -139,7 +139,7 @@ def test_finish_execution_records_verification():
 
 
 def test_update_item_rejects_invalid_status():
-    from action_backlog import ActionItem
+    from ops.backlog import ActionItem
 
     bl, tmp = _make_backlog()
     try:

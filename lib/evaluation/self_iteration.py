@@ -136,7 +136,7 @@ def distill_article_skills(title: str, final_text: str, type_key: str = "essay",
 
     # Check existing writer skills to avoid duplicates
     existing_skills = set()
-    writer_skills_dir = Path(__file__).resolve().parent.parent / "writer" / "skills"
+    from config import MIRA_ROOT as _MR; writer_skills_dir = _MR / "agents" / "writer" / "skills"
     if writer_skills_dir.exists():
         for f in writer_skills_dir.glob("*.md"):
             existing_skills.add(f.stem)
@@ -190,7 +190,7 @@ def save_article_skills(skills: list[dict], source_title: str):
     """
     from soul_manager import save_skill
 
-    writer_skills_dir = Path(__file__).resolve().parent.parent / "writer" / "skills"
+    from config import MIRA_ROOT as _MR; writer_skills_dir = _MR / "agents" / "writer" / "skills"
     writer_skills_dir.mkdir(parents=True, exist_ok=True)
 
     for skill in skills:

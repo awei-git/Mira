@@ -9,8 +9,7 @@ sys.path.insert(0, str(_SHARED))
 
 
 def test_remember_includes_user_id_when_column_exists(monkeypatch):
-    import memory_store
-
+    import memory.store as memory_store
     monkeypatch.setattr(memory_store, "_embed_texts", lambda texts: [[0.1, 0.2, 0.3]])
     store = memory_store.MemoryStore("postgresql://test")
     calls: list[tuple[str, tuple, bool]] = []
@@ -30,8 +29,7 @@ def test_remember_includes_user_id_when_column_exists(monkeypatch):
 
 
 def test_search_table_filters_by_user_id_when_supported(monkeypatch):
-    import memory_store
-
+    import memory.store as memory_store
     store = memory_store.MemoryStore("postgresql://test")
     calls: list[tuple[str, tuple, bool]] = []
 
@@ -50,8 +48,7 @@ def test_search_table_filters_by_user_id_when_supported(monkeypatch):
 
 
 def test_store_thought_includes_user_id_when_column_exists(monkeypatch):
-    import memory_store
-
+    import memory.store as memory_store
     monkeypatch.setattr(memory_store, "_embed_texts", lambda texts: [[0.1, 0.2, 0.3]])
     store = memory_store.MemoryStore("postgresql://test")
     calls: list[tuple[str, tuple, bool]] = []
@@ -71,8 +68,7 @@ def test_store_thought_includes_user_id_when_column_exists(monkeypatch):
 
 
 def test_conn_property_returns_live_connection(monkeypatch):
-    import memory_store
-
+    import memory.store as memory_store
     store = memory_store.MemoryStore("postgresql://test")
     sentinel = object()
     monkeypatch.setattr(store, "_get_conn", lambda: sentinel)

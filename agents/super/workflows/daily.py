@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 import health_monitor
 
@@ -28,15 +28,15 @@ from config import (
 )
 from user_paths import artifact_name_for_user, user_journal_dir
 try:
-    from mira import Mira
+    from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
-from soul_manager import (
+from memory.soul import (
     load_soul, format_soul, append_memory, save_skill,
     load_recent_reading_notes, recall_context,
     _atomic_write as atomic_write,
 )
-from sub_agent import claude_think, claude_act, model_think
+from llm import claude_think, claude_act, model_think
 from prompts import zhesi_prompt
 
 from workflows.helpers import (
@@ -946,7 +946,7 @@ def do_idle_think(user_id: str = "ang"):
     - continuation: Continue developing an active thought chain
     """
     try:
-        from emptiness import (
+        from evaluation.emptiness import (
             get_active_questions, mark_thought, after_think,
             load_emptiness, get_status_str, get_think_mode,
             get_continuation, start_continuation, advance_continuation,
@@ -996,7 +996,7 @@ def do_idle_think(user_id: str = "ang"):
 
     # Quality gate: skip saving if thought doesn't connect to existing threads
     try:
-        from emptiness import passes_quality_gate
+        from evaluation.emptiness import passes_quality_gate
         if not passes_quality_gate(result):
             log.info("idle-think [%s]: filtered by quality gate (no connection to existing threads)", mode)
             after_think(user_id=user_id)  # still reduce emptiness so we don't immediately re-trigger
@@ -1025,7 +1025,7 @@ def do_idle_think(user_id: str = "ang"):
 
 def _think_question(soul_ctx: str, recent_journal: str, user_id: str = "ang") -> str:
     """Question mode: think about pending questions (original idle-think)."""
-    from emptiness import get_active_questions, mark_thought, resolve_question
+    from evaluation.emptiness import get_active_questions, mark_thought, resolve_question
 
     questions = get_active_questions(limit=3, user_id=user_id)
     if not questions:
@@ -1051,7 +1051,7 @@ def _think_question(soul_ctx: str, recent_journal: str, user_id: str = "ang") ->
     # Pull related past thoughts from thought_stream
     related_thoughts = ""
     try:
-        from memory_store import get_store
+        from memory.store import get_store
         store = get_store()
         thoughts = store.recall_thoughts(questions[0]["text"], top_k=3, user_id=user_id)
         if thoughts:
@@ -1094,7 +1094,7 @@ SHARE 的风格要求：像给朋友发消息，不像写论文。要具体—�
 def _think_connection(soul_ctx: str, recent_journal: str, user_id: str = "ang") -> str:
     """Connection mode: find patterns between recent thoughts."""
     try:
-        from memory_store import get_store
+        from memory.store import get_store
         store = get_store()
     except (ImportError, ModuleNotFoundError, ConnectionError):
         return ""
@@ -1148,7 +1148,7 @@ SHARE 的风格要求：像给朋友发消息，不像写论文。要具体—�
         # Extract auto-generated questions
         for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
             try:
-                from emptiness import add_question
+                from evaluation.emptiness import add_question
                 add_question(match.group(1).strip(), priority=4.0, source="connection-mode", user_id=user_id)
             except (ImportError, ModuleNotFoundError, OSError):
                 pass
@@ -1159,7 +1159,7 @@ SHARE 的风格要求：像给朋友发消息，不像写论文。要具体—�
 def _think_auto_question(soul_ctx: str, user_id: str = "ang") -> str:
     """Auto-question mode: generate new questions from accumulated observations."""
     try:
-        from memory_store import get_store
+        from memory.store import get_store
         store = get_store()
     except (ImportError, ModuleNotFoundError, ConnectionError):
         return ""
@@ -1194,7 +1194,7 @@ def _think_auto_question(soul_ctx: str, user_id: str = "ang") -> str:
     result = model_think(prompt, model_name="omlx", timeout=90)
 
     if result:
-        from emptiness import add_question
+        from evaluation.emptiness import add_question
         for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
             add_question(match.group(1).strip(), priority=4.0, source="auto-question", user_id=user_id)
 
@@ -1203,14 +1203,14 @@ def _think_auto_question(soul_ctx: str, user_id: str = "ang") -> str:
 
 def _think_continuation(soul_ctx: str, user_id: str = "ang") -> str:
     """Continuation mode: continue developing an active thought chain."""
-    from emptiness import get_continuation, advance_continuation, end_continuation
+    from evaluation.emptiness import get_continuation, advance_continuation, end_continuation
 
     cont = get_continuation(user_id=user_id)
     if not cont:
         return ""
 
     try:
-        from memory_store import get_store
+        from memory.store import get_store
         store = get_store()
         chain = store.get_thought_chain(cont["active_thread_id"])
     except (ImportError, ModuleNotFoundError, ConnectionError, KeyError):
@@ -1249,7 +1249,7 @@ def _think_continuation(soul_ctx: str, user_id: str = "ang") -> str:
 
     if result:
         try:
-            from memory_store import get_store
+            from memory.store import get_store
             store = get_store()
 
             # Check for crystallization
@@ -1297,7 +1297,7 @@ def _handle_think_markers(result: str, user_id: str = "ang"):
 
     # Resolve markers
     try:
-        from emptiness import resolve_question
+        from evaluation.emptiness import resolve_question
         for match in re.finditer(r'\[RESOLVE:\s*(q_\w+)\]', result):
             resolve_question(match.group(1), user_id=user_id)
             log.info("idle-think: resolved question %s", match.group(1))
@@ -1321,7 +1321,7 @@ def _handle_think_markers(result: str, user_id: str = "ang"):
 
     # Question markers (from connection mode)
     try:
-        from emptiness import add_question
+        from evaluation.emptiness import add_question
         for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
             add_question(match.group(1).strip(), priority=4.0, source="idle-think", user_id=user_id)
     except (ImportError, ModuleNotFoundError, OSError):

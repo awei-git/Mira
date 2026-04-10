@@ -10,7 +10,7 @@ _HERE = Path(__file__).resolve().parent
 _SUPER = _HERE.parent
 _AGENTS = _SUPER.parent
 sys.path.insert(0, str(_SUPER))
-sys.path.insert(0, str(_AGENTS / "shared"))
+sys.path.insert(0, str(_AGENTS.parent / "lib"))
 
 from agent_registry import AgentRegistry
 import task_worker
@@ -18,8 +18,7 @@ from execution.plan_state import initialize_plan_artifacts, mark_step_finished
 
 
 def _patch_task_worker_test_side_effects(monkeypatch):
-    import soul_manager
-
+    import memory.soul as soul_manager
     monkeypatch.setattr(task_worker, "_emit_status", lambda *args, **kwargs: None)
     monkeypatch.setattr(task_worker, "_append_exec_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(task_worker, "_record_premortem", lambda *args, **kwargs: None)
@@ -1144,7 +1143,7 @@ def test_autowrite_approval_prefers_metadata_file(tmp_path, monkeypatch):
         captured["fields"] = fields
         return {}
 
-    monkeypatch.setattr("publish_manifest.update_manifest", fake_update_manifest)
+    monkeypatch.setattr("publish.manifest.update_manifest", fake_update_manifest)
     # _write_result transitively triggers auto_flush -> rebuild_memory_index over the
     # whole soul/, plus _extract_knowledge_writeback -> claude_think. Use the same
     # helper the other runtime-contract tests use to neutralize these side effects.

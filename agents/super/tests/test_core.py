@@ -9,7 +9,7 @@ import pytest
 
 _AGENTS = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS / "super"))
-sys.path.insert(0, str(_AGENTS / "shared"))
+sys.path.insert(0, str(_AGENTS.parent / "lib"))
 sys.path.insert(0, str(_AGENTS / "writer"))
 
 
@@ -35,7 +35,7 @@ def test_registry_loads():
 
 
 def test_soul_loads():
-    from soul_manager import load_soul
+    from memory.soul import load_soul
     soul = load_soul()
     assert isinstance(soul, dict), f"load_soul returned {type(soul)}"
     assert "identity" in soul, "Soul missing identity"
@@ -350,7 +350,7 @@ def test_do_talk_routes_completed_task_to_matching_user_bridge(monkeypatch):
 
 def test_do_talk_stops_other_legacy_inboxes_when_busy(monkeypatch):
     import core
-    import emptiness
+    import evaluation.emptiness as emptiness
     if core.Mira is None:
         pytest.skip("mira_bridge not available (CI)")
 
@@ -453,7 +453,7 @@ def test_do_talk_stops_other_legacy_inboxes_when_busy(monkeypatch):
 
 def test_do_talk_stops_retry_when_retry_ceiling_reached(monkeypatch):
     import core
-    import emptiness
+    import evaluation.emptiness as emptiness
     if core.Mira is None:
         pytest.skip("mira_bridge not available (CI)")
 
@@ -589,8 +589,7 @@ def test_canonical_writing_pipeline_only_advances_plan_ready(monkeypatch, tmp_pa
 def test_run_autowrite_pipeline_auto_approves_and_marks_done(monkeypatch, tmp_path):
     """Full autonomy (2026-04-07): autowrite auto-marks manifest approved and task done."""
     from workflows import writing
-    import publish_manifest
-
+    import publish.manifest as publish_manifest
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     final_file = project_dir / "final.md"

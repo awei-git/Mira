@@ -29,7 +29,7 @@ def today_local() -> str:
 # ---------------------------------------------------------------------------
 # Load config.yml  (stdlib-only parser — no PyYAML dependency)
 # ---------------------------------------------------------------------------
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # agents/shared/ -> agents/ -> Mira/
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent  # lib/ -> Mira/
 _CONFIG_FILE = _PROJECT_ROOT / "config.yml"
 
 def _parse_simple_yaml(text: str) -> dict:

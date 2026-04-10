@@ -385,8 +385,8 @@ def check_and_reply_note_comments() -> list[dict]:
     Returns list of {note_id, commenter, comment, reply}.
     """
     import time as _time
-    from sub_agent import claude_think
-    from soul_manager import load_soul, format_soul
+    from llm import claude_think
+    from memory.soul import load_soul, format_soul
 
     state = _load_state()
     replied_comments = set(state.get("replied_note_comments", []))
@@ -557,7 +557,7 @@ def generate_notes_for_new_article(title: str, article_text: str,
 
     Returns list of {text: str} dicts. Empty list on failure.
     """
-    from sub_agent import claude_think
+    from llm import claude_think
 
     prompt = f"""You just published a Substack article. Generate 5 Notes to promote it over the next few days.
 
@@ -734,7 +734,7 @@ def generate_standalone_note(briefing_text: str = "",
 
     Returns the Note text, or None if nothing worth posting.
     """
-    from sub_agent import claude_think
+    from llm import claude_think
 
     if not briefing_text:
         # Try to load today's briefings

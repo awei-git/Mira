@@ -20,7 +20,7 @@ from config import MIRA_DIR
 
 log = logging.getLogger("mira.emptiness")
 
-_SOUL_DIR = Path(__file__).resolve().parent / "soul"
+from config import SOUL_DIR as _SOUL_DIR; _SOUL_DIR  # imported from config
 EMPTINESS_FILE = _SOUL_DIR / "emptiness.json"
 
 # Default tuning constants
@@ -320,7 +320,7 @@ def passes_quality_gate(thought_text: str) -> bool:
     Standalone thoughts with no connection are filtered out to reduce noise.
     """
     from pathlib import Path
-    _soul = Path(__file__).resolve().parent / "soul"
+    from config import SOUL_DIR as _soul_dir; _soul = _soul_dir
     reference_text = ""
 
     # Load memory.md

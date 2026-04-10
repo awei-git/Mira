@@ -231,7 +231,7 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
 """
 
     try:
-        from sub_agent import model_think
+        from llm import model_think
         result = model_think(prompt, model_name=model, timeout=60)
         if result and len(result.strip()) > 30:
             return result.strip()

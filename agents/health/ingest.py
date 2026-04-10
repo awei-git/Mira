@@ -68,7 +68,7 @@ def parse_checkup_pdf(pdf_path: Path, person_id: str, store) -> dict:
     Returns the parsed JSON dict. Also stores results in the database.
     """
     from config import OMLX_DEFAULT_MODEL
-    from sub_agent import _omlx_call
+    from llm import _omlx_call
 
     # Extract text from PDF
     text = _extract_pdf_text(pdf_path)
@@ -178,7 +178,7 @@ def parse_checkup_images(image_paths: list[Path], person_id: str, store) -> dict
 
     # Parse extracted text into structured data
     from config import OMLX_DEFAULT_MODEL
-    from sub_agent import _omlx_call
+    from llm import _omlx_call
 
     prompt = f"""Extract all test results from this medical checkup report.
 For each test item, extract:

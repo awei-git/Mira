@@ -9,7 +9,7 @@ log = logging.getLogger("gen_upload")
 
 # Add paths
 agents_dir = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(agents_dir / "shared"))
+sys.path.insert(0, str(agents_dir.parent / "lib"))
 sys.path.insert(0, str(agents_dir / "socialmedia"))
 sys.path.insert(0, str(agents_dir / "podcast"))
 

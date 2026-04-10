@@ -82,7 +82,7 @@ def validate_plan_step(step: dict, valid_agents: set) -> dict | None:
         log.info("PLAN_ALIAS_NORMALIZE: '%s' → '%s'", alias_used, agent or "REJECTED")
     if agent is None:
         try:
-            from failure_log import record_failure
+            from ops.failure_log import record_failure
             record_failure("planner", "validate_step", raw_agent,
                            error_type="invalid_agent",
                            error_message=f"Agent '{raw_agent}' not in valid set",

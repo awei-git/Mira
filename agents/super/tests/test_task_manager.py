@@ -8,7 +8,7 @@ from types import SimpleNamespace
 _HERE = Path(__file__).resolve().parent
 _AGENTS = _HERE.parent.parent
 sys.path.insert(0, str(_AGENTS / "super"))
-sys.path.insert(0, str(_AGENTS / "shared"))
+sys.path.insert(0, str(_AGENTS.parent / "lib"))
 
 
 def test_dispatch_records_message_user_id(monkeypatch, tmp_path):
@@ -200,7 +200,7 @@ def test_check_tasks_records_timeout_alert_once(monkeypatch, tmp_path):
             return None
 
     fake_mira = types.SimpleNamespace(Mira=FakeBridge)
-    monkeypatch.setitem(sys.modules, "mira", fake_mira)
+    monkeypatch.setitem(sys.modules, "bridge", fake_mira)
 
     mgr = task_manager.TaskManager()
     rec = task_manager.TaskRecord(
@@ -292,7 +292,7 @@ def test_check_tasks_wait_reply_keeps_running_status(monkeypatch, tmp_path):
             }
 
     fake_mira = types.SimpleNamespace(Mira=FakeBridge)
-    monkeypatch.setitem(sys.modules, "mira", fake_mira)
+    monkeypatch.setitem(sys.modules, "bridge", fake_mira)
 
     mgr = task_manager.TaskManager()
     rec = task_manager.TaskRecord(

@@ -17,7 +17,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-_SHARED = Path(__file__).resolve().parent.parent / "shared"
+_SHARED = Path(__file__).resolve().parent.parent .parent / "lib"
 _SUPER = Path(__file__).resolve().parent.parent / "super"
 if str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
@@ -318,7 +318,7 @@ def score_all(days: int = 7) -> dict:
 
     # Cost
     try:
-        from sub_agent import usage_summary
+        from llm import usage_summary
         usage = usage_summary()
         agg["daily_cost_usd"] = usage.get("total_cost_usd", 0)
         agg["daily_tokens"] = usage.get("total_tokens", 0)
@@ -481,7 +481,7 @@ def diagnose_and_improve(assessment: dict) -> str | None:
 
     # Enrich assessment with failure_log data
     try:
-        from failure_log import get_failure_summary, load_recent_failures
+        from ops.failure_log import get_failure_summary, load_recent_failures
 
         recent_failures = load_recent_failures(days=7)
         failure_summary = get_failure_summary(days=7)
@@ -511,7 +511,7 @@ def diagnose_and_improve(assessment: dict) -> str | None:
 
     # Generate improvement plan using a DIFFERENT model to avoid self-preference
     try:
-        from sub_agent import model_think
+        from llm import model_think
         from config import CLAUDE_FALLBACK_MODEL
 
         # Use fallback model (not Claude) to evaluate Claude's work

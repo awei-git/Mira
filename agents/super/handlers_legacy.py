@@ -16,8 +16,8 @@ from pathlib import Path
 
 # Add shared + sibling agent directories to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-if str(_AGENTS_DIR / "shared") not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+if str(_AGENTS_DIR.parent / "lib") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 if str(_AGENTS_DIR / "writer") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 if str(_AGENTS_DIR / "general") not in sys.path:
@@ -26,8 +26,8 @@ if str(_AGENTS_DIR / "general") not in sys.path:
 from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR
 from agent_registry import get_registry
 from persona.persona_context import get_persona_context
-from soul_manager import load_soul, format_soul, recall_context
-from sub_agent import claude_act, claude_think, ClaudeTimeoutError
+from memory.soul import load_soul, format_soul, recall_context
+from llm import claude_act, claude_think, ClaudeTimeoutError
 from writing_workflow import run_full_pipeline
 
 # Import helpers that remain in task_worker.py
@@ -1047,7 +1047,7 @@ def _handle_general(workspace: Path, task_id: str, content: str,
 def _handle_autowrite_approval(workspace: Path, task_id: str):
     """Handle approval for an autowrite article -- write to publish manifest."""
     import re as _re
-    from publish_manifest import update_manifest
+    from publish.manifest import update_manifest
 
     meta_file = workspace / "autowrite_meta.json"
     if meta_file.exists():

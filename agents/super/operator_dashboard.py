@@ -7,10 +7,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import LOGS_DIR, MIRA_DIR
-from failure_log import load_recent_failures
-from action_backlog import ActionBacklog
+from ops.failure_log import load_recent_failures
+from ops.backlog import ActionBacklog
 from execution.runtime_contract import normalize_task_status
-from publish_manifest import get_stuck_articles, load_manifest
+from publish.manifest import get_stuck_articles, load_manifest
 from task_manager import HISTORY_FILE, STATUS_FILE
 
 log = logging.getLogger("mira.operator_dashboard")

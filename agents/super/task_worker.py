@@ -20,7 +20,7 @@ from pathlib import Path
 
 # Add shared + sibling agent directories to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 sys.path.insert(0, str(_AGENTS_DIR / "general"))
 
@@ -28,10 +28,10 @@ import shutil
 
 from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR, MEMORY_FILE, WORLDVIEW_FILE
 from execution.runtime_contract import derive_workflow_id, normalize_task_status
-from preflight import verify_artifact
-from soul_manager import (load_soul, format_soul, append_memory, save_skill,
+from publish.preflight import verify_artifact
+from memory.soul import (load_soul, format_soul, append_memory, save_skill,
                          save_episode, recall_context, save_knowledge_note)
-from sub_agent import claude_act, claude_think, ClaudeTimeoutError
+from llm import claude_act, claude_think, ClaudeTimeoutError
 from prompts import respond_prompt
 from writing_workflow import run_full_pipeline
 
@@ -530,7 +530,7 @@ def _register_runtime_tools_created(workspace: Path) -> None:
     during execution but didn't formally register via tool_forge.
     """
     try:
-        from tool_forge import RUNTIME_TOOLS_DIR, list_tools, forge_tool
+        from tools.tool_forge import RUNTIME_TOOLS_DIR, list_tools, forge_tool
     except ImportError:
         return
 
@@ -1076,7 +1076,7 @@ def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
             instruction = f"{CHILD_SAFETY_PROMPT}\n\n---\n\n{instruction}"
 
         # --- Model restriction: force local model for restricted users ---
-        from sub_agent import set_usage_agent, set_model_policy
+        from llm import set_usage_agent, set_model_policy
         if model_restriction:
             set_model_policy(model_restriction)
             log.info("Model policy: %s for user=%s", model_restriction, user_id)
@@ -2077,7 +2077,7 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
     # --- Self-iteration: extract lessons from failures ---
     if status == "failed":
         try:
-            from self_iteration import extract_failure_lesson, save_failure_lesson
+            from evaluation.self_iteration import extract_failure_lesson, save_failure_lesson
             lesson = extract_failure_lesson(task_id, summary[:200], summary)
             if lesson:
                 save_failure_lesson(lesson)
@@ -2086,7 +2086,7 @@ def _write_result(workspace: Path, task_id: str, status: str, summary: str,
 
     # --- Auto-flush context before worker exits ---
     try:
-        from soul_manager import auto_flush
+        from memory.soul import auto_flush
         context_summary = (
             f"Task {task_id} ({status}): {summary[:500]}\n"
             f"Tags: {', '.join(tags) if tags else 'none'}"

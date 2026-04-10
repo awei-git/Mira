@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # Add agents to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "agents" / "shared"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 from config import (
     MIRA_DIR,
     WEBGUI_ALLOW_LAN_WITHOUT_TOKEN,

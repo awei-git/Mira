@@ -64,7 +64,7 @@ def get_persona_context(domains: list[str] | None = None,
     beliefs = ""
     if include_beliefs:
         try:
-            from belief_store import BeliefStore
+            from knowledge.beliefs import BeliefStore
             store = BeliefStore()
             beliefs = store.get_belief_context(domains)
         except (ImportError, OSError) as e:

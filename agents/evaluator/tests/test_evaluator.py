@@ -9,7 +9,7 @@ import pytest
 _AGENTS = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS / "evaluator"))
 sys.path.insert(0, str(_AGENTS / "super"))
-sys.path.insert(0, str(_AGENTS / "shared"))
+sys.path.insert(0, str(_AGENTS.parent / "lib"))
 
 
 def _load_evaluator_handler():

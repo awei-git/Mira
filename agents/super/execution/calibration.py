@@ -17,8 +17,8 @@ from pathlib import Path
 
 # Add shared directory to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-if str(_AGENTS_DIR / "shared") not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+if str(_AGENTS_DIR.parent / "lib") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 log = logging.getLogger("task_worker")
 

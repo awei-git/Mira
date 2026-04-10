@@ -5,7 +5,7 @@ from pathlib import Path
 
 _AGENTS = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS / "socialmedia"))
-sys.path.insert(0, str(_AGENTS / "shared"))
+sys.path.insert(0, str(_AGENTS.parent / "lib"))
 
 
 def test_md_to_html_no_truncation():

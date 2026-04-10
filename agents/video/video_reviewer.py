@@ -15,8 +15,8 @@ import urllib.error
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-if str(_AGENTS_DIR / "shared") not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+if str(_AGENTS_DIR.parent / "lib") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
     GEMINI_VIDEO_MODEL, GEMINI_VIDEO_REVIEWER_MAX_TOKENS,

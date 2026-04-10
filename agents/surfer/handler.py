@@ -18,14 +18,14 @@ from pathlib import Path
 _SURFER_DIR = Path(__file__).resolve().parent
 _AGENTS_DIR = _SURFER_DIR.parent
 sys.path.insert(0, str(_SURFER_DIR))
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
     MIRA_DIR, SURFER_MAX_STEPS, SURFER_STEP_TIMEOUT,
     SURFER_LLM_TIMEOUT, SURFER_EXTRACTION_TIMEOUT,
 )
-from soul_manager import load_soul, format_soul
-from sub_agent import claude_think
+from memory.soul import load_soul, format_soul
+from llm import claude_think
 
 log = logging.getLogger("surfer_agent")
 

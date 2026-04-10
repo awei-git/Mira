@@ -14,9 +14,9 @@ import sys
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
-from sub_agent import claude_act
+from llm import claude_act
 
 log = logging.getLogger("photo.reviewer")
 

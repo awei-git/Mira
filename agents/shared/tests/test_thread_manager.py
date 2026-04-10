@@ -4,8 +4,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-_SHARED = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_SHARED))
+_LIB = Path(__file__).resolve().parent.parent.parent.parent / "lib"
+sys.path.insert(0, str(_LIB))
 
 # Patch MIRA_DIR and paths before importing
 _test_dir = Path(tempfile.mkdtemp(prefix="mira_thread_test_"))
@@ -13,7 +13,7 @@ import config
 _orig_mira_dir = config.MIRA_DIR
 config.MIRA_DIR = _test_dir
 
-import thread_manager as tm
+import memory.threads as tm
 
 
 def _fresh_manager():

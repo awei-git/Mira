@@ -10,12 +10,12 @@ import logging
 from datetime import date
 from pathlib import Path
 
-from evolution.config import EXPERIENCE_DIR
-from evolution.experience import record_experience
+from .config import EXPERIENCE_DIR
+from .experience import record_experience
 
 log = logging.getLogger("mira.evolution")
 
-_AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
+from config import MIRA_ROOT; _AGENTS_DIR = MIRA_ROOT / "agents"
 
 
 def collect_substack_rewards() -> list[str]:

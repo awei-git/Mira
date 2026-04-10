@@ -9,8 +9,8 @@ import json
 import logging
 from datetime import date, timedelta
 
-from evolution.config import LESSON_DIR
-from evolution.experience import load_experiences
+from .config import LESSON_DIR
+from .experience import load_experiences
 
 log = logging.getLogger("mira.evolution")
 

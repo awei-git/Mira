@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 
 # Ensure shared config is importable
-_shared_dir = str(Path(__file__).resolve().parent.parent / "shared")
+_shared_dir = str(Path(__file__).resolve().parent.parent .parent / "lib")
 if _shared_dir not in sys.path:
     sys.path.insert(0, _shared_dir)
 

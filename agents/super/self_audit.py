@@ -26,7 +26,7 @@ _HERE = Path(__file__).resolve().parent
 _AGENTS_DIR = _HERE.parent
 _MIRA_ROOT = _AGENTS_DIR.parent
 _LOGS_DIR = _MIRA_ROOT / "logs"
-_SHARED_DIR = _AGENTS_DIR / "shared"
+_SHARED_DIR = _AGENTS_DIR .parent / "lib"
 
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_SHARED_DIR))
@@ -390,7 +390,7 @@ def check_publish_pipeline() -> list[dict]:
         except Exception:
             posts = []
 
-        from publish_manifest import load_manifest
+        from publish.manifest import load_manifest
         manifest = load_manifest()
         skip_slugs = {slug for slug, e in manifest.get("articles", {}).items()
                       if not e.get("auto_podcast", True)}
@@ -435,7 +435,7 @@ def check_publish_pipeline() -> list[dict]:
                         })
 
         # 2. Check manifest for stuck articles
-        from publish_manifest import get_stuck_articles
+        from publish.manifest import get_stuck_articles
         stuck = get_stuck_articles(timeout_minutes=240)
         for entry in stuck:
             findings.append({
@@ -579,7 +579,7 @@ def notify_user(report: str):
     """Send report to user via Mira bridge."""
     try:
         from config import MIRA_BRIDGE_DIR
-        from mira import Mira
+        from bridge import Mira
 
         bridge = Mira(MIRA_BRIDGE_DIR)
         today = datetime.now().strftime("%Y-%m-%d")

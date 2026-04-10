@@ -10,7 +10,7 @@ sys.path.insert(0, str(_SHARED))
 
 def _make_store(initial_beliefs=None):
     """Create a BeliefStore backed by a temp file."""
-    from belief_store import BeliefStore
+    from knowledge.beliefs import BeliefStore
     tmp = Path(tempfile.mktemp(suffix=".json"))
     if initial_beliefs:
         tmp.write_text(json.dumps(initial_beliefs, ensure_ascii=False), encoding="utf-8")
@@ -19,7 +19,7 @@ def _make_store(initial_beliefs=None):
 
 def test_load_seeded_beliefs():
     """Verify the actual beliefs.json file loads correctly."""
-    from belief_store import BeliefStore
+    from knowledge.beliefs import BeliefStore
     store = BeliefStore()
     assert len(store) >= 10, f"Expected at least 10 seeded beliefs, got {len(store)}"
     domains = store.domains()
@@ -29,7 +29,7 @@ def test_load_seeded_beliefs():
 
 
 def test_add_and_retrieve():
-    from belief_store import BeliefStore, BeliefRecord
+    from knowledge.beliefs import BeliefStore, BeliefRecord
     store, tmp = _make_store()
     try:
         b = BeliefRecord(
@@ -49,7 +49,7 @@ def test_add_and_retrieve():
 
 
 def test_dedup():
-    from belief_store import BeliefStore, BeliefRecord
+    from knowledge.beliefs import BeliefStore, BeliefRecord
     store, tmp = _make_store()
     try:
         b1 = BeliefRecord(statement="Testing is important", domain="eng", confidence=0.9)
@@ -62,7 +62,7 @@ def test_dedup():
 
 
 def test_update_belief():
-    from belief_store import BeliefStore, BeliefRecord
+    from knowledge.beliefs import BeliefStore, BeliefRecord
     store, tmp = _make_store()
     try:
         b = BeliefRecord(
@@ -87,7 +87,7 @@ def test_update_belief():
 
 
 def test_get_belief_context():
-    from belief_store import BeliefStore, BeliefRecord
+    from knowledge.beliefs import BeliefStore, BeliefRecord
     store, tmp = _make_store()
     try:
         store.add_belief(BeliefRecord(
@@ -114,7 +114,7 @@ def test_get_belief_context():
 
 
 def test_persistence():
-    from belief_store import BeliefStore, BeliefRecord
+    from knowledge.beliefs import BeliefStore, BeliefRecord
     store, tmp = _make_store()
     try:
         store.add_belief(BeliefRecord(
@@ -131,7 +131,7 @@ def test_persistence():
 
 
 def test_add_reloads_latest_state_before_write():
-    from belief_store import BeliefStore, BeliefRecord
+    from knowledge.beliefs import BeliefStore, BeliefRecord
     store1, tmp = _make_store()
     try:
         assert store1.add_belief(BeliefRecord(statement="Belief A", domain="test", confidence=0.8))

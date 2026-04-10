@@ -13,9 +13,9 @@ import re
 import shutil
 from pathlib import Path
 
-from preflight import preflight_check, verify_artifact
-from runtime_context import build_runtime_context
-from sub_agent import claude_think
+from publish.preflight import preflight_check, verify_artifact
+from ops.runtime_context import build_runtime_context
+from llm import claude_think
 from writing_workflow import run_full_pipeline
 
 log = logging.getLogger("writer_agent")

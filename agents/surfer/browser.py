@@ -20,8 +20,8 @@ from pathlib import Path
 from typing import Optional
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-if str(_AGENTS_DIR / "shared") not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+if str(_AGENTS_DIR.parent / "lib") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
     BROWSER_DEFAULT_TIMEOUT_MS, BROWSER_NETWORKIDLE_TIMEOUT_MS,

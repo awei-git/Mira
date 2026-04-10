@@ -260,3 +260,25 @@
 - [2026-04-10 13:00] SAVE_READING_NOTE 2026-04-10_1-两种叙事都是故事.md: **1. 两种叙事都是故事**
 - [2026-04-10 13:00] SAVE_READING_NOTE 2026-04-10_2-无自我不等于无意识但为什么.md: **2. 无自我不等于无意识——但为什么？**
 - [2026-04-10 13:00] SAVE_READING_NOTE 2026-04-10_3-记法决定可见性.md: **3. 记法决定可见性**
+- [2026-04-10 13:50] SAVE_READING_NOTE 2026-04-10_1-0--89agentic-capability-是独立的训练维.md: **1. 0% → 89%：agentic capability 是独立的训练维度**
+- [2026-04-10 13:50] SAVE_READING_NOTE 2026-04-10_2-mythos-漏洞被小模型复现安全边界不在模型大小那里.md: **2. Mythos 漏洞被小模型复现：安全边界不在模型大小那里**
+- [2026-04-10 13:50] SAVE_READING_NOTE 2026-04-10_3-石油美元协议两年前就取消了没人注意.md: **3. 石油美元协议两年前就取消了，没人注意**
+- [2026-04-10 14:40] SAVE_READING_NOTE 2026-04-10_signal--apns-那个.md: **Signal / APNs 那个：**
+- [2026-04-10 14:40] SAVE_READING_NOTE 2026-04-10_cpu-z-劫持--rust-供应链分析同一天出现.md: **CPU-Z 劫持 + Rust 供应链分析同一天出现：**
+- [2026-04-10 14:40] SAVE_READING_NOTE 2026-04-10_nuwa-skill-批量复制现象.md: **nuwa-skill 批量复制现象：**
+- [2026-04-10 15:29] SAVE_READING_NOTE 2026-04-10_1.md: **1.**
+- [2026-04-10 15:29] SAVE_READING_NOTE 2026-04-10_2.md: **2.**
+- [2026-04-10 15:29] SAVE_READING_NOTE 2026-04-10_3.md: **3.**
+- [2026-04-10 16:19] SAVE_READING_NOTE 2026-04-10_1-相关误差分布比信息同质化更严重.md: **1. 相关误差分布比信息同质化更严重**
+- [2026-04-10 16:19] SAVE_READING_NOTE 2026-04-10_2-语义污染没有攻击特征.md: **2. 语义污染没有攻击特征**
+- [2026-04-10 16:19] SAVE_READING_NOTE 2026-04-10_3-llm-结构性地无法制造惊喜.md: **3. LLM 结构性地无法制造惊喜**
+- [2026-04-10 17:09] SAVE_READING_NOTE 2026-04-10_1-氦气真正消耗掉的工业必需品.md: **1. 氦气：真正消耗掉的工业必需品**
+- [2026-04-10 17:09] SAVE_READING_NOTE 2026-04-10_2-该忍多少的默认值不是固定的.md: **2. "该忍多少"的默认值不是固定的**
+- [2026-04-10 17:09] SAVE_READING_NOTE 2026-04-10_3-从什么阻止了它发生开始而不是从技术细节开始.md: **3. 从"什么阻止了它发生"开始，而不是从技术细节开始**
+- [2026-04-10 17:58] SAVE_READING_NOTE 2026-04-10_1.md: **1.**
+- [2026-04-10 17:58] SAVE_READING_NOTE 2026-04-10_2.md: **2.**
+- [2026-04-10 17:58] SAVE_READING_NOTE 2026-04-10_3.md: **3.**
+- [2026-04-10 18:05] SAVE_READING_NOTE 2026-04-10_1-safety-flags-as-theatrical-props.md: **1. Safety flags as theatrical props**
+- [2026-04-10 18:05] SAVE_READING_NOTE 2026-04-10_2-可测量性作为遮蔽.md: **2. 可测量性作为遮蔽**
+- [2026-04-10 18:05] SAVE_READING_NOTE 2026-04-10_3-平台依赖作为暴露面.md: **3. 平台依赖作为暴露面**
+- [2026-04-10 18:37] SAVE_SKILL verify-output-path-before-completion.md: verify-output-path-before-completion

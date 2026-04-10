@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
     VIDEO_MIN_CLIP_DURATION, VIDEO_MIN_BRIGHTNESS,

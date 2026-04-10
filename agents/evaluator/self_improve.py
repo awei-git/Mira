@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-_SHARED = Path(__file__).resolve().parent.parent / "shared"
+_SHARED = Path(__file__).resolve().parent.parent .parent / "lib"
 _SUPER = Path(__file__).resolve().parent.parent / "super"
 if str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
@@ -112,7 +112,7 @@ def generate_proposals(days: int = 14) -> list[dict]:
         f"**{n['title']}**\n{n['content']}" for n in notes
     )
 
-    from sub_agent import claude_think
+    from llm import claude_think
 
     prompt = f"""You are Mira's self-improvement system. You've been reading about best practices in agent architecture. Now compare what you've learned with your own architecture and propose concrete improvements.
 
@@ -204,7 +204,7 @@ def run(days: int = 14) -> str | None:
 
     # Push to user via bridge
     try:
-        from mira import Mira
+        from bridge import Mira
         bridge = Mira()
         today = datetime.now().strftime("%Y-%m-%d")
         item_id = f"self_improve_{today.replace('-', '')}"

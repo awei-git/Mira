@@ -12,22 +12,22 @@ All LLM calls use oMLX (local) to avoid API cost.
 
 Usage:
     from evolution import record_experience, get_relevant_experiences, extract_lessons
-    from evolution.rewards import collect_substack_rewards, record_user_feedback
+    from .rewards import collect_substack_rewards, record_user_feedback
 """
-from evolution.experience import (
+from .experience import (
     record_experience,
     get_relevant_experiences,
     record_task_outcome,
 )
-from evolution.lessons import (
+from .lessons import (
     extract_lessons,
     get_recent_lessons,
 )
-from evolution.strategy import (
+from .strategy import (
     propose_strategy_variant,
     evaluate_variant,
 )
-from evolution.rewards import (
+from .rewards import (
     collect_substack_rewards,
     record_user_feedback,
 )

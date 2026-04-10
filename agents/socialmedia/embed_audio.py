@@ -5,7 +5,7 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger("embed_audio")
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
 from config import SECRETS_FILE
 import yaml
 cfg = yaml.safe_load(SECRETS_FILE.read_text())["api_keys"]["substack"]

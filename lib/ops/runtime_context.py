@@ -16,7 +16,7 @@ from persona.persona_context import PersonaContext, get_persona_context
 
 log = logging.getLogger("mira.runtime_context")
 
-_AGENTS_DIR = Path(__file__).resolve().parent.parent
+from config import MIRA_ROOT; _AGENTS_DIR = MIRA_ROOT / "agents"
 _SUPER_DIR = _AGENTS_DIR / "super"
 if str(_SUPER_DIR) not in sys.path:
     sys.path.insert(0, str(_SUPER_DIR))

@@ -9,7 +9,7 @@ sys.path.insert(0, str(_SHARED.parent / "super"))
 
 
 def test_publish_preflight_pass():
-    from preflight import preflight_check
+    from publish.preflight import preflight_check
     result = preflight_check("publish", {
         "instruction": "Publish article",
         "title": "Test Article",
@@ -22,7 +22,7 @@ def test_publish_preflight_pass():
 
 
 def test_publish_preflight_no_title():
-    from preflight import preflight_check
+    from publish.preflight import preflight_check
     result = preflight_check("publish", {
         "instruction": "Publish",
         "title": "",
@@ -33,7 +33,7 @@ def test_publish_preflight_no_title():
 
 
 def test_publish_preflight_short_content():
-    from preflight import preflight_check
+    from publish.preflight import preflight_check
     result = preflight_check("publish", {
         "instruction": "Publish",
         "title": "Test",
@@ -44,7 +44,7 @@ def test_publish_preflight_short_content():
 
 
 def test_file_write_preflight_protected():
-    from preflight import preflight_check
+    from publish.preflight import preflight_check
     result = preflight_check("file_write", {
         "instruction": "Write file",
         "path": "/tmp/CLAUDE.md",
@@ -55,7 +55,7 @@ def test_file_write_preflight_protected():
 
 
 def test_file_write_preflight_pass():
-    from preflight import preflight_check
+    from publish.preflight import preflight_check
     result = preflight_check("file_write", {
         "instruction": "Write file",
         "path": "/tmp/test_output.txt",
@@ -65,7 +65,7 @@ def test_file_write_preflight_pass():
 
 
 def test_delete_preflight_not_recoverable():
-    from preflight import preflight_check
+    from publish.preflight import preflight_check
     with tempfile.NamedTemporaryFile(delete=False) as f:
         f.write(b"data")
         path = f.name
@@ -79,7 +79,7 @@ def test_delete_preflight_not_recoverable():
 
 
 def test_verify_file_exists():
-    from preflight import verify_artifact
+    from publish.preflight import verify_artifact
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         f.write("Hello world content here")
         path = f.name
@@ -89,14 +89,14 @@ def test_verify_file_exists():
 
 
 def test_verify_file_missing():
-    from preflight import verify_artifact
+    from publish.preflight import verify_artifact
     result = verify_artifact("file", "/tmp/nonexistent_file_xyz.txt")
     assert not result.verified
     assert any("not exist" in r for r in result.reasons)
 
 
 def test_verify_file_contains():
-    from preflight import verify_artifact
+    from publish.preflight import verify_artifact
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         f.write("The quick brown fox")
         path = f.name
@@ -110,7 +110,7 @@ def test_verify_file_contains():
 
 def test_verify_publish_uses_runtime_config_path(tmp_path, monkeypatch):
     import config
-    from preflight import verify_artifact
+    from publish.preflight import verify_artifact
 
     pubdir = tmp_path / "_published"
     pubdir.mkdir(parents=True)

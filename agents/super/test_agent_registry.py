@@ -8,7 +8,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 _AGENTS = _HERE.parent
 sys.path.insert(0, str(_HERE))
-sys.path.insert(0, str(_AGENTS / "shared"))
+sys.path.insert(0, str(_AGENTS.parent / "lib"))
 
 from agent_registry import AgentRegistry
 

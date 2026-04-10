@@ -11,7 +11,7 @@ sys.path.insert(0, str(_SHARED))
 
 
 def test_build_runtime_context_formats_memory_recall(monkeypatch):
-    import runtime_context as rc
+    import ops.runtime_context as rc
 
     class FakePersona:
         def as_prompt(self, max_length: int = 3000) -> str:
@@ -61,7 +61,7 @@ def test_build_runtime_context_formats_memory_recall(monkeypatch):
 
 
 def test_runtime_context_recall_block_respects_char_limit():
-    import runtime_context as rc
+    import ops.runtime_context as rc
 
     bundle = rc.RuntimeContextBundle(
         persona=rc.PersonaContext("", "", "", "", "", ""),

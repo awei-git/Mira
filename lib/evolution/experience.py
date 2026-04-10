@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
-from evolution.config import EXPERIENCE_DIR, REWARD_WEIGHTS
+from .config import EXPERIENCE_DIR, REWARD_WEIGHTS
 
 log = logging.getLogger("mira.evolution")
 

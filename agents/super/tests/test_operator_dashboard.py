@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 _SUPER = Path(__file__).resolve().parent.parent
-_SHARED = _SUPER.parent / "shared"
+_SHARED = _SUPER.parent.parent / "lib"
 sys.path.insert(0, str(_SUPER))
 sys.path.insert(0, str(_SHARED))
 

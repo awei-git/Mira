@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 
-from action_backlog import ActionBacklog
+from ops.backlog import ActionBacklog
 
 log = logging.getLogger("mira.backlog_executor")
 

@@ -44,8 +44,7 @@ class _FakeConn:
 
 
 def test_add_link_scopes_duplicates_by_user(monkeypatch):
-    import knowledge_links
-
+    import knowledge.links as knowledge_links
     cursor = _FakeCursor(fetchone_values=[(1,), None])
     conn = _FakeConn(cursor)
     monkeypatch.setattr(knowledge_links, "_get_conn", lambda: conn)
@@ -61,8 +60,7 @@ def test_add_link_scopes_duplicates_by_user(monkeypatch):
 
 
 def test_get_links_filters_by_user(monkeypatch):
-    import knowledge_links
-
+    import knowledge.links as knowledge_links
     cursor = _FakeCursor(fetchall_values=[[("wiki", "page1", "related", 0.8, None)]])
     conn = _FakeConn(cursor)
     monkeypatch.setattr(knowledge_links, "_get_conn", lambda: conn)

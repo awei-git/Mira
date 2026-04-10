@@ -20,10 +20,10 @@ import sys
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import DARKTABLE_CLI_PATH, DARKTABLE_RENDER_TIMEOUT
-from sub_agent import claude_act
+from llm import claude_act
 from dt_xmp import (
     make_exposure, make_filmic, make_colorbalance,
     make_tone_equalizer, write_xmp,
@@ -34,7 +34,7 @@ log = logging.getLogger("photo.editor")
 
 def _log_photo_failure(step: str, error_msg: str, slug: str = "photo"):
     try:
-        from failure_log import record_failure
+        from ops.failure_log import record_failure
         record_failure(pipeline="photo", step=step, slug=slug,
                        error_type="photo_agent_error", error_message=error_msg[:500])
     except Exception:

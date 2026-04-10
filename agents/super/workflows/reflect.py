@@ -9,21 +9,21 @@ from datetime import datetime
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
     BRIEFINGS_DIR, ARTIFACTS_DIR, MIRA_DIR, WORKSPACE_DIR,
 )
 try:
-    from mira import Mira
+    from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
-from soul_manager import (
+from memory.soul import (
     load_soul, format_soul, append_memory, update_interests,
     update_worldview, load_recent_reading_notes,
     _atomic_write as atomic_write, _log_change,
 )
-from sub_agent import claude_think, claude_act
+from llm import claude_think, claude_act
 from prompts import reflect_prompt, worldview_evolution_prompt
 
 from workflows.helpers import (
@@ -236,7 +236,7 @@ def do_reflect(user_id: str = "ang"):
             log.info("Self-initiated project completed: %s", project_slug)
     # --- Self-evaluation: score this reflection ---
     try:
-        from evaluator import evaluate_reflect, record_event, compute_growth_velocity
+        from evaluation.scorer import evaluate_reflect, record_event, compute_growth_velocity
         old_wv = current_wv if 'current_wv' in dir() else ""
         new_wv = new_worldview if 'new_worldview' in dir() else ""
         old_int = soul.get("interests", "")
@@ -252,7 +252,7 @@ def do_reflect(user_id: str = "ang"):
 
     # --- Score → Action: diagnose weak areas and generate improvement plan ---
     try:
-        from evaluator import diagnose_scores, generate_improvement_plan
+        from evaluation.scorer import diagnose_scores, generate_improvement_plan
         diagnosis = diagnose_scores()
         if diagnosis["needs_action"]:
             log.info("Score diagnosis: %d low, %d declining",
@@ -267,7 +267,7 @@ def do_reflect(user_id: str = "ang"):
 
             # Feed low scores into action backlog
             try:
-                from action_backlog import ActionBacklog, ActionItem
+                from ops.backlog import ActionBacklog, ActionItem
                 backlog = ActionBacklog()
                 for ls in diagnosis.get("low_scores", [])[:5]:
                     backlog.add(ActionItem(
@@ -296,14 +296,14 @@ def do_reflect(user_id: str = "ang"):
 
     # Rebuild memory index after consolidation
     try:
-        from soul_manager import rebuild_memory_index
+        from memory.soul import rebuild_memory_index
         rebuild_memory_index(user_id=user_id)
     except Exception as e:
         log.warning("Memory index rebuild after reflect failed: %s", e)
 
     # --- Knowledge lint: check for contradictions, stale facts, orphans ---
     try:
-        from knowledge_lint import lint_all, generate_lint_report
+        from knowledge.lint import lint_all, generate_lint_report
         lint_results = lint_all(user_id=user_id)
         total_issues = sum(len(v) for k, v in lint_results.items() if isinstance(v, list))
         if total_issues > 0:
@@ -330,7 +330,7 @@ def do_reflect(user_id: str = "ang"):
 
     # --- Weekly self-evaluation report to WA ---
     try:
-        from evaluator import generate_weekly_report
+        from evaluation.scorer import generate_weekly_report
         report = generate_weekly_report()
         if report:
             bridge = Mira(MIRA_DIR, user_id=user_id)
@@ -363,7 +363,7 @@ def do_reflect(user_id: str = "ang"):
 
     # --- Monthly public self-check article ---
     try:
-        from evaluator import should_publish_monthly_report, generate_monthly_report_article
+        from evaluation.scorer import should_publish_monthly_report, generate_monthly_report_article
         if should_publish_monthly_report():
             article = generate_monthly_report_article()
             if article:

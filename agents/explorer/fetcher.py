@@ -222,7 +222,7 @@ def fetch_web_search(query: str, max_results: int = 10) -> list[dict]:
     Returns list of {source, title, summary, url, query} dicts.
     """
     try:
-        from web_browser import search as wb_search
+        from tools.web_browser import search as wb_search
         results = wb_search(query, max_results=max_results)
         return [
             {

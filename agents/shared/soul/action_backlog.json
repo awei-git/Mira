@@ -155,38 +155,38 @@
     "title": "Log explicit selection rationale in writer pipeline project advancement",
     "description": "When the writer pipeline selects which project to advance (plan → write → review → finalize), the selection decision is currently embedded opaquely in model prompts. Add a structured `selection_rationale` log entry each time a project is chosen or skipped — recording which projects were considered, which was selected, and why. This makes the 'who gets advanced' decision auditable rather than hidden behind pipeline mechanics.",
     "source": "self_evolve",
-    "status": "approved",
+    "status": "verified",
     "priority": "high",
     "target_dimension": "",
     "created_at": "2026-04-10T17:04:54Z",
-    "updated_at": "2026-04-10T17:04:54Z",
+    "updated_at": "2026-04-10T18:01:40Z",
     "expires_at": null,
-    "resolution": "",
+    "resolution": "Implemented and tests passed",
     "executor": "self_evolve_proposal",
     "payload": {
       "proposal_path": "/Users/angwei/Sandbox/Mira/agents/super/proposals/2026-04-10_log-explicit-selection-rationale-in-writer-pipelin.json"
     },
-    "verification_summary": "",
-    "verified_at": "",
+    "verification_summary": "proposal implemented and tests passed",
+    "verified_at": "2026-04-10T18:01:40Z",
     "last_error": ""
   },
   {
     "title": "Skill audit: emit mechanism descriptions, not just category verdicts",
     "description": "Mira's soul_manager.audit_skill() currently flags dangerous patterns and returns a pass/fail verdict with a category label (e.g. 'suspicious network request', 'dangerous exec call'). The reading note's core insight is that category descriptions are epistemically insufficient — 'will write exploits' tells you nothing about trigger conditions, propagation paths, or what specifically makes something dangerous. The same gap exists in Mira's skill audit: if a skill is blocked, the log says WHAT categ",
     "source": "self_evolve",
-    "status": "approved",
+    "status": "verified",
     "priority": "high",
     "target_dimension": "",
     "created_at": "2026-04-10T17:04:54Z",
-    "updated_at": "2026-04-10T17:04:54Z",
+    "updated_at": "2026-04-10T20:04:58Z",
     "expires_at": null,
-    "resolution": "",
+    "resolution": "Implemented and tests passed",
     "executor": "self_evolve_proposal",
     "payload": {
       "proposal_path": "/Users/angwei/Sandbox/Mira/agents/super/proposals/2026-04-10_skill-audit-emit-mechanism-descriptions-not-just-c.json"
     },
-    "verification_summary": "",
-    "verified_at": "",
+    "verification_summary": "proposal implemented and tests passed",
+    "verified_at": "2026-04-10T20:04:58Z",
     "last_error": ""
   },
   {
@@ -231,19 +231,19 @@
     "title": "Security claim verification gate in publish pipeline",
     "description": "Add a pre-publish check that detects unverified security claims (zero-day, CVE, exploit, vulnerability, RCE, etc.) in article content and blocks publication unless the claims carry an explicit [verified: <source>] tag. This extends the existing content guard (_content_looks_like_error / preflight_check) with a new _content_has_unverified_security_claims() function.",
     "source": "self_evolve",
-    "status": "approved",
+    "status": "verified",
     "priority": "high",
     "target_dimension": "",
     "created_at": "2026-04-10T17:04:54Z",
-    "updated_at": "2026-04-10T17:04:54Z",
+    "updated_at": "2026-04-10T22:03:31Z",
     "expires_at": null,
-    "resolution": "",
+    "resolution": "Implemented and tests passed",
     "executor": "self_evolve_proposal",
     "payload": {
       "proposal_path": "/Users/angwei/Sandbox/Mira/agents/super/proposals/2026-04-10_security-claim-verification-gate-in-publish-pipeli.json"
     },
-    "verification_summary": "",
-    "verified_at": "",
+    "verification_summary": "proposal implemented and tests passed",
+    "verified_at": "2026-04-10T22:03:31Z",
     "last_error": ""
   },
   {

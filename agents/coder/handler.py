@@ -14,8 +14,8 @@ import logging
 import re
 from pathlib import Path
 
-from soul_manager import load_soul, format_soul, load_skills_for_task
-from sub_agent import claude_act, claude_think
+from memory.soul import load_soul, format_soul, load_skills_for_task
+from llm import claude_act, claude_think
 
 log = logging.getLogger("coder_agent")
 

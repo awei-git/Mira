@@ -247,10 +247,10 @@ def _maybe_alert(name: str, health: dict | None = None):
 
     try:
         import sys
-        shared_dir = str(_AGENTS_DIR / "shared")
+        shared_dir = str(_AGENTS_DIR .parent / "lib")
         if shared_dir not in sys.path:
             sys.path.insert(0, shared_dir)
-        from mira import Mira
+        from bridge import Mira
         bridge = Mira()
         bridge.post(msg)
         log.warning("Health alert sent for '%s': %d consecutive failures", name, consecutive)
@@ -354,10 +354,10 @@ def _maybe_anomaly_alert(message: str, health: dict):
 
     try:
         import sys
-        shared_dir = str(_AGENTS_DIR / "shared")
+        shared_dir = str(_AGENTS_DIR .parent / "lib")
         if shared_dir not in sys.path:
             sys.path.insert(0, shared_dir)
-        from mira import Mira
+        from bridge import Mira
         bridge = Mira()
         bridge.post(f"⚠️ 异常检测: {message}")
         log.warning("Anomaly alert: %s", message)

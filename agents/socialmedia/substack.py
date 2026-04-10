@@ -16,6 +16,7 @@ import base64
 import json
 import logging
 import os
+import re
 import tempfile
 import urllib.parse
 import urllib.request
@@ -23,6 +24,38 @@ import urllib.error
 from pathlib import Path
 
 log = logging.getLogger("publisher.substack")
+
+# ---------------------------------------------------------------------------
+# Security claim guard — block publishing unverified security claims
+# ---------------------------------------------------------------------------
+
+SECURITY_CLAIM_PATTERNS = [
+    r'zero.?day',
+    r'CVE-\d{4}-\d+',
+    r'\bexploit\b',
+    r'\bvulnerability\b',
+    r'\bRCE\b',
+    r'\bSQL injection\b',
+    r'\bbackdoor\b',
+]
+
+
+class PublishBlockedError(Exception):
+    """Raised when a publish is blocked by a content guard."""
+
+
+def _content_has_unverified_security_claims(content: str) -> bool:
+    """Return True if content contains a security claim not followed by a [verified: ...] tag.
+
+    A claim is considered verified if a [verified: <source>] tag appears within
+    200 characters after the match.
+    """
+    for pattern in SECURITY_CLAIM_PATTERNS:
+        for m in re.finditer(pattern, content, re.IGNORECASE):
+            window = content[m.start(): m.start() + 200]
+            if not re.search(r'\[verified:\s*[^\]]+\]', window, re.IGNORECASE):
+                return True
+    return False
 
 
 def _security_preamble() -> str:
@@ -37,7 +70,7 @@ def _security_preamble() -> str:
 def _get_substack_config() -> dict:
     """Load Substack credentials from secrets.yml."""
     from config import SECRETS_FILE
-    from sub_agent import _parse_secrets_simple
+    from llm import _parse_secrets_simple
 
     secrets = _parse_secrets_simple(SECRETS_FILE)
     cfg = secrets.get("api_keys", {}).get("substack", {})
@@ -49,7 +82,7 @@ def _get_substack_config() -> dict:
 def _md_to_html(markdown_text: str) -> str:
     """Convert markdown to basic HTML for Substack."""
     # Use Claude to do a clean conversion
-    from sub_agent import claude_think
+    from llm import claude_think
 
     prompt = f"""Convert this Markdown to clean HTML suitable for a Substack newsletter post.
 - Use <h2>, <h3> for headings (not <h1>, Substack uses that for title)
@@ -299,7 +332,7 @@ def _fetch_unsplash(query: str, workspace: Path) -> str | None:
 
 def _generate_dalle_image(title: str, article_text: str, workspace: Path) -> str | None:
     """Generate a cover image using DALL-E 3. Returns local file path or None."""
-    from sub_agent import _get_api_key, claude_think
+    from llm import _get_api_key, claude_think
 
     api_key = _get_api_key("openai")
     if not api_key:
@@ -412,7 +445,7 @@ def publish_to_substack(title: str, subtitle: str,
 
     # Preflight check
     try:
-        from preflight import preflight_check
+        from publish.preflight import preflight_check
         pf = preflight_check("publish", {
             "instruction": f"Publish '{title}' to Substack",
             "title": title,
@@ -425,6 +458,12 @@ def publish_to_substack(title: str, subtitle: str,
             return msg
     except ImportError:
         pass
+
+    if _content_has_unverified_security_claims(article_text):
+        raise PublishBlockedError(
+            "Security claim detected without [verified: <source>] tag"
+            " — manual review required before publishing."
+        )
 
     # Guard: respect the global kill switch
     try:
@@ -439,7 +478,7 @@ def publish_to_substack(title: str, subtitle: str,
     # Guard: enforce 1 post per 3 days cooldown
     PUBLISH_COOLDOWN_DAYS = 3
     try:
-        from soul_manager import catalog_list
+        from memory.soul import catalog_list
         pubs = [e for e in catalog_list() if e.get("status") == "published" and e.get("date")]
         if pubs:
             from datetime import datetime as _dt
@@ -487,7 +526,7 @@ def publish_to_substack(title: str, subtitle: str,
     _body_cjk_ratio = len(_re_lang.findall(r'[\u4e00-\u9fff]', _body_sample)) / max(len(_body_sample), 1)
     _body_is_cjk = _body_cjk_ratio > 0.1
     if _has_cjk != _body_is_cjk:
-        from sub_agent import claude_think as _ct
+        from llm import claude_think as _ct
         _target_lang = "Chinese" if _body_is_cjk else "English"
         _new_title = _ct(
             f"Translate this article title to {_target_lang}. "
@@ -500,7 +539,7 @@ def publish_to_substack(title: str, subtitle: str,
 
     # Auto-generate subtitle if not provided (acts as email preview + SEO)
     if not subtitle:
-        from sub_agent import claude_think
+        from llm import claude_think
         _lang_hint = "中文" if _body_is_cjk else "English"
         sub_prompt = f"""Write a one-sentence subtitle for this Substack article.
 It should be compelling, specific, and under 120 characters.
@@ -614,7 +653,7 @@ Output ONLY the subtitle, nothing else."""
 
         # Add to content catalog
         try:
-            from soul_manager import catalog_add
+            from memory.soul import catalog_add
             catalog_add({
                 "type": "article",
                 "title": title,
@@ -1084,8 +1123,8 @@ def check_and_reply_comments() -> list[dict]:
 
     Returns list of {post_title, comment_name, comment_body, reply}.
     """
-    from sub_agent import claude_think
-    from soul_manager import load_soul, format_soul
+    from llm import claude_think
+    from memory.soul import load_soul, format_soul
 
     cfg = _get_substack_config()
     if not cfg.get("subdomain"):

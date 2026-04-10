@@ -10,8 +10,7 @@ sys.path.insert(0, str(_SHARED))
 
 
 def test_save_and_load_emptiness_are_user_scoped(tmp_path, monkeypatch):
-    import emptiness
-
+    import evaluation.emptiness as emptiness
     monkeypatch.setattr(emptiness, "MIRA_DIR", tmp_path / "bridge")
     monkeypatch.setattr(emptiness, "EMPTINESS_FILE", tmp_path / "legacy.json")
 
@@ -28,8 +27,7 @@ def test_save_and_load_emptiness_are_user_scoped(tmp_path, monkeypatch):
 
 
 def test_load_emptiness_falls_back_to_legacy_file(tmp_path, monkeypatch):
-    import emptiness
-
+    import evaluation.emptiness as emptiness
     monkeypatch.setattr(emptiness, "MIRA_DIR", tmp_path / "bridge")
     monkeypatch.setattr(emptiness, "EMPTINESS_FILE", tmp_path / "legacy.json")
     emptiness.EMPTINESS_FILE.write_text(
@@ -43,8 +41,7 @@ def test_load_emptiness_falls_back_to_legacy_file(tmp_path, monkeypatch):
 
 
 def test_add_question_does_not_leak_between_users(tmp_path, monkeypatch):
-    import emptiness
-
+    import evaluation.emptiness as emptiness
     monkeypatch.setattr(emptiness, "MIRA_DIR", tmp_path / "bridge")
     monkeypatch.setattr(emptiness, "EMPTINESS_FILE", tmp_path / "legacy.json")
 

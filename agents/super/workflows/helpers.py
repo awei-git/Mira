@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
     BRIEFINGS_DIR, JOURNAL_DIR, SKILLS_INDEX, ARTIFACTS_DIR,
@@ -19,14 +19,14 @@ from config import (
 )
 from user_paths import artifact_name_for_user, user_journal_dir
 try:
-    from mira import Mira
+    from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
-from soul_manager import (
+from memory.soul import (
     append_memory, catalog_list,
     _atomic_write as atomic_write,
 )
-from sub_agent import model_think
+from llm import model_think
 
 log = logging.getLogger("mira")
 
@@ -627,7 +627,7 @@ def harvest_observations(output_text: str, source: str = "", user_id: str = "ang
         return
 
     try:
-        from memory_store import get_store
+        from memory.store import get_store
         store = get_store()
     except Exception as e:
         log.warning("harvest_observations: memory_store unavailable: %s", e)
@@ -681,7 +681,7 @@ type 可以是:
             # Also add questions to emptiness queue
             if ttype == "question":
                 try:
-                    from emptiness import add_question
+                    from evaluation.emptiness import add_question
                     add_question(content, priority=3.0, source=f"harvest:{source[:50]}", user_id=user_id)
                 except (ImportError, ModuleNotFoundError, OSError):
                     pass

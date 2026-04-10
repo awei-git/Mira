@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import ARTIFACTS_DIR, LOCAL_TZ
-from soul_manager import load_skills_for_task
-from sub_agent import claude_think
+from memory.soul import load_skills_for_task
+from llm import claude_think
 
 log = logging.getLogger("analyst_agent")
 
@@ -49,7 +49,7 @@ def _find_latest_report() -> Path | None:
 def _web_supplement(content: str, max_chars: int = 4000) -> str:
     """Fetch live web data to supplement Tetra briefing."""
     try:
-        from web_browser import search_and_read
+        from tools.web_browser import search_and_read
         import re
         query = re.sub(r"[，。！？\n]", " ", content[:120]).strip()
         log.info("Fetching web supplement for analyst: %s", query[:60])

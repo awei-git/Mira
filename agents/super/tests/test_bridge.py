@@ -6,10 +6,10 @@ import pytest
 
 _AGENTS = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS / "super"))
-sys.path.insert(0, str(_AGENTS / "shared"))
+sys.path.insert(0, str(_AGENTS.parent / "lib"))
 
 try:
-    from mira import Mira
+    from bridge import Mira
     _HAS_BRIDGE = True
 except (ImportError, ModuleNotFoundError):
     _HAS_BRIDGE = False
@@ -19,7 +19,7 @@ _skip_no_bridge = pytest.mark.skipif(not _HAS_BRIDGE, reason="mira_bridge not av
 
 @_skip_no_bridge
 def test_bridge_init():
-    from mira import Mira
+    from bridge import Mira
     from config import MIRA_BRIDGE_DIR
     bridge = Mira(MIRA_BRIDGE_DIR)
     assert bridge.bridge_dir.exists(), f"Bridge dir doesn't exist: {bridge.bridge_dir}"
@@ -27,7 +27,7 @@ def test_bridge_init():
 
 @_skip_no_bridge
 def test_bridge_create_item():
-    from mira import Mira
+    from bridge import Mira
     with tempfile.TemporaryDirectory() as tmpdir:
         bridge = Mira(Path(tmpdir))
         item = bridge.create_item(
@@ -43,7 +43,7 @@ def test_bridge_create_item():
 
 @_skip_no_bridge
 def test_bridge_message_format():
-    from mira import Mira
+    from bridge import Mira
     with tempfile.TemporaryDirectory() as tmpdir:
         bridge = Mira(Path(tmpdir))
         item = bridge.create_item(

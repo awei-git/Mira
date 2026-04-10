@@ -23,7 +23,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 _AGENTS_DIR = _HERE.parent
 _MIRA_ROOT = _AGENTS_DIR.parent
-_SHARED_DIR = _AGENTS_DIR / "shared"
+_SHARED_DIR = _AGENTS_DIR .parent / "lib"
 _PROPOSALS_DIR = _HERE / "proposals"
 _READING_NOTES_DIR = _SHARED_DIR / "soul" / "reading_notes"
 _CLAUDE_MD = _MIRA_ROOT.parent / "CLAUDE.md"
@@ -173,7 +173,7 @@ def compare_note_to_architecture(note: dict, arch_context: str) -> dict | None:
 
     Returns a proposal dict or None if no improvement is identified.
     """
-    from sub_agent import claude_think
+    from llm import claude_think
 
     prompt = f"""You are Mira's self-evolution module. Your job: read a reading note and compare it to Mira's own architecture to find a specific, concrete improvement.
 
@@ -264,7 +264,7 @@ def save_proposal(proposal: dict, date: str) -> Path:
 def _enqueue_backlog_action(proposal: dict, proposal_path: Path):
     """Mirror actionable proposals into the governed action backlog."""
     try:
-        from action_backlog import ActionBacklog, ActionItem
+        from ops.backlog import ActionBacklog, ActionItem
 
         risk = str(proposal.get("risk_level", "medium"))
         backlog = ActionBacklog()
@@ -295,7 +295,7 @@ def auto_implement(proposal: dict, proposal_path: Path) -> dict:
     2. Run pytest
     3. If tests pass, keep. If fail, revert via git checkout.
     """
-    from sub_agent import claude_act
+    from llm import claude_act
 
     files = proposal.get("files_affected", [])
     diff_desc = proposal.get("diff_description", "")
@@ -441,7 +441,7 @@ def send_report(proposals: list[dict], implementations: list[dict], date: str):
     """Send a feed item summarizing today's self-evolution results."""
     try:
         from config import MIRA_DIR
-        from mira import Mira
+        from bridge import Mira
 
         bridge = Mira(MIRA_DIR)
 

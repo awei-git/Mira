@@ -441,7 +441,7 @@ def should_spark_check(user_id: str | None = None) -> bool:
     # Only check if there's been new input (explore, task, etc.)
     # Use a simple heuristic: check if memory has grown since last spark check
     last_memory_lines = state.get("spark_memory_lines", 0)
-    from soul_manager import get_memory_size
+    from memory.soul import get_memory_size
     current_lines = get_memory_size()
     if current_lines <= last_memory_lines:
         return False
@@ -483,7 +483,7 @@ def should_idle_think(user_id: str = "ang") -> bool:
     External input bypasses this entirely (handled in do_talk / cmd_run).
     """
     try:
-        from emptiness import tick, check_threshold
+        from evaluation.emptiness import tick, check_threshold
         from task_manager import TaskManager
     except ImportError:
         return False
@@ -628,7 +628,7 @@ def _should_backlog_executor() -> bool:
         except ValueError:
             pass
     try:
-        from action_backlog import ActionBacklog
+        from ops.backlog import ActionBacklog
 
         backlog = ActionBacklog()
         has_work = any(

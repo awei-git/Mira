@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Add shared dir to path
-_SHARED_DIR = Path(__file__).resolve().parent
+from config import MIRA_ROOT; _SHARED_DIR = MIRA_ROOT / "agents" / "shared"
 sys.path.insert(0, str(_SHARED_DIR))
 
 from config import (

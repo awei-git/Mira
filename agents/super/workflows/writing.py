@@ -13,20 +13,20 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 if str(_AGENTS_DIR / "writer") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 
 from config import JOURNAL_DIR, WRITINGS_DIR, MIRA_ROOT
 try:
-    from mira import Mira
+    from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
-from soul_manager import (
+from memory.soul import (
     load_soul, format_soul, load_recent_reading_notes,
     detect_recurring_themes,
 )
-from sub_agent import claude_think
+from llm import claude_think
 from prompts import autonomous_writing_prompt
 from writing_workflow import run_full_pipeline
 
@@ -84,7 +84,7 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
         # Full autonomy mode (2026-04-07): auto-approve in publish_manifest so
         # _check_pending_publish() picks it up and publishes on the next cycle.
         try:
-            from publish_manifest import update_manifest
+            from publish.manifest import update_manifest
             update_manifest(
                 meta["slug"],
                 title=title,

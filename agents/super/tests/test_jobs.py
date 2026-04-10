@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 _SUPER = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_SUPER))
-sys.path.insert(0, str(_SUPER.parent / "shared"))
+sys.path.insert(0, str(_SUPER.parent / "lib"))
 
 
 def test_all_jobs_have_names():
@@ -164,7 +164,7 @@ def test_backlog_and_restore_triggers_do_not_write_state(monkeypatch):
         def get_active(self):
             return [SimpleNamespace(status="approved", executor="self_evolve_proposal")]
 
-    monkeypatch.setitem(sys.modules, "action_backlog", SimpleNamespace(ActionBacklog=FakeBacklog))
+    monkeypatch.setitem(sys.modules, "ops.backlog", SimpleNamespace(ActionBacklog=FakeBacklog))
     assert triggers._should_backlog_executor() is True
 
     monkeypatch.setitem(sys.modules, "restore_drill", SimpleNamespace(latest_backup_dir=lambda: "/tmp/backup"))

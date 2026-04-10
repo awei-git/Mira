@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-_SHARED = Path(__file__).resolve().parent.parent / "shared"
+_SHARED = Path(__file__).resolve().parent.parent .parent / "lib"
 _EXPLORER = Path(__file__).resolve().parent
 for p in [_SHARED, _EXPLORER]:
     if str(p) not in sys.path:
@@ -24,7 +24,7 @@ def _local_research_briefing(content: str, workspace: Path, model_think) -> str:
     reasoning model to synthesize them into the same deliverable the agent
     would normally write after tool use.
     """
-    from web_browser import read_article, search
+    from tools.web_browser import read_article, search
 
     query = re.sub(r"\s+", " ", content).strip()[:200]
     results = search(query, max_results=5)
@@ -74,7 +74,7 @@ def handle(workspace: Path, task_id: str, content: str,
     For scheduled explores, core.py calls do_explore() directly.
     This handler is for user-triggered "go research X" requests.
     """
-    from sub_agent import claude_act, claude_think
+    from llm import claude_act, claude_think
 
     prompt = f"""You are Mira's explorer agent. The user wants you to research something.
 

@@ -8,7 +8,7 @@ sys.path.insert(0, str(_SHARED.parent / "super"))
 
 
 def test_capability_policy_defaults_for_socialmedia():
-    from capability_policy import get_capability_policy
+    from ops.policy import get_capability_policy
 
     policy = get_capability_policy("socialmedia")
     assert policy.capability_class == "external-publish"
@@ -19,7 +19,7 @@ def test_capability_policy_defaults_for_socialmedia():
 
 
 def test_capability_policy_defaults_for_writer():
-    from capability_policy import get_capability_policy
+    from ops.policy import get_capability_policy
 
     policy = get_capability_policy("writer")
     assert policy.capability_class == "local-write"
@@ -38,7 +38,7 @@ def test_registry_exposes_capability_policy():
 
 
 def test_capability_policy_rejects_invalid_class():
-    from capability_policy import CapabilityPolicy
+    from ops.policy import CapabilityPolicy
 
     try:
         CapabilityPolicy(

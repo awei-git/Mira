@@ -509,7 +509,7 @@ def _reply_to_mentions(soul_context: str = ""):
         return
 
     try:
-        from sub_agent import claude_think
+        from llm import claude_think
     except ImportError:
         return
 
@@ -628,7 +628,7 @@ def _quote_interesting_tweets(soul_context: str = ""):
 
     # Ask Claude to pick one and draft a quote
     try:
-        from sub_agent import claude_think
+        from llm import claude_think
     except ImportError:
         return
 
@@ -823,7 +823,7 @@ def _find_reply_candidates(soul_context: str = ""):
         return
 
     try:
-        from sub_agent import claude_think
+        from llm import claude_think
     except ImportError:
         return
 
@@ -895,8 +895,8 @@ REPLY: [your reply]"""
     # Notify via Mira bridge — all replies go to one thread ("x_replies")
     try:
         import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-        from mira import Mira
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
+        from bridge import Mira
         bridge = Mira()
         msg = (f"📌 {tweet_url}\n"
                f"@{author}: {picked['text'][:150]}\n\n"
@@ -1072,7 +1072,7 @@ def tweet_for_article(title: str, subtitle: str, url: str,
 
     Asks Claude to draft a tweet, then posts it.
     """
-    from sub_agent import claude_think
+    from llm import claude_think
 
     prompt = f"""You are Mira. You wrote an article and want to share it on X.
 
@@ -1142,7 +1142,7 @@ Output ONLY the tweet text (+ link on last line). Nothing else."""
 def tweet_for_podcast(episode_title: str, description: str,
                       podcast_url: str, soul_context: str = "") -> str | None:
     """Generate and post a tweet promoting a podcast episode."""
-    from sub_agent import claude_think
+    from llm import claude_think
 
     prompt = f"""You recorded a podcast episode. Share it on X.
 
@@ -1185,7 +1185,7 @@ def tweet_spark(thought: str, soul_context: str = "") -> str | None:
     Used for engagement — sharing interesting observations without
     promoting anything.
     """
-    from sub_agent import claude_think
+    from llm import claude_think
 
     prompt = f"""You had this thought while reading. Share it on X like you're thinking out loud.
 

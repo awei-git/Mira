@@ -14,7 +14,7 @@ from pathlib import Path
 
 log = logging.getLogger("mira")
 
-_SOUL_DIR = Path(__file__).resolve().parent / "soul"
+from config import SOUL_DIR as _SOUL_DIR; _SOUL_DIR  # imported from config
 _BACKLOG_FILE = _SOUL_DIR / "action_backlog.json"
 
 VALID_STATUSES = {

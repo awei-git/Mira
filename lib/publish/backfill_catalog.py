@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Add shared to path
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# sys.path already set via conftest/caller
 
 from config import ARTIFACTS_DIR, MIRA_BRIDGE_DIR, EPISODES_DIR
 from soul_manager import catalog_add, save_episode

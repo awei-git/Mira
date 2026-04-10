@@ -9,7 +9,7 @@ from pathlib import Path
 
 _writing_dir = Path(__file__).resolve().parent
 
-_shared_dir = str(_writing_dir.parent / "shared")
+_shared_dir = str(_writing_dir.parent .parent / "lib")
 if _shared_dir not in sys.path:
     sys.path.insert(0, _shared_dir)
 _super_dir = str(_writing_dir.parent / "super")

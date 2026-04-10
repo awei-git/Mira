@@ -6,7 +6,7 @@ from pathlib import Path
 # Setup path
 _AGENTS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_AGENTS / "photo"))
-sys.path.insert(0, str(_AGENTS / "shared"))
+sys.path.insert(0, str(_AGENTS.parent / "lib"))
 
 
 class TestParamClamping:

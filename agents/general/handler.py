@@ -7,10 +7,10 @@ import logging
 import re
 from pathlib import Path
 
-from preflight import preflight_check
-from runtime_context import build_runtime_context
-from soul_manager import load_skills_for_task
-from sub_agent import claude_act, claude_think
+from publish.preflight import preflight_check
+from ops.runtime_context import build_runtime_context
+from memory.soul import load_skills_for_task
+from llm import claude_act, claude_think
 from prompts import respond_prompt
 
 log = logging.getLogger("general_agent")
@@ -62,7 +62,7 @@ def _maybe_web_research(content: str, max_chars: int = 6000) -> str:
     if not _WEB_HINTS.search(content):
         return ""
     try:
-        from web_browser import search_and_read
+        from tools.web_browser import search_and_read
         # Extract a search query from the content (first 80 chars, cleaned)
         query = re.sub(r"[，。！？\n]", " ", content[:120]).strip()
         log.info("Pre-fetching web research for: %s", query[:60])

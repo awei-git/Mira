@@ -9,12 +9,15 @@ from pathlib import Path
 
 _AGENTS = Path(__file__).resolve().parent / "agents"
 
-# Shared modules only — never add individual agent dirs here to avoid
-# handler.py module-cache collisions across test files.
-for subdir in ["shared", "super"]:
-    p = str(_AGENTS / subdir)
-    if p not in sys.path:
-        sys.path.insert(0, p)
+# lib/ has all shared modules (moved from agents/shared/)
+_LIB = str(Path(__file__).resolve().parent / "lib")
+if _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+# super/ for core.py, task_manager.py etc.
+_SUPER = str(_AGENTS / "super")
+if _SUPER not in sys.path:
+    sys.path.insert(0, _SUPER)
 
 # Exclude one-off scripts that aren't real tests
 collect_ignore_glob = ["**/test_audio_upload.py"]

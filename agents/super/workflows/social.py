@@ -10,19 +10,19 @@ from datetime import datetime
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import JOURNAL_DIR, MIRA_DIR
 from user_paths import user_journal_dir
 try:
-    from mira import Mira
+    from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
-from soul_manager import (
+from memory.soul import (
     load_soul, format_soul, load_recent_reading_notes,
     get_memory_size,
 )
-from sub_agent import claude_think
+from llm import claude_think
 from prompts import spark_check_prompt
 
 from workflows.helpers import _append_to_daily_feed
@@ -99,7 +99,7 @@ def do_growth_cycle():
 
     try:
         sm_dir = str(Path(__file__).resolve().parent.parent.parent / "socialmedia")
-        shared_dir = str(Path(__file__).resolve().parent.parent.parent / "shared")
+        shared_dir = str(Path(__file__).resolve().parent.parent.parent .parent / "lib")
         import sys as _sys
         for d in (sm_dir, shared_dir):
             if d not in _sys.path:

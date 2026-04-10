@@ -15,7 +15,7 @@ import pytest
 _AGENTS = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS / "coder"))
 sys.path.insert(0, str(_AGENTS / "super"))
-sys.path.insert(0, str(_AGENTS / "shared"))
+sys.path.insert(0, str(_AGENTS.parent / "lib"))
 
 # Clear cached handler so we get coder's handler.py, not another agent's
 sys.modules.pop("handler", None)

@@ -20,7 +20,7 @@ from xml.etree import ElementTree as ET
 
 _AGENTS = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS / "podcast"))
-sys.path.insert(0, str(_AGENTS / "shared"))
+sys.path.insert(0, str(_AGENTS.parent / "lib"))
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +360,7 @@ def test_full_publish_trace():
 
 def test_manifest_status_progression():
     """Manifest must progress: approved → published → podcast_en → podcast_zh → complete."""
-    from publish_manifest import (
+    from publish.manifest import (
         load_manifest, update_manifest, get_next_pending, _get_path,
     )
     import os
@@ -368,7 +368,7 @@ def test_manifest_status_progression():
     # Use a temp manifest
     original_path = _get_path()
     test_manifest = Path(tempfile.mkdtemp()) / "test_manifest.json"
-    import publish_manifest
+    import publish.manifest as publish_manifest
     publish_manifest._manifest_path = test_manifest
 
     try:

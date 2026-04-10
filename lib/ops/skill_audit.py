@@ -26,8 +26,8 @@ log = logging.getLogger("skill_audit")
 # Skill loading
 # ---------------------------------------------------------------------------
 
-SOUL_SKILLS_DIR = Path(__file__).resolve().parent / "soul" / "learned"
-AGENT_DIRS = list(Path(__file__).resolve().parent.parent.glob("*/skills"))
+from config import SOUL_DIR; SOUL_SKILLS_DIR = SOUL_DIR / "learned"
+from config import MIRA_ROOT; AGENT_DIRS = list((MIRA_ROOT / "agents").glob("*/skills"))
 
 SKILL_CRITERIA = {
     "trigger_clarity": (
@@ -163,7 +163,7 @@ def audit_all_skills(judge_fn=None, save_path: Optional[Path] = None) -> list[di
 
     # Save report
     if save_path is None:
-        save_path = Path(__file__).resolve().parent / "autoresearch_runs" / "skill_audit.json"
+        save_path = MIRA_ROOT / "agents" / "shared" / "autoresearch_runs" / "skill_audit.json"
     save_path.parent.mkdir(parents=True, exist_ok=True)
     save_path.write_text(
         json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"

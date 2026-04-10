@@ -17,8 +17,8 @@ import re
 from pathlib import Path
 
 from config import OMLX_DEFAULT_MODEL, SECRET_MAX_FILE_CHARS, SECRET_MAX_FILES
-from preflight import preflight_check
-from sub_agent import _omlx_call
+from publish.preflight import preflight_check
+from llm import _omlx_call
 
 log = logging.getLogger("secret_agent")
 

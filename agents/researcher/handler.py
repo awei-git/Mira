@@ -18,8 +18,8 @@ import time
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-if str(_AGENTS_DIR / "shared") not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+if str(_AGENTS_DIR.parent / "lib") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
     RESEARCHER_MAX_ITERATIONS, RESEARCHER_MAX_WALL_CLOCK,
@@ -60,7 +60,7 @@ def _is_math_task(content: str) -> bool:
 
 def _local_research_question(question: str, claude_think) -> str:
     """Fallback research path when Claude tool mode cannot browse/write files."""
-    from web_browser import read_article, search
+    from tools.web_browser import read_article, search
 
     query = re.sub(r"\s+", " ", question).strip()[:200]
     results = search(query, max_results=min(MAX_SOURCES_PER_QUESTION, 5))
@@ -106,12 +106,12 @@ def handle(workspace: Path, task_id: str, content: str,
            thread_history: str = "", thread_memory: str = "") -> str | None:
     """Handle a research task with iterative deep-dive."""
     import sys
-    shared_dir = str(Path(__file__).parent.parent / "shared")
+    shared_dir = str(Path(__file__).parent.parent .parent / "lib")
     if shared_dir not in sys.path:
         sys.path.insert(0, shared_dir)
 
-    from runtime_context import build_runtime_context
-    from sub_agent import claude_think, claude_act
+    from ops.runtime_context import build_runtime_context
+    from llm import claude_think, claude_act
 
     bundle = build_runtime_context(
         content,

@@ -13,8 +13,8 @@ from pathlib import Path
 log = logging.getLogger("health_agent")
 
 from config import OMLX_DEFAULT_MODEL, DATABASE_URL
-from preflight import preflight_check
-from sub_agent import _omlx_call
+from publish.preflight import preflight_check
+from llm import _omlx_call
 
 
 def handle(workspace: Path, task_id: str, content: str,
@@ -23,7 +23,7 @@ def handle(workspace: Path, task_id: str, content: str,
            tier: str = "light") -> str | None:
     """Main entry point for the health agent."""
     # Force local LLM for all health data processing (privacy boundary)
-    from sub_agent import set_model_policy
+    from llm import set_model_policy
     set_model_policy("omlx")
     log.info("Health agent: task=%s content=%s", task_id, content[:80])
 
@@ -326,7 +326,7 @@ def _generate_on_demand_advice(store, person: str, input_text: str,
     submits symptoms, notes, or checkup data — so they get actionable advice
     right away instead of waiting for the next daily check.
     """
-    from sub_agent import model_think
+    from llm import model_think
 
     # Gather context: recent metrics + notes + checkup
     data_parts = []
@@ -395,7 +395,7 @@ def _generate_on_demand_advice(store, person: str, input_text: str,
         # Temporarily allow cloud LLM for advice generation.
         # Raw health data was already stored locally; the prompt contains
         # only aggregated summaries, no PII beyond person_id.
-        from sub_agent import set_model_policy
+        from llm import set_model_policy
         set_model_policy(None)  # lift local-model restriction for this call
         try:
             result = model_think(prompt, model_name="gpt5", timeout=60)

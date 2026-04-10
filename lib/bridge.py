@@ -8,7 +8,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 # Add MiraBridge to path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "MiraBridge" / "python"))
+from config import MIRA_ROOT as _MIRA_ROOT
+sys.path.insert(0, str(Path(_MIRA_ROOT).parent / "MiraBridge" / "python"))
 
 from mira_bridge import Bridge, _utc_iso, _msg_id, _normalize_sender, _atomic_write, _ensure_downloaded  # noqa: E402
 from config import MIRA_DIR  # noqa: E402

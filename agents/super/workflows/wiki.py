@@ -9,12 +9,12 @@ from datetime import datetime
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
-from sub_agent import claude_think, model_think
-from soul_manager import load_soul, format_soul
+from llm import claude_think, model_think
+from memory.soul import load_soul, format_soul
 
-from wiki_manager import (
+from knowledge.wiki import (
     WIKI_DIR,
     list_wiki_pages, load_wiki_page, save_wiki_page,
     detect_wiki_candidates, get_notes_for_topic,
@@ -256,7 +256,7 @@ def _categorize_topic(topic: str, description: str) -> str:
 def _create_wiki_links(slug: str, source_notes: list[dict], user_id: str = "ang"):
     """Create knowledge links between a wiki page and its source notes."""
     try:
-        from knowledge_links import add_link
+        from knowledge.links import add_link
         for note in source_notes[:10]:
             add_link("wiki", slug, "reading_note", note.get("path", ""),
                      "related", confidence=0.7, created_by="wiki", user_id=user_id)
@@ -316,7 +316,7 @@ def do_wiki_maintenance(user_id: str = "ang"):
             related = find_related_pages(content, exclude_slug=slug)
             if related:
                 try:
-                    from knowledge_links import add_link
+                    from knowledge.links import add_link
                     for r_slug in related:
                         add_link("wiki", slug, "wiki", r_slug,
                                  "related", confidence=0.5, created_by="wiki-maintenance",

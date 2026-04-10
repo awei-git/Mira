@@ -26,13 +26,13 @@ from pathlib import Path
 
 # Add shared modules to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
     VIDEO_MAX_REVIEW_ITERATIONS, VIDEO_REVIEW_SCORE,
 )
-from preflight import preflight_check
-from sub_agent import claude_think, _get_api_key
+from publish.preflight import preflight_check
+from llm import claude_think, _get_api_key
 from scene_analyzer import analyze_all, analyze_all_v2
 from triage import triage_all
 from screenplay import generate_screenplay, generate_edit_plan
@@ -66,7 +66,7 @@ def _check_disk_space(output_dir: str, required_gb: float = 2.0) -> bool:
 
 def _log_video_failure(step: str, error_msg: str, slug: str = "video"):
     try:
-        from failure_log import record_failure
+        from ops.failure_log import record_failure
         record_failure(pipeline="video", step=step, slug=slug,
                        error_type="video_agent_error", error_message=error_msg[:500])
     except Exception:

@@ -10,21 +10,21 @@ from datetime import datetime
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
     BRIEFINGS_DIR, ARTIFACTS_DIR, MIRA_DIR,
     EXPLORE_SOURCE_GROUPS, MAX_DEEP_DIVES,
 )
 try:
-    from mira import Mira
+    from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
-from soul_manager import (
+from memory.soul import (
     load_soul, format_soul, save_skill, save_reading_note,
     load_recent_reading_notes,
 )
-from sub_agent import claude_think, claude_act
+from llm import claude_think, claude_act
 from fetcher import fetch_all
 from prompts import explore_prompt, deep_dive_prompt, internalize_prompt
 
@@ -147,7 +147,7 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
 
     # --- Self-evaluation: score this explore ---
     try:
-        from evaluator import evaluate_explore, record_event
+        from evaluation.scorer import evaluate_explore, record_event
         from datetime import date as _date
         _today_str = _date.today().strftime("%Y-%m-%d")
         _rn_dir = Path(__file__).resolve().parent.parent.parent / "shared" / "soul" / "reading_notes"

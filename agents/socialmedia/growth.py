@@ -226,7 +226,7 @@ URL | action | reason
 只输出上面的格式，不要多余的话。"""
 
     try:
-        from sub_agent import claude_think
+        from llm import claude_think
         resp = claude_think(prompt, timeout=30, tier="light")
     except Exception as e:
         log.warning("Comment failure diagnosis failed: %s", e)
@@ -728,7 +728,7 @@ COMMENT: [你的评论]
 SKIP"""
 
     try:
-        from sub_agent import claude_think
+        from llm import claude_think
         resp = claude_think(prompt, timeout=90, tier="light")
     except Exception as e:
         log.error("Proactive comment LLM call failed: %s", e)
@@ -909,7 +909,7 @@ Or if nothing is worth replying to:
 SKIP"""
 
     try:
-        from sub_agent import claude_think
+        from llm import claude_think
         resp = claude_think(prompt, timeout=90, tier="light")
     except Exception as e:
         log.error("Proactive note comment LLM call failed: %s", e)
@@ -1175,7 +1175,7 @@ def _follow_up_on_replies(soul_context: str = ""):
     log.info("Found %d new replies to follow up on", len(replies))
 
     try:
-        from sub_agent import claude_think
+        from llm import claude_think
     except ImportError:
         return
 

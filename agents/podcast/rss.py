@@ -450,10 +450,10 @@ def publish_episode(
             # Use LLM to generate a proper episode summary
             try:
                 import sys as _sys
-                _shared = str(Path(__file__).resolve().parent.parent / "shared")
+                _shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
                 if _shared not in _sys.path:
                     _sys.path.insert(0, _shared)
-                from sub_agent import claude_think
+                from llm import claude_think
                 desc_lang = "中文" if lang == "zh" else "English"
                 desc_prompt = (
                     f"Write a 2-3 sentence podcast episode description in {desc_lang}. "
@@ -539,10 +539,10 @@ def publish_episode(
         if slug not in feed_content:
             try:
                 import sys as _sys
-                _shared = str(Path(__file__).resolve().parent.parent / "shared")
+                _shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
                 if _shared not in _sys.path:
                     _sys.path.insert(0, _shared)
-                from failure_log import record_failure
+                from ops.failure_log import record_failure
                 record_failure(
                     pipeline="rss", step="feed_verification", slug=slug,
                     error_type="episode_not_in_feed",
@@ -566,7 +566,7 @@ def publish_all_existing(lang: str = "zh") -> None:
     """
     import sys
     here = Path(__file__).resolve().parent
-    sys.path.insert(0, str(here.parent / "shared"))
+    sys.path.insert(0, str(here.parent / "lib"))
     from config import ARTIFACTS_DIR
 
     EPISODE_META = {

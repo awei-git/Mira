@@ -417,7 +417,7 @@ class AutoResearchLoop:
         self.judge_fn = judge_model_fn
 
         # History
-        self.history_dir = history_dir or Path(__file__).resolve().parent / "autoresearch_runs"
+        self.history_dir = history_dir or MIRA_ROOT / "agents" / "shared" / "autoresearch_runs"
         self.history_dir.mkdir(parents=True, exist_ok=True)
         self.experiments: list[Experiment] = []
         self.baseline_eval: Optional[EvalResult] = None

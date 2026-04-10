@@ -19,8 +19,8 @@ import urllib.error
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-if str(_AGENTS_DIR / "shared") not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+if str(_AGENTS_DIR.parent / "lib") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
     VIDEO_FILE_MAX_BYTES, VIDEO_FILE_UPLOAD_TIMEOUT,

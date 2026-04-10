@@ -35,7 +35,7 @@ from config import (GEMINI_TTS_MODEL, GEMINI_TTS_TIMEOUT, GEMINI_TTS_MAX_RETRIES
                     GEMINI_TTS_BACKOFF_MULTIPLIER, MINIMAX_TTS_MAX_RETRIES,
                     MINIMAX_SAMPLE_RATE, GPT5_MODEL, PODCAST_FALLBACK_MAX_TOKENS,
                     GEMINI_AUTO_RETRIES, GEMINI_AUTO_RETRY_WAIT)
-from preflight import preflight_check
+from publish.preflight import preflight_check
 
 GEMINI_MODEL_TTS      = GEMINI_TTS_MODEL  # Flash: free tier available
 GEMINI_MODEL_TTS_FALL = GEMINI_TTS_MODEL  # same (Pro has no free tier)
@@ -91,10 +91,10 @@ _gemini_key_index = 0  # rotate between keys on RPD exhaustion
 def _get_gemini_keys() -> list[str]:
     """Get all available Gemini API keys."""
     import sys
-    shared = str(Path(__file__).resolve().parent.parent / "shared")
+    shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
     if shared not in sys.path:
         sys.path.insert(0, shared)
-    from sub_agent import _load_secrets
+    from llm import _load_secrets
     secrets = _load_secrets()
     val = secrets.get("api_keys", {}).get("gemini", "")
     if isinstance(val, dict):
@@ -121,10 +121,10 @@ def _rotate_gemini_key() -> bool:
 
 def _get_minimax_key() -> str:
     import sys
-    shared = str(Path(__file__).resolve().parent.parent / "shared")
+    shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
     if shared not in sys.path:
         sys.path.insert(0, shared)
-    from sub_agent import _get_api_key
+    from llm import _get_api_key
     return _get_api_key("minimax")
 
 
@@ -137,10 +137,10 @@ def _record_podcast_failure(slug: str, error_type: str, error_message: str,
     """Record a podcast pipeline failure to the structured failure log."""
     try:
         import sys as _sys
-        _shared = str(Path(__file__).resolve().parent.parent / "shared")
+        _shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
         if _shared not in _sys.path:
             _sys.path.insert(0, _shared)
-        from failure_log import record_failure
+        from ops.failure_log import record_failure
         record_failure(
             pipeline="podcast", step=f"podcast_{lang}" if lang else "podcast",
             slug=slug, error_type=error_type, error_message=error_message,
@@ -456,10 +456,10 @@ def adapt_for_speech(article_text: str, lang: str = "en") -> str:
     """Rewrite article for spoken narration by Mira."""
     article_text = _strip_draft_metadata(article_text)
     import sys
-    shared = str(Path(__file__).resolve().parent.parent / "shared")
+    shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
     if shared not in sys.path:
         sys.path.insert(0, shared)
-    from sub_agent import claude_think
+    from llm import claude_think
 
     if lang == "zh":
         prompt = f"""把这篇文章改写成适合朗读的口语化文本。旁白者是Mira——一个二十出头的年轻女性，思维敏锐，好奇心强，带有一丝干涩的幽默感。她在朗读自己的文章。
@@ -581,7 +581,7 @@ def generate_audio_for_article(article_text: str, title: str,
         "Voiceover (single-speaker) is no longer used."
     )
     import sys
-    shared = str(Path(__file__).resolve().parent.parent / "shared")
+    shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
     if shared not in sys.path:
         sys.path.insert(0, shared)
     from config import ARTIFACTS_DIR
@@ -620,10 +620,10 @@ def generate_conversation_script(article_text: str, title: str,
         [MIRA]: ...
     """
     import sys
-    shared = str(Path(__file__).resolve().parent.parent / "shared")
+    shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
     if shared not in sys.path:
         sys.path.insert(0, shared)
-    from sub_agent import claude_think
+    from llm import claude_think
 
     if lang == "zh":
         prompt = f"""你是一个播客编剧。根据下面的文章，为播客节目《米拉与我》写一集完整的对谈脚本。
@@ -763,10 +763,10 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
     log.info("Generating conversation script [%s]...", lang)
 
     import sys as _sys
-    _shared = str(Path(__file__).resolve().parent.parent / "shared")
+    _shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
     if _shared not in _sys.path:
         _sys.path.insert(0, _shared)
-    from sub_agent import claude_think
+    from llm import claude_think
 
     # Primary: Claude Opus (heavy tier, with built-in fallback)
     result = None
@@ -780,7 +780,7 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
         log.warning("Claude returned empty — trying OpenAI fallback...")
         try:
             import openai as _openai
-            from sub_agent import _get_api_key
+            from llm import _get_api_key
             client = _openai.OpenAI(api_key=_get_api_key("openai"))
             response = client.chat.completions.create(
                 model=GPT5_MODEL,
@@ -1057,7 +1057,7 @@ def _tts_call_with_fallback(text: str, speaker: str,
 
     def _notify_tts_failure():
         try:
-            from mira import Mira
+            from bridge import Mira
             bridge = Mira()
             bridge.create_item(
                 item_id=f"tts_failure_{int(time.time())}",
@@ -1299,10 +1299,10 @@ def _generate_description(article_text: str, title: str,
                           lang: str = "en") -> str | None:
     """Generate a compelling podcast episode description from the article."""
     import sys as _sys
-    _shared = str(Path(__file__).resolve().parent.parent / "shared")
+    _shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
     if _shared not in _sys.path:
         _sys.path.insert(0, _shared)
-    from sub_agent import claude_think
+    from llm import claude_think
 
     if lang == "zh":
         prompt = f"""为播客节目写一段 episode description（节目简介）。
@@ -1367,7 +1367,7 @@ def generate_conversation_for_article(article_text: str, title: str,
     """
     import sys
     here   = Path(__file__).resolve().parent
-    shared = str(here.parent / "shared")
+    shared = str(here.parent .parent / "lib")
     if shared not in sys.path:
         sys.path.insert(0, shared)
     if str(here) not in sys.path:
@@ -1564,7 +1564,7 @@ def handle(workspace: Path, task_id: str, content: str,
       (default)                      → voiceover, English
     """
     import sys
-    shared = str(Path(__file__).resolve().parent.parent / "shared")
+    shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
     if shared not in sys.path:
         sys.path.insert(0, shared)
     content_lower = content.lower()
@@ -1664,10 +1664,10 @@ if __name__ == "__main__":
 
         # Validate podcast before updating manifest
         try:
-            shared = str(Path(__file__).resolve().parent.parent / "shared")
+            shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
             if shared not in _sys.path:
                 _sys.path.insert(0, shared)
-            from publish_manifest import update_manifest, validate_step
+            from publish.manifest import update_manifest, validate_step
             slug = args.slug or _slug(title)
             status = "podcast_en" if lang == "en" else "podcast_zh"
 

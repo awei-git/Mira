@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import ARTIFACTS_DIR, STATE_FILE, PODCAST_DAILY_LIMIT, PODCAST_RETRY_COOLDOWN_HOURS
-from mira import Mira
+from bridge import Mira
 
 log = logging.getLogger("podcast.autopipeline")
 

@@ -29,18 +29,18 @@ from pathlib import Path
 
 # Add shared modules to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
-from sub_agent import claude_think, claude_act, model_think
+from llm import claude_think, claude_act, model_think
 from config import MIRA_ROOT
-from preflight import preflight_check
+from publish.preflight import preflight_check
 
 log = logging.getLogger("photo.handler")
 
 
 def _log_photo_failure(step: str, error_msg: str, slug: str = "photo"):
     try:
-        from failure_log import record_failure
+        from ops.failure_log import record_failure
         record_failure(pipeline="photo", step=step, slug=slug,
                        error_type="photo_agent_error", error_message=error_msg[:500])
     except Exception:

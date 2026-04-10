@@ -19,10 +19,10 @@ import sys
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import PHOTO_STYLE_LEARN_TIMEOUT
-from sub_agent import claude_act, claude_think
+from llm import claude_act, claude_think
 
 log = logging.getLogger("photo.style_learner")
 

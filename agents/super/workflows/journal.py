@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 import health_monitor
 
@@ -19,14 +19,14 @@ from config import (
 )
 from user_paths import artifact_name_for_user, user_journal_dir
 try:
-    from mira import Mira
+    from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
-from soul_manager import (
+from memory.soul import (
     load_soul, format_soul, load_recent_reading_notes,
     _atomic_write as atomic_write,
 )
-from sub_agent import claude_think
+from llm import claude_think
 from prompts import journal_prompt
 
 from workflows.helpers import (
@@ -121,8 +121,8 @@ def do_journal(user_id: str = "ang"):
     # 7. Pipeline failures today
     pipeline_failures = ""
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "shared"))
-        from failure_log import get_failure_summary
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
+        from ops.failure_log import get_failure_summary
         pipeline_failures = get_failure_summary(days=1)
         if "No pipeline failures" not in pipeline_failures:
             log.info("Including %d chars of failure summary in journal", len(pipeline_failures))
@@ -333,7 +333,7 @@ def do_journal(user_id: str = "ang"):
 
     # --- Self-evaluation: score this journal ---
     try:
-        from evaluator import evaluate_journal, record_event
+        from evaluation.scorer import evaluate_journal, record_event
         recent = []
         for p in sorted(journal_dir.glob("*.md"))[-7:]:
             try:
@@ -348,7 +348,7 @@ def do_journal(user_id: str = "ang"):
 
     # --- Daily post-mortem: extract lessons from today's failures ---
     try:
-        from self_iteration import daily_postmortem
+        from evaluation.self_iteration import daily_postmortem
         postmortem_summary = daily_postmortem()
         if postmortem_summary:
             log.info("Daily post-mortem: %s", postmortem_summary[:100])
@@ -370,14 +370,14 @@ def do_journal(user_id: str = "ang"):
 
     # Rebuild memory index after journal
     try:
-        from soul_manager import rebuild_memory_index
+        from memory.soul import rebuild_memory_index
         rebuild_memory_index(user_id=user_id)
     except Exception as e:
         log.warning("Memory index rebuild after journal failed: %s", e)
 
     # Run retention policy: distill expiring knowledge, then prune old files
     try:
-        from soul_manager import run_retention_policy
+        from memory.soul import run_retention_policy
         run_retention_policy(user_id=user_id)
     except Exception as e:
         log.warning("Retention policy failed: %s", e)

@@ -1,7 +1,7 @@
 """Evolution package paths and constants."""
 from pathlib import Path
 
-_AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
+from config import MIRA_ROOT; _AGENTS_DIR = MIRA_ROOT / "agents"
 SOUL_DIR = _AGENTS_DIR / "shared" / "soul"
 EXPERIENCE_DIR = SOUL_DIR / "experiences"
 LESSON_DIR = SOUL_DIR / "lessons"

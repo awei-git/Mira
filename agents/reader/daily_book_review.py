@@ -26,14 +26,14 @@ from pathlib import Path
 
 # Add shared dir to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-_SHARED_DIR = _AGENTS_DIR / "shared"
+_SHARED_DIR = _AGENTS_DIR.parent / "lib"
 sys.path.insert(0, str(_SHARED_DIR))
 
 from config import (
     MIRA_DIR, SOUL_DIR, IDENTITY_FILE, WORLDVIEW_FILE, INTERESTS_FILE,
     ARTIFACTS_DIR,
 )
-from sub_agent import claude_think, model_think
+from llm import claude_think, model_think
 
 logging.basicConfig(
     level=logging.INFO,
@@ -570,7 +570,7 @@ def _write_series_index(series_dir: Path, book: dict, state: dict):
 def _deliver_to_bridge(book: dict, report: str, day: int, angle_name: str):
     """Push today's report to the Mira bridge so it shows up in the iOS app."""
     try:
-        from mira import Mira
+        from bridge import Mira
         bridge = Mira(MIRA_DIR)
         today = datetime.now().strftime("%Y%m%d")
         item_id = f"book_day{day}_{today}"

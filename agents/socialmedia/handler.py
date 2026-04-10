@@ -13,8 +13,8 @@ from datetime import datetime
 from pathlib import Path
 
 from config import ARTIFACTS_DIR, WRITINGS_OUTPUT_DIR, SUBSTACK_PUBLISHING_DISABLED, MIRA_ROOT
-from preflight import preflight_check
-from sub_agent import claude_think
+from publish.preflight import preflight_check
+from llm import claude_think
 
 log = logging.getLogger("publisher")
 
@@ -359,7 +359,7 @@ def post_publish_pipeline(slug: str, title: str, article_text: str):
     import sys
     from pathlib import Path
     podcast_dir = str(Path(__file__).resolve().parent.parent / "podcast")
-    shared_dir = str(Path(__file__).resolve().parent.parent / "shared")
+    shared_dir = str(Path(__file__).resolve().parent.parent .parent / "lib")
     if podcast_dir not in sys.path:
         sys.path.insert(0, podcast_dir)
     if shared_dir not in sys.path:

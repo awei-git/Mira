@@ -7,7 +7,7 @@ sys.path.insert(0, str(_SHARED))
 
 
 def test_create_memory_record():
-    from memory_schema import MemoryRecord
+    from memory.schema import MemoryRecord
     r = MemoryRecord(
         content="AI agent adoption is accelerating",
         memory_type="fact",
@@ -22,14 +22,14 @@ def test_create_memory_record():
 
 
 def test_invalid_memory_type():
-    from memory_schema import MemoryRecord
+    from memory.schema import MemoryRecord
     import pytest
     with pytest.raises(ValueError, match="Invalid memory_type"):
         MemoryRecord(content="test", memory_type="invalid", source="test")
 
 
 def test_confidence_clamping():
-    from memory_schema import MemoryRecord
+    from memory.schema import MemoryRecord
     r = MemoryRecord(content="test", memory_type="fact", source="test", confidence=1.5)
     assert r.confidence == 1.0
     r2 = MemoryRecord(content="test", memory_type="fact", source="test", confidence=-0.5)
@@ -37,7 +37,7 @@ def test_confidence_clamping():
 
 
 def test_to_dict_roundtrip():
-    from memory_schema import MemoryRecord
+    from memory.schema import MemoryRecord
     r = MemoryRecord(
         content="Test content",
         memory_type="episode",
@@ -53,13 +53,13 @@ def test_to_dict_roundtrip():
 
 
 def test_freshness():
-    from memory_schema import MemoryRecord
+    from memory.schema import MemoryRecord
     r = MemoryRecord(content="test", memory_type="fact", source="test")
     assert r.is_fresh(max_age_days=30)  # just created
 
 
 def test_decay():
-    from memory_schema import MemoryRecord
+    from memory.schema import MemoryRecord
     # No TTL = never decays
     r = MemoryRecord(content="test", memory_type="fact", source="test", ttl_days=None)
     assert not r.should_decay()
@@ -70,7 +70,7 @@ def test_decay():
 
 
 def test_filter_by_confidence():
-    from memory_schema import MemoryRecord, filter_by_confidence
+    from memory.schema import MemoryRecord, filter_by_confidence
     records = [
         MemoryRecord(content="high", memory_type="fact", source="t", confidence=0.9),
         MemoryRecord(content="low", memory_type="fact", source="t", confidence=0.1),
@@ -82,7 +82,7 @@ def test_filter_by_confidence():
 
 
 def test_deduplicate():
-    from memory_schema import MemoryRecord, deduplicate
+    from memory.schema import MemoryRecord, deduplicate
     records = [
         MemoryRecord(content="AI agents are useful for automation", memory_type="fact", source="t"),
         MemoryRecord(content="AI agents are useful for automation", memory_type="fact", source="t"),

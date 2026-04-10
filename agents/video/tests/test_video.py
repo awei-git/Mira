@@ -6,7 +6,7 @@ from pathlib import Path
 
 _AGENTS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_AGENTS / "video"))
-sys.path.insert(0, str(_AGENTS / "shared"))
+sys.path.insert(0, str(_AGENTS.parent / "lib"))
 
 
 class TestClipGrader:

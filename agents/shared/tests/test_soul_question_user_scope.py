@@ -11,7 +11,7 @@ _SHARED = _HERE.parent
 sys.path.insert(0, str(_SHARED))
 
 try:
-    import soul_question
+    import evaluation.soul_question as soul_question
     _HAS_SOUL_QUESTION = True
 except (ImportError, ModuleNotFoundError):
     soul_question = None

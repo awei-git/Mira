@@ -19,7 +19,7 @@ from pathlib import Path
 
 log = logging.getLogger("mira")
 
-_SOUL_DIR = Path(__file__).resolve().parent / "soul"
+from config import SOUL_DIR as _SOUL_DIR
 _BELIEFS_FILE = _SOUL_DIR / "beliefs.json"
 
 VALID_STANCES = {"strong", "moderate", "tentative", "exploring"}

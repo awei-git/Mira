@@ -38,8 +38,8 @@ from config import (
     MIN_REVIEW_ROUNDS, CLAUDE_TIMEOUT_PLAN,
     WRITING_MIN_DRAFT_CHARS, WRITING_MIN_SCORE_3RD_ROUND,
 )
-from sub_agent import model_think, claude_think
-from soul_manager import load_soul, format_soul, recall_context
+from llm import model_think, claude_think
+from memory.soul import load_soul, format_soul, recall_context
 from prompts import (
     analyze_writing_prompt, plan_propose_prompt, plan_critique_prompt,
     plan_synthesize_prompt, write_draft_prompt, review_draft_prompt,
@@ -54,8 +54,8 @@ def _log_workflow_failure(slug: str, step: str, error_msg: str):
     """Record a structured failure for post-mortem analysis."""
     try:
         import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
-        from failure_log import record_failure
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
+        from ops.failure_log import record_failure
         record_failure(pipeline="writing", step=step, slug=slug,
                        error_type="workflow_error", error_message=error_msg[:500])
     except Exception:
@@ -347,8 +347,8 @@ def _finalize(ws: Path, p: dict) -> str:
 
     # --- Self-iteration: extract craft skills from finished article ---
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-        from self_iteration import on_article_complete
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
+        from evaluation.self_iteration import on_article_complete
         type_key = p.get("type", "essay")
         on_article_complete(title, final_text, type_key)
     except Exception as e:
@@ -357,8 +357,8 @@ def _finalize(ws: Path, p: dict) -> str:
 
     # --- Self-evaluation: score this piece ---
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-        from evaluator import evaluate_writing, record_event
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
+        from evaluation.scorer import evaluate_writing, record_event
         # Gather review scores from last round
         review_scores = []
         reviews_dir = ws / "versions" / f"v{v}" / "reviews"
@@ -897,7 +897,7 @@ def run_full_pipeline(
 
     # Add to content catalog
     try:
-        from soul_manager import catalog_add
+        from memory.soul import catalog_add
         catalog_add({
             "type": type_key,
             "title": title,

@@ -10,8 +10,8 @@ import logging
 import re
 from datetime import datetime, date
 
-from evolution.config import VARIANT_DIR
-from evolution.experience import load_experiences
+from .config import VARIANT_DIR
+from .experience import load_experiences
 
 log = logging.getLogger("mira.evolution")
 

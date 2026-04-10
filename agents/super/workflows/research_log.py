@@ -21,15 +21,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import MIRA_DIR  # noqa: E402
 try:
-    from mira import Mira
+    from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None  # type: ignore
-from soul_manager import _atomic_write as atomic_write  # noqa: E402
-from sub_agent import claude_think  # noqa: E402
+from memory.soul import _atomic_write as atomic_write  # noqa: E402
+from llm import claude_think  # noqa: E402
 
 log = logging.getLogger("mira")
 

@@ -65,9 +65,9 @@
   "last_cycle": {
     "qid": "Q5",
     "step_type": "experiment_design",
-    "timestamp": "2026-04-10T11:09:28",
+    "timestamp": "2026-04-10T17:13:45",
     "new_status": "in_progress",
-    "cost_usd": 0.003,
-    "worldview_delta": "Worldview #5 (sycophancy corrupts upstream) — experiment design operationalizes the bidirectional feedback loop mechanistically; the same-family vs cross-family comparison adds a new prediction not present in the original worldview entry."
+    "cost_usd": 0.12,
+    "worldview_delta": "Operationalizes worldview #5 ('sycophancy corrupts upstream') by making the bidirectional feedback loop empirically testable via grading-bar drift; no update yet, pending run."
   }
 }

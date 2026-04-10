@@ -15,11 +15,11 @@ from pathlib import Path
 
 # Add shared + sibling agent directories to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-if str(_AGENTS_DIR / "shared") not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+if str(_AGENTS_DIR.parent / "lib") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import MIRA_DIR, MIRA_ROOT
-from sub_agent import claude_think
+from llm import claude_think
 from planning.plan_schema import validate_plan_step as _validate_plan_step
 
 log = logging.getLogger("task_worker")
@@ -132,7 +132,7 @@ If a previous round already produced content, reference it in your plan (e.g. us
     # Calibration feedback: learn from past task outcomes
     cal_section = ""
     try:
-        from evaluator import diagnose_scores
+        from evaluation.scorer import diagnose_scores
         diag = diagnose_scores()
         cal = diag.get("calibration_insights", "")
         if cal:

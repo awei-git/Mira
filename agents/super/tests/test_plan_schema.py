@@ -4,7 +4,7 @@ from pathlib import Path
 
 _SUPER = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_SUPER))
-sys.path.insert(0, str(_SUPER.parent / "shared"))
+sys.path.insert(0, str(_SUPER.parent / "lib"))
 
 
 def test_normalize_canonical_name():

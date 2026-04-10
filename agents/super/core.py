@@ -22,7 +22,7 @@ from pathlib import Path
 
 # Add shared + sibling agent dirs to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 sys.path.insert(0, str(_AGENTS_DIR / "explorer"))
 
@@ -36,13 +36,13 @@ from config import (
     get_known_user_ids, get_user_config, is_agent_allowed, get_model_restriction, should_filter_content,
 )
 try:
-    from mira import Mira, Message
+    from bridge import Mira, Message
 except (ImportError, ModuleNotFoundError):
     Mira = None
     Message = None
 from task_manager import TaskManager, TASKS_DIR
-from soul_manager import load_soul, format_soul, append_memory, check_prompt_injection
-from sub_agent import claude_think
+from memory.soul import load_soul, format_soul, append_memory, check_prompt_injection
+from llm import claude_think
 from writing_workflow import (
     check_writing_responses, advance_project, start_from_plan,
 )
@@ -410,7 +410,7 @@ def do_talk():
     # --- Score completed tasks (grounded metrics only) ---
     for rec in completed:
         try:
-            from evaluator import evaluate_task_outcome, record_event
+            from evaluation.scorer import evaluate_task_outcome, record_event
             t_scores = evaluate_task_outcome({
                 "status": rec.status,
                 "summary": rec.summary or "",
@@ -593,7 +593,7 @@ def do_talk():
 
         # External input arrived — partial-reset emptiness (external takes priority)
         try:
-            from emptiness import on_external_input
+            from evaluation.emptiness import on_external_input
             on_external_input(user_id=bridge.user_id)
         except ImportError:
             pass
@@ -724,7 +724,7 @@ def do_talk():
 
 def _check_pending_publish():
     """Auto-publish approved articles from the manifest."""
-    from publish_manifest import get_next_pending, update_manifest, validate_step
+    from publish.manifest import get_next_pending, update_manifest, validate_step
 
     entry = get_next_pending("published")  # finds status="approved"
     if not entry:
@@ -788,7 +788,7 @@ def _check_pending_publish():
                                            url=post_url, title=entry["title"])
         if not passed:
             try:
-                from failure_log import record_failure
+                from ops.failure_log import record_failure
                 record_failure(
                     pipeline="publish", step="substack_publish", slug=entry["slug"],
                     error_type="verification_failed", error_message=verify_err,
@@ -839,7 +839,7 @@ def _check_pending_podcast():
     When multiple candidates are eligible, Mira ranks them by LLM judgment
     and picks the strongest one to podcast this week.
     """
-    from publish_manifest import get_next_pending, update_manifest, load_manifest
+    from publish.manifest import get_next_pending, update_manifest, load_manifest
 
     state = load_state()
     current_week = datetime.now().strftime("%Y-W%W")
@@ -865,7 +865,7 @@ def _check_pending_podcast():
             return candidates[0]
         # Multiple candidates: ask Claude to rank.
         try:
-            from sub_agent import claude_think
+            from llm import claude_think
             lines = [f"{i+1}. {c.get('title','')} [{c.get('slug','')}]"
                      for i, c in enumerate(candidates)]
             prompt = (
@@ -942,7 +942,7 @@ def _check_pending_podcast():
         log.debug("ZH podcast weekly quota already used for %s", current_week)
 
     # Check if both podcasts done → mark complete
-    from publish_manifest import load_manifest
+    from publish.manifest import load_manifest
     manifest = load_manifest()
     for entry in manifest.get("articles", {}).values():
         if entry.get("status") == "podcast_zh":
@@ -956,7 +956,7 @@ def _sweep_publish_pipeline():
 
     If an entry has exhausted MAX_RETRIES, notify the user via bridge.
     """
-    from publish_manifest import get_stuck_articles, MAX_RETRIES
+    from publish.manifest import get_stuck_articles, MAX_RETRIES
 
     stuck = get_stuck_articles(timeout_minutes=120)
     for entry in stuck:
@@ -988,10 +988,31 @@ def _sweep_publish_pipeline():
                 log.warning("Failed to notify about stuck pipeline: %s", e)
 
 
+def _log_writer_selection(considered: list, selected: list, skipped: list, rationale: str):
+    """Append a structured selection-rationale entry to writer_selection.jsonl."""
+    entry = {
+        "ts": datetime.now().isoformat(),
+        "considered": considered,
+        "selected": selected,
+        "skipped": skipped,
+        "rationale": rationale,
+    }
+    log_file = LOGS_DIR / "writer_selection.jsonl"
+    try:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning("Failed to write writer_selection log: %s", e)
+
+
 def _run_canonical_writing_pipeline() -> int:
     """Advance canonical writing_workflow projects that are ready to move."""
     advanced = 0
     responses = check_writing_responses()
+    considered = [resp["project"].get("title", resp["workspace"].name) for resp in responses]
+    selected = []
+    skipped = []
+
     for resp in responses:
         phase = resp["project"].get("phase", "")
         title = resp["project"].get("title", "")
@@ -999,8 +1020,18 @@ def _run_canonical_writing_pipeline() -> int:
             log.info("Auto-advancing canonical writing project: %s", title)
             advance_project(resp["workspace"])
             advanced += 1
+            selected.append(title)
         elif phase == "draft_ready":
             log.info("Writing project awaiting user feedback: %s", title)
+            skipped.append((title, "draft_ready: awaiting user feedback"))
+
+    if responses:
+        rationale = (
+            f"Advanced {len(selected)} plan_ready project(s); "
+            f"{len(skipped)} held in draft_ready awaiting feedback."
+        )
+        _log_writer_selection(considered, selected, skipped, rationale)
+
     return advanced
 
 
@@ -1777,7 +1808,7 @@ def cmd_run():
         # Sync Mira's own status + read all app feeds
         _t0 = _time.monotonic()
         try:
-            from app_feeds import read_app_feeds, sync_mira_status
+            from tools.app_feeds import read_app_feeds, sync_mira_status
             sync_mira_status()
             feeds = read_app_feeds()
             if feeds:
@@ -1931,7 +1962,7 @@ def main():
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
 
     # Set usage agent context for token tracking
-    from sub_agent import set_usage_agent
+    from llm import set_usage_agent
     set_usage_agent(command if command != "run" else "super")
 
     # Parse optional flags

@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
-shared = str(here.parent / "shared")
+shared = str(here.parent .parent / "lib")
 if shared not in sys.path:
     sys.path.insert(0, shared)
 

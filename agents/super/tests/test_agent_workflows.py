@@ -19,7 +19,7 @@ import pytest
 
 _AGENTS = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS / "super"))
-sys.path.insert(0, str(_AGENTS / "shared"))
+sys.path.insert(0, str(_AGENTS.parent / "lib"))
 sys.path.insert(0, str(_AGENTS / "writer"))
 sys.path.insert(0, str(_AGENTS / "explorer"))
 
@@ -209,7 +209,7 @@ def test_explore_workflow():
 @pytest.mark.slow
 def test_task_routing():
     """Task planner should route different messages to appropriate agents."""
-    from sub_agent import claude_think
+    from llm import claude_think
     from agent_registry import AgentRegistry
 
     registry = AgentRegistry()

@@ -21,11 +21,11 @@ from pathlib import Path
 from typing import Callable
 
 _SUPER_DIR = Path(__file__).resolve().parent
-_SHARED_DIR = _SUPER_DIR.parent / "shared"
+_SHARED_DIR = _SUPER_DIR.parent .parent / "lib"
 if str(_SHARED_DIR) not in sys.path:
     sys.path.insert(0, str(_SHARED_DIR))
 
-from capability_policy import get_capability_policy, resolve_capability_class
+from ops.policy import get_capability_policy, resolve_capability_class
 
 log = logging.getLogger("mira.registry")
 
@@ -118,7 +118,7 @@ class AgentRegistry:
             sys.path.insert(0, agent_dir)
 
         # Also ensure shared is in path
-        shared_dir = str(self._agents_dir / "shared")
+        shared_dir = str(self._agents_dir .parent / "lib")
         if shared_dir not in sys.path:
             sys.path.insert(0, shared_dir)
 

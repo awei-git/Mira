@@ -13,5 +13,6 @@
   "source_note_path": "/Users/angwei/Sandbox/Mira/agents/shared/soul/reading_notes/2026-04-10_mythos-零日漏洞发现.md",
   "created_at": "2026-04-10T13:04:54.053245",
   "date": "2026-04-10",
-  "status": "proposed"
+  "status": "implemented",
+  "implemented_at": "2026-04-10T18:03:31.373040"
 }

@@ -266,7 +266,7 @@ class TaskManager:
                         rec.timeout_alerted_at = _utc_iso()
                         changed = True
                         try:
-                            from mira import Mira
+                            from bridge import Mira
                             bridge = Mira(MIRA_DIR, user_id=rec.user_id)
                             elapsed_str = f"{int(elapsed//60)}分钟"
                             bridge.create_item(
@@ -284,7 +284,7 @@ class TaskManager:
                             log.warning("Failed to send timeout notification: %s", e)
                     # Check if user replied 'kill' to the timeout alert
                     try:
-                        from mira import Mira
+                        from bridge import Mira
                         bridge = Mira(MIRA_DIR, user_id=rec.user_id)
                         timeout_item = bridge.get_item(f"timeout-{rec.task_id}")
                         if timeout_item:

@@ -167,7 +167,7 @@ def generate_screenplay(scene_log: dict, work_dir: Path,
     log.info("Generating screenplay (target: %.1f min, %d scenes)",
              target_minutes, len(visual_scenes))
     # Use Gemini for speed; fall back to claude_think_fn if needed
-    from sub_agent import model_think
+    from llm import model_think
     screenplay = model_think(prompt, model_name="gemini", timeout=120)
     if not screenplay and claude_think_fn:
         screenplay = claude_think_fn(prompt, timeout=120)
@@ -360,7 +360,7 @@ def generate_edit_plan(scene_log: dict, beat_map: dict,
              content_mode, len(visual_scenes), len(beat_map.get("phrases", [])))
 
     # Use Gemini for edit plan (fast, good at structured JSON)
-    from sub_agent import model_think
+    from llm import model_think
     result = model_think(prompt, model_name="gemini", timeout=120)
 
     if not result:
@@ -488,7 +488,7 @@ def _self_review_plan(edit_plan: dict, taste_profile: str,
         plan_summary=plan_summary,
     )
 
-    from sub_agent import model_think
+    from llm import model_think
     result = model_think(prompt, model_name="gemini", timeout=120)
     if not result:
         log.warning("Self-review returned empty, keeping original plan")

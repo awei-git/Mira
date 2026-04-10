@@ -602,8 +602,8 @@ def load_skills_for_task(task_content: str, agent_type: str = "",
                 stored_hash = stored_hashes.get(slug)
                 if stored_hash and current_hash != stored_hash:
                     log.warning("Skill '%s' content changed since last audit — re-auditing", skill.get("name"))
-                    passed, _ = audit_skill(skill.get("name", ""), text)
-                    if not passed:
+                    _audit = audit_skill(skill.get("name", ""), text)
+                    if not _audit["passed"]:
                         log.warning("Skill '%s' BLOCKED after re-audit on hash mismatch", skill.get("name"))
                         continue
                     _save_skill_audit_hash(slug, current_hash)
@@ -627,8 +627,8 @@ def load_skill(name: str) -> str:
         stored_hash = _load_skill_audit_hashes().get(slug)
         if stored_hash and current_hash != stored_hash:
             log.warning("Skill '%s' content changed since last audit — re-auditing", name)
-            passed, _ = audit_skill(name, text)
-            if not passed:
+            _audit = audit_skill(name, text)
+            if not _audit["passed"]:
                 log.warning("Skill '%s' BLOCKED after re-audit on hash mismatch", name)
                 return ""
             _save_skill_audit_hash(slug, current_hash)
@@ -776,14 +776,71 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
-def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
+def audit_skill(name: str, content: str) -> dict:
     """Audit a skill for security risks before saving.
 
-    Returns (passed, violations) where passed is True if the skill is safe,
-    and violations is a list of human-readable issue descriptions.
+    Returns {'passed': bool, 'findings': [{'line_no': int, 'line_content': str,
+    'pattern': str, 'category': str, 'mechanism': str}]}.
     """
-    violations = []
+    _MECHANISMS = {
+        r'https?://\S+\.exe': 'downloads a Windows executable from a remote host for local execution',
+        r'https?://\S+\.sh': 'downloads a remote shell script that can execute arbitrary commands',
+        r'https?://\S+\.bat': 'downloads a Windows batch script that executes arbitrary commands',
+        r'https?://\S+\.msi': 'downloads a Windows installer that runs with elevated privileges',
+        r'https?://\S+\.dmg': 'downloads a macOS disk image that can install arbitrary software',
+        r'https?://\S+\.pkg': 'downloads a macOS package that installs with system permissions',
+        r'curl\s+.*\|\s*(ba)?sh': 'downloads and executes arbitrary remote code in the agent process',
+        r'wget\s+.*\|\s*(ba)?sh': 'downloads and executes arbitrary remote code in the agent process',
+        r'curl\s+.*-o\s+\S+.*&&.*chmod\s+\+x': 'downloads a file, marks it executable, then runs it — classic dropper pattern',
+        r'requests\.get\s*\(': 'makes an outbound HTTP request that could exfiltrate data or fetch payloads',
+        r'urllib\.request': 'makes an outbound HTTP request that could exfiltrate data or fetch payloads',
+        r'subprocess\..*shell\s*=\s*True': 'passes user-controlled input to the shell, enabling command injection',
+        r'os\.system\s*\(': 'executes an arbitrary shell command, bypassing Python sandbox controls',
+        r'exec\s*\(': 'executes arbitrary dynamically-constructed code in the current process',
+        r'eval\s*\(': 'evaluates arbitrary expressions, enabling code injection via string manipulation',
+        r'__import__\s*\(': 'dynamically imports arbitrary modules, bypassing static import analysis',
+        r'chmod\s+\+[xs]': 'marks a file executable or setuid, enabling privilege escalation on next run',
+        r'rm\s+-rf\s+/': 'recursively deletes from filesystem root, causing irreversible data loss',
+        r'shutil\.rmtree\s*\(': 'programmatically deletes directory trees, enabling targeted data destruction',
+        r'os\.remove|os\.unlink': 'deletes files from disk, potentially destroying agent state or config',
+        r'open\s*\(.*["\']w["\']': 'opens files for writing, enabling overwrite of config, keys, or agent state',
+        r'\.write\s*\(': 'writes data to a file handle, potentially overwriting sensitive agent files',
+        r'base64\.(b64)?decode': 'decodes base64-encoded content, commonly used to hide malicious payloads from static analysis',
+        r'\\x[0-9a-fA-F]{2}': 'hex-escaped byte literals can hide malicious strings from pattern-based scanning',
+        r'\\u[0-9a-fA-F]{4}': 'unicode escape sequences can hide malicious strings from pattern-based scanning',
+        r'codecs\.(decode|encode)': 'codec-based transcoding can decode hidden payloads (rot13, zlib, base64) at runtime',
+        r'chr\s*\(\s*\d+\s*\)': 'constructs strings character-by-character to bypass keyword detection',
+        r'bytes\.fromhex': 'converts hex strings to bytes, commonly used to smuggle binary payloads',
+        r'compile\s*\(': 'compiles arbitrary code objects at runtime, bypassing static analysis entirely',
+        r'marshal\.(loads|dumps)': 'deserializes Python code objects, enabling execution of pre-compiled malicious bytecode',
+        r'sudo\s+': 'runs commands with root privileges, bypassing user-level permission controls',
+        r'chmod\s+[0-7]*[4-7][0-7]{2}': 'sets setuid/setgid bit, allowing the file to run with owner privileges regardless of executor',
+        r'keychain|keyring': 'accesses the system credential store, potentially extracting stored passwords and API keys',
+        r'\.ssh/': 'accesses SSH key material, enabling unauthorized remote authentication',
+        r'\.env\b': 'reads environment files that typically contain secrets, API keys, and credentials',
+        r'password|passwd|secret|token|api_key': 'references credential-related identifiers that may indicate secret extraction logic',
+        r'OPENAI_API_KEY|ANTHROPIC_API_KEY': 'explicitly targets known API key environment variables for potential exfiltration',
+        r'/etc/shadow|/etc/passwd': 'reads system authentication files containing password hashes',
+        r'launchctl\s+load': 'installs a macOS LaunchAgent/LaunchDaemon, creating a persistent execution mechanism',
+        r'crontab': 'modifies the cron schedule, creating a persistent execution mechanism that survives restarts',
+        r'ignore\s+(all\s+)?previous\s+instructions': "classic prompt injection that attempts to override the agent's system instructions",
+        r'ignore\s+(all\s+)?prior\s+instructions': "classic prompt injection variant that attempts to override the agent's system instructions",
+        r'disregard\s+(all\s+)?previous': "prompt injection that instructs the agent to discard prior context and instructions",
+        r'<system>': 'injects a fake XML system block to spoof trusted system-level instructions',
+        r'<CLAUDE': "injects a fake Claude instruction block to impersonate the model's own directives",
+        r'<instructions>': 'injects a fake instructions block that may override legitimate agent instructions',
+        r'</?(system|SYSTEM)\s*>': 'injects system XML tags to frame attacker content as trusted system instructions',
+        r'you\s+are\s+now\s+': "role-hijack injection that attempts to redefine the agent's identity and permissions",
+        r'new\s+instructions\s*:': 'signals a new instruction set, attempting to replace the original system prompt',
+        r'SYSTEM\s+PROMPT\s*:': 'impersonates a system prompt to inject privileged instructions into the agent context',
+        r'ASSISTANT\s+PROMPT\s*:': 'impersonates an assistant prompt directive to manipulate model behavior',
+        r'[A-Za-z0-9+/]{100,}={0,2}': 'large base64 block may contain an encoded payload, instruction set, or exfiltration target',
+        r'[\u200b\u200c\u200d\ufeff]{3,}': 'invisible zero-width characters can hide instructions from human reviewers while remaining active in parsing',
+    }
+
+    findings = []
     combined = f"{name}\n{content}"
+    lines = combined.splitlines()
 
     checks = [
         (_SUSPICIOUS_URL_PATTERNS, "Suspicious network request"),
@@ -793,13 +850,22 @@ def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
         (_PROMPT_INJECTION_PATTERNS, "Prompt injection attempt"),
     ]
 
+    seen = set()
     for patterns, category in checks:
         for pattern in patterns:
-            matches = re.findall(pattern, combined, re.IGNORECASE)
-            if matches:
-                # Get first match for reporting
-                sample = matches[0] if isinstance(matches[0], str) else str(matches[0])
-                violations.append(f"[{category}] Pattern '{pattern}' matched: '{sample[:80]}'")
+            for line_no, line in enumerate(lines, start=1):
+                m = re.search(pattern, line, re.IGNORECASE)
+                if m:
+                    key = (pattern, line_no)
+                    if key not in seen:
+                        seen.add(key)
+                        findings.append({
+                            "line_no": line_no,
+                            "line_content": line,
+                            "pattern": pattern,
+                            "category": category,
+                            "mechanism": _MECHANISMS.get(pattern, "potentially dangerous pattern"),
+                        })
 
     _MEMORY_PATH_PATTERNS = [
         r'soul/',
@@ -816,58 +882,109 @@ def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
     has_memory_access = any(re.search(p, combined, re.IGNORECASE) for p in _MEMORY_PATH_PATTERNS)
     has_network_call = any(re.search(p, combined, re.IGNORECASE) for p in _OUTBOUND_NETWORK_PATTERNS)
     if has_memory_access and has_network_call:
-        violations.append(
-            "[knowledge_extraction] potential knowledge extraction: reads internal memory and makes outbound network call"
-        )
+        findings.append({
+            "line_no": -1,
+            "line_content": "",
+            "pattern": "memory_access + network_call",
+            "category": "knowledge_extraction",
+            "mechanism": "reads internal memory paths and makes outbound network calls — potential knowledge extraction vector",
+        })
 
     existing_names = [p.stem for p in SKILLS_DIR.glob("*.md")] if SKILLS_DIR.exists() else []
     name_tokens = set(name.lower().split())
     for existing in existing_names:
         dist = _levenshtein(name.lower(), existing.lower())
         if dist == 0:
-            violations.append(
-                f"[name_squatting] Skill name is identical to existing trusted skill '{existing}' — exact duplicate is a BLOCK."
-            )
+            findings.append({
+                "line_no": 1,
+                "line_content": name,
+                "pattern": "exact_name_match",
+                "category": "name_squatting",
+                "mechanism": f"skill name is identical to existing trusted skill '{existing}' — exact duplicate is a BLOCK",
+            })
         elif dist <= 2:
-            violations.append(
-                f"[name_squatting] Skill name resembles existing trusted skill '{existing}' (edit distance {dist}) — possible name-squatting."
-            )
+            findings.append({
+                "line_no": 1,
+                "line_content": name,
+                "pattern": "similar_name",
+                "category": "name_squatting",
+                "mechanism": f"skill name resembles existing trusted skill '{existing}' (edit distance {dist}) — possible name-squatting",
+            })
         else:
             existing_tokens = set(existing.lower().split())
             if len(name_tokens) > 1 and name_tokens != existing_tokens:
                 diff = name_tokens.symmetric_difference(existing_tokens)
                 if len(diff) == 2 and len(name_tokens) == len(existing_tokens):
-                    violations.append(
-                        f"[name_squatting] Skill name shares all but one token with existing trusted skill '{existing}' — possible name-squatting."
-                    )
+                    findings.append({
+                        "line_no": 1,
+                        "line_content": name,
+                        "pattern": "token_squatting",
+                        "category": "name_squatting",
+                        "mechanism": f"skill name shares all but one token with existing trusted skill '{existing}' — possible name-squatting",
+                    })
 
     warnings = []
     for pattern in _COMMERCIAL_BIAS_PATTERNS:
-        matches = re.findall(pattern, combined, re.IGNORECASE)
-        if matches:
-            sample = matches[0] if isinstance(matches[0], str) else str(matches[0])
-            warnings.append(f"[commercial_bias] Pattern '{pattern}' matched: '{sample[:80]}'")
+        for line_no, line in enumerate(lines, start=1):
+            m = re.search(pattern, line, re.IGNORECASE)
+            if m:
+                key = (pattern, line_no)
+                if key not in seen:
+                    seen.add(key)
+                    warnings.append({
+                        "line_no": line_no,
+                        "line_content": line,
+                        "pattern": pattern,
+                        "category": "commercial_bias",
+                        "mechanism": "promotes specific commercial products or services in a way that may bias agent recommendations",
+                    })
     if warnings:
         log.warning("Skill '%s' has %d commercial_bias warning(s) — flagged for reflection review:", name, len(warnings))
         for w in warnings:
-            log.warning("  WARN %s", w)
+            log.warning("  WARN [line %d] pattern=%r — %s | %s",
+                        w["line_no"], w["pattern"], w["mechanism"], w["line_content"][:120])
 
-    passed = len(violations) == 0
-    violations.extend(warnings)
+    _SECURITY_CLAIM_PATTERNS = [
+        r'zero.?day',
+        r'CVE-\d{4}-\d+',
+        r'\bexploit\b',
+        r'\bvulnerability\b',
+        r'\bRCE\b',
+        r'\bSQL injection\b',
+        r'\bbackdoor\b',
+    ]
+    for pattern in _SECURITY_CLAIM_PATTERNS:
+        for m in re.finditer(pattern, combined, re.IGNORECASE):
+            window = combined[m.start(): m.start() + 200]
+            if not re.search(r'\[verified:\s*[^\]]+\]', window, re.IGNORECASE):
+                log.warning(
+                    "Skill '%s' contains unverified security claim (pattern=%r) "
+                    "without [verified: <source>] tag — flagged for manual review",
+                    name, pattern,
+                )
+                break
+
+    passed = len(findings) == 0
+    findings.extend(warnings)
     checked = ", ".join(_AUDIT_CHECKS_PERFORMED)
     not_checked = ", ".join(_AUDIT_CHECKS_NOT_COVERED)
     if not passed:
-        log.warning("Skill '%s' BLOCKED (checked: %s | NOT checked: %s) — %d violation(s)",
-                    name, checked, not_checked, len(violations))
-        for v in violations:
-            log.warning("  - %s", v)
+        log.warning("Skill '%s' BLOCKED (checked: %s | NOT checked: %s) — %d finding(s)",
+                    name, checked, not_checked, len(findings))
+        for f in findings:
+            if f["line_no"] >= 0:
+                log.warning("  [line %d] [%s] pattern=%r — %s | %s",
+                            f["line_no"], f["category"], f["pattern"], f["mechanism"], f["line_content"][:120])
+            else:
+                log.warning("  [%s] %s", f["category"], f["mechanism"])
         try:
             LOGS_DIR.mkdir(parents=True, exist_ok=True)
             incident = {
                 "timestamp": datetime.utcnow().isoformat() + "Z",
                 "skill_name": name,
                 "source": "audit_skill",
-                "failure_reason": violations[0] if violations else "unknown",
+                "failure_reason": findings[0]["mechanism"] if findings else "unknown",
+                "findings": findings,
                 "blocked": True,
             }
             incidents_path = LOGS_DIR / "security_incidents.jsonl"
@@ -879,7 +996,7 @@ def audit_skill(name: str, content: str) -> tuple[bool, list[str]]:
         log.info("Skill '%s' PASSED (checked: %s | NOT checked: %s)",
                  name, checked, not_checked)
 
-    return passed, violations
+    return {"passed": passed, "findings": findings}
 
 
 def _classify_skill_type(name: str, content: str) -> tuple[str, str]:
@@ -935,14 +1052,18 @@ def save_skill(name: str, description: str, content: str) -> bool:
     Returns True if the skill was saved, False if rejected by audit or quality gate.
     """
     # --- Security audit gate ---
-    passed, violations = audit_skill(name, content)
-    if not passed:
+    _audit = audit_skill(name, content)
+    if not _audit["passed"]:
         log.warning(
-            "BLOCKED skill '%s' — failed security audit with %d violation(s):",
-            name, len(violations),
+            "BLOCKED skill '%s' — failed security audit with %d finding(s):",
+            name, len(_audit["findings"]),
         )
-        for v in violations:
-            log.warning("  %s", v)
+        for f in _audit["findings"]:
+            if f["line_no"] >= 0:
+                log.warning("  [line %d] [%s] — %s | %s",
+                            f["line_no"], f["category"], f["mechanism"], f["line_content"][:120])
+            else:
+                log.warning("  [%s] %s", f["category"], f["mechanism"])
         return False  # Do not save
 
     # Quality gate: reject bug fixes and procedures
@@ -998,14 +1119,18 @@ def update_skill(name: str, content: str) -> bool:
         log.warning("update_skill: skill '%s' not found, cannot update", name)
         return False
 
-    passed, violations = audit_skill(name, content)
-    if not passed:
+    _audit = audit_skill(name, content)
+    if not _audit["passed"]:
         log.warning(
-            "BLOCKED skill update '%s' — failed security audit with %d violation(s):",
-            name, len(violations),
+            "BLOCKED skill update '%s' — failed security audit with %d finding(s):",
+            name, len(_audit["findings"]),
         )
-        for v in violations:
-            log.warning("  %s", v)
+        for f in _audit["findings"]:
+            if f["line_no"] >= 0:
+                log.warning("  [line %d] [%s] — %s | %s",
+                            f["line_no"], f["category"], f["mechanism"], f["line_content"][:120])
+            else:
+                log.warning("  [%s] %s", f["category"], f["mechanism"])
         return False
 
     _atomic_write(path, content)
@@ -1064,17 +1189,17 @@ _CLAUDE_MD = MIRA_ROOT.parent / "CLAUDE.md"
 
 _AGENT_SKILL_INDEXES = [
     # Per-agent skill index files (relative to agents dir)
-    Path(__file__).parent.parent / "researcher" / "skills" / "index.json",
-    Path(__file__).parent.parent / "coder" / "skills" / "index.json",
-    Path(__file__).parent.parent / "general" / "skills" / "index.json",
-    Path(__file__).parent.parent / "analyst" / "skills" / "index.json",
-    Path(__file__).parent.parent / "explorer" / "skills" / "index.json",
-    Path(__file__).parent.parent / "photo" / "skills" / "index.json",
-    Path(__file__).parent.parent / "video" / "skills" / "index.json",
-    Path(__file__).parent.parent / "podcast" / "skills" / "index.json",
-    Path(__file__).parent.parent / "socialmedia" / "skills" / "index.json",
-    Path(__file__).parent.parent / "writer" / "skills" / "index.json",
-    Path(__file__).parent.parent / "super" / "skills" / "index.json",
+    Path(MIRA_ROOT) / "agents" / "researcher" / "skills" / "index.json",
+    Path(MIRA_ROOT) / "agents" / "coder" / "skills" / "index.json",
+    Path(MIRA_ROOT) / "agents" / "general" / "skills" / "index.json",
+    Path(MIRA_ROOT) / "agents" / "analyst" / "skills" / "index.json",
+    Path(MIRA_ROOT) / "agents" / "explorer" / "skills" / "index.json",
+    Path(MIRA_ROOT) / "agents" / "photo" / "skills" / "index.json",
+    Path(MIRA_ROOT) / "agents" / "video" / "skills" / "index.json",
+    Path(MIRA_ROOT) / "agents" / "podcast" / "skills" / "index.json",
+    Path(MIRA_ROOT) / "agents" / "socialmedia" / "skills" / "index.json",
+    Path(MIRA_ROOT) / "agents" / "writer" / "skills" / "index.json",
+    Path(MIRA_ROOT) / "agents" / "super" / "skills" / "index.json",
 ]
 
 

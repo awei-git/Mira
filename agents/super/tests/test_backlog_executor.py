@@ -8,20 +8,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 _SUPER = Path(__file__).resolve().parent.parent
-_SHARED = _SUPER.parent / "shared"
+_SHARED = _SUPER.parent.parent / "lib"
 sys.path.insert(0, str(_SUPER))
 sys.path.insert(0, str(_SHARED))
 
 
 def _make_backlog(tmp_path: Path):
-    from action_backlog import ActionBacklog
+    from ops.backlog import ActionBacklog
 
     path = tmp_path / "action_backlog.json"
     return ActionBacklog(path=path), path
 
 
 def test_run_once_executes_approved_self_evolve_proposal(monkeypatch, tmp_path: Path):
-    from action_backlog import ActionItem
+    from ops.backlog import ActionItem
     import backlog_executor
 
     backlog, backlog_path = _make_backlog(tmp_path)
@@ -56,7 +56,7 @@ def test_run_once_executes_approved_self_evolve_proposal(monkeypatch, tmp_path: 
 
 
 def test_run_once_rejects_missing_proposal(monkeypatch, tmp_path: Path):
-    from action_backlog import ActionItem, ActionBacklog
+    from ops.backlog import ActionItem, ActionBacklog
     import backlog_executor
 
     backlog, backlog_path = _make_backlog(tmp_path)

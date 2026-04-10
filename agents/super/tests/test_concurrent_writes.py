@@ -11,13 +11,13 @@ from pathlib import Path
 
 _AGENTS = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS / "super"))
-sys.path.insert(0, str(_AGENTS / "shared"))
+sys.path.insert(0, str(_AGENTS.parent / "lib"))
 
 
 def _append_worker(args):
     """Worker that appends a unique line to a file under lock."""
     file_path, worker_id, n_writes = args
-    from soul_manager import _locked_read_modify_write
+    from memory.soul import _locked_read_modify_write
 
     for i in range(n_writes):
         def _modify(text):
@@ -28,7 +28,7 @@ def _append_worker(args):
 def _overwrite_worker(args):
     """Worker that overwrites a file under lock."""
     file_path, worker_id, n_writes = args
-    from soul_manager import _locked_write
+    from memory.soul import _locked_write
 
     for i in range(n_writes):
         _locked_write(file_path, f"worker-{worker_id}-write-{i}\n")
@@ -85,7 +85,7 @@ def test_concurrent_overwrite_no_corruption():
 
 def test_atomic_write_no_partial():
     """Atomic write should never leave partial content."""
-    from soul_manager import _atomic_write
+    from memory.soul import _atomic_write
 
     with tempfile.TemporaryDirectory() as tmpdir:
         file_path = Path(tmpdir) / "test_atomic.md"
@@ -101,7 +101,7 @@ def test_atomic_write_no_partial():
 
 def test_locked_read_modify_write_creates_file():
     """_locked_read_modify_write should create file if it doesn't exist."""
-    from soul_manager import _locked_read_modify_write
+    from memory.soul import _locked_read_modify_write
 
     with tempfile.TemporaryDirectory() as tmpdir:
         file_path = Path(tmpdir) / "new_file.md"

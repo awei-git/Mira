@@ -22,7 +22,7 @@ log = logging.getLogger("evaluator")
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-_SOUL_DIR = Path(__file__).resolve().parent / "soul"
+from config import SOUL_DIR as _SOUL_DIR; _SOUL_DIR  # imported from config
 SCORES_FILE = _SOUL_DIR / "scores.json"
 
 # ---------------------------------------------------------------------------
@@ -310,7 +310,7 @@ def evaluate_reflect_auto(old_worldview: str, new_worldview: str,
     # instead of diffing a short interests.md file
     try:
         from pathlib import Path as _P
-        _rn_dir = _P(__file__).resolve().parent / "soul" / "reading_notes"
+        from config import SOUL_DIR as _sd; _rn_dir = _sd / "reading_notes"
         if _rn_dir.exists():
             from datetime import date as _d, timedelta as _td
             _week_ago = (_d.today() - _td(days=7)).strftime("%Y-%m-%d")
