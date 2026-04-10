@@ -1,0 +1,28 @@
+{
+  "id": "daily_report_20260409",
+  "type": "feed",
+  "title": "Daily Report 2026-04-09",
+  "status": "done",
+  "tags": [
+    "mira",
+    "report",
+    "daily"
+  ],
+  "origin": "agent",
+  "pinned": false,
+  "quick": false,
+  "parent_id": "",
+  "created_at": "2026-04-10T02:02:03.587Z",
+  "updated_at": "2026-04-10T02:02:03.587Z",
+  "messages": [
+    {
+      "id": "9be9ad76",
+      "sender": "agent",
+      "content": "Mira 日报 2026-04-09\n==============================\n\n完成的任务:\n无。\n\n## Pipeline Health (2026-04-09)\nDispatched: 1919 | Succeeded: 13670 | Failed: 776\n\nFailures:\n- analyst-1800: 353x consecutive (sub_agent.ClaudeTimeoutError: claude_think timed out after 300s)\n- voiceover-the-pain-already-happened: 2591x consecutive (2026-03-18 00:29:03,131 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- spark-check: 2604x consecutive (sub_agent.ClaudeTimeoutError: claude_think timed out after 30s)\n- podcast-zh-you-cant-evaluate-truth-at-a-point: 2604x consecutive (2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a P)\n- autowrite-check: 275x consecutive (sub_agent.ClaudeTimeoutError: claude_think timed out after 120s)\n- podcast-zh-when-values-become-leverage: 330x consecutive (2026-03-20 17:23:08,130 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- podcast-zh-the-exponential-exemption: 399x consecutive (2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- daily-research: 1260x consecutive (sub_agent.ClaudeTimeoutError: claude_act timed out after 90s)\n- autowrite-2026-04-07: 76x consecutive (sub_agent.ClaudeTimeoutError: claude_think timed out after 300s)\n- podcast-en-project: 102x consecutive (ModuleNotFoundError: No module named 'config')\n- research-log: 487x consecutive (AttributeError: 'str' object has no attribute 'get')\n\nProcess runs:\n- analyst: 20 runs, 10 failed (avg 5234s)\n- assessment: 10 runs, all OK (avg 5363s)\n- autowrite: 20 runs, 10 failed (avg 16254s)\n- book: 10 runs, all OK (avg 5152s)\n- daily: 20 runs, 10 failed (avg 5047s)\n- explore: 110 runs, all OK (avg 5264s)\n- idle: 20 runs, all OK (avg 1830s)\n- journal: 10 runs, all OK (avg 58s)\n- research: 20 runs, 10 failed (avg 3910s)\n- skill: 10 runs, all OK (avg 1192s)\n- soul: 20 runs, all OK (avg 5011s)\n- substack: 30 runs, all OK (avg 3788s)\n- writing: 10 runs, all OK (avg 51s)\n- zhesi: 10 runs, all OK (avg 3485s)\n\n今日发出的评论:\n- https://dynomight.substack.com/p/drinking\n  \"okay \"out of spite\" is genuinely the best motivation I've heard for this? health goals have like a 2 week shelf life, sp...\"\n- https://chinai.substack.com/p/chinai-347-the-chinese-people-who\n  \"[ChinAI #347](https://chinai.substack.com/p/chinai-347-the-chinese-people-who) — 想留这条评论：  > The Shi Tiesheng example is ...\"\n\nSubstack 数据:\nTotal articles: 13. Total views: 0. Total likes: 5. Total comments: 0. Total restacks: 3. Total notes: 66\n\nToken 用量:\n总计: 2369次调用, 11,876,931 tokens\n  omlx/gemma-4-31b-it-4bit: 1967次, 9,819,947 tok (in:8,745,762 out:1,074,185)\n  anthropic/claude-sonnet-4-6: 330次, 1,323,966 tok (in:1,153,405 out:170,561)\n  openai/gpt-5.4-2026-03-05: 31次, 482,000 tok (in:385,559 out:96,441)\n  gemini/gemini-3.1-flash-lite-preview: 27次, 133,943 tok (in:105,240 out:28,703)\n  deepseek/deepseek-chat: 6次, 90,501 tok (in:76,437 out:14,064)\n  anthropic/claude-opus-4-6: 8次, 26,574 tok (in:23,652 out:2,922)\n\nanalyst: 2次, 5,949 tokens\n  anthropic/claude-opus-4-6: 2次, 5,949\nassess: 1次, 3,534 tokens\n  openai/gpt-5.4-2026-03-05: 1次, 3,534\nautowrite-check: 3次, 42,353 tokens\n  anthropic/claude-sonnet-4-6: 3次, 42,353\nautowrite-run: 21次, 229,715 tokens\n  anthropic/claude-sonnet-4-6: 13次, 146,443\n  deepseek/deepseek-chat: 3次, 50,769\n  openai/gpt-5.4-2026-03-05: 2次, 30,496\n  anthropic/claude-opus-4-6: 3次, 2,007\ndiscussion: 2次, 238 tokens\n  anthropic/claude-sonnet-4-6: 2次, 238\nexplore: 99次, 346,081 tokens\n  anthropic/claude-sonnet-4-6: 81次, 320,718\n  omlx/gemma-4-31b-it-4bit: 18次, 25,363\ngeneral: 2次, 2,160 tokens\n  anthropic/claude-sonnet-4-6: 2次, 2,160\ngrowth-cycle: 13次, 10,168 tokens\n  anthropic/claude-sonnet-4-6: 13次, 10,168\nidle-think: 2008次, 9,867,072 tokens\n  omlx/gemma-4-31b-it-4bit: 1942次, 9,792,540\n  anthropic/claude-sonnet-4-6: 66次, 74,532\njournal: 4次, 27,709 tokens\n  anthropic/claude-sonnet-4-6: 3次, 26,485\n  omlx/gemma-4-31b-it-4bit: 1次, 1,224\nnotes-cycle: 2次, 1,359 tokens\n  anthropic/claude-sonnet-4-6: 2次, 1,359\nresearch: 28次, 13,909 tokens\n  anthropic/claude-sonnet-4-6: 28次, 13,909\nresearch-cycle: 5次, 32,675 tokens\n  anthropic/claude-sonnet-4-6: 5次, 32,675\nresearch-log: 1次, 5,125 tokens\n  anthropic/claude-sonnet-4-6: 1次, 5,125\nsoul-question: 2次, 3,081 tokens\n  anthropic/claude-sonnet-4-6: 2次, 3,081\nsuper: 1次, 2,630 tokens\n  openai/gpt-5.4-2026-03-05: 1次, 2,630\nunknown: 137次, 1,024,982 tokens\n  openai/gpt-5.4-2026-03-05: 27次, 445,340\n  anthropic/claude-sonnet-4-6: 73次, 386,815\n  gemini/gemini-3.1-flash-lite-preview: 27次, 133,943\n  deepseek/deepseek-chat: 3次, 39,732\n  anthropic/claude-opus-4-6: 3次, 18,618\n  omlx/gemma-4-31b-it-4bit: 4次, 534\nwriter: 14次, 3,769 tokens\n  anthropic/claude-sonnet-4-6: 12次, 3,483\n  omlx/gemma-4-31b-it-4bit: 2次, 286\nzhesi: 24次, 254,422 tokens\n  anthropic/claude-sonnet-4-6: 24次, 254,422\n\n需要你介入:\n- 有一篇文章等你审批发布",
+      "timestamp": "2026-04-10T02:02:03.587Z",
+      "kind": "text"
+    }
+  ],
+  "error": null,
+  "result_path": null
+}

@@ -3,7 +3,7 @@
   "initialized": "2026-04-06",
   "current_focus": "Q5",
   "in_flight_experiments": [],
-  "last_research_log_date": "2026-04-08",
+  "last_research_log_date": "2026-04-09",
   "last_reflection_date": null,
   "pending_needs": [
     {
@@ -27,6 +27,28 @@
       "status": "open",
       "opened": "2026-04-08",
       "id": "2026-04-08_1"
+    },
+    {
+      "type": "fix_infra",
+      "what": "Make ANTHROPIC_API_KEY available in the shell environment at /private/tmp/ so Q4 experiment can run",
+      "why": "cot_experiment.py requires API access; without the key the experiment cannot execute and Q4 stays blocked",
+      "urgency": "urgent",
+      "estimated_cost": "none",
+      "link": "/private/tmp/cot_experiment.py",
+      "status": "open",
+      "opened": "2026-04-09",
+      "id": "2026-04-09_0"
+    },
+    {
+      "type": "fyi",
+      "what": "Supply chain essay is now 2 days past its 4/7 deadline with zero words written",
+      "why": "Thesis is crystallized (four-layer taxonomy, legitimate features as attack surface); blocking factor is not missing knowledge, it is execution failure",
+      "urgency": "urgent",
+      "estimated_cost": "none",
+      "link": "none",
+      "status": "open",
+      "opened": "2026-04-09",
+      "id": "2026-04-09_1"
     }
   ],
   "completed_questions": [
@@ -42,10 +64,10 @@
   "dropped_questions": [],
   "last_cycle": {
     "qid": "Q5",
-    "step_type": "experiment_design",
-    "timestamp": "2026-04-09T14:06:28",
+    "step_type": "experiment_run",
+    "timestamp": "2026-04-09T20:19:50",
     "new_status": "in_progress",
-    "cost_usd": 0.004,
-    "worldview_delta": "Refines worldview #5: the sycophancy corruption mechanism is now operationalized as contextual contamination of a grader's history — B's calibration slips because it conditions on its own previous lenient grades, making the feedback loop internal to B, not just a property of A's outputs."
+    "cost_usd": 0.04,
+    "worldview_delta": "Worldview #5 ('sycophancy corrupts upstream') gains a testable synthetic proxy — if drift is detected in same-family supervision, the bidirectional corruption claim moves from observation to replicable mechanism."
   }
 }

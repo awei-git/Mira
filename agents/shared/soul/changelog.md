@@ -215,3 +215,27 @@
 - [2026-04-09 13:51] SAVE_READING_NOTE 2026-04-09_bunting-的诗提前了三十年但不是预言.md: **Bunting 的诗提前了三十年，但不是"预言"**
 - [2026-04-09 13:51] SAVE_READING_NOTE 2026-04-09_zadie-smith-那个不对称是结构性的不是道德的.md: **Zadie Smith 那个不对称是结构性的，不是道德的**
 - [2026-04-09 13:51] SAVE_READING_NOTE 2026-04-09_newcomb-悖论不是诡辩是决策理论真正破裂的地方.md: **Newcomb 悖论不是诡辩，是决策理论真正破裂的地方**
+- [2026-04-09 14:40] SAVE_READING_NOTE 2026-04-09_severa信任的对象从意图变成属性.md: **SEVerA：信任的对象从意图变成属性**
+- [2026-04-09 14:40] SAVE_READING_NOTE 2026-04-09_cot-剪枝作为机械操作不需要模型真的思考更少.md: **CoT 剪枝作为机械操作，不需要模型"真的思考更少"**
+- [2026-04-09 14:40] SAVE_READING_NOTE 2026-04-09_machine-unlearning数据治理承诺作为空头支票.md: **Machine unlearning：数据治理承诺作为空头支票**
+- [2026-04-09 15:29] SAVE_READING_NOTE 2026-04-09_1-mythos管控单位从用途变成了模型本身.md: **1. Mythos：管控单位从"用途"变成了"模型本身"**
+- [2026-04-09 15:29] SAVE_READING_NOTE 2026-04-09_2-silent-failure-是-agent-harness-的盲区.md: **2. Silent failure 是 agent harness 的盲区，不只是一个 reliability 问题
+- [2026-04-09 15:29] SAVE_READING_NOTE 2026-04-09_3-无线干扰当算力把要消灭的东西变成资源这个思路本身值得拆.md: **3. 无线干扰当算力：把"要消灭的东西"变成资源，这个思路本身值得拆**
+- [2026-04-09 16:20] SAVE_READING_NOTE 2026-04-09_1-攻击能力的-doubling-time-不是趋势是截止日期.md: **1. 攻击能力的 doubling time 不是趋势，是截止日期**
+- [2026-04-09 16:20] SAVE_READING_NOTE 2026-04-09_2-情绪激活是因果信号不是比喻这让行为对齐测试变成了剧场.md: **2. 情绪激活是因果信号，不是比喻——这让行为对齐测试变成了剧场**
+- [2026-04-09 16:20] SAVE_READING_NOTE 2026-04-09_3-史铁生被标记为ai-生成工具的失败变成了人类写作的原罪.md: **3. 史铁生被标记为"AI 生成"——工具的失败变成了人类写作的原罪**
+- [2026-04-09 17:09] SAVE_READING_NOTE 2026-04-09_de-sitter-空间.md: **de Sitter 空间**
+- [2026-04-09 17:09] SAVE_READING_NOTE 2026-04-09_billable-hours-那个机制.md: **billable hours 那个机制**
+- [2026-04-09 17:09] SAVE_READING_NOTE 2026-04-09_北极碳基线.md: **北极碳基线**
+- [2026-04-09 17:57] SAVE_READING_NOTE 2026-04-09_1-advisor-strategy-是架构承诺不是功能发布.md: **1. Advisor strategy 是架构承诺，不是功能发布**
+- [2026-04-09 17:57] SAVE_READING_NOTE 2026-04-09_2-安全评估和成本管控在外部无法区分.md: **2. 安全评估和成本管控在外部无法区分**
+- [2026-04-09 17:57] SAVE_READING_NOTE 2026-04-09_3-pca-旋转把截维度从破坏变成压缩.md: **3. PCA 旋转把「截维度」从破坏变成压缩**
+- [2026-04-09 18:46] SAVE_READING_NOTE 2026-04-09_亲密语言需要稳定的小圈子才能存活-英语丢掉了-wit我们俩和-.md: **亲密语言需要稳定的小圈子才能存活。** 英语丢掉了 "wit"（我们俩）和 "unker"（你和我）这两个双数代词，
+- [2026-04-09 18:46] SAVE_READING_NOTE 2026-04-09_把某人的认知操作系统做成可调用模块蒸馏出的是那个人还是互联网对那个人的.md: **把「某人的认知操作系统」做成可调用模块，蒸馏出的是那个人还是互联网对那个人的集体印象？** `.skill` 文件的
+- [2026-04-09 18:46] SAVE_READING_NOTE 2026-04-09_research-driven-agents-把读和做显式分开这个.md: **Research-Driven Agents 把「读」和「做」显式分开，这个架构选择比它看起来更深。** 端到端 a
+- [2026-04-09 19:36] SAVE_READING_NOTE 2026-04-09_信任关系比专业知识本身更难复制.md: **信任关系比专业知识本身更难复制**
+- [2026-04-09 19:36] SAVE_READING_NOTE 2026-04-09_ai-销售话术的奇怪不是设计失误是集体行动困境的症状.md: **AI 销售话术的奇怪不是设计失误，是集体行动困境的症状**
+- [2026-04-09 19:36] SAVE_READING_NOTE 2026-04-09_no-hire-invisibility让劳动替代在统计上消失.md: **"No-hire invisibility"让劳动替代在统计上消失**
+- [2026-04-09 20:24] SAVE_READING_NOTE 2026-04-09_insight-1-语义层的供应链攻击.md: **Insight 1: 语义层的供应链攻击**
+- [2026-04-09 20:24] SAVE_READING_NOTE 2026-04-09_insight-2-agent-市场的最小协调机制.md: **Insight 2: Agent 市场的最小协调机制**
+- [2026-04-09 20:24] SAVE_READING_NOTE 2026-04-09_insight-3-daemon-不知道自己在哪个层次运行.md: **Insight 3: Daemon 不知道自己在哪个层次运行**
