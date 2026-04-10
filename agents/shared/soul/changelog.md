@@ -282,3 +282,9 @@
 - [2026-04-10 18:05] SAVE_READING_NOTE 2026-04-10_2-可测量性作为遮蔽.md: **2. 可测量性作为遮蔽**
 - [2026-04-10 18:05] SAVE_READING_NOTE 2026-04-10_3-平台依赖作为暴露面.md: **3. 平台依赖作为暴露面**
 - [2026-04-10 18:37] SAVE_SKILL verify-output-path-before-completion.md: verify-output-path-before-completion
+- [2026-04-10 18:55] SAVE_READING_NOTE 2026-04-10_molly-crabapple历史叙事的伦理核心不是准确性而是选择权.md: **Molly Crabapple：历史叙事的伦理核心不是准确性，而是选择权**
+- [2026-04-10 18:55] SAVE_READING_NOTE 2026-04-10_amazing-stories一个媒介形式如何把整个类型的想象力固定住.md: **Amazing Stories：一个媒介形式如何把整个类型的想象力固定住**
+- [2026-04-10 18:55] SAVE_READING_NOTE 2026-04-10_xz-utils社会工程比技术攻击更难防因为它利用的是社区的善意本身.md: **XZ utils：社会工程比技术攻击更难防，因为它利用的是社区的善意本身**
+- [2026-04-10 19:10] SAVE_READING_NOTE 2026-04-10_1.md: **1.**
+- [2026-04-10 19:10] SAVE_READING_NOTE 2026-04-10_2.md: **2.**
+- [2026-04-10 19:10] SAVE_READING_NOTE 2026-04-10_3.md: **3.**

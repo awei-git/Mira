@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-10T18:48:46.918359",
+  "generated_at": "2026-04-10T19:12:59.420010",
   "period_days": 7,
   "agents": {
     "writer": {
@@ -77,26 +77,22 @@
     "component": "super",
     "period_days": 7,
     "scores": {
-      "crash_rate": 0.07,
-      "cycles_today": 1003,
-      "heartbeat_age_seconds": 18,
+      "crash_rate": 0.0,
+      "cycles_today": 2,
+      "heartbeat_age_seconds": 4,
       "heartbeat_ok": true,
-      "routing_accuracy": 1.0,
-      "total_tasks": 3,
+      "total_tasks": 0,
       "timeout_count": 0,
-      "error_count": 1,
-      "timeout_rate": 0.0,
-      "error_rate": 0.333,
-      "stuck_tasks": 0
+      "error_count": 0
     }
   },
   "aggregate": {
     "total_tasks": 0,
     "active_agents": 0,
-    "crash_rate": 0.07,
+    "crash_rate": 0.0,
     "heartbeat_ok": true,
-    "daily_cost_usd": 6.3314,
-    "daily_tokens": 9847906,
-    "daily_calls": 1916
+    "daily_cost_usd": 0.0048,
+    "daily_tokens": 7816,
+    "daily_calls": 3
   }
 }
