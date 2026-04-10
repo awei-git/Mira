@@ -375,12 +375,21 @@ def do_journal(user_id: str = "ang"):
     except Exception as e:
         log.warning("Memory index rebuild after journal failed: %s", e)
 
-    # Run retention policy to prune old files (daily)
+    # Run retention policy: distill expiring knowledge, then prune old files
     try:
         from soul_manager import run_retention_policy
-        run_retention_policy()
+        run_retention_policy(user_id=user_id)
     except Exception as e:
         log.warning("Retention policy failed: %s", e)
+
+    # Extract lessons from today's experiences (self-evolution Layer 2)
+    try:
+        from evolution import extract_lessons
+        lessons = extract_lessons(days=1, user_id=user_id)
+        if lessons:
+            log.info("Evolution: extracted lessons from today's experiences")
+    except Exception as e:
+        log.debug("Evolution lesson extraction failed (non-critical): %s", e)
 
     # Update personal wiki with today's knowledge
     try:

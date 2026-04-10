@@ -553,6 +553,22 @@ class TaskManager:
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
 
+        # Record task outcomes in evolution experience log
+        try:
+            from evolution import record_task_outcome
+            for rec in records:
+                if rec.status in ("done", "failed", "timeout"):
+                    agent = (rec.tags[0] if rec.tags else "general")
+                    record_task_outcome(
+                        task_id=rec.task_id,
+                        agent=agent,
+                        action=rec.content_preview[:200],
+                        status=rec.status,
+                        summary=rec.summary[:300] if rec.summary else "",
+                    )
+        except Exception as e:
+            log.debug("Evolution recording failed (non-critical): %s", e)
+
     def cleanup_old_records(self, max_age_days: int = 7):
         """Remove completed task records older than max_age_days."""
         cutoff = datetime.now(timezone.utc).timestamp() - max_age_days * 86400

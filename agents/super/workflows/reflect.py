@@ -377,6 +377,28 @@ def do_reflect(user_id: str = "ang"):
     except Exception as e:
         log.warning("Monthly self-check publish failed: %s", e)
 
+    # --- Self-evolution Layer 3: propose strategy variant based on reward trends ---
+    try:
+        from evolution import propose_strategy_variant, evaluate_variant
+        # First evaluate any active variant from last week
+        variant_dir = Path(__file__).resolve().parent.parent.parent / "shared" / "soul" / "variants"
+        if variant_dir.exists():
+            for vf in variant_dir.glob("*.json"):
+                try:
+                    v = json.loads(vf.read_text(encoding="utf-8"))
+                    if v.get("status") == "proposed":
+                        result = evaluate_variant(v["id"])
+                        if result:
+                            log.info("Evolution: evaluated variant '%s': %s", v["id"], result.get("status"))
+                except Exception:
+                    pass
+        # Then propose a new one
+        variant = propose_strategy_variant(user_id=user_id)
+        if variant:
+            log.info("Evolution: proposed strategy variant '%s'", variant.get("id", ""))
+    except Exception as e:
+        log.debug("Evolution strategy mutation failed (non-critical): %s", e)
+
     state = load_state(user_id=user_id)
     state["last_reflect"] = datetime.now().isoformat()
     save_state(state, user_id=user_id)

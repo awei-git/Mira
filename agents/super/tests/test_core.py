@@ -46,9 +46,9 @@ def test_dispatch_scheduled_jobs_uses_registry(monkeypatch):
     import core
 
     jobs = [
-        SimpleNamespace(name="explore", inline=False, priority=5),
-        SimpleNamespace(name="substack-growth", inline=False, priority=10),
-        SimpleNamespace(name="skill-study", inline=False, priority=20),
+        SimpleNamespace(name="explore", inline=False, priority=5, per_user=False, blocking_group="heavy"),
+        SimpleNamespace(name="substack-growth", inline=False, priority=10, per_user=False, blocking_group="light"),
+        SimpleNamespace(name="skill-study", inline=False, priority=20, per_user=False, blocking_group="heavy"),
     ]
     payloads = {
         "explore": {"label": "arxiv_hf", "sources": ["arxiv", "huggingface"]},
@@ -78,7 +78,7 @@ def test_dispatch_scheduled_jobs_uses_registry(monkeypatch):
             "skill-study": None,
         }[job.name],
     )
-    monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd: dispatched.append((name, cmd)))
+    monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd, **kw: dispatched.append((name, cmd)))
 
     core._dispatch_scheduled_jobs(session_new)
 
@@ -171,7 +171,7 @@ def test_dispatch_scheduled_jobs_dispatches_per_user_jobs(monkeypatch):
     import core
 
     jobs = [
-        SimpleNamespace(name="idle-think", inline=False, priority=5, per_user=True),
+        SimpleNamespace(name="idle-think", inline=False, priority=5, per_user=True, blocking_group="local"),
     ]
     dispatched = []
     session_new = []
@@ -196,7 +196,7 @@ def test_dispatch_scheduled_jobs_dispatches_per_user_jobs(monkeypatch):
         "build_job_session_record",
         lambda job, payload: {"action": "idle_think", "detail": ""},
     )
-    monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd: dispatched.append((name, cmd)))
+    monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd, **kw: dispatched.append((name, cmd)))
 
     core._dispatch_scheduled_jobs(session_new)
 
@@ -215,6 +215,7 @@ def test_dispatch_scheduled_jobs_records_state_only_after_success(monkeypatch):
         inline=False,
         priority=5,
         per_user=False,
+        blocking_group="light",
         state_key=lambda today="", slot="": "last_backlog_executor",
     )
     saved = []
@@ -226,7 +227,7 @@ def test_dispatch_scheduled_jobs_records_state_only_after_success(monkeypatch):
         "build_job_dispatch",
         lambda job, payload, python_executable, core_path, **kw: ("backlog-executor", ["python", "core.py", "backlog-executor"]),
     )
-    monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd: True)
+    monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd, **kw: True)
     monkeypatch.setattr(core, "build_job_session_record", lambda job, payload: None)
     monkeypatch.setattr(core, "load_state", lambda user_id=None: {})
     monkeypatch.setattr(core, "save_state", lambda state, user_id=None: saved.append((state, user_id)))
@@ -245,6 +246,7 @@ def test_dispatch_scheduled_jobs_does_not_record_state_when_dispatch_fails(monke
         inline=False,
         priority=5,
         per_user=False,
+        blocking_group="light",
         state_key=lambda today="", slot="": f"restore_dry_run_{today}",
     )
     saved = []
@@ -256,7 +258,7 @@ def test_dispatch_scheduled_jobs_does_not_record_state_when_dispatch_fails(monke
         "build_job_dispatch",
         lambda job, payload, python_executable, core_path, **kw: ("restore-dry-run", ["python", "core.py", "restore-dry-run"]),
     )
-    monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd: False)
+    monkeypatch.setattr(core, "_dispatch_background", lambda name, cmd, **kw: False)
     monkeypatch.setattr(core, "build_job_session_record", lambda job, payload: None)
     monkeypatch.setattr(core, "load_state", lambda user_id=None: {})
     monkeypatch.setattr(core, "save_state", lambda state, user_id=None: saved.append((state, user_id)))

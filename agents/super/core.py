@@ -1451,6 +1451,35 @@ def _run_inline_scheduled_job(job, payload):
     raise ValueError(f"No inline runner registered for job '{job.inline_runner or job.name}'")
 
 
+def _dispatch_pipeline_followups(completed: list[str], session_new: list[dict]):
+    """Trigger follow-up jobs for completed background processes (pipeline chaining).
+
+    When explore finishes → immediately dispatch autowrite-check, etc.
+    Bypasses cooldown/trigger checks — the chain definition is the authorization.
+    """
+    from runtime.jobs import get_pipeline_followups, get_job, build_job_dispatch
+
+    for bg_name in completed:
+        followups = get_pipeline_followups(bg_name)
+        if not followups:
+            continue
+        for job_name in followups:
+            job = get_job(job_name)
+            if not job or not job.enabled:
+                continue
+            next_bg_name, cmd = build_job_dispatch(
+                job,
+                payload=True,
+                python_executable=sys.executable,
+                core_path=str(Path(__file__).resolve()),
+            )
+            dispatched = _dispatch_background(next_bg_name, cmd, group=job.blocking_group)
+            if dispatched:
+                log.info("Pipeline chain: %s -> %s dispatched", bg_name, job_name)
+                session_new.append(session_record("pipeline_chain",
+                                                  f"{bg_name}->{job_name}"))
+
+
 def _dispatch_scheduled_jobs(session_new: list[dict]):
     """Run the declarative background scheduler using runtime.jobs."""
     for job in sorted(get_jobs(), key=lambda item: item.priority):
@@ -1474,7 +1503,7 @@ def _dispatch_scheduled_jobs(session_new: list[dict]):
                 core_path=str(Path(__file__).resolve()),
                 user_id=target_user_id,
             )
-            dispatched = _dispatch_background(bg_name, cmd)
+            dispatched = _dispatch_background(bg_name, cmd, group=job.blocking_group)
             if dispatched is False:
                 continue
             _record_scheduled_job_dispatch(job, payload, user_id=target_user_id)
@@ -1761,12 +1790,19 @@ def cmd_run():
 
     # --- Harvest background process outcomes & check health ---
     _t0 = _time.monotonic()
+    _completed_bg: list[str] = []
     try:
-        health_monitor.harvest_all()
+        _completed_bg = health_monitor.harvest_all() or []
         health_monitor.check_anomalies()
     except Exception as e:
         log.error("Health monitor failed: %s", e)
     _phase_times["health"] = round((_time.monotonic() - _t0) * 1000)
+
+    # --- Pipeline chaining: trigger follow-up jobs for completed ones ---
+    if _completed_bg:
+        _t0 = _time.monotonic()
+        _dispatch_pipeline_followups(_completed_bg, _session_new)
+        _phase_times["pipeline_chain"] = round((_time.monotonic() - _t0) * 1000)
 
     # Reap stale PID files (hourly) — prevents stuck tasks
     _t0 = _time.monotonic()

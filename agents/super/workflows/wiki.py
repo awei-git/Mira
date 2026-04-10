@@ -11,7 +11,7 @@ from pathlib import Path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
-from sub_agent import claude_think
+from sub_agent import claude_think, model_think
 from soul_manager import load_soul, format_soul
 
 from wiki_manager import (
@@ -151,7 +151,7 @@ def do_wiki_update(trigger: str = "journal", new_content: str = "",
                     new_material=new_material[:2000],
                     date=datetime.now().strftime("%Y-%m-%d"),
                 )
-                updated = claude_think(prompt, timeout=60, tier="light")
+                updated = model_think(prompt, model_name="omlx", timeout=90)
                 if updated and len(updated) > len(current) * 0.5:
                     save_wiki_page(
                         slug, title, updated,
@@ -210,7 +210,7 @@ def _create_new_page(candidate: dict, user_id: str = "ang"):
         n_sources=len(source_notes),
     )
 
-    content = claude_think(prompt, timeout=90, tier="light")
+    content = model_think(prompt, model_name="omlx", timeout=120)
     if not content or len(content) < 200:
         log.warning("Wiki: page creation for '%s' produced insufficient content", topic)
         return
@@ -241,7 +241,7 @@ def _categorize_topic(topic: str, description: str) -> str:
     """Categorize a topic using a lightweight LLM call."""
     try:
         prompt = _CATEGORIZE_PROMPT.format(topic=topic, description=description)
-        result = claude_think(prompt, timeout=15, tier="light")
+        result = model_think(prompt, model_name="omlx", timeout=30)
         if result:
             cat = result.strip().lower().split()[0]
             valid = {"technology", "philosophy", "craft", "markets",

@@ -30,23 +30,64 @@ def _get_bg_pid_dir() -> Path:
     return _MIRA_ROOT / "agents" / ".bg_pids"
 
 
-MAX_CONCURRENT_BG = 2  # Max background processes running at once
+MAX_CONCURRENT_BG = 2  # Legacy fallback — used only when no group is specified
+
+# Per-group concurrency limits.  Jobs in the same group share a slot pool.
+# "local" jobs (oMLX-only) don't compete with cloud API jobs.
+CONCURRENCY_LIMITS = {
+    "heavy": 2,    # Cloud API-heavy: explore, writer, researcher, analyst
+    "light": 3,    # Lightweight cloud: growth, comments, spark-check, notes
+    "local": 10,   # Local LLM only: idle-think, connection — no API cost
+    "content": 2,  # Legacy alias for heavy
+    "default": 2,  # Legacy fallback
+}
 
 
-def _count_bg_running() -> int:
-    """Count how many background processes are currently alive."""
+def _count_bg_running(group: str | None = None) -> int:
+    """Count how many background processes are currently alive.
+
+    If *group* is given, only count processes whose PID filename matches
+    a job in that concurrency group.
+    """
     bg_dir = _get_bg_pid_dir()
     if not bg_dir.exists():
         return 0
+
+    if group is None:
+        # Global count (legacy behaviour)
+        count = 0
+        for pid_file in bg_dir.glob("*.pid"):
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                os.kill(old_pid, 0)
+                count += 1
+            except (OSError, ValueError):
+                pass
+        return count
+
+    # Group-aware count: only count PIDs whose name belongs to *group*.
+    group_names = _group_members(group)
     count = 0
     for pid_file in bg_dir.glob("*.pid"):
-        try:
-            old_pid = int(pid_file.read_text().strip())
-            os.kill(old_pid, 0)
-            count += 1
-        except (OSError, ValueError):
-            pass
+        stem = pid_file.stem  # e.g. "idle-think-ang", "explore-morning"
+        # Match if the PID name starts with any job name in this group
+        if any(stem == n or stem.startswith(n + "-") for n in group_names):
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                os.kill(old_pid, 0)
+                count += 1
+            except (OSError, ValueError):
+                pass
     return count
+
+
+def _group_members(group: str) -> set[str]:
+    """Return the set of job names that belong to *group*."""
+    try:
+        from runtime.jobs import get_jobs
+        return {j.name for j in get_jobs(enabled_only=False) if j.blocking_group == group}
+    except Exception:
+        return set()
 
 
 def _is_bg_running(name: str) -> bool:
@@ -93,11 +134,11 @@ def _reap_stale_pids():
     save_state(state)
 
 
-def _dispatch_background(name: str, cmd: list[str]):
+def _dispatch_background(name: str, cmd: list[str], group: str = "default"):
     """Spawn a background process if one isn't already running for this name.
 
-    Enforces a global concurrency limit (MAX_CONCURRENT_BG) to prevent
-    too many Claude CLI subprocesses from competing for resources.
+    Enforces per-group concurrency limits so local-LLM jobs don't block
+    cloud-API jobs. Falls back to MAX_CONCURRENT_BG when group is unknown.
     Tracks PID to avoid duplicate runs. Fire-and-forget.
     """
     _ensure_config()
@@ -107,11 +148,12 @@ def _dispatch_background(name: str, cmd: list[str]):
     bg_dir.mkdir(parents=True, exist_ok=True)
     pid_file = bg_dir / f"{name}.pid"
 
-    # Global concurrency limit — don't spawn if too many are already running
-    running = _count_bg_running()
-    if running >= MAX_CONCURRENT_BG:
-        log.debug("Background '%s' deferred — %d/%d slots occupied",
-                  name, running, MAX_CONCURRENT_BG)
+    # Per-group concurrency limit
+    limit = CONCURRENCY_LIMITS.get(group, MAX_CONCURRENT_BG)
+    running = _count_bg_running(group=group)
+    if running >= limit:
+        log.debug("Background '%s' deferred — group '%s' %d/%d slots occupied",
+                  name, group, running, limit)
         return False
 
     # Check if a previous run is still active or finished recently

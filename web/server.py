@@ -291,6 +291,210 @@ def get_item(user_id: str, item_id: str):
     return item
 
 
+@app.get("/api/{user_id}/jobs")
+def get_jobs_today(user_id: str):
+    """Return today's scheduled job runs with status, model, token, cost details."""
+    from datetime import date as _date
+
+    today = _date.today().isoformat()
+
+    # 1. Load job registry
+    _agents_super = Path(__file__).resolve().parent.parent / "agents" / "super"
+    for _p in [str(_agents_super), str(_agents_super / "runtime")]:
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+    try:
+        from runtime.jobs import get_jobs as _get_jobs
+        all_jobs = _get_jobs(enabled_only=False)
+    except Exception:
+        all_jobs = []
+
+    # 2. Load agent state to check which jobs ran today
+    state_file = Path(__file__).resolve().parent.parent / ".agent_state.json"
+    state = _read_json(state_file) or {}
+    user_state = state.get("users", {}).get(user_id, {})
+
+    # 3. Load today's usage log for per-agent token/cost breakdown
+    logs_dir = Path(__file__).resolve().parent.parent / "logs"
+    usage_path = logs_dir / f"usage_{today}.jsonl"
+    agent_usage: dict[str, dict] = {}
+    if usage_path.exists():
+        for line in usage_path.read_text(encoding="utf-8").strip().splitlines():
+            if not line.strip():
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            agent = r.get("agent", "unknown")
+            if agent not in agent_usage:
+                agent_usage[agent] = {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}}
+            agent_usage[agent]["calls"] += 1
+            agent_usage[agent]["tokens"] += r.get("total_tokens", 0)
+            agent_usage[agent]["cost_usd"] += r.get("cost_usd", 0.0)
+            model = r.get("model", "unknown")
+            if model not in agent_usage[agent]["models"]:
+                agent_usage[agent]["models"][model] = {"calls": 0, "tokens": 0, "cost_usd": 0.0}
+            agent_usage[agent]["models"][model]["calls"] += 1
+            agent_usage[agent]["models"][model]["tokens"] += r.get("total_tokens", 0)
+            agent_usage[agent]["models"][model]["cost_usd"] += r.get("cost_usd", 0.0)
+
+    # Round costs
+    for v in agent_usage.values():
+        v["cost_usd"] = round(v["cost_usd"], 4)
+        for mv in v["models"].values():
+            mv["cost_usd"] = round(mv["cost_usd"], 4)
+
+    # 4. Parse today's dispatch log entries from main log
+    main_log = logs_dir / f"{today}.log"
+    dispatches: dict[str, list[str]] = {}  # job_name -> [timestamps]
+    completions: dict[str, list[str]] = {}
+    if main_log.exists():
+        try:
+            for line in main_log.read_text(encoding="utf-8", errors="replace").splitlines():
+                if "dispatched (PID" in line:
+                    # "Background 'explore-morning' dispatched (PID 12345)"
+                    parts = line.split("'")
+                    if len(parts) >= 2:
+                        bg_name = parts[1]
+                        ts = line[:19]  # "2026-04-10 07:00:01"
+                        dispatches.setdefault(bg_name, []).append(ts)
+                elif "complete" in line.lower() and ("[INFO]" in line):
+                    for job in all_jobs:
+                        if job.name in line.lower():
+                            ts = line[:19]
+                            completions.setdefault(job.name, []).append(ts)
+                            break
+        except OSError:
+            pass
+
+    # 5. Build per-job status
+    jobs_out = []
+    for job in all_jobs:
+        # Determine state key for today
+        state_key = job.state_key(today=today)
+        # Check multiple patterns for "ran today" — search both global and per-user state
+        ran_at = None
+        candidates = [state_key, f"{job.name}_{today}"]
+        # Cooldown-based jobs use "last_*" keys
+        if job.state_key_pattern.startswith("last_"):
+            candidates.append(job.state_key_pattern)
+        for key in candidates:
+            # Try per-user first, then global
+            val = user_state.get(key) or state.get(key)
+            if val and today in str(val):
+                ran_at = val
+                break
+        # Special case: explore uses "explored_DATE_*" keys
+        if not ran_at and job.name == "explore":
+            for key, val in state.items():
+                if key.startswith(f"explored_{today}"):
+                    ran_at = val
+                    break
+
+        # Map job name to agent name(s) in usage log
+        agent_map = {
+            "explore": ["explore"],
+            "journal": ["journal"],
+            "reflect": ["reflect"],
+            "research-cycle": ["research-cycle"],
+            "research-log": ["research-log"],
+            "analyst-pre": ["analyst"],
+            "analyst-post": ["analyst"],
+            "substack-comments": ["growth-cycle", "growth"],
+            "substack-growth": ["growth-cycle", "growth"],
+            "substack-notes": ["notes-cycle", "notes"],
+            "writing-pipeline": ["writer", "writing-pipeline"],
+            "autowrite-check": ["autowrite", "autowrite-check"],
+            "skill-study": ["skill-study"],
+            "idle-think": ["idle-think"],
+            "spark-check": ["spark-check"],
+            "daily-photo": ["daily-photo"],
+            "daily-report": ["daily-report"],
+            "zhesi": ["zhesi"],
+            "soul-question": ["soul-question"],
+            "daily-research": ["research", "daily-research"],
+            "book-review": ["book-review"],
+            "self-audit": ["self-audit"],
+            "self-evolve": ["self-evolve"],
+            "assessment": ["assess", "assessment"],
+            "backlog-executor": ["backlog-executor"],
+        }
+        agent_keys = agent_map.get(job.name, [job.name])
+        # Merge usage from all matching agent names
+        usage: dict = {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}}
+        for ak in agent_keys:
+            au = agent_usage.get(ak)
+            if not au:
+                continue
+            usage["calls"] += au["calls"]
+            usage["tokens"] += au["tokens"]
+            usage["cost_usd"] += au["cost_usd"]
+            for mk, mv in au["models"].items():
+                if mk not in usage["models"]:
+                    usage["models"][mk] = {"calls": 0, "tokens": 0, "cost_usd": 0.0}
+                usage["models"][mk]["calls"] += mv["calls"]
+                usage["models"][mk]["tokens"] += mv["tokens"]
+                usage["models"][mk]["cost_usd"] += mv["cost_usd"]
+        usage["cost_usd"] = round(usage["cost_usd"], 4)
+
+        # Dispatch count from log — match bg_name_pattern to dispatched names
+        dispatch_times = []
+        # Build all possible prefixes to match
+        job_prefixes = [job.name]
+        # Handle bg_name_pattern like "analyst-{slot}" → match "analyst-"
+        if job.bg_name_pattern != "{name}":
+            base = job.bg_name_pattern.split("{")[0].rstrip("-")
+            if base and base != job.name:
+                job_prefixes.append(base)
+        for bg_name, times in dispatches.items():
+            for pfx in job_prefixes:
+                if bg_name == pfx or bg_name.startswith(pfx + "-"):
+                    dispatch_times.extend(times)
+                    break
+
+        # A job counts as "done" if it has a state key OR was dispatched today
+        status = "done" if (ran_at or dispatch_times) else ("disabled" if not job.enabled else "pending")
+
+        entry = {
+            "name": job.name,
+            "description": job.description,
+            "trigger": job.trigger,
+            "cooldown_hours": job.cooldown_hours,
+            "window": f"{job.window_start or ''}:00-{job.window_end or ''}:00" if job.window_start is not None else "",
+            "priority": job.priority,
+            "enabled": job.enabled,
+            "status": status,
+            "ran_at": ran_at,
+            "dispatch_count": len(dispatch_times),
+            "dispatch_times": dispatch_times[-5:],  # last 5
+            "usage": {
+                "calls": usage.get("calls", 0),
+                "tokens": usage.get("tokens", 0),
+                "cost_usd": usage.get("cost_usd", 0.0),
+                "models": usage.get("models", {}),
+            },
+        }
+        jobs_out.append(entry)
+
+    # 6. Usage summary totals
+    total_cost = sum(v["cost_usd"] for v in agent_usage.values())
+    total_tokens = sum(v["tokens"] for v in agent_usage.values())
+    total_calls = sum(v["calls"] for v in agent_usage.values())
+
+    return {
+        "date": today,
+        "jobs": jobs_out,
+        "usage_totals": {
+            "cost_usd": round(total_cost, 4),
+            "tokens": total_tokens,
+            "calls": total_calls,
+        },
+        "by_agent": {k: {"calls": v["calls"], "tokens": v["tokens"], "cost_usd": v["cost_usd"]}
+                     for k, v in sorted(agent_usage.items(), key=lambda x: -x[1]["cost_usd"])},
+    }
+
+
 @app.get("/api/{user_id}/operator")
 def get_operator_dashboard(user_id: str):
     cached = _read_json(_user_dir(user_id) / "operator" / "dashboard.json")

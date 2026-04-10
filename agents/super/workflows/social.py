@@ -110,6 +110,13 @@ def do_growth_cycle():
     except Exception as e:
         log.error("Growth cycle failed: %s", e)
 
+    # Collect Substack engagement as evolution reward signals
+    try:
+        from evolution import collect_substack_rewards
+        collect_substack_rewards()
+    except Exception as e:
+        log.debug("Evolution Substack reward collection failed: %s", e)
+
     # Collect pending twitter metrics after engagement cycle
     try:
         from twitter import collect_pending_metrics

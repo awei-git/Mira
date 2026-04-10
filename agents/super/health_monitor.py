@@ -174,14 +174,17 @@ def record_outcome(name: str):
     return not failed
 
 
-def harvest_all():
+def harvest_all() -> list[str]:
     """Check all PID files for dead processes and record their outcomes.
 
     Called from cmd_run() to catch processes that finished between cycles.
+    Returns list of bg-names that completed *successfully* this cycle
+    (used by pipeline chaining to trigger follow-up jobs).
     """
     if not _BG_PID_DIR.exists():
-        return
+        return []
 
+    completed: list[str] = []
     for pid_file in _BG_PID_DIR.glob("*.pid"):
         name = pid_file.stem
         try:
@@ -189,7 +192,10 @@ def harvest_all():
             os.kill(pid, 0)  # still alive
         except (OSError, ValueError):
             # Process is dead — record outcome
-            record_outcome(name)
+            ok = record_outcome(name)
+            if ok:
+                completed.append(name)
+    return completed
 
 
 # ---------------------------------------------------------------------------

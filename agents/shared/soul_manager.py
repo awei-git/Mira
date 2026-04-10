@@ -1363,11 +1363,43 @@ def catalog_list(content_type: str | None = None) -> list[dict]:
 # Proactive Recall — search memory before acting
 # ---------------------------------------------------------------------------
 
+def _search_knowledge_files(query: str, max_chars: int = 800) -> str:
+    """Simple keyword search through soul/knowledge/ distillation files."""
+    knowledge_dir = MEMORY_FILE.parent / "knowledge"
+    if not knowledge_dir.exists():
+        return ""
+    query_words = set(query.lower().split())
+    hits = []
+    for path in sorted(knowledge_dir.glob("*.md"), reverse=True):
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            content_lower = content.lower()
+            # Score by keyword overlap
+            score = sum(1 for w in query_words if w in content_lower)
+            if score > 0:
+                hits.append((score, path.name, content))
+        except OSError:
+            continue
+    if not hits:
+        return ""
+    hits.sort(key=lambda x: -x[0])
+    # Return top matches, capped
+    result_parts = []
+    total = 0
+    for _score, name, content in hits[:3]:
+        snippet = content[:400].strip()
+        if total + len(snippet) > max_chars:
+            break
+        result_parts.append(f"[{name}] {snippet}")
+        total += len(snippet)
+    return "\n\n".join(result_parts)
+
+
 def recall_context(query: str, max_chars: int = 2000, user_id: str = "ang") -> str:
     """Search memory for relevant prior context before starting a task.
 
     Returns formatted context string for injection into task prompts.
-    Searches both semantic memory index and content catalog.
+    Searches semantic memory index, content catalog, and knowledge files.
     """
     parts = []
 
@@ -1376,7 +1408,12 @@ def recall_context(query: str, max_chars: int = 2000, user_id: str = "ang") -> s
     if mem_results:
         parts.append("## Relevant memories\n" + mem_results)
 
-    # 2. Content catalog search
+    # 2. Distilled knowledge (soul/knowledge/ files)
+    knowledge_hits = _search_knowledge_files(query, max_chars=600)
+    if knowledge_hits:
+        parts.append("## Distilled knowledge\n" + knowledge_hits)
+
+    # 3. Content catalog search
     catalog_hits = catalog_search(query)
     if catalog_hits:
         cat_lines = ["## Related content I've produced"]
@@ -1426,15 +1463,161 @@ def prune_old_files(directory: Path, max_age_days: int, label: str = "") -> int:
     return deleted
 
 
-def run_retention_policy():
-    """Prune old files across all date-indexed directories.
+def _collect_expiring_files(directory: Path, max_age_days: int) -> list[Path]:
+    """Return files that would be pruned (past retention cutoff)."""
+    if not directory.exists():
+        return []
+    cutoff = datetime.now() - __import__("datetime").timedelta(days=max_age_days)
+    expiring = []
+    for path in directory.glob("*.md"):
+        try:
+            date_str = path.stem[:10]
+            file_date = datetime.strptime(date_str, "%Y-%m-%d")
+            if file_date < cutoff:
+                expiring.append(path)
+        except (ValueError, OSError):
+            continue
+    return expiring
+
+
+def distill_before_delete(user_id: str = "ang") -> int:
+    """Extract key insights from expiring files before retention deletes them.
+
+    Reads soon-to-be-deleted journals, episodes, and reading notes in batch,
+    asks a local LLM to extract what's worth keeping permanently, and writes
+    the result to soul/knowledge/{YYYY-MM}_distill.md.
+
+    Uses oMLX (local) to avoid API cost — this is a background housekeeping
+    task, not a user-facing quality-critical operation.
+
+    Returns number of distilled files.
+    """
+    journal_dir = MEMORY_FILE.parent / "journal"
+    knowledge_dir = MEMORY_FILE.parent / "knowledge"
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+
+    # Collect all expiring files across the three directories
+    expiring: list[tuple[str, Path]] = []
+    for label, directory, days in [
+        ("journal", journal_dir, RETENTION_DAYS_JOURNAL),
+        ("reading_notes", READING_NOTES_DIR, RETENTION_DAYS_READING_NOTES),
+        ("episodes", EPISODES_DIR, RETENTION_DAYS_EPISODES),
+    ]:
+        for f in _collect_expiring_files(directory, days):
+            expiring.append((label, f))
+
+    if not expiring:
+        return 0
+
+    # Read content in batches (cap total to avoid overwhelming the LLM)
+    MAX_BATCH_CHARS = 12000
+    batch_text = []
+    batch_files = 0
+    total_chars = 0
+    for label, path in sorted(expiring, key=lambda x: x[1].name):
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            # Take first 800 chars of each file to stay within budget
+            snippet = content[:800].strip()
+            if snippet:
+                batch_text.append(f"[{label}: {path.name}]\n{snippet}")
+                total_chars += len(snippet)
+                batch_files += 1
+                if total_chars >= MAX_BATCH_CHARS:
+                    break
+        except OSError:
+            continue
+
+    if not batch_text:
+        return 0
+
+    combined = "\n\n---\n\n".join(batch_text)
+
+    prompt = f"""你正在整理即将过期的旧笔记 ({batch_files} 个文件).
+这些文件会被删除. 请提炼出值得永久记住的内容.
+
+## 要求
+- 只保留有长期价值的洞察、决策、教训、模式
+- 忽略日常琐事、临时状态、重复内容
+- 每条提炼 1-2 句话, 标注来源文件名
+- 如果没有值得保留的内容, 只输出: "无值得保留的内容"
+- 用中文输出
+
+## 待处理材料
+{combined}
+
+## 输出格式
+每条一行:
+- **[主题]** 提炼内容 (来源: 文件名)"""
+
+    try:
+        from sub_agent import model_think
+        result = model_think(prompt, model_name="omlx", timeout=120)
+    except Exception as e:
+        log.warning("distill_before_delete: LLM call failed: %s", e)
+        return 0
+
+    if not result or "无值得保留" in result or len(result) < 50:
+        log.info("distill_before_delete: nothing worth keeping from %d files", batch_files)
+        return 0
+
+    # Write to knowledge/ with month prefix
+    month = datetime.now().strftime("%Y-%m")
+    distill_path = knowledge_dir / f"{month}_distill.md"
+    header = f"# 知识提炼 {month}\n\n"
+    if distill_path.exists():
+        existing = distill_path.read_text(encoding="utf-8")
+        # Append new section
+        new_section = (
+            f"\n\n## {datetime.now().strftime('%Y-%m-%d')} "
+            f"(从 {batch_files} 个过期文件提炼)\n\n{result}\n"
+        )
+        _atomic_write(distill_path, existing + new_section)
+    else:
+        content = (
+            f"{header}"
+            f"## {datetime.now().strftime('%Y-%m-%d')} "
+            f"(从 {batch_files} 个过期文件提炼)\n\n{result}\n"
+        )
+        _atomic_write(distill_path, content)
+
+    log.info("distill_before_delete: extracted insights from %d files -> %s",
+             batch_files, distill_path.name)
+
+    # Also index in RAG if memory store is available
+    try:
+        from memory_store import get_store
+        store = get_store()
+        store.remember(
+            content=result[:2000],
+            source_type="distill",
+            source_id=f"distill_{month}",
+            user_id=user_id,
+        )
+    except Exception as e:
+        log.debug("distill RAG indexing failed (non-critical): %s", e)
+
+    return batch_files
+
+
+def run_retention_policy(user_id: str = "ang"):
+    """Distill expiring knowledge, then prune old files.
 
     Call from journal cycle (daily) to keep disk usage bounded.
+    Knowledge is extracted before deletion so nothing is lost silently.
     """
+    # Step 1: Distill before delete
+    try:
+        distilled = distill_before_delete(user_id=user_id)
+        if distilled:
+            log.info("Retention: distilled %d files before pruning", distilled)
+    except Exception as e:
+        log.warning("Retention: distill step failed (proceeding with prune): %s", e)
+
+    # Step 2: Prune
     total = 0
     total += prune_old_files(READING_NOTES_DIR, RETENTION_DAYS_READING_NOTES, "reading_notes")
     total += prune_old_files(EPISODES_DIR, RETENTION_DAYS_EPISODES, "episodes")
-    # Journal: keep longer history since it's the primary record
     journal_dir = MEMORY_FILE.parent / "journal"
     total += prune_old_files(journal_dir, RETENTION_DAYS_JOURNAL, "journal")
     return total

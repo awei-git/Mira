@@ -259,6 +259,7 @@ function buildSidebar() {
     <div class="nav-item" data-nav="requests" onclick="navTo('requests')">↑ Requests</div>
     <div class="nav-item" data-nav="pinned" onclick="navTo('pinned')">📌 Pinned</div>
     <div class="nav-item" data-nav="failed" onclick="navTo('failed')">⚠️ Failed</div>
+    <div class="nav-item" data-nav="jobs" onclick="navTo('jobs')">⚡ Jobs</div>
     <div class="nav-item" data-nav="operator" onclick="navTo('operator')">🛠️ Operator</div>
     <div class="nav-sep"></div>
     <div class="nav-item" data-nav="writings" onclick="navToArtifact('writings')">✍️ Writings</div>
@@ -272,10 +273,13 @@ function buildSidebar() {
 function navTo(tab) {
   currentTab = tab; currentSection = null;
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.nav === tab));
-  document.getElementById('listTitle').textContent = {home:'Home',timeline:'Timeline',requests:'Requests',pinned:'Pinned',failed:'Failed',operator:'Operator'}[tab] || tab;
+  document.getElementById('listTitle').textContent = {home:'Home',timeline:'Timeline',requests:'Requests',pinned:'Pinned',failed:'Failed',operator:'Operator',jobs:'Jobs'}[tab] || tab;
   if (tab === 'operator') {
     currentItemId = null;
     renderOperator();
+  } else if (tab === 'jobs') {
+    currentItemId = null;
+    renderJobs();
   } else {
     renderList();
     document.getElementById('replyBar').style.display = currentItemId ? '' : 'none';
@@ -314,6 +318,7 @@ async function refresh() {
     const badge = document.getElementById('badgeNeedsInput');
     if (ni > 0) { badge.style.display=''; badge.textContent=ni; } else { badge.style.display='none'; }
     if (currentTab === 'operator') renderOperator();
+    else if (currentTab === 'jobs') renderJobs();
     else if (currentTab !== 'artifacts') renderList();
     if (currentItemId && currentTab !== 'operator') renderDetail(currentItemId);
   } catch(e) { console.error(e); }
@@ -427,6 +432,110 @@ function renderOperator() {
       ].filter(Boolean).join(' · ')) : '<div class="empty" style="padding:20px">No restore drill recorded yet</div>'}</div>
     </div>
   `;
+}
+
+// ===== Jobs Tab =====
+let jobsData = null;
+async function renderJobs() {
+  document.getElementById('replyBar').style.display = 'none';
+  const listEl = document.getElementById('listContent');
+  const detailEl = document.getElementById('detailMessages');
+  listEl.innerHTML = '<div class="empty">Loading jobs...</div>';
+  detailEl.innerHTML = '';
+
+  try {
+    jobsData = await apiFetch(`/api/${currentUser}/jobs`).then(r=>r.json());
+  } catch(e) {
+    listEl.innerHTML = '<div class="empty">Failed to load jobs</div>';
+    return;
+  }
+
+  const jobs = jobsData.jobs || [];
+  const totals = jobsData.usage_totals || {};
+  const byAgent = jobsData.by_agent || {};
+
+  // List panel: job rows grouped by status
+  const done = jobs.filter(j=>j.status==='done');
+  const pending = jobs.filter(j=>j.status==='pending');
+  const disabled = jobs.filter(j=>j.status==='disabled');
+
+  const listHtml = [];
+  listHtml.push(sec('Completed Today', done.length));
+  done.forEach(j => listHtml.push(jobRow(j)));
+  if (pending.length) {
+    listHtml.push(sec('Pending', pending.length));
+    pending.forEach(j => listHtml.push(jobRow(j)));
+  }
+  if (disabled.length) {
+    listHtml.push(sec('Disabled', disabled.length));
+    disabled.forEach(j => listHtml.push(jobRow(j)));
+  }
+  listEl.innerHTML = listHtml.join('');
+
+  // Detail panel: summary cards + per-agent usage
+  document.getElementById('detailTitle').textContent = `Jobs — ${jobsData.date || 'Today'}`;
+  let detailHtml = `
+    <div class="operator-grid">
+      <div class="operator-card"><h4>Total Cost</h4><div class="operator-value">$${(totals.cost_usd||0).toFixed(2)}</div><div class="operator-note">${totals.calls||0} API calls</div></div>
+      <div class="operator-card"><h4>Total Tokens</h4><div class="operator-value">${fmtTokens(totals.tokens||0)}</div><div class="operator-note">${done.length}/${jobs.length} jobs done</div></div>
+    </div>
+    <div class="operator-section"><h4>Cost by Agent</h4><div class="operator-list">`;
+  const agentEntries = Object.entries(byAgent).sort((a,b)=>b[1].cost_usd-a[1].cost_usd);
+  if (agentEntries.length) {
+    agentEntries.forEach(([agent, u]) => {
+      detailHtml += `<div class="operator-row"><div class="operator-row-title">${esc(agent)}</div><div class="operator-row-sub">$${u.cost_usd.toFixed(4)} · ${fmtTokens(u.tokens)} · ${u.calls} calls</div></div>`;
+    });
+  } else {
+    detailHtml += '<div class="empty" style="padding:20px">No API usage today</div>';
+  }
+  detailHtml += '</div></div>';
+  detailEl.innerHTML = detailHtml;
+}
+
+function jobRow(j) {
+  const icon = j.status==='done' ? '✅' : j.status==='disabled' ? '⏸️' : '⏳';
+  const cost = j.usage.cost_usd > 0 ? `$${j.usage.cost_usd.toFixed(4)}` : '';
+  const tokens = j.usage.tokens > 0 ? fmtTokens(j.usage.tokens) : '';
+  const models = Object.keys(j.usage.models || {}).join(', ');
+  const time = j.ran_at ? j.ran_at.substring(11, 16) : (j.window || '');
+  const sub = [cost, tokens, models].filter(Boolean).join(' · ') || j.description;
+  const dispatches = j.dispatch_count > 1 ? ` x${j.dispatch_count}` : '';
+  return `<div class="row" onclick="showJobDetail('${j.name}')" style="border-left:3px solid ${j.status==='done'?'var(--accent)':j.status==='disabled'?'var(--text3)':'var(--orange)'}">
+    <div class="row-icon" style="font-size:15px">${icon}</div>
+    <div class="row-info"><div class="row-title" style="font-size:14px">${esc(j.name)}${dispatches}</div><div class="row-sub" style="font-size:12px">${esc(sub)}</div></div>
+    <div class="row-meta"><div class="row-time" style="font-size:13px">${esc(time)}</div></div></div>`;
+}
+
+function showJobDetail(name) {
+  if (!jobsData) return;
+  const j = (jobsData.jobs || []).find(x=>x.name===name);
+  if (!j) return;
+  const detailEl = document.getElementById('detailMessages');
+  document.getElementById('detailTitle').textContent = j.name;
+  let html = '<div style="padding:16px">';
+  html += `<div class="operator-row" style="margin-bottom:12px"><div class="operator-row-title">Description</div><div class="operator-row-sub">${esc(j.description)}</div></div>`;
+  html += `<div class="operator-row" style="margin-bottom:12px"><div class="operator-row-title">Schedule</div><div class="operator-row-sub">Trigger: ${esc(j.trigger)}${j.window ? ' · Window: '+esc(j.window) : ''}${j.cooldown_hours ? ' · Cooldown: '+j.cooldown_hours+'h' : ''} · Priority: ${j.priority}</div></div>`;
+  html += `<div class="operator-row" style="margin-bottom:12px"><div class="operator-row-title">Status</div><div class="operator-row-sub">${esc(j.status)}${j.ran_at ? ' · Ran at: '+esc(j.ran_at) : ''} · Dispatches: ${j.dispatch_count}</div></div>`;
+  if (j.dispatch_times && j.dispatch_times.length) {
+    html += `<div class="operator-row" style="margin-bottom:12px"><div class="operator-row-title">Dispatch Times</div><div class="operator-row-sub">${j.dispatch_times.map(t=>esc(t)).join('<br>')}</div></div>`;
+  }
+  html += `<div class="operator-row" style="margin-bottom:12px"><div class="operator-row-title">Usage</div><div class="operator-row-sub">Calls: ${j.usage.calls} · Tokens: ${fmtTokens(j.usage.tokens)} · Cost: $${j.usage.cost_usd.toFixed(4)}</div></div>`;
+  const models = j.usage.models || {};
+  if (Object.keys(models).length) {
+    html += '<div class="operator-row" style="margin-bottom:12px"><div class="operator-row-title">Models</div><div class="operator-row-sub">';
+    Object.entries(models).forEach(([m, u]) => {
+      html += `${esc(m)}: ${u.calls} calls, ${fmtTokens(u.tokens)}, $${u.cost_usd.toFixed(4)}<br>`;
+    });
+    html += '</div></div>';
+  }
+  html += '</div>';
+  detailEl.innerHTML = html;
+}
+
+function fmtTokens(n) {
+  if (n >= 1000000) return (n/1000000).toFixed(1)+'M';
+  if (n >= 1000) return (n/1000).toFixed(1)+'K';
+  return String(n);
 }
 
 function operatorSection(title, rows, emptyText) {
