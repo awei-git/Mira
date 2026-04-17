@@ -289,9 +289,17 @@ def _sweep_publish_pipeline():
     from config import MIRA_DIR
 
     stuck = get_stuck_articles(timeout_minutes=120)
+    from logging_util import throttled_warning
+
     for entry in stuck:
-        log.warning(
-            "PIPELINE STUCK: '%s' at status '%s' for >2h", entry.get("title", entry["slug"]), entry.get("status")
+        # Keyed by slug so we re-warn once/hour per stuck item, not every 30s tick.
+        throttled_warning(
+            log,
+            "PIPELINE STUCK: '%s' at status '%s' for >2h",
+            entry.get("title", entry["slug"]),
+            entry.get("status"),
+            key=f"stuck:{entry.get('slug')}",
+            interval_seconds=3600,
         )
 
         if entry.get("retry_count", 0) >= MAX_RETRIES:

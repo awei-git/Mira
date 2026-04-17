@@ -193,6 +193,83 @@ class WorkerSupervisor:
         self.record_crashes(reports)
         return reports
 
+    # ---- kill mode ------------------------------------------------------
+
+    def terminate_stale(
+        self,
+        reports: list[CrashReport] | None = None,
+        *,
+        sigterm_grace_seconds: float = 5.0,
+    ) -> list[int]:
+        """SIGTERM the PIDs in `reports` (or a fresh scan); escalate to
+        SIGKILL after `sigterm_grace_seconds` if they're still alive.
+
+        Returns the list of PIDs that were signalled. Missing / already-
+        dead PIDs are skipped silently. Heartbeat files are cleaned up
+        after termination so the same crash isn't re-reported.
+
+        Safe to call repeatedly — the supervisor's `_reported` set
+        prevents double-terminating the same worker across ticks.
+        """
+        import os
+        import signal
+
+        if reports is None:
+            reports = self.scan()
+
+        killed: list[int] = []
+        for r in reports:
+            pid = r.pid or 0
+            if not pid:
+                continue
+            # SIGTERM first — lets the worker flush state cleanly if it can.
+            try:
+                os.kill(pid, signal.SIGTERM)
+                killed.append(pid)
+                log.warning(
+                    "supervisor: SIGTERM to worker task=%s pid=%d (reason=%s)",
+                    r.task_id,
+                    pid,
+                    r.reason,
+                )
+            except ProcessLookupError:
+                log.debug("supervisor: pid %d already gone", pid)
+                continue
+            except PermissionError as e:
+                log.warning("supervisor: cannot signal pid %d: %s", pid, e)
+                continue
+
+            # Grace window, then escalate.
+            deadline = time.monotonic() + sigterm_grace_seconds
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)  # probe
+                except ProcessLookupError:
+                    break
+                time.sleep(0.2)
+            else:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    log.warning(
+                        "supervisor: SIGKILL to worker task=%s pid=%d (SIGTERM ignored)",
+                        r.task_id,
+                        pid,
+                    )
+                except ProcessLookupError:
+                    pass
+
+            # Clean up heartbeat so scan() doesn't re-flag this task next tick.
+            clear_heartbeat(r.task_id, root=self._root)
+
+        return killed
+
+    def enforce(self) -> tuple[list[CrashReport], list[int]]:
+        """One-shot: scan → record → terminate. Returns (reports, pids_killed)."""
+        reports = self.scan()
+        self.record_crashes(reports)
+        pids = self.terminate_stale(reports) if reports else []
+        return reports, pids
+
     # Diagnostic helpers
     def reset_reported(self) -> None:
         self._reported.clear()

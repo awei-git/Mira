@@ -214,7 +214,16 @@ def should_retry(entry: dict) -> bool:
     # Guard: don't retry if last error is identical to previous error
     # (learned from real failures — retrying the same non-transient error wastes cycles)
     if retry_count > 0 and entry.get("prev_error") and entry.get("error") == entry.get("prev_error"):
-        log.warning("Skipping retry for '%s': same error repeated (%s)", entry.get("slug", "?"), entry["error"][:120])
+        from logging_util import throttled_warning
+
+        throttled_warning(
+            log,
+            "Skipping retry for '%s': same error repeated (%s)",
+            entry.get("slug", "?"),
+            entry["error"][:120],
+            key=f"skip_retry:{entry.get('slug', '?')}",
+            interval_seconds=3600,
+        )
         return False
 
     # Check backoff timing

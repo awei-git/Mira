@@ -103,3 +103,81 @@ def test_tick_runs_scan_and_record(tmp_path):
     reports = sup.tick()
     assert len(reports) == 1
     assert crashes.exists()
+
+
+def test_terminate_stale_sigterms_then_sigkills(tmp_path, monkeypatch):
+    """Supervisor SIGTERMs first; escalates to SIGKILL if PID still alive."""
+    import signal as _signal
+
+    root = tmp_path / "workers"
+    (root / "stubborn").mkdir(parents=True)
+    (root / "stubborn" / "heartbeat").write_text(
+        json.dumps({"ts": time.time() - 120, "agent": "writer", "pid": 4242}),
+        encoding="utf-8",
+    )
+
+    signals_seen: list[tuple[int, int]] = []
+    alive = {"state": True}
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            if alive["state"]:
+                return
+            raise ProcessLookupError
+        signals_seen.append((pid, sig))
+        # Pretend SIGTERM is ignored; SIGKILL always works.
+        if sig == _signal.SIGKILL:
+            alive["state"] = False
+
+    monkeypatch.setattr("os.kill", fake_kill)
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    sup = WorkerSupervisor(root=root, stale_seconds=60, crashes_file=tmp_path / "crashes.jsonl")
+    killed = sup.terminate_stale(sigterm_grace_seconds=0.5)
+    assert 4242 in killed
+    signal_types = [s for _pid, s in signals_seen]
+    assert _signal.SIGTERM in signal_types
+    assert _signal.SIGKILL in signal_types
+    # Heartbeat cleaned so next scan won't re-flag.
+    assert not (root / "stubborn" / "heartbeat").exists()
+
+
+def test_terminate_stale_handles_already_dead_pid(tmp_path, monkeypatch):
+    root = tmp_path / "workers"
+    (root / "ghost").mkdir(parents=True)
+    (root / "ghost" / "heartbeat").write_text(
+        json.dumps({"ts": time.time() - 120, "agent": "x", "pid": 9999}),
+        encoding="utf-8",
+    )
+
+    def fake_kill(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr("os.kill", fake_kill)
+    sup = WorkerSupervisor(root=root, stale_seconds=60, crashes_file=tmp_path / "crashes.jsonl")
+    killed = sup.terminate_stale()
+    assert killed == []
+
+
+def test_enforce_is_one_shot_scan_record_kill(tmp_path, monkeypatch):
+    root = tmp_path / "workers"
+    (root / "one-shot").mkdir(parents=True)
+    (root / "one-shot" / "heartbeat").write_text(
+        json.dumps({"ts": time.time() - 120, "agent": "x", "pid": 111}),
+        encoding="utf-8",
+    )
+
+    def fake_kill(pid, sig):
+        # Simulate clean SIGTERM handling.
+        if sig == 0:
+            raise ProcessLookupError
+
+    monkeypatch.setattr("os.kill", fake_kill)
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    crashes = tmp_path / "crashes.jsonl"
+    sup = WorkerSupervisor(root=root, stale_seconds=60, crashes_file=crashes)
+    reports, killed = sup.enforce()
+    assert len(reports) == 1
+    assert 111 in killed
+    assert crashes.exists()

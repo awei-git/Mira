@@ -28,7 +28,16 @@ def ingest_apple_health(bridge_dir: Path, person_id: str, store) -> int:
             try:
                 data = json.loads(export_file.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError) as e2:
-                log.warning("Health export retry failed for %s: %s", person_id, e2)
+                from logging_util import throttled_warning
+
+                throttled_warning(
+                    log,
+                    "Health export retry failed for %s: %s",
+                    person_id,
+                    e2,
+                    key=f"health:retry:{person_id}",
+                    interval_seconds=1800,
+                )
                 return 0
         else:
             log.error("Failed to read health export for %s: %s", person_id, e)

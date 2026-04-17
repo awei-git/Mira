@@ -21,6 +21,7 @@ sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 import pathsetup  # noqa: F401  (side-effect: registers all Mira package dirs)
 
 import health_monitor
+from logging_util import throttled_warning  # noqa: E402  — used inside _check_invisible_deps
 
 from config import (
     MIRA_ROOT,
@@ -222,13 +223,29 @@ def _check_invisible_dependencies():
         ("config.TASK_TIMEOUT_LONG", TASK_TIMEOUT_LONG, "positive int"),
     ]:
         if not value:
-            log.warning("INVISIBLE_DEP node=%s expected=%s actual=missing/falsy", node, expected)
+            throttled_warning(
+                log,
+                "INVISIBLE_DEP node=%s expected=%s actual=missing/falsy",
+                node,
+                expected,
+                key=f"invis:{node}",
+            )
     if not SECRETS_FILE.exists():
-        log.warning("INVISIBLE_DEP node=config.SECRETS_FILE expected=exists actual=missing path=%s", SECRETS_FILE)
+        throttled_warning(
+            log,
+            "INVISIBLE_DEP node=config.SECRETS_FILE expected=exists actual=missing path=%s",
+            SECRETS_FILE,
+            key="invis:secrets_file",
+        )
 
     # 2. Soul directory and core identity/memory files
     if not SOUL_DIR.exists():
-        log.warning("INVISIBLE_DEP node=soul_dir expected=exists actual=missing path=%s", SOUL_DIR)
+        throttled_warning(
+            log,
+            "INVISIBLE_DEP node=soul_dir expected=exists actual=missing path=%s",
+            SOUL_DIR,
+            key="invis:soul_dir",
+        )
     else:
         try:
             from memory.soul import health_check as _soul_health
@@ -236,9 +253,19 @@ def _check_invisible_dependencies():
             result = _soul_health()
             if not result.get("ok"):
                 for fname in result.get("missing", []):
-                    log.warning("INVISIBLE_DEP node=soul/%s expected=non-empty-file actual=missing-or-empty", fname)
+                    throttled_warning(
+                        log,
+                        "INVISIBLE_DEP node=soul/%s expected=non-empty-file actual=missing-or-empty",
+                        fname,
+                        key=f"invis:soul_file:{fname}",
+                    )
         except Exception as _exc:
-            log.warning("INVISIBLE_DEP node=memory.soul expected=importable actual=%s", _exc)
+            throttled_warning(
+                log,
+                "INVISIBLE_DEP node=memory.soul expected=importable actual=%s",
+                _exc,
+                key="invis:memory_soul_import",
+            )
 
     # 3. Notes inbox / outbox paths
     for label, path in [
@@ -246,7 +273,13 @@ def _check_invisible_dependencies():
         ("notes_outbox", MIRA_DIR / "outbox"),
     ]:
         if not path.exists():
-            log.warning("INVISIBLE_DEP node=%s expected=exists actual=missing path=%s", label, path)
+            throttled_warning(
+                log,
+                "INVISIBLE_DEP node=%s expected=exists actual=missing path=%s",
+                label,
+                path,
+                key=f"invis:{label}",
+            )
 
     # 4. Import checks for shared modules that everything depends on
     for mod_name in ("bridge", "memory.soul"):
@@ -255,7 +288,13 @@ def _check_invisible_dependencies():
 
             importlib.import_module(mod_name)
         except Exception as _exc:
-            log.warning("INVISIBLE_DEP node=%s expected=importable actual=%s", mod_name, _exc)
+            throttled_warning(
+                log,
+                "INVISIBLE_DEP node=%s expected=importable actual=%s",
+                mod_name,
+                _exc,
+                key=f"invis:import:{mod_name}",
+            )
 
 
 # ---------------------------------------------------------------------------

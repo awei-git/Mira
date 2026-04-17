@@ -10,5 +10,19 @@ from .trajectory import (
     ToolStat,
     TrajectoryRecord,
 )
+from .boundaries import (
+    BridgeItem,
+    TaskRequest,
+    TaskResult,
+    AgentState,
+)
 
-__all__ = ["Turn", "ToolStat", "TrajectoryRecord"]
+__all__ = [
+    "Turn",
+    "ToolStat",
+    "TrajectoryRecord",
+    "BridgeItem",
+    "TaskRequest",
+    "TaskResult",
+    "AgentState",
+]
