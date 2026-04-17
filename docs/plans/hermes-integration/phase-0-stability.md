@@ -209,17 +209,15 @@ Baseline 7 天 **430,802 WARNING**（日均 ~6 万条），ERROR 信号被淹没
 
 ---
 
-## 总体 rollout
+## 总体 rollout（实际进度）
 
-1. **停 agent**：`launchctl unload ~/Library/LaunchAgents/com.angwei.mira-agent.plist`。
-2. **采集 baseline**（`python3 scripts/baseline_snapshot.py`）。
-3. **柱子 0.5**：清理现有坏 import + pre-commit hook 接入。（最便宜，先拔刺。）
-4. **柱子 1**：supervisor 先 dry-run 24h → 开 kill 模式。
-5. **柱子 3**：先 oMLX（吃掉 91% 噪音），再 Substack（治 publication_stats fetch），再其它 provider。
-6. **柱子 4.5**：日志降噪（柱子 3 之后做，因为 breaker 会自动解决大部分重复 WARNING）。
-7. **柱子 2**：typing 一次一个边界点，每个点过柱子 4 的回归。
-8. **柱子 4**：测试与其它柱子并行编写（不同文件）。
-9. 所有柱子 green → 重启 agent → 观察 3 天稳定再进 Phase 1。
+1. ✅ **停 agent** + 采集 baseline。
+2. ✅ **柱子 0.5**（import hygiene）：`scripts/check_imports.py` + pre-commit hook。
+3. ✅ **柱子 3**（circuit breaker + idempotent）：`lib/net/circuit_breaker.py` + `lib/net/idempotent.py`，包了 oMLX embed 和 Substack stats fetch。
+4. ✅ **柱子 1**（supervisor）：`lib/supervisor/worker_supervisor.py` 检测骨架——`write_heartbeat` / `scan` / `record_crashes` 到 `crashes.jsonl`。Live kill 另起一步。
+5. ✅ **Substack fetcher 修复**（Phase 1 Step 1.4 前置）：6h mtime freshness + circuit breaker tame 429 storm。
+6. ✅ **翻 `ENABLE_TRAJECTORY_V2 = True`**：2026-04-17 激活。
+7. 待办：**柱子 2**（typing 全面覆盖）、**柱子 4**（golden-path integration 测试）、**柱子 4.5**（日志降噪）、**柱子 1 kill 模式**。这四项是稳定性强化，不阻塞 Hermes 闭环。
 
 ## 成功标准
 

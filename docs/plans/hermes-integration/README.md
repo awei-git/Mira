@@ -13,14 +13,21 @@
 
 Hermes Agent（NousResearch）展示了一个干净的闭环：**trajectory 捕获 → 压缩 → 基于结果的 reward → skill 更新**。本 plan 把这套思路融进 Mira，但**先补齐稳定性底盘**（Phase 1 依赖的是稳定的 task_worker 和可信的 retry 语义）。
 
-## 阶段总览
+## 阶段总览（2026-04-17 激活）
 
-| 阶段 | 目标 | 依赖 | 预估 |
-|---|---|---|---|
-| 0 | 稳定性底盘（supervisor / typing / circuit breaker / golden tests） | — | 2-3 天 |
-| 1 | Trajectory 学习闭环 | Phase 0 | 1-2 天 |
-| 2 | FTS5 会话全文检索 | 无（可与 Phase 1 并行） | 0.5 天 |
-| 3 | 统一消息网关 | Phase 1 | 每 adapter 1 天 |
+| 阶段 | 目标 | 状态 |
+|---|---|---|
+| 0.5 | Import hygiene | ✅ 完成 |
+| 0 柱子 1 | Worker supervisor 检测骨架 | ✅ 完成（kill 模式另起） |
+| 0 柱子 3 | Circuit breaker + idempotent retry | ✅ 完成（oMLX + Substack 已包） |
+| Phase 1 Step 1.4 前置 | Substack fetcher 修复 | ✅ 完成（429-tame） |
+| 1 | Trajectory 学习闭环 | ✅ **激活**（`ENABLE_TRAJECTORY_V2=True`） |
+| 2 | FTS5 会话检索 | ✅ **激活**（trace finally → index） |
+| 3 | 统一消息网关（ABC + notes + telegram + discord 真连接器） | ✅ 完成（secrets.yml 加 token 即生效） |
+| 0 柱子 2 | Typing 全面覆盖 | 待办 |
+| 0 柱子 4 | Golden-path integration 测试 | 待办 |
+| 0 柱子 4.5 | 日志降噪 | 待办 |
+| 0 柱子 1 kill | 主动 SIGTERM 挂死 worker | 待办 |
 
 ## 排序理由
 
