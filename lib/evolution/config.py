@@ -8,10 +8,13 @@ EXPERIENCE_DIR = SOUL_DIR / "experiences"
 LESSON_DIR = SOUL_DIR / "lessons"
 VARIANT_DIR = SOUL_DIR / "variants"
 
-# Phase 1 (Hermes trajectory loop) — disabled by default until wiring
-# lands end-to-end; schema + recorder + compressor + tool_stats live
-# behind this flag so agent continues to run unchanged.
-ENABLE_TRAJECTORY_V2 = False
+# Phase 1 (Hermes trajectory loop) — enabled 2026-04-17 after Phase 0
+# pillar 1 (supervisor scaffold), pillar 3 (circuit breaker wrapping
+# oMLX + Substack), and the Substack publication_stats fetcher
+# prerequisite landed. Flip back to False to disable all telemetry:
+# trajectory persistence, tool_stats aggregation, FTS5 indexing, and
+# reward computation. The other modules keep compiling either way.
+ENABLE_TRAJECTORY_V2 = True
 
 # Trajectory aggregation paths (Phase 1).
 TRAJECTORY_FILE = SOUL_DIR / "trajectories.jsonl"

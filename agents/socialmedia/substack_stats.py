@@ -79,15 +79,70 @@ def _fetch_post_detail(slug: str, subdomain: str, cookie: str) -> dict | None:
         return None
 
 
-def fetch_publication_stats() -> dict:
+def fetch_publication_stats(*, force: bool = False, min_interval_hours: float = 6.0) -> dict:
     """Fetch stats for all published articles and recent Notes.
 
-    Queries individual post endpoints for view/like/restack data,
-    reads notes_state.json for Note engagement, and saves everything
-    to publication_stats.json.
+    Rate-limited: if `publication_stats.json` was updated within
+    `min_interval_hours`, return the cached disk copy instead of
+    hitting the Substack API. This tames the 429 storm the baseline
+    flagged (multiple "Failed to fetch posts: HTTP Error 429" across
+    the week).
 
-    Returns the stats dict (also saved to disk).
+    Wrapped by a per-provider circuit breaker so that during rate-
+    limit cool-offs we return cached data fast instead of piling more
+    requests on a rate-limited host.
+
+    Args:
+        force: skip the freshness check and force an API call.
+        min_interval_hours: return cached if the on-disk file is
+            younger than this.
+
+    Returns the stats dict (also saved to disk on refresh).
     """
+    from datetime import datetime, timezone
+    from config import SOCIAL_STATE_DIR
+    from net.circuit_breaker import CircuitOpen, get_circuit
+
+    stats_file = SOCIAL_STATE_DIR / "publication_stats.json"
+
+    # Freshness short-circuit — if disk copy is fresh enough, reuse it.
+    if not force and stats_file.exists():
+        try:
+            age_hours = (datetime.now(timezone.utc).timestamp() - stats_file.stat().st_mtime) / 3600
+            if age_hours < min_interval_hours:
+                return json.loads(stats_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass  # fall through to a live fetch
+
+    breaker = get_circuit(
+        "substack",
+        window_seconds=3600.0,  # 1h window: 429s are infrequent
+        min_samples=3,  # trip on any cluster
+        error_rate_threshold=0.5,
+        cooldown_seconds=1800.0,  # 30min backoff keeps us away from the rate limiter
+    )
+
+    try:
+        return breaker.call(lambda: _fetch_publication_stats_inner())
+    except CircuitOpen:
+        log.warning("Substack fetch skipped: circuit OPEN (recent failures)")
+        if stats_file.exists():
+            try:
+                return json.loads(stats_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {"articles": [], "notes": [], "fetched_at": None, "circuit_open": True}
+    except Exception as e:
+        log.warning("Substack fetch failed (%s); returning cached", e)
+        if stats_file.exists():
+            try:
+                return json.loads(stats_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {"articles": [], "notes": [], "fetched_at": None, "error": str(e)[:120]}
+
+
+def _fetch_publication_stats_inner() -> dict:
     from datetime import datetime, timezone
 
     cfg = _get_substack_config()
