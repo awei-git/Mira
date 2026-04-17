@@ -6,6 +6,25 @@
 
 **预估**：每 adapter 约 1 天。
 
+## 当前进度（2026-04-16 ABC + stubs 完成）
+
+**不动** 现有 `lib/bridge.py`。新包 `lib/bridge_gateway/` 提供 ABC + 注册器 + 两个 in-memory stub，让 supervisor/registry/Phase-1 reward 接入能在真实 connector 到位之前就测到契约。
+
+| 模块 | 路径 | 状态 |
+|---|---|---|
+| ABC + 数据类 | `lib/bridge_gateway/adapter.py`（`BridgeAdapter` ABC：`read_incoming / send_outgoing / heartbeat`；`BridgeMessage` dataclass；`bridge_message_from_dict` 解析器） | ✅ |
+| 注册器 | `lib/bridge_gateway/registry.py::AdapterRegistry`（多 adapter 并发 poll、`poll_all` 失败隔离、`send` 按 `source` 路由、`heartbeats` 聚合） | ✅ |
+| Telegram stub | `lib/bridge_gateway/stub_telegram.py::TelegramStubAdapter`（in-memory 队列 + `send_sink` 测试钩） | ✅ |
+| Discord stub | `lib/bridge_gateway/stub_discord.py::DiscordStubAdapter`（入站自动打 `reader_feedback` tag，供 Phase 1 reward 识别；tag 可自定义） | ✅ |
+| 契约单测 | `tests/bridge_gateway/test_adapter_contract.py` + `test_registry.py`（13 tests green：duplicate/empty name rejection、poll 隔离、路由、sink 拦截、auto-tag） | ✅ |
+
+待办（真正的 adapter 替换 stub 时做）：
+
+- **Step 3.1 整合 existing `lib/bridge.py`**：把 `lib/bridge.py::Mira` 的 iCloud/Notes 路径包成 `NotesBridgeAdapter` 注入 `AdapterRegistry`，让 `do_talk` 通过 registry fan-in 读 items。此步会最终替代 `lib/bridge.py` 的散装使用，但可渐进。
+- **Step 3.2 真 Telegram adapter**：`lib/bridge_gateway/adapters/telegram.py` 用 `python-telegram-bot`，bot token 从 `.env.secret`（参 `feedback_secrets_check`）；long-poll 起在 supervisor 下；send 走 Phase 0 circuit breaker + idempotent retry。
+- **Step 3.3 真 Discord adapter**：`discord.py`，默认只读、单频道，入站继承 stub 的 `reader_feedback` tag 约定。
+- **启用条件**：Phase 0 柱子 1（supervisor）到位后才能把 adapter 跑在独立进程；Phase 1 `ENABLE_TRAJECTORY_V2` 打开后 `reader_feedback` 才真正进入 reward 计算。
+
 ## 现状
 
 - [Mira/lib/bridge.py](Mira/lib/bridge.py)`::Mira` 包装 iCloud MiraBridge。
