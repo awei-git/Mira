@@ -123,11 +123,24 @@ def record_task_outcome(
     action: str,
     status: str,
     summary: str = "",
+    *,
+    trajectory=None,
+    outcome_verified: bool | None = None,
+    elapsed_seconds: float | None = None,
+    budget_seconds: float | None = None,
 ):
     """Record a task completion/failure as experience.
 
     Args:
-        status: "done", "failed", "timeout"
+        status: "done", "failed", "timeout", "crashed"
+        trajectory: Optional TrajectoryRecord. When provided AND
+            `ENABLE_TRAJECTORY_V2` is on, the record is compressed,
+            appended to the global trajectories.jsonl, and its
+            tool_stats are merged into the global aggregate.
+        outcome_verified: Optional flag — did the claimed artifact
+            (file/URL/post) actually land. Feeds the v2 reward.
+        elapsed_seconds / budget_seconds: Optional duration telemetry
+            for the time_cost_penalty signal.
     """
     reward_map = {"done": "success", "failed": "failure", "timeout": "timeout"}
     reward_key = reward_map.get(status, "failure")
@@ -140,3 +153,29 @@ def record_task_outcome(
         agent=agent,
         task_id=task_id,
     )
+
+    # Phase 1 — trajectory-loop side effects, strictly additive.
+    from .config import ENABLE_TRAJECTORY_V2
+
+    if not ENABLE_TRAJECTORY_V2 or trajectory is None:
+        return
+
+    try:  # never let telemetry crash the main task path
+        from .trajectory_compressor import compress
+        from .trajectory_recorder import append_to_global
+        from .tool_stats import merge_into_global
+        from .rewards_v2 import compute_trajectory_reward
+
+        compressed = compress(trajectory)
+        append_to_global(compressed)
+        merge_into_global(compressed)
+
+        score, components = compute_trajectory_reward(
+            compressed,
+            outcome_verified=outcome_verified,
+            elapsed_seconds=elapsed_seconds,
+            budget_seconds=budget_seconds,
+        )
+        log.debug("trajectory reward task=%s score=%.3f components=%s", task_id, score, components)
+    except Exception as e:
+        log.warning("trajectory side-effect failed (task=%s): %s", task_id, e)

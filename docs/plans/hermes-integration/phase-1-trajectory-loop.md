@@ -6,6 +6,28 @@
 
 **预估**：1-2 天专注 session。
 
+## 当前进度（2026-04-16 scaffold 完成）
+
+框架已落地并全程 flag-gated（`config.ENABLE_TRAJECTORY_V2 = False` by default）——不影响生产 agent。
+
+| 模块 | 路径 | 状态 |
+|---|---|---|
+| 类型契约 | `lib/schemas/trajectory.py`（Turn / ToolStat / TrajectoryRecord，Pydantic v2） | ✅ |
+| Trajectory 构造器 | `lib/evolution/trajectory_recorder.py`（`TrajectoryRecorder` + 持久化 helper） | ✅ |
+| Hermes 风格压缩器 | `lib/evolution/trajectory_compressor.py`（保留首 system/human/assistant/tool + 末 4 turn，中间 Gemini Flash 摘要，`[CONTEXT SUMMARY]:` 前缀） | ✅ |
+| Tool stats 聚合 | `lib/evolution/tool_stats.py`（原子写 `data/soul/tool_stats.json`） | ✅ |
+| v2 reward 计算 | `lib/evolution/rewards_v2.py`（基于事实的信号：`tool_success_rate` / `outcome_verified` / `crash_penalty` / `time_cost_penalty` / substack 订阅 / reader feedback） | ✅ |
+| 权重表 | `lib/evolution/config.py::REWARD_WEIGHTS` 新增 7 个信号 | ✅ |
+| 结构路径 | `TRAJECTORY_FILE` / `TOOL_STATS_FILE` / `CRASHES_FILE` / `PROPOSED_CHANGES_FILE` 常量 | ✅ |
+| `record_task_outcome` hook | 新增 `trajectory=` / `outcome_verified=` / `elapsed_seconds=` / `budget_seconds=` 参数，flag-off 时完全 no-op | ✅ |
+| 单测 | `tests/evolution/test_trajectory_*.py` + `test_rewards_v2.py` + `test_tool_stats.py` + `test_record_task_outcome_v2.py`（27 tests green） | ✅ |
+
+待办（这条 plan 的后续步骤）：
+
+- **Step 1.1 完整写入**：把 `TrajectoryRecorder` 接进 `task_worker.py::claude_act` 调用链——目前只是 API 可用，还没真正产生数据。
+- **Step 1.5 reflect 改造**：读 `trajectories.jsonl` + `tool_stats.json` delta + reward 分布产出 skill diff。
+- **Step 1.4 前置条件**：Substack `publication_stats.json` fetch 修复（baseline 里 stale 6 天），否则 `substack_new_subs_24h` 信号始终为 None。
+
 ## 现状（来自代码探测）
 
 - [Mira/lib/evolution/experience.py](Mira/lib/evolution/experience.py) 已有 `record_experience` / `load_experiences` / `record_task_outcome` / `get_relevant_experiences`。

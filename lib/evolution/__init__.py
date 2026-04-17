@@ -33,7 +33,27 @@ from .rewards import (
     record_user_feedback,
 )
 
+# Phase 1 — Hermes-inspired trajectory loop (scaffolding, flag-gated).
+from .trajectory_compressor import compress
+from .trajectory_recorder import (
+    TrajectoryRecorder,
+    persist_per_task,
+    append_to_global,
+    load_trajectory_jsonl,
+)
+from .tool_stats import (
+    load_tool_stats,
+    save_tool_stats,
+    merge_into_global,
+    success_rate_snapshot,
+)
+from .rewards_v2 import (
+    compute_trajectory_reward,
+    load_recent_trajectories,
+)
+
 __all__ = [
+    # Legacy experience API
     "record_experience",
     "get_relevant_experiences",
     "record_task_outcome",
@@ -43,4 +63,16 @@ __all__ = [
     "evaluate_variant",
     "collect_substack_rewards",
     "record_user_feedback",
+    # Phase 1 — trajectory
+    "TrajectoryRecorder",
+    "compress",
+    "persist_per_task",
+    "append_to_global",
+    "load_trajectory_jsonl",
+    "load_tool_stats",
+    "save_tool_stats",
+    "merge_into_global",
+    "success_rate_snapshot",
+    "compute_trajectory_reward",
+    "load_recent_trajectories",
 ]
