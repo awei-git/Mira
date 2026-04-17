@@ -19,10 +19,18 @@
 | 健壮性 | 所有操作 soft-fail（log + 返回默认值），不进 critical path | ✅ |
 | 单测 | `tests/memory/test_session_index.py`（9 tests green，覆盖 index/search/filter/prune/sanitize/empty） | ✅ |
 
-待办：
+### Step 2.2 — ✅ 完成
 
-- **Step 2.2 task_worker 收尾时 index**：等 Phase 1 `trace_task` 接入后，在 `trace_task` 的 `finally` 里追加一次 `session_index.index_trajectory(compressed)`。天然 flag-gated（只有 `ENABLE_TRAJECTORY_V2=True` 时才产生 trajectory 去 index）。
-- **Step 2.3 soul prompt 注入**：在 `lib/memory/soul.py::format_soul` 或 prompt 构造链里，用当前 prompt 调 `format_soul_recall` 加 snippet block（token 预算限制好，不能挤掉既有 context）。
+[lib/evolution/trace.py](Mira/lib/evolution/trace.py) 的 flag-on `finally` 段追加了 `memory.session_index.index_trajectory(record)`——用**未压缩**的原始 record 入索引，这样 phrase recall 不会被 `[CONTEXT SUMMARY]` 吞掉细节。
+
+### Step 2.3 — ✅ 完成
+
+[lib/memory/soul.py::format_soul](Mira/lib/memory/soul.py) 新增 `context_query: str | None = None` 关键字参数：
+
+- 不传：行为完全不变（向后兼容）。
+- 传了：调 `format_soul_recall(query, k=3, max_chars_per_snippet=200)`，命中就追加 `## Relevant past conversations` block。没命中或索引缺失——silent skip。
+
+调用方按需 opt-in，比如 `format_soul(soul, context_query=user_prompt)`。
 
 ## 现状
 

@@ -18,12 +18,36 @@
 | Discord stub | `lib/bridge_gateway/stub_discord.py::DiscordStubAdapter`（入站自动打 `reader_feedback` tag，供 Phase 1 reward 识别；tag 可自定义） | ✅ |
 | 契约单测 | `tests/bridge_gateway/test_adapter_contract.py` + `test_registry.py`（13 tests green：duplicate/empty name rejection、poll 隔离、路由、sink 拦截、auto-tag） | ✅ |
 
-待办（真正的 adapter 替换 stub 时做）：
+### Step 3.1 — ✅ 完成
 
-- **Step 3.1 整合 existing `lib/bridge.py`**：把 `lib/bridge.py::Mira` 的 iCloud/Notes 路径包成 `NotesBridgeAdapter` 注入 `AdapterRegistry`，让 `do_talk` 通过 registry fan-in 读 items。此步会最终替代 `lib/bridge.py` 的散装使用，但可渐进。
-- **Step 3.2 真 Telegram adapter**：`lib/bridge_gateway/adapters/telegram.py` 用 `python-telegram-bot`，bot token 从 `.env.secret`（参 `feedback_secrets_check`）；long-poll 起在 supervisor 下；send 走 Phase 0 circuit breaker + idempotent retry。
-- **Step 3.3 真 Discord adapter**：`discord.py`，默认只读、单频道，入站继承 stub 的 `reader_feedback` tag 约定。
+[lib/bridge_gateway/adapters/notes.py::NotesBridgeAdapter](Mira/lib/bridge_gateway/adapters/notes.py) 通过**组合**包裹现有 `lib/bridge.py::Mira`——**零改动** 现有 Notes/iCloud 路径。
+
+- `read_incoming()` 刻意返回空（避免与既有 fs 扫描双递送）
+- `send_outgoing()` 委托 `Mira.append_message` / `create_item`
+- `heartbeat()` 读 `bridge_dir/heartbeat.json`
+
+### Step 3.2 — ✅ 完成（零依赖情况下是安全空转）
+
+[lib/bridge_gateway/adapters/telegram.py::TelegramBridgeAdapter](Mira/lib/bridge_gateway/adapters/telegram.py) 真 `python-telegram-bot` 集成：
+
+- **lazy import**：未装 library → 首次调用时 disable，其后静默。
+- **token 缺失**：从 `secrets.yml` 读 `api_keys.telegram.bot_token`，空 → disable。
+- `read_incoming()` 用 `get_updates(offset=...)` long-poll，自动 offset tracking 保证 at-most-once。
+- **未注册 chat_id 一律忽略**（防 open-relay）。
+- 添加 token 到 secrets.yml + `pip install python-telegram-bot` → 自动启用。
+
+### Step 3.3 — ✅ 完成（零依赖情况下是安全空转）
+
+[lib/bridge_gateway/adapters/discord.py::DiscordBridgeAdapter](Mira/lib/bridge_gateway/adapters/discord.py) REST-based（不走 websocket，契合 30s agent loop）：
+
+- 从 `secrets.yml` 读 `api_keys.discord.bot_token` + `channel_id`。
+- `read_incoming()` 用 `/channels/{id}/messages?after=` REST 游标；入站自动打 `reader_feedback` tag。
+- `send_outgoing()` **默认 no-op**，必须显式 `enable_replies=True` 才写出（安全轨）。
+
+### 剩余依赖
+
 - **启用条件**：Phase 0 柱子 1（supervisor）到位后才能把 adapter 跑在独立进程；Phase 1 `ENABLE_TRAJECTORY_V2` 打开后 `reader_feedback` 才真正进入 reward 计算。
+- **部署**：`pip install python-telegram-bot` + `secrets.yml` 写 Telegram/Discord 段即可启用；当前状态下都是 graceful no-op。
 
 ## 现状
 

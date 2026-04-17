@@ -24,12 +24,31 @@
 | 任务级 capture context | `lib/evolution/trace.py::trace_task(...)` —— `with` 块形式，flag-off 时完全 no-op，flag-on 时自动 compress+append+merge+reward；异常传播正确（不吞 exception） | ✅ |
 | Reflect consumer | `lib/evolution/trajectory_reflect.py` —— `format_reflect_context` 产出 markdown、`parse_skill_diff` 解析 LLM 输出、`needs_human_review` 过滤 publish-sensitive、`record_proposals` 落盘并分流 | ✅ |
 
-待办（这条 plan 的后续步骤）：
+### Step 1.1 实际 wiring — ✅ 完成
 
-- **Step 1.1 实际 wiring**：把 `trace_task(...)` context manager 包到 `agents/super/workflows/writing.py` / `explore.py` / `daily.py` 等任务入口周围。Context API 已经可以直接 drop-in；flag 一开启即产生数据。
-- **Step 1.5 reflect 接入**：把 `format_reflect_context` 注入到 `workflows/reflect.py` 的 prompt 构造里；把 LLM 回复送给 `parse_skill_diff`；把 `record_proposals` 的 `needs_review` 分流接到 bridge inbox（人工审）+ auto-apply（skill audit gated）。
-- **Step 1.4 前置条件**：Substack `publication_stats.json` fetch 修复（baseline 里 stale 6 天），否则 `substack_new_subs_24h` 信号始终为 None。
-- **启用时机**：Phase 0 柱子 1（supervisor）+ 柱子 3（circuit breaker + idempotency）先落地再打开 `ENABLE_TRAJECTORY_V2`；否则不稳定的 worker 会生成损坏的 trajectory。
+`evolution.traced(...)` 装饰器一行接入；`evolution.workflow_trace(...)` 上下文管理器形式。已包装 5 个 workflow 入口：
+
+- [agents/super/workflows/journal.py::do_journal](Mira/agents/super/workflows/journal.py)
+- [agents/super/workflows/explore.py::do_explore](Mira/agents/super/workflows/explore.py)
+- [agents/super/workflows/reflect.py::do_reflect](Mira/agents/super/workflows/reflect.py)
+- [agents/super/workflows/daily.py::do_idle_think](Mira/agents/super/workflows/daily.py)
+- [agents/super/workflows/daily.py::do_soul_question](Mira/agents/super/workflows/daily.py)
+
+装饰器 flag-off 时纯 no-op（tests/evolution/test_trace.py::test_traced_decorator_flag_off_is_pure_noop）。扩展到其它 `do_X`：一行 `@traced("name", agent="...", budget_seconds=N)`。
+
+### Step 1.5 reflect 接入 — ✅ 完成
+
+[workflows/reflect.py::do_reflect](Mira/agents/super/workflows/reflect.py) 现在在主 reflection 之后：当 `ENABLE_TRAJECTORY_V2=True` 且有 trajectory 数据：
+
+1. `format_reflect_context(days=7)` 产出 markdown（reward summary + tool success rates + top/bottom trajectories）
+2. 独立的 `claude_think` call 以该 context + 明确 JSON 输出格式要求提 skill-diff
+3. `parse_skill_diff` 解析
+4. `record_proposals` 落盘 + 分流（publish-sensitive → `needs_review=True`）
+
+### 剩余依赖
+
+- **Step 1.4 前置条件**：Substack `publication_stats.json` fetch 修复（baseline 里 stale 6 天），否则 `substack_new_subs_24h` 信号始终为 None。Phase 0 柱子 3 的 circuit breaker 会顺手治这个。
+- **启用时机**：Phase 0 柱子 1（supervisor）+ 柱子 3（circuit breaker + idempotency）先落地再打开 `ENABLE_TRAJECTORY_V2`。
 
 ## 现状（来自代码探测）
 
