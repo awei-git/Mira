@@ -51,6 +51,13 @@ from .rewards_v2 import (
     compute_trajectory_reward,
     load_recent_trajectories,
 )
+from .trace import trace_task, TaskTrace
+from .trajectory_reflect import (
+    format_reflect_context,
+    parse_skill_diff,
+    needs_human_review,
+    record_proposals,
+)
 
 __all__ = [
     # Legacy experience API
@@ -75,4 +82,10 @@ __all__ = [
     "success_rate_snapshot",
     "compute_trajectory_reward",
     "load_recent_trajectories",
+    "trace_task",
+    "TaskTrace",
+    "format_reflect_context",
+    "parse_skill_diff",
+    "needs_human_review",
+    "record_proposals",
 ]

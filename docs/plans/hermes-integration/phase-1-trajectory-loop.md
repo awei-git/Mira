@@ -20,13 +20,16 @@
 | 权重表 | `lib/evolution/config.py::REWARD_WEIGHTS` 新增 7 个信号 | ✅ |
 | 结构路径 | `TRAJECTORY_FILE` / `TOOL_STATS_FILE` / `CRASHES_FILE` / `PROPOSED_CHANGES_FILE` 常量 | ✅ |
 | `record_task_outcome` hook | 新增 `trajectory=` / `outcome_verified=` / `elapsed_seconds=` / `budget_seconds=` 参数，flag-off 时完全 no-op | ✅ |
-| 单测 | `tests/evolution/test_trajectory_*.py` + `test_rewards_v2.py` + `test_tool_stats.py` + `test_record_task_outcome_v2.py`（27 tests green） | ✅ |
+| 单测 | `tests/evolution/test_trajectory_*.py` + `test_rewards_v2.py` + `test_tool_stats.py` + `test_record_task_outcome_v2.py` + `test_trace.py` + `test_trajectory_reflect.py`（36 tests green） | ✅ |
+| 任务级 capture context | `lib/evolution/trace.py::trace_task(...)` —— `with` 块形式，flag-off 时完全 no-op，flag-on 时自动 compress+append+merge+reward；异常传播正确（不吞 exception） | ✅ |
+| Reflect consumer | `lib/evolution/trajectory_reflect.py` —— `format_reflect_context` 产出 markdown、`parse_skill_diff` 解析 LLM 输出、`needs_human_review` 过滤 publish-sensitive、`record_proposals` 落盘并分流 | ✅ |
 
 待办（这条 plan 的后续步骤）：
 
-- **Step 1.1 完整写入**：把 `TrajectoryRecorder` 接进 `task_worker.py::claude_act` 调用链——目前只是 API 可用，还没真正产生数据。
-- **Step 1.5 reflect 改造**：读 `trajectories.jsonl` + `tool_stats.json` delta + reward 分布产出 skill diff。
+- **Step 1.1 实际 wiring**：把 `trace_task(...)` context manager 包到 `agents/super/workflows/writing.py` / `explore.py` / `daily.py` 等任务入口周围。Context API 已经可以直接 drop-in；flag 一开启即产生数据。
+- **Step 1.5 reflect 接入**：把 `format_reflect_context` 注入到 `workflows/reflect.py` 的 prompt 构造里；把 LLM 回复送给 `parse_skill_diff`；把 `record_proposals` 的 `needs_review` 分流接到 bridge inbox（人工审）+ auto-apply（skill audit gated）。
 - **Step 1.4 前置条件**：Substack `publication_stats.json` fetch 修复（baseline 里 stale 6 天），否则 `substack_new_subs_24h` 信号始终为 None。
+- **启用时机**：Phase 0 柱子 1（supervisor）+ 柱子 3（circuit breaker + idempotency）先落地再打开 `ENABLE_TRAJECTORY_V2`；否则不稳定的 worker 会生成损坏的 trajectory。
 
 ## 现状（来自代码探测）
 
