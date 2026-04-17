@@ -49,6 +49,10 @@ from workflows.helpers import (
 log = logging.getLogger("mira")
 
 
+from evolution import traced  # noqa: E402
+
+
+@traced("journal", agent="super", budget_seconds=180)
 def do_journal(user_id: str = "ang"):
     """Write a daily journal entry: what happened, what was learned, self-reflection.
 

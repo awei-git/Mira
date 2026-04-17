@@ -56,6 +56,10 @@ from workflows.helpers import (
 log = logging.getLogger("mira")
 
 
+from evolution import traced  # noqa: E402
+
+
+@traced("explore", agent="explorer", budget_seconds=600)
 def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     """Fetch sources, write briefing, optionally deep-dive.
 

@@ -38,6 +38,8 @@ try:
     from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
+
+from evolution import traced
 from memory.soul import (
     load_soul,
     format_soul,
@@ -520,6 +522,7 @@ def do_zhesi(user_id: str = "ang"):
 # ---------------------------------------------------------------------------
 
 
+@traced("soul_question", agent="super", budget_seconds=120)
 def do_soul_question(user_id: str = "ang"):
     """Generate and send the daily soul question."""
     # Lazy imports from core to avoid circular deps
@@ -988,6 +991,7 @@ def _run_self_improve():
 # ---------------------------------------------------------------------------
 
 
+@traced("idle_think", agent="super", budget_seconds=180)
 def do_idle_think(user_id: str = "ang"):
     """Enhanced self-awakening with three thinking modes.
 

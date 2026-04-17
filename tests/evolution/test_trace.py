@@ -13,16 +13,19 @@ def _redirect(monkeypatch, tmp_path: Path) -> dict:
     import evolution.trajectory_recorder as rec_mod
     import evolution.tool_stats as ts_mod
     import evolution.trajectory_compressor as comp_mod
+    import memory.session_index as idx_mod
 
     paths = {
         "traj": tmp_path / "trajectories.jsonl",
         "stats": tmp_path / "tool_stats.json",
+        "index": tmp_path / "session_index.db",
     }
     monkeypatch.setattr(cfg, "TRAJECTORY_FILE", paths["traj"])
     monkeypatch.setattr(cfg, "TOOL_STATS_FILE", paths["stats"])
     monkeypatch.setattr(rec_mod, "TRAJECTORY_FILE", paths["traj"])
     monkeypatch.setattr(ts_mod, "TOOL_STATS_FILE", paths["stats"])
     monkeypatch.setattr(comp_mod, "_default_summarizer", lambda: None)
+    monkeypatch.setattr(idx_mod, "DB_FILE", paths["index"])
     return paths
 
 
@@ -67,6 +70,69 @@ def test_trace_persists_when_flag_on(tmp_path, monkeypatch):
     assert paths["stats"].exists()
     stats = json.loads(paths["stats"].read_text(encoding="utf-8"))
     assert stats["WebSearch"]["count"] == 1
+
+    # Phase 2: session index populated by the same trace_task exit.
+    from memory.session_index import row_count, search
+
+    assert row_count(path=paths["index"]) >= 1
+    hits = search("write about X", path=paths["index"])
+    assert hits, "expected FTS5 hit for indexed trajectory turn"
+
+
+def test_workflow_trace_helper_uses_name_and_user_in_task_id(tmp_path, monkeypatch):
+    _redirect(monkeypatch, tmp_path)
+    import evolution.config as cfg
+    from evolution.trace import workflow_trace
+
+    monkeypatch.setattr(cfg, "ENABLE_TRAJECTORY_V2", True)
+
+    with workflow_trace("unit-demo", user_id="liquan") as trace:
+        trace.add_user("cycle")
+        trace.mark_completed(outcome_verified=True)
+
+    paths = _redirect.__wrapped__ if hasattr(_redirect, "__wrapped__") else None  # noqa: B019
+    # Simpler: reload via config + verify at least one entry exists
+    assert cfg.TRAJECTORY_FILE.exists()
+    import json
+
+    line = cfg.TRAJECTORY_FILE.read_text(encoding="utf-8").strip().splitlines()[-1]
+    doc = json.loads(line)
+    assert doc["task_id"].startswith("unit-demo_")
+    assert doc["task_id"].endswith("_liquan")
+
+
+def test_traced_decorator_wraps_and_preserves_return(tmp_path, monkeypatch):
+    _redirect(monkeypatch, tmp_path)
+    import evolution.config as cfg
+    from evolution import traced
+
+    monkeypatch.setattr(cfg, "ENABLE_TRAJECTORY_V2", True)
+
+    @traced("decofn")
+    def compute(user_id: str = "ang", x: int = 2):
+        return x * 3
+
+    assert compute(x=7) == 21
+    # Trajectory appended on call
+    lines = cfg.TRAJECTORY_FILE.read_text(encoding="utf-8").strip().splitlines()
+    import json
+
+    assert any(json.loads(l)["task_id"].startswith("decofn_") for l in lines)
+
+
+def test_traced_decorator_flag_off_is_pure_noop(tmp_path, monkeypatch):
+    _redirect(monkeypatch, tmp_path)
+    import evolution.config as cfg
+    from evolution import traced
+
+    monkeypatch.setattr(cfg, "ENABLE_TRAJECTORY_V2", False)
+
+    @traced("off")
+    def compute(user_id="ang"):
+        return "yes"
+
+    assert compute() == "yes"
+    assert not cfg.TRAJECTORY_FILE.exists()
 
 
 def test_trace_marks_crashed_on_exception(tmp_path, monkeypatch):

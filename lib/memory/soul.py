@@ -88,8 +88,17 @@ def load_soul() -> dict:
     }
 
 
-def format_soul(soul: dict) -> str:
-    """Format the full soul as a string for injection into prompts."""
+def format_soul(soul: dict, *, context_query: str | None = None) -> str:
+    """Format the full soul as a string for injection into prompts.
+
+    Args:
+        context_query: Optional free-text query for Phase 2 FTS5 session
+            recall. When provided, top matching past conversation turns
+            are appended under "Relevant past conversations". Pass the
+            current task prompt for best relevance. Silently skipped if
+            the index is missing or no hits — callers can always pass
+            this without guarding.
+    """
     parts = [
         "# My Identity\n",
         soul["identity"],
@@ -103,6 +112,21 @@ def format_soul(soul: dict) -> str:
     if soul["skills"]:
         parts.append("\n\n# My Skills\n")
         parts.append(soul["skills"])
+
+    # Phase 2 — FTS5 session recall. Only pulls when caller supplied a
+    # query; the index itself lives at data/soul/session_index.db and
+    # is populated by trace_task (Phase 1). Token-budget-friendly: 3
+    # snippets × ~200 chars.
+    if context_query:
+        try:
+            from memory.session_index import format_soul_recall
+
+            recall = format_soul_recall(context_query, k=3, max_chars_per_snippet=200)
+            if recall:
+                parts.append("\n\n")
+                parts.append(recall)
+        except Exception as e:
+            log.debug("session_index recall skipped: %s", e)
 
     # Self-evaluation scorecard (if available)
     try:

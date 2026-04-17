@@ -51,7 +51,7 @@ from .rewards_v2 import (
     compute_trajectory_reward,
     load_recent_trajectories,
 )
-from .trace import trace_task, TaskTrace
+from .trace import trace_task, workflow_trace, traced, TaskTrace
 from .trajectory_reflect import (
     format_reflect_context,
     parse_skill_diff,
@@ -83,6 +83,8 @@ __all__ = [
     "compute_trajectory_reward",
     "load_recent_trajectories",
     "trace_task",
+    "workflow_trace",
+    "traced",
     "TaskTrace",
     "format_reflect_context",
     "parse_skill_diff",

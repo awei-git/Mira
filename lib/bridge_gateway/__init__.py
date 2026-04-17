@@ -17,6 +17,9 @@ from .adapter import BridgeAdapter, BridgeMessage
 from .registry import AdapterRegistry
 from .stub_telegram import TelegramStubAdapter
 from .stub_discord import DiscordStubAdapter
+from .adapters.notes import NotesBridgeAdapter
+from .adapters.telegram import TelegramBridgeAdapter
+from .adapters.discord import DiscordBridgeAdapter
 
 __all__ = [
     "BridgeAdapter",
@@ -24,4 +27,7 @@ __all__ = [
     "AdapterRegistry",
     "TelegramStubAdapter",
     "DiscordStubAdapter",
+    "NotesBridgeAdapter",
+    "TelegramBridgeAdapter",
+    "DiscordBridgeAdapter",
 ]

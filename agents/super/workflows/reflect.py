@@ -160,6 +160,10 @@ def _prune_worldview_by_decay():
         log.warning("Could not save worldview decay metadata: %s", e)
 
 
+from evolution import traced  # noqa: E402
+
+
+@traced("reflect", agent="super", budget_seconds=600)
 def do_reflect(user_id: str = "ang"):
     """Weekly reflection: consolidate memory, evolve interests, maybe self-initiate."""
     # Lazy imports from core to avoid circular deps
@@ -239,6 +243,45 @@ def do_reflect(user_id: str = "ang"):
         _prune_worldview_by_decay()
     except Exception as e:
         log.warning("Worldview decay pruning failed: %s", e)
+
+    # --- Phase 1: trajectory-derived skill diff ---
+    # No-op when ENABLE_TRAJECTORY_V2 is False or no trajectories have
+    # been captured yet. When data is available, ask the model for
+    # concrete skill/config proposals grounded in the measured reward
+    # distribution and tool success rates, then split into auto-apply vs
+    # human-review bins (CLAUDE.md hard rule 3).
+    try:
+        from evolution.config import ENABLE_TRAJECTORY_V2
+
+        if ENABLE_TRAJECTORY_V2:
+            from evolution.trajectory_reflect import (
+                format_reflect_context,
+                parse_skill_diff,
+                record_proposals,
+            )
+
+            traj_ctx = format_reflect_context(days=7)
+            if traj_ctx:
+                diff_prompt = (
+                    f"{traj_ctx}\n\n---\n\n"
+                    "Based on the trajectory evidence above, propose concrete "
+                    "skill or config changes that would improve reward. Output "
+                    "ONLY a JSON array; each entry must have kind, target, "
+                    "rationale, affects, diff. Empty array [] is fine if nothing "
+                    "specific stands out. Do NOT propose changes to publish-flow "
+                    "guard rails.\n"
+                )
+                diff_result = claude_think(diff_prompt, timeout=180, tier="light")
+                proposals = parse_skill_diff(diff_result or "")
+                auto, review = record_proposals(proposals)
+                log.info(
+                    "Trajectory reflect: %d proposals (%d auto, %d review)",
+                    len(proposals),
+                    len(auto),
+                    len(review),
+                )
+    except Exception as e:
+        log.warning("Trajectory reflect skipped: %s", e)
 
     if project_section and "nothing right now" not in project_section.lower():
         # The agent wants to start something on its own

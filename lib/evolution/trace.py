@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Iterator
 
 from schemas.trajectory import TrajectoryRecord
@@ -34,6 +35,63 @@ from . import config as _cfg
 from .trajectory_recorder import TrajectoryRecorder
 
 log = logging.getLogger("mira.evolution.trace")
+
+
+def workflow_trace(
+    name: str,
+    *,
+    agent: str = "super",
+    budget_seconds: float | None = None,
+    user_id: str = "",
+):
+    """Drop-in convenience for wrapping a `do_X` workflow entry point.
+
+    Builds a unique task_id from `name` + timestamp + optional user, so
+    every cycle of the workflow becomes one trajectory. Usage:
+
+        def do_journal(user_id="ang"):
+            with workflow_trace("journal", user_id=user_id) as trace:
+                trace.add_user("daily journal cycle")
+                # ...existing body...
+                trace.mark_completed(outcome_verified=True)
+
+    The returned context manager is the same as `trace_task` — same
+    flag-gating, same soft-fail semantics.
+    """
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    suffix = f"_{user_id}" if user_id else ""
+    task_id = f"{name}_{ts}{suffix}"
+    return trace_task(task_id=task_id, agent=agent, budget_seconds=budget_seconds)
+
+
+def traced(name: str, *, agent: str = "super", budget_seconds: float | None = None):
+    """Decorator form — easiest wiring for existing `do_X` functions.
+
+    Automatically picks up `user_id` kwarg (default "ang") so the task_id
+    is disambiguated per user when the agent runs multi-tenant.
+
+    Marks `completed=True` and `outcome_verified` based on whether the
+    wrapped function returned without exception; sets `crashed=True`
+    if it raised (trace_task handles that automatically via __exit__).
+
+    Zero-overhead when `ENABLE_TRAJECTORY_V2` is off.
+    """
+
+    def _decorator(fn):
+        from functools import wraps
+
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            uid = kwargs.get("user_id", "") or (args[0] if args and isinstance(args[0], str) else "")
+            with workflow_trace(name, agent=agent, budget_seconds=budget_seconds, user_id=uid) as trace:
+                trace.add_user(f"{name} cycle")
+                result = fn(*args, **kwargs)
+                trace.mark_completed(outcome_verified=True)
+                return result
+
+        return wrapper
+
+    return _decorator
 
 
 class TaskTrace:
@@ -157,5 +215,14 @@ def trace_task(
                     components,
                     trace.elapsed_seconds,
                 )
+                # Phase 2 — also index turns for FTS5 recall. We index the
+                # *uncompressed* record so the raw exchange stays searchable;
+                # the summarized middle would make phrase recall useless.
+                try:
+                    from memory.session_index import index_trajectory
+
+                    index_trajectory(record)
+                except Exception as idx_err:
+                    log.debug("session_index.index_trajectory skipped: %s", idx_err)
             except Exception as e:
                 log.warning("trace_task finalize failed (task=%s): %s", task_id, e)
