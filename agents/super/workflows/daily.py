@@ -530,13 +530,7 @@ def do_soul_question(user_id: str = "ang"):
 
     state = load_state(user_id=user_id)
 
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "soul_question", str(Path(__file__).parent.parent.parent / "shared" / "soul_question.py")
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    from evaluation import soul_question as mod
 
     history = mod._load_history(user_id=user_id)
     log.info("Loaded %d historical soul questions", len(history))
