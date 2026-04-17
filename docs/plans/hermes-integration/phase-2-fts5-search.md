@@ -6,6 +6,24 @@
 
 **预估**：半天。
 
+## 当前进度（2026-04-16 scaffold 完成）
+
+| 模块 | 路径 | 状态 |
+|---|---|---|
+| FTS5 虚拟表 + 连接管理 | `lib/memory/session_index.py`（`DB_FILE = data/soul/session_index.db`，`unicode61 remove_diacritics 0` tokenizer，中文友好） | ✅ |
+| 写入 API | `index_trajectory(TrajectoryRecord)` —— 逐 turn insert，`tool_result_preview` 合并入文，空内容跳过 | ✅ |
+| 查询 API | `search(query, k=5, agent=None, since=None)` —— FTS5 prefix match + BM25 rank，支持 agent / 时间窗过滤 | ✅ |
+| 查询清洗 | `_normalize_query` 去除 `" * ( )`，保留 CJK + 字母数字，每 token 自动加 `*` 前缀（提高召回） | ✅ |
+| Retention | `prune_older_than(days=90)` —— 按 ts < cutoff 删 | ✅ |
+| Soul prompt 注入辅助 | `format_soul_recall(query, k=3, max_chars_per_snippet=200)` —— 产出 markdown block，空命中返回空串 | ✅ |
+| 健壮性 | 所有操作 soft-fail（log + 返回默认值），不进 critical path | ✅ |
+| 单测 | `tests/memory/test_session_index.py`（9 tests green，覆盖 index/search/filter/prune/sanitize/empty） | ✅ |
+
+待办：
+
+- **Step 2.2 task_worker 收尾时 index**：等 Phase 1 `trace_task` 接入后，在 `trace_task` 的 `finally` 里追加一次 `session_index.index_trajectory(compressed)`。天然 flag-gated（只有 `ENABLE_TRAJECTORY_V2=True` 时才产生 trajectory 去 index）。
+- **Step 2.3 soul prompt 注入**：在 `lib/memory/soul.py::format_soul` 或 prompt 构造链里，用当前 prompt 调 `format_soul_recall` 加 snippet block（token 预算限制好，不能挤掉既有 context）。
+
 ## 现状
 
 - Journal 是"每日摘要"，不是原始对话。
