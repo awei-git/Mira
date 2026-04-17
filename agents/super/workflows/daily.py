@@ -7,6 +7,7 @@ Includes: do_daily_report, do_daily_photo, handle_photo_feedback,
 
 Extracted from core.py — pure extraction, no logic changes.
 """
+
 import json
 import logging
 import re
@@ -20,30 +21,45 @@ sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 import health_monitor
 
 from config import (
-    BRIEFINGS_DIR, JOURNAL_DIR, MIRA_DIR, ARTIFACTS_DIR,
-    WORKSPACE_DIR, MIRA_ROOT,
+    BRIEFINGS_DIR,
+    JOURNAL_DIR,
+    MIRA_DIR,
+    ARTIFACTS_DIR,
+    WORKSPACE_DIR,
+    MIRA_ROOT,
     RESEARCH_TOPIC,
     SKILL_STUDY_SOURCE_GROUPS,
-    EPISODES_DIR, LOG_RETENTION_DAYS,
+    EPISODES_DIR,
+    LOG_RETENTION_DAYS,
 )
 from user_paths import artifact_name_for_user, user_journal_dir
+
 try:
     from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
 from memory.soul import (
-    load_soul, format_soul, append_memory, save_skill,
-    load_recent_reading_notes, recall_context,
+    load_soul,
+    format_soul,
+    append_memory,
+    save_skill,
+    load_recent_reading_notes,
+    recall_context,
     _atomic_write as atomic_write,
 )
 from llm import claude_think, claude_act, model_think
 from prompts import zhesi_prompt
 
 from workflows.helpers import (
-    _gather_today_tasks, _gather_today_skills, _gather_today_comments,
-    _gather_usage_summary, _gather_recent_briefings,
-    _mine_za_one, _mine_za_ideas,
-    _copy_to_briefings, _append_to_daily_feed,
+    _gather_today_tasks,
+    _gather_today_skills,
+    _gather_today_comments,
+    _gather_usage_summary,
+    _gather_recent_briefings,
+    _mine_za_one,
+    _mine_za_ideas,
+    _copy_to_briefings,
+    _append_to_daily_feed,
     _format_feed_items,
     harvest_observations,
 )
@@ -54,6 +70,7 @@ log = logging.getLogger("mira")
 # ---------------------------------------------------------------------------
 # Daily status report — sent to WA via bridge at 22:00
 # ---------------------------------------------------------------------------
+
 
 def do_daily_report():
     """Generate and send a daily status report to WA via the Mira bridge.
@@ -87,6 +104,7 @@ def do_daily_report():
     try:
         sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
         from substack import fetch_publication_stats
+
         stats = fetch_publication_stats()
         if stats and stats.get("summary"):
             stats_text = stats["summary"]
@@ -97,9 +115,10 @@ def do_daily_report():
     comments_text = _gather_today_comments()
 
     # 6. Pending items needing user attention
-    from config import MIRA_ROOT
+    from config import PENDING_PUBLISH_FILE
+
     pending_items = []
-    pending_file = MIRA_ROOT / ".pending_publish.json"
+    pending_file = PENDING_PUBLISH_FILE
     if pending_file.exists():
         pending_items.append("有一篇文章等你审批发布")
 
@@ -149,8 +168,7 @@ def do_daily_report():
         bridge = Mira(MIRA_ROOT, user_id="ang")
         report_id = f"daily_report_{today.replace('-', '')}"
         if not bridge.item_exists(report_id):
-            bridge.create_feed(report_id, f"Daily Report {today}", report,
-                               tags=["mira", "report", "daily"])
+            bridge.create_feed(report_id, f"Daily Report {today}", report, tags=["mira", "report", "daily"])
         else:
             bridge.append_message(report_id, "agent", report)
         log.info("Daily report pushed as standalone feed item: %s", report_id)
@@ -167,9 +185,11 @@ def do_daily_report():
 # Daily photo edit — pick, edit, push to Home for WA feedback at 07:00
 # ---------------------------------------------------------------------------
 
+
 def do_daily_photo():
     """Pick the best unprocessed RAW, edit it, push to Home feed for feedback."""
     import subprocess as _sp
+
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
 
@@ -189,7 +209,9 @@ def do_daily_photo():
     try:
         proc = _sp.run(
             [python312, str(photo_dir / "daily_edit.py")],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True,
+            text=True,
+            timeout=600,
             cwd=str(photo_dir),
         )
         if proc.returncode != 0:
@@ -210,8 +232,11 @@ def do_daily_photo():
     # Quality gate: don't send if review score is too low
     review_score = (result.get("review") or {}).get("score", 0)
     if review_score < 5:
-        log.warning("Daily photo: review score %s < 5, not sending. Critique: %s",
-                     review_score, (result.get("review") or {}).get("critique", "")[:200])
+        log.warning(
+            "Daily photo: review score %s < 5, not sending. Critique: %s",
+            review_score,
+            (result.get("review") or {}).get("critique", "")[:200],
+        )
         return
 
     # Extract result data
@@ -223,6 +248,7 @@ def do_daily_photo():
 
     # Copy rendered image to iCloud artifacts for iOS access
     import shutil as _shutil
+
     image_rel_path = ""
     if output_path and Path(output_path).exists():
         icloud_photos = ARTIFACTS_DIR / "photos"
@@ -275,9 +301,7 @@ def do_daily_photo():
         msg_parts.append(f"\n我的自评：{review['critique']}")
 
     msg_parts.append(f"\nReview score: **{review.get('score', score)}/10**")
-    msg_parts.append(
-        "\n给个分？(0-10) + 你觉得哪里不对"
-    )
+    msg_parts.append("\n给个分？(0-10) + 你觉得哪里不对")
 
     content = "\n".join(msg_parts)
 
@@ -310,17 +334,23 @@ def do_daily_photo():
     # Save result reference for feedback handler
     photo_state_file = photo_dir / "output" / "daily_active.json"
     photo_state_file.parent.mkdir(parents=True, exist_ok=True)
-    photo_state_file.write_text(json.dumps({
-        "date": today,
-        "item_id": item_id,
-        "raw": str(result.get("raw", "")),
-        "output": str(output_path),
-        "model_score": score,
-        "params": result.get("params", {}),
-        "wa_score": None,
-        "wa_feedback": None,
-        "rounds": 0,
-    }, ensure_ascii=False, indent=2))
+    photo_state_file.write_text(
+        json.dumps(
+            {
+                "date": today,
+                "item_id": item_id,
+                "raw": str(result.get("raw", "")),
+                "output": str(output_path),
+                "model_score": score,
+                "params": result.get("params", {}),
+                "wa_score": None,
+                "wa_feedback": None,
+                "rounds": 0,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
     log.info("Daily photo pushed to Home: %s (score=%.1f)", raw_name, score)
 
@@ -344,12 +374,11 @@ def handle_photo_feedback(item_id: str, user_message: str):
         return
 
     # Parse score from message (e.g. "6 — too warm" or "7.5 好多了" or just "8")
-    score_match = re.search(r'(\d+(?:\.\d+)?)', user_message)
+    score_match = re.search(r"(\d+(?:\.\d+)?)", user_message)
     if not score_match:
         # No score found — treat as text feedback only
         bridge = Mira(MIRA_DIR)
-        bridge.append_message(item_id, "agent",
-                              "Got your feedback. Can you also give a score (0-10)?")
+        bridge.append_message(item_id, "agent", "Got your feedback. Can you also give a score (0-10)?")
         bridge.update_status(item_id, "needs-input")
         return
 
@@ -383,8 +412,7 @@ def handle_photo_feedback(item_id: str, user_message: str):
         "round": active["rounds"],
     }
     calibration.append(entry)
-    calibration_file.write_text(
-        json.dumps(calibration, ensure_ascii=False, indent=2))
+    calibration_file.write_text(json.dumps(calibration, ensure_ascii=False, indent=2))
 
     # Respond
     model_score = active.get("model_score", 0)
@@ -405,13 +433,19 @@ def handle_photo_feedback(item_id: str, user_message: str):
 
     bridge.append_message(item_id, "agent", reply)
     bridge.update_status(item_id, "done")
-    log.info("Photo feedback recorded: wa=%.1f model=%.1f delta=%s (DB size=%d)",
-             wa_score, model_score, delta_str, len(calibration))
+    log.info(
+        "Photo feedback recorded: wa=%.1f model=%.1f delta=%s (DB size=%d)",
+        wa_score,
+        model_score,
+        delta_str,
+        len(calibration),
+    )
 
 
 # ---------------------------------------------------------------------------
 # 每日哲思 — Daily Philosophical Thought
 # ---------------------------------------------------------------------------
+
 
 def do_zhesi(user_id: str = "ang"):
     """Write a daily philosophical thought based on a fragment from 杂.md."""
@@ -466,7 +500,12 @@ def do_zhesi(user_id: str = "ang"):
     # Create feed item for zhesi
     try:
         bridge = Mira(MIRA_DIR, user_id=user_id)
-        bridge.create_feed(f"feed_zhesi_{datetime.now().strftime('%Y%m%d')}", f"每日哲思 {datetime.now().strftime('%m/%d')}", content[:2000], tags=["reflection", "philosophy"])
+        bridge.create_feed(
+            f"feed_zhesi_{datetime.now().strftime('%Y%m%d')}",
+            f"每日哲思 {datetime.now().strftime('%m/%d')}",
+            content[:2000],
+            tags=["reflection", "philosophy"],
+        )
         log.info("哲思 feed item created")
     except Exception as e:
         log.warning("Failed to create 哲思 feed: %s", e)
@@ -480,6 +519,7 @@ def do_zhesi(user_id: str = "ang"):
 # SOUL QUESTION — daily philosophical question for WA
 # ---------------------------------------------------------------------------
 
+
 def do_soul_question(user_id: str = "ang"):
     """Generate and send the daily soul question."""
     # Lazy imports from core to avoid circular deps
@@ -491,9 +531,10 @@ def do_soul_question(user_id: str = "ang"):
     state = load_state(user_id=user_id)
 
     import importlib.util
+
     spec = importlib.util.spec_from_file_location(
-        "soul_question",
-        str(Path(__file__).parent.parent.parent / "shared" / "soul_question.py"))
+        "soul_question", str(Path(__file__).parent.parent.parent / "shared" / "soul_question.py")
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
@@ -536,6 +577,7 @@ def do_soul_question(user_id: str = "ang"):
 # RESEARCH mode
 # ---------------------------------------------------------------------------
 
+
 def do_research():
     """Run daily research via the researcher agent (iterative deep-dive)."""
     # Lazy imports from core to avoid circular deps
@@ -551,9 +593,10 @@ def do_research():
 
     # Use the researcher agent's iterative pipeline
     import importlib.util
+
     spec = importlib.util.spec_from_file_location(
-        "researcher_handler",
-        str(Path(__file__).parent.parent.parent / "researcher" / "handler.py"))
+        "researcher_handler", str(Path(__file__).parent.parent.parent / "researcher" / "handler.py")
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
@@ -580,8 +623,7 @@ def do_research():
     bridge = Mira()
     item_id = f"feed_research_{today.replace('-', '')}"
     if not bridge.item_exists(item_id):
-        bridge.create_item(item_id, "feed", f"Daily Research {today}", result,
-                          tags=["research", "daily"])
+        bridge.create_item(item_id, "feed", f"Daily Research {today}", result, tags=["research", "daily"])
         bridge.update_status(item_id, "done")
 
     state[f"research_{today}"] = True
@@ -592,6 +634,7 @@ def do_research():
 # ---------------------------------------------------------------------------
 # BOOK REVIEW mode
 # ---------------------------------------------------------------------------
+
 
 def do_book_review():
     """Run the daily book review pipeline (weekly reading series)."""
@@ -608,9 +651,12 @@ def do_book_review():
 
     try:
         import subprocess as _sp
+
         result = _sp.run(
             [sys.executable, str(_AGENTS_DIR / "reader" / "daily_book_review.py")],
-            capture_output=True, text=True, timeout=900,
+            capture_output=True,
+            text=True,
+            timeout=900,
         )
         if result.returncode != 0:
             log.error("Book review failed (rc=%d): %s", result.returncode, result.stderr[-500:])
@@ -625,6 +671,7 @@ def do_book_review():
 # ---------------------------------------------------------------------------
 # ANALYST mode — daily market analysis briefing (business days)
 # ---------------------------------------------------------------------------
+
 
 def do_analyst(slot: str = ""):
     """Run the analyst agent to produce a daily analysis briefing.
@@ -730,8 +777,7 @@ def do_analyst(slot: str = ""):
     item_id = f"feed_market_{today.replace('-', '')}_{slot or '0000'}"
     title = f"{'开市前' if session_type == 'pre-market' else '收市后'}市场分析 {today}"
     if not bridge.item_exists(item_id):
-        bridge.create_item(item_id, "feed", title, result,
-                          tags=["market", "analyst", session_type])
+        bridge.create_item(item_id, "feed", title, result, tags=["market", "analyst", session_type])
         bridge.update_status(item_id, "done")
 
     # Mark this slot as done
@@ -751,6 +797,7 @@ def do_analyst(slot: str = ""):
 # SKILL STUDY — daily craft skill learning (video editing, photography)
 # ---------------------------------------------------------------------------
 
+
 def do_skill_study(group_idx: int = 0, user_id: str = "ang"):
     """Study video/photo craft skills from dedicated sources.
 
@@ -759,6 +806,7 @@ def do_skill_study(group_idx: int = 0, user_id: str = "ang"):
     """
     from fetcher import fetch_sources
     from prompts import skill_study_prompt
+
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
 
@@ -785,7 +833,7 @@ def do_skill_study(group_idx: int = 0, user_id: str = "ang"):
     # 2. Format items and ask Claude to extract skills
     feed_text = _format_feed_items(items)
     prompt = skill_study_prompt(soul_ctx, feed_text, domain)
-    result = claude_act(prompt)
+    result = claude_act(prompt, agent_id="explorer")
 
     if not result:
         log.error("Skill study (%s): Claude returned empty", domain)
@@ -805,13 +853,13 @@ def do_skill_study(group_idx: int = 0, user_id: str = "ang"):
     # Parse skill blocks from output
     # More flexible skill block extraction
     skill_pattern = re.compile(
-        r'```\s*[\n\r]+'
-        r'Name:\s*(.+?)[\n\r]+'
-        r'Description:\s*(.+?)[\n\r]+'
-        r'(?:Tags:\s*\[(.+?)\][\n\r]+)?'  # Tags optional
-        r'Content:\s*[\n\r]+'
-        r'(.+?)'
-        r'```',
+        r"```\s*[\n\r]+"
+        r"Name:\s*(.+?)[\n\r]+"
+        r"Description:\s*(.+?)[\n\r]+"
+        r"(?:Tags:\s*\[(.+?)\][\n\r]+)?"  # Tags optional
+        r"Content:\s*[\n\r]+"
+        r"(.+?)"
+        r"```",
         re.DOTALL,
     )
     skill_blocks = skill_pattern.findall(result)
@@ -850,9 +898,11 @@ def do_skill_study(group_idx: int = 0, user_id: str = "ang"):
 # PODCAST mode
 # ---------------------------------------------------------------------------
 
+
 def run_podcast_episode(lang: str, slug: str, title: str):
     """Delegate podcast generation to the podcast agent."""
     import sys as _sys
+
     podcast_dir = str(Path(__file__).resolve().parent.parent.parent / "podcast")
     if podcast_dir not in _sys.path:
         _sys.path.insert(0, podcast_dir)
@@ -865,14 +915,16 @@ def run_podcast_episode(lang: str, slug: str, title: str):
 # ASSESS — daily performance assessment
 # ---------------------------------------------------------------------------
 
+
 def do_assess():
     """Run full performance assessment and push results to user."""
     log.info("Starting daily performance assessment")
 
     import importlib.util
+
     spec = importlib.util.spec_from_file_location(
-        "evaluator_handler",
-        str(Path(__file__).parent.parent.parent / "evaluator" / "handler.py"))
+        "evaluator_handler", str(Path(__file__).parent.parent.parent / "evaluator" / "handler.py")
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
@@ -899,7 +951,9 @@ def do_assess():
         summary_parts.append("\nPer agent:")
         summary_parts.extend(active_agents)
     if plan:
-        summary_parts.append(f"\n⚠️ Improvement plan generated — see scorecards/{datetime.now().strftime('%Y-%m-%d')}.json")
+        summary_parts.append(
+            f"\n⚠️ Improvement plan generated — see scorecards/{datetime.now().strftime('%Y-%m-%d')}.json"
+        )
 
     summary = "\n".join(summary_parts)
 
@@ -908,21 +962,24 @@ def do_assess():
     today = datetime.now().strftime("%Y-%m-%d")
     item_id = f"feed_assessment_{today.replace('-', '')}"
     if not bridge.item_exists(item_id):
-        bridge.create_item(item_id, "feed", f"Performance Assessment {today}", summary,
-                          tags=["assessment", "system"])
+        bridge.create_item(item_id, "feed", f"Performance Assessment {today}", summary, tags=["assessment", "system"])
         bridge.update_status(item_id, "done")
 
-    log.info("Daily assessment complete: %d tasks, %.0f%% success",
-             agg.get("total_tasks", 0), agg.get("overall_success_rate", 0) * 100)
+    log.info(
+        "Daily assessment complete: %d tasks, %.0f%% success",
+        agg.get("total_tasks", 0),
+        agg.get("overall_success_rate", 0) * 100,
+    )
 
 
 def _run_self_improve():
     """Run proactive self-improvement: read notes → compare architecture → propose."""
     log.info("Starting self-improvement cycle")
     import importlib.util
+
     spec = importlib.util.spec_from_file_location(
-        "self_improve",
-        str(Path(__file__).parent.parent.parent / "evaluator" / "self_improve.py"))
+        "self_improve", str(Path(__file__).parent.parent.parent / "evaluator" / "self_improve.py")
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     result = mod.run(days=14)
@@ -936,6 +993,7 @@ def _run_self_improve():
 # IDLE-THINK mode — threshold-driven self-awakening
 # ---------------------------------------------------------------------------
 
+
 def do_idle_think(user_id: str = "ang"):
     """Enhanced self-awakening with three thinking modes.
 
@@ -947,10 +1005,17 @@ def do_idle_think(user_id: str = "ang"):
     """
     try:
         from evaluation.emptiness import (
-            get_active_questions, mark_thought, after_think,
-            load_emptiness, get_status_str, get_think_mode,
-            get_continuation, start_continuation, advance_continuation,
-            end_continuation, add_question,
+            get_active_questions,
+            mark_thought,
+            after_think,
+            load_emptiness,
+            get_status_str,
+            get_think_mode,
+            get_continuation,
+            start_continuation,
+            advance_continuation,
+            end_continuation,
+            add_question,
         )
     except ImportError:
         log.warning("idle-think: emptiness module not available")
@@ -997,6 +1062,7 @@ def do_idle_think(user_id: str = "ang"):
     # Quality gate: skip saving if thought doesn't connect to existing threads
     try:
         from evaluation.emptiness import passes_quality_gate
+
         if not passes_quality_gate(result):
             log.info("idle-think [%s]: filtered by quality gate (no connection to existing threads)", mode)
             after_think(user_id=user_id)  # still reduce emptiness so we don't immediately re-trigger
@@ -1052,6 +1118,7 @@ def _think_question(soul_ctx: str, recent_journal: str, user_id: str = "ang") ->
     related_thoughts = ""
     try:
         from memory.store import get_store
+
         store = get_store()
         thoughts = store.recall_thoughts(questions[0]["text"], top_k=3, user_id=user_id)
         if thoughts:
@@ -1095,6 +1162,7 @@ def _think_connection(soul_ctx: str, recent_journal: str, user_id: str = "ang") 
     """Connection mode: find patterns between recent thoughts."""
     try:
         from memory.store import get_store
+
         store = get_store()
     except (ImportError, ModuleNotFoundError, ConnectionError):
         return ""
@@ -1146,9 +1214,10 @@ SHARE 的风格要求：像给朋友发消息，不像写论文。要具体—�
             log.debug("Connection thought storage failed: %s", e)
 
         # Extract auto-generated questions
-        for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
+        for match in re.finditer(r"\[QUESTION:\s*(.+?)\]", result):
             try:
                 from evaluation.emptiness import add_question
+
                 add_question(match.group(1).strip(), priority=4.0, source="connection-mode", user_id=user_id)
             except (ImportError, ModuleNotFoundError, OSError):
                 pass
@@ -1160,6 +1229,7 @@ def _think_auto_question(soul_ctx: str, user_id: str = "ang") -> str:
     """Auto-question mode: generate new questions from accumulated observations."""
     try:
         from memory.store import get_store
+
         store = get_store()
     except (ImportError, ModuleNotFoundError, ConnectionError):
         return ""
@@ -1168,9 +1238,7 @@ def _think_auto_question(soul_ctx: str, user_id: str = "ang") -> str:
     if len(recent) < 5:
         return ""
 
-    observations = "\n".join(
-        f"- {t['content']}" for t in recent if t["thought_type"] == "observation"
-    )
+    observations = "\n".join(f"- {t['content']}" for t in recent if t["thought_type"] == "observation")
     if not observations:
         observations = "\n".join(f"- {t['content']}" for t in recent[:5])
 
@@ -1195,7 +1263,8 @@ def _think_auto_question(soul_ctx: str, user_id: str = "ang") -> str:
 
     if result:
         from evaluation.emptiness import add_question
-        for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
+
+        for match in re.finditer(r"\[QUESTION:\s*(.+?)\]", result):
             add_question(match.group(1).strip(), priority=4.0, source="auto-question", user_id=user_id)
 
     return result
@@ -1211,6 +1280,7 @@ def _think_continuation(soul_ctx: str, user_id: str = "ang") -> str:
 
     try:
         from memory.store import get_store
+
         store = get_store()
         chain = store.get_thought_chain(cont["active_thread_id"])
     except (ImportError, ModuleNotFoundError, ConnectionError, KeyError):
@@ -1221,10 +1291,7 @@ def _think_continuation(soul_ctx: str, user_id: str = "ang") -> str:
         end_continuation(user_id=user_id)
         return ""
 
-    chain_text = "\n\n".join(
-        f"[{t['thought_type']} #{t['id']}] {t['content']}"
-        for t in chain
-    )
+    chain_text = "\n\n".join(f"[{t['thought_type']} #{t['id']}] {t['content']}" for t in chain)
 
     prompt = f"""{soul_ctx}
 
@@ -1250,10 +1317,11 @@ def _think_continuation(soul_ctx: str, user_id: str = "ang") -> str:
     if result:
         try:
             from memory.store import get_store
+
             store = get_store()
 
             # Check for crystallization
-            cryst_match = re.search(r'\[CRYSTALLIZE:\s*(.+?)\]', result, re.DOTALL)
+            cryst_match = re.search(r"\[CRYSTALLIZE:\s*(.+?)\]", result, re.DOTALL)
             if cryst_match:
                 insight = cryst_match.group(1).strip()
                 # Store as high-maturity insight
@@ -1298,19 +1366,21 @@ def _handle_think_markers(result: str, user_id: str = "ang"):
     # Resolve markers
     try:
         from evaluation.emptiness import resolve_question
-        for match in re.finditer(r'\[RESOLVE:\s*(q_\w+)\]', result):
+
+        for match in re.finditer(r"\[RESOLVE:\s*(q_\w+)\]", result):
             resolve_question(match.group(1), user_id=user_id)
             log.info("idle-think: resolved question %s", match.group(1))
     except Exception as e:
         log.debug("Question resolution failed: %s", e)
 
     # Share markers — append to daily digest
-    share_match = re.search(r'\[SHARE:\s*(.+?)\]', result, re.DOTALL)
+    share_match = re.search(r"\[SHARE:\s*(.+?)\]", result, re.DOTALL)
     if share_match:
         thought = share_match.group(1).strip()[:500]
         try:
-            _append_to_daily_feed("mira", "Spark", thought,
-                                 source="idle-think", tags=["mira", "spark"], user_id=user_id)
+            _append_to_daily_feed(
+                "mira", "Spark", thought, source="idle-think", tags=["mira", "spark"], user_id=user_id
+            )
             state = load_state(user_id=user_id)
             today_key = datetime.now().strftime("%Y-%m-%d")
             state[f"sparks_{today_key}"] = state.get(f"sparks_{today_key}", 0) + 1
@@ -1322,7 +1392,8 @@ def _handle_think_markers(result: str, user_id: str = "ang"):
     # Question markers (from connection mode)
     try:
         from evaluation.emptiness import add_question
-        for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
+
+        for match in re.finditer(r"\[QUESTION:\s*(.+?)\]", result):
             add_question(match.group(1).strip(), priority=4.0, source="idle-think", user_id=user_id)
     except (ImportError, ModuleNotFoundError, OSError):
         pass
@@ -1330,6 +1401,7 @@ def _handle_think_markers(result: str, user_id: str = "ang"):
     # Check if the full idle-think output could spark a spontaneous writing idea
     try:
         from workflows.helpers import _maybe_create_spontaneous_idea
+
         _maybe_create_spontaneous_idea(result, source="idle-think", user_id=user_id)
     except Exception as e:
         log.debug("Spontaneous idea check from idle-think failed: %s", e)
@@ -1339,10 +1411,12 @@ def _handle_think_markers(result: str, user_id: str = "ang"):
 # Log cleanup
 # ---------------------------------------------------------------------------
 
+
 def log_cleanup():
     """Delete log files older than LOG_RETENTION_DAYS."""
     import time as _time
     from config import LOGS_DIR
+
     cutoff = _time.time() - LOG_RETENTION_DAYS * 86400
     deleted = 0
     for f in LOGS_DIR.iterdir():

@@ -26,7 +26,7 @@ def _load_module(name, path):
 _wcfg = _load_module("writing_config", _writing_dir / "writer_config.py")
 _wprompts = _load_module("writing_prompts", _writing_dir / "writer_prompts.py")
 
-_shared_dir = str(_writing_dir.parent .parent / "lib")
+_shared_dir = str(_writing_dir.parent.parent / "lib")
 if _shared_dir not in sys.path:
     sys.path.insert(0, _shared_dir)
 _super_dir = str(_writing_dir.parent / "super")
@@ -73,7 +73,7 @@ def _log_writing_failure(slug: str, step: str, error_msg: str):
     try:
         import sys as _sys
 
-        _shared = str(Path(__file__).resolve().parents[1] .parent / "lib")
+        _shared = str(Path(__file__).resolve().parents[1].parent / "lib")
         if _shared not in _sys.path:
             _sys.path.insert(0, _shared)
         from ops.failure_log import record_failure
@@ -375,9 +375,7 @@ def _check_topic_overlap(idea: dict) -> str | None:
         return None
 
     published = [
-        entry
-        for entry in catalog_list()
-        if entry.get("status") == "published" and entry.get("type") == "article"
+        entry for entry in catalog_list() if entry.get("status") == "published" and entry.get("type") == "article"
     ]
     if not published:
         return None

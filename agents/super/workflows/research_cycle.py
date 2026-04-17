@@ -14,6 +14,7 @@ Mira (Sonnet) based on the question's current state. Each cycle is bounded:
 This is the heart of the OPC pivot. Without this loop, research_log has
 nothing to report.
 """
+
 from __future__ import annotations
 
 import json
@@ -41,6 +42,7 @@ WORLDVIEW_PATH = SOUL_DIR / "worldview.md"
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
+
 
 def _load_state() -> dict:
     if not STATE_PATH.exists():
@@ -94,14 +96,16 @@ def _parse_queue() -> list[dict]:
         body = text[start:end]
         status_match = _STATUS_RE.search(body)
         priority_match = _PRIORITY_RE.search(body)
-        items.append({
-            "id": m.group(1),
-            "title": m.group(2).strip(),
-            "status": status_match.group(1) if status_match else "unknown",
-            "priority": priority_match.group(1) if priority_match else "P9",
-            "body": body,
-            "span": (start, end),
-        })
+        items.append(
+            {
+                "id": m.group(1),
+                "title": m.group(2).strip(),
+                "status": status_match.group(1) if status_match else "unknown",
+                "priority": priority_match.group(1) if priority_match else "P9",
+                "body": body,
+                "span": (start, end),
+            }
+        )
     return items
 
 
@@ -111,10 +115,12 @@ def _pick_next_question(items: list[dict]) -> dict | None:
     if not actionable:
         return None
     # in_progress first, then by priority (P0 lowest number = highest priority)
-    actionable.sort(key=lambda i: (
-        0 if i["status"] == "in_progress" else 1,
-        i["priority"],
-    ))
+    actionable.sort(
+        key=lambda i: (
+            0 if i["status"] == "in_progress" else 1,
+            i["priority"],
+        )
+    )
     return actionable[0]
 
 
@@ -178,6 +184,7 @@ def _load_worldview_excerpt() -> str:
 # Artifact persistence
 # ---------------------------------------------------------------------------
 
+
 def _ensure_experiment_file(qid: str) -> Path:
     EXPERIMENTS_DIR.mkdir(parents=True, exist_ok=True)
     path = EXPERIMENTS_DIR / f"{qid}.md"
@@ -186,8 +193,9 @@ def _ensure_experiment_file(qid: str) -> Path:
     return path
 
 
-def _append_experiment_step(qid: str, step_type: str, reasoning: str, artifact: str,
-                             cost_usd: float, worldview_delta: str) -> Path:
+def _append_experiment_step(
+    qid: str, step_type: str, reasoning: str, artifact: str, cost_usd: float, worldview_delta: str
+) -> Path:
     path = _ensure_experiment_file(qid)
     existing = path.read_text(encoding="utf-8")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -206,6 +214,7 @@ def _append_experiment_step(qid: str, step_type: str, reasoning: str, artifact: 
 # ---------------------------------------------------------------------------
 # Queue update
 # ---------------------------------------------------------------------------
+
 
 def _update_queue_status(qid: str, new_status: str, next_step_hint: str) -> None:
     """Rewrite the Status line of a question; append a Next-step hint."""
@@ -262,6 +271,7 @@ def _update_queue_status(qid: str, new_status: str, next_step_hint: str) -> None
 # Robust JSON extraction
 # ---------------------------------------------------------------------------
 
+
 def _extract_json(text: str) -> dict | None:
     """Pull the first balanced JSON object out of model output. Tolerant."""
     if not text:
@@ -295,7 +305,7 @@ def _extract_json(text: str) -> dict | None:
             depth -= 1
             if depth == 0:
                 try:
-                    return json.loads(text[start:i + 1])
+                    return json.loads(text[start : i + 1])
                 except json.JSONDecodeError:
                     return None
     return None
@@ -304,6 +314,7 @@ def _extract_json(text: str) -> dict | None:
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+
 
 def do_research_cycle(user_id: str = "ang") -> dict:
     """Advance one research question by one step.
@@ -326,8 +337,7 @@ def do_research_cycle(user_id: str = "ang") -> dict:
         log.info("research_cycle: no actionable items (all parked/done/dropped)")
         return {"status": "no_actionable_items"}
 
-    log.info("research_cycle: advancing %s (%s, status=%s)",
-             target["id"], target["title"], target["status"])
+    log.info("research_cycle: advancing %s (%s, status=%s)", target["id"], target["title"], target["status"])
 
     prompt = STEP_DECISION_PROMPT.format(
         qid=target["id"],
@@ -347,8 +357,7 @@ def do_research_cycle(user_id: str = "ang") -> dict:
 
     decision = _extract_json(response)
     if not decision or "step_type" not in decision or "artifact" not in decision:
-        log.error("research_cycle: could not parse decision JSON; preview: %s",
-                  response[:300])
+        log.error("research_cycle: could not parse decision JSON; preview: %s", response[:300])
         return {"status": "parse_error", "qid": target["id"], "preview": response[:300]}
 
     # Persist artifact
@@ -388,8 +397,7 @@ def do_research_cycle(user_id: str = "ang") -> dict:
             completed.append(target["id"])
     _save_state(state)
 
-    log.info("research_cycle: %s advanced via %s -> status=%s",
-             target["id"], decision.get("step_type"), new_status)
+    log.info("research_cycle: %s advanced via %s -> status=%s", target["id"], decision.get("step_type"), new_status)
 
     return {
         "status": "advanced",

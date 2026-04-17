@@ -10,6 +10,7 @@ Architecture (AutoResearch-inspired):
 
 Also handles math research (proofs, paper review) via specialized skills.
 """
+
 import json
 import logging
 import re
@@ -22,9 +23,12 @@ if str(_AGENTS_DIR.parent / "lib") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
-    RESEARCHER_MAX_ITERATIONS, RESEARCHER_MAX_WALL_CLOCK,
-    RESEARCHER_MAX_SOURCES, RESEARCHER_SYNTHESIS_TIMEOUT,
-    RESEARCHER_PLAN_TIMEOUT, RESEARCHER_QUERY_TIMEOUT,
+    RESEARCHER_MAX_ITERATIONS,
+    RESEARCHER_MAX_WALL_CLOCK,
+    RESEARCHER_MAX_SOURCES,
+    RESEARCHER_SYNTHESIS_TIMEOUT,
+    RESEARCHER_PLAN_TIMEOUT,
+    RESEARCHER_QUERY_TIMEOUT,
     RESEARCHER_REFLECT_TIMEOUT,
 )
 
@@ -52,8 +56,18 @@ def _load_skills(tags: list[str] | None = None) -> str:
 
 def _is_math_task(content: str) -> bool:
     """Check if this is a pure math/proof task (not general research)."""
-    math_signals = {"proof", "prove", "theorem", "lemma", "conjecture",
-                    "integral", "derivative", "equation", "证明", "定理"}
+    math_signals = {
+        "proof",
+        "prove",
+        "theorem",
+        "lemma",
+        "conjecture",
+        "integral",
+        "derivative",
+        "equation",
+        "证明",
+        "定理",
+    }
     lower = content.lower()
     return sum(1 for s in math_signals if s in lower) >= 2
 
@@ -101,12 +115,20 @@ Markdown only.
     return (claude_think(prompt, timeout=RESEARCHER_QUERY_TIMEOUT, tier="light") or "").strip()
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str,
-           thread_history: str = "", thread_memory: str = "") -> str | None:
+def handle(
+    workspace: Path,
+    task_id: str,
+    content: str,
+    sender: str,
+    thread_id: str,
+    thread_history: str = "",
+    thread_memory: str = "",
+    agent_id: str = "researcher",
+) -> str | None:
     """Handle a research task with iterative deep-dive."""
     import sys
-    shared_dir = str(Path(__file__).parent.parent .parent / "lib")
+
+    shared_dir = str(Path(__file__).parent.parent.parent / "lib")
     if shared_dir not in sys.path:
         sys.path.insert(0, shared_dir)
 
@@ -130,8 +152,7 @@ def handle(workspace: Path, task_id: str, content: str,
         return _handle_math(workspace, content, bundle, skills_ctx, claude_think)
 
     # General research: iterative plan → search → reflect loop
-    return _handle_research(workspace, task_id, content, bundle, skills_ctx,
-                           claude_think, claude_act)
+    return _handle_research(workspace, task_id, content, bundle, skills_ctx, claude_think, claude_act)
 
 
 def _handle_math(workspace, content, bundle, skills_ctx, claude_think) -> str | None:
@@ -163,8 +184,7 @@ flag gaps. Use LaTeX where appropriate."""
     return result
 
 
-def _handle_research(workspace, task_id, content, bundle, skills_ctx,
-                     claude_think, claude_act) -> str | None:
+def _handle_research(workspace, task_id, content, bundle, skills_ctx, claude_think, claude_act) -> str | None:
     """Iterative deep research loop."""
     start_time = time.monotonic()
     knowledge_base = []  # list of {question, findings, sources}
@@ -189,8 +209,7 @@ JSON only, no other text."""
         sub_questions = [content]
 
     log.info("Research plan: %d sub-questions for task %s", len(sub_questions), task_id)
-    (workspace / "plan.json").write_text(
-        json.dumps(sub_questions, ensure_ascii=False, indent=2), encoding="utf-8")
+    (workspace / "plan.json").write_text(json.dumps(sub_questions, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # --- Phase 2+3: RESEARCH + REFLECT loop ---
     remaining_questions = list(sub_questions)
@@ -220,24 +239,26 @@ Instructions:
 
 Write findings to output.md in the workspace."""
 
-            result = claude_act(research_prompt, cwd=workspace, timeout=RESEARCHER_QUERY_TIMEOUT, tier="light")
+            result = claude_act(
+                research_prompt, cwd=workspace, timeout=RESEARCHER_QUERY_TIMEOUT, tier="light", agent_id=task_id
+            )
             if not result:
-                log.warning("Research tool path unavailable for question '%s' — using local web fallback",
-                            question[:80])
+                log.warning(
+                    "Research tool path unavailable for question '%s' — using local web fallback", question[:80]
+                )
                 result = _local_research_question(question, claude_think)
             if result:
-                knowledge_base.append({
-                    "question": question,
-                    "findings": result,
-                    "iteration": iteration,
-                })
+                knowledge_base.append(
+                    {
+                        "question": question,
+                        "findings": result,
+                        "iteration": iteration,
+                    }
+                )
 
         # --- REFLECT: check coverage ---
         if remaining_questions or iteration < MAX_ITERATIONS:
-            kb_summary = "\n\n".join(
-                f"Q: {item['question']}\nA: {item['findings'][:500]}"
-                for item in knowledge_base
-            )
+            kb_summary = "\n\n".join(f"Q: {item['question']}\nA: {item['findings'][:500]}" for item in knowledge_base)
             reflect_prompt = f"""You are reviewing research progress.
 
 Original query: {content}
@@ -265,10 +286,7 @@ JSON or "DONE", nothing else."""
                 pass  # No new questions, continue
 
     # --- Phase 4: SYNTHESIZE ---
-    kb_full = "\n\n---\n\n".join(
-        f"## {item['question']}\n{item['findings']}"
-        for item in knowledge_base
-    )
+    kb_full = "\n\n---\n\n".join(f"## {item['question']}\n{item['findings']}" for item in knowledge_base)
 
     synth_context = ""
     if bundle.thread_history:
@@ -308,7 +326,12 @@ Synthesize the research findings into a comprehensive report:
     (workspace / "output.md").write_text(report, encoding="utf-8")
 
     elapsed = time.monotonic() - start_time
-    log.info("Research complete: %d questions, %d iterations, %.0fs, task %s",
-             len(knowledge_base), iteration, elapsed, task_id)
+    log.info(
+        "Research complete: %d questions, %d iterations, %.0fs, task %s",
+        len(knowledge_base),
+        iteration,
+        elapsed,
+        task_id,
+    )
 
     return report

@@ -7,6 +7,7 @@ Threads group messages by topic. Each user keeps:
 Legacy global paths under threads/ are still read as fallback so old data
 remains visible during migration.
 """
+
 import fcntl
 import json
 import logging

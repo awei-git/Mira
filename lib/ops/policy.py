@@ -4,6 +4,7 @@ The current runtime routes by agent name, but production policy is defined by
 the type of side effect a capability can perform. This module provides a
 single place to map agents to policy classes and derive runtime behavior.
 """
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -137,10 +138,7 @@ def get_capability_policy(agent_name: str, manifest_value: str | None = None) ->
     capability_class = resolve_capability_class(agent_name, manifest_value)
     base = _CLASS_POLICY_DEFAULTS[capability_class]
 
-    requires_preflight = (
-        base.requires_preflight
-        or agent_name in _REQUIRED_PREFLIGHT_AGENTS
-    )
+    requires_preflight = base.requires_preflight or agent_name in _REQUIRED_PREFLIGHT_AGENTS
     fail_closed = base.fail_closed or agent_name in _REQUIRED_PREFLIGHT_AGENTS
     # The compatibility shim keeps historically sensitive agents fail-closed
     # even if they sit in a broader capability class like `local-write`.

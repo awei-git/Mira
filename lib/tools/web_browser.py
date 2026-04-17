@@ -9,6 +9,7 @@ Provides:
 Uses only Python stdlib. If `trafilatura` is installed, article extraction
 is significantly better. Install with: pip install trafilatura
 """
+
 import html
 import json
 import logging
@@ -37,6 +38,7 @@ _MAX_BODY = 512_000  # 512KB max download
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class SearchResult:
@@ -68,8 +70,8 @@ class Page:
 # Low-level HTTP
 # ---------------------------------------------------------------------------
 
-def _fetch(url: str, timeout: int = _TIMEOUT,
-           headers: dict | None = None) -> tuple[str, str]:
+
+def _fetch(url: str, timeout: int = _TIMEOUT, headers: dict | None = None) -> tuple[str, str]:
     """Fetch URL, return (final_url, body_text). Raises on failure."""
     hdrs = {"User-Agent": _UA, "Accept-Language": "en-US,en;q=0.9,zh;q=0.8"}
     if headers:
@@ -101,13 +103,28 @@ def fetch_raw(url: str, timeout: int = _TIMEOUT) -> str:
 # ---------------------------------------------------------------------------
 
 # Tags whose content should be completely removed
-_REMOVE_TAGS = {"script", "style", "noscript", "svg", "iframe", "nav",
-                "footer", "header", "aside", "form"}
+_REMOVE_TAGS = {"script", "style", "noscript", "svg", "iframe", "nav", "footer", "header", "aside", "form"}
 
 # Block-level tags that should produce line breaks
-_BLOCK_TAGS = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
-               "li", "tr", "blockquote", "pre", "section", "article",
-               "figcaption", "dt", "dd"}
+_BLOCK_TAGS = {
+    "p",
+    "div",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "li",
+    "tr",
+    "blockquote",
+    "pre",
+    "section",
+    "article",
+    "figcaption",
+    "dt",
+    "dd",
+}
 
 
 class _TextExtractor(HTMLParser):
@@ -176,8 +193,7 @@ def _html_to_text(raw_html: str) -> tuple[str, str]:
     # Also try to extract title from <title> or og:title
     title = parser.title
     if not title:
-        m = re.search(r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"',
-                       raw_html, re.IGNORECASE)
+        m = re.search(r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"', raw_html, re.IGNORECASE)
         if m:
             title = html.unescape(m.group(1))
     return title, parser.get_text()
@@ -195,6 +211,7 @@ def _check_trafilatura() -> bool:
     if _HAS_TRAFILATURA is None:
         try:
             import trafilatura  # noqa: F401
+
             _HAS_TRAFILATURA = True
         except ImportError:
             _HAS_TRAFILATURA = False
@@ -204,8 +221,10 @@ def _check_trafilatura() -> bool:
 def _extract_article_trafilatura(raw_html: str, url: str) -> tuple[str, str]:
     """Extract article text using trafilatura (high quality)."""
     import trafilatura
+
     result = trafilatura.extract(
-        raw_html, url=url,
+        raw_html,
+        url=url,
         include_comments=False,
         include_tables=True,
         output_format="txt",
@@ -224,10 +243,7 @@ def _extract_article_stdlib(raw_html: str) -> tuple[str, str]:
     <main>, or the largest text-dense <div>.
     """
     # Try <article> first
-    article_match = re.search(
-        r"<article[^>]*>(.*?)</article>", raw_html,
-        re.DOTALL | re.IGNORECASE
-    )
+    article_match = re.search(r"<article[^>]*>(.*?)</article>", raw_html, re.DOTALL | re.IGNORECASE)
     if article_match:
         title, text = _html_to_text(article_match.group(1))
         if len(text) > 200:
@@ -236,10 +252,7 @@ def _extract_article_stdlib(raw_html: str) -> tuple[str, str]:
             return title, text
 
     # Try <main>
-    main_match = re.search(
-        r"<main[^>]*>(.*?)</main>", raw_html,
-        re.DOTALL | re.IGNORECASE
-    )
+    main_match = re.search(r"<main[^>]*>(.*?)</main>", raw_html, re.DOTALL | re.IGNORECASE)
     if main_match:
         title, text = _html_to_text(main_match.group(1))
         if len(text) > 200:
@@ -254,6 +267,7 @@ def _extract_article_stdlib(raw_html: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def browse(url: str, timeout: int = _TIMEOUT) -> Page:
     """Fetch any URL and return readable text.
@@ -292,8 +306,7 @@ def read_article(url: str, timeout: int = _TIMEOUT) -> Page:
         # Fallback to full page extraction
         title, text = _html_to_text(raw_html)
 
-    log.info("read_article(%s) → %d chars (trafilatura=%s)",
-             url, len(text), _HAS_TRAFILATURA)
+    log.info("read_article(%s) → %d chars (trafilatura=%s)", url, len(text), _HAS_TRAFILATURA)
     return Page(url=final_url, title=title, text=text, raw_html=raw_html)
 
 
@@ -303,9 +316,13 @@ def search(query: str, max_results: int = 8) -> list[SearchResult]:
     url = f"https://html.duckduckgo.com/html/?q={encoded}"
 
     try:
-        _, body = _fetch(url, timeout=15, headers={
-            "Referer": "https://duckduckgo.com/",
-        })
+        _, body = _fetch(
+            url,
+            timeout=15,
+            headers={
+                "Referer": "https://duckduckgo.com/",
+            },
+        )
     except Exception as e:
         log.warning("search(%s) failed: %s", query, e)
         return []
@@ -315,7 +332,8 @@ def search(query: str, max_results: int = 8) -> list[SearchResult]:
     blocks = re.findall(
         r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>'
         r'.*?<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
-        body, re.DOTALL
+        body,
+        re.DOTALL,
     )
 
     for raw_url, raw_title, raw_snippet in blocks[:max_results]:
@@ -333,16 +351,13 @@ def search(query: str, max_results: int = 8) -> list[SearchResult]:
         if "duckduckgo.com/y.js" in actual_url:
             continue
         if title and actual_url:
-            results.append(SearchResult(
-                title=title, url=actual_url, snippet=snippet
-            ))
+            results.append(SearchResult(title=title, url=actual_url, snippet=snippet))
 
     log.info("search(%s) → %d results", query, len(results))
     return results
 
 
-def search_and_read(query: str, max_results: int = 3,
-                    max_chars_per_page: int = 3000) -> str:
+def search_and_read(query: str, max_results: int = 3, max_chars_per_page: int = 3000) -> str:
     """Search, then read top results. Returns formatted text for prompts.
 
     Useful for agents that need to research a topic autonomously.

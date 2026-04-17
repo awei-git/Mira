@@ -5,27 +5,45 @@ Supports multiple model "flavors" for different writing styles:
 - GPT-5: creative, fluent, natural-sounding prose
 - DeepSeek: strong reasoning, good Chinese writing, cost-efficient
 """
+
 import json
 import logging
-import os
 import random
 import re
-import subprocess
 import threading
-import time
-import urllib.request
-import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
 from config import (
-    CLAUDE_BIN, CLAUDE_TIMEOUT_THINK, CLAUDE_TIMEOUT_ACT,
-    SECRETS_FILE, MODELS, WRITING_MODELS, DEFAULT_MODEL, CLAUDE_FALLBACK_MODEL,
-    LOGS_DIR, OMLX_DEFAULT_MODEL,
-    CLAUDE_SONNET_MODEL, CLAUDE_OPUS_MODEL,
-    GPT5_MODEL, DEEPSEEK_CHAT_MODEL,
-    OPENAI_API_ENDPOINT, DEEPSEEK_API_ENDPOINT,
-    DEEPSEEK_MAX_TOKENS, DEEPSEEK_TEMPERATURE,
+    SECRETS_FILE,
+    MODELS,
+    WRITING_MODELS,
+    DEFAULT_MODEL,
+    CLAUDE_TIMEOUT_THINK,
+    OMLX_DEFAULT_MODEL,
+    LOGS_DIR,
+)
+
+# ---------------------------------------------------------------------------
+# Re-export provider functions for backward compatibility
+# ---------------------------------------------------------------------------
+from llm_providers.claude import (  # noqa: F401
+    ClaudeTimeoutError,
+    claude_think,
+    claude_act,
+)
+from llm_providers.openai_compat import (  # noqa: F401
+    _api_call,
+    _probe_endpoint,
+)
+from llm_providers.gemini import (  # noqa: F401
+    _gemini_call,
+)
+from llm_providers.local import (  # noqa: F401
+    _omlx_call,
+    omlx_embed,
+    _ollama_call,
+    ollama_embed,
 )
 
 log = logging.getLogger("mira")
@@ -53,8 +71,8 @@ def _init_redact_cache():
                 for sv in v.values():
                     if isinstance(sv, str) and len(sv) > 8:
                         _redact_cache.append(sv)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger("mira.llm").debug("Failed to init redact cache: %s", e)
 
 
 def redact_secrets(text: str) -> str:
@@ -101,7 +119,7 @@ def _force_ollama() -> bool:
 
 # Cost per 1M tokens (USD) — update when prices change
 _COST_PER_1M = {
-    # provider/model prefix → (input_cost, output_cost)
+    # provider/model prefix -> (input_cost, output_cost)
     "anthropic/claude-sonnet": (3.00, 15.00),
     "anthropic/claude-opus": (15.00, 75.00),
     "anthropic/claude-haiku": (0.80, 4.00),
@@ -115,8 +133,7 @@ _COST_PER_1M = {
 }
 
 
-def _estimate_cost(provider: str, model: str,
-                   prompt_tokens: int, completion_tokens: int) -> float:
+def _estimate_cost(provider: str, model: str, prompt_tokens: int, completion_tokens: int) -> float:
     """Estimate USD cost for a single API call."""
     key = f"{provider}/{model}"
     for prefix, (inp_cost, out_cost) in _COST_PER_1M.items():
@@ -125,8 +142,7 @@ def _estimate_cost(provider: str, model: str,
     return 0.0
 
 
-def _log_usage(provider: str, model: str, prompt_tokens: int,
-               completion_tokens: int, estimated: bool = False):
+def _log_usage(provider: str, model: str, prompt_tokens: int, completion_tokens: int, estimated: bool = False):
     """Append one usage record to the daily JSONL log with cost estimate."""
     try:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -160,8 +176,7 @@ def usage_summary(date: str = "") -> dict:
         date = datetime.now().strftime("%Y-%m-%d")
     path = LOGS_DIR / f"usage_{date}.jsonl"
     if not path.exists():
-        return {"date": date, "total_cost_usd": 0, "total_tokens": 0,
-                "calls": 0, "by_provider": {}, "by_agent": {}}
+        return {"date": date, "total_cost_usd": 0, "total_tokens": 0, "calls": 0, "by_provider": {}, "by_agent": {}}
 
     by_provider: dict[str, dict] = {}
     by_agent: dict[str, dict] = {}
@@ -219,8 +234,7 @@ _LOW_CONFIDENCE_SIGNALS = re.compile(
 )
 
 _HIGH_CONFIDENCE_SIGNALS = re.compile(
-    r"definitely|certainly|verified|confirmed|已验证|确认|"
-    r"the (?:answer|result|output) is|结果是|答案是",
+    r"definitely|certainly|verified|confirmed|已验证|确认|" r"the (?:answer|result|output) is|结果是|答案是",
     re.IGNORECASE,
 )
 
@@ -265,6 +279,7 @@ def _load_secrets() -> dict:
         return _secrets_cache
     try:
         import yaml
+
         _secrets_cache = yaml.safe_load(SECRETS_FILE.read_text(encoding="utf-8"))
     except ImportError:
         # Fallback: basic YAML parsing for simple key: value
@@ -335,469 +350,13 @@ def _get_api_key(provider: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Claude CLI calls
-# ---------------------------------------------------------------------------
-
-class ClaudeTimeoutError(Exception):
-    """Raised when a Claude CLI call exceeds its timeout."""
-    pass
-
-
-# Substrings in Claude CLI stderr that indicate quota/rate-limit exhaustion.
-_QUOTA_SIGNALS = (
-    "rate limit",
-    "quota",
-    "usage limit",
-    "too many requests",
-    "credit",
-    "overloaded",
-    "capacity",
-)
-
-
-def _is_quota_error(stderr: str) -> bool:
-    """Return True if Claude CLI stderr indicates a quota or rate-limit error."""
-    lower = stderr.lower()
-    return any(sig in lower for sig in _QUOTA_SIGNALS)
-
-
-# Tier → Claude model ID mapping.
-# "light" uses Sonnet (fast, cheap), "heavy" uses Opus (best quality).
-_CLAUDE_MODELS = {
-    "light": CLAUDE_SONNET_MODEL,
-    "heavy": CLAUDE_OPUS_MODEL,
-}
-
-# Tier → OpenAI reasoning_effort mapping (for GPT-5.4 and o-series).
-_OPENAI_EFFORT = {
-    "light": "medium",
-    "heavy": "high",
-}
-
-
-def _fallback_think(prompt: str, timeout: int, tier: str = "light") -> str:
-    """Call the configured fallback model (default: gpt-5.4) with the same prompt."""
-    fallback = CLAUDE_FALLBACK_MODEL
-    cfg = MODELS.get(fallback)
-    if not cfg:
-        log.error("Fallback model '%s' not in MODELS registry", fallback)
-        return ""
-    effort = _OPENAI_EFFORT.get(tier, "medium")
-    log.warning("Claude quota hit — falling back to %s/%s (effort=%s)",
-                cfg["provider"], cfg["model_id"], effort)
-    return _api_call(cfg["provider"], cfg["model_id"], prompt,
-                     timeout=timeout, reasoning_effort=effort)
-
-
-def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK,
-                 tier: str = "light") -> str:
-    """Call Claude CLI for thinking — no tools, just reasoning.
-
-    Args:
-        tier: "light" → Sonnet (fast), "heavy" → Opus (best quality).
-              On OpenAI fallback maps to reasoning_effort medium/high.
-
-    Raises ClaudeTimeoutError on timeout so callers can distinguish
-    timeout from a genuine empty response.
-    On quota/rate-limit errors, automatically falls back to CLAUDE_FALLBACK_MODEL.
-    """
-    # Model restriction: force local oMLX if set (e.g. for child users)
-    if _force_local():
-        return _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=timeout)
-    model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
-    # Strip CLAUDECODE env var to allow nested Claude CLI sessions (LaunchAgent)
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-    try:
-        result = subprocess.run(
-            [CLAUDE_BIN, "-p", prompt, "--setting-sources", "user",
-             "--model", model_id],
-            capture_output=True, text=True, timeout=timeout,
-            cwd="/tmp", env=env,
-        )
-    except subprocess.TimeoutExpired:
-        log.error("claude_think timed out (%ds)", timeout)
-        raise ClaudeTimeoutError(f"claude_think timed out after {timeout}s")
-    except FileNotFoundError:
-        log.error("Claude CLI not found at %s", CLAUDE_BIN)
-        return _fallback_think(prompt, timeout, tier)
-
-    if result.returncode != 0:
-        log.error("claude_think failed (exit %d): %s", result.returncode, result.stderr[:300])
-        reason = "quota/rate-limit" if _is_quota_error(result.stderr) else f"cli exit {result.returncode}"
-        log.warning("claude_think unavailable (%s) — using fallback model", reason)
-        return _fallback_think(prompt, timeout, tier)
-
-    output = result.stdout.strip()
-    _log_usage("anthropic", model_id,
-               _estimate_tokens(prompt), _estimate_tokens(output), estimated=True)
-    return output
-
-
-def claude_act(prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT,
-               tier: str = "light") -> str:
-    """Call Claude CLI with tool access — can read/write files, run commands.
-
-    Args:
-        tier: "light" → Sonnet, "heavy" → Opus.
-              On OpenAI fallback maps to reasoning_effort medium/high (thinking only).
-
-    Raises ClaudeTimeoutError on timeout so callers can distinguish
-    timeout from a genuine empty response.
-    On quota/rate-limit errors, falls back to CLAUDE_FALLBACK_MODEL (thinking only,
-    no tool access — caller receives text output without file operations).
-    """
-    # Model restriction: force local oMLX if set (e.g. for child users)
-    if _force_local():
-        return _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=timeout)
-    model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
-    cmd = [
-        CLAUDE_BIN, "-p", prompt,
-        "--model", model_id,
-        "--allowedTools",
-        "Bash(command:*),Read,Write,Edit,Glob,Grep,WebFetch(url:*)",
-    ]
-
-    # Strip CLAUDECODE env var to allow nested Claude CLI sessions (LaunchAgent)
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=timeout,
-            cwd=str(cwd) if cwd else None, env=env,
-        )
-    except subprocess.TimeoutExpired:
-        log.error("claude_act timed out (%ds)", timeout)
-        raise ClaudeTimeoutError(f"claude_act timed out after {timeout}s")
-    except FileNotFoundError:
-        log.error("Claude CLI not found at %s", CLAUDE_BIN)
-        return _fallback_think(prompt, timeout, tier)
-
-    if result.returncode != 0:
-        log.error("claude_act failed (exit %d): %s", result.returncode, result.stderr[:300])
-        reason = "quota/rate-limit" if _is_quota_error(result.stderr) else f"cli exit {result.returncode}"
-        log.warning("claude_act unavailable (%s) — falling back to thinking-only mode", reason)
-        return _fallback_think(prompt, timeout, tier)
-
-    output = result.stdout.strip()
-    _log_usage("anthropic", model_id,
-               _estimate_tokens(prompt), _estimate_tokens(output), estimated=True)
-    return output
-
-
-# ---------------------------------------------------------------------------
-# OpenAI / DeepSeek / Gemini API calls
-# ---------------------------------------------------------------------------
-
-_API_ENDPOINTS = {
-    "openai": OPENAI_API_ENDPOINT,
-    "deepseek": DEEPSEEK_API_ENDPOINT,
-    # Gemini uses a different URL pattern — handled in _gemini_call
-    # oMLX uses OpenAI-compatible format — handled in _omlx_call
-}
-
-# Endpoint drift detection — probe once per session
-_probed_providers: dict[str, bool] = {}  # provider → True if healthy
-
-
-def _probe_endpoint(provider: str) -> bool:
-    """Send minimal request to verify API is reachable and schema unchanged.
-
-    Runs once per provider per session. Caches result.
-    Cost: ~$0.001 per probe.
-    """
-    if provider in _probed_providers:
-        return _probed_providers[provider]
-
-    api_key = _get_api_key(provider)
-    if not api_key:
-        _probed_providers[provider] = False
-        return False
-
-    endpoint = _API_ENDPOINTS.get(provider, "")
-    if not endpoint:
-        _probed_providers[provider] = True  # non-standard providers skip probe
-        return True
-
-    payload = {
-        "model": GPT5_MODEL if provider == "openai" else DEEPSEEK_CHAT_MODEL,
-        "messages": [{"role": "user", "content": "hi"}],
-    }
-    if provider == "openai":
-        payload["max_completion_tokens"] = 16
-        payload["reasoning_effort"] = "medium"
-    else:
-        payload["max_tokens"] = 1
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        endpoint, data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            # Verify expected schema
-            if "choices" in data and isinstance(data["choices"], list):
-                _probed_providers[provider] = True
-                log.debug("Endpoint probe OK: %s", provider)
-                return True
-            else:
-                log.warning("Endpoint schema drift: %s — missing 'choices' key. Keys: %s",
-                           provider, list(data.keys()))
-                _probed_providers[provider] = False
-                return False
-    except urllib.error.HTTPError as e:
-        if e.code == 429:
-            # Rate limited = endpoint is alive, schema OK
-            _probed_providers[provider] = True
-            return True
-        log.warning("Endpoint probe failed: %s HTTP %d", provider, e.code)
-        _probed_providers[provider] = False
-        return False
-    except (urllib.error.URLError, OSError) as e:
-        log.warning("Endpoint unreachable: %s — %s", provider, e)
-        _probed_providers[provider] = False
-        return False
-
-
-# ---------------------------------------------------------------------------
-# oMLX (local LLM — no network, privacy-safe, Apple Silicon optimized)
-# ---------------------------------------------------------------------------
-
-def _omlx_call(model_id: str, prompt: str,
-               system: str = "", timeout: int = 300) -> str:
-    """Call local oMLX (OpenAI-compatible) for privacy-sensitive tasks. Never leaves localhost."""
-    from config import OMLX_HOST, OMLX_PORT
-    endpoint = f"http://{OMLX_HOST}:{OMLX_PORT}/v1/chat/completions"
-
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
-
-    payload = {
-        "model": model_id,
-        "messages": messages,
-        "max_tokens": 32768,
-        "temperature": 0.7,
-    }
-    body = json.dumps(payload).encode("utf-8")
-
-    req = urllib.request.Request(
-        endpoint,
-        data=body,
-        headers={"Content-Type": "application/json"},
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            content = data["choices"][0]["message"]["content"]
-            model_used = data.get("model", model_id)
-            log.info("oMLX call: %s → %d chars", model_used, len(content))
-            usage = data.get("usage", {})
-            _log_usage("omlx", model_used,
-                       usage.get("prompt_tokens", _estimate_tokens(prompt)),
-                       usage.get("completion_tokens", _estimate_tokens(content)),
-                       estimated="usage" not in data)
-            return content.strip()
-    except Exception as e:
-        log.error("oMLX %s failed: %s", model_id, str(e))
-        # Fallback to secondary local model
-        from config import OMLX_FALLBACK_MODEL
-        if model_id != OMLX_FALLBACK_MODEL:
-            log.info("oMLX falling back to %s", OMLX_FALLBACK_MODEL)
-            return _omlx_call(OMLX_FALLBACK_MODEL, prompt, system=system, timeout=timeout)
-        return ""
-
-
-def omlx_embed(text: str, model: str = "",
-               retries: int = 2) -> list[float]:
-    """Get embedding from local oMLX (OpenAI-compatible). Retries on transient failures."""
-    if not text or not text.strip():
-        return []
-    from config import OMLX_HOST, OMLX_PORT, OMLX_EMBED_MODEL
-    if not model:
-        model = OMLX_EMBED_MODEL
-    endpoint = f"http://{OMLX_HOST}:{OMLX_PORT}/v1/embeddings"
-
-    payload = {"model": model, "input": text}
-    body = json.dumps(payload).encode("utf-8")
-
-    for attempt in range(1 + retries):
-        req = urllib.request.Request(
-            endpoint,
-            data=body,
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                return data["data"][0]["embedding"]
-        except urllib.error.HTTPError as e:
-            if e.code == 500 and attempt < retries:
-                import time as _time
-                wait = 2 ** attempt
-                log.warning("oMLX embed 500, retry %d/%d in %ds", attempt + 1, retries, wait)
-                _time.sleep(wait)
-                continue
-            log.error("oMLX embed failed (HTTP %d): %s", e.code, str(e))
-            return []
-        except (urllib.error.URLError, OSError) as e:
-            if attempt < retries:
-                import time as _time
-                _time.sleep(2)
-                continue
-            log.error("oMLX embed failed: %s", str(e))
-            return []
-    return []
-
-
-def _ollama_call(model_id: str, prompt: str,
-                 system: str = "", timeout: int = 300) -> str:
-    """Backward-compatible alias during the Ollama -> oMLX migration."""
-    return _omlx_call(model_id, prompt, system=system, timeout=timeout)
-
-
-def ollama_embed(text: str, model: str = "nomic-embed-text",
-                 retries: int = 2) -> list[float]:
-    """Backward-compatible alias during the Ollama -> oMLX migration."""
-    return omlx_embed(text, model=model, retries=retries)
-
-
-def _gemini_call(model_id: str, prompt: str,
-                 system: str = "", timeout: int = 120) -> str:
-    """Call Gemini API (different format from OpenAI-compatible APIs)."""
-    api_key = _get_api_key("gemini")
-    if not api_key:
-        log.error("No API key for gemini")
-        return ""
-
-    endpoint = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model_id}:generateContent?key={api_key}"
-    )
-
-    contents = []
-    if system:
-        contents.append({"role": "user", "parts": [{"text": system}]})
-        contents.append({"role": "model", "parts": [{"text": "Understood."}]})
-    contents.append({"role": "user", "parts": [{"text": prompt}]})
-
-    payload = {
-        "contents": contents,
-        "generationConfig": {
-            "maxOutputTokens": 32768,
-            "temperature": 0.8,
-        },
-    }
-    body = json.dumps(payload).encode("utf-8")
-
-    req = urllib.request.Request(
-        endpoint,
-        data=body,
-        headers={"Content-Type": "application/json"},
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            content = data["candidates"][0]["content"]["parts"][0]["text"]
-            log.info("API call: gemini/%s → %d chars", model_id, len(content))
-            # Extract real token counts from Gemini response
-            usage = data.get("usageMetadata", {})
-            _log_usage("gemini", model_id,
-                       usage.get("promptTokenCount", 0),
-                       usage.get("candidatesTokenCount", 0))
-            return content.strip()
-    except urllib.error.HTTPError as e:
-        error_body = redact_secrets(e.read().decode("utf-8", errors="replace")[:300])
-        log.error("API gemini/%s HTTP %d: %s", model_id, e.code, error_body)
-        return ""
-    except Exception as e:
-        log.error("API gemini/%s failed: %s", model_id, redact_secrets(str(e)))
-        return ""
-
-
-def _api_call(provider: str, model_id: str, prompt: str,
-              system: str = "", timeout: int = 120,
-              reasoning_effort: str = "") -> str:
-    """Call OpenAI-compatible chat completion API (OpenAI, DeepSeek, oMLX)."""
-    if provider == "gemini":
-        return _gemini_call(model_id, prompt, system, timeout)
-
-    # Probe endpoint on first use (detect drift before wasting a real call)
-    if provider in _API_ENDPOINTS and not _probe_endpoint(provider):
-        log.error("API endpoint probe failed for %s — skipping call", provider)
-        return ""
-    if provider == "omlx":
-        return _omlx_call(model_id, prompt, system, timeout)
-
-    api_key = _get_api_key(provider)
-    if not api_key:
-        log.error("No API key for provider '%s'", provider)
-        return ""
-
-    endpoint = _API_ENDPOINTS.get(provider, "")
-    if not endpoint:
-        log.error("Unknown provider '%s'", provider)
-        return ""
-
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
-
-    # Build request body — OpenAI GPT-5+ has different param names
-    payload = {"model": model_id, "messages": messages}
-    if provider == "openai":
-        payload["max_completion_tokens"] = 32768
-        if reasoning_effort:
-            payload["reasoning_effort"] = reasoning_effort
-    elif provider == "deepseek":
-        payload["max_tokens"] = DEEPSEEK_MAX_TOKENS
-        payload["temperature"] = DEEPSEEK_TEMPERATURE
-    else:
-        payload["max_tokens"] = 32768
-        payload["temperature"] = 0.8
-    body = json.dumps(payload).encode("utf-8")
-
-    req = urllib.request.Request(
-        endpoint,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            content = data["choices"][0]["message"]["content"]
-            model_used = data.get("model", model_id)
-            log.info("API call: %s/%s → %d chars", provider, model_used, len(content))
-            # Extract real token counts from OpenAI-compatible response
-            usage = data.get("usage", {})
-            _log_usage(provider, model_used,
-                       usage.get("prompt_tokens", 0),
-                       usage.get("completion_tokens", 0))
-            return content.strip()
-    except urllib.error.HTTPError as e:
-        error_body = redact_secrets(e.read().decode("utf-8", errors="replace")[:300])
-        log.error("API %s/%s HTTP %d: %s", provider, model_id, e.code, error_body)
-        return ""
-    except Exception as e:
-        log.error("API %s/%s failed: %s", provider, model_id, redact_secrets(str(e)))
-        return ""
-
-
-# ---------------------------------------------------------------------------
 # Unified interface
 # ---------------------------------------------------------------------------
 
-def model_think(prompt: str, model_name: str = DEFAULT_MODEL,
-                system: str = "", timeout: int = CLAUDE_TIMEOUT_THINK) -> str:
+
+def model_think(
+    prompt: str, model_name: str = DEFAULT_MODEL, system: str = "", timeout: int = CLAUDE_TIMEOUT_THINK
+) -> str:
     """Call any model for thinking (no tools). Falls back to Claude on failure."""
     # Model restriction: force local oMLX if policy is set (privacy boundary)
     if _force_local():
@@ -811,8 +370,7 @@ def model_think(prompt: str, model_name: str = DEFAULT_MODEL,
         full_prompt = f"{system}\n\n{prompt}" if system else prompt
         return claude_think(full_prompt, timeout=timeout)
     else:
-        result = _api_call(cfg["provider"], cfg["model_id"], prompt,
-                           system=system, timeout=timeout)
+        result = _api_call(cfg["provider"], cfg["model_id"], prompt, system=system, timeout=timeout)
         if not result:
             log.info("Falling back to claude after %s failure", model_name)
             full_prompt = f"{system}\n\n{prompt}" if system else prompt

@@ -10,6 +10,7 @@ questions. External input always triggers immediately and takes priority.
 State stored per user in: bridge/users/{user_id}/state/emptiness.json
 Legacy fallback: agents/shared/soul/emptiness.json
 """
+
 import json
 import logging
 from datetime import datetime, timezone
@@ -20,17 +21,19 @@ from config import MIRA_DIR
 
 log = logging.getLogger("mira.emptiness")
 
-from config import SOUL_DIR as _SOUL_DIR; _SOUL_DIR  # imported from config
+from config import SOUL_DIR as _SOUL_DIR
+
+_SOUL_DIR  # imported from config
 EMPTINESS_FILE = _SOUL_DIR / "emptiness.json"
 
 # Default tuning constants
-DEFAULT_THRESHOLD = 150.0        # emptiness units to trigger question-mode self-awakening
-CONNECTION_THRESHOLD = 80.0      # lower threshold for connection-mode thinking
-DEFAULT_BASE_RATE = 5.0          # units per minute when idle — targets ~30min cycle
-DEFAULT_QUESTION_RATE = 0.5      # additional units per minute per pending question
-DEFAULT_DECAY_AFTER_THINK = 500.0 # emptiness reduction after one think — ensures full 30min cooldown
-MAX_EMPTINESS = 500.0            # cap so it doesn't explode if agent is offline for days
-MAX_CONTINUATION = 5             # max rounds of continuing same thought chain
+DEFAULT_THRESHOLD = 150.0  # emptiness units to trigger question-mode self-awakening
+CONNECTION_THRESHOLD = 150.0  # same as question threshold — 30min interval is enforced in triggers
+DEFAULT_BASE_RATE = 5.0  # units per minute when idle — targets ~30min cycle
+DEFAULT_QUESTION_RATE = 0.5  # additional units per minute per pending question
+DEFAULT_DECAY_AFTER_THINK = 500.0  # emptiness reduction after one think — ensures full 30min cooldown
+MAX_EMPTINESS = 500.0  # cap so it doesn't explode if agent is offline for days
+MAX_CONTINUATION = 5  # max rounds of continuing same thought chain
 
 
 def _now_iso() -> str:
@@ -71,9 +74,7 @@ def load_emptiness(user_id: str = "ang") -> dict:
 def save_emptiness(state: dict, user_id: str = "ang"):
     state_file = _state_file(user_id)
     state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_text(
-        json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _default_state() -> dict:
@@ -89,13 +90,14 @@ def _default_state() -> dict:
         "stats": {
             "total_self_awakenings": 0,
             "total_questions_resolved": 0,
-        }
+        },
     }
 
 
 # ---------------------------------------------------------------------------
 # Core operations
 # ---------------------------------------------------------------------------
+
 
 def tick(user_id: str = "ang") -> float:
     """Advance the emptiness value based on elapsed time and pending questions.
@@ -118,8 +120,14 @@ def tick(user_id: str = "ang") -> float:
     state["last_updated"] = _now_iso()
     save_emptiness(state, user_id=user_id)
 
-    log.debug("Emptiness tick: %.1f → %.1f (Δ%.1f, %d questions, %.1f min)",
-              state.get("emptiness_value", 0.0), new_value, delta, num_questions, minutes)
+    log.debug(
+        "Emptiness tick: %.1f → %.1f (Δ%.1f, %d questions, %.1f min)",
+        state.get("emptiness_value", 0.0),
+        new_value,
+        delta,
+        num_questions,
+        minutes,
+    )
     return new_value
 
 
@@ -164,7 +172,8 @@ def get_think_mode(user_id: str = "ang") -> str | None:
     if value >= CONNECTION_THRESHOLD:
         # Check if thought_stream has enough entries for connection/auto-question
         try:
-            from memory_store import get_store
+            from memory.store import get_store
+
             stats = get_store().get_stats(user_id=user_id)
             thought_count = stats.get("thought_stream", 0)
         except Exception:
@@ -206,8 +215,8 @@ def on_external_input(user_id: str = "ang"):
 # Question management
 # ---------------------------------------------------------------------------
 
-def add_question(text: str, priority: float = 5.0, source: str = "",
-                 user_id: str = "ang") -> str:
+
+def add_question(text: str, priority: float = 5.0, source: str = "", user_id: str = "ang") -> str:
     """Add a pending question to the queue. Returns the question ID."""
     state = load_emptiness(user_id=user_id)
 
@@ -222,6 +231,7 @@ def add_question(text: str, priority: float = 5.0, source: str = "",
             return q["id"]
 
     import uuid
+
     q_id = "q_" + uuid.uuid4().hex[:8]
     question = {
         "id": q_id,
@@ -265,8 +275,7 @@ def resolve_question(q_id: str, user_id: str = "ang"):
         if q["id"] == q_id:
             q["resolved"] = True
             q["resolved_at"] = _now_iso()
-            state["stats"]["total_questions_resolved"] = \
-                state["stats"].get("total_questions_resolved", 0) + 1
+            state["stats"]["total_questions_resolved"] = state["stats"].get("total_questions_resolved", 0) + 1
             break
     save_emptiness(state, user_id=user_id)
 
@@ -320,7 +329,9 @@ def passes_quality_gate(thought_text: str) -> bool:
     Standalone thoughts with no connection are filtered out to reduce noise.
     """
     from pathlib import Path
-    from config import SOUL_DIR as _soul_dir; _soul = _soul_dir
+    from config import SOUL_DIR as _soul_dir
+
+    _soul = _soul_dir
     reference_text = ""
 
     # Load memory.md
@@ -343,6 +354,7 @@ def passes_quality_gate(thought_text: str) -> bool:
     rn_dir = _soul / "reading_notes"
     if rn_dir.exists():
         from datetime import timedelta
+
         cutoff = datetime.now(timezone.utc) - timedelta(days=7)
         for p in sorted(rn_dir.glob("*.md"), reverse=True)[:10]:
             try:
@@ -356,7 +368,8 @@ def passes_quality_gate(thought_text: str) -> bool:
 
     # Extract meaningful terms from the thought (words 4+ chars, lowercased)
     import re
-    thought_words = set(w.lower() for w in re.findall(r'[a-zA-Z\u4e00-\u9fff]{4,}', thought_text))
+
+    thought_words = set(w.lower() for w in re.findall(r"[a-zA-Z\u4e00-\u9fff]{4,}", thought_text))
     ref_lower = reference_text.lower()
 
     # Check if at least one meaningful term from the thought appears in reference material

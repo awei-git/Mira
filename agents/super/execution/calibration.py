@@ -7,6 +7,7 @@ Extracted from task_worker.py. Contains:
 - _track_output_quality: append to global quality log
 - detect_quality_regression: check if agent output quality is declining
 """
+
 from __future__ import annotations
 
 import json
@@ -34,8 +35,7 @@ def _utc_iso() -> str:
 _CALIBRATION_FILE = Path(__file__).resolve().parent.parent.parent / "shared" / "soul" / "calibration.jsonl"
 
 
-def _record_premortem(task_id: str, step_index: int, agent: str,
-                      instruction: str, prediction: dict | None):
+def _record_premortem(task_id: str, step_index: int, agent: str, instruction: str, prediction: dict | None):
     """Record predicted difficulty/failure modes before step execution."""
     if not prediction:
         return
@@ -55,9 +55,9 @@ def _record_premortem(task_id: str, step_index: int, agent: str,
         pass
 
 
-def _record_postmortem(task_id: str, step_index: int, agent: str,
-                       prediction: dict | None, actual_status: str,
-                       actual_output_preview: str):
+def _record_postmortem(
+    task_id: str, step_index: int, agent: str, prediction: dict | None, actual_status: str, actual_output_preview: str
+):
     """Record actual result after step execution; compare to prediction."""
     record = {
         "type": "postmortem",
@@ -73,10 +73,13 @@ def _record_postmortem(task_id: str, step_index: int, agent: str,
         succeeded = actual_status in ("done", "completed")
         predicted_easy = prediction.get("difficulty") == "easy"
         record["calibration_note"] = (
-            "expected_easy_succeeded" if (predicted_easy and succeeded) else
-            "expected_easy_failed" if (predicted_easy and not succeeded) else
-            "expected_hard_succeeded" if (not predicted_easy and succeeded) else
-            "expected_hard_failed"
+            "expected_easy_succeeded"
+            if (predicted_easy and succeeded)
+            else (
+                "expected_easy_failed"
+                if (predicted_easy and not succeeded)
+                else "expected_hard_succeeded" if (not predicted_easy and succeeded) else "expected_hard_failed"
+            )
         )
     try:
         with open(_CALIBRATION_FILE, "a", encoding="utf-8") as f:
@@ -129,8 +132,8 @@ def detect_quality_regression(agent: str, window: int = 10) -> str | None:
     # Check: are recent outputs getting shorter?
     lengths = [r.get("length", 0) for r in recent]
     if len(lengths) >= 5:
-        first_half = sum(lengths[:len(lengths)//2]) / (len(lengths)//2)
-        second_half = sum(lengths[len(lengths)//2:]) / (len(lengths) - len(lengths)//2)
+        first_half = sum(lengths[: len(lengths) // 2]) / (len(lengths) // 2)
+        second_half = sum(lengths[len(lengths) // 2 :]) / (len(lengths) - len(lengths) // 2)
         if first_half > 0 and second_half / first_half < 0.5:
             return f"{agent}: output length dropped {second_half/first_half:.0%} vs earlier"
 

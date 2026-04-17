@@ -7,6 +7,7 @@ knowledge from multiple reading notes into connected prose.
 Designed to be called from workflows (journal, reflect) — not directly
 from the 30s LaunchAgent cycle.
 """
+
 import json
 import logging
 import re
@@ -15,9 +16,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import (
-    READING_NOTES_DIR, WIKI_DIR, WIKI_META, WIKI_LOG_MAX_LINES,
+    READING_NOTES_DIR,
+    WIKI_DIR,
+    WIKI_META,
+    WIKI_LOG_MAX_LINES,
 )
-from soul_manager import _atomic_write, _locked_read_modify_write, _log_change
+from memory.soul_io import _atomic_write, _locked_read_modify_write, _log_change
 
 log = logging.getLogger("mira")
 
@@ -32,6 +36,7 @@ WIKI_LOG = WIKI_DIR / "log.md"
 # ---------------------------------------------------------------------------
 # Read operations
 # ---------------------------------------------------------------------------
+
 
 def _load_meta() -> dict:
     """Load wiki metadata. Returns empty structure if missing."""
@@ -52,10 +57,7 @@ def _save_meta(meta: dict):
 def list_wiki_pages() -> list[dict]:
     """List all wiki pages with metadata."""
     meta = _load_meta()
-    return [
-        {"slug": slug, **info}
-        for slug, info in meta.get("pages", {}).items()
-    ]
+    return [{"slug": slug, **info} for slug, info in meta.get("pages", {}).items()]
 
 
 def load_wiki_page(slug: str) -> str | None:
@@ -70,9 +72,16 @@ def load_wiki_page(slug: str) -> str | None:
 # Write operations
 # ---------------------------------------------------------------------------
 
-def save_wiki_page(slug: str, title: str, content: str,
-                   description: str = "", category: str = "general",
-                   source_count: int = 0, reason: str = ""):
+
+def save_wiki_page(
+    slug: str,
+    title: str,
+    content: str,
+    description: str = "",
+    category: str = "general",
+    source_count: int = 0,
+    reason: str = "",
+):
     """Save a wiki page and update metadata + log."""
     WIKI_DIR.mkdir(parents=True, exist_ok=True)
     path = WIKI_DIR / f"{slug}.md"
@@ -113,7 +122,7 @@ def append_wiki_log(slug: str, action: str, detail: str = ""):
         lines = text.split("\n")
         if len(lines) > WIKI_LOG_MAX_LINES:
             header = lines[:2]
-            trimmed = lines[-(WIKI_LOG_MAX_LINES - 2):]
+            trimmed = lines[-(WIKI_LOG_MAX_LINES - 2) :]
             text = "\n".join(header + trimmed)
         return text
 
@@ -123,6 +132,7 @@ def append_wiki_log(slug: str, action: str, detail: str = ""):
 # ---------------------------------------------------------------------------
 # Topic detection — find wiki-worthy topics from reading notes
 # ---------------------------------------------------------------------------
+
 
 def _load_recent_notes(days: int = 14) -> list[dict]:
     """Load reading notes from recent days with title and content."""
@@ -140,15 +150,17 @@ def _load_recent_notes(days: int = 14) -> list[dict]:
             # Extract title from first line, clean up prefixes
             title = content.split("\n")[0].strip("# ").strip()
             # Remove "Reading Note: " prefix and bold/number markers
-            title = re.sub(r'^Reading Note:\s*', '', title)
-            title = re.sub(r'^\*{1,2}\d+\.\s*', '', title)
+            title = re.sub(r"^Reading Note:\s*", "", title)
+            title = re.sub(r"^\*{1,2}\d+\.\s*", "", title)
             title = title.strip("*").strip()
-            notes.append({
-                "path": path.name,
-                "date": date_str,
-                "title": title,
-                "content": content[:1500],
-            })
+            notes.append(
+                {
+                    "path": path.name,
+                    "date": date_str,
+                    "title": title,
+                    "content": content[:1500],
+                }
+            )
         except (ValueError, OSError):
             continue
     return notes
@@ -165,17 +177,87 @@ def _extract_topic_phrases(notes: list[dict]) -> Counter:
     # Stop words — common words that don't form good wiki topics
     stop = {
         # Chinese
-        "的", "是", "在", "和", "了", "不", "与", "从", "到", "而", "这", "那",
-        "也", "就", "都", "要", "会", "对", "说", "问题", "可以", "因为", "所以",
-        "但是", "如果", "没有", "什么", "为什么", "怎么", "一个", "这个", "那个",
-        "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+        "的",
+        "是",
+        "在",
+        "和",
+        "了",
+        "不",
+        "与",
+        "从",
+        "到",
+        "而",
+        "这",
+        "那",
+        "也",
+        "就",
+        "都",
+        "要",
+        "会",
+        "对",
+        "说",
+        "问题",
+        "可以",
+        "因为",
+        "所以",
+        "但是",
+        "如果",
+        "没有",
+        "什么",
+        "为什么",
+        "怎么",
+        "一个",
+        "这个",
+        "那个",
+        "一",
+        "二",
+        "三",
+        "四",
+        "五",
+        "六",
+        "七",
+        "八",
+        "九",
+        "十",
         # English
-        "the", "a", "an", "is", "are", "in", "on", "of", "and", "to",
-        "for", "it", "that", "this", "but", "or", "reading", "note",
-        "not", "how", "what", "why", "when", "will", "can", "has", "have",
-        "about", "from", "with", "more", "new", "just", "than",
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "in",
+        "on",
+        "of",
+        "and",
+        "to",
+        "for",
+        "it",
+        "that",
+        "this",
+        "but",
+        "or",
+        "reading",
+        "note",
+        "not",
+        "how",
+        "what",
+        "why",
+        "when",
+        "will",
+        "can",
+        "has",
+        "have",
+        "about",
+        "from",
+        "with",
+        "more",
+        "new",
+        "just",
+        "than",
         # Meta terms from notes format
-        "source", "insight", "question",
+        "source",
+        "insight",
+        "question",
     }
 
     for note in notes:
@@ -185,9 +267,9 @@ def _extract_topic_phrases(notes: list[dict]) -> Counter:
         # Strategy 1: Extract bold phrases (**multi-word term**)
         # Skip bold phrases in the title/header lines
         body = "\n".join(content.split("\n")[3:])  # Skip first 3 header lines
-        bold_terms = re.findall(r'\*\*([^*]{4,60})\*\*', body)
+        bold_terms = re.findall(r"\*\*([^*]{4,60})\*\*", body)
         for term in bold_terms:
-            cleaned = re.sub(r'^[\d.\s]+', '', term).strip()
+            cleaned = re.sub(r"^[\d.\s]+", "", term).strip()
             # Must be 4+ chars, multi-word, and not just stop words
             words = cleaned.lower().split()
             meaningful = [w for w in words if w not in stop and len(w) > 2]
@@ -196,7 +278,7 @@ def _extract_topic_phrases(notes: list[dict]) -> Counter:
 
         # Strategy 2: Extract compound concepts from titles
         # Split title on punctuation, take meaningful segments
-        segments = re.split(r'[—\-:：,，。!！?？]', title)
+        segments = re.split(r"[—\-:：,，。!！?？]", title)
         for seg in segments:
             seg = seg.strip()
             if 6 <= len(seg) <= 50:
@@ -208,8 +290,7 @@ def _extract_topic_phrases(notes: list[dict]) -> Counter:
     return topics
 
 
-def detect_wiki_candidates(days: int = 14, min_count: int = 2,
-                           user_id: str = "ang") -> list[dict]:
+def detect_wiki_candidates(days: int = 14, min_count: int = 2, user_id: str = "ang") -> list[dict]:
     """Find topics appearing in 3+ reading notes without a wiki page.
 
     Uses both keyword frequency and vector similarity clustering.
@@ -226,7 +307,8 @@ def detect_wiki_candidates(days: int = 14, min_count: int = 2,
 
     # Strategy 2: Use vector similarity to cluster notes by topic
     try:
-        from memory_store import get_store
+        from memory.store import get_store
+
         store = get_store()
 
         # Group notes by similarity — find clusters
@@ -256,12 +338,14 @@ def detect_wiki_candidates(days: int = 14, min_count: int = 2,
             if len(paths) >= min_count and len(label) >= 6:
                 slug = _slugify(label)
                 if slug not in existing_slugs:
-                    candidates.append({
-                        "topic": label,
-                        "slug": slug,
-                        "count": len(paths),
-                        "source_notes": list(paths)[:10],
-                    })
+                    candidates.append(
+                        {
+                            "topic": label,
+                            "slug": slug,
+                            "count": len(paths),
+                            "source_notes": list(paths)[:10],
+                        }
+                    )
     except Exception as e:
         log.debug("Vector-based candidate detection failed: %s", e)
 
@@ -273,25 +357,23 @@ def detect_wiki_candidates(days: int = 14, min_count: int = 2,
                 continue
             if slug not in existing_slugs and not any(c["slug"] == slug for c in candidates):
                 # Find which notes mention this topic
-                source_notes = [
-                    n["path"] for n in notes
-                    if topic.lower() in n["content"].lower()
-                ]
+                source_notes = [n["path"] for n in notes if topic.lower() in n["content"].lower()]
                 if len(source_notes) >= min_count:
-                    candidates.append({
-                        "topic": topic,
-                        "slug": slug,
-                        "count": len(source_notes),
-                        "source_notes": source_notes[:10],
-                    })
+                    candidates.append(
+                        {
+                            "topic": topic,
+                            "slug": slug,
+                            "count": len(source_notes),
+                            "source_notes": source_notes[:10],
+                        }
+                    )
 
     # Sort by count descending
     candidates.sort(key=lambda c: c["count"], reverse=True)
     return candidates[:10]  # Top 10
 
 
-def get_notes_for_topic(topic: str, days: int = 30,
-                        user_id: str = "ang") -> list[dict]:
+def get_notes_for_topic(topic: str, days: int = 30, user_id: str = "ang") -> list[dict]:
     """Find reading notes related to a topic via content search + vector."""
     notes = _load_recent_notes(days)
     matches = []
@@ -304,19 +386,22 @@ def get_notes_for_topic(topic: str, days: int = 30,
 
     # Vector search supplement
     try:
-        from memory_store import get_store
+        from memory.store import get_store
+
         store = get_store()
         results = store.recall(topic, top_k=10, source_filter="reading_note", user_id=user_id)
         for r in results:
             if r.get("score", 0) > 0.5:
                 sid = r.get("source_id", "")
                 if sid and not any(m["path"] == sid for m in matches):
-                    matches.append({
-                        "path": sid,
-                        "date": "",
-                        "title": r.get("content", "")[:80],
-                        "content": r.get("content", "")[:1500],
-                    })
+                    matches.append(
+                        {
+                            "path": sid,
+                            "date": "",
+                            "title": r.get("content", "")[:80],
+                            "content": r.get("content", "")[:1500],
+                        }
+                    )
     except Exception as e:
         log.debug("Vector search for topic notes failed: %s", e)
 
@@ -339,9 +424,7 @@ def find_related_pages(content: str, exclude_slug: str = "") -> list[str]:
         title = info.get("title", "").lower()
         desc = info.get("description", "").lower()
         # Simple keyword match — title or description appears in content
-        if title and (title in content_lower or any(
-            w in content_lower for w in title.split() if len(w) > 3
-        )):
+        if title and (title in content_lower or any(w in content_lower for w in title.split() if len(w) > 3)):
             related.append(slug)
         elif desc and any(w in content_lower for w in desc.split() if len(w) > 4):
             related.append(slug)
@@ -352,6 +435,7 @@ def find_related_pages(content: str, exclude_slug: str = "") -> list[str]:
 # ---------------------------------------------------------------------------
 # Index generation
 # ---------------------------------------------------------------------------
+
 
 def rebuild_wiki_index():
     """Regenerate wiki/index.md from metadata."""
@@ -388,19 +472,19 @@ def rebuild_wiki_index():
         lines.append("")
 
     _atomic_write(WIKI_INDEX, "\n".join(lines))
-    log.info("Wiki index rebuilt: %d pages in %d categories",
-             len(pages), len(by_category))
+    log.info("Wiki index rebuilt: %d pages in %d categories", len(pages), len(by_category))
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _slugify(text: str) -> str:
     """Convert topic text to a URL-safe slug."""
     # Handle Chinese + English mix
     slug = text.lower().strip()
-    slug = re.sub(r'[^\w\s-]', '', slug)
-    slug = re.sub(r'[\s_]+', '-', slug)
-    slug = slug.strip('-')[:60]
+    slug = re.sub(r"[^\w\s-]", "", slug)
+    slug = re.sub(r"[\s_]+", "-", slug)
+    slug = slug.strip("-")[:60]
     return slug or "untitled"

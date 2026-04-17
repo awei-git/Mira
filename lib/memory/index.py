@@ -7,6 +7,7 @@ Uses SQLite for storage and OpenAI text-embedding-3-small for embeddings.
 Indexes: identity, worldview, memory, interests, journal, reading_notes, skills.
 Chunks text into ~400-token pieces with overlap for retrieval.
 """
+
 import hashlib
 import json
 import logging
@@ -21,9 +22,19 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import (
-    SOUL_DIR, IDENTITY_FILE, MEMORY_FILE, INTERESTS_FILE, WORLDVIEW_FILE,
-    READING_NOTES_DIR, SKILLS_DIR, SKILLS_INDEX, JOURNAL_DIR, SECRETS_FILE,
-    CONVERSATIONS_DIR, EPISODES_DIR, CATALOG_FILE,
+    SOUL_DIR,
+    IDENTITY_FILE,
+    MEMORY_FILE,
+    INTERESTS_FILE,
+    WORLDVIEW_FILE,
+    READING_NOTES_DIR,
+    SKILLS_DIR,
+    SKILLS_INDEX,
+    JOURNAL_DIR,
+    SECRETS_FILE,
+    CONVERSATIONS_DIR,
+    EPISODES_DIR,
+    CATALOG_FILE,
     OPENAI_EMBEDDINGS_ENDPOINT,
 )
 
@@ -34,7 +45,7 @@ log = logging.getLogger("mira.memory_index")
 # ---------------------------------------------------------------------------
 EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIMS = 1536
-CHUNK_SIZE = 400          # ~tokens (chars / 4 as rough estimate)
+CHUNK_SIZE = 400  # ~tokens (chars / 4 as rough estimate)
 CHUNK_OVERLAP = 80
 DB_PATH = SOUL_DIR / ".memory_index.sqlite"
 # Temporal decay: halve relevance every 30 days
@@ -45,11 +56,13 @@ DECAY_HALF_LIFE_DAYS = 30
 # SQLite setup
 # ---------------------------------------------------------------------------
 
+
 def _get_db() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS chunks (
             id TEXT PRIMARY KEY,
             source TEXT NOT NULL,
@@ -59,10 +72,13 @@ def _get_db() -> sqlite3.Connection:
             updated_at TEXT NOT NULL,
             content_hash TEXT NOT NULL
         )
-    """)
-    conn.execute("""
+    """
+    )
+    conn.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source)
-    """)
+    """
+    )
     conn.commit()
     return conn
 
@@ -71,8 +87,10 @@ def _get_db() -> sqlite3.Connection:
 # Embedding via OpenAI API
 # ---------------------------------------------------------------------------
 
+
 def _get_openai_key() -> str:
-    from sub_agent import _parse_secrets_simple
+    from llm import _parse_secrets_simple
+
     secrets = _parse_secrets_simple(SECRETS_FILE)
     keys = secrets.get("api_keys", {})
     openai_cfg = keys.get("openai", {})
@@ -89,10 +107,12 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
         return [[] for _ in texts]
 
     # OpenAI allows up to 2048 inputs per batch, but keep it reasonable
-    body = json.dumps({
-        "input": texts,
-        "model": EMBEDDING_MODEL,
-    }).encode("utf-8")
+    body = json.dumps(
+        {
+            "input": texts,
+            "model": EMBEDDING_MODEL,
+        }
+    ).encode("utf-8")
 
     req = urllib.request.Request(
         OPENAI_EMBEDDINGS_ENDPOINT,
@@ -113,8 +133,7 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
             # Validate embedding dimensions
             for emb in embeddings:
                 if emb and len(emb) != EMBEDDING_DIMS:
-                    log.error("Embedding dimension mismatch: got %d, expected %d",
-                              len(emb), EMBEDDING_DIMS)
+                    log.error("Embedding dimension mismatch: got %d, expected %d", len(emb), EMBEDDING_DIMS)
                     return [[] for _ in texts]
             return embeddings
         except urllib.error.HTTPError as e:
@@ -123,14 +142,14 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
                 log.warning("Embedding API HTTP %d, retrying in %ds...", e.code, wait)
                 time.sleep(wait)
                 continue
-            log.error("Embedding API HTTP %d: %s", e.code,
-                      e.read().decode("utf-8", errors="replace")[:200])
+            log.error("Embedding API HTTP %d: %s", e.code, e.read().decode("utf-8", errors="replace")[:200])
             return [[] for _ in texts]
         except Exception as e:
             if attempt < max_retries - 1:
                 wait = 2 ** (attempt + 1)
-                log.warning("Embedding API failed (attempt %d/%d): %s, retrying in %ds...",
-                            attempt + 1, max_retries, e, wait)
+                log.warning(
+                    "Embedding API failed (attempt %d/%d): %s, retrying in %ds...", attempt + 1, max_retries, e, wait
+                )
                 time.sleep(wait)
                 continue
             log.error("Embedding API failed after %d attempts: %s", max_retries, e)
@@ -146,6 +165,7 @@ def _embed_single(text: str) -> list[float]:
 # ---------------------------------------------------------------------------
 # Vector operations (pure Python — no numpy needed at this scale)
 # ---------------------------------------------------------------------------
+
 
 def _vec_to_blob(vec: list[float]) -> bytes:
     return struct.pack(f"{len(vec)}f", *vec)
@@ -171,6 +191,7 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
 # Chunking
 # ---------------------------------------------------------------------------
 
+
 def _chunk_text(text: str, source: str, source_path: str) -> list[dict]:
     """Split text into overlapping chunks with metadata."""
     # Rough char-based chunking (chars / 4 ≈ tokens)
@@ -184,22 +205,26 @@ def _chunk_text(text: str, source: str, source_path: str) -> list[dict]:
 
     for para in paragraphs:
         if len(current) + len(para) > char_size and current:
-            chunks.append({
-                "content": current.strip(),
-                "source": source,
-                "source_path": source_path,
-            })
+            chunks.append(
+                {
+                    "content": current.strip(),
+                    "source": source,
+                    "source_path": source_path,
+                }
+            )
             # Keep overlap
             current = current[-char_overlap:] + "\n\n" + para
         else:
             current = current + "\n\n" + para if current else para
 
     if current.strip():
-        chunks.append({
-            "content": current.strip(),
-            "source": source,
-            "source_path": source_path,
-        })
+        chunks.append(
+            {
+                "content": current.strip(),
+                "source": source,
+                "source_path": source_path,
+            }
+        )
 
     return chunks
 
@@ -211,6 +236,7 @@ def _content_hash(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Indexing
 # ---------------------------------------------------------------------------
+
 
 def _gather_sources() -> list[dict]:
     """Gather all indexable content from soul files."""
@@ -224,48 +250,58 @@ def _gather_sources() -> list[dict]:
         ("worldview", WORLDVIEW_FILE),
     ]:
         if path.exists():
-            sources.append({
-                "source": name,
-                "path": str(path),
-                "content": path.read_text(encoding="utf-8"),
-            })
+            sources.append(
+                {
+                    "source": name,
+                    "path": str(path),
+                    "content": path.read_text(encoding="utf-8"),
+                }
+            )
 
     # Journal entries
     if JOURNAL_DIR.exists():
         for path in sorted(JOURNAL_DIR.glob("*.md")):
-            sources.append({
-                "source": "journal",
-                "path": str(path),
-                "content": path.read_text(encoding="utf-8"),
-            })
+            sources.append(
+                {
+                    "source": "journal",
+                    "path": str(path),
+                    "content": path.read_text(encoding="utf-8"),
+                }
+            )
 
     # Reading notes
     if READING_NOTES_DIR.exists():
         for path in sorted(READING_NOTES_DIR.glob("*.md")):
-            sources.append({
-                "source": "reading_note",
-                "path": str(path),
-                "content": path.read_text(encoding="utf-8"),
-            })
+            sources.append(
+                {
+                    "source": "reading_note",
+                    "path": str(path),
+                    "content": path.read_text(encoding="utf-8"),
+                }
+            )
 
     # Learned skills
     if SKILLS_DIR.exists():
         for path in sorted(SKILLS_DIR.glob("*.md")):
-            sources.append({
-                "source": "skill",
-                "path": str(path),
-                "content": path.read_text(encoding="utf-8"),
-            })
+            sources.append(
+                {
+                    "source": "skill",
+                    "path": str(path),
+                    "content": path.read_text(encoding="utf-8"),
+                }
+            )
 
     # Conversation archives — full task conversations saved for recall across sessions
     if CONVERSATIONS_DIR.exists():
         for path in sorted(CONVERSATIONS_DIR.glob("*.md")):
             try:
-                sources.append({
-                    "source": "conversation",
-                    "path": str(path),
-                    "content": path.read_text(encoding="utf-8"),
-                })
+                sources.append(
+                    {
+                        "source": "conversation",
+                        "path": str(path),
+                        "content": path.read_text(encoding="utf-8"),
+                    }
+                )
             except OSError:
                 continue
 
@@ -273,11 +309,13 @@ def _gather_sources() -> list[dict]:
     if EPISODES_DIR.exists():
         for path in sorted(EPISODES_DIR.glob("*.md")):
             try:
-                sources.append({
-                    "source": "episode",
-                    "path": str(path),
-                    "content": path.read_text(encoding="utf-8"),
-                })
+                sources.append(
+                    {
+                        "source": "episode",
+                        "path": str(path),
+                        "content": path.read_text(encoding="utf-8"),
+                    }
+                )
             except OSError:
                 continue
 
@@ -286,11 +324,13 @@ def _gather_sources() -> list[dict]:
         try:
             content = CATALOG_FILE.read_text(encoding="utf-8")
             if content.strip():
-                sources.append({
-                    "source": "catalog",
-                    "path": str(CATALOG_FILE),
-                    "content": content,
-                })
+                sources.append(
+                    {
+                        "source": "catalog",
+                        "path": str(CATALOG_FILE),
+                        "content": content,
+                    }
+                )
         except OSError:
             pass
 
@@ -324,9 +364,7 @@ def rebuild_index(force: bool = False) -> int:
             chunk["hash"] = _content_hash(chunk["content"])
 
             if not force:
-                row = conn.execute(
-                    "SELECT content_hash FROM chunks WHERE id = ?", (chunk_id,)
-                ).fetchone()
+                row = conn.execute("SELECT content_hash FROM chunks WHERE id = ?", (chunk_id,)).fetchone()
                 if row and row[0] == chunk["hash"]:
                     continue  # unchanged
 
@@ -344,7 +382,7 @@ def rebuild_index(force: bool = False) -> int:
         batch_size = 50
         embeddings = []
         for start in range(0, len(texts), batch_size):
-            batch = texts[start:start + batch_size]
+            batch = texts[start : start + batch_size]
             batch_embs = _embed_texts(batch)
             embeddings.extend(batch_embs)
             if start + batch_size < len(texts):
@@ -358,8 +396,7 @@ def rebuild_index(force: bool = False) -> int:
                 """INSERT OR REPLACE INTO chunks
                    (id, source, source_path, content, embedding, updated_at, content_hash)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (chunk["id"], chunk["source"], chunk["source_path"],
-                 chunk["content"], blob, now, chunk["hash"]),
+                (chunk["id"], chunk["source"], chunk["source_path"], chunk["content"], blob, now, chunk["hash"]),
             )
 
         # Clean up stale chunks (from deleted files)
@@ -381,6 +418,7 @@ def rebuild_index(force: bool = False) -> int:
 # Search
 # ---------------------------------------------------------------------------
 
+
 def _keyword_score(query: str, text: str) -> float:
     """Simple BM25-ish keyword matching score."""
     query_terms = set(re.findall(r"\w+", query.lower()))
@@ -401,9 +439,7 @@ def _temporal_decay(updated_at: str) -> float:
         return 0.5
 
 
-def search(query: str, top_k: int = 5,
-           source_filter: str | None = None,
-           include_decay: bool = True) -> list[dict]:
+def search(query: str, top_k: int = 5, source_filter: str | None = None, include_decay: bool = True) -> list[dict]:
     """Hybrid search: vector similarity (70%) + keyword (30%).
 
     Args:
@@ -423,14 +459,12 @@ def search(query: str, top_k: int = 5,
         # Fetch all chunks (with optional source filter)
         if source_filter:
             rows = conn.execute(
-                "SELECT id, source, source_path, content, embedding, updated_at "
-                "FROM chunks WHERE source = ?",
+                "SELECT id, source, source_path, content, embedding, updated_at " "FROM chunks WHERE source = ?",
                 (source_filter,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, source, source_path, content, embedding, updated_at "
-                "FROM chunks"
+                "SELECT id, source, source_path, content, embedding, updated_at " "FROM chunks"
             ).fetchall()
     finally:
         conn.close()
@@ -459,20 +493,21 @@ def search(query: str, top_k: int = 5,
         if include_decay:
             combined *= _temporal_decay(updated_at)
 
-        results.append({
-            "content": content,
-            "source": source,
-            "source_path": source_path,
-            "score": combined,
-        })
+        results.append(
+            {
+                "content": content,
+                "source": source,
+                "source_path": source_path,
+                "score": combined,
+            }
+        )
 
     # Sort by score descending
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:top_k]
 
 
-def search_formatted(query: str, top_k: int = 5,
-                     max_chars: int = 3000) -> str:
+def search_formatted(query: str, top_k: int = 5, max_chars: int = 3000) -> str:
     """Search and return formatted results for prompt injection.
 
     Returns a string like:
@@ -506,17 +541,14 @@ def search_formatted(query: str, top_k: int = 5,
 # Index stats
 # ---------------------------------------------------------------------------
 
+
 def get_stats() -> dict:
     """Get index statistics."""
     conn = _get_db()
     try:
         total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-        by_source = dict(conn.execute(
-            "SELECT source, COUNT(*) FROM chunks GROUP BY source"
-        ).fetchall())
-        has_embedding = conn.execute(
-            "SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL"
-        ).fetchone()[0]
+        by_source = dict(conn.execute("SELECT source, COUNT(*) FROM chunks GROUP BY source").fetchall())
+        has_embedding = conn.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL").fetchone()[0]
     finally:
         conn.close()
     return {
@@ -533,6 +565,7 @@ def get_stats() -> dict:
 
 if __name__ == "__main__":
     import sys
+
     logging.basicConfig(level=logging.INFO)
 
     if len(sys.argv) > 1 and sys.argv[1] == "rebuild":

@@ -18,6 +18,7 @@ Usage:
     )
     result = loop.run(max_iterations=10, time_budget_minutes=60)
 """
+
 import json
 import logging
 import random
@@ -29,18 +30,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Any, Optional
 
+from config import MIRA_ROOT
+
 log = logging.getLogger("autoresearch")
 
 # ---------------------------------------------------------------------------
 # Evaluation primitives
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class EvalResult:
     """Result of evaluating a single output."""
-    scores: dict[str, float]       # criterion -> 0-10 score
+
+    scores: dict[str, float]  # criterion -> 0-10 score
     reasoning: str = ""
-    aggregate: float = 0.0         # weighted mean of scores
+    aggregate: float = 0.0  # weighted mean of scores
     metadata: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -51,8 +56,9 @@ class EvalResult:
 @dataclass
 class CompareResult:
     """Result of blind A/B comparison."""
-    winner: str                    # "a", "b", or "tie"
-    confidence: float              # 0-1
+
+    winner: str  # "a", "b", or "tie"
+    confidence: float  # 0-1
     reasoning: str = ""
     per_criterion: dict = field(default_factory=dict)
 
@@ -60,9 +66,10 @@ class CompareResult:
 @dataclass
 class Experiment:
     """Record of a single autoresearch experiment."""
+
     iteration: int
     hypothesis: str
-    asset_diff: str                # human-readable description of change
+    asset_diff: str  # human-readable description of change
     eval_result: Optional[EvalResult] = None
     compare_result: Optional[CompareResult] = None
     kept: bool = False
@@ -77,6 +84,7 @@ class Experiment:
 # ---------------------------------------------------------------------------
 # LLM-as-Judge
 # ---------------------------------------------------------------------------
+
 
 def llm_judge(
     output: str,
@@ -93,19 +101,21 @@ def llm_judge(
         model_fn: fn(prompt, timeout) -> str  (e.g. claude_think or model_think)
     """
     if not model_fn:
-        from sub_agent import claude_think
+        from llm import claude_think
+
         model_fn = lambda p, t=120: claude_think(p, timeout=t)
 
-    criteria_block = "\n".join(
-        f"- **{name}**: 10/10 = {desc}" for name, desc in criteria.items()
-    )
+    criteria_block = "\n".join(f"- **{name}**: 10/10 = {desc}" for name, desc in criteria.items())
 
-    rubric_block = rubric or """Score anchors:
+    rubric_block = (
+        rubric
+        or """Score anchors:
 - 1-2: Fundamentally broken or missing
 - 3-4: Present but weak, major issues
 - 5-6: Acceptable, does the job
 - 7-8: Good, clear quality
 - 9-10: Exceptional, hard to improve"""
+    )
 
     prompt = f"""You are an expert evaluator. Score the following output on each criterion.
 Be rigorous and honest — most work is 5-7, not 9-10.
@@ -137,14 +147,14 @@ Respond with JSON only:
         return EvalResult(scores={k: 5.0 for k in criteria}, reasoning="Judge failed to respond")
 
     try:
-        match = re.search(r'\{[\s\S]+\}', raw)
+        match = re.search(r"\{[\s\S]+\}", raw)
         if not match:
             return EvalResult(scores={k: 5.0 for k in criteria}, reasoning="Failed to parse judge output")
         json_str = match.group()
         # Clean common JSON issues from LLMs (trailing commas, comments)
-        json_str = re.sub(r',\s*}', '}', json_str)
-        json_str = re.sub(r',\s*]', ']', json_str)
-        json_str = re.sub(r'//[^\n]*', '', json_str)
+        json_str = re.sub(r",\s*}", "}", json_str)
+        json_str = re.sub(r",\s*]", "]", json_str)
+        json_str = re.sub(r"//[^\n]*", "", json_str)
         data = json.loads(json_str)
         scores = {}
         for name in criteria:
@@ -176,7 +186,8 @@ def llm_compare(
     Uses a different model than the generator when possible.
     """
     if not model_fn:
-        from sub_agent import claude_think
+        from llm import claude_think
+
         model_fn = lambda p, t=120: claude_think(p, timeout=t)
 
     # Randomize which is "Option 1" vs "Option 2" to prevent position bias
@@ -186,9 +197,7 @@ def llm_compare(
     else:
         first, second = output_a, output_b
 
-    criteria_block = "\n".join(
-        f"- **{name}**: {desc}" for name, desc in criteria.items()
-    )
+    criteria_block = "\n".join(f"- **{name}**: {desc}" for name, desc in criteria.items())
 
     prompt = f"""You are comparing two outputs. Determine which is better.
 You do NOT know which is the baseline and which is the candidate.
@@ -222,13 +231,13 @@ Respond with JSON only:
         return CompareResult(winner="tie", confidence=0.0, reasoning="Comparator failed")
 
     try:
-        match = re.search(r'\{[\s\S]+\}', raw)
+        match = re.search(r"\{[\s\S]+\}", raw)
         if not match:
             return CompareResult(winner="tie", confidence=0.0, reasoning="Parse failed")
         json_str = match.group()
-        json_str = re.sub(r',\s*}', '}', json_str)
-        json_str = re.sub(r',\s*]', ']', json_str)
-        json_str = re.sub(r'//[^\n]*', '', json_str)
+        json_str = re.sub(r",\s*}", "}", json_str)
+        json_str = re.sub(r",\s*]", "]", json_str)
+        json_str = re.sub(r"//[^\n]*", "", json_str)
         data = json.loads(json_str)
 
         raw_winner = str(data.get("overall_winner", "tie"))
@@ -255,6 +264,7 @@ Respond with JSON only:
 # Mutation engine
 # ---------------------------------------------------------------------------
 
+
 def mutate_asset(
     current_asset: str,
     eval_feedback: str,
@@ -267,7 +277,8 @@ def mutate_asset(
     Returns: (new_asset, hypothesis, diff_description)
     """
     if not model_fn:
-        from sub_agent import claude_think
+        from llm import claude_think
+
         model_fn = lambda p, t=120: claude_think(p, timeout=t)
 
     prompt = f"""You are optimizing a text asset (prompt, skill definition, or config).
@@ -302,7 +313,7 @@ Respond with JSON only:
         return current_asset, "mutation failed", "no change"
 
     try:
-        match = re.search(r'\{[\s\S]+\}', raw)
+        match = re.search(r"\{[\s\S]+\}", raw)
         if not match:
             # Fallback: if the LLM just returned the new asset directly (no JSON wrapper),
             # treat the entire output as the new asset
@@ -323,7 +334,7 @@ Respond with JSON only:
         # This handles cases where markdown content breaks JSON
         asset_match = re.search(r'"new_asset"\s*:\s*"([\s\S]+?)"\s*[,}]', raw)
         if asset_match:
-            new_asset = asset_match.group(1).replace('\\n', '\n').replace('\\"', '"')
+            new_asset = asset_match.group(1).replace("\\n", "\n").replace('\\"', '"')
             hyp_match = re.search(r'"hypothesis"\s*:\s*"([^"]+)"', raw)
             diff_match = re.search(r'"diff_description"\s*:\s*"([^"]+)"', raw)
             return (
@@ -333,10 +344,10 @@ Respond with JSON only:
             )
         # Last resort: if the raw output looks like a complete asset (has headings, is long),
         # use it directly
-        if len(raw) > 200 and ('#' in raw or '##' in raw):
+        if len(raw) > 200 and ("#" in raw or "##" in raw):
             # Strip any JSON wrapper attempts
-            cleaned = re.sub(r'^[\s\S]*?"new_asset"\s*:\s*"?', '', raw)
-            cleaned = re.sub(r'"?\s*\}\s*$', '', cleaned)
+            cleaned = re.sub(r'^[\s\S]*?"new_asset"\s*:\s*"?', "", raw)
+            cleaned = re.sub(r'"?\s*\}\s*$', "", cleaned)
             if len(cleaned) > 100:
                 return cleaned.strip(), "recovered from malformed output", "partial recovery"
         log.warning("Mutation parse error: %s", e)
@@ -346,6 +357,7 @@ Respond with JSON only:
 # ---------------------------------------------------------------------------
 # AutoResearch Loop
 # ---------------------------------------------------------------------------
+
 
 class AutoResearchLoop:
     """Run iterative optimization on a text asset.
@@ -400,24 +412,27 @@ class AutoResearchLoop:
 
         # Model functions — default to cross-model setup
         if not mutate_model_fn:
-            from sub_agent import claude_think
+            from llm import claude_think
+
             mutate_model_fn = lambda p, t=180: claude_think(p, timeout=t, tier="heavy")
         if not judge_model_fn:
             # Use a DIFFERENT model for judging to avoid self-evaluation bias
             # Try GPT-5 first, fall back to Gemini — never use Claude (same as mutator)
-            from sub_agent import model_think
+            from llm import model_think
+
             def _cross_model_judge(p, t=120):
                 result = model_think(p, model_name="gpt5", timeout=t)
                 if not result:
                     result = model_think(p, model_name="gemini", timeout=t)
                 return result
+
             judge_model_fn = _cross_model_judge
 
         self.mutate_fn = mutate_model_fn
         self.judge_fn = judge_model_fn
 
         # History
-        self.history_dir = history_dir or MIRA_ROOT / "agents" / "shared" / "autoresearch_runs"
+        self.history_dir = history_dir or MIRA_ROOT / "data" / "autoresearch"
         self.history_dir.mkdir(parents=True, exist_ok=True)
         self.experiments: list[Experiment] = []
         self.baseline_eval: Optional[EvalResult] = None
@@ -431,9 +446,7 @@ class AutoResearchLoop:
         for exp in recent:
             kept = "KEPT" if exp.kept else "DISCARDED"
             score = exp.eval_result.aggregate if exp.eval_result else 0
-            lines.append(
-                f"- [{kept}] {exp.hypothesis} | score={score:.1f} | {exp.asset_diff}"
-            )
+            lines.append(f"- [{kept}] {exp.hypothesis} | score={score:.1f} | {exp.asset_diff}")
         return "\n".join(lines)
 
     def _save_history(self):
@@ -490,15 +503,14 @@ class AutoResearchLoop:
         start_time = time.time()
         deadline = start_time + time_budget_minutes * 60
 
-        log.info("AutoResearch [%s] starting: %d iterations, %.0f min budget",
-                 self.name, max_iterations, time_budget_minutes)
+        log.info(
+            "AutoResearch [%s] starting: %d iterations, %.0f min budget", self.name, max_iterations, time_budget_minutes
+        )
 
         # Evaluate baseline
         log.info("[%s] Evaluating baseline...", self.name)
         baseline_output = self.eval_fn(self.current_asset)
-        self.baseline_eval = llm_judge(
-            baseline_output, self.criteria, self.rubric, self.judge_fn
-        )
+        self.baseline_eval = llm_judge(baseline_output, self.criteria, self.rubric, self.judge_fn)
         best_score = self.baseline_eval.aggregate
         log.info("[%s] Baseline score: %.2f", self.name, best_score)
 
@@ -518,8 +530,7 @@ class AutoResearchLoop:
 
             # Mutate
             new_asset, hypothesis, diff_desc = mutate_asset(
-                self.current_asset, feedback, self._history_summary(),
-                self.directive, self.mutate_fn
+                self.current_asset, feedback, self._history_summary(), self.directive, self.mutate_fn
             )
 
             if new_asset == self.current_asset:
@@ -528,14 +539,10 @@ class AutoResearchLoop:
 
             # Evaluate candidate
             candidate_output = self.eval_fn(new_asset)
-            candidate_eval = llm_judge(
-                candidate_output, self.criteria, self.rubric, self.judge_fn
-            )
+            candidate_eval = llm_judge(candidate_output, self.criteria, self.rubric, self.judge_fn)
 
             # A/B compare
-            compare = llm_compare(
-                baseline_output, candidate_output, self.criteria, self.judge_fn
-            )
+            compare = llm_compare(baseline_output, candidate_output, self.criteria, self.judge_fn)
 
             # Decision: keep if score improved, or comparator strongly prefers it
             # BUT never allow score to regress more than 0.5 even if comparator likes it
@@ -562,16 +569,26 @@ class AutoResearchLoop:
                 self.current_asset = new_asset
                 baseline_output = candidate_output
                 best_score = candidate_eval.aggregate
-                log.info("[%s] IMPROVEMENT #%d: %.2f → %.2f (%s)",
-                         self.name, improvements, best_score - candidate_eval.aggregate + best_score,
-                         best_score, diff_desc)
+                log.info(
+                    "[%s] IMPROVEMENT #%d: %.2f → %.2f (%s)",
+                    self.name,
+                    improvements,
+                    best_score - candidate_eval.aggregate + best_score,
+                    best_score,
+                    diff_desc,
+                )
                 if save_every:
                     self._save_asset()
                     self._save_best()
             else:
-                log.info("[%s] Discarded: score=%.2f, compare=%s (conf=%.2f) | %s",
-                         self.name, candidate_eval.aggregate, compare.winner,
-                         compare.confidence, hypothesis)
+                log.info(
+                    "[%s] Discarded: score=%.2f, compare=%s (conf=%.2f) | %s",
+                    self.name,
+                    candidate_eval.aggregate,
+                    compare.winner,
+                    compare.confidence,
+                    hypothesis,
+                )
 
         elapsed = time.time() - start_time
 
@@ -596,16 +613,17 @@ class AutoResearchLoop:
 
         # Save final summary
         summary_path = self.history_dir / f"{self.name}_summary.json"
-        summary_path.write_text(
-            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
         log.info(
-            "AutoResearch [%s] complete: %d iterations, %d improvements, "
-            "%.2f → %.2f (+%.2f) in %.1f min",
-            self.name, len(self.experiments), improvements,
-            self.baseline_eval.aggregate, best_score,
-            best_score - self.baseline_eval.aggregate, elapsed / 60
+            "AutoResearch [%s] complete: %d iterations, %d improvements, " "%.2f → %.2f (+%.2f) in %.1f min",
+            self.name,
+            len(self.experiments),
+            improvements,
+            self.baseline_eval.aggregate,
+            best_score,
+            best_score - self.baseline_eval.aggregate,
+            elapsed / 60,
         )
 
         return summary
@@ -614,6 +632,7 @@ class AutoResearchLoop:
 # ---------------------------------------------------------------------------
 # Convenience: batch optimize multiple assets
 # ---------------------------------------------------------------------------
+
 
 def batch_optimize(
     configs: list[dict],

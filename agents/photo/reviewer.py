@@ -54,6 +54,7 @@ PORTRAIT_CRITERIA = {
 # Review functions
 # ---------------------------------------------------------------------------
 
+
 def review_photo(image_path: Path, category: str = "auto") -> dict:
     """Review and score a single photo.
 
@@ -188,6 +189,7 @@ Output as JSON:
 # Photo classification
 # ---------------------------------------------------------------------------
 
+
 def _classify_photo(image_path: Path) -> str:
     """Classify photo as landscape or portrait using vision model."""
     prompt = f"""Read this photograph: {image_path}
@@ -205,6 +207,7 @@ Classify this photo into ONE category. Reply with ONLY the category name, nothin
 # ---------------------------------------------------------------------------
 # Formatting
 # ---------------------------------------------------------------------------
+
 
 def format_review(review: dict) -> str:
     """Format a review dict as readable text."""
@@ -279,14 +282,15 @@ def format_batch_review(reviews: list[dict]) -> str:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _extract_json(text: str) -> dict | None:
-    m = re.search(r'```(?:json)?\s*\n(.*?)\n```', text, re.DOTALL)
+    m = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
     if m:
         try:
             return json.loads(m.group(1))
         except json.JSONDecodeError:
             pass
-    m = re.search(r'\{.*\}', text, re.DOTALL)
+    m = re.search(r"\{.*\}", text, re.DOTALL)
     if m:
         try:
             return json.loads(m.group())
@@ -301,6 +305,7 @@ def _extract_json(text: str) -> dict | None:
 
 if __name__ == "__main__":
     import argparse
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 
     parser = argparse.ArgumentParser(description="Photo reviewer")

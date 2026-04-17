@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when starting a video edit by laying the audio bed first — dialogue, music, and ambient sound — before making any picture decisions."
+---
+
 # Sound-First Editing
 
 ## One-liner

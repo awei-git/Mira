@@ -14,6 +14,7 @@ Security: runtime tools use a separate audit from learned skills.
 Executable code legitimately needs urllib, file I/O, etc.
 We block only truly dangerous patterns (eval, exec, sudo, credential theft).
 """
+
 import json
 import logging
 import re
@@ -27,20 +28,20 @@ log = logging.getLogger("mira.forge")
 # Patterns that are genuinely dangerous in executable tools
 _TOOL_BLOCKED_PATTERNS = [
     # Code injection / dynamic execution
-    (r'\beval\s*\(', "Dynamic eval() — use ast.literal_eval if needed"),
-    (r'\bexec\s*\(', "Dynamic exec()"),
-    (r'__import__\s*\(', "Dynamic __import__"),
-    (r'marshal\.(loads|dumps)', "Serialized code objects"),
+    (r"\beval\s*\(", "Dynamic eval() — use ast.literal_eval if needed"),
+    (r"\bexec\s*\(", "Dynamic exec()"),
+    (r"__import__\s*\(", "Dynamic __import__"),
+    (r"marshal\.(loads|dumps)", "Serialized code objects"),
     # Privilege escalation
-    (r'\bsudo\s+', "Privilege escalation"),
-    (r'/etc/shadow|/etc/passwd', "System credential files"),
-    (r'\.ssh/', "SSH key access"),
-    (r'keychain|keyring', "Credential store access"),
+    (r"\bsudo\s+", "Privilege escalation"),
+    (r"/etc/shadow|/etc/passwd", "System credential files"),
+    (r"\.ssh/", "SSH key access"),
+    (r"keychain|keyring", "Credential store access"),
     # Persistence / stealth
-    (r'curl\s+.*\|\s*(ba)?sh', "Pipe-to-shell pattern"),
-    (r'wget\s+.*\|\s*(ba)?sh', "Pipe-to-shell pattern"),
+    (r"curl\s+.*\|\s*(ba)?sh", "Pipe-to-shell pattern"),
+    (r"wget\s+.*\|\s*(ba)?sh", "Pipe-to-shell pattern"),
     # Credential exfiltration
-    (r'OPENAI_API_KEY|ANTHROPIC_API_KEY', "Hardcoded API key reference"),
+    (r"OPENAI_API_KEY|ANTHROPIC_API_KEY", "Hardcoded API key reference"),
 ]
 
 RUNTIME_TOOLS_DIR = MIRA_ROOT / "agents" / "shared" / "runtime_tools"
@@ -82,9 +83,10 @@ def load_tools_summary(max_chars: int = 3000) -> str:
     tools = list_tools()
     if not tools:
         return ""
-    lines = ["## Available Runtime Tools\n",
-             "These are Python scripts you can import and use. "
-             f"Location: {RUNTIME_TOOLS_DIR}/\n"]
+    lines = [
+        "## Available Runtime Tools\n",
+        "These are Python scripts you can import and use. " f"Location: {RUNTIME_TOOLS_DIR}/\n",
+    ]
     for t in tools:
         name = t.get("name", "?")
         desc = t.get("description", "")
@@ -97,9 +99,9 @@ def load_tools_summary(max_chars: int = 3000) -> str:
     return result[:max_chars]
 
 
-def forge_tool(name: str, description: str, code: str,
-               tags: list[str] | None = None,
-               usage: str = "") -> tuple[bool, str]:
+def forge_tool(
+    name: str, description: str, code: str, tags: list[str] | None = None, usage: str = ""
+) -> tuple[bool, str]:
     """Save a new runtime tool. Returns (success, message).
 
     Args:
@@ -138,17 +140,17 @@ def forge_tool(name: str, description: str, code: str,
     # Update index
     index = list_tools()
     index = [t for t in index if t["name"] != name]
-    index.append({
-        "name": name,
-        "description": description,
-        "file": filename,
-        "tags": tags or [],
-        "usage": usage,
-        "created": datetime.now().isoformat(),
-    })
-    TOOLS_INDEX.write_text(
-        json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8"
+    index.append(
+        {
+            "name": name,
+            "description": description,
+            "file": filename,
+            "tags": tags or [],
+            "usage": usage,
+            "created": datetime.now().isoformat(),
+        }
     )
+    TOOLS_INDEX.write_text(json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8")
     log.info("Forged runtime tool: %s → %s", name, filepath)
     return True, str(filepath)
 
@@ -166,8 +168,6 @@ def delete_tool(name: str) -> bool:
 
     index = [t for t in index if t["name"] != name]
     _ensure_dir()
-    TOOLS_INDEX.write_text(
-        json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    TOOLS_INDEX.write_text(json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8")
     log.info("Deleted runtime tool: %s", name)
     return True

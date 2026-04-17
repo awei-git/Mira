@@ -11,6 +11,7 @@ across clips with similar lighting conditions.
 Log footage handling: detects S-Log3 (Sony), D-Log M (DJI), and flat/D-Cinelike
 profiles, and prepends the appropriate 3D LUT for linearization before grading.
 """
+
 import json
 import logging
 import subprocess
@@ -30,10 +31,7 @@ _DLOGM_LUT = _LUT_DIR / "DLogM_to_Rec709.cube"
 _NORMALIZE = "format=yuv420p,normalize=blackpt=black:whitept=white:smoothing=50"
 
 # Base filter: always applied (scale + pad to 1080p)
-_BASE = (
-    "scale=1920:1080:force_original_aspect_ratio=decrease,"
-    "pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
-)
+_BASE = "scale=1920:1080:force_original_aspect_ratio=decrease," "pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
 
 # High FPS handling (slow-mo source clips)
 _FPS_NORMALIZE = "fps=30"
@@ -55,7 +53,6 @@ GRADE_PRESETS = {
         "unsharp=3:3:0.2,"
         "vignette=PI/6"
     ),
-
     # --- Blue hour ---
     ("blue_hour", "travel"): (
         "eq=brightness=-0.03:contrast=1.15:saturation=1.05,"
@@ -69,7 +66,6 @@ GRADE_PRESETS = {
         "unsharp=3:3:0.2,"
         "vignette=PI/6"
     ),
-
     # --- Overcast / diffused ---
     ("overcast", "travel"): (
         "eq=brightness=0.03:contrast=1.15:saturation=0.95,"
@@ -77,12 +73,7 @@ GRADE_PRESETS = {
         "unsharp=3:3:0.3,"
         "vignette=PI/5"
     ),
-    ("overcast", "family"): (
-        "eq=saturation=1.05,"
-        "colorbalance=rs=0.03:gs=0.01:bs=-0.01,"
-        "unsharp=3:3:0.2"
-    ),
-
+    ("overcast", "family"): ("eq=saturation=1.05," "colorbalance=rs=0.03:gs=0.01:bs=-0.01," "unsharp=3:3:0.2"),
     # --- Harsh midday ---
     ("harsh_midday", "travel"): (
         "eq=brightness=-0.04:contrast=1.12:saturation=1.10,"
@@ -96,31 +87,18 @@ GRADE_PRESETS = {
         "unsharp=3:3:0.2,"
         "vignette=PI/6"
     ),
-
     # --- Indoor warm ---
     ("indoor_warm", "travel"): (
-        "eq=brightness=0.02:contrast=1.10:saturation=1.00,"
-        "colorbalance=rs=0.04:gs=0.01:bs=-0.03,"
-        "unsharp=3:3:0.2"
+        "eq=brightness=0.02:contrast=1.10:saturation=1.00," "colorbalance=rs=0.04:gs=0.01:bs=-0.03," "unsharp=3:3:0.2"
     ),
-    ("indoor_warm", "family"): (
-        "eq=saturation=1.10,"
-        "colorbalance=rs=0.04:gs=0.01:bs=-0.02,"
-        "unsharp=3:3:0.2"
-    ),
-
+    ("indoor_warm", "family"): ("eq=saturation=1.10," "colorbalance=rs=0.04:gs=0.01:bs=-0.02," "unsharp=3:3:0.2"),
     # --- Indoor cool (fluorescent, etc.) ---
     ("indoor_cool", "travel"): (
         "eq=brightness=0.02:contrast=1.10:saturation=0.95,"
         "colorbalance=rs=0.02:gs=-0.01:bs=0.0:rh=0.02:gh=0.01:bh=-0.01,"
         "unsharp=3:3:0.2"
     ),
-    ("indoor_cool", "family"): (
-        "eq=saturation=1.05,"
-        "colorbalance=rs=0.04:gs=0.01:bs=-0.01,"
-        "unsharp=3:3:0.2"
-    ),
-
+    ("indoor_cool", "family"): ("eq=saturation=1.05," "colorbalance=rs=0.04:gs=0.01:bs=-0.01," "unsharp=3:3:0.2"),
     # --- Night ---
     ("night", "travel"): (
         "eq=brightness=-0.05:contrast=1.22:saturation=1.10,"
@@ -134,7 +112,6 @@ GRADE_PRESETS = {
         "unsharp=3:3:0.2,"
         "vignette=PI/5"
     ),
-
     # --- Mixed / unknown (safe default) ---
     ("mixed", "travel"): (
         "eq=brightness=0.0:contrast=1.12:saturation=1.05,"
@@ -142,12 +119,7 @@ GRADE_PRESETS = {
         "unsharp=3:3:0.3,"
         "vignette=PI/5"
     ),
-    ("mixed", "family"): (
-        "eq=saturation=1.12,"
-        "colorbalance=rs=0.04:gs=0.01:bs=-0.03,"
-        "unsharp=3:3:0.2"
-    ),
-
+    ("mixed", "family"): ("eq=saturation=1.12," "colorbalance=rs=0.04:gs=0.01:bs=-0.03," "unsharp=3:3:0.2"),
     # --- Underwater / aquarium ---
     ("underwater", "travel"): (
         "eq=brightness=-0.02:contrast=1.15:saturation=1.10,"
@@ -164,11 +136,7 @@ GRADE_PRESETS = {
 }
 
 # Default fallback
-_DEFAULT_GRADE = (
-    "eq=saturation=1.10,"
-    "colorbalance=rs=0.04:gs=0.01:bs=-0.03,"
-    "unsharp=3:3:0.2"
-)
+_DEFAULT_GRADE = "eq=saturation=1.10," "colorbalance=rs=0.04:gs=0.01:bs=-0.03," "unsharp=3:3:0.2"
 
 
 def detect_log_profile(source_path: Path) -> str:
@@ -182,11 +150,23 @@ def detect_log_profile(source_path: Path) -> str:
     """
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
-             "-show_entries", "stream=pix_fmt,color_transfer,color_primaries,profile",
-             "-show_entries", "format_tags=major_brand,compatible_brands",
-             "-select_streams", "v:0", str(source_path)],
-            capture_output=True, text=True, timeout=10,
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_entries",
+                "stream=pix_fmt,color_transfer,color_primaries,profile",
+                "-show_entries",
+                "format_tags=major_brand,compatible_brands",
+                "-select_streams",
+                "v:0",
+                str(source_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         data = json.loads(r.stdout)
         stream = data.get("streams", [{}])[0]
@@ -234,22 +214,38 @@ def _probe_brightness(source_path: Path) -> float:
     """Quick brightness check — extract one frame at 30% and measure mean."""
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-             "-of", "csv=p=0", str(source_path)],
-            capture_output=True, text=True, timeout=5,
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", str(source_path)],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         dur = float(r.stdout.strip())
         ss = dur * 0.3
 
         r = subprocess.run(
-            ["ffmpeg", "-ss", str(ss), "-i", str(source_path),
-             "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray",
-             "-vf", "scale=80:-1", "-"],
-            capture_output=True, timeout=10,
+            [
+                "ffmpeg",
+                "-ss",
+                str(ss),
+                "-i",
+                str(source_path),
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray",
+                "-vf",
+                "scale=80:-1",
+                "-",
+            ],
+            capture_output=True,
+            timeout=10,
         )
         if r.stdout:
             import array
-            pixels = array.array('B', r.stdout)
+
+            pixels = array.array("B", r.stdout)
             if pixels:
                 return sum(pixels) / len(pixels)
     except Exception:
@@ -269,8 +265,9 @@ def _get_lut_filter(log_profile: str) -> str:
     return ""
 
 
-def grade_clip(clip_analysis: dict, content_mode: str = "family",
-               high_fps: bool = False, source_path: Path = None) -> str:
+def grade_clip(
+    clip_analysis: dict, content_mode: str = "family", high_fps: bool = False, source_path: Path = None
+) -> str:
     """Build ffmpeg video filter chain for a clip based on its analysis.
 
     Args:
@@ -313,10 +310,21 @@ def grade_clip(clip_analysis: dict, content_mode: str = "family",
         # Check if 10-bit source (needs normalize to avoid grey fog)
         try:
             r = subprocess.run(
-                ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
-                 "-show_entries", "stream=pix_fmt", "-of", "csv=p=0",
-                 str(source_path)],
-                capture_output=True, text=True, timeout=5,
+                [
+                    "ffprobe",
+                    "-v",
+                    "quiet",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=pix_fmt",
+                    "-of",
+                    "csv=p=0",
+                    str(source_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             is_10bit = "10" in r.stdout.strip()
         except Exception:

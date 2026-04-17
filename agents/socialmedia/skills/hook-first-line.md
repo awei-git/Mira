@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when writing the opening sentence of a newsletter or article that must force the reader to continue through curiosity, tension, or a violated assumption."
+---
+
 # Hook: First Line
 
 **Tags:** writing, substack, newsletter, hooks, engagement

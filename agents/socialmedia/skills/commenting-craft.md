@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when writing a comment on a Substack post or social platform that must add genuine value to the discussion without self-promotion."
+---
+
 # Commenting Craft
 
 ## One-liner

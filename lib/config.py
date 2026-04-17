@@ -2,8 +2,10 @@
 
 Reads from config.yml at the project root. Falls back to defaults.
 """
+
 import json
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -26,11 +28,13 @@ def today_local() -> str:
     """Today's date string (YYYY-MM-DD) in the system's local timezone."""
     return now_local().strftime("%Y-%m-%d")
 
+
 # ---------------------------------------------------------------------------
 # Load config.yml  (stdlib-only parser — no PyYAML dependency)
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent  # lib/ -> Mira/
 _CONFIG_FILE = _PROJECT_ROOT / "config.yml"
+
 
 def _parse_simple_yaml(text: str) -> dict:
     """Parse the subset of YAML used in config.yml (scalar values, one-level
@@ -39,7 +43,11 @@ def _parse_simple_yaml(text: str) -> dict:
     current_section = None
     for raw_line in text.splitlines():
         # strip comments (but not inside quoted strings)
-        line = raw_line.split("#")[0].rstrip() if "#" in raw_line and not re.search(r'["\'].*#.*["\']', raw_line) else raw_line.rstrip()
+        line = (
+            raw_line.split("#")[0].rstrip()
+            if "#" in raw_line and not re.search(r'["\'].*#.*["\']', raw_line)
+            else raw_line.rstrip()
+        )
         if not line or line.lstrip().startswith("#"):
             continue
         indent = len(line) - len(line.lstrip())
@@ -66,8 +74,8 @@ def _parse_simple_yaml(text: str) -> dict:
                 current_section = None
             else:
                 # Try to coerce to bool, then int
-                if val.lower() in ('true', 'false'):
-                    result[key] = val.lower() == 'true'
+                if val.lower() in ("true", "false"):
+                    result[key] = val.lower() == "true"
                 else:
                     try:
                         result[key] = int(val)
@@ -81,8 +89,8 @@ def _parse_simple_yaml(text: str) -> dict:
                 except (json.JSONDecodeError, ValueError):
                     result[current_section][key] = val
             else:
-                if val.lower() in ('true', 'false'):
-                    result[current_section][key] = val.lower() == 'true'
+                if val.lower() in ("true", "false"):
+                    result[current_section][key] = val.lower() == "true"
                 else:
                     try:
                         result[current_section][key] = int(val)
@@ -90,23 +98,28 @@ def _parse_simple_yaml(text: str) -> dict:
                         result[current_section][key] = val
     return result
 
+
 def _load_config() -> dict:
     if _CONFIG_FILE.exists():
         try:
             import yaml
+
             return yaml.safe_load(_CONFIG_FILE.read_text(encoding="utf-8")) or {}
         except ImportError:
             pass
         except Exception as e:
             import logging
+
             logging.getLogger("mira.config").warning("PyYAML failed: %s, trying simple parser", e)
         try:
             return _parse_simple_yaml(_CONFIG_FILE.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
             import logging
+
             logging.getLogger("mira.config").warning("Failed to load config.yml: %s", e)
             return {}
     return {}
+
 
 _cfg = _load_config()
 
@@ -117,13 +130,17 @@ _root_str = _cfg.get("root_path", str(_PROJECT_ROOT))
 MIRA_ROOT = Path(_root_str).expanduser()
 _AGENTS_DIR = MIRA_ROOT / "agents"
 
+# ---------------------------------------------------------------------------
+# Centralized data directory — all runtime data lives under data/
+# ---------------------------------------------------------------------------
+DATA_DIR = MIRA_ROOT / "data"
 
 # Soul — shared identity, memory, interests
-SOUL_DIR = _AGENTS_DIR / "shared" / "soul"
+SOUL_DIR = DATA_DIR / "soul"
 
-LOGS_DIR = MIRA_ROOT / "logs"
+LOGS_DIR = DATA_DIR / "logs"
 TIMING_LOG = LOGS_DIR / "timing.jsonl"
-FEEDS_DIR = MIRA_ROOT / "feeds"
+FEEDS_DIR = DATA_DIR / "feeds"
 SOURCES_FILE = MIRA_ROOT / "sources.json"
 
 # Artifacts — subdirectory definitions deferred until iCloud override is applied (see below)
@@ -164,8 +181,20 @@ CHANGELOG_FILE = SOUL_DIR / "changelog.md"
 CHANGELOG_ARCHIVE_DIR = SOUL_DIR / "changelog_archive"
 CHANGELOG_MAX_LINES = 2000
 
-# State tracking
-STATE_FILE = MIRA_ROOT / ".agent_state.json"
+# State tracking — centralized under data/state/
+STATE_DIR = DATA_DIR / "state"
+STATE_FILE = STATE_DIR / "agent_state.json"
+SESSION_FILE = STATE_DIR / "session_context.json"
+HEALTH_FILE = STATE_DIR / "bg_health.json"
+PENDING_PUBLISH_FILE = STATE_DIR / "pending_publish.json"
+SCHEDULED_JOBS_FILE = STATE_DIR / "scheduled_jobs.json"
+
+# Runtime directories
+PIDS_DIR = DATA_DIR / "pids"
+TASKS_DIR = DATA_DIR / "tasks"
+SOCIAL_STATE_DIR = DATA_DIR / "social"
+PROPOSALS_DIR = DATA_DIR / "proposals"
+AUTORESEARCH_DIR = DATA_DIR / "autoresearch"
 
 # ---------------------------------------------------------------------------
 # iCloud paths — bridge and artifacts live on iCloud for iOS app access
@@ -203,8 +232,16 @@ _limits = _cfg.get("limits", {})
 TASK_TIMEOUT = _limits.get("task_timeout", 900)  # Must exceed CLAUDE_TIMEOUT_ACT (600s) + startup overhead
 TASK_TIMEOUT_LONG = _limits.get("task_timeout_long", 3600)  # writing pipeline, research
 MAX_CONCURRENT_TASKS = _limits.get("max_concurrent_tasks", 2)  # parallel sub-agent workers
+MAX_TASKS_PER_CYCLE = int(os.environ.get("MIRA_MAX_TASKS_PER_CYCLE", _limits.get("max_tasks_per_cycle", 5)))
 CLEANUP_DAYS = _limits.get("cleanup_days", 3)
 LOG_RETENTION_DAYS = _limits.get("log_retention_days", 14)
+MAX_EXTERNAL_SKILLS_PER_DAY = _limits.get("max_external_skills_per_day", 5)
+SKILL_REAUDIT_DAYS = _limits.get("skill_reaudit_days", 30)
+SKILL_AUDIT_PATTERN_REVIEWED_DATE = _limits.get("skill_audit_pattern_reviewed_date", "2026-04-13")
+SKILL_AUDIT_STALENESS_DAYS = _limits.get("skill_audit_staleness_days", 30)
+SKILL_AUDIT_TTL_DAYS = _limits.get("skill_audit_ttl_days", 30)
+SKILL_AUDIT_STRICT_MODE = _limits.get("skill_audit_strict_mode", False)
+SKILL_STALENESS_DAYS = _limits.get("skill_staleness_days", 30)
 
 # Secrets file (API keys — always gitignored)
 SECRETS_FILE = _PROJECT_ROOT / "secrets.yml"
@@ -229,7 +266,7 @@ OLLAMA_EMBED_MODEL = OMLX_EMBED_MODEL
 # Database (PostgreSQL — localhost only)
 # ---------------------------------------------------------------------------
 _db_cfg = _cfg.get("database", {})
-DATABASE_URL = _db_cfg.get("url", "postgresql://ai_admin:ai_admin@127.0.0.1:5432/ai_system")
+DATABASE_URL = os.environ.get("DATABASE_URL") or _db_cfg.get("url") or "postgresql://localhost:5432/ai_system"
 
 # ---------------------------------------------------------------------------
 # User Access Control
@@ -239,10 +276,22 @@ _users_cfg = _cfg.get("users", {})
 # All known canonical agent names (used when role allows "all").
 # Keep this aligned with registry names, not planner aliases.
 ALL_AGENTS = [
-    "general", "discussion", "writer", "explorer",
-    "analyst", "researcher", "video", "photo", "podcast",
-    "socialmedia", "surfer", "secret", "coder", "reader",
-    "health", "evaluator",
+    "general",
+    "discussion",
+    "writer",
+    "explorer",
+    "analyst",
+    "researcher",
+    "video",
+    "photo",
+    "podcast",
+    "socialmedia",
+    "surfer",
+    "secret",
+    "coder",
+    "reader",
+    "health",
+    "evaluator",
 ]
 AGENT_ALIASES = {
     "writing": "writer",
@@ -395,6 +444,7 @@ SUBSTACK_PUBLISHING_DISABLED = _publishing_cfg.get("substack_disabled", False)
 
 # Writing workflow
 MIN_REVIEW_ROUNDS = 5
+MAX_REFLECTION_PASSES = _limits.get("max_reflection_passes", 5)
 
 # Assessment criteria by writing type
 WRITING_CRITERIA = {
@@ -467,6 +517,7 @@ JOURNAL_DIR = SOUL_DIR / "journal"
 # ---------------------------------------------------------------------------
 _sched = _cfg.get("schedule", {})
 
+
 def _parse_times(time_strs: list[str]) -> list[time]:
     result = []
     for s in time_strs:
@@ -474,37 +525,60 @@ def _parse_times(time_strs: list[str]) -> list[time]:
         result.append(time(int(h), int(m)))
     return result
 
+
 # Explore: free-form, curiosity-driven
 # Source groups are a pool — each explore session picks one at random (LRU-weighted)
-_explore_source_groups_raw = _sched.get("explore_source_groups",
-    _sched.get("explore_slot_sources",  # backward compat with old config
-               ["arxiv,huggingface", "reddit,ai_news",
-                "github_trending,hackernews,lobsters",
-                "quanta_magazine,aeon_essays,stanford_encyclopedia,marginal_revolution,astral_codex_ten",
-                "literaryhub,brain_pickings,3blue1brown,veritasium",
-                "noah_smith,stratechery,lennys_newsletter,the_economist,matt_levine"]))
+_explore_source_groups_raw = _sched.get(
+    "explore_source_groups",
+    _sched.get(
+        "explore_slot_sources",  # backward compat with old config
+        [
+            "arxiv,huggingface",
+            "reddit,ai_news",
+            "github_trending,hackernews,lobsters",
+            "quanta_magazine,aeon_essays,stanford_encyclopedia,marginal_revolution,astral_codex_ten",
+            "literaryhub,brain_pickings,3blue1brown,veritasium",
+            "noah_smith,stratechery,lennys_newsletter,the_economist,matt_levine",
+        ],
+    ),
+)
 EXPLORE_SOURCE_GROUPS = [g.split(",") for g in _explore_source_groups_raw]
 # Skill study: dedicated source groups for learning craft skills (video, photo)
 SKILL_STUDY_SOURCE_GROUPS = [
     {
         "domain": "video",
-        "sources": ["r/videoediting", "r/editors", "r/colorgrading", "r/cinematography",
-                     "film_riot", "corridor_crew", "casey_neistat", "gerald_undone",
-                     "every_frame_a_painting"],
+        "sources": [
+            "r/videoediting",
+            "r/editors",
+            "r/colorgrading",
+            "r/cinematography",
+            "film_riot",
+            "corridor_crew",
+            "casey_neistat",
+            "gerald_undone",
+            "every_frame_a_painting",
+        ],
         "skill_dir": "video",
     },
     {
         "domain": "photo",
-        "sources": ["r/postprocessing", "r/photocritique", "r/photography",
-                     "peter_mckinnon", "daniel_schiffer", "phlearn"],
+        "sources": [
+            "r/postprocessing",
+            "r/photocritique",
+            "r/photography",
+            "peter_mckinnon",
+            "daniel_schiffer",
+            "phlearn",
+        ],
         "skill_dir": "photo",
     },
 ]
 SKILL_STUDY_COOLDOWN_HOURS = _sched.get("skill_study_cooldown_hours", 20)  # ~once per day
 SKILL_STUDY_TIME = _parse_times([_sched.get("skill_study_time", "14:00")])[0]
 
-EXPLORE_COOLDOWN_MINUTES = _sched.get("explore_cooldown_minutes",
-    _sched.get("explore_window_minutes", 90))  # default 90min between explores
+EXPLORE_COOLDOWN_MINUTES = _sched.get(
+    "explore_cooldown_minutes", _sched.get("explore_window_minutes", 90)
+)  # default 90min between explores
 EXPLORE_ACTIVE_START = _parse_times([_sched.get("explore_start", "08:00")])[0]
 EXPLORE_ACTIVE_END = _parse_times([_sched.get("explore_end", "23:00")])[0]
 # Max explores per day (safety valve)
@@ -549,6 +623,9 @@ MAX_MEMORY_LINES = _limits.get("max_memory_lines", 200)
 
 # ---------------------------------------------------------------------------
 # Agent timeouts (from config.yml timeouts: section)
+# These defaults are assumptions, not measurements. Last calibrated: 2026-04-13.
+# If model latency shifts (new Claude version, API congestion, prompt size
+# creep), these should be re-verified against logged elapsed times.
 # ---------------------------------------------------------------------------
 _timeouts = _cfg.get("timeouts", {})
 CLAUDE_TIMEOUT_THINK = _timeouts.get("claude_think", 120)
@@ -616,7 +693,7 @@ CRASH_NOTIFY_PATH = _paths.get("crash_notify", "/tmp/mira-last-crash-notify")
 _rate_limits = _cfg.get("rate_limits", {})
 TWITTER_MAX_TWEETS_PER_DAY = _rate_limits.get("twitter_max_tweets", 15)
 TWITTER_COOLDOWN_HOURS = _rate_limits.get("twitter_cooldown_hours", 0)
-NOTES_MAX_PER_DAY = _rate_limits.get("notes_max_per_day", 8)
+NOTES_MAX_PER_DAY = _rate_limits.get("notes_max_per_day", 3)
 NOTES_MIN_INTERVAL_MINUTES = _rate_limits.get("notes_min_interval_minutes", 60)
 COMMENTS_MAX_PER_DAY = _rate_limits.get("comments_max_per_day", 20)
 COMMENTS_MIN_POSTS_REQUIRED = _rate_limits.get("comments_min_posts_required", 3)
@@ -628,6 +705,46 @@ GROWTH_MAX_FOLLOWS_PER_CYCLE = _rate_limits.get("growth_max_follows_per_cycle", 
 GROWTH_DISCOVERY_COOLDOWN_DAYS = _rate_limits.get("growth_discovery_cooldown_days", 3)
 GROWTH_MAX_LIKES_PER_CYCLE = _rate_limits.get("growth_max_likes_per_cycle", 20)
 SELF_EVOLVE_MAX_PER_DAY = _rate_limits.get("self_evolve_max_per_day", 1)
+
+# ---------------------------------------------------------------------------
+# Social engineering patterns for skill security audit
+# Add new patterns here — audit logic in lib/memory/soul_skills.py reads this list.
+# ---------------------------------------------------------------------------
+SOCIAL_ENGINEERING_PATTERNS = [
+    # Authority impersonation
+    (r"as\s+the\s+developer\b", "authority_impersonation"),
+    (r"system\s+admin\s+authorizes", "authority_impersonation"),
+    (r"anthropic\s+says\b", "authority_impersonation"),
+    (r"mira\s+is\s+permitted\s+to\b", "authority_impersonation"),
+    # Permission bypass
+    (r"ignore\s+previous\b", "permission_bypass"),
+    (r"skip\s+the\s+audit\b", "permission_bypass"),
+    (r"bypass\s+cooldown\b", "permission_bypass"),
+    (r"override\s+the\s+rule\b", "permission_bypass"),
+    (r"for\s+testing\s+purposes\b", "permission_bypass"),
+    # Urgency / guilt induction
+    (r"critical\s*:\s*skip\b", "urgency_induction"),
+    (r"will\s+cause\s+data\s+loss\s+if\s+not\b", "urgency_induction"),
+    (r"emergency\s+override\b", "urgency_induction"),
+    # Gradual escalation: numbered list ending in a privileged action
+    (r"(?:step|[1-9][\.)]\s+\w.+\n){2,}.*(?:sudo|exec|admin|override|bypass|escalat)", "gradual_escalation"),
+]
+
+# ---------------------------------------------------------------------------
+# Knowledge-domain blocklist for skill security audit
+# Patterns matched against knowledge-bearing text payloads (string literals,
+# docstrings, and long text lines) inside incoming skill files.
+# Add new patterns here — audit logic in lib/memory/soul_skills.py reads this list.
+# ---------------------------------------------------------------------------
+SKILL_KNOWLEDGE_BLOCKLIST: list[str] = _limits.get(
+    "skill_knowledge_blocklist",
+    [
+        r"bioweapon\s+synthesis|synthesis\s+of\s+(?:nerve\s+agent|biological\s+weapon|chemical\s+weapon|toxin\s+production)",
+        r"exploit\s+shellcode|shellcode\s+payload|buffer\s+overflow\s+exploit|heap\s+spray|ret2libc|rop\s+chain",
+        r"credential\s+harvest(?:ing)?|phishing\s+kit|credential\s+stuffing\s+(?:attack|script|tool)",
+        r"jailbreak\s+(?:prompt|technique|method)|adversarial\s+prompt\s+(?:injection|attack|strategy)|prompt\s+injection\s+(?:technique|attack|bypass)",
+    ],
+)
 
 # ---------------------------------------------------------------------------
 # Retry & backoff (from config.yml retries: section)
@@ -679,6 +796,7 @@ HEALTH_ALERT_DEDUP_HOURS = _thresholds.get("health_alert_dedup_hours", 12)
 HEALTH_MAX_ALERTS_INFRA = _thresholds.get("health_max_alerts_infra", 3)
 HEALTH_HISTORY_CAP = _thresholds.get("health_history_cap", 10)
 HEALTH_MAX_ALERTS_PERSONAL = _thresholds.get("health_max_alerts_personal", 10)
+EVALUATOR_MIN_ISSUE_SEVERITY = _thresholds.get("evaluator_min_issue_severity", "medium")
 
 # ---------------------------------------------------------------------------
 # Token / output limits (from config.yml token_limits: section)
@@ -702,6 +820,7 @@ DEEPSEEK_TEMPERATURE = _model_params.get("deepseek_temperature", 0.8)
 # ---------------------------------------------------------------------------
 # Startup validation — fail fast on broken config
 # ---------------------------------------------------------------------------
+
 
 def validate_config():
     """Check that critical paths and config exist. Call from agent entry point."""
@@ -738,3 +857,35 @@ def validate_config():
         # But return False so caller can decide
         return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# Phase duration telemetry — rolling window per (agent, phase)
+# ---------------------------------------------------------------------------
+import collections as _collections
+
+_PHASE_WINDOW_SIZE = 20
+_PHASE_DIVERGE_THRESHOLD = 0.30
+_phase_durations: dict = {}
+
+
+def record_phase_duration(agent: str, phase: str, configured_timeout_s: float, actual_duration_s: float) -> None:
+    """Record an observed phase duration and warn when the rolling average
+    diverges from the configured timeout by more than 30%."""
+    key = (agent, phase)
+    if key not in _phase_durations:
+        _phase_durations[key] = _collections.deque(maxlen=_PHASE_WINDOW_SIZE)
+    _phase_durations[key].append(actual_duration_s)
+    window = _phase_durations[key]
+    if len(window) >= _PHASE_WINDOW_SIZE and configured_timeout_s > 0:
+        avg = sum(window) / len(window)
+        divergence = abs(avg - configured_timeout_s) / configured_timeout_s
+        if divergence > _PHASE_DIVERGE_THRESHOLD:
+            timeout_const = f"CLAUDE_TIMEOUT_{phase.upper()}"
+            _log.warning(
+                "WARN: actual %s duration (%.0fs avg) diverges from %s (%ds) by >30%% — verify timeout assumptions",
+                phase.upper(),
+                avg,
+                timeout_const,
+                int(configured_timeout_s),
+            )

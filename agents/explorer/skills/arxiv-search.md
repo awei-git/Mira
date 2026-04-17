@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when searching arxiv for recent papers to track research direction in AI, ML, or related fields."
+---
+
 # Arxiv Search — Explorer Feed Strategy
 
 **Tags:** explorer, arxiv, research, papers, AI, signal-detection

@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when planning or evaluating B-roll footage to ensure it functions as an illustrative, contrastive, atmospheric, or bridging narrative layer rather than decoration."
+---
+
 # B-Roll Strategy
 
 **Tags:** video, editing, b-roll, storytelling, visual-coverage

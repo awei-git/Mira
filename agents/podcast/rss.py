@@ -9,6 +9,7 @@ RSS feeds:
   ZH: https://awei-git.github.io/MiraPodcastZh/feed.xml
   EN: https://awei-git.github.io/MiraPodcastEn/feed.xml
 """
+
 import json
 import logging
 import os
@@ -24,10 +25,10 @@ from config import PODCAST_REPOS_DIR
 log = logging.getLogger("podcast.rss")
 
 # Register XML namespaces at module load — required for both parsing and serialization
-ET.register_namespace("itunes",  "http://www.itunes.com/dtds/podcast-1.0.dtd")
+ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
 ET.register_namespace("content", "http://purl.org/rss/1.0/modules/content/")
-ET.register_namespace("atom",    "http://www.w3.org/2005/Atom")
-ET.register_namespace("sy",      "http://purl.org/rss/modules/syndication/")
+ET.register_namespace("atom", "http://www.w3.org/2005/Atom")
+ET.register_namespace("sy", "http://purl.org/rss/modules/syndication/")
 ET.register_namespace("podcast", "https://podcastindex.org/namespace/1.0")
 
 # Registry for content:encoded CDATA sections — ElementTree escapes < and >
@@ -70,10 +71,10 @@ _PODCAST_CONFIG = {
     },
 }
 
-PODCAST_LINK        = "https://uncountablemira.substack.com"
-PODCAST_AUTHOR      = "Mira"
-PODCAST_EMAIL       = "weiang0212@gmail.com"
-PODCAST_CATEGORY    = "Technology"
+PODCAST_LINK = "https://uncountablemira.substack.com"
+PODCAST_AUTHOR = "Mira"
+PODCAST_EMAIL = "weiang0212@gmail.com"
+PODCAST_CATEGORY = "Technology"
 
 
 def _get_config(lang: str = "zh") -> dict:
@@ -82,19 +83,20 @@ def _get_config(lang: str = "zh") -> dict:
 
 
 # Legacy globals — default to ZH for backward compatibility
-GITHUB_REPO      = _PODCAST_CONFIG["zh"]["repo"]
+GITHUB_REPO = _PODCAST_CONFIG["zh"]["repo"]
 GITHUB_PAGES_URL = _PODCAST_CONFIG["zh"]["pages_url"]
-FEED_URL         = f"{GITHUB_PAGES_URL}/feed.xml"
-PODCAST_TITLE    = _PODCAST_CONFIG["zh"]["title"]
+FEED_URL = f"{GITHUB_PAGES_URL}/feed.xml"
+PODCAST_TITLE = _PODCAST_CONFIG["zh"]["title"]
 PODCAST_DESCRIPTION = _PODCAST_CONFIG["zh"]["description"]
 PODCAST_LANGUAGE = _PODCAST_CONFIG["zh"]["language"]
 PODCAST_COVER_URL = f"{GITHUB_PAGES_URL}/cover.jpg"
-REPO_DIR         = _PODCAST_CONFIG["zh"]["repo_dir"]
+REPO_DIR = _PODCAST_CONFIG["zh"]["repo_dir"]
 
 
 # ---------------------------------------------------------------------------
 # Git / GitHub helpers
 # ---------------------------------------------------------------------------
+
 
 def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
@@ -126,7 +128,9 @@ def _get_duration_seconds(mp3_path: Path) -> int:
     try:
         result = subprocess.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(mp3_path)],
-            capture_output=True, text=True, check=True
+            capture_output=True,
+            text=True,
+            check=True,
         )
         data = json.loads(result.stdout)
         return int(float(data["format"]["duration"]))
@@ -136,16 +140,16 @@ def _get_duration_seconds(mp3_path: Path) -> int:
 
 def _format_duration(seconds: int) -> str:
     h, rem = divmod(seconds, 3600)
-    m, s   = divmod(rem, 60)
+    m, s = divmod(rem, 60)
     if h:
         return f"{h}:{m:02d}:{s:02d}"
     return f"{m}:{s:02d}"
 
 
-def _copy_mp3_to_repo(mp3_path: Path, repo_dir: Path = None, pages_url: str = "",
-                      slug: str = "") -> str:
+def _copy_mp3_to_repo(mp3_path: Path, repo_dir: Path = None, pages_url: str = "", slug: str = "") -> str:
     """Copy MP3 into repo/audios/ using slug as filename (not episode.mp3)."""
     import shutil
+
     repo_dir = repo_dir or REPO_DIR
     pages_url = pages_url or GITHUB_PAGES_URL
     # Use slug as filename — episode.mp3 is not unique across episodes
@@ -157,10 +161,12 @@ def _copy_mp3_to_repo(mp3_path: Path, repo_dir: Path = None, pages_url: str = ""
     return f"{pages_url}/audios/{filename}"
 
 
-def _copy_transcript_to_repo(mp3_path: Path, repo_dir: Path = None,
-                              pages_url: str = "", slug: str = "") -> tuple[str | None, str]:
+def _copy_transcript_to_repo(
+    mp3_path: Path, repo_dir: Path = None, pages_url: str = "", slug: str = ""
+) -> tuple[str | None, str]:
     """Copy SRT or script.txt into repo/transcripts/ using slug as filename."""
     import shutil
+
     repo_dir = repo_dir or REPO_DIR
     pages_url = pages_url or GITHUB_PAGES_URL
     basename = slug if slug else mp3_path.parent.name
@@ -187,6 +193,7 @@ def _copy_transcript_to_repo(mp3_path: Path, repo_dir: Path = None,
 def _script_to_html(txt: str) -> str:
     """Convert [HOST]/[MIRA] script format to HTML for content:encoded."""
     import html
+
     lines = txt.strip().splitlines()
     parts = []
     for line in lines:
@@ -194,31 +201,37 @@ def _script_to_html(txt: str) -> str:
         if not line:
             continue
         import re
-        m = re.match(r'\[(HOST|MIRA)\]:\s*(.*)', line)
+
+        m = re.match(r"\[(HOST|MIRA)\]:\s*(.*)", line)
         if m:
             speaker, text = m.group(1), html.escape(m.group(2))
-            parts.append(f'<p><b>{speaker}</b>: {text}</p>')
+            parts.append(f"<p><b>{speaker}</b>: {text}</p>")
         else:
-            parts.append(f'<p>{html.escape(line)}</p>')
-    return '\n'.join(parts)
+            parts.append(f"<p>{html.escape(line)}</p>")
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
 # RSS XML helpers
 # ---------------------------------------------------------------------------
 
+
 def _load_or_create_feed(feed_path: Path, lang: str = "zh") -> ET.Element:
     """Load existing feed.xml or create a fresh one."""
     _cdata_registry.clear()
     if feed_path.exists():
         raw = feed_path.read_text(encoding="utf-8")
+
         def _extract(m: re.Match) -> str:
             key = f"CDATAPH{len(_cdata_registry)}END"
             _cdata_registry[key] = m.group(1)
             return f"<content:encoded>{key}</content:encoded>"
+
         raw = re.sub(
             r"<content:encoded><!\[CDATA\[(.*?)\]\]></content:encoded>",
-            _extract, raw, flags=re.DOTALL,
+            _extract,
+            raw,
+            flags=re.DOTALL,
         )
         return ET.fromstring(raw)
 
@@ -227,14 +240,17 @@ def _load_or_create_feed(feed_path: Path, lang: str = "zh") -> ET.Element:
     feed_url = f"{cfg['pages_url']}/feed.xml"
     cover_url = f"{cfg['pages_url']}/cover.jpg"
 
-    rss = ET.Element("rss", {
-        "version": "2.0",
-        "xmlns:itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd",
-        "xmlns:content": "http://purl.org/rss/1.0/modules/content/",
-        "xmlns:atom": "http://www.w3.org/2005/Atom",
-        "xmlns:sy": "http://purl.org/rss/modules/syndication/",
-        "xmlns:podcast": "https://podcastindex.org/namespace/1.0",
-    })
+    rss = ET.Element(
+        "rss",
+        {
+            "version": "2.0",
+            "xmlns:itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd",
+            "xmlns:content": "http://purl.org/rss/1.0/modules/content/",
+            "xmlns:atom": "http://www.w3.org/2005/Atom",
+            "xmlns:sy": "http://purl.org/rss/modules/syndication/",
+            "xmlns:podcast": "https://podcastindex.org/namespace/1.0",
+        },
+    )
     channel = ET.SubElement(rss, "channel")
 
     def sub(parent, tag, text="", **attrib):
@@ -243,16 +259,16 @@ def _load_or_create_feed(feed_path: Path, lang: str = "zh") -> ET.Element:
             el.text = text
         return el
 
-    sub(channel, "title",          cfg["title"])
-    sub(channel, "link",           PODCAST_LINK)
-    sub(channel, "description",    cfg["description"])
-    sub(channel, "language",       cfg["language"])
-    sub(channel, "atom:link",      href=feed_url, rel="self", type="application/rss+xml")
-    sub(channel, "itunes:author",  PODCAST_AUTHOR)
+    sub(channel, "title", cfg["title"])
+    sub(channel, "link", PODCAST_LINK)
+    sub(channel, "description", cfg["description"])
+    sub(channel, "language", cfg["language"])
+    sub(channel, "atom:link", href=feed_url, rel="self", type="application/rss+xml")
+    sub(channel, "itunes:author", PODCAST_AUTHOR)
     sub(channel, "itunes:summary", cfg["description"])
     sub(channel, "itunes:category", **{"text": PODCAST_CATEGORY})
     owner = ET.SubElement(channel, "itunes:owner")
-    sub(owner, "itunes:name",  PODCAST_AUTHOR)
+    sub(owner, "itunes:name", PODCAST_AUTHOR)
     sub(owner, "itunes:email", PODCAST_EMAIL)
     sub(channel, "itunes:image", href=cover_url)
     sub(channel, "itunes:explicit", "false")
@@ -306,15 +322,15 @@ def _add_episode_to_feed(
             el.text = text
         return el
 
-    sub("title",           title)
-    sub("description",     description)
-    sub("pubDate",         format_datetime(pub_date))
-    sub("guid",            slug, isPermaLink="false")
-    sub("enclosure",       url=mp3_url, length=str(file_size), type="audio/mpeg")
-    sub("itunes:title",    title)
+    sub("title", title)
+    sub("description", description)
+    sub("pubDate", format_datetime(pub_date))
+    sub("guid", slug, isPermaLink="false")
+    sub("enclosure", url=mp3_url, length=str(file_size), type="audio/mpeg")
+    sub("itunes:title", title)
     sub("itunes:duration", _format_duration(duration_sec))
     sub("itunes:episodeType", "full")
-    sub("itunes:summary",  description)
+    sub("itunes:summary", description)
     sub("itunes:explicit", "false")
     if transcript_url:
         sub("podcast:transcript", url=transcript_url, type=transcript_type, language=lang)
@@ -333,11 +349,13 @@ def _save_feed(rss: ET.Element, feed_path: Path) -> None:
         for item in items:
             channel.remove(item)
         from email.utils import parsedate_to_datetime
+
         def _sort_key(item):
             try:
                 return parsedate_to_datetime(item.findtext("pubDate", ""))
             except Exception:
                 return datetime.min.replace(tzinfo=timezone.utc)
+
         items.sort(key=_sort_key)
         for item in items:
             channel.append(item)
@@ -345,6 +363,7 @@ def _save_feed(rss: ET.Element, feed_path: Path) -> None:
     ET.indent(rss, space="  ")
     tree = ET.ElementTree(rss)
     import io
+
     buf = io.StringIO()
     tree.write(buf, encoding="unicode", xml_declaration=False)
     xml_str = '<?xml version="1.0" encoding="UTF-8"?>\n' + buf.getvalue()
@@ -361,6 +380,7 @@ def _save_feed(rss: ET.Element, feed_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # README helpers
 # ---------------------------------------------------------------------------
+
 
 def _update_readme(repo_dir: Path, title: str, description: str, lang: str = "zh") -> None:
     """Append a new episode row to the README episode table and push."""
@@ -396,7 +416,7 @@ def _update_readme(repo_dir: Path, title: str, description: str, lang: str = "zh
         return
 
     new_row = f"\n| {next_num} | {title} | {short_desc} |"
-    readme = readme[:match.end()] + new_row + readme[match.end():]
+    readme = readme[: match.end()] + new_row + readme[match.end() :]
     readme_path.write_text(readme, encoding="utf-8")
 
     # Commit and push the README update
@@ -412,6 +432,7 @@ def _update_readme(repo_dir: Path, title: str, description: str, lang: str = "zh
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def publish_episode(
     mp3_path: Path,
@@ -450,10 +471,12 @@ def publish_episode(
             # Use LLM to generate a proper episode summary
             try:
                 import sys as _sys
-                _shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
+
+                _shared = str(Path(__file__).resolve().parent.parent.parent / "lib")
                 if _shared not in _sys.path:
                     _sys.path.insert(0, _shared)
                 from llm import claude_think
+
                 desc_lang = "中文" if lang == "zh" else "English"
                 desc_prompt = (
                     f"Write a 2-3 sentence podcast episode description in {desc_lang}. "
@@ -478,8 +501,10 @@ def publish_episode(
     size_mb = file_size / (1024 * 1024)
     log.info("Episode validation: %.1f MB, %d sec (%s)", size_mb, duration_sec, _format_duration(duration_sec))
     if duration_sec < 300:
-        log.error("Episode too short (%d sec < 5 min) — refusing to publish. "
-                  "File may be corrupted or TTS failed.", duration_sec)
+        log.error(
+            "Episode too short (%d sec < 5 min) — refusing to publish. " "File may be corrupted or TTS failed.",
+            duration_sec,
+        )
         return None
     if size_mb < 2:
         log.error("Episode too small (%.1f MB < 2 MB) — refusing to publish.", size_mb)
@@ -501,14 +526,24 @@ def publish_episode(
     mp3_url = _copy_mp3_to_repo(mp3_path, repo_dir=repo_dir, pages_url=pages_url, slug=slug)
     log.info("MP3 URL: %s", mp3_url)
     transcript_url, transcript_type = _copy_transcript_to_repo(
-        mp3_path, repo_dir=repo_dir, pages_url=pages_url, slug=slug)
+        mp3_path, repo_dir=repo_dir, pages_url=pages_url, slug=slug
+    )
     if transcript_url:
         log.info("Transcript URL: %s (%s)", transcript_url, transcript_type)
 
     # 3. Add episode to feed
     _add_episode_to_feed(
-        rss, title, slug, mp3_url, file_size, duration_sec, description, pub_date,
-        transcript_url=transcript_url, transcript_type=transcript_type, lang=lang,
+        rss,
+        title,
+        slug,
+        mp3_url,
+        file_size,
+        duration_sec,
+        description,
+        pub_date,
+        transcript_url=transcript_url,
+        transcript_type=transcript_type,
+        lang=lang,
     )
     _save_feed(rss, feed_path)
 
@@ -533,18 +568,23 @@ def publish_episode(
     # Post-condition: verify episode appears in the published feed
     try:
         import urllib.request as _urllib_req
+
         req = _urllib_req.Request(feed_url, headers={"User-Agent": "Mira/1.0"})
         resp = _urllib_req.urlopen(req, timeout=20)
         feed_content = resp.read().decode()
         if slug not in feed_content:
             try:
                 import sys as _sys
-                _shared = str(Path(__file__).resolve().parent.parent .parent / "lib")
+
+                _shared = str(Path(__file__).resolve().parent.parent.parent / "lib")
                 if _shared not in _sys.path:
                     _sys.path.insert(0, _shared)
                 from ops.failure_log import record_failure
+
                 record_failure(
-                    pipeline="rss", step="feed_verification", slug=slug,
+                    pipeline="rss",
+                    step="feed_verification",
+                    slug=slug,
                     error_type="episode_not_in_feed",
                     error_message=f"Episode '{slug}' not found in published feed",
                     expected_output=f"Episode entry in {feed_url}",
@@ -565,6 +605,7 @@ def publish_all_existing(lang: str = "zh") -> None:
     Maps known slugs to Chinese titles. Useful for initial bulk upload.
     """
     import sys
+
     here = Path(__file__).resolve().parent
     sys.path.insert(0, str(here.parent / "lib"))
     from config import ARTIFACTS_DIR

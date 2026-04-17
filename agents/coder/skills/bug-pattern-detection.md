@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when reviewing code for bugs, investigating intermittent failures, or doing a pre-merge code review."
+---
+
 # Bug Pattern Detection
 
 **Tags:** coding, debugging, review, patterns

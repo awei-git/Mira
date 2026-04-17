@@ -1,4 +1,5 @@
 """Discussion agent — conversational response as Mira."""
+
 from __future__ import annotations
 
 import logging
@@ -14,8 +15,7 @@ for p in [_SUPER, _SHARED]:
 log = logging.getLogger("discussion_agent")
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str, **kwargs) -> str | None:
+def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs) -> str | None:
     """Handle conversational messages using the unified persona context."""
     from ops.runtime_context import build_runtime_context
     from llm import claude_think

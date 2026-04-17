@@ -101,9 +101,7 @@ def read_app_feeds(max_age_hours: float = 48) -> list[AppFeed]:
         # Skip stale
         if max_age_hours > 0:
             try:
-                updated = datetime.fromisoformat(
-                    data["updatedAt"].replace("Z", "+00:00")
-                )
+                updated = datetime.fromisoformat(data["updatedAt"].replace("Z", "+00:00"))
                 if (now - updated).total_seconds() / 3600 > max_age_hours:
                     continue
             except (ValueError, KeyError):
@@ -265,15 +263,17 @@ def sync_mira_status() -> None:
     outputs: list[dict[str, Any]] = []
 
     # Progress: agent heartbeat
-    outputs.append({
-        "type": "progress",
-        "id": "agent",
-        "title": "Mira Agent",
-        "updatedAt": now_str,
-        "status": "active",
-        "stage": {"current": 1, "total": 1, "label": "Running"},
-        "highlights": [],
-    })
+    outputs.append(
+        {
+            "type": "progress",
+            "id": "agent",
+            "title": "Mira Agent",
+            "updatedAt": now_str,
+            "status": "active",
+            "stage": {"current": 1, "total": 1, "label": "Running"},
+            "highlights": [],
+        }
+    )
 
     # Briefings (recent 7 days)
     if BRIEFINGS_DIR.exists():
@@ -281,16 +281,18 @@ def sync_mira_status() -> None:
         for b in briefings:
             rel = str(b.relative_to(ARTIFACTS_DIR))
             stat = b.stat()
-            outputs.append({
-                "type": "report",
-                "id": f"briefing/{b.stem}",
-                "title": f"Briefing — {b.stem}",
-                "updatedAt": datetime.fromtimestamp(stat.st_mtime, tz=LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S%z"),
-                "period": "daily",
-                "path": rel,
-                "size": stat.st_size,
-                "parent": "agent",
-            })
+            outputs.append(
+                {
+                    "type": "report",
+                    "id": f"briefing/{b.stem}",
+                    "title": f"Briefing — {b.stem}",
+                    "updatedAt": datetime.fromtimestamp(stat.st_mtime, tz=LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "period": "daily",
+                    "path": rel,
+                    "size": stat.st_size,
+                    "parent": "agent",
+                }
+            )
 
     # Writing projects
     if WRITINGS_OUTPUT_DIR.exists():
@@ -303,15 +305,17 @@ def sync_mira_status() -> None:
             stat = proj_dir.stat()
             # Count files as rough progress indicator
             files = list(proj_dir.glob("*.md"))
-            outputs.append({
-                "type": "progress",
-                "id": f"writing/{proj_dir.name}",
-                "title": proj_dir.name,
-                "updatedAt": datetime.fromtimestamp(stat.st_mtime, tz=LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S%z"),
-                "status": "active",
-                "stage": {"current": len(files), "total": len(files), "label": f"{len(files)} files"},
-                "highlights": [],
-            })
+            outputs.append(
+                {
+                    "type": "progress",
+                    "id": f"writing/{proj_dir.name}",
+                    "title": proj_dir.name,
+                    "updatedAt": datetime.fromtimestamp(stat.st_mtime, tz=LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "status": "active",
+                    "stage": {"current": len(files), "total": len(files), "label": f"{len(files)} files"},
+                    "highlights": [],
+                }
+            )
 
     # Research (recent)
     if RESEARCH_DIR.exists():
@@ -319,15 +323,17 @@ def sync_mira_status() -> None:
         for r in research_files:
             rel = str(r.relative_to(ARTIFACTS_DIR))
             stat = r.stat()
-            outputs.append({
-                "type": "deep_dive",
-                "id": f"research/{r.stem}",
-                "title": r.stem.replace("_", " ").replace("-", " ").title(),
-                "updatedAt": datetime.fromtimestamp(stat.st_mtime, tz=LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S%z"),
-                "topic": r.stem,
-                "content": "",
-                "path": rel,
-            })
+            outputs.append(
+                {
+                    "type": "deep_dive",
+                    "id": f"research/{r.stem}",
+                    "title": r.stem.replace("_", " ").replace("-", " ").title(),
+                    "updatedAt": datetime.fromtimestamp(stat.st_mtime, tz=LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "topic": r.stem,
+                    "content": "",
+                    "path": rel,
+                }
+            )
 
     feed = {
         "app": "mira",
@@ -336,7 +342,9 @@ def sync_mira_status() -> None:
         "outputs": outputs,
     }
 
-    status_path = MIRA_ROOT / "output" / "status.json"
+    from config import DATA_DIR
+
+    status_path = DATA_DIR / "state" / "app_feed_status.json"
     try:
         status_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = status_path.with_suffix(".json.tmp")

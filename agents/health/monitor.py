@@ -1,4 +1,5 @@
 """Health anomaly detection — daily checks and alerts."""
+
 import copy
 import json
 import logging
@@ -9,13 +10,13 @@ log = logging.getLogger("health_monitor")
 
 # ---- Staleness thresholds (hours) ----
 STALENESS_HOURS = {
-    "weight": 72,           # 3 days - people don't weigh daily
-    "sleep_hours": 36,      # 1.5 days - should sync daily
-    "heart_rate": 36,       # 1.5 days
+    "weight": 72,  # 3 days - people don't weigh daily
+    "sleep_hours": 36,  # 1.5 days - should sync daily
+    "heart_rate": 36,  # 1.5 days
     "blood_pressure": 168,  # 7 days - manual measurement
-    "blood_sugar": 168,     # 7 days - manual
-    "blood_oxygen": 36,     # 1.5 days
-    "hrv": 36,              # 1.5 days
+    "blood_sugar": 168,  # 7 days - manual
+    "blood_oxygen": 36,  # 1.5 days
+    "hrv": 36,  # 1.5 days
     "readiness_score": 36,
     "stress_high": 36,
     "temperature_deviation": 36,
@@ -55,35 +56,35 @@ def _recorded_day(data_point: dict) -> str | None:
 # Anomaly thresholds
 RULES = {
     "weight": {
-        "daily_change_kg": 1.5,      # > 1.5kg in 24h
-        "weekly_change_kg": 3.0,     # > 3kg in 7 days
+        "daily_change_kg": 1.5,  # > 1.5kg in 24h
+        "weekly_change_kg": 3.0,  # > 3kg in 7 days
     },
     "sleep_hours": {
-        "min_hours": 4.5,            # < 4.5h is concerning
-        "max_hours": 12.0,           # > 12h is concerning
-        "week_avg_min": 6.0,         # weekly avg < 6h
+        "min_hours": 4.5,  # < 4.5h is concerning
+        "max_hours": 12.0,  # > 12h is concerning
+        "week_avg_min": 6.0,  # weekly avg < 6h
     },
     "heart_rate": {
-        "resting_max_bpm": 100,      # tachycardia threshold
-        "resting_min_bpm": 40,       # bradycardia threshold
+        "resting_max_bpm": 100,  # tachycardia threshold
+        "resting_min_bpm": 40,  # bradycardia threshold
     },
     "blood_pressure_sys": {
-        "high": 140,                 # stage 1 hypertension
+        "high": 140,  # stage 1 hypertension
         "low": 90,
     },
     "blood_sugar": {
-        "fasting_high": 7.0,         # mmol/L
+        "fasting_high": 7.0,  # mmol/L
         "fasting_low": 3.9,
     },
     "blood_oxygen": {
-        "low": 95,                   # SpO2 < 95% is concerning
-        "critical": 90,              # SpO2 < 90% needs attention
+        "low": 95,  # SpO2 < 95% is concerning
+        "critical": 90,  # SpO2 < 90% needs attention
     },
     "hrv": {
-        "low_ms": 20,               # very low HRV = stress/fatigue
+        "low_ms": 20,  # very low HRV = stress/fatigue
     },
     "body_fat": {
-        "male_high": 25,            # % — adjust per user
+        "male_high": 25,  # % — adjust per user
         "male_low": 5,
     },
 }
@@ -241,9 +242,11 @@ def check_person(store, person_id: str, rules: dict | None = None) -> list[dict]
         critical = [a for a in alerts if a.get("severity") == "critical"]
         warning = [a for a in alerts if a.get("severity") == "warning"]
         info = [a for a in alerts if a.get("severity") == "info"]
-        alerts = (critical
-                  + warning[:MAX_ALERTS_PER_DAY - len(critical)]
-                  + info[:max(0, MAX_ALERTS_PER_DAY - len(critical) - len(warning))])
+        alerts = (
+            critical
+            + warning[: MAX_ALERTS_PER_DAY - len(critical)]
+            + info[: max(0, MAX_ALERTS_PER_DAY - len(critical) - len(warning))]
+        )
 
     # Record sent alerts
     for a in alerts:
@@ -280,6 +283,7 @@ def format_alerts(person_id: str, alerts: list[dict]) -> str:
 
 # ---- Individual checks ----
 
+
 def _check_weight(store, person_id: str, rules: dict) -> list[dict]:
     alerts = []
     if _is_suppressed("weight"):
@@ -309,12 +313,14 @@ def _check_weight(store, person_id: str, rules: dict) -> list[dict]:
 
     if daily_change > rules["weight"]["daily_change_kg"]:
         direction = "增加" if latest_val > prev_val else "减少"
-        alerts.append({
-            "title": "体重突变",
-            "message": f"体重{direction} {daily_change:.1f}kg ({prev_val:.1f} → {latest_val:.1f}kg)",
-            "severity": "warning",
-            "metric": "weight",
-        })
+        alerts.append(
+            {
+                "title": "体重突变",
+                "message": f"体重{direction} {daily_change:.1f}kg ({prev_val:.1f} → {latest_val:.1f}kg)",
+                "severity": "warning",
+                "metric": "weight",
+            }
+        )
 
     # Weekly change
     if len(data) >= 3:
@@ -322,12 +328,14 @@ def _check_weight(store, person_id: str, rules: dict) -> list[dict]:
         weekly_change = abs(latest_val - oldest)
         if weekly_change > rules["weight"]["weekly_change_kg"]:
             direction = "增加" if latest_val > oldest else "减少"
-            alerts.append({
-                "title": "体重周变化大",
-                "message": f"本周体重{direction} {weekly_change:.1f}kg",
-                "severity": "warning",
-                "metric": "weight",
-            })
+            alerts.append(
+                {
+                    "title": "体重周变化大",
+                    "message": f"本周体重{direction} {weekly_change:.1f}kg",
+                    "severity": "warning",
+                    "metric": "weight",
+                }
+            )
     return alerts
 
 
@@ -345,30 +353,36 @@ def _check_sleep(store, person_id: str, rules: dict) -> list[dict]:
     sleep_rules = rules["sleep_hours"]
 
     if latest < sleep_rules["min_hours"]:
-        alerts.append({
-            "title": "睡眠严重不足",
-            "message": f"昨晚只睡了 {latest:.1f} 小时",
-            "severity": "critical" if latest < 4 else "warning",
-            "metric": "sleep_hours",
-        })
+        alerts.append(
+            {
+                "title": "睡眠严重不足",
+                "message": f"昨晚只睡了 {latest:.1f} 小时",
+                "severity": "critical" if latest < 4 else "warning",
+                "metric": "sleep_hours",
+            }
+        )
     elif latest > sleep_rules["max_hours"]:
-        alerts.append({
-            "title": "睡眠时间过长",
-            "message": f"昨晚睡了 {latest:.1f} 小时，可能需要关注",
-            "severity": "info",
-            "metric": "sleep_hours",
-        })
+        alerts.append(
+            {
+                "title": "睡眠时间过长",
+                "message": f"昨晚睡了 {latest:.1f} 小时，可能需要关注",
+                "severity": "info",
+                "metric": "sleep_hours",
+            }
+        )
 
     # Weekly average
     if len(data) >= 3:
         avg = sum(d["value"] for d in data) / len(data)
         if avg < sleep_rules["week_avg_min"]:
-            alerts.append({
-                "title": "本周睡眠不足",
-                "message": f"本周平均睡眠 {avg:.1f} 小时，低于 {sleep_rules['week_avg_min']} 小时",
-                "severity": "warning",
-                "metric": "sleep_hours",
-            })
+            alerts.append(
+                {
+                    "title": "本周睡眠不足",
+                    "message": f"本周平均睡眠 {avg:.1f} 小时，低于 {sleep_rules['week_avg_min']} 小时",
+                    "severity": "warning",
+                    "metric": "sleep_hours",
+                }
+            )
     return alerts
 
 
@@ -385,19 +399,23 @@ def _check_heart_rate(store, person_id: str, rules: dict) -> list[dict]:
     hr = latest["value"]
     hr_rules = rules["heart_rate"]
     if hr > hr_rules["resting_max_bpm"]:
-        alerts.append({
-            "title": "静息心率偏高",
-            "message": f"静息心率 {hr:.0f} bpm (正常 < {hr_rules['resting_max_bpm']})",
-            "severity": "warning",
-            "metric": "heart_rate",
-        })
+        alerts.append(
+            {
+                "title": "静息心率偏高",
+                "message": f"静息心率 {hr:.0f} bpm (正常 < {hr_rules['resting_max_bpm']})",
+                "severity": "warning",
+                "metric": "heart_rate",
+            }
+        )
     elif hr < hr_rules["resting_min_bpm"]:
-        alerts.append({
-            "title": "静息心率偏低",
-            "message": f"静息心率 {hr:.0f} bpm (正常 > {hr_rules['resting_min_bpm']})",
-            "severity": "warning",
-            "metric": "heart_rate",
-        })
+        alerts.append(
+            {
+                "title": "静息心率偏低",
+                "message": f"静息心率 {hr:.0f} bpm (正常 > {hr_rules['resting_min_bpm']})",
+                "severity": "warning",
+                "metric": "heart_rate",
+            }
+        )
     return alerts
 
 
@@ -414,19 +432,23 @@ def _check_blood_pressure(store, person_id: str, rules: dict) -> list[dict]:
     sys_bp = latest["value"]
     bp_rules = rules["blood_pressure_sys"]
     if sys_bp >= bp_rules["high"]:
-        alerts.append({
-            "title": "血压偏高",
-            "message": f"收缩压 {sys_bp:.0f} mmHg (正常 < {bp_rules['high']})",
-            "severity": "critical" if sys_bp >= 160 else "warning",
-            "metric": "blood_pressure",
-        })
+        alerts.append(
+            {
+                "title": "血压偏高",
+                "message": f"收缩压 {sys_bp:.0f} mmHg (正常 < {bp_rules['high']})",
+                "severity": "critical" if sys_bp >= 160 else "warning",
+                "metric": "blood_pressure",
+            }
+        )
     elif sys_bp < bp_rules["low"]:
-        alerts.append({
-            "title": "血压偏低",
-            "message": f"收缩压 {sys_bp:.0f} mmHg (正常 > {bp_rules['low']})",
-            "severity": "warning",
-            "metric": "blood_pressure",
-        })
+        alerts.append(
+            {
+                "title": "血压偏低",
+                "message": f"收缩压 {sys_bp:.0f} mmHg (正常 > {bp_rules['low']})",
+                "severity": "warning",
+                "metric": "blood_pressure",
+            }
+        )
     return alerts
 
 
@@ -459,37 +481,45 @@ def _check_blood_sugar(store, person_id: str, rules: dict) -> list[dict]:
     if bs >= bs_rules["fasting_high"]:
         if is_likely_fasting:
             # Likely fasting — alert is meaningful
-            alerts.append({
-                "title": "空腹血糖偏高",
-                "message": f"空腹血糖 {bs:.1f} mmol/L（正常 < {bs_rules['fasting_high']} mmol/L）",
-                "severity": "critical" if bs >= 11.1 else "warning",
-                "metric": "blood_sugar",
-            })
+            alerts.append(
+                {
+                    "title": "空腹血糖偏高",
+                    "message": f"空腹血糖 {bs:.1f} mmol/L（正常 < {bs_rules['fasting_high']} mmol/L）",
+                    "severity": "critical" if bs >= 11.1 else "warning",
+                    "metric": "blood_sugar",
+                }
+            )
         else:
             # Could be postprandial — soften alert
             if bs >= 11.1:
                 # Still critical even postprandial
-                alerts.append({
-                    "title": "血糖异常偏高",
-                    "message": f"血糖 {bs:.1f} mmol/L，即使餐后也偏高（> 11.1 mmol/L）",
-                    "severity": "critical",
-                    "metric": "blood_sugar",
-                })
+                alerts.append(
+                    {
+                        "title": "血糖异常偏高",
+                        "message": f"血糖 {bs:.1f} mmol/L，即使餐后也偏高（> 11.1 mmol/L）",
+                        "severity": "critical",
+                        "metric": "blood_sugar",
+                    }
+                )
             elif bs >= 10.0:
-                alerts.append({
-                    "title": "餐后血糖偏高",
-                    "message": f"血糖 {bs:.1f} mmol/L（如为餐后2小时，正常应 < 7.8 mmol/L）",
-                    "severity": "info",
-                    "metric": "blood_sugar",
-                })
+                alerts.append(
+                    {
+                        "title": "餐后血糖偏高",
+                        "message": f"血糖 {bs:.1f} mmol/L（如为餐后2小时，正常应 < 7.8 mmol/L）",
+                        "severity": "info",
+                        "metric": "blood_sugar",
+                    }
+                )
             # 7.0-10.0 postprandial is normal, don't alert
     elif bs < bs_rules["fasting_low"]:
-        alerts.append({
-            "title": "血糖偏低",
-            "message": f"血糖 {bs:.1f} mmol/L (正常 > {bs_rules['fasting_low']})",
-            "severity": "critical",
-            "metric": "blood_sugar",
-        })
+        alerts.append(
+            {
+                "title": "血糖偏低",
+                "message": f"血糖 {bs:.1f} mmol/L (正常 > {bs_rules['fasting_low']})",
+                "severity": "critical",
+                "metric": "blood_sugar",
+            }
+        )
     return alerts
 
 
@@ -505,19 +535,23 @@ def _check_blood_oxygen(store, person_id: str, rules: dict) -> list[dict]:
     spo2 = latest["value"]
     o2_rules = rules["blood_oxygen"]
     if spo2 < o2_rules["critical"]:
-        alerts.append({
-            "title": "血氧严重偏低",
-            "message": f"血氧 {spo2:.0f}% (正常 > 95%)",
-            "severity": "critical",
-            "metric": "blood_oxygen",
-        })
+        alerts.append(
+            {
+                "title": "血氧严重偏低",
+                "message": f"血氧 {spo2:.0f}% (正常 > 95%)",
+                "severity": "critical",
+                "metric": "blood_oxygen",
+            }
+        )
     elif spo2 < o2_rules["low"]:
-        alerts.append({
-            "title": "血氧偏低",
-            "message": f"血氧 {spo2:.0f}% (正常 > 95%)",
-            "severity": "warning",
-            "metric": "blood_oxygen",
-        })
+        alerts.append(
+            {
+                "title": "血氧偏低",
+                "message": f"血氧 {spo2:.0f}% (正常 > 95%)",
+                "severity": "warning",
+                "metric": "blood_oxygen",
+            }
+        )
     return alerts
 
 
@@ -532,22 +566,26 @@ def _check_hrv(store, person_id: str, rules: dict) -> list[dict]:
         return alerts
     latest = data[0]["value"]
     if latest < rules["hrv"]["low_ms"]:
-        alerts.append({
-            "title": "HRV 偏低",
-            "message": f"心率变异性 {latest:.0f}ms，可能压力/疲劳较大",
-            "severity": "warning",
-            "metric": "hrv",
-        })
+        alerts.append(
+            {
+                "title": "HRV 偏低",
+                "message": f"心率变异性 {latest:.0f}ms，可能压力/疲劳较大",
+                "severity": "warning",
+                "metric": "hrv",
+            }
+        )
     elif len(data) >= 5:
         # Trend: HRV dropping significantly (only if absolute threshold didn't fire)
         avg = sum(d["value"] for d in data) / len(data)
         if latest < avg * 0.7:
-            alerts.append({
-                "title": "HRV 明显下降",
-                "message": f"当前 {latest:.0f}ms vs 7天均值 {avg:.0f}ms (下降 {((avg-latest)/avg*100):.0f}%)",
-                "severity": "warning",
-                "metric": "hrv",
-            })
+            alerts.append(
+                {
+                    "title": "HRV 明显下降",
+                    "message": f"当前 {latest:.0f}ms vs 7天均值 {avg:.0f}ms (下降 {((avg-latest)/avg*100):.0f}%)",
+                    "severity": "warning",
+                    "metric": "hrv",
+                }
+            )
     return alerts
 
 
@@ -564,31 +602,37 @@ def _check_readiness(store, person_id: str) -> list[dict]:
     score = latest["value"]
 
     if score < 50:
-        alerts.append({
-            "title": "身体状态差",
-            "message": f"准备度分数 {score:.0f}/100，身体需要休息，建议减少运动强度",
-            "severity": "warning",
-            "metric": "readiness_score",
-        })
+        alerts.append(
+            {
+                "title": "身体状态差",
+                "message": f"准备度分数 {score:.0f}/100，身体需要休息，建议减少运动强度",
+                "severity": "warning",
+                "metric": "readiness_score",
+            }
+        )
     elif score < 65:
-        alerts.append({
-            "title": "身体状态一般",
-            "message": f"准备度分数 {score:.0f}/100，注意适度休息",
-            "severity": "info",
-            "metric": "readiness_score",
-        })
+        alerts.append(
+            {
+                "title": "身体状态一般",
+                "message": f"准备度分数 {score:.0f}/100，注意适度休息",
+                "severity": "info",
+                "metric": "readiness_score",
+            }
+        )
     else:
         # Only check for sudden drop if absolute threshold didn't fire
         data = store.get_recent_metrics(person_id, "readiness_score", days=7)
         if len(data) >= 3:
             avg = sum(d["value"] for d in data) / len(data)
             if score < avg * 0.7:
-                alerts.append({
-                    "title": "准备度骤降",
-                    "message": f"今日 {score:.0f} vs 近7天均值 {avg:.0f}，身体可能正在对抗什么",
-                    "severity": "warning",
-                    "metric": "readiness_score",
-                })
+                alerts.append(
+                    {
+                        "title": "准备度骤降",
+                        "message": f"今日 {score:.0f} vs 近7天均值 {avg:.0f}，身体可能正在对抗什么",
+                        "severity": "warning",
+                        "metric": "readiness_score",
+                    }
+                )
     return alerts
 
 
@@ -614,12 +658,14 @@ def _check_stress(store, person_id: str) -> list[dict]:
             msg += f"，恢复仅 {recovery_min:.0f} 分钟（压力/恢复比 {ratio:.1f}:1）"
             if ratio > 3:
                 msg += "，严重失衡"
-        alerts.append({
-            "title": "压力过高",
-            "message": msg,
-            "severity": "warning" if stress_min > 90 else "info",
-            "metric": "stress",
-        })
+        alerts.append(
+            {
+                "title": "压力过高",
+                "message": msg,
+                "severity": "warning" if stress_min > 90 else "info",
+                "metric": "stress",
+            }
+        )
     return alerts
 
 
@@ -640,19 +686,23 @@ def _check_temperature(store, person_id: str) -> list[dict]:
 
     # Big drop in temperature score = body temperature deviation (Oura reports as contributor score 0-100)
     if latest < avg * 0.5 and avg > 30:
-        alerts.append({
-            "title": "体温偏差异常",
-            "message": f"体温偏差指标 {latest:.0f}（近期均值 {avg:.0f}），身体可能有异常，建议测量体温确认",
-            "severity": "warning",
-            "metric": "temperature_deviation",
-        })
+        alerts.append(
+            {
+                "title": "体温偏差异常",
+                "message": f"体温偏差指标 {latest:.0f}（近期均值 {avg:.0f}），身体可能有异常，建议测量体温确认",
+                "severity": "warning",
+                "metric": "temperature_deviation",
+            }
+        )
     elif latest < avg * 0.7 and avg > 30:
-        alerts.append({
-            "title": "体温偏差偏大",
-            "message": f"体温偏差指标 {latest:.0f}（近期均值 {avg:.0f}），注意观察",
-            "severity": "info",
-            "metric": "temperature_deviation",
-        })
+        alerts.append(
+            {
+                "title": "体温偏差偏大",
+                "message": f"体温偏差指标 {latest:.0f}（近期均值 {avg:.0f}），注意观察",
+                "severity": "info",
+                "metric": "temperature_deviation",
+            }
+        )
     return alerts
 
 
@@ -669,23 +719,27 @@ def _check_sleep_score(store, person_id: str) -> list[dict]:
     score = latest["value"]
 
     if score < 60:
-        alerts.append({
-            "title": "睡眠质量差",
-            "message": f"睡眠分数 {score:.0f}/100，昨晚睡眠质量很差",
-            "severity": "warning",
-            "metric": "sleep_score",
-        })
+        alerts.append(
+            {
+                "title": "睡眠质量差",
+                "message": f"睡眠分数 {score:.0f}/100，昨晚睡眠质量很差",
+                "severity": "warning",
+                "metric": "sleep_score",
+            }
+        )
 
     # Check consecutive bad sleep
     data = store.get_recent_metrics(person_id, "sleep_score", days=7)
     bad_days = sum(1 for d in data if d["value"] < 70)
     if bad_days >= 3:
-        alerts.append({
-            "title": "连续睡眠不佳",
-            "message": f"过去7天有 {bad_days} 天睡眠分数低于70，长期睡眠差影响免疫力",
-            "severity": "warning",
-            "metric": "sleep_score",
-        })
+        alerts.append(
+            {
+                "title": "连续睡眠不佳",
+                "message": f"过去7天有 {bad_days} 天睡眠分数低于70，长期睡眠差影响免疫力",
+                "severity": "warning",
+                "metric": "sleep_score",
+            }
+        )
     return alerts
 
 
@@ -698,10 +752,12 @@ def _check_symptoms(store, person_id: str) -> list[dict]:
     symptom_notes = [n for n in notes if n.get("category") == "symptom"]
 
     if len(symptom_notes) >= 3:
-        alerts.append({
-            "title": "近期多次报告症状",
-            "message": f"过去3天报告了 {len(symptom_notes)} 次症状，建议关注",
-            "severity": "info",
-            "metric": "symptoms",
-        })
+        alerts.append(
+            {
+                "title": "近期多次报告症状",
+                "message": f"过去3天报告了 {len(symptom_notes)} 次症状，建议关注",
+                "severity": "info",
+                "metric": "symptoms",
+            }
+        )
     return alerts

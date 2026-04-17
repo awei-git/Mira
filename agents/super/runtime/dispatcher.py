@@ -3,6 +3,7 @@
 Manages PID files, concurrency limits, cooldowns, and stale process cleanup.
 Extracted from core.py to reduce file size.
 """
+
 import logging
 import os
 import subprocess
@@ -20,6 +21,7 @@ def _ensure_config():
     global _config_loaded, _MIRA_ROOT, _LOGS_DIR
     if not _config_loaded:
         from config import MIRA_ROOT, LOGS_DIR
+
         _MIRA_ROOT = MIRA_ROOT
         _LOGS_DIR = LOGS_DIR
         _config_loaded = True
@@ -27,7 +29,9 @@ def _ensure_config():
 
 def _get_bg_pid_dir() -> Path:
     _ensure_config()
-    return _MIRA_ROOT / "agents" / ".bg_pids"
+    from config import PIDS_DIR
+
+    return PIDS_DIR
 
 
 MAX_CONCURRENT_BG = 2  # Legacy fallback — used only when no group is specified
@@ -35,9 +39,9 @@ MAX_CONCURRENT_BG = 2  # Legacy fallback — used only when no group is specifie
 # Per-group concurrency limits.  Jobs in the same group share a slot pool.
 # "local" jobs (oMLX-only) don't compete with cloud API jobs.
 CONCURRENCY_LIMITS = {
-    "heavy": 2,    # Cloud API-heavy: explore, writer, researcher, analyst
-    "light": 3,    # Lightweight cloud: growth, comments, spark-check, notes
-    "local": 10,   # Local LLM only: idle-think, connection — no API cost
+    "heavy": 2,  # Cloud API-heavy: explore, writer, researcher, analyst
+    "light": 3,  # Lightweight cloud: growth, comments, spark-check, notes
+    "local": 10,  # Local LLM only: idle-think, connection — no API cost
     "content": 2,  # Legacy alias for heavy
     "default": 2,  # Legacy fallback
 }
@@ -85,6 +89,7 @@ def _group_members(group: str) -> set[str]:
     """Return the set of job names that belong to *group*."""
     try:
         from runtime.jobs import get_jobs
+
         return {j.name for j in get_jobs(enabled_only=False) if j.blocking_group == group}
     except Exception:
         return set()
@@ -110,6 +115,7 @@ def _reap_stale_pids():
         return
     import time as _time
     from core import load_state, save_state
+
     state = load_state()
     last_reap = state.get("last_pid_reap", 0)
     if _time.time() - last_reap < 3600:
@@ -152,8 +158,7 @@ def _dispatch_background(name: str, cmd: list[str], group: str = "default"):
     limit = CONCURRENCY_LIMITS.get(group, MAX_CONCURRENT_BG)
     running = _count_bg_running(group=group)
     if running >= limit:
-        log.debug("Background '%s' deferred — group '%s' %d/%d slots occupied",
-                  name, group, running, limit)
+        log.debug("Background '%s' deferred — group '%s' %d/%d slots occupied", name, group, running, limit)
         return False
 
     # Check if a previous run is still active or finished recently
@@ -176,14 +181,14 @@ def _dispatch_background(name: str, cmd: list[str], group: str = "default"):
         # Reduced from 5min to 1min; processes that crashed in <30s get faster retry
         try:
             import time as _time
+
             age = _time.time() - pid_file.stat().st_mtime
             cooldown = 60  # 1-minute cooldown (was 5 minutes)
             # If process ran < 30s it likely failed at startup — allow faster retry
             if age < 30:
                 cooldown = 30
             if age < cooldown:
-                log.debug("Background '%s' in cooldown (%ds since last run, cooldown=%ds)",
-                          name, int(age), cooldown)
+                log.debug("Background '%s' in cooldown (%ds since last run, cooldown=%ds)", name, int(age), cooldown)
                 return False
         except OSError:
             pass

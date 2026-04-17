@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when conducting web research and needing to formulate progressively constrained queries and interpret result quality across multiple search strategies."
+---
+
 # Web Search — Query Formulation and Result Interpretation
 
 **Tags:** explorer, web-search, research, duckduckgo, query-design

@@ -11,13 +11,14 @@ Scoring philosophy:
   - LLM-as-judge is recorded but NEVER triggers improvement plans
   - Different eval model from the agent being evaluated (avoid self-preference)
 """
+
 import json
 import logging
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-_SHARED = Path(__file__).resolve().parent.parent .parent / "lib"
+_SHARED = Path(__file__).resolve().parent.parent.parent / "lib"
 _SUPER = Path(__file__).resolve().parent.parent / "super"
 if str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
@@ -111,7 +112,21 @@ AGENT_CRITERIA = {
             "comments_replied": "Comments replied to / flagged for reply",
         },
     },
+    "super": {
+        "description": "Orchestrator — routing, planning, lifecycle",
+        "metrics": {
+            "routing_accuracy": "Tasks routed to correct agent (no re-routes needed)",
+            "plan_quality": "Multi-step plans that executed without step failures",
+            "cycle_time": "Average main loop duration (target: < 5s)",
+            "crash_rate": "Cycles that crashed / total cycles",
+            "heartbeat_uptime": "Heartbeat updated within 3min window (%)",
+            "stuck_tasks": "Tasks stuck in dispatched/running state > 30min",
+            "timeout_rate": "Tasks that timed out / total dispatched",
+        },
+    },
 }
+
+_SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 SUPER_CRITERIA = {
     "description": "Orchestrator — routing, planning, lifecycle",
@@ -131,10 +146,12 @@ SUPER_CRITERIA = {
 # Score computation — all deterministic, from task history and logs
 # ---------------------------------------------------------------------------
 
+
 def _load_task_history(days: int = 7) -> list[dict]:
     """Load recent task records from history.jsonl."""
-    from config import MIRA_ROOT
-    history_file = MIRA_ROOT / "tasks" / "history.jsonl"
+    from config import TASKS_DIR
+
+    history_file = TASKS_DIR / "history.jsonl"
     if not history_file.exists():
         return []
     cutoff = datetime.now() - timedelta(days=days)
@@ -160,11 +177,7 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
 
     history = _load_task_history(days)
     # Match by explicit 'agent' field (preferred) or exact agent name in tags
-    agent_tasks = [
-        t for t in history
-        if t.get("agent") == agent_name
-        or agent_name in t.get("tags", [])
-    ]
+    agent_tasks = [t for t in history if t.get("agent") == agent_name or agent_name in t.get("tags", [])]
 
     total = len(agent_tasks)
     if total == 0:
@@ -194,7 +207,19 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
     # Agent-specific metrics would go here
     # (each agent type can register custom scoring functions)
 
-    return {
+    # Persist scores derived from task logs with log_verified evidence
+    try:
+        from evaluation.storage import update_weakness_score
+
+        update_weakness_score(f"{agent_name}.task_success", scores["task_success"], evidence_type="log_verified")
+        if "output_length_avg" in scores:
+            update_weakness_score(
+                f"{agent_name}.output_length_avg", scores["output_length_avg"], evidence_type="log_verified"
+            )
+    except Exception as _e:
+        log.debug("update_weakness_score failed for %s: %s", agent_name, _e)
+
+    result = {
         "agent": agent_name,
         "period_days": days,
         "task_count": total,
@@ -203,6 +228,12 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
         "success_rate": scores.get("task_success", 0),
         "scores": scores,
     }
+
+    # Update validated_at for this agent's skills when scoring positively
+    if scores.get("task_success", 0) >= 0.8:
+        _update_agent_skill_validation(agent_name)
+
+    return result
 
 
 def score_super(days: int = 7) -> dict:
@@ -226,6 +257,7 @@ def score_super(days: int = 7) -> dict:
 
     # Heartbeat freshness
     from config import MIRA_BRIDGE_DIR
+
     hb_file = MIRA_BRIDGE_DIR / "heartbeat.json"
     if hb_file.exists():
         try:
@@ -255,8 +287,9 @@ def score_super(days: int = 7) -> dict:
         scores["error_rate"] = round(error_tasks / total_tasks, 3)
 
     # Check for currently stuck tasks (dispatched > 30 min ago, not completed)
-    from config import MIRA_ROOT
-    status_file = MIRA_ROOT / "tasks" / "status.json"
+    from config import TASKS_DIR
+
+    status_file = TASKS_DIR / "status.json"
     if status_file.exists():
         try:
             active = json.loads(status_file.read_text(encoding="utf-8"))
@@ -319,6 +352,7 @@ def score_all(days: int = 7) -> dict:
     # Cost
     try:
         from llm import usage_summary
+
         usage = usage_summary()
         agg["daily_cost_usd"] = usage.get("total_cost_usd", 0)
         agg["daily_tokens"] = usage.get("total_tokens", 0)
@@ -328,19 +362,127 @@ def score_all(days: int = 7) -> dict:
 
     result["aggregate"] = agg
 
+    # Skill staleness scan
+    stale = scan_stale_skills()
+    if stale:
+        for w in stale:
+            log.warning("SKILL_STALE skill=%r source=%s reason=%s", w["skill"], w["source"], w["reason"])
+    result["stale_skills"] = stale
+
     # Save scorecard
     _SCORECARDS_DIR.mkdir(parents=True, exist_ok=True)
     today = datetime.now().strftime("%Y-%m-%d")
     scorecard_path = _SCORECARDS_DIR / f"{today}.json"
-    scorecard_path.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    scorecard_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return result
 
 
 # ---------------------------------------------------------------------------
+# Skill staleness instrumentation
+# ---------------------------------------------------------------------------
+
+_AGENTS_DIR = Path(__file__).resolve().parent.parent
+
+
+def _update_agent_skill_validation(agent_name: str) -> None:
+    """Set validated_at=now for skills in this agent's index that are stale or unset."""
+    from config import SKILL_STALENESS_DAYS
+
+    index_path = _AGENTS_DIR / agent_name / "skills" / "index.json"
+    if not index_path.exists():
+        return
+    try:
+        entries = json.loads(index_path.read_text(encoding="utf-8"))
+        now_str = datetime.now(timezone.utc).isoformat()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=SKILL_STALENESS_DAYS)
+        changed = False
+        for entry in entries:
+            vat = entry.get("validated_at")
+            if not vat:
+                entry["validated_at"] = now_str
+                changed = True
+            else:
+                try:
+                    ts = datetime.fromisoformat(vat.replace("Z", "+00:00"))
+                    if ts < cutoff:
+                        entry["validated_at"] = now_str
+                        changed = True
+                except ValueError:
+                    entry["validated_at"] = now_str
+                    changed = True
+        if changed:
+            index_path.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+    except (json.JSONDecodeError, OSError) as e:
+        log.debug("Could not update skill validation for %s: %s", agent_name, e)
+
+
+def scan_stale_skills() -> list[dict]:
+    """Scan all skill indices and return SKILL_STALE entries for stale or unvalidated skills."""
+    from config import SKILL_STALENESS_DAYS, SKILLS_DIR
+
+    threshold = timedelta(days=SKILL_STALENESS_DAYS)
+    now = datetime.now(timezone.utc)
+    cutoff = now - threshold
+    warnings = []
+
+    def _check_index(index_path: Path, source: str) -> None:
+        if not index_path.exists():
+            return
+        try:
+            entries = json.loads(index_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+        for entry in entries:
+            name = entry.get("name", "unknown")
+            vat = entry.get("validated_at")
+            if not vat:
+                warnings.append(
+                    {
+                        "event": "SKILL_STALE",
+                        "skill": name,
+                        "source": source,
+                        "reason": "validated_at absent",
+                        "validated_at": None,
+                    }
+                )
+            else:
+                try:
+                    ts = datetime.fromisoformat(vat.replace("Z", "+00:00"))
+                    if ts < cutoff:
+                        age_days = (now - ts).days
+                        warnings.append(
+                            {
+                                "event": "SKILL_STALE",
+                                "skill": name,
+                                "source": source,
+                                "reason": f"not validated in {age_days}d (threshold: {SKILL_STALENESS_DAYS}d)",
+                                "validated_at": vat,
+                            }
+                        )
+                except ValueError:
+                    warnings.append(
+                        {
+                            "event": "SKILL_STALE",
+                            "skill": name,
+                            "source": source,
+                            "reason": "invalid validated_at format",
+                            "validated_at": vat,
+                        }
+                    )
+
+    _check_index(SKILLS_DIR / "index.json", "learned")
+    for agent_index in _AGENTS_DIR.glob("*/skills/index.json"):
+        agent_name = agent_index.parent.parent.name
+        _check_index(agent_index, f"agent:{agent_name}")
+
+    return warnings
+
+
+# ---------------------------------------------------------------------------
 # Improvement plan outcome tracking
 # ---------------------------------------------------------------------------
+
 
 def _extract_baseline_scores(assessment: dict) -> dict[str, float]:
     """Extract per-agent success rates from an assessment for baseline comparison."""
@@ -447,20 +589,44 @@ def check_improvement_outcomes(current_assessment: dict) -> str:
 # Top-down improvement: Mira diagnosis → targeted sub-agent fixes
 # ---------------------------------------------------------------------------
 
+
 def diagnose_and_improve(assessment: dict) -> str | None:
     """Analyze assessment, identify weak agents, generate targeted improvements.
 
     Top-down: Mira-level problem → trace to responsible agent → fix plan.
     Only triggered by GROUNDED metrics, never by LLM self-eval.
     """
+    from config import EVALUATOR_MIN_ISSUE_SEVERITY, LOGS_DIR
+
+    _min_sev = _SEVERITY_ORDER.get(EVALUATOR_MIN_ISSUE_SEVERITY, 1)
+    _low_sev_log = LOGS_DIR / "evaluator_low_severity.log"
+
+    def _passes(severity: str) -> bool:
+        return _SEVERITY_ORDER.get(severity, 0) >= _min_sev
+
+    def _log_low(desc: str, severity: str) -> None:
+        try:
+            with open(_low_sev_log, "a", encoding="utf-8") as _f:
+                _f.write(f"{datetime.now().isoformat()} [{severity}] {desc}\n")
+        except OSError:
+            pass
+
     problems = []
 
     # Check aggregate health
     agg = assessment.get("aggregate", {})
     if agg.get("overall_success_rate", 1) < 0.8:
-        problems.append(f"Overall success rate is {agg['overall_success_rate']:.0%} (target: 80%+)")
+        desc = f"Overall success rate is {agg['overall_success_rate']:.0%} (target: 80%+)"
+        if _passes("high"):
+            problems.append(desc)
+        else:
+            _log_low(desc, "high")
     if agg.get("crash_rate", 0) > 0.05:
-        problems.append(f"Crash rate is {agg['crash_rate']:.1%} (target: < 5%)")
+        desc = f"Crash rate is {agg['crash_rate']:.1%} (target: < 5%)"
+        if _passes("high"):
+            problems.append(desc)
+        else:
+            _log_low(desc, "high")
 
     # Find weak agents
     weak_agents = []
@@ -468,16 +634,19 @@ def diagnose_and_improve(assessment: dict) -> str | None:
         if card["task_count"] == 0:
             continue
         if card["success_rate"] < 0.7:
-            weak_agents.append({
+            severity = "high" if card["success_rate"] < 0.5 else "medium"
+            weak_agent_entry = {
                 "agent": name,
                 "success_rate": card["success_rate"],
                 "task_count": card["task_count"],
                 "failed": card["failed"],
-            })
-            problems.append(
-                f"{name} agent: {card['success_rate']:.0%} success "
-                f"({card['failed']}/{card['task_count']} failed)"
-            )
+            }
+            desc = f"{name} agent: {card['success_rate']:.0%} success ({card['failed']}/{card['task_count']} failed)"
+            if _passes(severity):
+                weak_agents.append(weak_agent_entry)
+                problems.append(desc)
+            else:
+                _log_low(desc, severity)
 
     # Enrich assessment with failure_log data
     try:
@@ -499,9 +668,11 @@ def diagnose_and_improve(assessment: dict) -> str | None:
         # Flag pipelines with high failure counts as problems
         for pipeline, count in failure_by_pipeline.items():
             if count >= 3:
-                problems.append(
-                    f"{pipeline} pipeline: {count} failures in 7 days"
-                )
+                desc = f"{pipeline} pipeline: {count} failures in 7 days"
+                if _passes("medium"):
+                    problems.append(desc)
+                else:
+                    _log_low(desc, "medium")
     except Exception as e:
         log.debug("Could not load failure log for evaluation: %s", e)
 
@@ -518,13 +689,35 @@ def diagnose_and_improve(assessment: dict) -> str | None:
         diagnosis_text = "\n".join(f"- {p}" for p in problems)
         weak_detail = json.dumps(weak_agents, indent=2) if weak_agents else "none"
 
+        blocked_skills_summary = ""
+        try:
+            _failures_path = _SHARED / "soul" / "skill_audit_failures.jsonl"
+            if _failures_path.exists():
+                _unresolved = []
+                for _line in _failures_path.read_text(encoding="utf-8").splitlines():
+                    if not _line.strip():
+                        continue
+                    try:
+                        _rec = json.loads(_line)
+                        if "resolved_at" not in _rec:
+                            _unresolved.append(_rec.get("skill_name", "?"))
+                    except json.JSONDecodeError:
+                        continue
+                if _unresolved:
+                    blocked_skills_summary = (
+                        f"\n\n## Blocked Skills (unresolved)\n"
+                        f"{len(_unresolved)} skills blocked since last review: {', '.join(_unresolved)}"
+                    )
+        except Exception as _e:
+            log.debug("Could not load skill audit failures: %s", _e)
+
         prompt = f"""You are an engineering manager reviewing an AI agent system's performance.
 
 ## Problems Detected (from deterministic metrics)
 {diagnosis_text}
 
 ## Weak Agent Details
-{weak_detail}
+{weak_detail}{blocked_skills_summary}
 
 ## Available Levers
 For each weak agent, you can recommend:
@@ -542,8 +735,9 @@ Generate a concrete improvement plan. For each recommendation:
 
 Be specific. "Improve the prompt" is not actionable. "Add error handling for empty input in coder/handler.py line 45" is."""
 
-        plan = model_think(prompt, model_name=CLAUDE_FALLBACK_MODEL,
-                          system="You are a senior engineering manager.", timeout=90)
+        plan = model_think(
+            prompt, model_name=CLAUDE_FALLBACK_MODEL, system="You are a senior engineering manager.", timeout=90
+        )
 
         if plan:
             plan_data = {
@@ -554,11 +748,9 @@ Be specific. "Improve the prompt" is not actionable. "Add error handling for emp
                 "status": "pending",
                 "source": "evaluator_agent",
             }
-            _IMPROVEMENT_FILE.write_text(
-                json.dumps(plan_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            _IMPROVEMENT_FILE.write_text(json.dumps(plan_data, ensure_ascii=False, indent=2), encoding="utf-8")
             save_improvement_plan_with_baseline(plan_data, assessment)
-            log.info("Top-down improvement plan: %d problems, %d weak agents",
-                     len(problems), len(weak_agents))
+            log.info("Top-down improvement plan: %d problems, %d weak agents", len(problems), len(weak_agents))
             return plan
 
     except (ImportError, OSError) as e:
@@ -571,8 +763,8 @@ Be specific. "Improve the prompt" is not actionable. "Add error handling for emp
 # Handler — can be triggered by super agent or on schedule
 # ---------------------------------------------------------------------------
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str, **kwargs) -> str | None:
+
+def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs) -> str | None:
     """Run full hierarchical assessment and generate improvement plan if needed."""
     days = 7  # default assessment window
 
@@ -584,6 +776,20 @@ def handle(workspace: Path, task_id: str, content: str,
             pass
 
     log.info("Running full assessment (last %d days)", days)
+
+    # Apply user-confirmed score overrides if provided in content
+    # Format: "score agent_name.metric=value" e.g. "score writer.task_success=0.9"
+    if "score " in content:
+        try:
+            from evaluation.storage import update_weakness_score
+
+            for part in content.split():
+                if "=" in part and "." in part.split("=")[0]:
+                    metric, val_str = part.split("=", 1)
+                    update_weakness_score(metric.strip(), float(val_str.strip()), evidence_type="user_confirmed")
+                    log.info("User-confirmed score: %s = %s", metric.strip(), val_str.strip())
+        except Exception as _e:
+            log.debug("User-confirmed score parsing failed: %s", _e)
 
     # Score everything
     assessment = score_all(days)
@@ -613,9 +819,77 @@ def handle(workspace: Path, task_id: str, content: str,
         else:
             emoji = "✅" if card["success_rate"] >= 0.8 else "⚠️" if card["success_rate"] >= 0.5 else "❌"
             lines.append(
-                f"- **{name}** {emoji}: {card['success_rate']:.0%} "
-                f"({card['succeeded']}/{card['task_count']})"
+                f"- **{name}** {emoji}: {card['success_rate']:.0%} " f"({card['succeeded']}/{card['task_count']})"
             )
+
+    # Stale skills
+    stale_skills = assessment.get("stale_skills", [])
+    if stale_skills:
+        from config import SKILL_STALENESS_DAYS
+
+        stale_lines = [f"- **{w['skill']}** ({w['source']}): {w['reason']}" for w in stale_skills]
+        lines.extend(["", f"## Stale Skills ({len(stale_skills)}, threshold: {SKILL_STALENESS_DAYS}d)", *stale_lines])
+
+    # Skills added during this evaluation period
+    try:
+        from config import SOUL_DIR
+
+        provenance_file = SOUL_DIR / "skill_provenance.json"
+        if provenance_file.exists():
+            provenance = json.loads(provenance_file.read_text(encoding="utf-8"))
+            cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+            new_skills = [r for r in provenance if r.get("date_added", "") >= cutoff]
+            if new_skills:
+                skill_lines = [
+                    f"- **{r['skill_name']}** (added {r['date_added'][:10]}"
+                    + (f", from: {r['source_article_title']}" if r.get("source_article_title") else "")
+                    + ")"
+                    for r in new_skills
+                ]
+                lines.extend(["", f"## Skills Added This Period ({len(new_skills)})", *skill_lines])
+    except Exception as _e:
+        log.debug("Could not load skill provenance for report: %s", _e)
+
+    # Skill audit gray inventory — WARN-level findings that need human eyes
+    try:
+        from memory.soul_skills import load_audit_warnings_digest
+
+        audit_digest = load_audit_warnings_digest(days=days)
+        if audit_digest:
+            lines.extend(["", "## Skill Audit Warnings (Gray Inventory)", audit_digest])
+    except Exception as _e:
+        log.debug("Could not load audit warnings digest: %s", _e)
+
+    # Blocked skill sources — flag high-rejection-rate origins
+    try:
+        from config import LOGS_DIR
+
+        blocked_log = LOGS_DIR / "blocked_skills_log.jsonl"
+        if blocked_log.exists():
+            cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+            source_counts: dict[str, int] = {}
+            for line in blocked_log.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                    ts_str = rec.get("timestamp", "")
+                    if ts_str:
+                        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        if ts >= cutoff:
+                            src = rec.get("source", "unknown")
+                            source_counts[src] = source_counts.get(src, 0) + 1
+                except (json.JSONDecodeError, ValueError):
+                    continue
+            high_suspicion = {src: cnt for src, cnt in source_counts.items() if cnt >= 2}
+            if high_suspicion:
+                suspicion_lines = [
+                    f"- **{src}**: {cnt} blocked skills (30d)"
+                    for src, cnt in sorted(high_suspicion.items(), key=lambda x: -x[1])
+                ]
+                lines.extend(["", "## High-Suspicion Skill Sources (>=2 blocks in 30d)", *suspicion_lines])
+    except Exception as _e:
+        log.debug("Could not load blocked skills log: %s", _e)
 
     # Check outcomes of previous improvement plans
     outcomes = check_improvement_outcomes(assessment)

@@ -8,6 +8,7 @@ Feedback loop: when the briefing can't answer a question, the question
 is logged to tetra/feedback/gaps.jsonl. Tetra reads this on next run
 to improve coverage.
 """
+
 import json
 import logging
 from datetime import datetime, timezone
@@ -51,6 +52,7 @@ def _web_supplement(content: str, max_chars: int = 4000) -> str:
     try:
         from tools.web_browser import search_and_read
         import re
+
         query = re.sub(r"[，。！？\n]", " ", content[:120]).strip()
         log.info("Fetching web supplement for analyst: %s", query[:60])
         result = search_and_read(query, max_results=3, max_chars_per_page=1500)
@@ -61,9 +63,15 @@ def _web_supplement(content: str, max_chars: int = 4000) -> str:
     return ""
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str,
-           thread_history: str = "", thread_memory: str = "") -> str | None:
+def handle(
+    workspace: Path,
+    task_id: str,
+    content: str,
+    sender: str,
+    thread_id: str,
+    thread_history: str = "",
+    thread_memory: str = "",
+) -> str | None:
     """Answer a market question using Tetra briefing + live web data.
 
     1. Load latest Tetra briefing (real data from daily pipeline)

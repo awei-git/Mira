@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when extracting signal from Reddit hot posts, using subreddit selection and comment-to-upvote pattern reading to find real-world practitioner feedback."
+---
+
 # Reddit Hot Posts — Signal Extraction
 
 **Tags:** explorer, reddit, social-signals, trends, community

@@ -13,7 +13,7 @@ from pathlib import Path
 # sys.path already set via conftest/caller
 
 from config import ARTIFACTS_DIR, MIRA_BRIDGE_DIR, EPISODES_DIR
-from soul_manager import catalog_add, save_episode
+from memory.soul import catalog_add, save_episode
 
 WRITINGS_DIR = ARTIFACTS_DIR / "writings"
 PUBLISHED_DIR = WRITINGS_DIR / "_published"
@@ -37,14 +37,16 @@ def backfill_published_articles():
             if line.strip().startswith("# "):
                 title = line.strip()[2:].strip()
                 break
-        catalog_add({
-            "type": "article",
-            "title": title,
-            "date": date_str,
-            "path": str(path),
-            "topics": [],
-            "status": "published",
-        })
+        catalog_add(
+            {
+                "type": "article",
+                "title": title,
+                "date": date_str,
+                "path": str(path),
+                "topics": [],
+                "status": "published",
+            }
+        )
         count += 1
     print(f"  Published articles: {count}")
     return count
@@ -77,13 +79,15 @@ def backfill_writing_projects():
                 if line.strip().startswith("# "):
                     title = line.strip()[2:].strip()
                     break
-        catalog_add({
-            "type": "essay",
-            "title": title,
-            "path": str(d),
-            "topics": [],
-            "status": status,
-        })
+        catalog_add(
+            {
+                "type": "essay",
+                "title": title,
+                "path": str(d),
+                "topics": [],
+                "status": status,
+            }
+        )
         count += 1
     print(f"  Writing projects: {count}")
     return count
@@ -102,13 +106,15 @@ def backfill_research():
             if line.strip().startswith("# "):
                 title = line.strip()[2:].strip()
                 break
-        catalog_add({
-            "type": "research",
-            "title": title,
-            "path": str(path),
-            "topics": [],
-            "status": "done",
-        })
+        catalog_add(
+            {
+                "type": "research",
+                "title": title,
+                "path": str(path),
+                "topics": [],
+                "status": "done",
+            }
+        )
         count += 1
     # Research subdirectories
     for d in RESEARCH_DIR.iterdir():
@@ -118,13 +124,15 @@ def backfill_research():
         if not output.exists():
             continue
         title = d.name.replace("_", " ").replace("-", " ").title()
-        catalog_add({
-            "type": "research",
-            "title": title,
-            "path": str(d),
-            "topics": [],
-            "status": "done",
-        })
+        catalog_add(
+            {
+                "type": "research",
+                "title": title,
+                "path": str(d),
+                "topics": [],
+                "status": "done",
+            }
+        )
         count += 1
     print(f"  Research: {count}")
     return count
@@ -144,22 +152,26 @@ def backfill_audio():
                 if not ep_dir.is_dir():
                     continue
                 title = ep_dir.name.replace("-", " ").replace("_", " ").title()
-                catalog_add({
-                    "type": "podcast",
-                    "title": title,
-                    "path": str(ep_dir),
-                    "topics": [],
-                    "status": "done",
-                })
+                catalog_add(
+                    {
+                        "type": "podcast",
+                        "title": title,
+                        "path": str(ep_dir),
+                        "topics": [],
+                        "status": "done",
+                    }
+                )
                 count += 1
     for mp3 in AUDIO_DIR.glob("*.mp3"):
-        catalog_add({
-            "type": "audio",
-            "title": mp3.stem.replace("-", " ").replace("_", " ").title(),
-            "path": str(mp3),
-            "topics": [],
-            "status": "done",
-        })
+        catalog_add(
+            {
+                "type": "audio",
+                "title": mp3.stem.replace("-", " ").replace("_", " ").title(),
+                "path": str(mp3),
+                "topics": [],
+                "status": "done",
+            }
+        )
         count += 1
     print(f"  Audio: {count}")
     return count
@@ -179,9 +191,9 @@ def backfill_episodes():
             continue
         messages = task.get("messages", [])
         # Only archive conversations with at least 2 substantive messages
-        substantive = [m for m in messages
-                      if not m.get("content", "").startswith('{"type":')
-                      and len(m.get("content", "")) > 10]
+        substantive = [
+            m for m in messages if not m.get("content", "").startswith('{"type":') and len(m.get("content", "")) > 10
+        ]
         if len(substantive) < 2:
             continue
         task_id = task.get("id", task_file.stem)

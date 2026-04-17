@@ -1,4 +1,5 @@
 """Helpers for per-user soul/state paths with legacy fallbacks."""
+
 from __future__ import annotations
 
 from pathlib import Path

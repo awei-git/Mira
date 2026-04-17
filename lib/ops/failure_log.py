@@ -22,16 +22,16 @@ FAILURE_LOG = LOGS_DIR / "pipeline_failures.jsonl"
 
 
 def record_failure(
-    pipeline: str,           # "publish", "podcast", "rss", "notes"
-    step: str,               # "substack_publish", "tts_zh", "script_generation", etc.
-    slug: str,               # article/episode slug
-    error_type: str,         # "api_timeout", "tts_quota", "validation_failed", etc.
-    error_message: str,      # human-readable error description
-    input_summary: str = "", # what was fed in (e.g. "9200 chars ZH script, 42 turns")
-    expected_output: str = "", # what we expected (e.g. "episode.mp3 >= 30min")
-    actual_output: str = "", # what we got (e.g. "partial file 12min")
+    pipeline: str,  # "publish", "podcast", "rss", "notes"
+    step: str,  # "substack_publish", "tts_zh", "script_generation", etc.
+    slug: str,  # article/episode slug
+    error_type: str,  # "api_timeout", "tts_quota", "validation_failed", etc.
+    error_message: str,  # human-readable error description
+    input_summary: str = "",  # what was fed in (e.g. "9200 chars ZH script, 42 turns")
+    expected_output: str = "",  # what we expected (e.g. "episode.mp3 >= 30min")
+    actual_output: str = "",  # what we got (e.g. "partial file 12min")
     context: Optional[dict] = None,  # extra diagnostic info
-    resolution: Optional[str] = None, # how it was resolved (filled later)
+    resolution: Optional[str] = None,  # how it was resolved (filled later)
 ) -> dict:
     """Record a pipeline failure with full diagnostic context.
 
@@ -59,8 +59,7 @@ def record_failure(
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
-        log.info("Recorded pipeline failure: %s/%s for '%s': %s",
-                 pipeline, step, slug, error_type)
+        log.info("Recorded pipeline failure: %s/%s for '%s': %s", pipeline, step, slug, error_type)
     except Exception as e:
         log.error("Failed to write failure log: %s", e)
 
@@ -149,8 +148,7 @@ def get_failure_summary(days: int = 7) -> str:
     for key, records in sorted(groups.items()):
         lines.append(f"### {key} ({len(records)} failures)")
         for rec in records[:3]:  # Show up to 3 per group
-            lines.append(f"- [{rec['timestamp'][:16]}] **{rec['error_type']}**: "
-                         f"{rec['error_message'][:200]}")
+            lines.append(f"- [{rec['timestamp'][:16]}] **{rec['error_type']}**: " f"{rec['error_message'][:200]}")
             if rec.get("input_summary"):
                 lines.append(f"  Input: {rec['input_summary'][:150]}")
             if rec.get("actual_output"):
@@ -187,9 +185,7 @@ def resolve_failure(slug: str, step: str, resolution: str) -> bool:
                 for i in range(len(lines) - 1, -1, -1):
                     try:
                         rec = json.loads(lines[i])
-                        if (rec.get("slug") == slug
-                                and rec.get("step") == step
-                                and not rec.get("resolution")):
+                        if rec.get("slug") == slug and rec.get("step") == step and not rec.get("resolution"):
                             rec["resolution"] = resolution
                             lines[i] = json.dumps(rec, ensure_ascii=False) + "\n"
                             resolved = True
@@ -200,8 +196,7 @@ def resolve_failure(slug: str, step: str, resolution: str) -> bool:
                 if resolved:
                     # Atomic write via tmp + rename (same pattern as soul_manager)
                     fd, tmp_path = tempfile.mkstemp(
-                        dir=FAILURE_LOG.parent, suffix=".tmp",
-                        prefix=f".{FAILURE_LOG.stem}_"
+                        dir=FAILURE_LOG.parent, suffix=".tmp", prefix=f".{FAILURE_LOG.stem}_"
                     )
                     try:
                         with os.fdopen(fd, "w", encoding="utf-8") as f:

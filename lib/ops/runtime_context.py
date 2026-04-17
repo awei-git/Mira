@@ -4,6 +4,7 @@ Primary paths should consume this instead of each handler inventing its own
 long-context assembly. The goal is not maximal context volume, but a stable
 contract with provenance and freshness signals.
 """
+
 from __future__ import annotations
 
 import logging
@@ -16,7 +17,9 @@ from persona.persona_context import PersonaContext, get_persona_context
 
 log = logging.getLogger("mira.runtime_context")
 
-from config import MIRA_ROOT; _AGENTS_DIR = MIRA_ROOT / "agents"
+from config import MIRA_ROOT
+
+_AGENTS_DIR = MIRA_ROOT / "agents"
 _SUPER_DIR = _AGENTS_DIR / "super"
 if str(_SUPER_DIR) not in sys.path:
     sys.path.insert(0, str(_SUPER_DIR))
@@ -71,10 +74,7 @@ class RuntimeContextBundle:
             truncated = snippet[: max(0, available)] if available > 0 else ""
             if available <= 0 and not parts:
                 truncated = snippet[:120]
-            line = (
-                f"- [{entry.confidence} confidence | {entry.freshness}] "
-                f"{entry.provenance}: {truncated}"
-            )
+            line = f"- [{entry.confidence} confidence | {entry.freshness}] " f"{entry.provenance}: {truncated}"
             if total + len(line) > max_chars and parts:
                 break
             parts.append(line)
@@ -115,7 +115,7 @@ def build_runtime_context(
 def _recall_entries(query: str, *, user_id: str, top_k: int) -> list[RecallEntry]:
     """Best-effort governed memory recall for prompt injection."""
     try:
-        from memory_store import get_store
+        from memory.store import get_store
 
         store = get_store()
         if not store:

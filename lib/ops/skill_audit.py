@@ -13,6 +13,7 @@ Usage:
     # Optimize: improve the N worst high-frequency skills
     results = optimize_top_n(n=5, iterations_per_skill=5)
 """
+
 import json
 import logging
 from pathlib import Path
@@ -26,25 +27,24 @@ log = logging.getLogger("skill_audit")
 # Skill loading
 # ---------------------------------------------------------------------------
 
-from config import SOUL_DIR; SOUL_SKILLS_DIR = SOUL_DIR / "learned"
-from config import MIRA_ROOT; AGENT_DIRS = list((MIRA_ROOT / "agents").glob("*/skills"))
+from config import SOUL_DIR
+
+SOUL_SKILLS_DIR = SOUL_DIR / "learned"
+from config import MIRA_ROOT
+
+AGENT_DIRS = list((MIRA_ROOT / "agents").glob("*/skills"))
 
 SKILL_CRITERIA = {
     "trigger_clarity": (
         "A reader can immediately tell WHEN to apply this skill — "
         "specific trigger conditions, not vague 'when appropriate'"
     ),
-    "actionability": (
-        "The skill gives concrete steps or a decision procedure, "
-        "not abstract principles or truisms"
-    ),
+    "actionability": ("The skill gives concrete steps or a decision procedure, " "not abstract principles or truisms"),
     "information_density": (
-        "Every sentence adds new information — no filler, no repetition, "
-        "no restating the obvious"
+        "Every sentence adds new information — no filler, no repetition, " "no restating the obvious"
     ),
     "distinctiveness": (
-        "The skill teaches something non-obvious that a competent practitioner "
-        "might not already know"
+        "The skill teaches something non-obvious that a competent practitioner " "might not already know"
     ),
 }
 
@@ -70,14 +70,16 @@ def load_all_skills() -> list[dict]:
         for entry in index:
             fpath = SOUL_SKILLS_DIR / entry.get("file", "")
             if fpath.exists():
-                skills.append({
-                    "name": entry.get("name", fpath.stem),
-                    "path": str(fpath),
-                    "content": fpath.read_text(encoding="utf-8"),
-                    "source": "soul/learned",
-                    "tags": entry.get("tags", []),
-                    "description": entry.get("description", ""),
-                })
+                skills.append(
+                    {
+                        "name": entry.get("name", fpath.stem),
+                        "path": str(fpath),
+                        "content": fpath.read_text(encoding="utf-8"),
+                        "source": "soul/learned",
+                        "tags": entry.get("tags", []),
+                        "description": entry.get("description", ""),
+                    }
+                )
 
     # Per-agent skills
     for agent_dir in AGENT_DIRS:
@@ -89,14 +91,16 @@ def load_all_skills() -> list[dict]:
                 for entry in index:
                     fpath = agent_dir / entry.get("file", "")
                     if fpath.exists():
-                        skills.append({
-                            "name": entry.get("name", fpath.stem),
-                            "path": str(fpath),
-                            "content": fpath.read_text(encoding="utf-8"),
-                            "source": f"agents/{agent_name}/skills",
-                            "tags": entry.get("tags", []),
-                            "description": entry.get("description", ""),
-                        })
+                        skills.append(
+                            {
+                                "name": entry.get("name", fpath.stem),
+                                "path": str(fpath),
+                                "content": fpath.read_text(encoding="utf-8"),
+                                "source": f"agents/{agent_name}/skills",
+                                "tags": entry.get("tags", []),
+                                "description": entry.get("description", ""),
+                            }
+                        )
             except (json.JSONDecodeError, OSError):
                 continue
 
@@ -114,6 +118,7 @@ def load_all_skills() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Audit
 # ---------------------------------------------------------------------------
+
 
 def audit_skill(skill: dict, judge_fn=None) -> dict:
     """Evaluate a single skill and return scores."""
@@ -149,25 +154,25 @@ def audit_all_skills(judge_fn=None, save_path: Optional[Path] = None) -> list[di
             results.append(result)
         except Exception as e:
             log.warning("Failed to audit %s: %s", skill["name"], e)
-            results.append({
-                "name": skill["name"],
-                "source": skill["source"],
-                "tags": skill["tags"],
-                "scores": {},
-                "aggregate": 0,
-                "reasoning": f"Audit failed: {e}",
-            })
+            results.append(
+                {
+                    "name": skill["name"],
+                    "source": skill["source"],
+                    "tags": skill["tags"],
+                    "scores": {},
+                    "aggregate": 0,
+                    "reasoning": f"Audit failed: {e}",
+                }
+            )
 
     # Sort worst first
     results.sort(key=lambda r: r["aggregate"])
 
     # Save report
     if save_path is None:
-        save_path = MIRA_ROOT / "agents" / "shared" / "autoresearch_runs" / "skill_audit.json"
+        save_path = MIRA_ROOT / "data" / "autoresearch" / "skill_audit.json"
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    save_path.write_text(
-        json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    save_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     log.info("Audit complete. Saved to %s", save_path)
 
     # Print summary
@@ -189,6 +194,7 @@ def audit_all_skills(judge_fn=None, save_path: Optional[Path] = None) -> list[di
 # Optimize worst skills
 # ---------------------------------------------------------------------------
 
+
 def optimize_top_n(
     n: int = 5,
     iterations_per_skill: int = 5,
@@ -209,8 +215,7 @@ def optimize_top_n(
 
     # Take the N worst
     worst = audit_results[:n]
-    log.info("Optimizing %d worst skills: %s",
-             len(worst), [w["name"] for w in worst])
+    log.info("Optimizing %d worst skills: %s", len(worst), [w["name"] for w in worst])
 
     # Load full skill content for optimization
     all_skills = {s["name"]: s for s in load_all_skills()}
@@ -247,9 +252,13 @@ def optimize_top_n(
         )
         results.append(result)
 
-        log.info("Skill %s: %.2f → %.2f (+%.2f)",
-                 w["name"], result["baseline_score"],
-                 result["final_score"], result["score_delta"])
+        log.info(
+            "Skill %s: %.2f → %.2f (+%.2f)",
+            w["name"],
+            result["baseline_score"],
+            result["final_score"],
+            result["score_delta"],
+        )
 
     return results
 
@@ -260,6 +269,7 @@ def optimize_top_n(
 
 if __name__ == "__main__":
     import argparse
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 
     parser = argparse.ArgumentParser(description="Audit and optimize Mira skills")
@@ -272,5 +282,4 @@ if __name__ == "__main__":
     if args.action == "audit":
         audit_all_skills()
     elif args.action == "optimize":
-        optimize_top_n(n=args.top_n, iterations_per_skill=args.iterations,
-                       budget_per_skill=args.budget)
+        optimize_top_n(n=args.top_n, iterations_per_skill=args.iterations, budget_per_skill=args.budget)

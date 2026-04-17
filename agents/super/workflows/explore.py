@@ -2,6 +2,7 @@
 
 Extracted from core.py — pure extraction, no logic changes.
 """
+
 import json
 import logging
 import re
@@ -13,25 +14,42 @@ _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
-    BRIEFINGS_DIR, ARTIFACTS_DIR, MIRA_DIR,
-    EXPLORE_SOURCE_GROUPS, MAX_DEEP_DIVES,
+    BRIEFINGS_DIR,
+    ARTIFACTS_DIR,
+    MIRA_DIR,
+    EXPLORE_SOURCE_GROUPS,
+    MAX_DEEP_DIVES,
+    SKILLS_DIR,
+    SKILL_REAUDIT_DAYS,
 )
+
 try:
     from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
 from memory.soul import (
-    load_soul, format_soul, save_skill, save_reading_note,
+    load_soul,
+    format_soul,
+    save_skill,
+    save_reading_note,
     load_recent_reading_notes,
+    get_stale_skills,
+    audit_skill,
+    SkillAuditFailedError,
+    quarantine_skill,
+    _refresh_audited_at,
 )
 from llm import claude_think, claude_act
 from fetcher import fetch_all
 from prompts import explore_prompt, deep_dive_prompt, internalize_prompt
 
 from workflows.helpers import (
-    _format_feed_items, _extract_recent_briefing_topics,
-    _extract_deep_dive, _extract_comment_suggestions,
-    _append_to_daily_feed, harvest_observations,
+    _format_feed_items,
+    _extract_recent_briefing_topics,
+    _extract_deep_dive,
+    _extract_comment_suggestions,
+    _append_to_daily_feed,
+    harvest_observations,
     _maybe_create_spontaneous_idea,
 )
 
@@ -47,11 +65,11 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
         slot_name: name of the explore slot (e.g. "morning") for context.
     """
     from fetcher import fetch_sources
+
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
 
-    log.info("Starting explore cycle (sources=%s, slot=%s)",
-             source_names or "all", slot_name or "default")
+    log.info("Starting explore cycle (sources=%s, slot=%s)", source_names or "all", slot_name or "default")
 
     # 1. Fetch sources
     if source_names:
@@ -72,13 +90,50 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
                     if i in recent:
                         recent.remove(i)
                     recent.append(i)
-                    state["explore_recent_groups"] = recent[-len(EXPLORE_SOURCE_GROUPS):]
+                    state["explore_recent_groups"] = recent[-len(EXPLORE_SOURCE_GROUPS) :]
                     break
         save_state(state)
         return
 
     soul = load_soul()
     soul_ctx = format_soul(soul)
+
+    # Re-audit stale skills before processing new content
+    try:
+        stale = get_stale_skills(threshold_days=SKILL_REAUDIT_DAYS)
+        if stale:
+            log.info("Stale skill re-audit: %d skill(s) to check", len(stale))
+            for skill_meta in stale:
+                name = skill_meta.get("name", "")
+                slug = name.lower().replace(" ", "-")
+                skill_path = SKILLS_DIR / f"{slug}.md"
+                if not skill_path.exists():
+                    continue
+                content = skill_path.read_text(encoding="utf-8")
+                try:
+                    _audit = audit_skill(name, content)
+                    if _audit.get("requires_review"):
+                        quarantine_skill(name, "requires_review after stale re-audit")
+                        log.warning("Skill '%s' quarantined after stale re-audit (requires_review)", name)
+                    else:
+                        if _audit.get("result") == "PASS_WITH_CONCERNS":
+                            log.warning(
+                                "Skill '%s' passed stale re-audit with concerns: %s",
+                                name,
+                                _audit.get("proxy_chain", _audit.get("findings", [])),
+                            )
+                        _refresh_audited_at(name)
+                        log.info(
+                            "Skill '%s' passed stale re-audit (verification_depth=%s assumptions=%s)",
+                            name,
+                            _audit.get("verification_depth"),
+                            _audit.get("assumptions"),
+                        )
+                except SkillAuditFailedError as e:
+                    quarantine_skill(name, str(e))
+                    log.warning("Skill '%s' quarantined after stale re-audit: %s", name, e)
+    except Exception as e:
+        log.warning("Stale skill re-audit step failed (non-fatal): %s", e)
 
     # 2. Format items for Claude
     feed_text = _format_feed_items(items)
@@ -87,8 +142,7 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     recent_topics = _extract_recent_briefing_topics(days=5)
 
     # 3. Ask Claude to filter and rank
-    prompt = explore_prompt(soul_ctx, feed_text, source_slot=slot_name,
-                            recent_topics=recent_topics)
+    prompt = explore_prompt(soul_ctx, feed_text, source_slot=slot_name, recent_topics=recent_topics)
     briefing = claude_think(prompt, timeout=180)
 
     if not briefing:
@@ -110,8 +164,9 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     # Append briefing to daily digest (single item per day, not per explore slot)
     try:
         src_label = slot_name.replace("_", " / ") if slot_name else "all"
-        _append_to_daily_feed("explore", f"Explore: {src_label}", briefing,
-                             source=src_label, tags=["explore", "briefing"])
+        _append_to_daily_feed(
+            "explore", f"Explore: {src_label}", briefing, source=src_label, tags=["explore", "briefing"]
+        )
         log.info("Explore briefing appended to daily digest")
     except Exception as e:
         log.warning("Failed to append explore briefing to digest: %s", e)
@@ -141,6 +196,7 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
         try:
             sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
             from growth import run_growth_cycle
+
             run_growth_cycle(briefing_comments=comment_suggestions)
         except Exception as e:
             log.error("Growth cycle failed: %s", e)
@@ -149,12 +205,13 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     try:
         from evaluation.scorer import evaluate_explore, record_event
         from datetime import date as _date
+
         _today_str = _date.today().strftime("%Y-%m-%d")
         _rn_dir = Path(__file__).resolve().parent.parent.parent / "shared" / "soul" / "reading_notes"
         _today_notes = [f.name for f in _rn_dir.glob(f"{_today_str}*")] if _rn_dir.exists() else []
         e_scores = evaluate_explore(briefing, reading_notes=_today_notes, source_names=source_names)
         if e_scores:
-            record_event("explore", e_scores, {"sources": src_label if 'src_label' in dir() else ""})
+            record_event("explore", e_scores, {"sources": src_label if "src_label" in dir() else ""})
     except Exception as e:
         log.warning("Explore self-evaluation failed: %s", e)
 
@@ -182,17 +239,15 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
                     recent.remove(i)
                 recent.append(i)
                 # Keep only last N entries
-                state["explore_recent_groups"] = recent[-len(EXPLORE_SOURCE_GROUPS):]
+                state["explore_recent_groups"] = recent[-len(EXPLORE_SOURCE_GROUPS) :]
                 break
     save_state(state)
 
 
 def _do_deep_dive(soul_ctx: str, dive: dict):
     """Deep-dive into one item from the briefing."""
-    prompt = deep_dive_prompt(
-        soul_ctx, dive["title"], dive["url"], dive.get("note", "")
-    )
-    result = claude_act(prompt)
+    prompt = deep_dive_prompt(soul_ctx, dive["title"], dive["url"], dive.get("note", ""))
+    result = claude_act(prompt, agent_id="explorer")
 
     if not result:
         log.error("Deep dive returned empty")
@@ -212,12 +267,13 @@ def _do_deep_dive(soul_ctx: str, dive: dict):
     # Check if a skill was extracted
     # More flexible skill extraction - handles whitespace variations
     skill_match = re.search(
-        r'Name:\s*(.+?)[\n\r]+'
-        r'Description:\s*(.+?)[\n\r]+'
-        r'(?:Tags:\s*\[.*?\][\n\r]+)?'  # Optional tags line
-        r'Content:\s*[\n\r]+'
-        r'(.+?)(?:\n```|$)',
-        result, re.DOTALL,
+        r"Name:\s*(.+?)[\n\r]+"
+        r"Description:\s*(.+?)[\n\r]+"
+        r"(?:Tags:\s*\[.*?\][\n\r]+)?"  # Optional tags line
+        r"Content:\s*[\n\r]+"
+        r"(.+?)(?:\n```|$)",
+        result,
+        re.DOTALL,
     )
     if skill_match:
         name = skill_match.group(1).strip()
@@ -239,8 +295,7 @@ def _do_deep_dive(soul_ctx: str, dive: dict):
         log.warning("Internalization failed: %s", e)
 
 
-def _extract_briefing_insights(soul_ctx: str, briefing: str,
-                                today: str, slot_name: str = ""):
+def _extract_briefing_insights(soul_ctx: str, briefing: str, today: str, slot_name: str = ""):
     """Extract 2-3 key insights from a briefing into structured reading notes.
 
     Unlike deep dives (which go deep on one item), this captures the
@@ -300,6 +355,7 @@ def _maybe_proactive_reading_message(soul_ctx: str):
     compose a conversational message to WA via the bridge.
     """
     from config import MEMORY_FILE, WORLDVIEW_FILE, READING_NOTES_DIR
+
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
 
@@ -359,7 +415,7 @@ def _maybe_proactive_reading_message(soul_ctx: str):
         return
 
     try:
-        match = re.search(r'\{.*\}', result, re.DOTALL)
+        match = re.search(r"\{.*\}", result, re.DOTALL)
         if not match:
             return
         decision = json.loads(match.group())
@@ -375,8 +431,7 @@ def _maybe_proactive_reading_message(soul_ctx: str):
         return
 
     # Send as a spark to the daily Mira feed
-    _append_to_daily_feed("mira", "Spark", message,
-                         source="reading-connection", tags=["mira", "spark", "reading"])
+    _append_to_daily_feed("mira", "Spark", message, source="reading-connection", tags=["mira", "spark", "reading"])
 
     state[f"proactive_reading_{today}"] = reading_msgs_today + 1
     save_state(state)

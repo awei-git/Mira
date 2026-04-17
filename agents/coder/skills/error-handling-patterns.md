@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when writing production code that performs I/O, network calls, parsing, or external API requests that can fail."
+---
+
 # Error Handling Patterns
 
 **Tags:** coding, error-handling, reliability

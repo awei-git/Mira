@@ -62,6 +62,7 @@ def run():
             result_path = Path(result)
             if result_path != audio_path:
                 import shutil
+
                 shutil.copy2(result_path, audio_path)
                 log.info("Copied to %s", audio_path)
             else:

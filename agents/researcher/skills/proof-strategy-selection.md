@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when a mathematical statement needs a proof and you must select the most effective technique by reading its structural signature before attempting a solution."
+---
+
 # Proof Strategy Selection
 
 **Tags:** math, proof, reasoning, problem-solving, strategy

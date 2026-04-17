@@ -1,0 +1,11 @@
+{
+  "name": "super",
+  "description": "Orchestrator — plans, dispatches, synthesizes. Does NOT execute domain tasks directly.",
+  "keywords": [],
+  "handles": ["orchestration", "planning", "synthesis"],
+  "tier": "light",
+  "timeout_category": "short",
+  "entry_point": "core.py:cmd_run",
+  "requires_workspace": false,
+  "allowed_tools": ["Read", "Glob", "Grep", "Write", "Edit"]
+}

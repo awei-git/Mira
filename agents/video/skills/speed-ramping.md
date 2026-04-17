@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when dynamically varying playback speed within a shot for dramatic emphasis, creating smooth velocity curves between normal and slow-motion."
+---
+
 # Speed Ramping
 
 **Tags:** video, editing, speed, slow-motion, technique

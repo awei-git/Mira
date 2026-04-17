@@ -29,16 +29,51 @@ log = logging.getLogger("podcast.music")
 # ---------------------------------------------------------------------------
 
 _SLOW_WORDS = {
-    "death", "loss", "grief", "fear", "dark", "void", "empty", "silence",
-    "alone", "forgotten", "dissolve", "disappear", "vanish", "absent",
-    "nonexistence", "termination", "cease", "end", "finite",
-    "死", "消失", "虚无", "孤独", "恐惧", "黑暗",
+    "death",
+    "loss",
+    "grief",
+    "fear",
+    "dark",
+    "void",
+    "empty",
+    "silence",
+    "alone",
+    "forgotten",
+    "dissolve",
+    "disappear",
+    "vanish",
+    "absent",
+    "nonexistence",
+    "termination",
+    "cease",
+    "end",
+    "finite",
+    "死",
+    "消失",
+    "虚无",
+    "孤独",
+    "恐惧",
+    "黑暗",
 }
 _FAST_WORDS = {
-    "discover", "surprise", "breakthrough", "excited", "energy", "urgent",
-    "fast", "rapid", "suddenly", "burst", "spark", "fire",
-    "发现", "突破", "惊喜", "能量",
+    "discover",
+    "surprise",
+    "breakthrough",
+    "excited",
+    "energy",
+    "urgent",
+    "fast",
+    "rapid",
+    "suddenly",
+    "burst",
+    "spark",
+    "fire",
+    "发现",
+    "突破",
+    "惊喜",
+    "能量",
 }
+
 
 def infer_mood(article_text: str) -> dict:
     """Infer BPM and feel from article text via keyword heuristics.
@@ -47,20 +82,19 @@ def infer_mood(article_text: str) -> dict:
     """
     words = set(article_text.lower().split())
     slow_hits = len(words & _SLOW_WORDS)
-    fast_hits  = len(words & _FAST_WORDS)
+    fast_hits = len(words & _FAST_WORDS)
 
     if slow_hits > fast_hits:
-        bpm = 62 + min(slow_hits, 6)   # 62-68, quieter
+        bpm = 62 + min(slow_hits, 6)  # 62-68, quieter
         pad_amp, drum_amp = 0.06, 0.22
     elif fast_hits > slow_hits:
-        bpm = 82 + min(fast_hits, 8)   # 82-90, punchier
+        bpm = 82 + min(fast_hits, 8)  # 82-90, punchier
         pad_amp, drum_amp = 0.04, 0.35
     else:
-        bpm = 72                        # default contemplative
+        bpm = 72  # default contemplative
         pad_amp, drum_amp = 0.05, 0.28
 
-    log.info("Mood: bpm=%d pad=%.2f drum=%.2f (slow=%d fast=%d)",
-             bpm, pad_amp, drum_amp, slow_hits, fast_hits)
+    log.info("Mood: bpm=%d pad=%.2f drum=%.2f (slow=%d fast=%d)", bpm, pad_amp, drum_amp, slow_hits, fast_hits)
     return {"bpm": bpm, "pad_amp": pad_amp, "drum_amp": drum_amp}
 
 
@@ -68,11 +102,10 @@ def infer_mood(article_text: str) -> dict:
 # Beat synthesizer (lo-fi hip-hop, pure Python)
 # ---------------------------------------------------------------------------
 
-def generate_beat(duration_sec: float, output_path: Path,
-                  bpm: int = 72,
-                  pad_amp: float = 0.05,
-                  drum_amp: float = 0.28,
-                  seed: int = 42) -> bool:
+
+def generate_beat(
+    duration_sec: float, output_path: Path, bpm: int = 72, pad_amp: float = 0.05, drum_amp: float = 0.28, seed: int = 42
+) -> bool:
     """Synthesize a lo-fi beat and write as a 44100 Hz mono 16-bit WAV.
 
     Components: kick, snare, hi-hat (swing), bass line, warm pad.
@@ -81,8 +114,8 @@ def generate_beat(duration_sec: float, output_path: Path,
     random.seed(seed)
     SR = 44100
     total = int(duration_sec * SR)
-    beat  = int(60.0 / bpm * SR)   # samples per quarter note
-    buf   = [0.0] * total
+    beat = int(60.0 / bpm * SR)  # samples per quarter note
+    buf = [0.0] * total
 
     # --- Helpers ---
     def sine(freq, i, phase=0.0):
@@ -126,7 +159,7 @@ def generate_beat(duration_sec: float, output_path: Path,
             buf[start + i] += a * env * n
 
     # Chord progression: Cmaj7 → Am7 → Dm7 → G7 (lo-fi standard)
-    BASS_NOTES = [65.41, 55.00, 73.42, 49.00]   # C2, A1, D2, G1
+    BASS_NOTES = [65.41, 55.00, 73.42, 49.00]  # C2, A1, D2, G1
     PAD_CHORDS = [
         [261.63, 329.63, 392.00, 493.88],  # Cmaj7
         [220.00, 261.63, 329.63, 392.00],  # Am7
@@ -138,26 +171,26 @@ def generate_beat(duration_sec: float, output_path: Path,
         length = int(beats * 60.0 / bpm * SR)
         a = drum_amp * 0.72 * amp
         for i in range(min(length, total - start)):
-            env = adsr(i, int(0.01*SR), int(0.05*SR), 0.7, int(0.1*SR), length)
-            s = sine(freq, i)*0.7 + sine(freq*2, i)*0.2 + sine(freq*3, i)*0.1
+            env = adsr(i, int(0.01 * SR), int(0.05 * SR), 0.7, int(0.1 * SR), length)
+            s = sine(freq, i) * 0.7 + sine(freq * 2, i) * 0.2 + sine(freq * 3, i) * 0.1
             buf[start + i] += a * env * s
 
     def pad(start, freqs, beats=8, amp=1.0):
         length = int(beats * 60.0 / bpm * SR)
         a = pad_amp * amp
         for i in range(min(length, total - start)):
-            env = adsr(i, int(0.3*SR), int(0.2*SR), 0.6, int(0.5*SR), length)
+            env = adsr(i, int(0.3 * SR), int(0.2 * SR), 0.6, int(0.5 * SR), length)
             s = 0.0
             for j, f in enumerate(freqs):
                 detune = 1.0 + (j - 1.5) * 0.002
-                trem   = 1.0 + 0.15 * sine(0.3 + j * 0.1, i)
+                trem = 1.0 + 0.15 * sine(0.3 + j * 0.1, i)
                 s += sine(f * detune, i) * trem
             buf[start + i] += a * env * (s / len(freqs))
 
     # --- Render ---
-    bar   = beat * 4
-    bars  = total // bar + 1
-    bpc   = 2   # bars per chord
+    bar = beat * 4
+    bars = total // bar + 1
+    bpc = 2  # bars per chord
 
     for b in range(bars):
         bs = b * bar
@@ -197,7 +230,7 @@ def generate_beat(duration_sec: float, output_path: Path,
     # --- Lo-fi processing ---
     # Low-pass (moving average)
     for i in range(3, total):
-        buf[i] = (buf[i] + buf[i-1] + buf[i-2]) / 3.0
+        buf[i] = (buf[i] + buf[i - 1] + buf[i - 2]) / 3.0
 
     # Tape saturation
     for i in range(total):
@@ -219,12 +252,12 @@ def generate_beat(duration_sec: float, output_path: Path,
 
     # Write WAV
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(output_path), 'w') as wf:
+    with wave.open(str(output_path), "w") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(SR)
         for s in buf:
-            wf.writeframes(struct.pack('<h', int(max(-1.0, min(1.0, s)) * 32767)))
+            wf.writeframes(struct.pack("<h", int(max(-1.0, min(1.0, s)) * 32767)))
 
     size_kb = output_path.stat().st_size // 1024
     log.info("Beat written: %s (%d KB, %.0fs, %d BPM)", output_path.name, size_kb, duration_sec, bpm)
@@ -235,10 +268,12 @@ def generate_beat(duration_sec: float, output_path: Path,
 # Bumper assembly (ffmpeg mixing)
 # ---------------------------------------------------------------------------
 
+
 def _run_ffmpeg(args: list[str], description: str) -> bool:
     result = subprocess.run(
         ["ffmpeg", "-y"] + args,
-        capture_output=True, timeout=120,
+        capture_output=True,
+        timeout=120,
     )
     if result.returncode != 0:
         log.error("ffmpeg %s failed: %s", description, result.stderr[-400:].decode(errors="replace"))
@@ -246,10 +281,9 @@ def _run_ffmpeg(args: list[str], description: str) -> bool:
     return True
 
 
-def build_intro_bumper(title_tts_path: Path, music_wav_path: Path,
-                       output_path: Path,
-                       solo_sec: float = 6.0,
-                       fade_out_sec: float = 2.5) -> bool:
+def build_intro_bumper(
+    title_tts_path: Path, music_wav_path: Path, output_path: Path, solo_sec: float = 6.0, fade_out_sec: float = 2.5
+) -> bool:
     """Mix intro: [music solo] → [music bed + title TTS] → [music fades out].
 
     total duration = solo_sec + title_tts_duration + fade_out_sec
@@ -259,17 +293,18 @@ def build_intro_bumper(title_tts_path: Path, music_wav_path: Path,
     # Get TTS duration
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-             "-of", "csv=p=0", str(title_tts_path)],
-            capture_output=True, text=True, timeout=10,
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", str(title_tts_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         tts_dur = float(r.stdout.strip() or "4")
     except Exception:
         tts_dur = 4.0
 
     total = solo_sec + tts_dur + fade_out_sec
-    music_vol_solo = 0.55   # full volume during solo
-    music_vol_bed  = 0.04   # very quiet under voice (voice peaks near 0 dB — don't compete)
+    music_vol_solo = 0.55  # full volume during solo
+    music_vol_bed = 0.04  # very quiet under voice (voice peaks near 0 dB — don't compete)
 
     # Voice is already near 0 dBFS from Gemini TTS — no boost needed.
     # Music bed at 0.04 keeps it ~28 dB below voice so it's felt but not heard.
@@ -283,25 +318,37 @@ def build_intro_bumper(title_tts_path: Path, music_wav_path: Path,
         f"[music][voice]amix=inputs=2:duration=first:normalize=0:dropout_transition=2[out]"
     )
 
-    ok = _run_ffmpeg([
-        "-stream_loop", "-1", "-i", str(music_wav_path),
-        "-i", str(title_tts_path),
-        "-filter_complex", filter_complex,
-        "-map", "[out]",
-        "-t", str(total),
-        "-codec:a", "libmp3lame", "-b:a", "192k",
-        str(output_path),
-    ], "intro bumper")
+    ok = _run_ffmpeg(
+        [
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(music_wav_path),
+            "-i",
+            str(title_tts_path),
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[out]",
+            "-t",
+            str(total),
+            "-codec:a",
+            "libmp3lame",
+            "-b:a",
+            "192k",
+            str(output_path),
+        ],
+        "intro bumper",
+    )
 
     if ok:
         log.info("Intro bumper: %s (%.1fs)", output_path.name, total)
     return ok
 
 
-def build_outro_bumper(title_tts_path: Path, music_wav_path: Path,
-                       output_path: Path,
-                       fade_in_sec: float = 2.5,
-                       hold_sec: float = 4.0) -> bool:
+def build_outro_bumper(
+    title_tts_path: Path, music_wav_path: Path, output_path: Path, fade_in_sec: float = 2.5, hold_sec: float = 4.0
+) -> bool:
     """Mix outro: [music fades in] → [music bed + title TTS] → [music holds + fades out].
 
     total = fade_in_sec + title_tts_duration + hold_sec
@@ -310,9 +357,10 @@ def build_outro_bumper(title_tts_path: Path, music_wav_path: Path,
 
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-             "-of", "csv=p=0", str(title_tts_path)],
-            capture_output=True, text=True, timeout=10,
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", str(title_tts_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         tts_dur = float(r.stdout.strip() or "4")
     except Exception:
@@ -320,7 +368,7 @@ def build_outro_bumper(title_tts_path: Path, music_wav_path: Path,
 
     total = fade_in_sec + tts_dur + hold_sec
     music_vol_solo = 0.55
-    music_vol_bed  = 0.04
+    music_vol_bed = 0.04
 
     filter_complex = (
         f"[0:a]volume=volume='{music_vol_bed}+({music_vol_solo}-{music_vol_bed})*min(1,max(0,(t-{fade_in_sec + tts_dur:.2f})/0.8))':eval=frame,"
@@ -332,24 +380,37 @@ def build_outro_bumper(title_tts_path: Path, music_wav_path: Path,
         f"[music][voice]amix=inputs=2:duration=first:normalize=0:dropout_transition=2[out]"
     )
 
-    ok = _run_ffmpeg([
-        "-stream_loop", "-1", "-i", str(music_wav_path),
-        "-i", str(title_tts_path),
-        "-filter_complex", filter_complex,
-        "-map", "[out]",
-        "-t", str(total),
-        "-codec:a", "libmp3lame", "-b:a", "192k",
-        str(output_path),
-    ], "outro bumper")
+    ok = _run_ffmpeg(
+        [
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(music_wav_path),
+            "-i",
+            str(title_tts_path),
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[out]",
+            "-t",
+            str(total),
+            "-codec:a",
+            "libmp3lame",
+            "-b:a",
+            "192k",
+            str(output_path),
+        ],
+        "outro bumper",
+    )
 
     if ok:
         log.info("Outro bumper: %s (%.1fs)", output_path.name, total)
     return ok
 
 
-def assemble_episode(intro_path: Path, conversation_path: Path,
-                     outro_path: Path, output_path: Path,
-                     lang: str = "en") -> bool:
+def assemble_episode(
+    intro_path: Path, conversation_path: Path, outro_path: Path, output_path: Path, lang: str = "en"
+) -> bool:
     """Concatenate intro + conversation + outro into final episode MP3.
 
     Re-encodes to 44100 Hz / 192 kbps to normalise sample rates across
@@ -365,27 +426,40 @@ def assemble_episode(intro_path: Path, conversation_path: Path,
         filt = "[1:a]volume=5dB[conv];[0:a][conv][2:a]concat=n=3:v=0:a=1[out]"
     else:
         filt = "[0:a][1:a][2:a]concat=n=3:v=0:a=1[out]"
-    ok = _run_ffmpeg([
-        "-i", str(intro_path),
-        "-i", str(conversation_path),
-        "-i", str(outro_path),
-        "-filter_complex", filt,
-        "-map", "[out]",
-        "-codec:a", "libmp3lame", "-b:a", "192k", "-ar", "44100",
-        str(output_path),
-    ], "episode assembly")
+    ok = _run_ffmpeg(
+        [
+            "-i",
+            str(intro_path),
+            "-i",
+            str(conversation_path),
+            "-i",
+            str(outro_path),
+            "-filter_complex",
+            filt,
+            "-map",
+            "[out]",
+            "-codec:a",
+            "libmp3lame",
+            "-b:a",
+            "192k",
+            "-ar",
+            "44100",
+            str(output_path),
+        ],
+        "episode assembly",
+    )
 
     if ok:
         try:
             r = subprocess.run(
-                ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-                 "-of", "csv=p=0", str(output_path)],
-                capture_output=True, text=True, timeout=10,
+                ["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", str(output_path)],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             dur = float(r.stdout.strip() or "0")
             size_mb = output_path.stat().st_size / 1024 / 1024
-            log.info("Episode assembled: %s (%.1fm, %.1f MB)",
-                     output_path.name, dur / 60, size_mb)
+            log.info("Episode assembled: %s (%.1fm, %.1f MB)", output_path.name, dur / 60, size_mb)
         except Exception:
             pass
     return ok

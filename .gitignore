@@ -3,42 +3,32 @@ secrets.yml
 config.yml
 sources.json
 
-# Personal data — artifacts, messages, state
-artifacts/
-Mira-bridge/
+# Data directory — ALL runtime data, completely ignored
+data/
 
-# Feed data and logs
-feeds/
-logs/
-
-# Runtime state
-.agent_state.json
+# Legacy locations
 agents/super/notes_inbox/
 agents/super/notes_outbox/
 agents/.bg_pids/
-
-# Writer ideas (personal notes)
 agents/writer/ideas/
-
-# Soul (personal data — memory, journal, conversations, episodes, notes)
-agents/shared/soul/journal/
-agents/shared/soul/memory.md
-agents/shared/soul/conversations/
-agents/shared/soul/episodes/
-agents/shared/soul/reading_notes/
-agents/shared/soul/scorecards/
-agents/shared/soul/proposals/
-agents/shared/soul/.backups/
-agents/shared/soul/identity.md
-agents/shared/soul/worldview.md
-agents/shared/soul/interests.md
-agents/shared/soul/calibration.jsonl
-agents/shared/soul/catalog.jsonl
-agents/shared/soul/book_review_history.json
-agents/shared/soul/soul_questions_history.json
-agents/shared/soul/worldview_decay.json
-agents/shared/soul/.soul_hashes.json
 agents/health/alert_history.json
+agents/shared/soul/
+agents/socialmedia/*_state.json
+agents/socialmedia/publication_stats.json
+agents/socialmedia/reply_tracking.json
+agents/socialmedia/notes_queue.json
+.agent_state.json
+.bg_health.json
+.session_context.json
+.pending_publish.json
+.cover_history.json
+logs/
+feeds/
+tasks/
+output/
+autoresearch_runs/
+artifacts_old/
+comparison/
 
 # Sync state files
 *.sync.json
@@ -53,47 +43,28 @@ __pycache__/
 .DS_Store
 *.swp
 
-# Xcode build artifacts and user data
+# Xcode
 **/build/
 **/*.xcuserdata/
 **/xcuserdata/
 **/DerivedData/
 *.xcuserstate
 
-# Backup files
+# Backup / lock files
 *_backup.*
-tasks/
-.bg_health.json
-.session_context.json
-.pending_publish.json
-.cover_history.json
-logs/audits/
-artifacts_old/
-output/
+*.lock
+
+# Media files
 *.mp4
 *.mp3
 *.wav
 *.m4a
-logs/*.log
-.agent_state.json
-autoresearch_runs/
-comparison/
-# Photo agent outputs and models
-agents/photo/output/
-agents/photo/models/*.pth
 *.npy
 
-# SQLite databases
+# SQLite
 *.sqlite
 *.sqlite.bak
 
-# Lock files
-*.lock
-
-# Secrets (should never be tracked)
-secrets.yml
-agents/socialmedia/*_state.json
-agents/socialmedia/publication_stats.json
-agents/socialmedia/reply_tracking.json
-agents/shared/soul/emptiness.json
-agents/shared/soul/scores.json
+# Photo agent
+agents/photo/output/
+agents/photo/models/*.pth

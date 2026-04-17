@@ -13,9 +13,7 @@ def scaffold_prompt(idea_content: str, writing_type: str) -> str:
     Returns content in a structured format with markers so Python can
     split and save to separate files.
     """
-    framework = {"essay": "essay.md", "novel": "novel.md", "blog": "blog.md"}.get(
-        writing_type, "essay.md"
-    )
+    framework = {"essay": "essay.md", "novel": "novel.md", "blog": "blog.md"}.get(writing_type, "essay.md")
 
     return f"""你是写作项目的初始化助手。
 
@@ -54,9 +52,7 @@ def scaffold_prompt(idea_content: str, writing_type: str) -> str:
 
 def draft_prompt(writing_type: str, round_num: int) -> str:
     """Prompt for creating a first draft."""
-    framework = {"essay": "essay.md", "novel": "novel.md", "blog": "blog.md"}.get(
-        writing_type, "essay.md"
-    )
+    framework = {"essay": "essay.md", "novel": "novel.md", "blog": "blog.md"}.get(writing_type, "essay.md")
 
     return f"""你是严厉的责编，现在要写第{round_num}轮初稿。
 

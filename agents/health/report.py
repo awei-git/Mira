@@ -1,4 +1,5 @@
 """Health report generator — weekly/monthly summaries."""
+
 import logging
 from datetime import date, timedelta
 
@@ -106,7 +107,7 @@ def generate_weekly_report(store, person_id: str) -> str:
             sections.append(f"- 摘要: {r['summary'][:200]}\n")
 
     if len(sections) == 1:
-        sections.append("暂无健康数据。开始记录: 发送 \"记录体重 72\" 或 \"今天睡了6小时\"。\n")
+        sections.append('暂无健康数据。开始记录: 发送 "记录体重 72" 或 "今天睡了6小时"。\n')
 
     sections.append("\n---\n*此报告由 Mira Health Agent 生成，仅供参考。重要健康问题请咨询专业医生。*")
     return "\n".join(sections)
@@ -125,23 +126,32 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
 
     # Today's metrics — wearables + body composition
     for metric_name, label in [
-        ("weight", "体重(kg)"), ("body_fat", "体脂(%)"),
-        ("sleep_hours", "睡眠(h)"), ("sleep_score", "睡眠分数"),
-        ("steps", "步数"), ("heart_rate", "静息心率(bpm)"),
+        ("weight", "体重(kg)"),
+        ("body_fat", "体脂(%)"),
+        ("sleep_hours", "睡眠(h)"),
+        ("sleep_score", "睡眠分数"),
+        ("steps", "步数"),
+        ("heart_rate", "静息心率(bpm)"),
         ("resting_hr_lowest", "最低心率(bpm)"),
-        ("hrv", "HRV(ms)"), ("blood_oxygen", "血氧(%)"),
+        ("hrv", "HRV(ms)"),
+        ("blood_oxygen", "血氧(%)"),
         ("respiratory_rate", "呼吸频率(brpm)"),
         ("readiness_score", "准备度分数"),
         ("activity_score", "活动分数"),
-        ("active_calories", "活动消耗(kcal)"), ("total_calories", "总消耗(kcal)"),
-        ("active_minutes", "活动时间(min)"), ("sedentary_hours", "久坐时间(h)"),
+        ("active_calories", "活动消耗(kcal)"),
+        ("total_calories", "总消耗(kcal)"),
+        ("active_minutes", "活动时间(min)"),
+        ("sedentary_hours", "久坐时间(h)"),
         ("inactivity_alerts", "久坐提醒次数"),
-        ("stress_high", "高压力时间(min)"), ("recovery_high", "恢复时间(min)"),
+        ("stress_high", "高压力时间(min)"),
+        ("recovery_high", "恢复时间(min)"),
         ("stress_level", "压力等级(1恢复/2正常/3高压)"),
         ("resilience_level", "韧性等级(1-5)"),
-        ("sleep_recovery", "睡眠恢复度"), ("daytime_recovery", "日间恢复度"),
+        ("sleep_recovery", "睡眠恢复度"),
+        ("daytime_recovery", "日间恢复度"),
         ("temperature_deviation", "体温偏差"),
-        ("workout", "锻炼时长(min)"), ("workout_calories", "锻炼消耗(kcal)"),
+        ("workout", "锻炼时长(min)"),
+        ("workout_calories", "锻炼消耗(kcal)"),
     ]:
         latest = store.get_latest_metric(person_id, metric_name)
         if latest:
@@ -153,10 +163,16 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
     # 7-day trends
     trend_parts = []
     for metric_name, label in [
-        ("weight", "体重"), ("sleep_hours", "睡眠"), ("sleep_score", "睡眠分数"),
-        ("hrv", "HRV"), ("heart_rate", "心率"), ("blood_oxygen", "血氧"),
-        ("steps", "步数"), ("active_minutes", "活动时间"),
-        ("stress_high", "高压力"), ("recovery_high", "恢复"),
+        ("weight", "体重"),
+        ("sleep_hours", "睡眠"),
+        ("sleep_score", "睡眠分数"),
+        ("hrv", "HRV"),
+        ("heart_rate", "心率"),
+        ("blood_oxygen", "血氧"),
+        ("steps", "步数"),
+        ("active_minutes", "活动时间"),
+        ("stress_high", "高压力"),
+        ("recovery_high", "恢复"),
         ("readiness_score", "准备度"),
     ]:
         week_data = store.get_recent_metrics(person_id, metric_name, days=7)
@@ -183,6 +199,7 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
         parsed = r.get("parsed_json")
         if isinstance(parsed, str):
             import json
+
             try:
                 parsed = json.loads(parsed)
             except Exception:
@@ -197,7 +214,9 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
                 panel = panels.get(panel_name, {})
                 for test, info in panel.items():
                     if isinstance(info, dict) and info.get("flag"):
-                        checkup_text += f"\n  {test}: {info['value']} {info.get('unit','')} (参考: {info.get('ref','')}) ⚠️"
+                        checkup_text += (
+                            f"\n  {test}: {info['value']} {info.get('unit','')} (参考: {info.get('ref','')}) ⚠️"
+                        )
                     elif isinstance(info, dict) and "prev" in info:
                         checkup_text += f"\n  {test}: {info['value']} (上次: {info['prev']})"
 
@@ -232,6 +251,7 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
 
     try:
         from llm import model_think
+
         result = model_think(prompt, model_name=model, timeout=60)
         if result and len(result.strip()) > 30:
             return result.strip()

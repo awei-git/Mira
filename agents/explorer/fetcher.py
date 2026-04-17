@@ -1,4 +1,5 @@
 """Fetch content from web sources: arxiv, Reddit, HuggingFace, GitHub, HN, Lobsters, RSS."""
+
 import json
 import logging
 import urllib.request
@@ -39,6 +40,7 @@ def _http_get(url: str, timeout: int = 15) -> str:
 # Arxiv
 # ---------------------------------------------------------------------------
 
+
 def fetch_arxiv(categories: list[str], max_results: int = 10) -> list[dict]:
     """Fetch recent papers from arxiv API."""
     if not categories:
@@ -73,12 +75,14 @@ def fetch_arxiv(categories: list[str], max_results: int = 10) -> list[dict]:
             if not link:
                 link_el = entry.find("atom:id", ns)
                 link = link_el.text if link_el is not None else ""
-            items.append({
-                "source": "arxiv",
-                "title": title,
-                "summary": summary,
-                "url": link,
-            })
+            items.append(
+                {
+                    "source": "arxiv",
+                    "title": title,
+                    "summary": summary,
+                    "url": link,
+                }
+            )
     except ET.ParseError as e:
         log.error("Arxiv XML parse failed: %s", e)
 
@@ -88,6 +92,7 @@ def fetch_arxiv(categories: list[str], max_results: int = 10) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Reddit
 # ---------------------------------------------------------------------------
+
 
 def fetch_reddit(subreddits: list[str], limit: int = 10) -> list[dict]:
     """Fetch hot posts from subreddits via JSON API."""
@@ -104,13 +109,15 @@ def fetch_reddit(subreddits: list[str], limit: int = 10) -> list[dict]:
             d = post.get("data", {})
             if d.get("stickied"):
                 continue
-            items.append({
-                "source": f"r/{sub}",
-                "title": d.get("title", ""),
-                "summary": (d.get("selftext", "") or "")[:300],
-                "url": f"https://reddit.com{d.get('permalink', '')}",
-                "score": d.get("score", 0),
-            })
+            items.append(
+                {
+                    "source": f"r/{sub}",
+                    "title": d.get("title", ""),
+                    "summary": (d.get("selftext", "") or "")[:300],
+                    "url": f"https://reddit.com{d.get('permalink', '')}",
+                    "score": d.get("score", 0),
+                }
+            )
 
     return items
 
@@ -118,6 +125,7 @@ def fetch_reddit(subreddits: list[str], limit: int = 10) -> list[dict]:
 # ---------------------------------------------------------------------------
 # HuggingFace Daily Papers
 # ---------------------------------------------------------------------------
+
 
 def fetch_hf_papers() -> list[dict]:
     """Fetch today's trending papers from HuggingFace."""
@@ -131,12 +139,14 @@ def fetch_hf_papers() -> list[dict]:
     items = []
     for paper in data[:15]:
         p = paper.get("paper", {})
-        items.append({
-            "source": "huggingface",
-            "title": p.get("title", ""),
-            "summary": (p.get("summary", "") or "")[:300],
-            "url": f"https://huggingface.co/papers/{p.get('id', '')}",
-        })
+        items.append(
+            {
+                "source": "huggingface",
+                "title": p.get("title", ""),
+                "summary": (p.get("summary", "") or "")[:300],
+                "url": f"https://huggingface.co/papers/{p.get('id', '')}",
+            }
+        )
 
     return items
 
@@ -145,8 +155,8 @@ def fetch_hf_papers() -> list[dict]:
 # GitHub Trending (via Search API — stars proxy)
 # ---------------------------------------------------------------------------
 
-def fetch_github_trending(days_back: int = 7, language: str | None = None,
-                          per_page: int = 25) -> list[dict]:
+
+def fetch_github_trending(days_back: int = 7, language: str | None = None, per_page: int = 25) -> list[dict]:
     """Fetch trending repos via GitHub Search API (sorted by stars, recent)."""
     since = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
     q = f"created:>{since}"
@@ -157,10 +167,13 @@ def fetch_github_trending(days_back: int = 7, language: str | None = None,
         f"?q={urllib.parse.quote(q)}&sort=stars&order=desc&per_page={per_page}"
     )
     try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "application/vnd.github+json",
-        })
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "application/vnd.github+json",
+            },
+        )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
     except Exception as e:
@@ -172,19 +185,22 @@ def fetch_github_trending(days_back: int = 7, language: str | None = None,
         desc = (r.get("description") or "")[:300]
         lang = r.get("language") or "?"
         stars = r.get("stargazers_count", 0)
-        items.append({
-            "source": "github_trending",
-            "title": f"{r['full_name']} [{lang}] ({stars} stars)",
-            "summary": desc,
-            "url": r["html_url"],
-            "stars": stars,
-        })
+        items.append(
+            {
+                "source": "github_trending",
+                "title": f"{r['full_name']} [{lang}] ({stars} stars)",
+                "summary": desc,
+                "url": r["html_url"],
+                "stars": stars,
+            }
+        )
     return items
 
 
 # ---------------------------------------------------------------------------
 # Hacker News (via Algolia API — single request, rich data)
 # ---------------------------------------------------------------------------
+
 
 def fetch_hackernews(count: int = 30, min_points: int = 0) -> list[dict]:
     """Fetch HN front page stories via Algolia Search API."""
@@ -200,20 +216,23 @@ def fetch_hackernews(count: int = 30, min_points: int = 0) -> list[dict]:
 
     items = []
     for h in data.get("hits", []):
-        items.append({
-            "source": "hackernews",
-            "title": h.get("title", ""),
-            "summary": f"Score: {h.get('points', 0)} | Comments: {h.get('num_comments', 0)}",
-            "url": h.get("url") or f"https://news.ycombinator.com/item?id={h['objectID']}",
-            "score": h.get("points", 0),
-            "hn_url": f"https://news.ycombinator.com/item?id={h['objectID']}",
-        })
+        items.append(
+            {
+                "source": "hackernews",
+                "title": h.get("title", ""),
+                "summary": f"Score: {h.get('points', 0)} | Comments: {h.get('num_comments', 0)}",
+                "url": h.get("url") or f"https://news.ycombinator.com/item?id={h['objectID']}",
+                "score": h.get("points", 0),
+                "hn_url": f"https://news.ycombinator.com/item?id={h['objectID']}",
+            }
+        )
     return items
 
 
 # ---------------------------------------------------------------------------
 # Web Search (DuckDuckGo HTML — no API key required)
 # ---------------------------------------------------------------------------
+
 
 def fetch_web_search(query: str, max_results: int = 10) -> list[dict]:
     """Search DuckDuckGo and return structured results.
@@ -223,6 +242,7 @@ def fetch_web_search(query: str, max_results: int = 10) -> list[dict]:
     """
     try:
         from tools.web_browser import search as wb_search
+
         results = wb_search(query, max_results=max_results)
         return [
             {
@@ -243,6 +263,7 @@ def fetch_web_search(query: str, max_results: int = 10) -> list[dict]:
 # Lobsters (JSON API)
 # ---------------------------------------------------------------------------
 
+
 def fetch_lobsters(count: int = 25) -> list[dict]:
     """Fetch hottest stories from Lobsters."""
     url = "https://lobste.rs/hottest.json"
@@ -255,19 +276,22 @@ def fetch_lobsters(count: int = 25) -> list[dict]:
     items = []
     for s in data[:count]:
         tags = ", ".join(s.get("tags", []))
-        items.append({
-            "source": "lobsters",
-            "title": s.get("short_id_url", "").split("/")[-1] if not s.get("title") else s.get("title", ""),
-            "summary": f"[{tags}] Score: {s.get('score', 0)} | Comments: {s.get('comment_count', 0)}",
-            "url": s.get("url") or s.get("short_id_url", ""),
-            "score": s.get("score", 0),
-        })
+        items.append(
+            {
+                "source": "lobsters",
+                "title": s.get("short_id_url", "").split("/")[-1] if not s.get("title") else s.get("title", ""),
+                "summary": f"[{tags}] Score: {s.get('score', 0)} | Comments: {s.get('comment_count', 0)}",
+                "url": s.get("url") or s.get("short_id_url", ""),
+                "score": s.get("score", 0),
+            }
+        )
     return items
 
 
 # ---------------------------------------------------------------------------
 # Dev.to (public API — no auth needed)
 # ---------------------------------------------------------------------------
+
 
 def fetch_devto(per_page: int = 20, top_days: int = 7) -> list[dict]:
     """Fetch top articles from Dev.to public API."""
@@ -280,20 +304,23 @@ def fetch_devto(per_page: int = 20, top_days: int = 7) -> list[dict]:
 
     items = []
     for a in data:
-        items.append({
-            "source": "devto",
-            "title": a.get("title", ""),
-            "summary": (a.get("description", "") or "")[:300],
-            "url": a.get("url", ""),
-            "score": a.get("positive_reactions_count", 0),
-            "tags": ", ".join(a.get("tag_list", [])),
-        })
+        items.append(
+            {
+                "source": "devto",
+                "title": a.get("title", ""),
+                "summary": (a.get("description", "") or "")[:300],
+                "url": a.get("url", ""),
+                "score": a.get("positive_reactions_count", 0),
+                "tags": ", ".join(a.get("tag_list", [])),
+            }
+        )
     return items
 
 
 # ---------------------------------------------------------------------------
 # RSS feeds
 # ---------------------------------------------------------------------------
+
 
 def fetch_rss(feeds: list[dict]) -> list[dict]:
     """Fetch items from RSS feeds. Each feed is {name, url}."""
@@ -315,12 +342,14 @@ def fetch_rss(feeds: list[dict]) -> list[dict]:
             # Try RSS 2.0 format
             feed_items = []
             for item in root.findall(".//item")[:10]:
-                feed_items.append({
-                    "source": name,
-                    "title": (item.findtext("title") or "").strip(),
-                    "summary": (item.findtext("description") or "").strip()[:300],
-                    "url": (item.findtext("link") or "").strip(),
-                })
+                feed_items.append(
+                    {
+                        "source": name,
+                        "title": (item.findtext("title") or "").strip(),
+                        "summary": (item.findtext("description") or "").strip()[:300],
+                        "url": (item.findtext("link") or "").strip(),
+                    }
+                )
             # Try Atom format if no RSS items found for this feed
             if not feed_items:
                 ns = {"atom": "http://www.w3.org/2005/Atom"}
@@ -329,12 +358,14 @@ def fetch_rss(feeds: list[dict]) -> list[dict]:
                     for lnk in entry.findall("atom:link", ns):
                         link = lnk.get("href", "")
                         break
-                    feed_items.append({
-                        "source": name,
-                        "title": (entry.findtext("atom:title", "", ns) or "").strip(),
-                        "summary": (entry.findtext("atom:summary", "", ns) or "").strip()[:300],
-                        "url": link,
-                    })
+                    feed_items.append(
+                        {
+                            "source": name,
+                            "title": (entry.findtext("atom:title", "", ns) or "").strip(),
+                            "summary": (entry.findtext("atom:summary", "", ns) or "").strip()[:300],
+                            "url": link,
+                        }
+                    )
             items.extend(feed_items)
         except ET.ParseError as e:
             log.error("RSS parse failed for '%s': %s", name, e)
@@ -345,6 +376,7 @@ def fetch_rss(feeds: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Fetch all sources
 # ---------------------------------------------------------------------------
+
 
 def fetch_sources(source_names: list[str]) -> list[dict]:
     """Fetch from specific named sources. Names: arxiv, reddit, huggingface, hacker_news, rss, or RSS feed names."""
@@ -424,7 +456,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
     # Supports "web_search:QUERY" entries in source_names
     for name in names_lower:
         if name.startswith("web_search:"):
-            query = name[len("web_search:"):]
+            query = name[len("web_search:") :]
             if query:
                 items = fetch_web_search(query, max_results=10)
                 all_items.extend(items)
@@ -455,13 +487,13 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
     # Save raw
     raw_path = FEEDS_DIR / "raw" / f"{datetime.now().strftime('%Y-%m-%d_%H%M')}.json"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_path.write_text(
-        json.dumps(all_items, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    raw_path.write_text(json.dumps(all_items, indent=2, ensure_ascii=False), encoding="utf-8")
 
     return all_items[:MAX_FEED_ITEMS]
 
 
 def fetch_all() -> list[dict]:
     """Fetch from all configured sources. Returns combined list of items."""
-    return fetch_sources(["arxiv", "reddit", "huggingface", "github_trending", "hackernews", "lobsters", "devto", "rss"])
+    return fetch_sources(
+        ["arxiv", "reddit", "huggingface", "github_trending", "hackernews", "lobsters", "devto", "rss"]
+    )

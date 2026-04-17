@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when bounding expectations of products or absolute values of jointly Gaussian random variables using permanents, hafnians, or the Wick formula."
+---
+
 # Gaussian Moment Inequalities
 
 **Tags:** probability, gaussian, inequalities, permanents, wick-formula

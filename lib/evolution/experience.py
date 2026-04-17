@@ -3,6 +3,7 @@
 Records {action, outcome, reward} after every task. Retrieves the most
 relevant past experiences for injection into prompts as few-shot context.
 """
+
 from __future__ import annotations
 
 import json
@@ -40,11 +41,7 @@ def record_experience(
     reward = reward or {}
     context = context or {}
 
-    score = sum(
-        reward.get(k, 0) * w
-        for k, w in REWARD_WEIGHTS.items()
-        if k in reward
-    )
+    score = sum(reward.get(k, 0) * w for k, w in REWARD_WEIGHTS.items() if k in reward)
 
     entry = {
         "ts": datetime.now().isoformat(timespec="seconds"),
@@ -98,10 +95,7 @@ def get_relevant_experiences(query: str, top_k: int = 3, days: int = 14) -> str:
 
     scored = []
     for exp in experiences:
-        text = (
-            f"{exp.get('action', '')} {exp.get('outcome', '')} "
-            f"{json.dumps(exp.get('context', {}))}"
-        ).lower()
+        text = (f"{exp.get('action', '')} {exp.get('outcome', '')} " f"{json.dumps(exp.get('context', {}))}").lower()
         relevance = sum(1 for w in query_words if w in text)
         reward_bonus = max(0, exp.get("score", 0)) * 0.1
         scored.append((relevance + reward_bonus, exp))
@@ -124,8 +118,11 @@ def get_relevant_experiences(query: str, top_k: int = 3, days: int = 14) -> str:
 
 
 def record_task_outcome(
-    task_id: str, agent: str, action: str,
-    status: str, summary: str = "",
+    task_id: str,
+    agent: str,
+    action: str,
+    status: str,
+    summary: str = "",
 ):
     """Record a task completion/failure as experience.
 

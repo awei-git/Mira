@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when you need to estimate P(||X|| < ε) as ε→0 for a Gaussian process or determine finiteness of negative moments for a Gaussian functional."
+---
+
 # Small Deviation Probabilities
 
 **Tags:** probability, gaussian, small-deviation, negative-moments, determinants

@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when editing multi-shot sequences and spatial, temporal, or logical consistency between cuts must be maintained to preserve the viewer's mental model."
+---
+
 # Visual Continuity
 
 **Tags:** video, editing, continuity, storytelling

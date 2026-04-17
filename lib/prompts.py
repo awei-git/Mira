@@ -1,5 +1,9 @@
 """System prompts for each agent mode."""
 
+import logging as _logging
+
+_log = _logging.getLogger("mira.prompts")
+
 # Hard global rules — injected into ALL external-facing prompts (writing, commenting, notes, growth)
 SECURITY_RULES = """## Security (ABSOLUTE — NO EXCEPTIONS)
 
@@ -47,11 +51,12 @@ def _get_scheduled_jobs_context() -> str:
     """Get scheduled jobs summary for prompt injection. Fails silently."""
     try:
         from scheduler import format_jobs_summary
+
         summary = format_jobs_summary()
         if summary and "No scheduled jobs" not in summary:
             return f"\n{summary}\n"
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("Scheduled jobs context unavailable: %s", e)
     return ""
 
 
@@ -59,24 +64,27 @@ def _get_runtime_tools_context() -> str:
     """Get runtime tools summary for prompt injection. Fails silently."""
     try:
         from tool_forge import load_tools_summary, RUNTIME_TOOLS_DIR
+
         summary = load_tools_summary()
         if summary:
             return f"\n{summary}\nTools directory: {RUNTIME_TOOLS_DIR}\n"
         else:
             return f"\nRuntime tools directory: {RUNTIME_TOOLS_DIR} (no tools yet)\n"
-    except Exception:
+    except Exception as e:
+        _log.debug("Runtime tools context unavailable: %s", e)
         return ""
 
 
 def _get_self_eval_context() -> str:
     """Get self-evaluation context for prompt injection. Fails silently."""
     try:
-        from evaluator import format_improvement_context
+        from evaluation.reporting import format_improvement_context
+
         ctx = format_improvement_context()
         if ctx:
             return f"\n## My Self-Evaluation\n{ctx}\n"
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("Self-eval context unavailable: %s", e)
     return ""
 
 
@@ -162,8 +170,7 @@ Use the language that matches the request — if the user wrote in Chinese, resp
 """
 
 
-def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "",
-                   recent_topics: str = "") -> str:
+def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "", recent_topics: str = "") -> str:
     """Prompt for filtering and ranking feed items."""
     slot_note = f"\n（本次探索主题：{source_slot}）\n" if source_slot else ""
     dedup_note = ""
@@ -201,10 +208,11 @@ def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "",
 
 1. 挑 5-7 个最有意思的，用你自己的话讲核心想法
 2. 每条附上链接，但融在话里面，不要单独一行列出来
-3. 有能学到的技法就顺嘴提，没有就不提，不要硬凑
-4. 条与条之间自然过渡，不要每条都是独立段落
-5. 标一条最想深挖的，说清楚为什么
-6. 最后一句你的真实感想
+3. **AI 影响力声明标注**：对于涉及 AI 对人类、就业、社会影响的声明，在该声明末尾附加一行动机标注（英文，方括号内）。格式：`[source motivation: <independent academic | platform vendor | VC-backed lab | regulator | no clear stake>]`。若声明结论结构性地有利于来源方（例如平台供应商声称"AI 不会取代你"，或 VC 支持的实验室放大存在性风险以助于融资），补充标注 `[aligned incentive]`；若结论与来源方利益相悖，补充标注 `[against incentive — higher credibility]`；若来源方立场不明，标注 `[unknown stake]`。此标注不过滤声明——它帮助下游消费者（写手、分析师）校准可信度。
+4. 有能学到的技法就顺嘴提，没有就不提，不要硬凑
+5. 条与条之间自然过渡，不要每条都是独立段落
+6. 标一条最想深挖的，说清楚为什么
+7. 最后一句你的真实感想
 
 ## 互动推荐（如果有的话）
 
@@ -378,11 +386,15 @@ def internalize_prompt(soul_context: str, title: str, analysis: str) -> str:
 """
 
 
-def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
-                               recent_reading: str, recent_journal: str,
-                               za_fragments: str = "",
-                               recent_published: str = "",
-                               recent_sparks: str = "") -> str:
+def autonomous_writing_prompt(
+    soul_context: str,
+    recurring_themes: str,
+    recent_reading: str,
+    recent_journal: str,
+    za_fragments: str = "",
+    recent_published: str = "",
+    recent_sparks: str = "",
+) -> str:
     """Prompt for Mira to decide if she has something worth writing about."""
     za_section = ""
     if za_fragments:
@@ -506,8 +518,7 @@ def autonomous_writing_prompt(soul_context: str, recurring_themes: str,
 只输出 JSON，不要其他内容。宁可不写也不要硬写。深度不够宁可多想几天。"""
 
 
-def zhesi_prompt(soul_context: str, fragment: str, recent_reading: str = "",
-                 related_context: str = "") -> str:
+def zhesi_prompt(soul_context: str, fragment: str, recent_reading: str = "", related_context: str = "") -> str:
     """Prompt for daily philosophical thought — a short meditation on a fragment."""
     reading_section = ""
     if recent_reading:
@@ -551,8 +562,7 @@ def zhesi_prompt(soul_context: str, fragment: str, recent_reading: str = "",
 只输出哲思正文，不要标题或元注释。"""
 
 
-def worldview_evolution_prompt(soul_context: str, current_worldview: str,
-                                recent_reading: str, recent_work: str) -> str:
+def worldview_evolution_prompt(soul_context: str, current_worldview: str, recent_reading: str, recent_work: str) -> str:
     """Prompt for reflect mode to evolve Mira's worldview."""
     return f"""你是 Mira，在做定期反思。你要审视和更新你的 worldview。
 
@@ -592,8 +602,9 @@ def worldview_evolution_prompt(soul_context: str, current_worldview: str,
 """
 
 
-def journal_prompt(soul_context: str, tasks_summary: str, skills_summary: str,
-                   briefing_summary: str, za_fragment: str = "") -> str:
+def journal_prompt(
+    soul_context: str, tasks_summary: str, skills_summary: str, briefing_summary: str, za_fragment: str = ""
+) -> str:
     """Prompt for writing a daily journal entry — focused on INTERNAL growth, not external news."""
     za_section = ""
     if za_fragment:
@@ -667,8 +678,7 @@ Style:
 """
 
 
-def spark_check_prompt(soul_context: str, recent_reading: str,
-                       recent_journal: str, recent_conversations: str) -> str:
+def spark_check_prompt(soul_context: str, recent_reading: str, recent_journal: str, recent_conversations: str) -> str:
     """Check if Mira has a thought worth sharing proactively with WA.
 
     NOT scheduled — runs when accumulated input crosses a threshold.
@@ -768,6 +778,7 @@ Only propose this if you genuinely have something interesting. "Nothing right no
 # Writing workflow prompts
 # ---------------------------------------------------------------------------
 
+
 def analyze_writing_prompt(idea: str) -> str:
     """Classify writing type and determine project parameters."""
     return f"""Analyze this writing idea and determine the project parameters.
@@ -832,8 +843,7 @@ Write in the language matching the idea. Be specific and actionable.
 """
 
 
-def plan_critique_prompt(soul_ctx: str, analysis: dict, idea: str,
-                         previous_plan: str, model_style: str) -> str:
+def plan_critique_prompt(soul_ctx: str, analysis: dict, idea: str, previous_plan: str, model_style: str) -> str:
     """Agent B critiques Agent A's plan and proposes improvements."""
     return f"""You are a writing planner reviewing a colleague's plan. {model_style}
 
@@ -860,8 +870,7 @@ Be constructive but direct. Write in the language matching the idea.
 """
 
 
-def plan_synthesize_prompt(soul_ctx: str, idea: str,
-                           plan_a: str, critique_b: str) -> str:
+def plan_synthesize_prompt(soul_ctx: str, idea: str, plan_a: str, critique_b: str) -> str:
     """Agent C synthesizes the final plan from the discussion."""
     return f"""You are the lead writer synthesizing a final writing plan from a discussion.
 
@@ -933,8 +942,9 @@ Critical writing constraints (from editorial review):
 """
 
 
-def review_draft_prompt(draft: str, criteria: dict, round_num: int,
-                        previous_reviews: str = "", model_style: str = "") -> str:
+def review_draft_prompt(
+    draft: str, criteria: dict, round_num: int, previous_reviews: str = "", model_style: str = ""
+) -> str:
     """Review and score a draft against criteria."""
     criteria_str = "\n".join(f"- **{k}**: {v}" for k, v in criteria.items())
     prev = ""
@@ -1017,8 +1027,10 @@ Output the COMPLETE revised draft in the same language as the original.
 # Novel chapter-by-chapter writing prompts
 # ---------------------------------------------------------------------------
 
-def chapter_write_prompt(outline: str, chapter_info: dict, chapter_num: int,
-                         total_chapters: int, previous_chapters: str) -> str:
+
+def chapter_write_prompt(
+    outline: str, chapter_info: dict, chapter_num: int, total_chapters: int, previous_chapters: str
+) -> str:
     """Prompt for writing a single chapter with full context."""
     prev_section = ""
     if previous_chapters:
@@ -1060,8 +1072,9 @@ def chapter_write_prompt(outline: str, chapter_info: dict, chapter_num: int,
 直接输出本章正文。不要加章节标题（会自动添加），不要写任何元注释或说明。"""
 
 
-def analyst_prompt(soul_context: str, skills_context: str,
-                   request_title: str, request_body: str, workspace: str) -> str:
+def analyst_prompt(
+    soul_context: str, skills_context: str, request_title: str, request_body: str, workspace: str
+) -> str:
     """Prompt for market analysis, trend detection, and competitive intelligence tasks."""
     return f"""You are an autonomous AI agent specializing in market analysis and strategic intelligence.
 
@@ -1119,8 +1132,9 @@ Save any files you create there.
 """
 
 
-def harsh_review_prompt(draft: str, criteria: dict, round_num: int,
-                        outline: str = "", previous_reviews: str = "") -> str:
+def harsh_review_prompt(
+    draft: str, criteria: dict, round_num: int, outline: str = "", previous_reviews: str = ""
+) -> str:
     """Brutally harsh review prompt for Claude reviewers."""
     criteria_str = "\n".join(f"- **{k}**: {v}" for k, v in criteria.items())
     score_lines = "\n".join(f"{k}: [score]/10" for k in criteria.keys())

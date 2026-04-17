@@ -14,6 +14,7 @@ with output logged to /tmp/mira-sched-<name>.log.
 Security: jobs run as the current user, within Mira's permission boundary.
 No root, no sudo, no cron (launchd is the macOS way).
 """
+
 import json
 import logging
 import os
@@ -27,7 +28,9 @@ log = logging.getLogger("mira.scheduler")
 
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 SCHED_PREFIX = "com.mira.sched."
-SCHED_INDEX = Path.home() / "Sandbox" / "Mira" / "agents" / "shared" / "scheduled_jobs.json"
+from config import SCHEDULED_JOBS_FILE
+
+SCHED_INDEX = SCHEDULED_JOBS_FILE
 SCRIPTS_DIR = Path.home() / "Sandbox" / "bin" / "scheduled"
 PYTHON = "/opt/homebrew/bin/python3"
 
@@ -47,9 +50,7 @@ def _load_index() -> list[dict]:
 
 
 def _save_index(index: list[dict]):
-    SCHED_INDEX.write_text(
-        json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    SCHED_INDEX.write_text(json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _label(name: str) -> str:
@@ -72,8 +73,7 @@ def _log_path(name: str) -> str:
     return f"/tmp/mira-sched-{slug}.log"
 
 
-def schedule_interval(name: str, command: str, interval_seconds: int,
-                      description: str = "") -> tuple[bool, str]:
+def schedule_interval(name: str, command: str, interval_seconds: int, description: str = "") -> tuple[bool, str]:
     """Schedule a recurring job that runs every N seconds.
 
     Args:
@@ -87,17 +87,18 @@ def schedule_interval(name: str, command: str, interval_seconds: int,
     """
     if interval_seconds < 10:
         return False, "Interval must be at least 10 seconds"
-    return _create_job(name, command, description,
-                       schedule_type="interval",
-                       interval=interval_seconds)
+    return _create_job(name, command, description, schedule_type="interval", interval=interval_seconds)
 
 
-def schedule_calendar(name: str, command: str,
-                      hour: Optional[int] = None,
-                      minute: Optional[int] = None,
-                      weekday: Optional[int] = None,
-                      day: Optional[int] = None,
-                      description: str = "") -> tuple[bool, str]:
+def schedule_calendar(
+    name: str,
+    command: str,
+    hour: Optional[int] = None,
+    minute: Optional[int] = None,
+    weekday: Optional[int] = None,
+    day: Optional[int] = None,
+    description: str = "",
+) -> tuple[bool, str]:
     """Schedule a calendar-based job.
 
     Args:
@@ -127,14 +128,10 @@ def schedule_calendar(name: str, command: str,
     if not cal:
         return False, "Must specify at least one of: hour, minute, weekday, day"
 
-    return _create_job(name, command, description,
-                       schedule_type="calendar",
-                       calendar=cal)
+    return _create_job(name, command, description, schedule_type="calendar", calendar=cal)
 
 
-def schedule_once(name: str, command: str,
-                  at: datetime,
-                  description: str = "") -> tuple[bool, str]:
+def schedule_once(name: str, command: str, at: datetime, description: str = "") -> tuple[bool, str]:
     """Schedule a one-shot job at a specific datetime.
 
     The job auto-unloads after running. Cleanup via remove() later.
@@ -145,15 +142,12 @@ def schedule_once(name: str, command: str,
         "Hour": at.hour,
         "Minute": at.minute,
     }
-    return _create_job(name, command, description,
-                       schedule_type="once",
-                       calendar=cal)
+    return _create_job(name, command, description, schedule_type="once", calendar=cal)
 
 
-def _create_job(name: str, command: str, description: str,
-                schedule_type: str,
-                interval: int = 0,
-                calendar: dict = None) -> tuple[bool, str]:
+def _create_job(
+    name: str, command: str, description: str, schedule_type: str, interval: int = 0, calendar: dict = None
+) -> tuple[bool, str]:
     """Create and load a LaunchAgent job."""
     _ensure_dirs()
     label = _label(name)
@@ -208,7 +202,9 @@ echo "--- $(date) ---"
     try:
         subprocess.run(
             ["launchctl", "load", str(plist)],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except Exception as e:
         plist.unlink(missing_ok=True)
@@ -218,19 +214,21 @@ echo "--- $(date) ---"
     # Update index
     index = _load_index()
     index = [j for j in index if j["name"] != name]
-    index.append({
-        "name": name,
-        "label": label,
-        "description": description,
-        "command": command,
-        "schedule_type": schedule_type,
-        "interval": interval if schedule_type == "interval" else None,
-        "calendar": calendar if schedule_type in ("calendar", "once") else None,
-        "plist": str(plist),
-        "script": str(script),
-        "log": logfile,
-        "created": datetime.now().isoformat(),
-    })
+    index.append(
+        {
+            "name": name,
+            "label": label,
+            "description": description,
+            "command": command,
+            "schedule_type": schedule_type,
+            "interval": interval if schedule_type == "interval" else None,
+            "calendar": calendar if schedule_type in ("calendar", "once") else None,
+            "plist": str(plist),
+            "script": str(script),
+            "log": logfile,
+            "created": datetime.now().isoformat(),
+        }
+    )
     _save_index(index)
 
     log.info("Scheduled job: %s (%s)", name, schedule_type)
@@ -255,10 +253,12 @@ def remove(name: str) -> tuple[bool, str]:
         try:
             subprocess.run(
                 ["launchctl", "unload", str(plist)],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("launchctl unload failed for %s: %s", name, e)
         plist.unlink(missing_ok=True)
 
     script = _script_path(name)
@@ -284,10 +284,13 @@ def list_jobs() -> list[dict]:
         try:
             result = subprocess.run(
                 ["launchctl", "list", label],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             job["loaded"] = result.returncode == 0
-        except Exception:
+        except Exception as e:
+            log.debug("launchctl list check failed for %s: %s", label, e)
             job["loaded"] = False
 
         # Check last log line
@@ -296,7 +299,8 @@ def list_jobs() -> list[dict]:
             try:
                 lines = Path(logfile).read_text(encoding="utf-8").strip().splitlines()
                 job["last_log"] = lines[-1][:200] if lines else ""
-            except Exception:
+            except Exception as e:
+                log.debug("Failed to read log for %s: %s", job.get("name", "?"), e)
                 job["last_log"] = ""
     return index
 

@@ -4,6 +4,7 @@ Enables cross-referencing between memories, worldview sections, reading notes,
 learned skills, and episodes. Links are stored in PostgreSQL and can be
 traversed to surface related context during recall.
 """
+
 import logging
 from datetime import datetime
 
@@ -17,7 +18,8 @@ _COLUMN_CACHE: dict[str, bool] = {}
 def _get_conn():
     """Get PostgreSQL connection from memory store."""
     try:
-        from memory_store import get_store
+        from memory.store import get_store
+
         store = get_store()
         conn = store.conn
         if not conn:
@@ -35,7 +37,8 @@ def _ensure_table():
         return False
     try:
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS knowledge_links (
                 id SERIAL PRIMARY KEY,
                 user_id VARCHAR(100) NOT NULL DEFAULT 'ang',
@@ -48,7 +51,8 @@ def _ensure_table():
                 created_at TIMESTAMPTZ DEFAULT now(),
                 created_by VARCHAR(50) DEFAULT 'auto'
             )
-        """)
+        """
+        )
         cur.execute("ALTER TABLE knowledge_links ADD COLUMN IF NOT EXISTS user_id VARCHAR(100) NOT NULL DEFAULT 'ang'")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_kl_user_source ON knowledge_links(user_id, source_type, source_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_kl_user_target ON knowledge_links(user_id, target_type, target_id)")
@@ -88,11 +92,16 @@ def _has_user_id_column() -> bool:
     return present
 
 
-def add_link(source_type: str, source_id: str,
-             target_type: str, target_id: str,
-             relation: str, confidence: float = 0.5,
-             created_by: str = "auto",
-             user_id: str = "ang") -> bool:
+def add_link(
+    source_type: str,
+    source_id: str,
+    target_type: str,
+    target_id: str,
+    relation: str,
+    confidence: float = 0.5,
+    created_by: str = "auto",
+    user_id: str = "ang",
+) -> bool:
     """Add a link between two knowledge fragments.
 
     Returns True if link was created, False otherwise.
@@ -114,40 +123,50 @@ def add_link(source_type: str, source_id: str,
         cur = conn.cursor()
         # Skip if duplicate
         if _has_user_id_column():
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT 1 FROM knowledge_links
                 WHERE user_id = %s
                   AND source_type = %s AND source_id = %s
                   AND target_type = %s AND target_id = %s
                   AND relation = %s
                 LIMIT 1
-            """, (user_id, source_type, source_id, target_type, target_id, relation))
+            """,
+                (user_id, source_type, source_id, target_type, target_id, relation),
+            )
         else:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT 1 FROM knowledge_links
                 WHERE source_type = %s AND source_id = %s
                   AND target_type = %s AND target_id = %s
                   AND relation = %s
                 LIMIT 1
-            """, (source_type, source_id, target_type, target_id, relation))
+            """,
+                (source_type, source_id, target_type, target_id, relation),
+            )
         if cur.fetchone():
             cur.close()
             return False  # Already exists
 
         if _has_user_id_column():
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO knowledge_links
                     (user_id, source_type, source_id, target_type, target_id, relation, confidence, created_by)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (user_id, source_type, source_id, target_type, target_id, relation,
-                  confidence, created_by))
+            """,
+                (user_id, source_type, source_id, target_type, target_id, relation, confidence, created_by),
+            )
         else:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO knowledge_links
                     (source_type, source_id, target_type, target_id, relation, confidence, created_by)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (source_type, source_id, target_type, target_id, relation,
-                  confidence, created_by))
+            """,
+                (source_type, source_id, target_type, target_id, relation, confidence, created_by),
+            )
         conn.commit()
         cur.close()
         return True
@@ -169,24 +188,35 @@ def get_links(source_type: str, source_id: str, user_id: str = "ang") -> list[di
         _ensure_table()
         cur = conn.cursor()
         if _has_user_id_column():
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT target_type, target_id, relation, confidence, created_at
                 FROM knowledge_links
                 WHERE user_id = %s AND source_type = %s AND source_id = %s
                 ORDER BY confidence DESC
-            """, (user_id, source_type, source_id))
+            """,
+                (user_id, source_type, source_id),
+            )
         else:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT target_type, target_id, relation, confidence, created_at
                 FROM knowledge_links
                 WHERE source_type = %s AND source_id = %s
                 ORDER BY confidence DESC
-            """, (source_type, source_id))
+            """,
+                (source_type, source_id),
+            )
         rows = cur.fetchall()
         cur.close()
         return [
-            {"target_type": r[0], "target_id": r[1], "relation": r[2],
-             "confidence": r[3], "created_at": r[4].isoformat() if r[4] else None}
+            {
+                "target_type": r[0],
+                "target_id": r[1],
+                "relation": r[2],
+                "confidence": r[3],
+                "created_at": r[4].isoformat() if r[4] else None,
+            }
             for r in rows
         ]
     except Exception as e:
@@ -203,24 +233,35 @@ def get_backlinks(target_type: str, target_id: str, user_id: str = "ang") -> lis
         _ensure_table()
         cur = conn.cursor()
         if _has_user_id_column():
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT source_type, source_id, relation, confidence, created_at
                 FROM knowledge_links
                 WHERE user_id = %s AND target_type = %s AND target_id = %s
                 ORDER BY confidence DESC
-            """, (user_id, target_type, target_id))
+            """,
+                (user_id, target_type, target_id),
+            )
         else:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT source_type, source_id, relation, confidence, created_at
                 FROM knowledge_links
                 WHERE target_type = %s AND target_id = %s
                 ORDER BY confidence DESC
-            """, (target_type, target_id))
+            """,
+                (target_type, target_id),
+            )
         rows = cur.fetchall()
         cur.close()
         return [
-            {"source_type": r[0], "source_id": r[1], "relation": r[2],
-             "confidence": r[3], "created_at": r[4].isoformat() if r[4] else None}
+            {
+                "source_type": r[0],
+                "source_id": r[1],
+                "relation": r[2],
+                "confidence": r[3],
+                "created_at": r[4].isoformat() if r[4] else None,
+            }
             for r in rows
         ]
     except Exception as e:
@@ -228,9 +269,9 @@ def get_backlinks(target_type: str, target_id: str, user_id: str = "ang") -> lis
         return []
 
 
-def auto_link(content: str, source_type: str, source_id: str,
-              top_k: int = 3, min_score: float = 0.5,
-              user_id: str = "ang") -> int:
+def auto_link(
+    content: str, source_type: str, source_id: str, top_k: int = 3, min_score: float = 0.5, user_id: str = "ang"
+) -> int:
     """Automatically discover and create links to related knowledge.
 
     Uses vector similarity from memory_store to find related entries,
@@ -240,7 +281,8 @@ def auto_link(content: str, source_type: str, source_id: str,
     """
     created = 0
     try:
-        from memory_store import get_store
+        from memory.store import get_store
+
         store = get_store()
         results = store.recall(content[:500], top_k=top_k, user_id=user_id)
 
@@ -265,8 +307,9 @@ def auto_link(content: str, source_type: str, source_id: str,
             if target_type == source_type and target_id == source_id:
                 continue
 
-            if add_link(source_type, source_id, target_type, target_id,
-                        "related", confidence=round(score, 3), user_id=user_id):
+            if add_link(
+                source_type, source_id, target_type, target_id, "related", confidence=round(score, 3), user_id=user_id
+            ):
                 created += 1
 
     except Exception as e:

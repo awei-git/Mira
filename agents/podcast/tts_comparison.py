@@ -6,6 +6,7 @@ saves output to comparison/ directory for listening.
 Usage:
     python tts_comparison.py
 """
+
 from __future__ import annotations
 
 import os
@@ -14,7 +15,7 @@ import time
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
-shared = str(here.parent .parent / "lib")
+shared = str(here.parent.parent / "lib")
 if shared not in sys.path:
     sys.path.insert(0, shared)
 
@@ -41,6 +42,7 @@ def test_gemini():
     try:
         from handler import _call_gemini_tts_text, _get_gemini_key
         from handler import VOICE_HOST_GEMINI, VOICE_MIRA_ZH_GEMINI
+
         key = _get_gemini_key()
         if not key:
             print("  No Gemini key found")
@@ -55,11 +57,28 @@ def test_gemini():
             if pcm:
                 # Convert PCM to MP3
                 import subprocess
+
                 out = OUTPUT_DIR / f"gemini_{label}.mp3"
                 proc = subprocess.run(
-                    ["ffmpeg", "-y", "-f", "s16le", "-ar", "24000", "-ac", "1",
-                     "-i", "pipe:0", "-codec:a", "libmp3lame", "-q:a", "2", str(out)],
-                    input=pcm, capture_output=True,
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-f",
+                        "s16le",
+                        "-ar",
+                        "24000",
+                        "-ac",
+                        "1",
+                        "-i",
+                        "pipe:0",
+                        "-codec:a",
+                        "libmp3lame",
+                        "-q:a",
+                        "2",
+                        str(out),
+                    ],
+                    input=pcm,
+                    capture_output=True,
                 )
                 print(f"  Saved: {out} ({out.stat().st_size // 1024} KB)")
             else:
@@ -77,6 +96,7 @@ def test_volcengine():
 
     # Check if credentials exist
     from config import load_secrets
+
     secrets = load_secrets()
     volc_config = secrets.get("volcengine", {})
     appid = volc_config.get("appid", "")
@@ -85,8 +105,8 @@ def test_volcengine():
     if not appid or not token:
         print("  No volcengine credentials in secrets.yml. Add:")
         print("    volcengine:")
-        print("      appid: \"your-app-id\"")
-        print("      token: \"your-access-token\"")
+        print('      appid: "your-app-id"')
+        print('      token: "your-access-token"')
         print("  Skipping.")
         return
 
@@ -97,14 +117,16 @@ def test_volcengine():
         voice_type = "BV701_streaming" if label == "host" else "BV700_streaming"
         print(f"  Generating {label} (voice: {voice_type})...")
         try:
-            payload = json.dumps({
-                "appid": appid,
-                "text": text,
-                "format": "mp3",
-                "voice_type": voice_type,
-                "sample_rate": 24000,
-                "speed": 1.0,
-            }).encode("utf-8")
+            payload = json.dumps(
+                {
+                    "appid": appid,
+                    "text": text,
+                    "format": "mp3",
+                    "voice_type": voice_type,
+                    "sample_rate": 24000,
+                    "speed": 1.0,
+                }
+            ).encode("utf-8")
 
             req = urllib.request.Request(
                 "https://openspeech.bytedance.com/api/v1/tts",
@@ -135,6 +157,7 @@ def test_cosyvoice():
         # Try secrets.yml
         try:
             from config import load_secrets
+
             secrets = load_secrets()
             dashscope_key = secrets.get("dashscope", {}).get("api_key", "")
         except Exception:
@@ -143,7 +166,7 @@ def test_cosyvoice():
     if not dashscope_key:
         print("  No DASHSCOPE_API_KEY. Add to secrets.yml:")
         print("    dashscope:")
-        print("      api_key: \"your-key\"")
+        print('      api_key: "your-key"')
         print("  Get one at: https://dashscope.console.aliyun.com/")
         print("  Skipping.")
         return
@@ -151,6 +174,7 @@ def test_cosyvoice():
     try:
         import dashscope
         from dashscope.audio.tts_v2 import SpeechSynthesizer
+
         dashscope.api_key = dashscope_key
 
         for label, text, voice in [

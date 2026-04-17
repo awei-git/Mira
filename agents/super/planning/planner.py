@@ -5,6 +5,7 @@ Extracted from task_worker.py. Contains:
 - _plan_task: main planner that calls Claude to decompose tasks
 - _synthesize_outputs: synthesizes multi-step outputs into coherent response
 """
+
 from __future__ import annotations
 
 import json
@@ -96,9 +97,15 @@ def _load_super_skills(task_content: str = "") -> str:
 # LLM-based task planning
 # ---------------------------------------------------------------------------
 
-def _plan_task(content: str, conversation: str = "", exec_history: str = "",
-               prior_context: str = "", allowed_agents: list[str] | None = None,
-               content_filter: bool = False) -> list[dict]:
+
+def _plan_task(
+    content: str,
+    conversation: str = "",
+    exec_history: str = "",
+    prior_context: str = "",
+    allowed_agents: list[str] | None = None,
+    content_filter: bool = False,
+) -> list[dict]:
     """Use LLM to decompose a request into an ordered list of steps.
 
     Each step is {"agent": "<name>", "instruction": "<what to do>"}.
@@ -114,13 +121,15 @@ def _plan_task(content: str, conversation: str = "", exec_history: str = "",
     if exec_history:
         context_parts.append(exec_history)
     if conversation:
-        context_parts.append(f"""
+        context_parts.append(
+            f"""
 IMPORTANT: This is a FOLLOW-UP message in an ongoing conversation. Read the history carefully.
 If the user's intent is clear from context, DO NOT use clarify — just execute the task.
 Only use clarify if the request is genuinely ambiguous even with the conversation history.
 If a previous round already produced content, reference it in your plan (e.g. use publish to publish existing output).
 
-{conversation}""")
+{conversation}"""
+        )
     if context_parts:
         conversation_context = "\n\n".join(context_parts) + f"\n\n---\nLatest message from user: {content[:500]}"
     else:
@@ -133,6 +142,7 @@ If a previous round already produced content, reference it in your plan (e.g. us
     cal_section = ""
     try:
         from evaluation.scorer import diagnose_scores
+
         diag = diagnose_scores()
         cal = diag.get("calibration_insights", "")
         if cal:
@@ -142,6 +152,7 @@ If a previous round already produced content, reference it in your plan (e.g. us
 
     # Build available agents list from registry (single source of truth)
     from agent_registry import get_registry
+
     _registry = get_registry()
     _all_agent_descs = {}
     for _name in _registry.list_agents():
@@ -150,7 +161,9 @@ If a previous round already produced content, reference it in your plan (e.g. us
             _handles = ", ".join(_m.handles) if _m.handles else _m.description
             _all_agent_descs[_name] = _handles
     # clarify is a virtual agent (not in registry)
-    _all_agent_descs["clarify"] = "Ask the user a question ONLY if the request is genuinely ambiguous and cannot be inferred"
+    _all_agent_descs["clarify"] = (
+        "Ask the user a question ONLY if the request is genuinely ambiguous and cannot be inferred"
+    )
     if allowed_agents:
         # Always include clarify + discussion as fallbacks
         agent_filter = set(allowed_agents) | {"clarify", "discussion"}
@@ -217,11 +230,12 @@ JSON:"""
     try:
         result = claude_think(prompt, timeout=20)
         if result:
-            match = re.search(r'\[.*\]', result, re.DOTALL)
+            match = re.search(r"\[.*\]", result, re.DOTALL)
             if match:
                 steps = json.loads(match.group())
                 # Validate against schema
                 from agent_registry import get_registry
+
                 valid_agents = get_registry().get_valid_agents() | {"clarify"}  # clarify is special, not in registry
                 validated = []
                 for s in steps:
@@ -238,8 +252,7 @@ JSON:"""
     return [{"agent": "general", "instruction": content}]
 
 
-def _synthesize_outputs(original_request: str, plan: list[dict],
-                        final_output: str) -> str:
+def _synthesize_outputs(original_request: str, plan: list[dict], final_output: str) -> str:
     """Synthesize the final output of a multi-step plan into a coherent response.
 
     Only called for multi-step plans where the last step's raw output
@@ -265,9 +278,7 @@ def _synthesize_outputs(original_request: str, plan: list[dict],
                 synthesis_skill = block.strip()
                 break
 
-    steps_summary = "; ".join(
-        f"{s['agent']}: {s['instruction'][:60]}" for s in plan
-    )
+    steps_summary = "; ".join(f"{s['agent']}: {s['instruction'][:60]}" for s in plan)
 
     prompt = f"""You are synthesizing the output of a multi-step agent plan into a single coherent response.
 

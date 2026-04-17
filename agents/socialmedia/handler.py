@@ -6,6 +6,7 @@ Usage from task_worker:
     from handler import handle as publish_handle
     publish_handle(workspace, task_id, content, sender, thread_id)
 """
+
 import json
 import logging
 import re
@@ -24,8 +25,18 @@ log = logging.getLogger("publisher")
 
 # Keywords that indicate the "content" is actually an error message, not real content
 _ERROR_KEYWORDS = [
-    "找不到", "错误", "失败", "exception", "traceback", "error",
-    "failed", "not found", "无法", "没有找到", "cannot", "unable",
+    "找不到",
+    "错误",
+    "失败",
+    "exception",
+    "traceback",
+    "error",
+    "failed",
+    "not found",
+    "无法",
+    "没有找到",
+    "cannot",
+    "unable",
 ]
 # Real articles are long; anything shorter than this is almost certainly not publishable
 _MIN_PUBLISH_CHARS = 200
@@ -68,13 +79,14 @@ PLATFORMS = {
 }
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str, **kwargs) -> str | None:
+def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs) -> str | None:
     """Handle a publish request. Returns summary or None on failure."""
 
     # Guard: Substack publishing disabled
     if SUBSTACK_PUBLISHING_DISABLED:
-        msg = "Substack 发布已被禁用（config.yml: publishing.substack_disabled=true）。如需重新启用，请修改 config.yml。"
+        msg = (
+            "Substack 发布已被禁用（config.yml: publishing.substack_disabled=true）。如需重新启用，请修改 config.yml。"
+        )
         (workspace / "output.md").write_text(msg, encoding="utf-8")
         return msg
 
@@ -110,11 +122,12 @@ def handle(workspace: Path, task_id: str, content: str,
     # which gets chained to publish agent and published verbatim).
     is_error, error_reason = _content_looks_like_error(article_text)
     if is_error:
-        msg = (f"🚫 发布被拒绝：{error_reason}。\n"
-               f"内容预览（前 150 字符）：{article_text[:150]!r}\n\n"
-               f"请检查上一步是否成功完成，确认内容正确后再重试。")
-        log.error("PUBLISH BLOCKED (content guard): %s | preview: %s",
-                  error_reason, article_text[:100])
+        msg = (
+            f"🚫 发布被拒绝：{error_reason}。\n"
+            f"内容预览（前 150 字符）：{article_text[:150]!r}\n\n"
+            f"请检查上一步是否成功完成，确认内容正确后再重试。"
+        )
+        log.error("PUBLISH BLOCKED (content guard): %s | preview: %s", error_reason, article_text[:100])
         (workspace / "output.md").write_text(msg, encoding="utf-8")
         return None  # None → task_worker marks as status="error"
 
@@ -124,6 +137,7 @@ def handle(workspace: Path, task_id: str, content: str,
         # Safety net: content guard above already blocked error-shaped payloads;
         # publish_to_substack() also enforces preflight + cooldown.
         from substack import publish_to_substack
+
         log.info("Auto-publishing manual request '%s' to Substack", title)
         result = publish_to_substack(
             title=title,
@@ -136,13 +150,12 @@ def handle(workspace: Path, task_id: str, content: str,
     else:
         result = f"平台 '{platform}' 暂不支持"
 
-    actual_result = result[len("NEEDS_APPROVAL:"):] if result.startswith("NEEDS_APPROVAL:") else result
+    actual_result = result[len("NEEDS_APPROVAL:") :] if result.startswith("NEEDS_APPROVAL:") else result
     (workspace / "output.md").write_text(actual_result, encoding="utf-8")
     return result
 
 
-def preflight(workspace: Path, task_id: str, content: str,
-              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
     """Execution preflight for publish actions before side effects happen."""
     plan = _plan_publish(content)
     if not plan:
@@ -199,8 +212,7 @@ def _load_preflight_cache(workspace: Path) -> dict | None:
     return data
 
 
-def _handle_note(content: str, inline_text: str | None,
-                 workspace: Path) -> str:
+def _handle_note(content: str, inline_text: str | None, workspace: Path) -> str:
     """Handle a Substack Notes publish request.
 
     Supports:
@@ -211,8 +223,7 @@ def _handle_note(content: str, inline_text: str | None,
     from notes import post_note, backfill_notes_for_articles
 
     # Check if this is a backfill request
-    backfill_keywords = ["之前", "过去", "所有", "backfill", "all", "past",
-                         "以前的文章", "历史"]
+    backfill_keywords = ["之前", "过去", "所有", "backfill", "all", "past", "以前的文章", "历史"]
     is_backfill = any(kw in content.lower() for kw in backfill_keywords)
 
     if is_backfill:
@@ -259,7 +270,7 @@ Example: {{"platform": "substack_note", "source": "", "title": "", "subtitle": "
     if not result:
         return None
 
-    match = re.search(r'\{.*?\}', result, re.DOTALL)
+    match = re.search(r"\{.*?\}", result, re.DOTALL)
     if match:
         try:
             return json.loads(match.group())
@@ -281,7 +292,8 @@ def _find_article_in_project(project_dir: Path) -> str | None:
     drafts_dir = project_dir / "drafts"
     if drafts_dir.exists():
         candidates = [
-            f for f in sorted(drafts_dir.glob("draft_r[2-9].md"), reverse=True)
+            f
+            for f in sorted(drafts_dir.glob("draft_r[2-9].md"), reverse=True)
             if f.stat().st_size >= _MIN_ARTICLE_BYTES
         ]
         if candidates:
@@ -346,6 +358,7 @@ def _resolve_content(source: str, original_msg: str) -> str | None:
 # Post-publish pipeline — hardcoded correct sequence
 # ---------------------------------------------------------------------------
 
+
 def post_publish_pipeline(slug: str, title: str, article_text: str):
     """Hardcoded post-publish pipeline. No guessing allowed.
 
@@ -358,8 +371,9 @@ def post_publish_pipeline(slug: str, title: str, article_text: str):
     """
     import sys
     from pathlib import Path
+
     podcast_dir = str(Path(__file__).resolve().parent.parent / "podcast")
-    shared_dir = str(Path(__file__).resolve().parent.parent .parent / "lib")
+    shared_dir = str(Path(__file__).resolve().parent.parent.parent / "lib")
     if podcast_dir not in sys.path:
         sys.path.insert(0, podcast_dir)
     if shared_dir not in sys.path:

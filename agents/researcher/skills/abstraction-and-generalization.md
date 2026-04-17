@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when a specific mathematical problem appears to be an instance of a broader pattern that, if generalized, would yield a more powerful and reusable result."
+---
+
 # Abstraction and Generalization
 
 **Tags:** math, research, abstraction, pattern-recognition, problem-solving

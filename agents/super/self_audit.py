@@ -25,8 +25,9 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 _AGENTS_DIR = _HERE.parent
 _MIRA_ROOT = _AGENTS_DIR.parent
-_LOGS_DIR = _MIRA_ROOT / "logs"
-_SHARED_DIR = _AGENTS_DIR .parent / "lib"
+from config import LOGS_DIR as _LOGS_DIR
+
+_SHARED_DIR = _AGENTS_DIR.parent / "lib"
 
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_SHARED_DIR))
@@ -38,6 +39,7 @@ log = logging.getLogger("self-audit")
 # ---------------------------------------------------------------------------
 # Step 1: Scan logs for recurring errors
 # ---------------------------------------------------------------------------
+
 
 def scan_logs(days: int = 1) -> list[dict]:
     """Scan recent log files for error patterns. Returns deduplicated findings."""
@@ -59,9 +61,9 @@ def scan_logs(days: int = 1) -> list[dict]:
         for line in text.splitlines():
             if "[ERROR]" in line or "[WARNING]" in line and "failed" in line.lower():
                 # Extract error template (remove timestamps, PIDs, specific IDs)
-                template = re.sub(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+', '', line)
-                template = re.sub(r'PID \d+', 'PID X', template)
-                template = re.sub(r'[0-9a-f]{6,}', 'ID', template)
+                template = re.sub(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+", "", line)
+                template = re.sub(r"PID \d+", "PID X", template)
+                template = re.sub(r"[0-9a-f]{6,}", "ID", template)
                 template = template.strip()[:120]
 
                 error_counts[template] = error_counts.get(template, 0) + 1
@@ -69,12 +71,14 @@ def scan_logs(days: int = 1) -> list[dict]:
     # Sort by frequency, report top errors
     for template, count in sorted(error_counts.items(), key=lambda x: -x[1])[:15]:
         severity = "critical" if count > 10 else "warning" if count > 3 else "info"
-        findings.append({
-            "type": "recurring_error",
-            "severity": severity,
-            "count": count,
-            "pattern": template,
-        })
+        findings.append(
+            {
+                "type": "recurring_error",
+                "severity": severity,
+                "count": count,
+                "pattern": template,
+            }
+        )
 
     return findings
 
@@ -83,50 +87,61 @@ def scan_logs(days: int = 1) -> list[dict]:
 # Step 2: Run test suite
 # ---------------------------------------------------------------------------
 
+
 def run_tests() -> list[dict]:
     """Run the test suite and report failures."""
     findings = []
     test_runner = _AGENTS_DIR / "run_tests.py"
     if not test_runner.exists():
-        findings.append({
-            "type": "missing_infrastructure",
-            "severity": "warning",
-            "description": "Test runner not found at agents/run_tests.py",
-        })
+        findings.append(
+            {
+                "type": "missing_infrastructure",
+                "severity": "warning",
+                "description": "Test runner not found at agents/run_tests.py",
+            }
+        )
         return findings
 
     try:
         result = subprocess.run(
             [sys.executable, str(test_runner)],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True,
+            text=True,
+            timeout=120,
             cwd=str(_MIRA_ROOT),
         )
         if result.returncode != 0:
             # Extract failures
             for line in result.stdout.splitlines():
                 if "FAIL" in line or "ERROR" in line:
-                    findings.append({
-                        "type": "test_failure",
-                        "severity": "critical",
-                        "description": line.strip(),
-                    })
+                    findings.append(
+                        {
+                            "type": "test_failure",
+                            "severity": "critical",
+                            "description": line.strip(),
+                        }
+                    )
         else:
             # Extract pass count
             for line in result.stdout.splitlines():
                 if "passed" in line:
                     log.info("Tests: %s", line.strip())
     except subprocess.TimeoutExpired:
-        findings.append({
-            "type": "test_timeout",
-            "severity": "warning",
-            "description": "Test suite timed out after 120s",
-        })
+        findings.append(
+            {
+                "type": "test_timeout",
+                "severity": "warning",
+                "description": "Test suite timed out after 120s",
+            }
+        )
     except Exception as e:
-        findings.append({
-            "type": "test_error",
-            "severity": "warning",
-            "description": f"Failed to run tests: {e}",
-        })
+        findings.append(
+            {
+                "type": "test_error",
+                "severity": "warning",
+                "description": f"Failed to run tests: {e}",
+            }
+        )
 
     return findings
 
@@ -144,13 +159,13 @@ _ANTI_PATTERNS = [
     },
     {
         "name": "bare_except",
-        "pattern": r'except\s*:',
+        "pattern": r"except\s*:",
         "description": "Bare except — should catch specific exceptions",
         "exclude": ["__pycache__"],
     },
     {
         "name": "truncation_limit",
-        "pattern": r'\[:(?:5000|8000|10000)\]',
+        "pattern": r"\[:(?:5000|8000|10000)\]",
         "description": "Suspicious truncation limit — may cause data loss",
         "exclude": ["__pycache__", "test_"],
     },
@@ -180,16 +195,18 @@ def scan_codebase() -> list[dict]:
             if matches:
                 # Find line numbers
                 for m in matches[:3]:  # Max 3 per file per pattern
-                    line_num = content[:m.start()].count("\n") + 1
-                    findings.append({
-                        "type": "anti_pattern",
-                        "severity": "info",
-                        "pattern_name": ap["name"],
-                        "description": ap["description"],
-                        "file": str(rel_path),
-                        "line": line_num,
-                        "match": content[m.start():m.end()][:60],
-                    })
+                    line_num = content[: m.start()].count("\n") + 1
+                    findings.append(
+                        {
+                            "type": "anti_pattern",
+                            "severity": "info",
+                            "pattern_name": ap["name"],
+                            "description": ap["description"],
+                            "file": str(rel_path),
+                            "line": line_num,
+                            "match": content[m.start() : m.end()][:60],
+                        }
+                    )
 
     return findings
 
@@ -197,6 +214,7 @@ def scan_codebase() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Step 4: Check manifest coverage
 # ---------------------------------------------------------------------------
+
 
 def check_manifests() -> list[dict]:
     """Verify all agent directories have valid manifests."""
@@ -210,11 +228,13 @@ def check_manifests() -> list[dict]:
 
         manifest = agent_dir / "manifest.json"
         if not manifest.exists():
-            findings.append({
-                "type": "missing_manifest",
-                "severity": "warning",
-                "description": f"Agent '{agent_dir.name}' has no manifest.json",
-            })
+            findings.append(
+                {
+                    "type": "missing_manifest",
+                    "severity": "warning",
+                    "description": f"Agent '{agent_dir.name}' has no manifest.json",
+                }
+            )
             continue
 
         try:
@@ -222,17 +242,21 @@ def check_manifests() -> list[dict]:
             required = ["name", "description", "entry_point"]
             for field in required:
                 if field not in data:
-                    findings.append({
-                        "type": "incomplete_manifest",
-                        "severity": "warning",
-                        "description": f"{agent_dir.name}/manifest.json missing '{field}'",
-                    })
+                    findings.append(
+                        {
+                            "type": "incomplete_manifest",
+                            "severity": "warning",
+                            "description": f"{agent_dir.name}/manifest.json missing '{field}'",
+                        }
+                    )
         except json.JSONDecodeError as e:
-            findings.append({
-                "type": "invalid_manifest",
-                "severity": "critical",
-                "description": f"{agent_dir.name}/manifest.json parse error: {e}",
-            })
+            findings.append(
+                {
+                    "type": "invalid_manifest",
+                    "severity": "critical",
+                    "description": f"{agent_dir.name}/manifest.json parse error: {e}",
+                }
+            )
 
     return findings
 
@@ -273,13 +297,12 @@ def _fix_hardcoded_path(finding: dict) -> dict | None:
         # Replace common hardcoded patterns with config imports
         # Only safe replacements — path to artifacts
         replacements = [
-            (r'Path\.home\(\)\s*/\s*"Sandbox/Mira/artifacts/photos"',
-             'ARTIFACTS_DIR / "photos"'),
-            (r'Path\.home\(\)\s*/\s*"Sandbox/Mira/artifacts"',
-             'ARTIFACTS_DIR'),
+            (r'Path\.home\(\)\s*/\s*"Sandbox/Mira/artifacts/photos"', 'ARTIFACTS_DIR / "photos"'),
+            (r'Path\.home\(\)\s*/\s*"Sandbox/Mira/artifacts"', "ARTIFACTS_DIR"),
         ]
 
         import re as _re
+
         changed = False
         for old_pattern, new_val in replacements:
             if _re.search(old_pattern, content):
@@ -291,11 +314,7 @@ def _fix_hardcoded_path(finding: dict) -> dict | None:
 
         # Ensure config import exists
         if "from config import" in content and "ARTIFACTS_DIR" not in content:
-            content = content.replace(
-                "from config import",
-                "from config import ARTIFACTS_DIR,",
-                1
-            )
+            content = content.replace("from config import", "from config import ARTIFACTS_DIR,", 1)
         elif "from config import" not in content:
             # Add import at top (after docstring)
             lines = content.split("\n")
@@ -336,6 +355,7 @@ def _fix_missing_manifest(finding: dict) -> dict | None:
     desc = finding.get("description", "")
     # Extract agent name from description
     import re as _re
+
     m = _re.match(r"Agent '(\w+)' has no manifest.json", desc)
     if not m:
         return None
@@ -379,6 +399,7 @@ def check_publish_pipeline() -> list[dict]:
     findings = []
     try:
         from config import ARTIFACTS_DIR
+
         sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
 
         audio_base = ARTIFACTS_DIR / "audio" / "podcast"
@@ -386,14 +407,15 @@ def check_publish_pipeline() -> list[dict]:
         # 1. Check published articles have podcasts
         try:
             from substack import get_recent_posts
+
             posts = get_recent_posts(limit=50)
         except Exception:
             posts = []
 
         from publish.manifest import load_manifest
+
         manifest = load_manifest()
-        skip_slugs = {slug for slug, e in manifest.get("articles", {}).items()
-                      if not e.get("auto_podcast", True)}
+        skip_slugs = {slug for slug, e in manifest.get("articles", {}).items() if not e.get("auto_podcast", True)}
 
         for post in posts:
             substack_slug = post.get("slug", "")
@@ -415,51 +437,63 @@ def check_publish_pipeline() -> list[dict]:
                         if (ep_dir / "episode.mp3").exists():
                             found = True
                         else:
-                            findings.append({
-                                "type": "incomplete_podcast",
-                                "severity": "warning",
-                                "description": f"'{title}' [{lang.upper()}]: directory exists but no episode.mp3",
-                            })
+                            findings.append(
+                                {
+                                    "type": "incomplete_podcast",
+                                    "severity": "warning",
+                                    "description": f"'{title}' [{lang.upper()}]: directory exists but no episode.mp3",
+                                }
+                            )
                         break
                 if not found and substack_slug not in skip_slugs:
                     # Check if any local slug matches
                     local_match = any(
                         d.name in substack_slug or substack_slug.startswith(d.name)
-                        for d in lang_dir.iterdir() if d.is_dir()
+                        for d in lang_dir.iterdir()
+                        if d.is_dir()
                     )
                     if not local_match:
-                        findings.append({
-                            "type": "missing_podcast",
-                            "severity": "warning",
-                            "description": f"Published article '{title}' has no {lang.upper()} podcast",
-                        })
+                        findings.append(
+                            {
+                                "type": "missing_podcast",
+                                "severity": "warning",
+                                "description": f"Published article '{title}' has no {lang.upper()} podcast",
+                            }
+                        )
 
         # 2. Check manifest for stuck articles
         from publish.manifest import get_stuck_articles
+
         stuck = get_stuck_articles(timeout_minutes=240)
         for entry in stuck:
-            findings.append({
-                "type": "stuck_pipeline",
-                "severity": "critical",
-                "description": f"Article '{entry.get('title', entry['slug'])}' stuck at '{entry.get('status')}' for >4h",
-            })
+            findings.append(
+                {
+                    "type": "stuck_pipeline",
+                    "severity": "critical",
+                    "description": f"Article '{entry.get('title', entry['slug'])}' stuck at '{entry.get('status')}' for >4h",
+                }
+            )
 
         # 3. Check manifest for errors
         for slug, entry in manifest.get("articles", {}).items():
             if entry.get("error"):
-                findings.append({
-                    "type": "pipeline_error",
-                    "severity": "critical",
-                    "description": f"Article '{slug}' has error: {entry['error']}",
-                })
+                findings.append(
+                    {
+                        "type": "pipeline_error",
+                        "severity": "critical",
+                        "description": f"Article '{slug}' has error: {entry['error']}",
+                    }
+                )
 
     except Exception as e:
         log.warning("Pipeline integrity check failed: %s", e)
-        findings.append({
-            "type": "audit_error",
-            "severity": "warning",
-            "description": f"Pipeline check itself failed: {e}",
-        })
+        findings.append(
+            {
+                "type": "audit_error",
+                "severity": "warning",
+                "description": f"Pipeline check itself failed: {e}",
+            }
+        )
 
     return findings
 
@@ -472,7 +506,9 @@ def _run_tests_quick() -> bool:
     try:
         result = subprocess.run(
             [sys.executable, str(test_runner)],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
             cwd=str(_MIRA_ROOT),
         )
         return result.returncode == 0
@@ -496,12 +532,14 @@ def attempt_fixes(findings: list[dict]) -> tuple[list[dict], list[dict]]:
             elif fix:
                 pending.append(fix)
         elif f.get("severity") in ("critical", "warning"):
-            pending.append({
-                "description": f.get("description", f.get("pattern", "")),
-                "action": "needs manual review",
-                "risk": "high",
-                "applied": False,
-            })
+            pending.append(
+                {
+                    "description": f.get("description", f.get("pattern", "")),
+                    "action": "needs manual review",
+                    "risk": "high",
+                    "applied": False,
+                }
+            )
 
     return applied, pending
 
@@ -510,9 +548,10 @@ def attempt_fixes(findings: list[dict]) -> tuple[list[dict], list[dict]]:
 # Step 5: Generate report + notify user
 # ---------------------------------------------------------------------------
 
-def generate_report(all_findings: list[dict],
-                    auto_fixed: list[dict] | None = None,
-                    pending_fixes: list[dict] | None = None) -> str:
+
+def generate_report(
+    all_findings: list[dict], auto_fixed: list[dict] | None = None, pending_fixes: list[dict] | None = None
+) -> str:
     """Format findings + fix results into a readable report."""
     auto_fixed = auto_fixed or []
     pending_fixes = pending_fixes or []
@@ -601,6 +640,7 @@ def notify_user(report: str):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def run_audit(logs_only: bool = False, tests_only: bool = False) -> list[dict]:
     """Run full audit pipeline. Returns all findings."""
     log.info("=== Mira Self-Audit ===")
@@ -645,7 +685,7 @@ def run_audit(logs_only: bool = False, tests_only: bool = False) -> list[dict]:
     print(report)
 
     # Save report locally
-    report_dir = _MIRA_ROOT / "logs" / "audits"
+    report_dir = _LOGS_DIR / "audits"
     report_dir.mkdir(exist_ok=True)
     today = datetime.now().strftime("%Y-%m-%d")
     (report_dir / f"{today}.txt").write_text(report, encoding="utf-8")
@@ -661,6 +701,7 @@ def run_audit(logs_only: bool = False, tests_only: bool = False) -> list[dict]:
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--logs-only", action="store_true")
     parser.add_argument("--tests-only", action="store_true")

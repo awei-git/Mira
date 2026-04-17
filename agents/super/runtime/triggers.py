@@ -6,6 +6,7 @@ a task should be dispatched. Extracted from core.py to reduce file size.
 State management: functions use lazy imports of load_state/save_state from
 core to avoid circular imports at module level.
 """
+
 import logging
 import random
 from datetime import datetime, time, timedelta
@@ -16,11 +17,13 @@ log = logging.getLogger("mira")
 
 def _load_state(user_id: str | None = None):
     from core import load_state
+
     return load_state(user_id=user_id)
 
 
 def _save_state(state, user_id: str | None = None):
     from core import save_state
+
     save_state(state, user_id=user_id)
 
 
@@ -28,15 +31,25 @@ def _save_state(state, user_id: str | None = None):
 # Config imports (safe — config has no dependency on core)
 # ---------------------------------------------------------------------------
 from config import (
-    EXPLORE_SOURCE_GROUPS, EXPLORE_COOLDOWN_MINUTES,
-    EXPLORE_ACTIVE_START, EXPLORE_ACTIVE_END, EXPLORE_MAX_PER_DAY,
-    REFLECT_DAY, REFLECT_TIME,
+    EXPLORE_SOURCE_GROUPS,
+    EXPLORE_COOLDOWN_MINUTES,
+    EXPLORE_ACTIVE_START,
+    EXPLORE_ACTIVE_END,
+    EXPLORE_MAX_PER_DAY,
+    REFLECT_DAY,
+    REFLECT_TIME,
     JOURNAL_TIME,
-    ANALYST_TIMES, ANALYST_BUSINESS_DAYS_ONLY,
-    ZHESI_TIME, RESEARCH_TIME, RESEARCH_TOPIC,
+    ANALYST_TIMES,
+    ANALYST_BUSINESS_DAYS_ONLY,
+    ZHESI_TIME,
+    RESEARCH_TIME,
+    RESEARCH_TOPIC,
     RESEARCH_LOG_TIME,
-    SOUL_QUESTION_TIME, BOOK_REVIEW_TIME,
-    SKILL_STUDY_SOURCE_GROUPS, SKILL_STUDY_COOLDOWN_HOURS, SKILL_STUDY_TIME,
+    SOUL_QUESTION_TIME,
+    BOOK_REVIEW_TIME,
+    SKILL_STUDY_SOURCE_GROUPS,
+    SKILL_STUDY_COOLDOWN_HOURS,
+    SKILL_STUDY_TIME,
     LOG_RETENTION_DAYS,
 )
 
@@ -46,13 +59,14 @@ from config import (
 # ---------------------------------------------------------------------------
 DAILY_PHOTO_TIME = time(7, 0)
 DAILY_REPORT_TIME = time(22, 0)
-GROWTH_COOLDOWN_HOURS = 2   # Run growth cycle every 2 hours (8:00-23:00 = ~7 runs/day)
-NOTES_COOLDOWN_HOURS = 4    # Run Notes cycle at most every 4 hours
+GROWTH_COOLDOWN_HOURS = 2  # Run growth cycle every 2 hours (8:00-23:00 = ~7 runs/day)
+NOTES_COOLDOWN_HOURS = 4  # Run Notes cycle at most every 4 hours
 
 
 # ---------------------------------------------------------------------------
 # Trigger functions
 # ---------------------------------------------------------------------------
+
 
 def should_explore() -> dict | None:
     """Check if Mira should explore now. Free-form, curiosity-driven.
@@ -338,6 +352,7 @@ def should_check_writing() -> bool:
 def should_podcast() -> tuple[str, str, str] | None:
     """Delegate podcast backlog selection to the podcast agent."""
     import sys as _sys
+
     podcast_dir = str(Path(__file__).resolve().parent.parent.parent / "podcast")
     if podcast_dir not in _sys.path:
         _sys.path.insert(0, podcast_dir)
@@ -442,6 +457,7 @@ def should_spark_check(user_id: str | None = None) -> bool:
     # Use a simple heuristic: check if memory has grown since last spark check
     last_memory_lines = state.get("spark_memory_lines", 0)
     from memory.soul import get_memory_size
+
     current_lines = get_memory_size()
     if current_lines <= last_memory_lines:
         return False
@@ -455,12 +471,14 @@ _IDLE_THINK_DAILY_COST_CAP = 5.0  # USD — stop idle-think when daily Claude co
 def _idle_think_cost_today() -> float:
     """Sum today's idle-think Claude cost from usage log."""
     from datetime import date
+
     usage_file = Path(__file__).resolve().parents[2] / "logs" / f"usage_{date.today().isoformat()}.jsonl"
     if not usage_file.exists():
         return 0.0
     total = 0.0
     try:
         import json as _json
+
         for line in usage_file.read_text(encoding="utf-8").splitlines():
             try:
                 d = _json.loads(line)
@@ -473,26 +491,41 @@ def _idle_think_cost_today() -> float:
     return total
 
 
+_IDLE_THINK_MIN_INTERVAL_MINUTES = 30  # hard floor: at most once per 30 minutes per user
+
+
 def should_idle_think(user_id: str = "ang") -> bool:
     """Returns True if emptiness has crossed the threshold and agent is idle.
 
-    The emptiness value accumulates over time when Mira is idle. More pending
-    questions = faster accumulation. When it exceeds the threshold, Mira
-    self-awakens to think through the top-priority question.
-
-    External input bypasses this entirely (handled in do_talk / cmd_run).
+    Hard constraint: at most once per 30 minutes per user, regardless of
+    emptiness value. This prevents oMLX from running non-stop.
     """
     try:
-        from evaluation.emptiness import tick, check_threshold
+        from evaluation.emptiness import tick, check_threshold, load_emptiness
         from task_manager import TaskManager
     except ImportError:
         return False
 
+    # --- Hard 30-minute minimum interval (per user) ---
+    state = load_emptiness(user_id=user_id)
+    last_think = state.get("last_think_at")
+    if last_think:
+        try:
+            from datetime import datetime, timezone
+
+            elapsed = datetime.now(timezone.utc) - datetime.fromisoformat(last_think.replace("Z", "+00:00"))
+            elapsed_min = elapsed.total_seconds() / 60.0
+            if elapsed_min < _IDLE_THINK_MIN_INTERVAL_MINUTES:
+                return False
+        except (ValueError, TypeError):
+            pass
+
     # Daily cost cap: stop burning Claude quota on idle thinking
     cost = _idle_think_cost_today()
     if cost >= _IDLE_THINK_DAILY_COST_CAP:
-        log.info("idle-think: daily Claude cost cap reached ($%.2f >= $%.2f), skipping",
-                 cost, _IDLE_THINK_DAILY_COST_CAP)
+        log.info(
+            "idle-think: daily Claude cost cap reached ($%.2f >= $%.2f), skipping", cost, _IDLE_THINK_DAILY_COST_CAP
+        )
         return False
 
     # Don't self-awaken if there are active tasks (external input takes priority)
@@ -632,8 +665,7 @@ def _should_backlog_executor() -> bool:
 
         backlog = ActionBacklog()
         has_work = any(
-            item.status == "approved" and item.executor == "self_evolve_proposal"
-            for item in backlog.get_active()
+            item.status == "approved" and item.executor == "self_evolve_proposal" for item in backlog.get_active()
         )
     except Exception:
         return False

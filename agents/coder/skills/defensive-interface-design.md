@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when designing code at a system boundary where external, untrusted data enters and must be validated before flowing inward."
+---
+
 # Defensive Interface Design
 
 **Tags:** coding, architecture, API, robustness

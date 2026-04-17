@@ -6,6 +6,7 @@ Provides the production task-worker contract:
 This replaces the old manifest entry that pointed directly at
 writing_workflow.start_project(), whose signature did not match the runtime.
 """
+
 from __future__ import annotations
 
 import logging
@@ -21,13 +22,23 @@ from writing_workflow import run_full_pipeline
 log = logging.getLogger("writer_agent")
 
 _QUICK_WRITE_SIGNALS = (
-    "短文", "短一点", "简短", "quick", "tweet", "note", "caption",
-    "100字", "200字", "300字", "brief", "一句", "一段",
+    "短文",
+    "短一点",
+    "简短",
+    "quick",
+    "tweet",
+    "note",
+    "caption",
+    "100字",
+    "200字",
+    "300字",
+    "brief",
+    "一句",
+    "一段",
 )
 
 
-def preflight(workspace: Path, task_id: str, content: str,
-              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
     """Execution preflight for writer tasks before any file artifacts are created."""
     result = preflight_check(
         "file_write",
@@ -42,8 +53,7 @@ def preflight(workspace: Path, task_id: str, content: str,
     return False, result.summary()
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str, **kwargs) -> str | None:
+def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs) -> str | None:
     """Handle a writing request and return a short summary."""
     title = _extract_title(content)
     bundle = build_runtime_context(
@@ -152,10 +162,7 @@ def _handle_full_write(workspace: Path, content: str, title: str, bundle) -> str
         log.error("Writer artifact verification failed: %s", verify.summary())
         return None
 
-    summary = (
-        f"Writing project complete: {title}. "
-        f"Project: {project_dir}."
-    )
+    summary = f"Writing project complete: {title}. " f"Project: {project_dir}."
     (workspace / "summary.txt").write_text(summary, encoding="utf-8")
     (workspace / "project_path.txt").write_text(str(project_dir), encoding="utf-8")
     return summary

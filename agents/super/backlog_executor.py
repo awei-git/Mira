@@ -1,4 +1,5 @@
 """Minimal executor for production-approved self-improvement actions."""
+
 from __future__ import annotations
 
 import json

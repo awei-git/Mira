@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when scanning peripheral discourse for early-stage indicators of emerging trends before they become obvious in mainstream sources."
+---
+
 # Weak Signal Detection
 
 **Tags:** explorer, trends, forecasting, horizon-scanning, research

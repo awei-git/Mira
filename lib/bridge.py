@@ -3,12 +3,14 @@
 Thin wrapper around MiraBridge library, adding Mira-specific defaults
 and backward-compatible aliases.
 """
+
 import sys
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 # Add MiraBridge to path
 from config import MIRA_ROOT as _MIRA_ROOT
+
 sys.path.insert(0, str(Path(_MIRA_ROOT).parent / "MiraBridge" / "python"))
 
 from mira_bridge import Bridge, _utc_iso, _msg_id, _normalize_sender, _atomic_write, _ensure_downloaded  # noqa: E402
@@ -79,6 +81,7 @@ class Message:
 # Mira — Bridge subclass with Mira-specific defaults
 # ---------------------------------------------------------------------------
 
+
 class Mira(Bridge):
     """Mira agent bridge — wraps MiraBridge with Mira defaults.
 
@@ -104,12 +107,8 @@ class Mira(Bridge):
 
     # --- v1 API compatibility aliases ---
 
-    def update_task_status(self, task_id: str, status: str,
-                           agent_message: str = "",
-                           result_path: str = ""):
-        self.update_status(task_id, status,
-                           agent_message=agent_message,
-                           result_path=result_path)
+    def update_task_status(self, task_id: str, status: str, agent_message: str = "", result_path: str = ""):
+        self.update_status(task_id, status, agent_message=agent_message, result_path=result_path)
 
     def emit_status(self, task_id: str, text: str, icon: str = "gear"):
         self.emit_status_card(task_id, text, icon)
@@ -123,11 +122,16 @@ class Mira(Bridge):
     def task_exists(self, task_id: str) -> bool:
         return self.item_exists(task_id)
 
-    def create_task(self, task_id: str, title: str, first_message: str,
-                    sender: str = "user", tags: list[str] | None = None,
-                    origin: str = "user") -> dict:
-        return self.create_item(task_id, "request", title, first_message,
-                                sender=sender, tags=tags, origin=origin)
+    def create_task(
+        self,
+        task_id: str,
+        title: str,
+        first_message: str,
+        sender: str = "user",
+        tags: list[str] | None = None,
+        origin: str = "user",
+    ) -> dict:
+        return self.create_item(task_id, "request", title, first_message, sender=sender, tags=tags, origin=origin)
 
     # --- Legacy no-ops ---
 
@@ -140,12 +144,10 @@ class Mira(Bridge):
     def mark_processed(self, msg_path: Path):
         pass
 
-    def post(self, content: str, sender: str = "agent",
-             thread_id: str = "", msg_type: str = "text") -> str:
+    def post(self, content: str, sender: str = "agent", thread_id: str = "", msg_type: str = "text") -> str:
         return _msg_id()
 
-    def reply(self, msg_id: str, recipient: str, content: str,
-              thread_id: str = "") -> str:
+    def reply(self, msg_id: str, recipient: str, content: str, thread_id: str = "") -> str:
         item_id = thread_id or msg_id
         self.append_message(item_id, "agent", content)
         return _msg_id()

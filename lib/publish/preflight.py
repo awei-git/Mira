@@ -4,8 +4,10 @@ All side-effect actions (publish, file write, external API, delete) must
 pass preflight before execution. Post-action verification confirms the
 side effect actually happened.
 """
+
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +22,8 @@ class CheckResult:
     name: str
     passed: bool
     message: str
+    proves: str = ""
+    assumes: str = ""
 
 
 @dataclass
@@ -28,6 +32,7 @@ class PreflightResult:
     action_type: str
     checks: list[CheckResult] = field(default_factory=list)
     blocking_reasons: list[str] = field(default_factory=list)
+    verification_trace: list[dict] = field(default_factory=list)
 
     def summary(self) -> str:
         status = "PASS" if self.passed else "BLOCKED"
@@ -39,15 +44,19 @@ class PreflightResult:
 # Minimum content lengths by action type
 # ---------------------------------------------------------------------------
 _MIN_CONTENT_LENGTH = {
-    "publish": 200,       # articles must be > 200 chars
-    "broadcast": 10,      # notes/messages
-    "file_write": 1,      # non-empty
+    "publish": 200,  # articles must be > 200 chars
+    "broadcast": 10,  # notes/messages
+    "file_write": 1,  # non-empty
 }
 
 # Protected paths that should never be overwritten without explicit intent
 _PROTECTED_PATHS = {
-    "CLAUDE.md", ".env", "credentials.json", "config.yaml",
-    "identity.md", "worldview.md",
+    "CLAUDE.md",
+    ".env",
+    "credentials.json",
+    "config.yaml",
+    "identity.md",
+    "worldview.md",
 }
 
 
@@ -72,10 +81,26 @@ def preflight_check(action_type: str, context: dict) -> PreflightResult:
     # Universal: instruction must be present
     instruction = context.get("instruction", "")
     if not instruction and action_type not in ("delete",):
-        checks.append(CheckResult("instruction_present", False, "No instruction provided"))
+        checks.append(
+            CheckResult(
+                "instruction_present",
+                False,
+                "No instruction provided",
+                proves="an instruction exists for this action",
+                assumes="presence of instruction correlates with intentional rather than accidental invocation",
+            )
+        )
         blockers.append("missing instruction")
     else:
-        checks.append(CheckResult("instruction_present", True, "ok"))
+        checks.append(
+            CheckResult(
+                "instruction_present",
+                True,
+                "ok",
+                proves="an instruction exists for this action",
+                assumes="presence of instruction correlates with intentional rather than accidental invocation",
+            )
+        )
 
     # Action-specific checks
     if action_type == "publish":
@@ -90,13 +115,24 @@ def preflight_check(action_type: str, context: dict) -> PreflightResult:
         _check_external_api(context, checks, blockers)
 
     passed = len(blockers) == 0
+    verification_trace = [
+        {
+            "check_name": c.name,
+            "passed": c.passed,
+            "proves": c.proves,
+            "assumes": c.assumes,
+        }
+        for c in checks
+    ]
     result = PreflightResult(
         passed=passed,
         action_type=action_type,
         checks=checks,
         blocking_reasons=blockers,
+        verification_trace=verification_trace,
     )
     log.info("PREFLIGHT %s: %s", "PASS" if passed else "BLOCKED", result.summary())
+    log.info("PREFLIGHT_TRACE [%s]: %s", action_type, json.dumps(verification_trace))
     return result
 
 
@@ -106,20 +142,59 @@ def _check_publish(ctx: dict, checks: list, blockers: list):
     min_len = _MIN_CONTENT_LENGTH["publish"]
 
     if not title:
-        checks.append(CheckResult("title_present", False, "No title"))
+        checks.append(
+            CheckResult(
+                "title_present",
+                False,
+                "No title",
+                proves="title field was provided",
+                assumes="non-empty title correlates with a properly prepared publish payload",
+            )
+        )
         blockers.append("missing title")
     else:
-        checks.append(CheckResult("title_present", True, f"title='{title[:50]}'"))
+        checks.append(
+            CheckResult(
+                "title_present",
+                True,
+                f"title='{title[:50]}'",
+                proves="title field was provided",
+                assumes="non-empty title correlates with a properly prepared publish payload",
+            )
+        )
 
     if not content:
-        checks.append(CheckResult("content_present", False, "No content"))
+        checks.append(
+            CheckResult(
+                "content_present",
+                False,
+                "No content",
+                proves="content field is non-empty",
+                assumes="non-empty content is the intended article payload",
+            )
+        )
         blockers.append("empty content")
     elif len(content) < min_len:
-        checks.append(CheckResult("content_length", False,
-                                  f"Content too short: {len(content)} < {min_len}"))
+        checks.append(
+            CheckResult(
+                "content_length",
+                False,
+                f"Content too short: {len(content)} < {min_len}",
+                proves="content is non-trivially long",
+                assumes="length correlates with completeness",
+            )
+        )
         blockers.append(f"content too short ({len(content)} chars)")
     else:
-        checks.append(CheckResult("content_length", True, f"{len(content)} chars"))
+        checks.append(
+            CheckResult(
+                "content_length",
+                True,
+                f"{len(content)} chars",
+                proves="content is non-trivially long",
+                assumes="length correlates with completeness",
+            )
+        )
 
 
 def _check_file_write(ctx: dict, checks: list, blockers: list):
@@ -127,7 +202,15 @@ def _check_file_write(ctx: dict, checks: list, blockers: list):
     content = ctx.get("content", "")
 
     if not path_str:
-        checks.append(CheckResult("path_present", False, "No path"))
+        checks.append(
+            CheckResult(
+                "path_present",
+                False,
+                "No path",
+                proves="a destination path was specified",
+                assumes="path presence means write target is intentional",
+            )
+        )
         blockers.append("missing file path")
         return
 
@@ -135,24 +218,72 @@ def _check_file_write(ctx: dict, checks: list, blockers: list):
 
     # Check parent exists
     if not path.parent.exists():
-        checks.append(CheckResult("parent_exists", False, f"Parent dir missing: {path.parent}"))
+        checks.append(
+            CheckResult(
+                "parent_exists",
+                False,
+                f"Parent dir missing: {path.parent}",
+                proves="destination directory exists on disk",
+                assumes="directory existence means the write will succeed",
+            )
+        )
         blockers.append(f"parent directory does not exist: {path.parent}")
     else:
-        checks.append(CheckResult("parent_exists", True, "ok"))
+        checks.append(
+            CheckResult(
+                "parent_exists",
+                True,
+                "ok",
+                proves="destination directory exists on disk",
+                assumes="directory existence means the write will succeed",
+            )
+        )
 
     # Check protected paths
     if path.name in _PROTECTED_PATHS:
-        checks.append(CheckResult("not_protected", False, f"Protected file: {path.name}"))
+        checks.append(
+            CheckResult(
+                "not_protected",
+                False,
+                f"Protected file: {path.name}",
+                proves="filename is not on the protected list",
+                assumes="protection list covers all critical config and identity files",
+            )
+        )
         blockers.append(f"refusing to overwrite protected file: {path.name}")
     else:
-        checks.append(CheckResult("not_protected", True, "ok"))
+        checks.append(
+            CheckResult(
+                "not_protected",
+                True,
+                "ok",
+                proves="filename is not on the protected list",
+                assumes="protection list covers all critical config and identity files",
+            )
+        )
 
     # Check content non-empty
     if not content:
-        checks.append(CheckResult("content_present", False, "Empty content"))
+        checks.append(
+            CheckResult(
+                "content_present",
+                False,
+                "Empty content",
+                proves="content is non-empty",
+                assumes="non-empty content is the intended file payload",
+            )
+        )
         blockers.append("empty content for file write")
     else:
-        checks.append(CheckResult("content_present", True, f"{len(content)} chars"))
+        checks.append(
+            CheckResult(
+                "content_present",
+                True,
+                f"{len(content)} chars",
+                proves="content is non-empty",
+                assumes="non-empty content is the intended file payload",
+            )
+        )
 
 
 def _check_delete(ctx: dict, checks: list, blockers: list):
@@ -160,46 +291,119 @@ def _check_delete(ctx: dict, checks: list, blockers: list):
     recoverable = ctx.get("recoverable", False)
 
     if not path_str:
-        checks.append(CheckResult("path_present", False, "No path"))
+        checks.append(
+            CheckResult(
+                "path_present",
+                False,
+                "No path",
+                proves="a target path was specified",
+                assumes="path presence means delete target is intentional",
+            )
+        )
         blockers.append("missing path for delete")
         return
 
     path = Path(path_str)
     if not path.exists():
-        checks.append(CheckResult("target_exists", False, f"Does not exist: {path}"))
+        checks.append(
+            CheckResult(
+                "target_exists",
+                False,
+                f"Does not exist: {path}",
+                proves="target path exists on disk",
+                assumes="existence means safe to attempt delete",
+            )
+        )
         blockers.append("target does not exist")
         return
 
-    checks.append(CheckResult("target_exists", True, str(path)))
+    checks.append(
+        CheckResult(
+            "target_exists",
+            True,
+            str(path),
+            proves="target path exists on disk",
+            assumes="existence means safe to attempt delete",
+        )
+    )
 
     if not recoverable:
-        checks.append(CheckResult("recoverable", False, "Not recoverable — needs backup"))
+        checks.append(
+            CheckResult(
+                "recoverable",
+                False,
+                "Not recoverable — needs backup",
+                proves="caller flagged operation as recoverable",
+                assumes="recoverable flag means a backup exists or the operation is reversible",
+            )
+        )
         blockers.append("delete is not recoverable — create backup first")
     else:
-        checks.append(CheckResult("recoverable", True, "ok"))
+        checks.append(
+            CheckResult(
+                "recoverable",
+                True,
+                "ok",
+                proves="caller flagged operation as recoverable",
+                assumes="recoverable flag means a backup exists or the operation is reversible",
+            )
+        )
 
 
 def _check_broadcast(ctx: dict, checks: list, blockers: list):
     content = ctx.get("content", "")
     if not content or len(content) < _MIN_CONTENT_LENGTH["broadcast"]:
-        checks.append(CheckResult("content_present", False, "Content too short"))
+        checks.append(
+            CheckResult(
+                "content_present",
+                False,
+                "Content too short",
+                proves="content meets minimum broadcast length",
+                assumes="length threshold distinguishes real content from stubs or error messages",
+            )
+        )
         blockers.append("broadcast content too short")
     else:
-        checks.append(CheckResult("content_present", True, f"{len(content)} chars"))
+        checks.append(
+            CheckResult(
+                "content_present",
+                True,
+                f"{len(content)} chars",
+                proves="content meets minimum broadcast length",
+                assumes="length threshold distinguishes real content from stubs or error messages",
+            )
+        )
 
 
 def _check_external_api(ctx: dict, checks: list, blockers: list):
     endpoint = ctx.get("endpoint", "")
     if not endpoint:
-        checks.append(CheckResult("endpoint_present", False, "No endpoint"))
+        checks.append(
+            CheckResult(
+                "endpoint_present",
+                False,
+                "No endpoint",
+                proves="an endpoint URL was provided",
+                assumes="endpoint presence means the API call is intentional",
+            )
+        )
         blockers.append("missing API endpoint")
     else:
-        checks.append(CheckResult("endpoint_present", True, endpoint[:100]))
+        checks.append(
+            CheckResult(
+                "endpoint_present",
+                True,
+                endpoint[:100],
+                proves="an endpoint URL was provided",
+                assumes="endpoint presence means the API call is intentional",
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
 # Post-action artifact verification
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class VerifyResult:
@@ -214,8 +418,7 @@ class VerifyResult:
         return f"VERIFY {status} [{self.artifact_type}]: {detail}"
 
 
-def verify_artifact(artifact_type: str, path_or_url: str,
-                    expected: dict | None = None) -> VerifyResult:
+def verify_artifact(artifact_type: str, path_or_url: str, expected: dict | None = None) -> VerifyResult:
     """Verify that a side-effect action produced the expected artifact.
 
     Args:
@@ -304,8 +507,7 @@ def _verify_publish(identifier: str, expected: dict, checks: list, reasons: list
         content = matches[0].read_text(encoding="utf-8", errors="replace")
         min_len = expected.get("min_length", 200)
         if len(content) < min_len:
-            checks.append(CheckResult("content_length", False,
-                                      f"{len(content)} < {min_len}"))
+            checks.append(CheckResult("content_length", False, f"{len(content)} < {min_len}"))
             reasons.append(f"published content too short: {len(content)} chars")
         else:
             checks.append(CheckResult("content_length", True, f"{len(content)} chars"))

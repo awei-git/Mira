@@ -2,6 +2,7 @@
 
 Extracted from core.py — pure extraction, no logic changes.
 """
+
 import json
 import logging
 import sys
@@ -12,23 +13,34 @@ _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
-    BRIEFINGS_DIR, ARTIFACTS_DIR, MIRA_DIR, WORKSPACE_DIR,
+    BRIEFINGS_DIR,
+    ARTIFACTS_DIR,
+    MIRA_DIR,
+    WORKSPACE_DIR,
 )
+
 try:
     from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
 from memory.soul import (
-    load_soul, format_soul, append_memory, update_interests,
-    update_worldview, load_recent_reading_notes,
-    _atomic_write as atomic_write, _log_change,
+    load_soul,
+    format_soul,
+    append_memory,
+    update_interests,
+    update_worldview,
+    load_recent_reading_notes,
+    _atomic_write as atomic_write,
+    _log_change,
 )
 from llm import claude_think, claude_act
 from prompts import reflect_prompt, worldview_evolution_prompt
 
 from workflows.helpers import (
-    _gather_recent_briefings, _gather_recent_episodes,
-    _extract_section, _prune_episodes_from_reflect,
+    _gather_recent_briefings,
+    _gather_recent_episodes,
+    _extract_section,
+    _prune_episodes_from_reflect,
 )
 
 log = logging.getLogger("mira")
@@ -125,21 +137,21 @@ def _prune_worldview_by_decay():
 
         if age_days > DECAY_DAYS and access_count <= 2:
             pruned_headings.append(heading_key)
-            log.info("Worldview decay: pruning section '%s' (age=%d days, accesses=%d)",
-                     heading_key.strip(), age_days, access_count)
+            log.info(
+                "Worldview decay: pruning section '%s' (age=%d days, accesses=%d)",
+                heading_key.strip(),
+                age_days,
+                access_count,
+            )
         else:
             surviving_sections.append((heading, body))
 
     if pruned_headings:
         # Rewrite worldview with surviving sections only
-        new_content = preamble + "".join(
-            heading + body for heading, body in surviving_sections
-        )
+        new_content = preamble + "".join(heading + body for heading, body in surviving_sections)
         update_worldview(new_content)
-        log.info("Worldview pruned: removed %d section(s): %s",
-                 len(pruned_headings), [h[:40] for h in pruned_headings])
-        _log_change("PRUNE_WORLDVIEW", "worldview.md",
-                     f"removed {len(pruned_headings)} section(s)")
+        log.info("Worldview pruned: removed %d section(s): %s", len(pruned_headings), [h[:40] for h in pruned_headings])
+        _log_change("PRUNE_WORLDVIEW", "worldview.md", f"removed {len(pruned_headings)} section(s)")
 
     # Persist updated metadata
     try:
@@ -164,7 +176,21 @@ def do_reflect(user_id: str = "ang"):
     # Gather recent work from episode archives (not memory.md — it's a cognitive log now)
     recent_work = _gather_recent_episodes(days=7)
 
+    audit_summary: dict = {}
+    try:
+        from memory.soul_skills import skill_audit_summary
+
+        audit_summary = skill_audit_summary(days=7)
+    except Exception as _ae:
+        log.warning("Skill audit summary failed: %s", _ae)
+
     prompt = reflect_prompt(soul_ctx, recent_briefings, recent_work)
+    if audit_summary:
+        prompt += (
+            f"\n\n---\n\n## Skill audit failures this week\n"
+            f"{json.dumps(audit_summary, indent=2)}\n\n"
+            f"Are any of these patterns worth adding to the audit ruleset?"
+        )
     result = claude_think(prompt, timeout=300, tier="heavy")
 
     if not result:
@@ -198,6 +224,7 @@ def do_reflect(user_id: str = "ang"):
     try:
         recent_reading = load_recent_reading_notes(days=14, user_id=user_id)
         from config import WORLDVIEW_FILE
+
         current_wv = WORLDVIEW_FILE.read_text(encoding="utf-8") if WORLDVIEW_FILE.exists() else ""
         wv_prompt = worldview_evolution_prompt(soul_ctx, current_wv, recent_reading, recent_work)
         new_worldview = claude_think(wv_prompt, timeout=120, tier="heavy")
@@ -230,19 +257,19 @@ def do_reflect(user_id: str = "ang"):
             f"Now execute it. Your workspace is: {project_dir}\n"
             f"Save your output there. Write a summary.txt when done."
         )
-        output = claude_act(self_prompt, cwd=project_dir, tier="heavy")
+        output = claude_act(self_prompt, cwd=project_dir, tier="heavy", agent_id="researcher")
         if output:
             (project_dir / "output.md").write_text(output, encoding="utf-8")
             log.info("Self-initiated project completed: %s", project_slug)
     # --- Self-evaluation: score this reflection ---
     try:
         from evaluation.scorer import evaluate_reflect, record_event, compute_growth_velocity
-        old_wv = current_wv if 'current_wv' in dir() else ""
-        new_wv = new_worldview if 'new_worldview' in dir() else ""
+
+        old_wv = current_wv if "current_wv" in dir() else ""
+        new_wv = new_worldview if "new_worldview" in dir() else ""
         old_int = soul.get("interests", "")
         new_int = interests_section or old_int
-        r_scores = evaluate_reflect(old_wv, new_wv, old_int, new_int,
-                                     reflect_output=result)
+        r_scores = evaluate_reflect(old_wv, new_wv, old_int, new_int, reflect_output=result)
         # Also compute growth velocity during reflect
         r_scores.update(compute_growth_velocity())
         if r_scores:
@@ -253,10 +280,10 @@ def do_reflect(user_id: str = "ang"):
     # --- Score → Action: diagnose weak areas and generate improvement plan ---
     try:
         from evaluation.scorer import diagnose_scores, generate_improvement_plan
+
         diagnosis = diagnose_scores()
         if diagnosis["needs_action"]:
-            log.info("Score diagnosis: %d low, %d declining",
-                     len(diagnosis["low_scores"]), len(diagnosis["declining"]))
+            log.info("Score diagnosis: %d low, %d declining", len(diagnosis["low_scores"]), len(diagnosis["declining"]))
             plan = generate_improvement_plan(diagnosis)
             if plan:
                 append_memory(
@@ -268,23 +295,28 @@ def do_reflect(user_id: str = "ang"):
             # Feed low scores into action backlog
             try:
                 from ops.backlog import ActionBacklog, ActionItem
+
                 backlog = ActionBacklog()
                 for ls in diagnosis.get("low_scores", [])[:5]:
-                    backlog.add(ActionItem(
-                        title=f"Improve {ls['dim']}",
-                        description=f"Score {ls['score']:.1f} — below threshold",
-                        source="reflect",
-                        priority="high" if ls["score"] < 2.0 else "medium",
-                        target_dimension=ls["dim"],
-                    ))
+                    backlog.add(
+                        ActionItem(
+                            title=f"Improve {ls['dim']}",
+                            description=f"Score {ls['score']:.1f} — below threshold",
+                            source="reflect",
+                            priority="high" if ls["score"] < 2.0 else "medium",
+                            target_dimension=ls["dim"],
+                        )
+                    )
                 for dl in diagnosis.get("declining", [])[:3]:
-                    backlog.add(ActionItem(
-                        title=f"Stop decline in {dl['dim']}",
-                        description=f"Trend: {dl['scores']} (delta={dl['delta']:.2f})",
-                        source="reflect",
-                        priority="medium",
-                        target_dimension=dl["dim"],
-                    ))
+                    backlog.add(
+                        ActionItem(
+                            title=f"Stop decline in {dl['dim']}",
+                            description=f"Trend: {dl['scores']} (delta={dl['delta']:.2f})",
+                            source="reflect",
+                            priority="medium",
+                            target_dimension=dl["dim"],
+                        )
+                    )
                 backlog.expire_stale()
                 log.info("Reflect → backlog: %s", backlog.summary())
             except (ImportError, OSError) as e:
@@ -297,6 +329,7 @@ def do_reflect(user_id: str = "ang"):
     # Rebuild memory index after consolidation
     try:
         from memory.soul import rebuild_memory_index
+
         rebuild_memory_index(user_id=user_id)
     except Exception as e:
         log.warning("Memory index rebuild after reflect failed: %s", e)
@@ -304,6 +337,7 @@ def do_reflect(user_id: str = "ang"):
     # --- Knowledge lint: check for contradictions, stale facts, orphans ---
     try:
         from knowledge.lint import lint_all, generate_lint_report
+
         lint_results = lint_all(user_id=user_id)
         total_issues = sum(len(v) for k, v in lint_results.items() if isinstance(v, list))
         if total_issues > 0:
@@ -312,10 +346,8 @@ def do_reflect(user_id: str = "ang"):
             lint_dir.mkdir(parents=True, exist_ok=True)
             lint_path = lint_dir / f"lint_{datetime.now().strftime('%Y%m%d')}.md"
             atomic_write(lint_path, report_text)
-            _log_change("LINT", "knowledge_system",
-                        f"{total_issues} issues found")
-            log.info("Knowledge lint: %d issues, report saved to %s",
-                     total_issues, lint_path.name)
+            _log_change("LINT", "knowledge_system", f"{total_issues} issues found")
+            log.info("Knowledge lint: %d issues, report saved to %s", total_issues, lint_path.name)
         else:
             log.info("Knowledge lint: all clean")
     except Exception as e:
@@ -324,6 +356,7 @@ def do_reflect(user_id: str = "ang"):
     # --- Wiki maintenance: prune stale pages, refresh cross-links ---
     try:
         from workflows.wiki import do_wiki_maintenance
+
         do_wiki_maintenance(user_id=user_id)
     except Exception as e:
         log.warning("Wiki maintenance failed: %s", e)
@@ -331,10 +364,16 @@ def do_reflect(user_id: str = "ang"):
     # --- Weekly self-evaluation report to WA ---
     try:
         from evaluation.scorer import generate_weekly_report
+
         report = generate_weekly_report()
         if report:
             bridge = Mira(MIRA_DIR, user_id=user_id)
-            bridge.create_feed(f"feed_reflect_{datetime.now().strftime('%Y%m%d')}", "Weekly Reflection", report[:2000], tags=["reflection"])
+            bridge.create_feed(
+                f"feed_reflect_{datetime.now().strftime('%Y%m%d')}",
+                "Weekly Reflection",
+                report[:2000],
+                tags=["reflection"],
+            )
             bridge.create_task(
                 task_id=f"weekly_eval_{datetime.now().strftime('%Y%m%d')}",
                 title="Weekly self-evaluation",
@@ -350,9 +389,10 @@ def do_reflect(user_id: str = "ang"):
     # --- Proactive self-improvement: reading notes → architecture proposals ---
     try:
         import importlib.util
+
         spec = importlib.util.spec_from_file_location(
-            "self_improve",
-            str(Path(__file__).parent.parent.parent / "evaluator" / "self_improve.py"))
+            "self_improve", str(Path(__file__).parent.parent.parent / "evaluator" / "self_improve.py")
+        )
         si_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(si_mod)
         proposals_text = si_mod.run(days=14)
@@ -364,10 +404,12 @@ def do_reflect(user_id: str = "ang"):
     # --- Monthly public self-check article ---
     try:
         from evaluation.scorer import should_publish_monthly_report, generate_monthly_report_article
+
         if should_publish_monthly_report():
             article = generate_monthly_report_article()
             if article:
                 from substack import publish_article
+
                 result = publish_article(
                     title=article["title"],
                     article_text=article["body_markdown"],
@@ -380,6 +422,7 @@ def do_reflect(user_id: str = "ang"):
     # --- Self-evolution Layer 3: propose strategy variant based on reward trends ---
     try:
         from evolution import propose_strategy_variant, evaluate_variant
+
         # First evaluate any active variant from last week
         variant_dir = Path(__file__).resolve().parent.parent.parent / "shared" / "soul" / "variants"
         if variant_dir.exists():

@@ -9,6 +9,7 @@ The book text is read once on Monday and cached; daily reports draw from it.
 
 Entry point: main() — called from core.py via background dispatch.
 """
+
 import json
 import logging
 import os
@@ -30,7 +31,11 @@ _SHARED_DIR = _AGENTS_DIR.parent / "lib"
 sys.path.insert(0, str(_SHARED_DIR))
 
 from config import (
-    MIRA_DIR, SOUL_DIR, IDENTITY_FILE, WORLDVIEW_FILE, INTERESTS_FILE,
+    MIRA_DIR,
+    SOUL_DIR,
+    IDENTITY_FILE,
+    WORLDVIEW_FILE,
+    INTERESTS_FILE,
     ARTIFACTS_DIR,
 )
 from llm import claude_think, model_think
@@ -47,8 +52,7 @@ STATE_FILE = SOUL_DIR / "book_review_state.json"
 HISTORY_FILE = SOUL_DIR / "book_review_history.json"
 BOOKS_CACHE_DIR = SOUL_DIR / "book_cache"
 BOOKS_ARTIFACTS_DIR = ARTIFACTS_DIR / "books"
-ICLOUD_BOOKS = Path.home() / "Library" / "Mobile Documents" / \
-    "com~apple~CloudDocs" / "MtJoy" / "Books"
+ICLOUD_BOOKS = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "MtJoy" / "Books"
 USER_AGENT = "MiraAgent/1.0 (daily-reader)"
 MAX_HISTORY = 200
 MAX_TEXT_CHARS = 300_000
@@ -141,6 +145,7 @@ DAILY_ANGLES = [
 # HTML stripper
 # ---------------------------------------------------------------------------
 
+
 class _HTMLStripper(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -177,6 +182,7 @@ def strip_html(html: str) -> str:
 # State management
 # ---------------------------------------------------------------------------
 
+
 def _load_state() -> dict:
     """Load current week's reading state."""
     if not STATE_FILE.exists():
@@ -188,9 +194,7 @@ def _load_state() -> dict:
 
 
 def _save_state(state: dict):
-    STATE_FILE.write_text(
-        json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _load_history() -> list[dict]:
@@ -234,6 +238,7 @@ def _today_day_number(state: dict) -> int:
 # Book discovery
 # ---------------------------------------------------------------------------
 
+
 def _http_get(url: str, timeout: int = 20) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -258,17 +263,20 @@ def _discover_icloud_library(read_titles: set[str]) -> list[dict]:
         elif "by " in name.lower():
             idx = name.lower().index("by ")
             title = name[:idx].strip().rstrip(",").rstrip("_")
-            author = name[idx + 3:].strip()
-        for suffix in ["(Z-Library)", "(z-lib.org)", "- libgen.lc",
-                        "(Z_Library)", "_Z_Library", "Z_Library"]:
+            author = name[idx + 3 :].strip()
+        for suffix in ["(Z-Library)", "(z-lib.org)", "- libgen.lc", "(Z_Library)", "_Z_Library", "Z_Library"]:
             title = title.replace(suffix, "").strip()
             author = author.replace(suffix, "").strip()
         title = re.sub(r"^\d+[_-]\s*", "", title)
-        candidates.append({
-            "title": title, "author": author,
-            "epub_url": "", "epub_path": str(epub),
-            "source": "icloud_library",
-        })
+        candidates.append(
+            {
+                "title": title,
+                "author": author,
+                "epub_url": "",
+                "epub_path": str(epub),
+                "source": "icloud_library",
+            }
+        )
     log.info("iCloud library: %d candidates", len(candidates))
     return candidates
 
@@ -300,10 +308,14 @@ def _discover_standard_ebooks(read_titles: set[str]) -> list[dict]:
         epub_url = enc.get("url", "") if enc is not None else ""
         if not epub_url:
             continue
-        candidates.append({
-            "title": title.strip(), "author": author.strip(),
-            "epub_url": epub_url, "source": "standard_ebooks",
-        })
+        candidates.append(
+            {
+                "title": title.strip(),
+                "author": author.strip(),
+                "epub_url": epub_url,
+                "source": "standard_ebooks",
+            }
+        )
     log.info("Standard Ebooks: %d candidates", len(candidates))
     return candidates
 
@@ -328,10 +340,14 @@ def _discover_gutenberg(read_titles: set[str]) -> list[dict]:
             formats = book.get("formats", {})
             epub_url = formats.get("application/epub+zip", "")
             if epub_url:
-                candidates.append({
-                    "title": title, "author": author,
-                    "epub_url": epub_url, "source": "gutenberg",
-                })
+                candidates.append(
+                    {
+                        "title": title,
+                        "author": author,
+                        "epub_url": epub_url,
+                        "source": "gutenberg",
+                    }
+                )
     log.info("Gutenberg: %d candidates", len(candidates))
     return candidates
 
@@ -366,14 +382,15 @@ def pick_book(history: list[dict]) -> dict | None:
 # Epub download & text extraction
 # ---------------------------------------------------------------------------
 
+
 def download_epub(book: dict) -> Path | None:
     if book.get("epub_path"):
         local = Path(book["epub_path"])
         if local.exists():
             import subprocess
+
             try:
-                subprocess.run(["brctl", "download", str(local)],
-                               timeout=30, capture_output=True)
+                subprocess.run(["brctl", "download", str(local)], timeout=30, capture_output=True)
             except Exception:
                 pass
             if local.stat().st_size > 0:
@@ -404,7 +421,8 @@ def extract_text(epub_path: Path) -> str:
     try:
         with zipfile.ZipFile(epub_path) as zf:
             html_files = [
-                n for n in zf.namelist()
+                n
+                for n in zf.namelist()
                 if n.endswith((".xhtml", ".html", ".htm"))
                 and "toc" not in n.lower()
                 and "nav" not in n.lower()
@@ -434,6 +452,7 @@ def extract_text(epub_path: Path) -> str:
 # Report generation
 # ---------------------------------------------------------------------------
 
+
 def _load_mira_voice() -> str:
     parts = []
     for f in [IDENTITY_FILE, WORLDVIEW_FILE, INTERESTS_FILE]:
@@ -457,8 +476,7 @@ def _load_previous_reports(series_dir: Path, up_to_day: int) -> str:
     return "\n\n".join(parts)
 
 
-def write_daily_report(book: dict, book_text: str, day: int,
-                       series_dir: Path) -> str:
+def write_daily_report(book: dict, book_text: str, day: int, series_dir: Path) -> str:
     """Generate one day's reading report."""
     mira_voice = _load_mira_voice()
     title = book["title"]
@@ -525,9 +543,10 @@ def write_daily_report(book: dict, book_text: str, day: int,
 # Series management & delivery
 # ---------------------------------------------------------------------------
 
+
 def _get_series_dir(week_id: str, book: dict) -> Path:
     """Get/create the series directory for this week's book on iCloud."""
-    slug = re.sub(r'[^\w\u4e00-\u9fff-]', '_', book["title"][:40]).strip("_")
+    slug = re.sub(r"[^\w\u4e00-\u9fff-]", "_", book["title"][:40]).strip("_")
     series_name = f"{week_id}_{slug}"
     series_dir = BOOKS_ARTIFACTS_DIR / series_name
     series_dir.mkdir(parents=True, exist_ok=True)
@@ -571,6 +590,7 @@ def _deliver_to_bridge(book: dict, report: str, day: int, angle_name: str):
     """Push today's report to the Mira bridge so it shows up in the iOS app."""
     try:
         from bridge import Mira
+
         bridge = Mira(MIRA_DIR)
         today = datetime.now().strftime("%Y%m%d")
         item_id = f"book_day{day}_{today}"
@@ -584,7 +604,9 @@ def _deliver_to_bridge(book: dict, report: str, day: int, angle_name: str):
             title += f" — {book['author']}"
 
         bridge.create_feed(
-            item_id, title, report,
+            item_id,
+            title,
+            report,
             tags=["mira", "book-review", "reading", f"day-{day}"],
         )
         log.info("Report delivered to bridge: %s", item_id)
@@ -595,6 +617,7 @@ def _deliver_to_bridge(book: dict, report: str, day: int, angle_name: str):
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
+
 
 def main():
     log.info("=== Book Review pipeline starting ===")
@@ -613,8 +636,7 @@ def main():
             log.error("Failed to pick a book. Aborting.")
             return
 
-        log.info("This week's book: '%s' by %s [%s]",
-                 book["title"], book["author"], book["source"])
+        log.info("This week's book: '%s' by %s [%s]", book["title"], book["author"], book["source"])
 
         # Download and extract
         epub_path = download_epub(book)
@@ -647,13 +669,15 @@ def main():
         _save_state(state)
 
         # Add to history
-        history.append({
-            "week": week_id,
-            "title": book["title"],
-            "author": book["author"],
-            "source": book["source"],
-            "started": today,
-        })
+        history.append(
+            {
+                "week": week_id,
+                "title": book["title"],
+                "author": book["author"],
+                "source": book["source"],
+                "started": today,
+            }
+        )
         _save_history(history)
 
     # --- Check if today's report is already done ---
@@ -665,21 +689,27 @@ def main():
     # --- Load book text from cache ---
     text_cache_path = Path(state.get("text_cache", ""))
     if not text_cache_path.exists():
-        log.error("Book text cache missing: %s", text_cache_path)
-        return
+        # Fallback: try current BOOKS_CACHE_DIR with same filename
+        fallback = BOOKS_CACHE_DIR / text_cache_path.name
+        if fallback.exists():
+            log.warning("Text cache moved; using fallback: %s", fallback)
+            text_cache_path = fallback
+            state["text_cache"] = str(fallback)
+            _save_state(state)
+        else:
+            log.error("Book text cache missing: %s (fallback %s also missing)", text_cache_path, fallback)
+            return
     book_text = text_cache_path.read_text("utf-8")
     book = state["book"]
     series_dir = Path(state["series_dir"])
     series_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Generate today's report ---
-    log.info("Writing Day %d report (%s) for '%s'",
-             day_num, DAILY_ANGLES[day_num - 1]["name"], book["title"])
+    log.info("Writing Day %d report (%s) for '%s'", day_num, DAILY_ANGLES[day_num - 1]["name"], book["title"])
 
     report = write_daily_report(book, book_text, day_num, series_dir)
     if not report or len(report) < MIN_REPORT_CHARS:
-        log.error("Report too short (%d chars, need %d+). Aborting.",
-                  len(report) if report else 0, MIN_REPORT_CHARS)
+        log.error("Report too short (%d chars, need %d+). Aborting.", len(report) if report else 0, MIN_REPORT_CHARS)
         return
 
     log.info("Day %d report: %d chars", day_num, len(report))

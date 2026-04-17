@@ -3,6 +3,7 @@
 This is the bridge between PostgreSQL health data and the iOS app.
 Called by the daily health check and after every metric insertion.
 """
+
 import json
 import logging
 from datetime import datetime, timedelta, timezone, date
@@ -24,8 +25,7 @@ def write_summary_to_bridge(store, bridge_dir: Path, person_id: str):
 
     try:
         tmp = out_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str),
-                       encoding="utf-8")
+        tmp.write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         tmp.rename(out_file)
         log.info("Health summary written for %s (%d metrics)", person_id, len(summary.get("latest", {})))
     except OSError as e:
@@ -60,19 +60,35 @@ def build_summary(store, person_id: str) -> dict:
 
     # Trends: last 30 days for key metrics
     trends = {}
-    for mtype in ["weight", "sleep_hours", "sleep_score", "heart_rate",
-                   "body_fat", "hrv", "steps", "blood_oxygen",
-                   "active_minutes", "active_calories", "stress_high",
-                   "recovery_high", "readiness_score", "activity_score",
-                   "sedentary_hours", "workout", "resilience_level"]:
+    for mtype in [
+        "weight",
+        "sleep_hours",
+        "sleep_score",
+        "heart_rate",
+        "body_fat",
+        "hrv",
+        "steps",
+        "blood_oxygen",
+        "active_minutes",
+        "active_calories",
+        "stress_high",
+        "recovery_high",
+        "readiness_score",
+        "activity_score",
+        "sedentary_hours",
+        "workout",
+        "resilience_level",
+    ]:
         data = store.get_recent_metrics(person_id, mtype, days=30)
         if data:
             points = []
             for d in reversed(data):  # oldest first for charting
-                points.append({
-                    "value": d["value"],
-                    "date": d["date"].isoformat() if hasattr(d["date"], "isoformat") else str(d["date"]),
-                })
+                points.append(
+                    {
+                        "value": d["value"],
+                        "date": d["date"].isoformat() if hasattr(d["date"], "isoformat") else str(d["date"]),
+                    }
+                )
             trends[mtype] = points
 
     # 7-day stats for key metrics
@@ -89,11 +105,14 @@ def build_summary(store, person_id: str) -> dict:
 
     # Recent notes
     notes = store.get_recent_notes(person_id, days=7)
-    notes_list = [{
-        "date": str(n["date"]),
-        "category": n["category"],
-        "content": n["content"],
-    } for n in notes]
+    notes_list = [
+        {
+            "date": str(n["date"]),
+            "category": n["category"],
+            "content": n["content"],
+        }
+        for n in notes
+    ]
 
     return {
         "person_id": person_id,

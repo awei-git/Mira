@@ -8,6 +8,7 @@ Usage:
     beliefs = store.get_beliefs(domain="ai_systems")
     context = store.get_belief_context(["ai_systems", "security"])
 """
+
 from __future__ import annotations
 
 import fcntl
@@ -20,6 +21,7 @@ from pathlib import Path
 log = logging.getLogger("mira")
 
 from config import SOUL_DIR as _SOUL_DIR
+
 _BELIEFS_FILE = _SOUL_DIR / "beliefs.json"
 
 VALID_STANCES = {"strong", "moderate", "tentative", "exploring"}
@@ -99,8 +101,10 @@ class BeliefStore:
 
     def save(self):
         """Save beliefs to JSON file with fcntl locking."""
+
         def _save():
             self._write_beliefs_unlocked(self._beliefs)
+
         self._with_lock(fcntl.LOCK_EX, _save)
 
     def get_beliefs(self, domain: str | None = None) -> list[BeliefRecord]:
@@ -110,8 +114,7 @@ class BeliefStore:
             return list(self._beliefs)
         return [b for b in self._beliefs if b.domain == domain]
 
-    def get_belief_context(self, domains: list[str] | None = None,
-                           max_beliefs: int = 10) -> str:
+    def get_belief_context(self, domains: list[str] | None = None, max_beliefs: int = 10) -> str:
         """Format beliefs as a prompt-injectable context string."""
         self.load()
         if domains:
@@ -128,7 +131,12 @@ class BeliefStore:
 
         lines = ["## Mira's Current Positions\n"]
         for b in beliefs:
-            stance_marker = {"strong": "firmly", "moderate": "", "tentative": "tentatively", "exploring": "exploring"}.get(b.stance, "")
+            stance_marker = {
+                "strong": "firmly",
+                "moderate": "",
+                "tentative": "tentatively",
+                "exploring": "exploring",
+            }.get(b.stance, "")
             prefix = f"({stance_marker}) " if stance_marker else ""
             lines.append(f"- {prefix}{b.statement}")
             if b.evidence_against:
@@ -156,10 +164,14 @@ class BeliefStore:
         self._with_lock(fcntl.LOCK_EX, _add)
         return added
 
-    def update_belief(self, statement_prefix: str, *,
-                      new_evidence: str | None = None,
-                      new_stance: str | None = None,
-                      new_confidence: float | None = None) -> bool:
+    def update_belief(
+        self,
+        statement_prefix: str,
+        *,
+        new_evidence: str | None = None,
+        new_stance: str | None = None,
+        new_confidence: float | None = None,
+    ) -> bool:
         """Update an existing belief by matching statement prefix."""
         updated = False
 

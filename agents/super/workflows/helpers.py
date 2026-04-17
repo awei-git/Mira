@@ -2,6 +2,7 @@
 
 Extracted from core.py — pure extraction, no logic changes.
 """
+
 import json
 import logging
 import re
@@ -13,17 +14,25 @@ _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
-    BRIEFINGS_DIR, JOURNAL_DIR, SKILLS_INDEX, ARTIFACTS_DIR,
-    MIRA_DIR, EPISODES_DIR, WRITINGS_DIR, LOGS_DIR,
+    BRIEFINGS_DIR,
+    JOURNAL_DIR,
+    SKILLS_INDEX,
+    ARTIFACTS_DIR,
+    MIRA_DIR,
+    EPISODES_DIR,
+    WRITINGS_DIR,
+    LOGS_DIR,
     ZA_FILE,
 )
 from user_paths import artifact_name_for_user, user_journal_dir
+
 try:
     from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
 from memory.soul import (
-    append_memory, catalog_list,
+    append_memory,
+    catalog_list,
     _atomic_write as atomic_write,
 )
 from llm import model_think
@@ -34,9 +43,14 @@ log = logging.getLogger("mira")
 PUBLISH_COOLDOWN_DAYS = 2  # minimum days between Substack publications
 
 
-def _append_to_daily_feed(feed_type: str, section_title: str, content: str,
-                          source: str = "", tags: list[str] | None = None,
-                          user_id: str = "ang"):
+def _append_to_daily_feed(
+    feed_type: str,
+    section_title: str,
+    content: str,
+    source: str = "",
+    tags: list[str] | None = None,
+    user_id: str = "ang",
+):
     """Append content to a daily feed item (one item per type per day).
 
     feed_type: 'explore' or 'mira' — determines which daily item to append to.
@@ -65,8 +79,7 @@ def _append_to_daily_feed(feed_type: str, section_title: str, content: str,
     if bridge.item_exists(feed_id):
         bridge.append_message(feed_id, "agent", section)
     else:
-        bridge.create_feed(feed_id, feed_title, section,
-                           tags=tags or default_tags)
+        bridge.create_feed(feed_id, feed_title, section, tags=tags or default_tags)
 
 
 def _copy_to_briefings(filename: str, content: str):
@@ -76,6 +89,7 @@ def _copy_to_briefings(filename: str, content: str):
     and log clearly if it doesn't.
     """
     import time
+
     briefings_dir = ARTIFACTS_DIR / "briefings"
     briefings_dir.mkdir(parents=True, exist_ok=True)
     target = briefings_dir / filename
@@ -88,8 +102,9 @@ def _copy_to_briefings(filename: str, content: str):
             if target.exists() and target.stat().st_size > 0:
                 log.info("Copied to briefings: %s (%d bytes)", filename, target.stat().st_size)
                 return
-            log.warning("Briefing copy verification failed (attempt %d): %s exists=%s",
-                        attempt + 1, filename, target.exists())
+            log.warning(
+                "Briefing copy verification failed (attempt %d): %s exists=%s", attempt + 1, filename, target.exists()
+            )
         except OSError as e:
             log.error("Briefing copy failed (attempt %d): %s — %s", attempt + 1, filename, e)
         time.sleep(1)
@@ -109,6 +124,7 @@ def _sync_journals_to_briefings():
 
     try:
         from config import get_known_user_ids
+
         user_ids = get_known_user_ids()
     except Exception:
         user_ids = ["ang"]
@@ -138,6 +154,7 @@ def _sync_journals_to_briefings():
 def _slugify(title: str) -> str:
     """Simple slug from title."""
     import unicodedata
+
     slug = title.lower().strip()
     slug = re.sub(r"[^\w\s-]", "", slug)
     slug = re.sub(r"[\s_]+", "-", slug)
@@ -162,7 +179,8 @@ def _extract_deep_dive(briefing: str) -> dict | None:
     """Extract the deep-dive candidate from a briefing."""
     match = re.search(
         r"Deep Dive Candidate\s*\n+(.+?)(?:\n##|\Z)",
-        briefing, re.DOTALL,
+        briefing,
+        re.DOTALL,
     )
     if not match:
         return None
@@ -193,7 +211,8 @@ def _extract_comment_suggestions(briefing: str) -> list[dict]:
     # Match the section header (emoji or text variants)
     match = re.search(
         r"(?:💬\s*)?值得去聊两句\s*\n+(.+?)(?:\n##|\n---|\Z)",
-        briefing, re.DOTALL,
+        briefing,
+        re.DOTALL,
     )
     if not match:
         return []
@@ -210,11 +229,13 @@ def _extract_comment_suggestions(briefing: str) -> list[dict]:
         url_match = re.search(r"(https?://\S+)", item)
         if url_match:
             draft = re.sub(r"—\s*我想说：\s*", "— ", item)
-            suggestions.append({
-                "url": url_match.group(1).rstrip(")"),
-                "comment_draft": draft,
-                "reason": "",
-            })
+            suggestions.append(
+                {
+                    "url": url_match.group(1).rstrip(")"),
+                    "comment_draft": draft,
+                    "reason": "",
+                }
+            )
 
     return suggestions[:3]  # Max 3 suggestions
 
@@ -248,7 +269,7 @@ def _extract_recent_briefing_topics(days: int = 3) -> str:
             continue
         content = path.read_text(encoding="utf-8")
         # Extract markdown links as topic indicators
-        links = re.findall(r'\[([^\]]+)\]\(([^)]+)\)', content)
+        links = re.findall(r"\[([^\]]+)\]\(([^)]+)\)", content)
         for title, url in links[:15]:
             topics.append(f"- {title} ({url})")
         # Also grab any lines that look like topic headers
@@ -274,9 +295,40 @@ def _is_duplicate_topic(title: str, thesis: str) -> bool:
     """
     # Build keyword set from new topic
     import re as _re
-    stop = {"the","a","an","is","are","was","were","in","on","of","to","for","and","or","but","with","this","that","it","not","from","by","as","at","how","why","when","what"}
+
+    stop = {
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "in",
+        "on",
+        "of",
+        "to",
+        "for",
+        "and",
+        "or",
+        "but",
+        "with",
+        "this",
+        "that",
+        "it",
+        "not",
+        "from",
+        "by",
+        "as",
+        "at",
+        "how",
+        "why",
+        "when",
+        "what",
+    }
+
     def keywords(text):
-        words = set(_re.findall(r'[a-z]{3,}', text.lower()))
+        words = set(_re.findall(r"[a-z]{3,}", text.lower()))
         return words - stop
 
     new_kw = keywords(f"{title} {thesis}")
@@ -296,7 +348,7 @@ def _is_duplicate_topic(title: str, thesis: str) -> bool:
                     continue
                 overlap = len(new_kw & existing_kw) / max(len(new_kw), 1)
                 if overlap > 0.5:
-                    log.debug("Duplicate topic: '%s' overlaps %.0f%% with %s", title, overlap*100, f.name)
+                    log.debug("Duplicate topic: '%s' overlaps %.0f%% with %s", title, overlap * 100, f.name)
                     return True
             except OSError:
                 continue
@@ -386,6 +438,7 @@ def _gather_recent_episodes(days: int = 7) -> str:
 def _prune_episodes_from_reflect(pruning_text: str):
     """Delete old episodes listed in reflect output, preserve insights in memory."""
     import re as _re
+
     for line in pruning_text.strip().splitlines():
         line = line.strip()
         if not line.startswith("- "):
@@ -478,6 +531,7 @@ def _gather_usage_summary(date_str: str) -> str:
     try:
         # Aggregate by agent x provider x model
         from collections import defaultdict
+
         by_agent = defaultdict(lambda: defaultdict(lambda: {"prompt": 0, "completion": 0, "calls": 0}))
         by_provider = defaultdict(lambda: {"prompt": 0, "completion": 0, "calls": 0})
         total = {"prompt": 0, "completion": 0, "calls": 0}
@@ -506,8 +560,10 @@ def _gather_usage_summary(date_str: str) -> str:
         lines = []
         # Per-model totals
         lines.append(f"总计: {total['calls']}次调用, {total['prompt']+total['completion']:,} tokens")
-        for key, v in sorted(by_provider.items(), key=lambda x: -(x[1]["prompt"]+x[1]["completion"])):
-            lines.append(f"  {key}: {v['calls']}次, {v['prompt']+v['completion']:,} tok (in:{v['prompt']:,} out:{v['completion']:,})")
+        for key, v in sorted(by_provider.items(), key=lambda x: -(x[1]["prompt"] + x[1]["completion"])):
+            lines.append(
+                f"  {key}: {v['calls']}次, {v['prompt']+v['completion']:,} tok (in:{v['prompt']:,} out:{v['completion']:,})"
+            )
 
         # Per-agent breakdown
         lines.append("")
@@ -515,7 +571,7 @@ def _gather_usage_summary(date_str: str) -> str:
             agent_total = sum(m["prompt"] + m["completion"] for m in models.values())
             agent_calls = sum(m["calls"] for m in models.values())
             lines.append(f"{agent}: {agent_calls}次, {agent_total:,} tokens")
-            for key, v in sorted(models.items(), key=lambda x: -(x[1]["prompt"]+x[1]["completion"])):
+            for key, v in sorted(models.items(), key=lambda x: -(x[1]["prompt"] + x[1]["completion"])):
                 lines.append(f"  {key}: {v['calls']}次, {v['prompt']+v['completion']:,}")
 
         return "\n".join(lines)
@@ -526,7 +582,9 @@ def _gather_usage_summary(date_str: str) -> str:
 
 def _gather_today_comments() -> str:
     """Read comments posted today from growth_state.json."""
-    growth_file = _AGENTS_DIR / "socialmedia" / "growth_state.json"
+    from config import SOCIAL_STATE_DIR
+
+    growth_file = SOCIAL_STATE_DIR / "growth_state.json"
     if not growth_file.exists():
         return ""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -537,7 +595,7 @@ def _gather_today_comments() -> str:
             if entry.get("date", "")[:10] == today:
                 url = entry.get("url", "")
                 text = entry.get("text", "")[:120].replace("\n", " ")
-                lines.append(f"- {url}\n  \"{text}...\"")
+                lines.append(f'- {url}\n  "{text}..."')
     except (json.JSONDecodeError, OSError) as e:
         log.warning("Failed to read comment history: %s", e)
     return "\n".join(lines)
@@ -576,6 +634,7 @@ def _mine_za_ideas(count: int = 3) -> list[str]:
 def _mine_za_one(state: dict | None = None) -> str:
     """Pick one fragment from 杂.md, avoiding recently used ones."""
     import hashlib
+
     fragments = _mine_za_ideas(count=50)  # get many, then filter
     if not fragments:
         return ""
@@ -593,6 +652,7 @@ def _mine_za_one(state: dict | None = None) -> str:
             state["zhesi_used"] = []
 
     import random
+
     chosen = random.choice(available)
 
     # Track usage
@@ -611,6 +671,7 @@ def _days_since_last_publish() -> float:
             return 999.0
         latest = max(e["date"] for e in pubs)
         from datetime import date as _date
+
         pub_date = datetime.strptime(latest[:10], "%Y-%m-%d").date()
         return (datetime.now().date() - pub_date).days
     except (json.JSONDecodeError, OSError, KeyError, ValueError):
@@ -628,6 +689,7 @@ def harvest_observations(output_text: str, source: str = "", user_id: str = "ang
 
     try:
         from memory.store import get_store
+
         store = get_store()
     except Exception as e:
         log.warning("harvest_observations: memory_store unavailable: %s", e)
@@ -657,6 +719,7 @@ type 可以是:
 
         # Parse JSON array from result
         import json as _json
+
         # Find JSON array in response
         start = result.find("[")
         end = result.rfind("]") + 1
@@ -682,6 +745,7 @@ type 可以是:
             if ttype == "question":
                 try:
                     from evaluation.emptiness import add_question
+
                     add_question(content, priority=3.0, source=f"harvest:{source[:50]}", user_id=user_id)
                 except (ImportError, ModuleNotFoundError, OSError):
                     pass
@@ -692,8 +756,7 @@ type 可以是:
         log.warning("harvest_observations failed: %s", e)
 
 
-def _maybe_create_spontaneous_idea(thought_text: str, source: str = "",
-                                   user_id: str | None = None):
+def _maybe_create_spontaneous_idea(thought_text: str, source: str = "", user_id: str | None = None):
     """Create a writing idea if a thought connects to 2+ existing threads.
 
     Checks the thought against memory.md, worldview.md, and recent reading
@@ -762,7 +825,7 @@ def _maybe_create_spontaneous_idea(thought_text: str, source: str = "",
         if not result:
             return
 
-        match = re.search(r'\{.*\}', result, re.DOTALL)
+        match = re.search(r"\{.*\}", result, re.DOTALL)
         if not match:
             return
         decision = json.loads(match.group())
@@ -787,8 +850,7 @@ def _maybe_create_spontaneous_idea(thought_text: str, source: str = "",
         pass
 
     # Create idea file
-    slug = re.sub(r'[^a-z0-9\u4e00-\u9fff]+', '-',
-                  title.lower().replace(" ", "-"))[:50].strip("-")
+    slug = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "-", title.lower().replace(" ", "-"))[:50].strip("-")
     idea_path = WRITINGS_DIR / "ideas" / f"{slug}.md"
 
     if idea_path.exists():
@@ -900,7 +962,7 @@ def _prune_old_logs(logs_dir: Path, keep_days: int = 14):
                 # Truncate oversized logs (keep tail)
                 if log_file.stat().st_size > _LOG_MAX_BYTES:
                     content = log_file.read_bytes()
-                    log_file.write_bytes(content[-2 * 1024 * 1024:])
+                    log_file.write_bytes(content[-2 * 1024 * 1024 :])
 
                 # Compress logs older than 3 days (skip today's active log)
                 if file_date < compress_cutoff:

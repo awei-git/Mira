@@ -41,8 +41,10 @@ log = logging.getLogger("photo.handler")
 def _log_photo_failure(step: str, error_msg: str, slug: str = "photo"):
     try:
         from ops.failure_log import record_failure
-        record_failure(pipeline="photo", step=step, slug=slug,
-                       error_type="photo_agent_error", error_message=error_msg[:500])
+
+        record_failure(
+            pipeline="photo", step=step, slug=slug, error_type="photo_agent_error", error_message=error_msg[:500]
+        )
     except Exception:
         pass
 
@@ -53,12 +55,27 @@ _STYLE_DIR = _PHOTO_DIR / "styles"
 _REFERENCE_DIR = _PHOTO_DIR / "reference"
 
 # Supported image extensions
-_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".heic", ".webp",
-               ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".rw2", ".orf"}
+_IMAGE_EXTS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".tiff",
+    ".tif",
+    ".heic",
+    ".webp",
+    ".cr2",
+    ".cr3",
+    ".nef",
+    ".arw",
+    ".dng",
+    ".raf",
+    ".rw2",
+    ".orf",
+}
 
 # Signals that user approves the edit plan
 _APPROVE_PATTERNS = re.compile(
-    r'\b(ok|好的?|可以|开始|go|proceed|执行|没问题|就这样|lgtm|apply|修吧|改吧)\b',
+    r"\b(ok|好的?|可以|开始|go|proceed|执行|没问题|就这样|lgtm|apply|修吧|改吧)\b",
     re.IGNORECASE,
 )
 
@@ -69,8 +86,10 @@ _STATE_FILE = "photo_state.json"
 # Main handler (called by task_worker)
 # ---------------------------------------------------------------------------
 
-def preflight(workspace: Path, task_id: str, instruction: str,
-              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+
+def preflight(
+    workspace: Path, task_id: str, instruction: str, sender: str, thread_id: str, **kwargs
+) -> tuple[bool, str]:
     """Block photo jobs that have no resolvable image inputs or style context."""
     state = _load_state(workspace)
     phase = state.get("phase", "")
@@ -124,8 +143,7 @@ def preflight(workspace: Path, task_id: str, instruction: str,
     return False, "PREFLIGHT BLOCKED [photo]: 找不到要处理的图片或目录"
 
 
-def handle(workspace: Path, task_id: str, instruction: str,
-           sender: str, thread_id: str, **kwargs) -> str:
+def handle(workspace: Path, task_id: str, instruction: str, sender: str, thread_id: str, **kwargs) -> str:
     """Handle a photo editing task from Mira's task_worker."""
     workspace.mkdir(parents=True, exist_ok=True)
     state = _load_state(workspace)
@@ -169,27 +187,27 @@ def handle(workspace: Path, task_id: str, instruction: str,
 # ---------------------------------------------------------------------------
 
 _LEARN_HINTS = re.compile(
-    r'学习?|learn|style|风格|品味|taste|参考|reference|训练|train',
+    r"学习?|learn|style|风格|品味|taste|参考|reference|训练|train",
     re.IGNORECASE,
 )
 _BATCH_HINTS = re.compile(
-    r'批量|batch|所有|all\s+photos?|整个?文件夹|whole\s+folder|每[一张]',
+    r"批量|batch|所有|all\s+photos?|整个?文件夹|whole\s+folder|每[一张]",
     re.IGNORECASE,
 )
 _REVIEW_HINTS = re.compile(
-    r'打分|评分|score|rate|review|评[价估]|critique|评一下|几分|rating',
+    r"打分|评分|score|rate|review|评[价估]|critique|评一下|几分|rating",
     re.IGNORECASE,
 )
 _COMPARE_HINTS = re.compile(
-    r'对比|比较|compare|vs|原图|before.?after|改前|改后',
+    r"对比|比较|compare|vs|原图|before.?after|改前|改后",
     re.IGNORECASE,
 )
 _ANALYZE_HINTS = re.compile(
-    r'分析|analyz|看看|怎么样',
+    r"分析|analyz|看看|怎么样",
     re.IGNORECASE,
 )
 _PRESET_HINTS = re.compile(
-    r'preset|预设|xmp|lut|cube|导出.*风格|export.*style',
+    r"preset|预设|xmp|lut|cube|导出.*风格|export.*style",
     re.IGNORECASE,
 )
 
@@ -214,6 +232,7 @@ def _classify_intent(instruction: str) -> str:
 # Review / Score photos
 # ---------------------------------------------------------------------------
 
+
 def _review_photos(workspace: Path, state: dict, instruction: str) -> str:
     """Score and critique photos."""
     from reviewer import review_photo, review_batch, format_review, format_batch_review
@@ -224,9 +243,9 @@ def _review_photos(workspace: Path, state: dict, instruction: str) -> str:
 
     # Detect category from instruction
     category = "auto"
-    if re.search(r'风景|landscape|scenery|自然|nature', instruction, re.IGNORECASE):
+    if re.search(r"风景|landscape|scenery|自然|nature", instruction, re.IGNORECASE):
         category = "landscape"
-    elif re.search(r'人[像物]|portrait|face|街拍|street', instruction, re.IGNORECASE):
+    elif re.search(r"人[像物]|portrait|face|街拍|street", instruction, re.IGNORECASE):
         category = "portrait"
 
     if len(images) == 1:
@@ -299,6 +318,7 @@ def _compare_photos(workspace: Path, state: dict, instruction: str) -> str:
 # ---------------------------------------------------------------------------
 # Phase 1: Analyze photo(s) via vision model
 # ---------------------------------------------------------------------------
+
 
 def _analyze_photo(image_path: Path, style_profile: dict = None) -> str:
     """Analyze a single photo using Claude vision (via claude_act which can read images)."""
@@ -378,6 +398,7 @@ def _analyze_only(workspace: Path, state: dict, instruction: str) -> str:
 # Analyze + Plan edits (interactive)
 # ---------------------------------------------------------------------------
 
+
 def _analyze_and_plan(workspace: Path, state: dict, instruction: str) -> str:
     """Analyze photo(s) and propose an edit plan, then pause for review."""
     images = _extract_images(instruction)
@@ -451,8 +472,7 @@ def _revise_plan(workspace: Path, state: dict, feedback: str) -> str:
         _log_photo_failure("plan_revision_failed", "claude_think returned empty for plan revision")
         return "修改失败，请再说一次你想怎么调整。"
 
-    state["analyses"] = [{"file": a["file"], "name": a["name"], "analysis": revised}
-                         for a in analyses]
+    state["analyses"] = [{"file": a["file"], "name": a["name"], "analysis": revised} for a in analyses]
     _save_state(workspace, state)
 
     return f"方案已更新:\n\n{revised}\n\n---\n\n继续调整，或者说「ok」开始修图。"
@@ -461,6 +481,7 @@ def _revise_plan(workspace: Path, state: dict, feedback: str) -> str:
 # ---------------------------------------------------------------------------
 # Execute edits
 # ---------------------------------------------------------------------------
+
 
 def _run_edits(workspace: Path, state: dict) -> str:
     """Apply the planned edits to all images."""
@@ -525,6 +546,7 @@ def _run_edits(workspace: Path, state: dict) -> str:
 # Style learning
 # ---------------------------------------------------------------------------
 
+
 def _start_style_learning(workspace: Path, state: dict, instruction: str) -> str:
     """Start learning editing style from reference photos."""
     ref_dir = _extract_path(instruction)
@@ -562,9 +584,7 @@ def _start_style_learning(workspace: Path, state: dict, instruction: str) -> str
     _STYLE_DIR.mkdir(parents=True, exist_ok=True)
     style_name = state.get("style_name", "default")
     style_path = _STYLE_DIR / f"{style_name}.json"
-    style_path.write_text(
-        json.dumps(style_profile, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    style_path.write_text(json.dumps(style_profile, ensure_ascii=False, indent=2), encoding="utf-8")
 
     state["phase"] = ""
     state["style_profile"] = style_name
@@ -589,6 +609,7 @@ def _continue_style_learning(workspace: Path, state: dict, instruction: str) -> 
 # ---------------------------------------------------------------------------
 # Batch processing
 # ---------------------------------------------------------------------------
+
 
 def _start_batch(workspace: Path, state: dict, instruction: str) -> str:
     """Batch process a folder of images."""
@@ -615,7 +636,7 @@ def _start_batch(workspace: Path, state: dict, instruction: str) -> str:
     _save_state(workspace, state)
 
     # Analyze 2-3 representative images
-    sample = images[:min(3, len(images))]
+    sample = images[: min(3, len(images))]
     analyses = []
     for img in sample:
         log.info("Batch sample analysis: %s", img.name)
@@ -639,6 +660,7 @@ def _start_batch(workspace: Path, state: dict, instruction: str) -> str:
 # ---------------------------------------------------------------------------
 # Preset / LUT generation
 # ---------------------------------------------------------------------------
+
 
 def _generate_preset(workspace: Path, state: dict, instruction: str) -> str:
     """Generate a Lightroom XMP preset or .cube LUT from style profile."""
@@ -683,6 +705,7 @@ def _generate_preset(workspace: Path, state: dict, instruction: str) -> str:
 # Style profile management
 # ---------------------------------------------------------------------------
 
+
 def _load_active_style() -> dict | None:
     """Load the active style profile."""
     default_path = _STYLE_DIR / "default.json"
@@ -718,6 +741,7 @@ def _format_style_summary(profile: dict) -> str:
 # Skills context
 # ---------------------------------------------------------------------------
 
+
 def _load_skills_context() -> str:
     """Load relevant photo editing skills for prompt injection."""
     if not _SKILLS_DIR.exists():
@@ -735,6 +759,7 @@ def _load_skills_context() -> str:
 # ---------------------------------------------------------------------------
 # File/path utilities
 # ---------------------------------------------------------------------------
+
 
 def _find_images(directory: Path) -> list[Path]:
     """Find all image files in a directory (non-recursive)."""
@@ -767,8 +792,8 @@ def _extract_path(instruction: str) -> Path | None:
     patterns = [
         r'"([^"]+)"',
         r"'([^']+)'",
-        r'(/\S+)',
-        r'(~/\S+)',
+        r"(/\S+)",
+        r"(~/\S+)",
     ]
     for p in patterns:
         m = re.search(p, instruction)
@@ -781,7 +806,7 @@ def _extract_path(instruction: str) -> Path | None:
 
 def _extract_file_ref(instruction: str) -> Path | None:
     """Extract @file: references from iOS file picker."""
-    matches = re.findall(r'@file:(\S+)', instruction)
+    matches = re.findall(r"@file:(\S+)", instruction)
     for ref in matches:
         path = Path(ref).expanduser()
         if path.exists():
@@ -797,6 +822,7 @@ def _is_approval(text: str) -> bool:
 # State management
 # ---------------------------------------------------------------------------
 
+
 def _load_state(workspace: Path) -> dict:
     state_path = workspace / _STATE_FILE
     if state_path.exists():
@@ -809,14 +835,13 @@ def _load_state(workspace: Path) -> dict:
 
 def _save_state(workspace: Path, state: dict):
     state_path = workspace / _STATE_FILE
-    state_path.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
 # Standalone CLI
 # ---------------------------------------------------------------------------
+
 
 def main():
     parser = argparse.ArgumentParser(description="Photo editing agent")

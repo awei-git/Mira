@@ -10,6 +10,7 @@ This is fundamentally different from web_browser.py which just fetches
 static HTML. Surfer can handle JS-rendered SPAs, fill forms, click
 through multi-step flows, and take screenshots for visual grounding.
 """
+
 import json
 import logging
 import sys
@@ -21,8 +22,11 @@ sys.path.insert(0, str(_SURFER_DIR))
 sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
-    MIRA_DIR, SURFER_MAX_STEPS, SURFER_STEP_TIMEOUT,
-    SURFER_LLM_TIMEOUT, SURFER_EXTRACTION_TIMEOUT,
+    MIRA_DIR,
+    SURFER_MAX_STEPS,
+    SURFER_STEP_TIMEOUT,
+    SURFER_LLM_TIMEOUT,
+    SURFER_EXTRACTION_TIMEOUT,
 )
 from memory.soul import load_soul, format_soul
 from llm import claude_think
@@ -74,8 +78,7 @@ Available actions (output ONE as JSON):
 """
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str) -> str | None:
+def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: str) -> str | None:
     """Handle a browser automation request. Returns output text or None."""
     from browser import BrowserSession
 
@@ -112,15 +115,17 @@ def handle(workspace: Path, task_id: str, content: str,
             # Parse the action
             action = _parse_action(llm_response)
             if not action:
-                log.warning("Step %d: Could not parse action from: %s",
-                           step + 1, llm_response[:200])
+                log.warning("Step %d: Could not parse action from: %s", step + 1, llm_response[:200])
                 history.append({"step": step + 1, "error": "Could not parse action"})
                 continue
 
             action_type = action.get("action", "")
-            log.info("Step %d: %s %s", step + 1, action_type,
-                    json.dumps({k: v for k, v in action.items()
-                               if k != "action"}, ensure_ascii=False)[:100])
+            log.info(
+                "Step %d: %s %s",
+                step + 1,
+                action_type,
+                json.dumps({k: v for k, v in action.items() if k != "action"}, ensure_ascii=False)[:100],
+            )
 
             # Handle terminal actions
             if action_type == "done":
@@ -129,19 +134,20 @@ def handle(workspace: Path, task_id: str, content: str,
                 break
             elif action_type == "fail":
                 result = f"Task failed: {action.get('reason', 'Unknown reason')}"
-                history.append({"step": step + 1, "action": "fail",
-                               "reason": action.get("reason", "")})
+                history.append({"step": step + 1, "action": "fail", "reason": action.get("reason", "")})
                 break
 
             # Execute browser action
             browser_result = _execute_action(browser, action)
-            history.append({
-                "step": step + 1,
-                "action": action_type,
-                "detail": {k: str(v)[:80] for k, v in action.items() if k != "action"},
-                "ok": browser_result.ok if hasattr(browser_result, 'ok') else not browser_result.error,
-                "error": browser_result.error if browser_result.error else None,
-            })
+            history.append(
+                {
+                    "step": step + 1,
+                    "action": action_type,
+                    "detail": {k: str(v)[:80] for k, v in action.items() if k != "action"},
+                    "ok": browser_result.ok if hasattr(browser_result, "ok") else not browser_result.error,
+                    "error": browser_result.error if browser_result.error else None,
+                }
+            )
 
             # Update page state for next iteration
             if action_type == "extract":
@@ -164,17 +170,18 @@ def handle(workspace: Path, task_id: str, content: str,
     return result[:500]
 
 
-def _build_step_prompt(task: str, soul_ctx: str, page_state: str,
-                       history: list[dict], step: int, max_steps: int) -> str:
+def _build_step_prompt(
+    task: str, soul_ctx: str, page_state: str, history: list[dict], step: int, max_steps: int
+) -> str:
     history_text = ""
     if history:
         recent = history[-8:]  # keep context manageable
         lines = []
         for h in recent:
             s = f"Step {h['step']}: {h.get('action', '?')}"
-            if h.get('detail'):
+            if h.get("detail"):
                 s += f" {h['detail']}"
-            if h.get('error'):
+            if h.get("error"):
                 s += f" [ERROR: {h['error']}]"
             lines.append(s)
         history_text = "\n".join(lines)
@@ -205,8 +212,9 @@ Your action (JSON only):"""
 
 def _parse_action(response: str) -> dict | None:
     import re
+
     # Try to find JSON in the response
-    match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+    match = re.search(r"\{[^{}]*\}", response, re.DOTALL)
     if match:
         try:
             return json.loads(match.group())
@@ -225,6 +233,7 @@ def _parse_action(response: str) -> dict | None:
 def _execute_action(browser, action: dict):
     """Execute a browser action and return the result."""
     from browser import BrowserResult
+
     act = action.get("action", "")
 
     try:
@@ -235,21 +244,15 @@ def _execute_action(browser, action: dict):
         elif act == "fill":
             return browser.fill(action["selector"], action["value"])
         elif act == "type":
-            return browser.type_text(
-                action["selector"], action["text"],
-                delay=action.get("delay", 50))
+            return browser.type_text(action["selector"], action["text"], delay=action.get("delay", 50))
         elif act == "press":
             return browser.press(action["key"])
         elif act == "scroll":
-            return browser.scroll(
-                action.get("direction", "down"),
-                action.get("amount", 500))
+            return browser.scroll(action.get("direction", "down"), action.get("amount", 500))
         elif act == "select":
             return browser.select(action["selector"], action["value"])
         elif act == "wait":
-            return browser.wait_for(
-                action["selector"],
-                timeout=action.get("timeout", 10000))
+            return browser.wait_for(action["selector"], timeout=action.get("timeout", 10000))
         elif act == "screenshot":
             b64 = browser.screenshot()
             return BrowserResult(
@@ -300,8 +303,7 @@ def _format_page_state(result, extraction: str = "", screenshot_taken: bool = Fa
         parts.append(f"\nPage text (first 4000 chars):\n{text}")
 
     if result.links:
-        link_lines = [f"  [{l['text'][:50]}]({l['href']})"
-                     for l in result.links[:20]]
+        link_lines = [f"  [{l['text'][:50]}]({l['href']})" for l in result.links[:20]]
         parts.append(f"\nLinks:\n" + "\n".join(link_lines))
 
     if screenshot_taken:
@@ -314,7 +316,7 @@ def _format_output(task: str, result: str, history: list[dict]) -> str:
     steps_summary = []
     for h in history:
         line = f"- Step {h['step']}: {h.get('action', '?')}"
-        if h.get('error'):
+        if h.get("error"):
             line += f" (error: {h['error']})"
         steps_summary.append(line)
 

@@ -11,6 +11,7 @@ This file is the *contract* between Mira and WA for the research-build loop:
 
 Pushed to the iOS app at 21:00 every day as a `feed` item with type `research_log`.
 """
+
 from __future__ import annotations
 
 import json
@@ -24,6 +25,7 @@ _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import MIRA_DIR  # noqa: E402
+
 try:
     from bridge import Mira
 except (ImportError, ModuleNotFoundError):
@@ -49,6 +51,7 @@ LOG_DIR = SOUL_DIR / "research_logs"
 # ---------------------------------------------------------------------------
 # State helpers
 # ---------------------------------------------------------------------------
+
 
 def _load_state() -> dict:
     if not STATE_PATH.exists():
@@ -76,6 +79,7 @@ def _save_state(state: dict) -> None:
 # ---------------------------------------------------------------------------
 # Data gathering
 # ---------------------------------------------------------------------------
+
 
 def _gather_queue_summary() -> str:
     """Read queue.md and return a compact summary for the prompt."""
@@ -106,22 +110,30 @@ def _gather_recent_experiments(window_hours: int = 30) -> list[dict]:
             content = p.read_text(encoding="utf-8")[:2000]
         except OSError:
             content = ""
-        out.append({"file": p.name, "modified": mtime.isoformat(timespec="minutes"),
-                    "preview": content})
+        out.append({"file": p.name, "modified": mtime.isoformat(timespec="minutes"), "preview": content})
     return out
 
 
 def _gather_today_commits(window_hours: int = 30) -> list[str]:
     """Best-effort scan of git commits in the Mira repo touching research/."""
     import subprocess
+
     repo_root = _AGENTS_DIR.parent  # /Users/angwei/Sandbox/Mira
     try:
         out = subprocess.run(
-            ["git", "-C", str(repo_root), "log",
-             f"--since={window_hours} hours ago",
-             "--pretty=format:%h %s",
-             "--", "agents/shared/soul/research/"],
-            capture_output=True, text=True, timeout=15,
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "log",
+                f"--since={window_hours} hours ago",
+                "--pretty=format:%h %s",
+                "--",
+                "data/soul/research/",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return []
@@ -173,7 +185,9 @@ def _gather_cost_today() -> dict:
     """Best-effort daily cost gathering. Returns {'today': float, 'month': float}."""
     # Placeholder until cost-watcher subagent is online.
     # Pull from idle-think cost cap if present, else 0.
-    cost_state = _AGENTS_DIR / "shared" / "cost_state.json"
+    from config import DATA_DIR
+
+    cost_state = DATA_DIR / "state" / "cost_state.json"
     if cost_state.exists():
         try:
             data = json.loads(cost_state.read_text(encoding="utf-8"))
@@ -340,6 +354,7 @@ def _extract_needs(log_text: str) -> list[dict]:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 def _mark_run_in_global_state(today: str, user_id: str = "ang") -> None:
     """Set research_log_<date>=true in scheduler state so the trigger
     stops re-firing after success.
@@ -378,8 +393,7 @@ def do_research_log(user_id: str = "ang") -> None:
     experiments = _gather_recent_experiments()
     if experiments:
         experiments_summary = "\n\n".join(
-            f"### {e['file']} (modified {e['modified']})\n{e['preview']}"
-            for e in experiments
+            f"### {e['file']} (modified {e['modified']})\n{e['preview']}" for e in experiments
         )
     else:
         experiments_summary = "(no experiment files modified in the last 30 hours)"
@@ -396,7 +410,8 @@ def do_research_log(user_id: str = "ang") -> None:
             f"{n.get('type')}: {n.get('what')}"
             for n in pending
         )
-        if pending else "(no pending needs from previous days)"
+        if pending
+        else "(no pending needs from previous days)"
     )
 
     # --- prompt ---
@@ -452,13 +467,9 @@ def do_research_log(user_id: str = "ang") -> None:
         needs_payload = {
             "date": today,
             "user_id": user_id,
-            "needs": [
-                {**n, "status": "open", "opened": today, "id": f"{today}_{i}"}
-                for i, n in enumerate(needs)
-            ],
+            "needs": [{**n, "status": "open", "opened": today, "id": f"{today}_{i}"} for i, n in enumerate(needs)],
         }
-        atomic_write(NEEDS_DIR / f"{today}.json",
-                     json.dumps(needs_payload, indent=2, ensure_ascii=False))
+        atomic_write(NEEDS_DIR / f"{today}.json", json.dumps(needs_payload, indent=2, ensure_ascii=False))
         # merge into state pending list (dedupe by what+type)
         existing = {(n.get("type"), n.get("what")) for n in state.get("pending_needs", [])}
         for n in needs_payload["needs"]:
@@ -482,7 +493,8 @@ def do_research_log(user_id: str = "ang") -> None:
         item_id = f"feed_research_log_{today.replace('-', '')}"
         if not bridge.item_exists(item_id):
             bridge.create_item(
-                item_id, "feed",
+                item_id,
+                "feed",
                 f"Research Log {today}",
                 log_text,
                 tags=["mira", "research", "research_log"],

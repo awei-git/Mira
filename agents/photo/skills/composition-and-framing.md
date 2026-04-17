@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when evaluating or advising on how to place subjects and elements within a frame to create intentional visual hierarchy and meaning."
+---
+
 # Composition and Framing
 
 **Tags:** photo, editing, composition, framing

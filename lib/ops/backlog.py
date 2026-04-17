@@ -3,6 +3,7 @@
 Each reflect/audit cycle should produce concrete action items that get
 tracked through: proposed → approved → in_progress → verified / rejected / expired.
 """
+
 from __future__ import annotations
 
 import fcntl
@@ -14,7 +15,9 @@ from pathlib import Path
 
 log = logging.getLogger("mira")
 
-from config import SOUL_DIR as _SOUL_DIR; _SOUL_DIR  # imported from config
+from config import SOUL_DIR as _SOUL_DIR
+
+_SOUL_DIR  # imported from config
 _BACKLOG_FILE = _SOUL_DIR / "action_backlog.json"
 
 VALID_STATUSES = {
@@ -115,6 +118,7 @@ class ActionBacklog:
     def save(self):
         def _save():
             self._write_items_unlocked(self._items)
+
         self._with_lock(fcntl.LOCK_EX, _save)
 
     def add(self, item: ActionItem) -> bool:
@@ -167,9 +171,7 @@ class ActionBacklog:
     def get_active(self) -> list[ActionItem]:
         """Return items that need attention (proposed/approved/in_progress)."""
         self.load()
-        return [i for i in self._items
-                if i.status in ("proposed", "approved", "in_progress")
-                and not i.is_expired()]
+        return [i for i in self._items if i.status in ("proposed", "approved", "in_progress") and not i.is_expired()]
 
     def get_by_status(self, status: str) -> list[ActionItem]:
         self.load()
@@ -210,7 +212,8 @@ class ActionBacklog:
             nonlocal claimed
             items = self._read_items_unlocked()
             candidates = [
-                item for item in items
+                item
+                for item in items
                 if item.status == "approved"
                 and not item.is_expired()
                 and (executors is None or item.executor in executors)

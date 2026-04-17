@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when classifying an incoming task to route it to the correct specialized agent before any work begins."
+---
+
 # Task Routing Intelligence
 
 **Tags:** agents, orchestration, routing, task-planning, super-agent

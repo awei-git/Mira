@@ -38,8 +38,8 @@ APPS_ARTIFACT_DIR = ARTIFACTS_DIR / "apps"
 def _safe_filename(title: str) -> str:
     """Convert title to safe filename."""
     # Replace slashes and special chars
-    name = re.sub(r'[/\\:*?"<>|]', '-', title)
-    name = re.sub(r'\s+', '-', name.strip())
+    name = re.sub(r'[/\\:*?"<>|]', "-", title)
+    name = re.sub(r"\s+", "-", name.strip())
     return name[:80] or "untitled"
 
 

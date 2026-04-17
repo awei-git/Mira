@@ -3,6 +3,7 @@
 Each function gathers reward signals from one external source and converts
 them into experience records via record_experience().
 """
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,7 @@ from .experience import record_experience
 
 log = logging.getLogger("mira.evolution")
 
-from config import MIRA_ROOT; _AGENTS_DIR = MIRA_ROOT / "agents"
+from config import SOCIAL_STATE_DIR
 
 
 def collect_substack_rewards() -> list[str]:
@@ -24,7 +25,7 @@ def collect_substack_rewards() -> list[str]:
     Called during growth cycle. Deduplicates by tracking seen IDs per day.
     Returns list of IDs recorded.
     """
-    stats_file = _AGENTS_DIR / "socialmedia" / "publication_stats.json"
+    stats_file = SOCIAL_STATE_DIR / "publication_stats.json"
     if not stats_file.exists():
         return []
 
@@ -62,8 +63,7 @@ def collect_substack_rewards() -> list[str]:
             action=f"published article: {article.get('title', '')[:80]}",
             outcome=f"views={views} likes={likes} comments={comments} restacks={restacks}",
             reward={"views": views, "likes": likes, "comments": comments, "restacks": restacks},
-            context={"type": "article", "slug": article.get("slug", ""),
-                     "post_date": article.get("post_date", "")},
+            context={"type": "article", "slug": article.get("slug", ""), "post_date": article.get("post_date", "")},
             agent="writer",
         )
         seen.add(aid)

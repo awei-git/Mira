@@ -3,6 +3,7 @@
 Daily: distill today's experiences into reusable principles using oMLX.
 Principles are saved to soul/lessons/ and searchable via get_recent_lessons().
 """
+
 from __future__ import annotations
 
 import json
@@ -67,7 +68,8 @@ def extract_lessons(days: int = 1, user_id: str = "ang") -> str:
 **[适用范围]** 教训内容"""
 
     try:
-        from sub_agent import model_think
+        from llm import model_think
+
         result = model_think(prompt, model_name="omlx", timeout=90)
     except Exception as e:
         log.warning("extract_lessons: LLM call failed: %s", e)

@@ -3,6 +3,7 @@
 Run by the Mira scheduler at 9am local time.
 Generates a non-repetitive question grounded in Mira's current thinking.
 """
+
 import json
 import logging
 import sys
@@ -10,17 +11,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Add shared dir to path
-from config import MIRA_ROOT; _SHARED_DIR = MIRA_ROOT / "agents" / "shared"
+from config import MIRA_ROOT
+
+_SHARED_DIR = MIRA_ROOT / "agents" / "shared"
 sys.path.insert(0, str(_SHARED_DIR))
 
 from config import (
-    MIRA_DIR, MIRA_ROOT,
-    SOUL_DIR, READING_NOTES_DIR, WORLDVIEW_FILE, MEMORY_FILE,
+    MIRA_DIR,
+    MIRA_ROOT,
+    SOUL_DIR,
+    READING_NOTES_DIR,
+    WORLDVIEW_FILE,
+    MEMORY_FILE,
 )
-from sub_agent import claude_think
-from mira import Mira
+from llm import claude_think
+from bridge import Mira
 from user_paths import (
-    user_reading_notes_dir, user_soul_question_history_file, normalize_user_id,
+    user_reading_notes_dir,
+    user_soul_question_history_file,
+    normalize_user_id,
 )
 
 logging.basicConfig(

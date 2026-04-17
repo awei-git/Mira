@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when classifying the current macroeconomic regime (Goldilocks/Reflation/Stagflation/Deflation) to guide asset allocation decisions."
+---
+
 # Macro Regime Mapping
 
 **Tags:** analyst, macro, investing, regime, asset-allocation

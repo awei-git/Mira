@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when editing a recorded podcast episode to remove distractions through subtraction while preserving natural speech rhythm and authenticity."
+---
+
 # Audio Editing Discipline
 
 **Tags:** podcast, audio-editing, post-production, workflow, quality

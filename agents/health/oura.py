@@ -3,6 +3,7 @@
 Runs on Mac Studio, writes directly to PostgreSQL. No Apple Health dependency.
 API docs: https://cloud.ouraring.com/v2/docs
 """
+
 import json
 import logging
 from datetime import date, datetime, timedelta, timezone
@@ -113,8 +114,7 @@ class OuraClient:
             return []
 
 
-def fetch_and_store(store, access_token: str, person_id: str,
-                    days_back: int = 1) -> int:
+def fetch_and_store(store, access_token: str, person_id: str, days_back: int = 1) -> int:
     """Fetch Oura data and store in PostgreSQL. Returns number of metrics stored."""
     client = OuraClient(access_token)
     start = (date.today() - timedelta(days=days_back)).isoformat()
@@ -129,8 +129,11 @@ def fetch_and_store(store, access_token: str, person_id: str,
             # Use the most recent resting HR
             latest = rest_hrs[-1]
             store.insert_metric(
-                person_id, "heart_rate", float(latest["bpm"]),
-                unit="bpm", source="oura",
+                person_id,
+                "heart_rate",
+                float(latest["bpm"]),
+                unit="bpm",
+                source="oura",
                 recorded_at=datetime.fromisoformat(latest["timestamp"].replace("Z", "+00:00")),
             )
             count += 1
@@ -146,16 +149,22 @@ def fetch_and_store(store, access_token: str, person_id: str,
 
             # Sleep score
             if s.get("score"):
-                store.insert_metric(person_id, "sleep_score", float(s["score"]),
-                                    unit="", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id, "sleep_score", float(s["score"]), unit="", source="oura", recorded_at=recorded
+                )
                 count += 1
 
             # HRV (from contributors)
             contributors = s.get("contributors", {})
             if contributors.get("resting_heart_rate"):
-                store.insert_metric(person_id, "heart_rate",
-                                    float(contributors["resting_heart_rate"]),
-                                    unit="bpm", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "heart_rate",
+                    float(contributors["resting_heart_rate"]),
+                    unit="bpm",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
     except Exception as e:
         log.warning("Oura daily sleep fetch failed: %s", e)
@@ -169,16 +178,16 @@ def fetch_and_store(store, access_token: str, person_id: str,
 
             hrv = s.get("average_hrv")
             if hrv:
-                store.insert_metric(person_id, "hrv", float(hrv),
-                                    unit="ms", source="oura", recorded_at=recorded)
+                store.insert_metric(person_id, "hrv", float(hrv), unit="ms", source="oura", recorded_at=recorded)
                 count += 1
 
             # Sleep hours
             total_seconds = s.get("total_sleep_duration")
             if total_seconds:
                 hours = total_seconds / 3600.0
-                store.insert_metric(person_id, "sleep_hours", round(hours, 2),
-                                    unit="hours", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id, "sleep_hours", round(hours, 2), unit="hours", source="oura", recorded_at=recorded
+                )
                 count += 1
 
             # Note: temperature deviation comes from readiness contributors, not sleep
@@ -189,16 +198,26 @@ def fetch_and_store(store, access_token: str, person_id: str,
 
             # Respiratory rate
             if s.get("average_breath"):
-                store.insert_metric(person_id, "respiratory_rate",
-                                    float(s["average_breath"]),
-                                    unit="brpm", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "respiratory_rate",
+                    float(s["average_breath"]),
+                    unit="brpm",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
 
             # Lowest resting HR
             if s.get("lowest_heart_rate"):
-                store.insert_metric(person_id, "resting_hr_lowest",
-                                    float(s["lowest_heart_rate"]),
-                                    unit="bpm", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "resting_hr_lowest",
+                    float(s["lowest_heart_rate"]),
+                    unit="bpm",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
     except Exception as e:
         log.warning("Oura sleep detail fetch failed: %s", e)
@@ -210,17 +229,18 @@ def fetch_and_store(store, access_token: str, person_id: str,
             day = r.get("day", start)
             recorded = datetime.fromisoformat(f"{day}T08:00:00+00:00")
             if r.get("score"):
-                store.insert_metric(person_id, "readiness_score", float(r["score"]),
-                                    unit="", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id, "readiness_score", float(r["score"]), unit="", source="oura", recorded_at=recorded
+                )
                 count += 1
 
             # Temperature deviation from readiness
             contributors = r.get("contributors", {})
             temp = contributors.get("body_temperature")
             if temp is not None:
-                store.insert_metric(person_id, "temperature_deviation",
-                                    float(temp), unit="°C", source="oura",
-                                    recorded_at=recorded)
+                store.insert_metric(
+                    person_id, "temperature_deviation", float(temp), unit="°C", source="oura", recorded_at=recorded
+                )
                 count += 1
     except Exception as e:
         log.warning("Oura readiness fetch failed: %s", e)
@@ -233,8 +253,9 @@ def fetch_and_store(store, access_token: str, person_id: str,
             recorded = datetime.fromisoformat(f"{day}T08:00:00+00:00")
             avg = s.get("spo2_percentage", {}).get("average")
             if avg:
-                store.insert_metric(person_id, "blood_oxygen", float(avg),
-                                    unit="%", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id, "blood_oxygen", float(avg), unit="%", source="oura", recorded_at=recorded
+                )
                 count += 1
     except Exception as e:
         log.warning("Oura SpO2 fetch failed: %s", e)
@@ -247,38 +268,67 @@ def fetch_and_store(store, access_token: str, person_id: str,
             recorded = datetime.fromisoformat(f"{day}T20:00:00+00:00")
 
             if a.get("score"):
-                store.insert_metric(person_id, "activity_score", float(a["score"]),
-                                    unit="", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id, "activity_score", float(a["score"]), unit="", source="oura", recorded_at=recorded
+                )
                 count += 1
             if a.get("steps"):
-                store.insert_metric(person_id, "steps", float(a["steps"]),
-                                    unit="steps", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id, "steps", float(a["steps"]), unit="steps", source="oura", recorded_at=recorded
+                )
                 count += 1
             if a.get("active_calories"):
-                store.insert_metric(person_id, "active_calories", float(a["active_calories"]),
-                                    unit="kcal", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "active_calories",
+                    float(a["active_calories"]),
+                    unit="kcal",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
             if a.get("total_calories"):
-                store.insert_metric(person_id, "total_calories", float(a["total_calories"]),
-                                    unit="kcal", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "total_calories",
+                    float(a["total_calories"]),
+                    unit="kcal",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
             # Active time in minutes
             high = a.get("high_activity_time", 0) or 0
             medium = a.get("medium_activity_time", 0) or 0
             if high + medium > 0:
-                store.insert_metric(person_id, "active_minutes",
-                                    float((high + medium) / 60),
-                                    unit="min", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "active_minutes",
+                    float((high + medium) / 60),
+                    unit="min",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
             if a.get("sedentary_time"):
-                store.insert_metric(person_id, "sedentary_hours",
-                                    float(a["sedentary_time"]) / 3600,
-                                    unit="hours", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "sedentary_hours",
+                    float(a["sedentary_time"]) / 3600,
+                    unit="hours",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
             if a.get("inactivity_alerts"):
-                store.insert_metric(person_id, "inactivity_alerts",
-                                    float(a["inactivity_alerts"]),
-                                    unit="", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "inactivity_alerts",
+                    float(a["inactivity_alerts"]),
+                    unit="",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
     except Exception as e:
         log.warning("Oura activity fetch failed: %s", e)
@@ -291,19 +341,25 @@ def fetch_and_store(store, access_token: str, person_id: str,
             recorded = datetime.fromisoformat(f"{day}T20:00:00+00:00")
 
             if s.get("stress_high") is not None:
-                store.insert_metric(person_id, "stress_high", float(s["stress_high"]),
-                                    unit="min", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id, "stress_high", float(s["stress_high"]), unit="min", source="oura", recorded_at=recorded
+                )
                 count += 1
             if s.get("recovery_high") is not None:
-                store.insert_metric(person_id, "recovery_high", float(s["recovery_high"]),
-                                    unit="min", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "recovery_high",
+                    float(s["recovery_high"]),
+                    unit="min",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
             if s.get("day_summary"):
                 # Store as categorical: "restored"=1, "normal"=2, "stressful"=3
                 summary_map = {"restored": 1, "normal": 2, "stressful": 3}
                 val = summary_map.get(s["day_summary"], 2)
-                store.insert_metric(person_id, "stress_level", float(val),
-                                    unit="", source="oura", recorded_at=recorded)
+                store.insert_metric(person_id, "stress_level", float(val), unit="", source="oura", recorded_at=recorded)
                 count += 1
     except Exception as e:
         log.warning("Oura stress fetch failed: %s", e)
@@ -316,41 +372,49 @@ def fetch_and_store(store, access_token: str, person_id: str,
             recorded = datetime.fromisoformat(f"{day}T12:00:00+00:00")
             if w.get("start_datetime"):
                 try:
-                    recorded = datetime.fromisoformat(
-                        w["start_datetime"].replace("Z", "+00:00"))
+                    recorded = datetime.fromisoformat(w["start_datetime"].replace("Z", "+00:00"))
                 except Exception:
                     pass
 
             # Duration in minutes
             if w.get("start_datetime") and w.get("end_datetime"):
                 try:
-                    s_dt = datetime.fromisoformat(
-                        w["start_datetime"].replace("Z", "+00:00"))
-                    e_dt = datetime.fromisoformat(
-                        w["end_datetime"].replace("Z", "+00:00"))
+                    s_dt = datetime.fromisoformat(w["start_datetime"].replace("Z", "+00:00"))
+                    e_dt = datetime.fromisoformat(w["end_datetime"].replace("Z", "+00:00"))
                     duration_min = (e_dt - s_dt).total_seconds() / 60
                     activity = w.get("activity", "workout")
-                    store.insert_metric(person_id, "workout", duration_min,
-                                        unit="min", source=f"oura:{activity}",
-                                        recorded_at=recorded)
+                    store.insert_metric(
+                        person_id, "workout", duration_min, unit="min", source=f"oura:{activity}", recorded_at=recorded
+                    )
                     count += 1
                 except Exception:
                     pass
 
             if w.get("calories"):
-                store.insert_metric(person_id, "workout_calories", float(w["calories"]),
-                                    unit="kcal", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "workout_calories",
+                    float(w["calories"]),
+                    unit="kcal",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
             if w.get("distance"):
-                store.insert_metric(person_id, "workout_distance",
-                                    float(w["distance"]),
-                                    unit="m", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id, "workout_distance", float(w["distance"]), unit="m", source="oura", recorded_at=recorded
+                )
                 count += 1
             if w.get("intensity"):
                 intensity_map = {"easy": 1, "moderate": 2, "hard": 3}
-                store.insert_metric(person_id, "workout_intensity",
-                                    float(intensity_map.get(w["intensity"], 2)),
-                                    unit="", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "workout_intensity",
+                    float(intensity_map.get(w["intensity"], 2)),
+                    unit="",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
     except Exception as e:
         log.warning("Oura workout fetch failed: %s", e)
@@ -363,20 +427,35 @@ def fetch_and_store(store, access_token: str, person_id: str,
             recorded = datetime.fromisoformat(f"{day}T20:00:00+00:00")
             if r.get("level"):
                 level_map = {"limited": 1, "adequate": 2, "solid": 3, "strong": 4, "exceptional": 5}
-                store.insert_metric(person_id, "resilience_level",
-                                    float(level_map.get(r["level"], 2)),
-                                    unit="", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "resilience_level",
+                    float(level_map.get(r["level"], 2)),
+                    unit="",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
             contributors = r.get("contributors", {})
             if contributors.get("sleep_recovery") is not None:
-                store.insert_metric(person_id, "sleep_recovery",
-                                    float(contributors["sleep_recovery"]),
-                                    unit="", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "sleep_recovery",
+                    float(contributors["sleep_recovery"]),
+                    unit="",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
             if contributors.get("daytime_recovery") is not None:
-                store.insert_metric(person_id, "daytime_recovery",
-                                    float(contributors["daytime_recovery"]),
-                                    unit="", source="oura", recorded_at=recorded)
+                store.insert_metric(
+                    person_id,
+                    "daytime_recovery",
+                    float(contributors["daytime_recovery"]),
+                    unit="",
+                    source="oura",
+                    recorded_at=recorded,
+                )
                 count += 1
     except Exception as e:
         log.warning("Oura resilience fetch failed: %s", e)

@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply before modifying any existing file, function, or class that was not written in the current session and has other code depending on it."
+---
+
 # Read Before Write
 
 **Tags:** coding, safety, workflow

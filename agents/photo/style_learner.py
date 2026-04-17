@@ -27,8 +27,7 @@ from llm import claude_act, claude_think
 log = logging.getLogger("photo.style_learner")
 
 
-def learn_style(images: list[Path], workspace: Path,
-                max_samples: int = 12) -> dict | None:
+def learn_style(images: list[Path], workspace: Path, max_samples: int = 12) -> dict | None:
     """Analyze reference images and extract a style profile.
 
     Args:
@@ -51,10 +50,12 @@ def learn_style(images: list[Path], workspace: Path,
         log.info("Analyzing reference [%d/%d]: %s", i + 1, len(sample), img.name)
         analysis = _analyze_single_reference(img)
         if analysis:
-            individual_analyses.append({
-                "file": img.name,
-                "analysis": analysis,
-            })
+            individual_analyses.append(
+                {
+                    "file": img.name,
+                    "analysis": analysis,
+                }
+            )
 
     if not individual_analyses:
         log.error("No reference images could be analyzed")
@@ -73,9 +74,7 @@ def learn_style(images: list[Path], workspace: Path,
 
     if profile:
         profile_path = workspace / "style_profile.json"
-        profile_path.write_text(
-            json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
         log.info("Style profile saved: %s", profile_path)
 
     return profile
@@ -231,7 +230,7 @@ def _extract_json(text: str) -> dict | None:
     import re
 
     # Try code block first
-    m = re.search(r'```(?:json)?\s*\n(.*?)\n```', text, re.DOTALL)
+    m = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
     if m:
         try:
             return json.loads(m.group(1))
@@ -239,7 +238,7 @@ def _extract_json(text: str) -> dict | None:
             pass
 
     # Try bare JSON
-    m = re.search(r'\{.*\}', text, re.DOTALL)
+    m = re.search(r"\{.*\}", text, re.DOTALL)
     if m:
         try:
             return json.loads(m.group())

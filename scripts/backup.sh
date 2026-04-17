@@ -5,7 +5,7 @@
 set -uo pipefail  # no -e: we want to continue on individual failures
 
 DATE=$(date +%Y-%m-%d)
-LOCAL_LOG="$HOME/Sandbox/Mira/logs/backup.log"
+LOCAL_LOG="$HOME/Sandbox/Mira/data/logs/backup.log"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOCAL_LOG"; }
 
@@ -39,7 +39,7 @@ fi
 
 # 3. Soul data (core files)
 log "Backing up soul..."
-SOUL="$HOME/Sandbox/Mira/agents/shared/soul"
+SOUL="$HOME/Sandbox/Mira/data/soul"
 mkdir -p "$BACKUP_DIR/soul"
 for f in identity.md memory.md worldview.md interests.md skills.md catalog.jsonl scores.json emptiness.json; do
     cp "$SOUL/$f" "$BACKUP_DIR/soul/" 2>/dev/null || true
@@ -52,11 +52,11 @@ if [ -d "$SOUL/learned" ]; then
 fi
 
 # 5. Agent state
-cp "$HOME/Sandbox/Mira/.agent_state.json" "$BACKUP_DIR/" 2>>"$LOCAL_LOG" || true
+cp "$HOME/Sandbox/Mira/data/state/agent_state.json" "$BACKUP_DIR/" 2>>"$LOCAL_LOG" || true
 
 # 6. Social media state files
 log "Backing up socialmedia state..."
-SM="$HOME/Sandbox/Mira/agents/socialmedia"
+SM="$HOME/Sandbox/Mira/data/social"
 mkdir -p "$BACKUP_DIR/socialmedia"
 for f in growth_state.json notes_state.json notes_queue.json comment_state.json publication_stats.json reply_tracking.json; do
     cp "$SM/$f" "$BACKUP_DIR/socialmedia/" 2>/dev/null || true

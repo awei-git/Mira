@@ -1,4 +1,5 @@
 """Operator dashboard summary for Mira production runtime."""
+
 from __future__ import annotations
 
 import json
@@ -62,9 +63,7 @@ def build_operator_summary(user_id: str = "ang") -> dict:
     manifest = load_manifest()
     articles = list(manifest.get("articles", {}).values())
     publish_queue = [
-        _publish_entry(entry)
-        for entry in articles
-        if entry.get("status") and entry.get("status") != "complete"
+        _publish_entry(entry) for entry in articles if entry.get("status") and entry.get("status") != "complete"
     ]
     publish_queue.sort(key=lambda item: item.get("updated_at", ""))
 

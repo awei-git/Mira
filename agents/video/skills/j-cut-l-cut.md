@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when transitioning between scenes in a video edit and audio/video need to split across the cut for smoother continuity or emotional carry-over."
+---
+
 # J-Cut and L-Cut
 
 **Tags:** video, editing, transitions, audio, technique

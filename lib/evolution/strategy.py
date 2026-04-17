@@ -3,6 +3,7 @@
 Weekly: compare reward trends across two weeks, propose a concrete A/B test
 for any declining dimension. Evaluate last week's variant against baseline.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,8 +28,7 @@ def propose_strategy_variant(dimension: str = "", user_id: str = "ang") -> dict 
     last_week = [e for e in last_week_all if e not in this_week]
 
     if len(this_week) < 5 or len(last_week) < 5:
-        log.info("propose_strategy_variant: not enough data (this=%d, last=%d)",
-                 len(this_week), len(last_week))
+        log.info("propose_strategy_variant: not enough data (this=%d, last=%d)", len(this_week), len(last_week))
         return None
 
     def avg_score(entries, agent_filter=""):
@@ -44,12 +44,14 @@ def propose_strategy_variant(dimension: str = "", user_id: str = "ang") -> dict 
         this_avg = avg_score(this_week, agent)
         last_avg = avg_score(last_week, agent)
         if last_avg > 0 and this_avg < last_avg * 0.7:
-            declining.append({
-                "agent": agent,
-                "this_week": round(this_avg, 2),
-                "last_week": round(last_avg, 2),
-                "drop": round((last_avg - this_avg) / last_avg * 100, 1),
-            })
+            declining.append(
+                {
+                    "agent": agent,
+                    "this_week": round(this_avg, 2),
+                    "last_week": round(last_avg, 2),
+                    "drop": round((last_avg - this_avg) / last_avg * 100, 1),
+                }
+            )
 
     if not declining and not dimension:
         log.info("propose_strategy_variant: no declining dimensions")
@@ -58,8 +60,7 @@ def propose_strategy_variant(dimension: str = "", user_id: str = "ang") -> dict 
     decline_text = ""
     if declining:
         decline_text = "## 下降的维度\n" + "\n".join(
-            f"- {d['agent']}: {d['last_week']:+.1f} -> {d['this_week']:+.1f} (下降 {d['drop']}%)"
-            for d in declining
+            f"- {d['agent']}: {d['last_week']:+.1f} -> {d['this_week']:+.1f} (下降 {d['drop']}%)" for d in declining
         )
 
     top_pos = sorted(this_week, key=lambda x: -x.get("score", 0))[:5]
@@ -90,7 +91,8 @@ def propose_strategy_variant(dimension: str = "", user_id: str = "ang") -> dict 
 {{"dimension": "变更的维度", "control": "当前做法", "variant": "新做法", "hypothesis": "预期效果", "metric": "用什么指标衡量", "duration_days": 7}}"""
 
     try:
-        from sub_agent import model_think
+        from llm import model_think
+
         result = model_think(prompt, model_name="omlx", timeout=90)
     except Exception as e:
         log.warning("propose_strategy_variant: LLM call failed: %s", e)
@@ -100,7 +102,7 @@ def propose_strategy_variant(dimension: str = "", user_id: str = "ang") -> dict 
         return None
 
     try:
-        json_match = re.search(r'\{[^}]+\}', result, re.DOTALL)
+        json_match = re.search(r"\{[^}]+\}", result, re.DOTALL)
         if json_match:
             variant = json.loads(json_match.group())
             variant["proposed_at"] = datetime.now().isoformat(timespec="seconds")
@@ -110,9 +112,7 @@ def propose_strategy_variant(dimension: str = "", user_id: str = "ang") -> dict 
             variant_id = f"{date.today().isoformat()}_{variant.get('dimension', 'unknown')[:20]}"
             variant["id"] = variant_id
             variant_path = VARIANT_DIR / f"{variant_id}.json"
-            variant_path.write_text(
-                json.dumps(variant, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
+            variant_path.write_text(json.dumps(variant, indent=2, ensure_ascii=False), encoding="utf-8")
             log.info("propose_strategy_variant: proposed '%s'", variant_id)
             return variant
     except (json.JSONDecodeError, OSError) as e:
@@ -154,9 +154,7 @@ def evaluate_variant(variant_id: str) -> dict | None:
     variant["evaluation"] = result
     variant["status"] = "evaluated"
     try:
-        variant_path.write_text(
-            json.dumps(variant, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        variant_path.write_text(json.dumps(variant, indent=2, ensure_ascii=False), encoding="utf-8")
     except OSError:
         pass
 

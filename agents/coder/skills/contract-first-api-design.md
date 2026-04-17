@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when designing a new API that will have multiple producers or consumers, requiring a stable interface contract before implementation begins."
+---
+
 # Contract-First API Design
 
 **Tags:** coding, api, design, architecture, openapi

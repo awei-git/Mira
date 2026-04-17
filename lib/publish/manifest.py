@@ -3,6 +3,7 @@
 Tracks each article from approval through publish → podcast → complete.
 Lives at WRITINGS_OUTPUT_DIR / "publish_manifest.json" (on iCloud).
 """
+
 import json
 import logging
 import subprocess
@@ -26,12 +27,14 @@ def _get_path() -> Path:
     path through env removes that whole class of leak.
     """
     import os
+
     override = os.environ.get("MIRA_PUBLISH_MANIFEST_PATH")
     if override:
         return Path(override)
     global _manifest_path
     if _manifest_path is None:
         from config import WRITINGS_OUTPUT_DIR
+
         _manifest_path = WRITINGS_OUTPUT_DIR / "publish_manifest.json"
     return _manifest_path
 
@@ -73,10 +76,13 @@ def update_manifest(slug: str, **fields) -> dict:
     """
     manifest = load_manifest()
     articles = manifest.setdefault("articles", {})
-    entry = articles.setdefault(slug, {
-        "slug": slug,
-        "timestamps": {},
-    })
+    entry = articles.setdefault(
+        slug,
+        {
+            "slug": slug,
+            "timestamps": {},
+        },
+    )
 
     # Set timestamp for status transitions
     if "status" in fields:
@@ -114,22 +120,25 @@ def get_next_pending(target_status: str) -> dict | None:
 
     manifest = load_manifest()
     candidates = [
-        a for a in manifest.get("articles", {}).values()
-        if a.get("status") == prev_status and not a.get("error")
+        a for a in manifest.get("articles", {}).values() if a.get("status") == prev_status and not a.get("error")
     ]
     if not candidates:
         # Also check for retryable failed entries at the previous status
         retryable = [
-            a for a in manifest.get("articles", {}).values()
+            a
+            for a in manifest.get("articles", {}).values()
             if a.get("status") == prev_status and a.get("error") and should_retry(a)
         ]
         if retryable:
             retryable.sort(key=lambda a: a.get("timestamps", {}).get("last_error", ""))
             candidate = retryable[0]
             if prepare_retry(candidate["slug"]):
-                log.info("Retrying '%s' at status '%s' (attempt %d)",
-                         candidate["slug"], prev_status,
-                         candidate.get("retry_count", 0) + 1)
+                log.info(
+                    "Retrying '%s' at status '%s' (attempt %d)",
+                    candidate["slug"],
+                    prev_status,
+                    candidate.get("retry_count", 0) + 1,
+                )
                 # Re-load after prepare_retry mutated the manifest
                 manifest = load_manifest()
                 return manifest.get("articles", {}).get(candidate["slug"])
@@ -163,6 +172,7 @@ def get_stuck_articles(timeout_minutes: int = 120) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Post-condition validation — called before advancing pipeline status
 # ---------------------------------------------------------------------------
+
 
 def validate_step(slug: str, status: str, **kwargs) -> tuple[bool, str]:
     """Validate that a pipeline step actually succeeded.
@@ -204,8 +214,7 @@ def should_retry(entry: dict) -> bool:
     # Guard: don't retry if last error is identical to previous error
     # (learned from real failures — retrying the same non-transient error wastes cycles)
     if retry_count > 0 and entry.get("prev_error") and entry.get("error") == entry.get("prev_error"):
-        log.warning("Skipping retry for '%s': same error repeated (%s)",
-                    entry.get("slug", "?"), entry["error"][:120])
+        log.warning("Skipping retry for '%s': same error repeated (%s)", entry.get("slug", "?"), entry["error"][:120])
         return False
 
     # Check backoff timing
@@ -238,11 +247,9 @@ def prepare_retry(slug: str) -> bool:
         return False
 
     # Save current error as prev_error for repeated-error detection in should_retry
-    update_manifest(slug,
-                    prev_error=entry.get("error"),
-                    error=None,
-                    retry_count=retry_count + 1,
-                    _clear_last_error=True)
+    update_manifest(
+        slug, prev_error=entry.get("error"), error=None, retry_count=retry_count + 1, _clear_last_error=True
+    )
     return True
 
 
@@ -252,8 +259,8 @@ def _validate_published(slug: str, url: str = "", title: str = "", **kw) -> tupl
         return False, "No URL returned from publish"
     try:
         import urllib.request
-        req = urllib.request.Request(url, method="HEAD",
-                                     headers={"User-Agent": "Mira/1.0"})
+
+        req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "Mira/1.0"})
         resp = urllib.request.urlopen(req, timeout=15)
         if resp.status != 200:
             return False, f"Published URL returned {resp.status}"
@@ -276,9 +283,10 @@ def _validate_podcast(slug: str, mp3_path: str = "", expected_min_seconds: int =
     # Check duration with ffprobe
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-             "-of", "csv=p=0", str(path)],
-            capture_output=True, text=True, timeout=10
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         duration = float(result.stdout.strip())
         if duration < expected_min_seconds:

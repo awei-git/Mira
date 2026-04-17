@@ -10,6 +10,7 @@ Called from:
 - writing_workflow._finalize() — extract craft skills from finished articles
 - task_worker._write_result() — extract lessons from failed tasks
 """
+
 import json
 import logging
 import re
@@ -17,8 +18,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import (
-    EPISODES_DIR, JOURNAL_DIR, SKILLS_DIR,
-    WRITINGS_OUTPUT_DIR, CATALOG_FILE,
+    EPISODES_DIR,
+    JOURNAL_DIR,
+    SKILLS_DIR,
+    WRITINGS_OUTPUT_DIR,
+    CATALOG_FILE,
 )
 
 log = logging.getLogger("mira.self_iteration")
@@ -28,8 +32,8 @@ log = logging.getLogger("mira.self_iteration")
 # Post-mortem: extract lessons from failures
 # ---------------------------------------------------------------------------
 
-def extract_failure_lesson(task_id: str, title: str, error_context: str,
-                           claude_fn=None) -> dict | None:
+
+def extract_failure_lesson(task_id: str, title: str, error_context: str, claude_fn=None) -> dict | None:
     """Analyze a failed task and extract a preventive rule or skill.
 
     Args:
@@ -43,7 +47,8 @@ def extract_failure_lesson(task_id: str, title: str, error_context: str,
     """
     if not claude_fn:
         try:
-            from sub_agent import claude_think
+            from llm import claude_think
+
             claude_fn = claude_think
         except ImportError:
             log.warning("self_iteration: no claude_fn available")
@@ -78,7 +83,7 @@ If the failure is trivial (typo, transient network error, etc.), set worth_extra
 
     try:
         # Extract JSON from response
-        json_match = re.search(r'\{[\s\S]+\}', result)
+        json_match = re.search(r"\{[\s\S]+\}", result)
         if not json_match:
             return None
         data = json.loads(json_match.group())
@@ -93,7 +98,8 @@ If the failure is trivial (typo, transient network error, etc.), set worth_extra
 
 def save_failure_lesson(lesson: dict):
     """Save an extracted failure lesson as a skill."""
-    from soul_manager import save_skill
+    from memory.soul_skills import save_skill
+
     name = lesson["name"]
     content = f"""# {name}
 
@@ -114,8 +120,8 @@ def save_failure_lesson(lesson: dict):
 # Article distillation: extract craft skills from completed writing
 # ---------------------------------------------------------------------------
 
-def distill_article_skills(title: str, final_text: str, type_key: str = "essay",
-                           claude_fn=None) -> list[dict]:
+
+def distill_article_skills(title: str, final_text: str, type_key: str = "essay", claude_fn=None) -> list[dict]:
     """Analyze a completed article and extract reusable writing craft skills.
 
     Args:
@@ -129,14 +135,17 @@ def distill_article_skills(title: str, final_text: str, type_key: str = "essay",
     """
     if not claude_fn:
         try:
-            from sub_agent import claude_think
+            from llm import claude_think
+
             claude_fn = claude_think
         except ImportError:
             return []
 
     # Check existing writer skills to avoid duplicates
     existing_skills = set()
-    from config import MIRA_ROOT as _MR; writer_skills_dir = _MR / "agents" / "writer" / "skills"
+    from config import MIRA_ROOT as _MR
+
+    writer_skills_dir = _MR / "agents" / "writer" / "skills"
     if writer_skills_dir.exists():
         for f in writer_skills_dir.glob("*.md"):
             existing_skills.add(f.stem)
@@ -173,7 +182,7 @@ Rules:
         return []
 
     try:
-        json_match = re.search(r'\[[\s\S]*\]', result)
+        json_match = re.search(r"\[[\s\S]*\]", result)
         if not json_match:
             return []
         skills = json.loads(json_match.group())
@@ -188,9 +197,11 @@ def save_article_skills(skills: list[dict], source_title: str):
     Routes through save_skill() for security audit and quality gate.
     Only writes per-agent copy if the skill passes.
     """
-    from soul_manager import save_skill
+    from memory.soul_skills import save_skill
 
-    from config import MIRA_ROOT as _MR; writer_skills_dir = _MR / "agents" / "writer" / "skills"
+    from config import MIRA_ROOT as _MR
+
+    writer_skills_dir = _MR / "agents" / "writer" / "skills"
     writer_skills_dir.mkdir(parents=True, exist_ok=True)
 
     for skill in skills:
@@ -200,7 +211,7 @@ def save_article_skills(skills: list[dict], source_title: str):
         if path.exists():
             log.info("Writer skill already exists, skipping: %s", name)
             continue
-        description = skill.get('description', '')
+        description = skill.get("description", "")
         content = f"""# {name}
 
 {description}
@@ -226,6 +237,7 @@ def save_article_skills(skills: list[dict], source_title: str):
 # Daily post-mortem: run during journal cycle
 # ---------------------------------------------------------------------------
 
+
 def daily_postmortem(claude_fn=None) -> str:
     """Review today's episodes for failures and extract lessons.
 
@@ -244,10 +256,21 @@ def daily_postmortem(claude_fn=None) -> str:
             continue
 
         # Look for failure indicators
-        has_failure = any(kw in content.lower() for kw in [
-            "error", "failed", "exception", "traceback", "bug",
-            "wrong", "mistake", "不对", "出错", "失败",
-        ])
+        has_failure = any(
+            kw in content.lower()
+            for kw in [
+                "error",
+                "failed",
+                "exception",
+                "traceback",
+                "bug",
+                "wrong",
+                "mistake",
+                "不对",
+                "出错",
+                "失败",
+            ]
+        )
         if not has_failure:
             continue
 
@@ -273,8 +296,8 @@ def daily_postmortem(claude_fn=None) -> str:
 # Article completion hook: run after writing pipeline finishes
 # ---------------------------------------------------------------------------
 
-def on_article_complete(title: str, final_text: str, type_key: str = "essay",
-                        claude_fn=None):
+
+def on_article_complete(title: str, final_text: str, type_key: str = "essay", claude_fn=None):
     """Hook called after an article is finalized. Extracts craft skills."""
     try:
         skills = distill_article_skills(title, final_text, type_key, claude_fn)

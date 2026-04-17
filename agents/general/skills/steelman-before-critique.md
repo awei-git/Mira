@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when asked to evaluate, critique, or argue against a plan, argument, or piece of work — reconstruct its strongest version first."
+---
+
 # Steelman Before Critique
 
 **Tags:** agents, reasoning, argumentation, epistemics, thinking

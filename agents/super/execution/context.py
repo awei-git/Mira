@@ -9,6 +9,7 @@ Extracted from task_worker.py. Contains:
 - _load_recent_journals: load last N journal entries
 - _load_recent_briefings: load last N briefings
 """
+
 from __future__ import annotations
 
 import json
@@ -163,6 +164,7 @@ def load_thread_memory(thread_id: str, user_id: str = "ang") -> str:
 
 _COMPRESS_THRESHOLD = 3000  # chars above which we compress
 
+
 def compress_conversation(conversation: str, max_chars: int = 2000) -> str:
     """Compress a long conversation history to fit within token budget.
 
@@ -202,7 +204,7 @@ def compress_conversation(conversation: str, max_chars: int = 2000) -> str:
             f"Summarize this conversation excerpt in 3-5 bullet points. "
             f"Focus on decisions made, key information exchanged, and task progress. "
             f"Be concise.\n\n{middle[:3000]}",
-            timeout=60
+            timeout=60,
         )
         if summary and len(summary) < len(middle):
             compressed_middle = f"\n*[{len(msg_indices) - 4} earlier messages summarized]*\n{summary}\n"
@@ -222,9 +224,7 @@ def _truncate_messages(conversation: str, max_chars: int) -> str:
         return conversation
     half = max_chars // 2
     return (
-        conversation[:half]
-        + f"\n\n... ({len(conversation) - max_chars} chars omitted) ...\n\n"
-        + conversation[-half:]
+        conversation[:half] + f"\n\n... ({len(conversation) - max_chars} chars omitted) ...\n\n" + conversation[-half:]
     )
 
 

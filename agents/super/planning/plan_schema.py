@@ -6,6 +6,7 @@ agent names are canonicalized.
 Moved from task_worker.py to its own module for reuse by planner,
 executor, and tests.
 """
+
 from __future__ import annotations
 
 import logging
@@ -83,14 +84,20 @@ def validate_plan_step(step: dict, valid_agents: set) -> dict | None:
     if agent is None:
         try:
             from ops.failure_log import record_failure
-            record_failure("planner", "validate_step", raw_agent,
-                           error_type="invalid_agent",
-                           error_message=f"Agent '{raw_agent}' not in valid set",
-                           context={"step": step, "valid_agents": sorted(valid_agents)})
+
+            record_failure(
+                "planner",
+                "validate_step",
+                raw_agent,
+                error_type="invalid_agent",
+                error_message=f"Agent '{raw_agent}' not in valid set",
+                context={"step": step, "valid_agents": sorted(valid_agents)},
+            )
         except (ImportError, OSError):
             pass
-        log.warning("PLAN_STEP_REJECTED: agent='%s' not in valid set %s | step=%s",
-                    raw_agent, sorted(valid_agents), step)
+        log.warning(
+            "PLAN_STEP_REJECTED: agent='%s' not in valid set %s | step=%s", raw_agent, sorted(valid_agents), step
+        )
         return None
 
     instruction = step.get("instruction", "").strip()

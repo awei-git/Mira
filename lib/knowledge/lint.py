@@ -3,6 +3,7 @@
 Checks for contradictions, stale facts, orphan pages, and duplicates.
 Designed to run during weekly reflect or on-demand.
 """
+
 import json
 import logging
 from datetime import datetime, timedelta
@@ -17,6 +18,7 @@ log = logging.getLogger("mira")
 # Individual lint checks
 # ---------------------------------------------------------------------------
 
+
 def _check_stale_facts(max_age_days: int = 90) -> list[dict]:
     """Find reading notes and memory entries older than max_age_days."""
     stale = []
@@ -29,11 +31,13 @@ def _check_stale_facts(max_age_days: int = 90) -> list[dict]:
                 date_str = path.stem[:10]
                 file_date = datetime.strptime(date_str, "%Y-%m-%d")
                 if file_date < cutoff:
-                    stale.append({
-                        "type": "reading_note",
-                        "path": str(path.name),
-                        "age_days": (datetime.now() - file_date).days,
-                    })
+                    stale.append(
+                        {
+                            "type": "reading_note",
+                            "path": str(path.name),
+                            "age_days": (datetime.now() - file_date).days,
+                        }
+                    )
             except ValueError:
                 continue
 
@@ -58,11 +62,13 @@ def _check_orphan_skills() -> list[dict]:
     # Check all .md files in learned/
     for path in SKILLS_DIR.glob("*.md"):
         if path.name not in indexed_files:
-            orphans.append({
-                "type": "orphan_skill",
-                "path": str(path.name),
-                "reason": "not in index.json",
-            })
+            orphans.append(
+                {
+                    "type": "orphan_skill",
+                    "path": str(path.name),
+                    "reason": "not in index.json",
+                }
+            )
 
     return orphans
 
@@ -86,18 +92,20 @@ def _check_duplicates_in_memory() -> list[dict]:
         # Format: - [2026-04-05 14:30] content...
         bracket_end = line.find("]")
         if bracket_end > 0:
-            content = line[bracket_end + 1:].strip()
+            content = line[bracket_end + 1 :].strip()
             entries.append(content)
 
     # Simple O(n^2) check — memory.md is max 200 lines so this is fine
     for i in range(len(entries)):
         for j in range(i + 1, len(entries)):
             if _text_similarity(entries[i], entries[j]) > 0.85:
-                duplicates.append({
-                    "type": "duplicate_memory",
-                    "entry_a": entries[i][:100],
-                    "entry_b": entries[j][:100],
-                })
+                duplicates.append(
+                    {
+                        "type": "duplicate_memory",
+                        "entry_a": entries[i][:100],
+                        "entry_b": entries[j][:100],
+                    }
+                )
 
     return duplicates
 
@@ -121,48 +129,50 @@ def _check_contradictions_via_db(user_id: str = "ang") -> list[dict]:
     """
     contradictions = []
     try:
-        from memory_store import get_store
+        from memory.store import get_store
+
         store = get_store()
         if not store.conn:
             return contradictions
 
         # Query for pairs with high cosine similarity
         cur = store.conn.cursor()
-        has_user_id = getattr(store, "_table_has_column", lambda *args, **kwargs: False)(
-            "episodic_memory", "user_id"
+        cur.execute(
+            """
+            SELECT a.id, a.content, b.id, b.content,
+                   1 - (a.embedding <=> b.embedding) AS similarity
+            FROM episodic_memory a, episodic_memory b
+            WHERE a.id < b.id
+              AND a.user_id = %s
+              AND b.user_id = %s
+              AND a.embedding IS NOT NULL
+              AND b.embedding IS NOT NULL
+              AND 1 - (a.embedding <=> b.embedding) > 0.85
+            ORDER BY similarity DESC
+            LIMIT 20
+        """,
+            (user_id, user_id),
         )
-        if has_user_id:
-            cur.execute("""
-                SELECT a.id, a.content, b.id, b.content,
-                       1 - (a.embedding <=> b.embedding) AS similarity
-                FROM episodic_memory a, episodic_memory b
-                WHERE a.id < b.id
-                  AND a.user_id = %s
-                  AND b.user_id = %s
-                  AND a.embedding IS NOT NULL
-                  AND b.embedding IS NOT NULL
-                  AND 1 - (a.embedding <=> b.embedding) > 0.85
-                ORDER BY similarity DESC
-                LIMIT 20
-            """, (user_id, user_id))
-        else:
-            cur.execute("""
-                SELECT a.id, a.content, b.id, b.content,
-                       1 - (a.embedding <=> b.embedding) AS similarity
-                FROM episodic_memory a, episodic_memory b
-                WHERE a.id < b.id
-                  AND a.embedding IS NOT NULL
-                  AND b.embedding IS NOT NULL
-                  AND 1 - (a.embedding <=> b.embedding) > 0.85
-                ORDER BY similarity DESC
-                LIMIT 20
-            """)
         rows = cur.fetchall()
         cur.close()
 
-        negation_words = {"not", "never", "no", "don't", "doesn't", "isn't",
-                          "wasn't", "aren't", "won't", "can't", "shouldn't",
-                          "opposite", "incorrect", "wrong", "false"}
+        negation_words = {
+            "not",
+            "never",
+            "no",
+            "don't",
+            "doesn't",
+            "isn't",
+            "wasn't",
+            "aren't",
+            "won't",
+            "can't",
+            "shouldn't",
+            "opposite",
+            "incorrect",
+            "wrong",
+            "false",
+        }
 
         for row in rows:
             id_a, content_a, id_b, content_b, sim = row
@@ -172,12 +182,14 @@ def _check_contradictions_via_db(user_id: str = "ang") -> list[dict]:
             neg_a = words_a & negation_words
             neg_b = words_b & negation_words
             if neg_a != neg_b:  # Asymmetric negation
-                contradictions.append({
-                    "type": "potential_contradiction",
-                    "entry_a": content_a[:150],
-                    "entry_b": content_b[:150],
-                    "similarity": round(sim, 3),
-                })
+                contradictions.append(
+                    {
+                        "type": "potential_contradiction",
+                        "entry_a": content_a[:150],
+                        "entry_b": content_b[:150],
+                        "similarity": round(sim, 3),
+                    }
+                )
 
     except Exception as e:
         log.debug("Contradiction check skipped: %s", e)
@@ -188,6 +200,7 @@ def _check_contradictions_via_db(user_id: str = "ang") -> list[dict]:
 # ---------------------------------------------------------------------------
 # Main lint orchestrator
 # ---------------------------------------------------------------------------
+
 
 def lint_all(user_id: str = "ang") -> dict:
     """Run all knowledge lint checks. Returns a structured report."""

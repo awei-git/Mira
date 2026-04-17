@@ -9,6 +9,7 @@ Memory types:
     episode      Record of a task, conversation, or event
     task_state   Workflow checkpoints and pending items
 """
+
 from __future__ import annotations
 
 import uuid
@@ -47,8 +48,7 @@ class MemoryRecord:
 
     def __post_init__(self):
         if self.memory_type not in VALID_MEMORY_TYPES:
-            raise ValueError(f"Invalid memory_type: {self.memory_type}. "
-                             f"Must be one of {VALID_MEMORY_TYPES}")
+            raise ValueError(f"Invalid memory_type: {self.memory_type}. " f"Must be one of {VALID_MEMORY_TYPES}")
         self.confidence = max(0.0, min(1.0, self.confidence))
 
     def to_dict(self) -> dict:
@@ -81,14 +81,12 @@ class MemoryRecord:
         self.last_verified_at = _utc_now()
 
 
-def filter_by_freshness(records: list[MemoryRecord],
-                        max_age_days: int = 90) -> list[MemoryRecord]:
+def filter_by_freshness(records: list[MemoryRecord], max_age_days: int = 90) -> list[MemoryRecord]:
     """Filter out stale records beyond max_age_days."""
     return [r for r in records if r.is_fresh(max_age_days)]
 
 
-def filter_by_confidence(records: list[MemoryRecord],
-                         min_confidence: float = 0.3) -> list[MemoryRecord]:
+def filter_by_confidence(records: list[MemoryRecord], min_confidence: float = 0.3) -> list[MemoryRecord]:
     """Filter out low-confidence records."""
     return [r for r in records if r.confidence >= min_confidence]
 

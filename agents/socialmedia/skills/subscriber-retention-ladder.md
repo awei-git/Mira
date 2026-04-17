@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when diagnosing subscriber churn or declining engagement to identify promise-delivery mismatches before attempting mechanical retention fixes."
+---
+
 # Subscriber Retention Ladder
 
 **Tags:** newsletter, substack, retention, churn, engagement

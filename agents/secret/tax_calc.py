@@ -7,6 +7,7 @@ Pipeline:
 
 Zero network calls. Everything stays on localhost.
 """
+
 import json
 import logging
 import subprocess
@@ -42,82 +43,76 @@ def _extract_w2_regex(text: str) -> dict:
     Box 12 codes: D=401k, W=HSA, C=group life, DD=health
     """
     import re
+
     data = {}
 
     # Strategy 1: Labeled fields (explicit "Box N" or "wages, tips")
     for pattern in [
-        r'(?:box\s*1|wages.*tips.*other\s*comp)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
-        r'wages[,\s]*tips[,\s]*(?:other\s+)?comp[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
+        r"(?:box\s*1|wages.*tips.*other\s*comp)[^\d$]*[\$]?\s*([\d,]+\.?\d*)",
+        r"wages[,\s]*tips[,\s]*(?:other\s+)?comp[^\d$]*[\$]?\s*([\d,]+\.?\d*)",
     ]:
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
-            data['wages'] = float(m.group(1).replace(',', ''))
+            data["wages"] = float(m.group(1).replace(",", ""))
             break
 
     for pattern in [
-        r'(?:box\s*2|federal\s+income\s+tax\s+withheld)[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
-        r'federal\s+(?:income\s+)?tax\s+w(?:ith)?held[^\d$]*[\$]?\s*([\d,]+\.?\d*)',
+        r"(?:box\s*2|federal\s+income\s+tax\s+withheld)[^\d$]*[\$]?\s*([\d,]+\.?\d*)",
+        r"federal\s+(?:income\s+)?tax\s+w(?:ith)?held[^\d$]*[\$]?\s*([\d,]+\.?\d*)",
     ]:
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
-            data['fed_withheld'] = float(m.group(1).replace(',', ''))
+            data["fed_withheld"] = float(m.group(1).replace(",", ""))
             break
 
     # Strategy 2: Positional — find ALL lines with EIN + two amounts
     # W-2 layout: line1=Box1+2 (wages+fed), line3=Box5+6 (med+med tax)
     # The FIRST match is Box1 (wages) + Box2 (fed withheld)
-    if 'wages' not in data:
+    if "wages" not in data:
         # Match SSN (XXX-XX-XXXX) or EIN (XX-XXXXXXX) followed by two amounts
-        ein_lines = re.findall(
-            r'\d{2,3}-\d{2,3}-?\d{3,8}\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})',
-            text
-        )
+        ein_lines = re.findall(r"\d{2,3}-\d{2,3}-?\d{3,8}\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})", text)
         if ein_lines:
             # First EIN line = Box 1 (wages) + Box 2 (fed withheld)
-            v1 = float(ein_lines[0][0].replace(',', ''))
-            v2 = float(ein_lines[0][1].replace(',', ''))
+            v1 = float(ein_lines[0][0].replace(",", ""))
+            v2 = float(ein_lines[0][1].replace(",", ""))
             if v1 > v2:
-                data['wages'] = v1
-                data['fed_withheld'] = v2
+                data["wages"] = v1
+                data["fed_withheld"] = v2
             else:
-                data['wages'] = v2
-                data['fed_withheld'] = v1
+                data["wages"] = v2
+                data["fed_withheld"] = v1
 
     # State line: "NY  EIN  amount  amount" or "ST  digits  amount  amount"
-    m = re.search(
-        r'\b([A-Z]{2})\s+\d{9,}\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})',
-        text
-    )
+    m = re.search(r"\b([A-Z]{2})\s+\d{9,}\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})", text)
     if m:
-        data['state'] = m.group(1)
+        data["state"] = m.group(1)
         # state wages and state tax withheld
-        sw = float(m.group(2).replace(',', ''))
-        st = float(m.group(3).replace(',', ''))
+        sw = float(m.group(2).replace(",", ""))
+        st = float(m.group(3).replace(",", ""))
         if sw > st:
-            data['state_withheld'] = st
+            data["state_withheld"] = st
         else:
-            data['state_withheld'] = sw
+            data["state_withheld"] = sw
 
     # Box 12 codes: D=401k, W=HSA
-    for code, key in [('D', 'retirement_401k'), ('W', 'hsa'),
-                      ('DD', 'health_insurance')]:
-        m = re.search(rf'\b{code}\s+([\d,]+\.\d{{2}})', text)
+    for code, key in [("D", "retirement_401k"), ("W", "hsa"), ("DD", "health_insurance")]:
+        m = re.search(rf"\b{code}\s+([\d,]+\.\d{{2}})", text)
         if m:
-            data[key] = float(m.group(1).replace(',', ''))
+            data[key] = float(m.group(1).replace(",", ""))
 
     # SS wages (second line, two amounts where first ~176100 = SS wage base)
-    lines = text.split('\n')
+    lines = text.split("\n")
     for line in lines:
-        amounts = re.findall(r'([\d,]+\.\d{2})', line)
+        amounts = re.findall(r"([\d,]+\.\d{2})", line)
         if len(amounts) >= 2:
-            v1 = float(amounts[0].replace(',', ''))
+            v1 = float(amounts[0].replace(",", ""))
             if 170000 < v1 < 180000:  # SS wage base is ~$176,100 for 2025
-                data['ss_wages'] = v1
+                data["ss_wages"] = v1
 
     # Employer name
-    m = re.search(r'([\w\s]+(?:Inc|Corp|LLC|Co|Ltd|Platforms)[\w\s.,]*)', text)
+    m = re.search(r"([\w\s]+(?:Inc|Corp|LLC|Co|Ltd|Platforms)[\w\s.,]*)", text)
     if m:
-        data['employer'] = m.group(1).strip()
+        data["employer"] = m.group(1).strip()
 
     return data
 
@@ -125,27 +120,30 @@ def _extract_w2_regex(text: str) -> dict:
 def _extract_1099_regex(text: str) -> dict:
     """Extract 1099 data using regex patterns."""
     import re
+
     data = {}
 
     # Interest (1099-INT)
-    m = re.search(r'(?:interest\s+income|box\s*1.*interest)[^\d$]*[\$]?\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
+    m = re.search(r"(?:interest\s+income|box\s*1.*interest)[^\d$]*[\$]?\s*([\d,]+\.?\d*)", text, re.IGNORECASE)
     if m:
-        data['interest'] = float(m.group(1).replace(',', ''))
+        data["interest"] = float(m.group(1).replace(",", ""))
 
     # Dividends (1099-DIV)
-    m = re.search(r'(?:ordinary\s+dividends|total\s+ordinary\s+dividends)[^\d$]*[\$]?\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
+    m = re.search(
+        r"(?:ordinary\s+dividends|total\s+ordinary\s+dividends)[^\d$]*[\$]?\s*([\d,]+\.?\d*)", text, re.IGNORECASE
+    )
     if m:
-        data['dividends'] = float(m.group(1).replace(',', ''))
+        data["dividends"] = float(m.group(1).replace(",", ""))
 
     # Capital gains
     for pattern in [
-        r'(?:net\s+(?:short|long)[- ]term\s+(?:capital\s+)?gain)[^\d$-]*[\$]?\s*(-?[\d,]+\.?\d*)',
-        r'(?:total\s+(?:capital\s+)?gain)[^\d$-]*[\$]?\s*(-?[\d,]+\.?\d*)',
-        r'(?:proceeds|net\s+gain)[^\d$-]*[\$]?\s*(-?[\d,]+\.?\d*)',
+        r"(?:net\s+(?:short|long)[- ]term\s+(?:capital\s+)?gain)[^\d$-]*[\$]?\s*(-?[\d,]+\.?\d*)",
+        r"(?:total\s+(?:capital\s+)?gain)[^\d$-]*[\$]?\s*(-?[\d,]+\.?\d*)",
+        r"(?:proceeds|net\s+gain)[^\d$-]*[\$]?\s*(-?[\d,]+\.?\d*)",
     ]:
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
-            data['capital_gains'] = float(m.group(1).replace(',', ''))
+            data["capital_gains"] = float(m.group(1).replace(",", ""))
             break
 
     return data
@@ -180,9 +178,7 @@ def extract_tax_data(pdf_texts: dict[str, str], ollama_model: str) -> dict:
             regex_data["capital_gains"] = regex_data.get("capital_gains", 0) + f1099.get("capital_gains", 0)
             log.info("1099 regex extracted from %s: %s", name, f1099)
 
-    combined = "\n\n---\n\n".join(
-        f"### {name}\n{text}" for name, text in pdf_texts.items()
-    )
+    combined = "\n\n---\n\n".join(f"### {name}\n{text}" for name, text in pdf_texts.items())
 
     prompt = f"""Extract tax information from these documents. Return JSON only.
 
@@ -220,9 +216,9 @@ IMPORTANT:
 
     # Step 2: LLM extraction as supplement (for things regex missed)
     llm_data = {}
-    result = _ollama_call(ollama_model, prompt,
-                         system="Extract structured data from tax documents. JSON only.",
-                         timeout=120)
+    result = _ollama_call(
+        ollama_model, prompt, system="Extract structured data from tax documents. JSON only.", timeout=120
+    )
     if result:
         try:
             clean = result.strip().strip("```json").strip("```").strip()
@@ -233,9 +229,9 @@ IMPORTANT:
 
     # Step 3: Merge — regex wins for numeric fields (more reliable), LLM fills gaps
     merged = {}
-    merged.update(llm_data)   # LLM as base
+    merged.update(llm_data)  # LLM as base
     for k, v in regex_data.items():
-        if v and v != 0:      # Regex overwrites LLM if regex found something
+        if v and v != 0:  # Regex overwrites LLM if regex found something
             merged[k] = v
 
     log.info("Final merged tax data: %s", {k: v for k, v in merged.items() if v})
@@ -252,38 +248,40 @@ def compute_federal_tax(data: dict) -> dict:
 
     filing = data.get("filing_status", "married_jointly")
     mars_map = {
-        "single": 1, "married_jointly": 2, "married_separately": 3,
+        "single": 1,
+        "married_jointly": 2,
+        "married_separately": 3,
         "head_of_household": 4,
     }
     mars = mars_map.get(filing, 2)
 
     wages_p = float(data.get("wages_primary", 0))
     wages_s = float(data.get("wages_spouse", 0))
-    fed_withheld = float(data.get("federal_withheld_primary", 0)) + \
-                   float(data.get("federal_withheld_spouse", 0))
+    fed_withheld = float(data.get("federal_withheld_primary", 0)) + float(data.get("federal_withheld_spouse", 0))
 
     num_kids = int(data.get("num_children", 0))
     xtot = (2 if mars == 2 else 1) + num_kids
 
-    df = pd.DataFrame({
-        'RECID': [1],
-        'MARS': [mars],
-        'FLPDYR': [2025],
-        'e00200': [wages_p + wages_s],
-        'e00200p': [wages_p],
-        'e00200s': [wages_s],
-        'e00300': [float(data.get("interest_income", 0))],
-        'e00600': [float(data.get("dividend_income", 0))],
-        'p23250': [float(data.get("capital_gains", 0))],
-        'e19200': [float(data.get("mortgage_interest", 0))],
-        'e19800': [float(data.get("charitable", 0))],
-        'e18400': [float(data.get("state_local_tax", 0)) +
-                   float(data.get("property_tax", 0))],
-        'XTOT': [xtot],
-        'n24': [num_kids],
-        'age_head': [int(data.get("age_primary", 35))],
-        'age_spouse': [int(data.get("age_spouse", 33))] if mars == 2 else [0],
-    })
+    df = pd.DataFrame(
+        {
+            "RECID": [1],
+            "MARS": [mars],
+            "FLPDYR": [2025],
+            "e00200": [wages_p + wages_s],
+            "e00200p": [wages_p],
+            "e00200s": [wages_s],
+            "e00300": [float(data.get("interest_income", 0))],
+            "e00600": [float(data.get("dividend_income", 0))],
+            "p23250": [float(data.get("capital_gains", 0))],
+            "e19200": [float(data.get("mortgage_interest", 0))],
+            "e19800": [float(data.get("charitable", 0))],
+            "e18400": [float(data.get("state_local_tax", 0)) + float(data.get("property_tax", 0))],
+            "XTOT": [xtot],
+            "n24": [num_kids],
+            "age_head": [int(data.get("age_primary", 35))],
+            "age_spouse": [int(data.get("age_spouse", 33))] if mars == 2 else [0],
+        }
+    )
 
     try:
         rec = Records(data=df, start_year=2025, gfactors=None, weights=None)
@@ -293,14 +291,14 @@ def compute_federal_tax(data: dict) -> dict:
     except Exception as e:
         return {"error": f"taxcalc computation failed: {e}"}
 
-    agi = calc.array('c00100')[0]
-    std_ded = calc.array('standard')[0]
-    item_ded = calc.array('c04470')[0]
-    taxable = calc.array('c04800')[0]
-    income_tax = calc.array('iitax')[0]
-    ctc = calc.array('c07220')[0]
-    payroll = calc.array('payrolltax')[0]
-    combined = calc.array('combined')[0]
+    agi = calc.array("c00100")[0]
+    std_ded = calc.array("standard")[0]
+    item_ded = calc.array("c04470")[0]
+    taxable = calc.array("c04800")[0]
+    income_tax = calc.array("iitax")[0]
+    ctc = calc.array("c07220")[0]
+    payroll = calc.array("payrolltax")[0]
+    combined = calc.array("combined")[0]
 
     owed_or_refund = combined - fed_withheld
 
@@ -351,41 +349,47 @@ def format_result(data: dict, result: dict) -> str:
     if data.get("capital_gains"):
         lines.append(f"  Capital Gains:       ${data['capital_gains']:>12,.0f}")
 
-    lines.extend([
-        f"  **AGI:               ${result['agi']:>12,}**",
-        "",
-        "## Deductions",
-        f"  Standard:            ${result['standard_deduction']:>12,}",
-        f"  Itemized:            ${result['itemized_deduction']:>12,}",
-        f"  Used: **{result['deduction_used'].upper()}** (${result['deduction_amount']:,})",
-        "",
-        "## Tax",
-        f"  Taxable Income:      ${result['taxable_income']:>12,}",
-        f"  Income Tax:          ${result['income_tax']:>12,}",
-    ])
+    lines.extend(
+        [
+            f"  **AGI:               ${result['agi']:>12,}**",
+            "",
+            "## Deductions",
+            f"  Standard:            ${result['standard_deduction']:>12,}",
+            f"  Itemized:            ${result['itemized_deduction']:>12,}",
+            f"  Used: **{result['deduction_used'].upper()}** (${result['deduction_amount']:,})",
+            "",
+            "## Tax",
+            f"  Taxable Income:      ${result['taxable_income']:>12,}",
+            f"  Income Tax:          ${result['income_tax']:>12,}",
+        ]
+    )
     if result.get("child_tax_credit"):
         lines.append(f"  Child Tax Credit:   -${result['child_tax_credit']:>12,}")
-    lines.extend([
-        f"  Payroll Tax:         ${result['payroll_tax']:>12,}",
-        f"  **Total Federal Tax: ${result['total_federal_tax']:>12,}**",
-        "",
-        "## Withheld vs Owed",
-        f"  Total Withheld:      ${result['total_withheld']:>12,}",
-        f"  Total Tax:           ${result['total_federal_tax']:>12,}",
-        "",
-    ])
+    lines.extend(
+        [
+            f"  Payroll Tax:         ${result['payroll_tax']:>12,}",
+            f"  **Total Federal Tax: ${result['total_federal_tax']:>12,}**",
+            "",
+            "## Withheld vs Owed",
+            f"  Total Withheld:      ${result['total_withheld']:>12,}",
+            f"  Total Tax:           ${result['total_federal_tax']:>12,}",
+            "",
+        ]
+    )
 
     if result["result"] == "REFUND":
         lines.append(f"  **→ REFUND: ${result['amount']:,}**")
     else:
         lines.append(f"  **→ OWE: ${result['amount']:,}**")
 
-    lines.extend([
-        "",
-        "---",
-        "*Computed by taxcalc (deterministic). Numbers extracted by local LLM.*",
-        "*This is an estimate — consult a tax professional for filing.*",
-    ])
+    lines.extend(
+        [
+            "",
+            "---",
+            "*Computed by taxcalc (deterministic). Numbers extracted by local LLM.*",
+            "*This is an estimate — consult a tax professional for filing.*",
+        ]
+    )
 
     return "\n".join(lines)
 

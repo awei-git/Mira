@@ -4,6 +4,7 @@ Extracted from core.py — pure extraction, no logic changes.
 Note: This is the super-agent's writing orchestration, NOT the writing_workflow.py
 in agents/writer/.
 """
+
 import json
 import logging
 import re
@@ -18,12 +19,15 @@ if str(_AGENTS_DIR / "writer") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 
 from config import JOURNAL_DIR, WRITINGS_DIR, MIRA_ROOT
+
 try:
     from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
 from memory.soul import (
-    load_soul, format_soul, load_recent_reading_notes,
+    load_soul,
+    format_soul,
+    load_recent_reading_notes,
     detect_recurring_themes,
 )
 from llm import claude_think
@@ -31,13 +35,15 @@ from prompts import autonomous_writing_prompt
 from writing_workflow import run_full_pipeline
 
 from workflows.helpers import (
-    _mine_za_ideas, _days_since_last_publish,
-    _extract_recent_published_titles, _is_duplicate_topic,
+    _mine_za_ideas,
+    _days_since_last_publish,
+    _extract_recent_published_titles,
+    _is_duplicate_topic,
     PUBLISH_COOLDOWN_DAYS,
 )
 
 log = logging.getLogger("mira")
-_TASKS_DIR = MIRA_ROOT / "tasks"
+from config import TASKS_DIR as _TASKS_DIR
 
 
 def _autowrite_workspace(task_id: str) -> Path:
@@ -85,6 +91,7 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
         # _check_pending_publish() picks it up and publishes on the next cycle.
         try:
             from publish.manifest import update_manifest
+
             update_manifest(
                 meta["slug"],
                 title=title,
@@ -101,12 +108,7 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
         preview_text = article_text[:4000]
         if len(article_text) > 4000:
             preview_text += f"\n\n[...文章还有 {len(article_text) - 4000} 字，已截断]"
-        status_msg = (
-            f"写好了，已排队发布：\n\n"
-            f"**{title}**\n\n"
-            f"---\n\n"
-            f"{preview_text}"
-        )
+        status_msg = f"写好了，已排队发布：\n\n" f"**{title}**\n\n" f"---\n\n" f"{preview_text}"
         if bridge:
             bridge.update_task_status(task_id, "done", agent_message=status_msg)
         log.info("Canonical autowrite complete for '%s' (%s)", title, project_dir)
@@ -126,6 +128,7 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
     """
     # Guard: don't trigger if publishing is disabled
     from config import SUBSTACK_PUBLISHING_DISABLED
+
     if SUBSTACK_PUBLISHING_DISABLED:
         log.info("Autonomous writing skipped: Substack publishing is disabled")
         return
@@ -133,8 +136,9 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
     # Guard: respect publish cooldown (1 post per 3 days)
     days = _days_since_last_publish()
     if days < PUBLISH_COOLDOWN_DAYS:
-        log.info("Autonomous writing skipped: last publish %.0f days ago (cooldown: %d days)",
-                 days, PUBLISH_COOLDOWN_DAYS)
+        log.info(
+            "Autonomous writing skipped: last publish %.0f days ago (cooldown: %d days)", days, PUBLISH_COOLDOWN_DAYS
+        )
         return
 
     # Detect recurring themes across recent journals + reading notes
@@ -156,7 +160,7 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
 
     # Parse JSON response
     try:
-        match = re.search(r'\{.*\}', result, re.DOTALL)
+        match = re.search(r"\{.*\}", result, re.DOTALL)
         if not match:
             return
         decision = json.loads(match.group())
@@ -164,8 +168,7 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
         return
 
     if not decision.get("should_write"):
-        log.info("Autonomous writing check: Mira chose not to write (%s)",
-                 decision.get("reason", "")[:80])
+        log.info("Autonomous writing check: Mira chose not to write (%s)", decision.get("reason", "")[:80])
         return
 
     # Mira wants to write!
@@ -179,7 +182,9 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
 
     # Lazy imports from core to avoid circular deps
     from core import (
-        load_session_context, save_session_context, session_record,
+        load_session_context,
+        save_session_context,
+        session_record,
     )
     from runtime.dispatcher import _dispatch_background
 
@@ -201,19 +206,25 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
         tags=["writing", "autonomous", "auto", writing_type],
         origin="auto",
     )
-    bridge.update_task_status(task_id, "working",
-                              agent_message="开始写作...")
+    bridge.update_task_status(task_id, "working", agent_message="开始写作...")
 
     # Dispatch writing as background task
-    _dispatch_background(f"autowrite-{today}", [
-        sys.executable,
-        str(Path(__file__).resolve().parent.parent / "core.py"),
-        "autowrite-run",
-        "--task-id", task_id,
-        "--title", title,
-        "--type", writing_type,
-        "--idea", content,
-    ])
+    _dispatch_background(
+        f"autowrite-{today}",
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parent.parent / "core.py"),
+            "autowrite-run",
+            "--task-id",
+            task_id,
+            "--title",
+            title,
+            "--type",
+            writing_type,
+            "--idea",
+            content,
+        ],
+    )
 
     log.info("Self-initiated writing: '%s' (%s)", title, writing_type)
 
@@ -239,30 +250,30 @@ def _scan_ideas_dir():
         except OSError:
             continue
 
-        state_match = re.search(r'\*\*state\*\*:\s*(\S+)', text)
+        state_match = re.search(r"\*\*state\*\*:\s*(\S+)", text)
         state = state_match.group(1) if state_match else "unknown"
         if state != "new":
             continue
 
-        title_match = re.search(r'^#\s+(.+)$', text, re.MULTILINE)
+        title_match = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
         title = title_match.group(1).strip() if title_match else path.stem
 
-        type_match = re.search(r'\*\*type\*\*:\s*(\S+)', text)
+        type_match = re.search(r"\*\*type\*\*:\s*(\S+)", text)
         writing_type = type_match.group(1) if type_match else "essay"
 
-        deadline_match = re.search(r'\*\*deadline\*\*:\s*(\d{4}-\d{2}-\d{2})', text)
+        deadline_match = re.search(r"\*\*deadline\*\*:\s*(\d{4}-\d{2}-\d{2})", text)
         deadline = deadline_match.group(1) if deadline_match else ""
 
         priority = 50
         if deadline:
             from datetime import date as _date
+
             try:
                 dl = _date.fromisoformat(deadline)
                 days_left = (dl - _date.today()).days
                 if days_left < 0:
                     priority = 1
-                    log.warning("Idea '%s' is %d days past deadline %s",
-                                title, -days_left, deadline)
+                    log.warning("Idea '%s' is %d days past deadline %s", title, -days_left, deadline)
                 elif days_left <= 2:
                     priority = 5
                 else:
@@ -287,28 +298,35 @@ def _scan_ideas_dir():
 def do_autowrite_check():
     """Check for writing opportunities: queued ideas first, then autonomous discovery."""
     from core import (
-        load_state, save_state,
-        load_session_context, save_session_context, session_record,
+        load_state,
+        save_state,
+        load_session_context,
+        save_session_context,
+        session_record,
         session_has_recent,
     )
     from runtime.dispatcher import _dispatch_background
 
     from config import SUBSTACK_PUBLISHING_DISABLED
+
     if SUBSTACK_PUBLISHING_DISABLED:
         log.info("Autowrite check skipped: Substack publishing is disabled")
         return
 
     days = _days_since_last_publish()
     if days < PUBLISH_COOLDOWN_DAYS:
-        log.info("Autowrite check skipped: last publish %.0f days ago (cooldown: %d days)",
-                 days, PUBLISH_COOLDOWN_DAYS)
+        log.info("Autowrite check skipped: last publish %.0f days ago (cooldown: %d days)", days, PUBLISH_COOLDOWN_DAYS)
         return
 
     # --- Priority 1: Queued ideas from ideas/ directory ---
     idea = _scan_ideas_dir()
     if idea and not session_has_recent("autowrite_triggered", hours=4):
-        log.info("Found queued idea: '%s' (priority=%d, deadline=%s)",
-                 idea["title"], idea["priority"], idea.get("deadline", "none"))
+        log.info(
+            "Found queued idea: '%s' (priority=%d, deadline=%s)",
+            idea["title"],
+            idea["priority"],
+            idea.get("deadline", "none"),
+        )
 
         today = datetime.now().strftime("%Y-%m-%d")
         task_id = f"autowrite_{today}"
@@ -324,15 +342,23 @@ def do_autowrite_check():
         )
         bridge.update_task_status(task_id, "working", agent_message="Starting...")
 
-        _dispatch_background(f"autowrite-{today}", [
-            sys.executable,
-            str(Path(__file__).resolve().parent.parent / "core.py"),
-            "autowrite-run",
-            "--task-id", task_id,
-            "--title", idea["title"],
-            "--type", idea["type"],
-            "--idea", idea["content"][:3000],
-        ], group="heavy")
+        _dispatch_background(
+            f"autowrite-{today}",
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parent.parent / "core.py"),
+                "autowrite-run",
+                "--task-id",
+                task_id,
+                "--title",
+                idea["title"],
+                "--type",
+                idea["type"],
+                "--idea",
+                idea["content"][:3000],
+            ],
+            group="heavy",
+        )
 
         # Mark idea as picked up
         try:
@@ -343,8 +369,7 @@ def do_autowrite_check():
             pass
 
         ctx = load_session_context()
-        ctx.append(session_record("autowrite_triggered", idea["title"],
-                                  topic=idea["title"]))
+        ctx.append(session_record("autowrite_triggered", idea["title"], topic=idea["title"]))
         save_session_context(ctx)
 
         state = load_state()
@@ -353,7 +378,7 @@ def do_autowrite_check():
         log.info("Queued idea dispatched: '%s'", idea["title"])
         return
 
-    # --- Priority 2: Autonomous topic discovery (existing logic below) ---
+        # --- Priority 2: Autonomous topic discovery (existing logic below) ---
         return
 
     # Check session context: don't re-trigger if we recently decided to write or skip
@@ -398,7 +423,7 @@ def do_autowrite_check():
         share_thoughts = []
         for sf in spark_files[:30]:  # cap file reads
             content = sf.read_text(encoding="utf-8")
-            share_match = re.search(r'\[SHARE:\s*(.+?)\]', content, re.DOTALL)
+            share_match = re.search(r"\[SHARE:\s*(.+?)\]", content, re.DOTALL)
             if share_match:
                 share_thoughts.append(share_match.group(1).strip())
         if share_thoughts:
@@ -428,7 +453,7 @@ def do_autowrite_check():
 
     # Parse decision
     try:
-        match = re.search(r'\{.*\}', result, re.DOTALL)
+        match = re.search(r"\{.*\}", result, re.DOTALL)
         if not match:
             return
         decision = json.loads(match.group())
@@ -439,12 +464,10 @@ def do_autowrite_check():
     state["last_autowrite_check"] = datetime.now().isoformat()
 
     if not decision.get("should_write"):
-        log.info("Autonomous writing: Mira chose not to write (%s)",
-                 decision.get("reason", "")[:80])
+        log.info("Autonomous writing: Mira chose not to write (%s)", decision.get("reason", "")[:80])
         # Record decision in session context so next cycle knows
         ctx = load_session_context()
-        ctx.append(session_record("autowrite_skip",
-                                  decision.get("reason", "")[:100]))
+        ctx.append(session_record("autowrite_skip", decision.get("reason", "")[:100]))
         save_session_context(ctx)
         save_state(state)
         return
@@ -486,15 +509,22 @@ def do_autowrite_check():
     )
     bridge.update_task_status(task_id, "working", agent_message="开始写作...")
 
-    _dispatch_background(f"autowrite-{today}", [
-        sys.executable,
-        str(Path(__file__).resolve().parent.parent / "core.py"),
-        "autowrite-run",
-        "--task-id", task_id,
-        "--title", title,
-        "--type", writing_type,
-        "--idea", content,
-    ])
+    _dispatch_background(
+        f"autowrite-{today}",
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parent.parent / "core.py"),
+            "autowrite-run",
+            "--task-id",
+            task_id,
+            "--title",
+            title,
+            "--type",
+            writing_type,
+            "--idea",
+            content,
+        ],
+    )
 
     log.info("Self-initiated writing: '%s' (%s)", title, writing_type)
     save_state(state)
