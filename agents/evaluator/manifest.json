@@ -8,5 +8,6 @@
   "entry_point": "handler.py:handle",
   "requires_workspace": true,
   "scheduler_only": false,
-  "allowed_tools": ["Read", "Glob", "Grep"]
+  "allowed_tools": ["Read", "Glob", "Grep"],
+  "permissions": ["filesystem:sandbox:read"]
 }

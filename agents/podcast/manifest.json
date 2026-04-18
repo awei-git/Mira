@@ -7,5 +7,6 @@
   "timeout_category": "background",
   "entry_point": "handler.py:handle",
   "requires_workspace": true,
-  "allowed_tools": ["Bash(command:*)", "Read", "Write", "Glob", "Grep"]
+  "allowed_tools": ["Bash(command:*)", "Read", "Write", "Glob", "Grep"],
+  "permissions": ["filesystem:sandbox", "bash:local", "api:tts"]
 }

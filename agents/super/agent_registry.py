@@ -51,6 +51,8 @@ class AgentManifest:
         )
         # Tool access control: if absent, defaults to full access (legacy compat)
         self.allowed_tools: list[str] | None = data.get("allowed_tools")
+        # Permission scopes: machine-readable resource/API access declarations
+        self.permissions: list[str] = data.get("permissions", [])
         self.agent_dir: Path = agent_dir
 
     def handler_path(self) -> tuple[Path, str]:

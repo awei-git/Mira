@@ -7,3 +7,4 @@
 {"timestamp": "2026-04-15T00:00:52.870961+00:00", "problems": ["photo pipeline: 6 failures in 7 days", "planner pipeline: 8 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.036}, "status": "pending"}
 {"timestamp": "2026-04-16T00:02:00.820313+00:00", "problems": ["photo pipeline: 6 failures in 7 days", "planner pipeline: 8 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.024}, "status": "pending"}
 {"timestamp": "2026-04-17T00:01:44.117773+00:00", "problems": ["photo pipeline: 6 failures in 7 days", "planner pipeline: 8 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.035}, "status": "pending"}
+{"timestamp": "2026-04-18T00:01:03.986378+00:00", "problems": ["Crash rate is 6.1% (target: < 5%)", "photo pipeline: 6 failures in 7 days", "planner pipeline: 5 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.061}, "status": "pending"}

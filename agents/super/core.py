@@ -32,6 +32,7 @@ from config import (
     MIRA_DIR,
     ARTIFACTS_DIR,
     CLEANUP_DAYS,
+    LOG_RETENTION_DAYS,
     JOURNAL_DIR,
     WRITINGS_OUTPUT_DIR,
     WRITINGS_DIR,
@@ -84,7 +85,6 @@ from workflows.helpers import (
     PUBLISH_COOLDOWN_DAYS,
     harvest_observations,
     _maybe_create_spontaneous_idea,
-    _prune_old_logs,
 )
 from workflows.explore import do_explore
 from workflows.reflect import do_reflect
@@ -428,6 +428,22 @@ def cmd_run():
             _run_health_weekly_report()
         except Exception as e:
             log.error("Health weekly report failed: %s", e)
+
+    # Weekly skill security re-audit — slotted alongside reflect/memory consolidation
+    _reaudit_now = datetime.now()
+    if _reaudit_now.weekday() == 6:
+        _reaudit_key = f"skill_reaudit_{_reaudit_now.strftime('%Y-W%W')}"
+        _reaudit_state = load_state()
+        if not _reaudit_state.get(_reaudit_key):
+            _reaudit_state[_reaudit_key] = _reaudit_now.isoformat()
+            save_state(_reaudit_state)
+            try:
+                from memory.soul_skills import reaudit_stale_skills
+
+                reaudit_stale_skills()
+            except Exception as e:
+                log.error("Skill re-audit failed: %s", e)
+
     _phase_times["dispatch"] = round((_time.monotonic() - _t0) * 1000)
 
     # -----------------------------------------------------------------------
@@ -550,8 +566,28 @@ def main():
 
     setup_logging(logs_dir=LOGS_DIR, json_logs=True)
 
-    # Prune old log files (keep 14 days)
-    _prune_old_logs(LOGS_DIR)
+    # Prune old log files — once daily, gated by marker file
+    import os as _prune_os
+
+    _prune_marker = LOGS_DIR / ".last_prune"
+    _prune_today = datetime.now().strftime("%Y-%m-%d")
+    if not _prune_marker.exists() or _prune_marker.read_text(encoding="utf-8").strip() != _prune_today:
+        _cutoff = time.time() - LOG_RETENTION_DAYS * 86400
+        for _lf in LOGS_DIR.rglob("*"):
+            if not _lf.is_file() or _lf.name.startswith("."):
+                continue
+            _rel = _lf.relative_to(LOGS_DIR)
+            if any(p.startswith("_") for p in _rel.parts[:-1]):
+                continue
+            try:
+                if _lf.stat().st_mtime < _cutoff:
+                    _prune_os.remove(_lf)
+            except OSError:
+                pass
+        try:
+            _prune_marker.write_text(_prune_today, encoding="utf-8")
+        except OSError:
+            pass
 
     # Validate configuration — log errors but don't crash
     if not validate_config():

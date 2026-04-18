@@ -7,5 +7,6 @@
   "timeout_category": "long",
   "entry_point": "handler.py:handle",
   "requires_workspace": true,
-  "allowed_tools": ["Read", "Glob", "Grep", "Write", "Edit"]
+  "allowed_tools": ["Read", "Glob", "Grep", "Write", "Edit"],
+  "permissions": ["filesystem:sandbox"]
 }

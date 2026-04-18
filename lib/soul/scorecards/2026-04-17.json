@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-16T22:30:37.482999",
+  "generated_at": "2026-04-17T20:00:11.864481",
   "period_days": 7,
   "agents": {
     "writer": {
@@ -84,9 +84,9 @@
     "component": "super",
     "period_days": 7,
     "scores": {
-      "crash_rate": 0.027,
-      "cycles_today": 291,
-      "heartbeat_age_seconds": 28,
+      "crash_rate": 0.061,
+      "cycles_today": 708,
+      "heartbeat_age_seconds": 8,
       "heartbeat_ok": true,
       "routing_accuracy": 1.0,
       "total_tasks": 2,
@@ -100,11 +100,11 @@
   "aggregate": {
     "total_tasks": 0,
     "active_agents": 0,
-    "crash_rate": 0.027,
+    "crash_rate": 0.061,
     "heartbeat_ok": true,
-    "daily_cost_usd": 22.9296,
-    "daily_tokens": 5840405,
-    "daily_calls": 1081
+    "daily_cost_usd": 8.4113,
+    "daily_tokens": 2610685,
+    "daily_calls": 434
   },
   "stale_skills": [
     {

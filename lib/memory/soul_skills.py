@@ -15,6 +15,7 @@ from config import (
     LOGS_DIR,
     SOUL_DIR,
     MAX_EXTERNAL_SKILLS_PER_DAY,
+    MAX_SKILLS_PER_AGENT,
     SKILL_AUDIT_PATTERN_REVIEWED_DATE,
     SKILL_AUDIT_STALENESS_DAYS,
     SKILL_AUDIT_TTL_DAYS,
@@ -206,7 +207,7 @@ def _extract_trigger(text: str) -> str:
     return ""
 
 
-def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: int = 8) -> str:
+def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: int = MAX_SKILLS_PER_AGENT) -> str:
     """Load full skill content filtered by relevance to the task.
 
     Returns full text of the most relevant skills (not just summaries).
@@ -254,6 +255,13 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
             scored.append((score, skill))
 
     scored.sort(key=lambda x: x[0], reverse=True)
+    if len(scored) > max_skills:
+        log.warning(
+            "skill load truncated: %d skills available, loaded %d (agent=%s)",
+            len(scored),
+            max_skills,
+            agent_type or "unknown",
+        )
     top = scored[:max_skills]
 
     all_tags = set()
@@ -499,6 +507,25 @@ PROMPT_INJECTION_SIGNATURES = [
     r"forget\s+everything",
     r"override\s+your",
     r"system\s+prompt\s*:",
+]
+
+SEMANTIC_INJECTION_PATTERNS: list[tuple[str, str]] = [
+    # 1. Role / identity reassignment phrases
+    (r"you\s+are\s+now\b", "role_reassignment"),
+    (r"ignore\s+previous\s+instructions", "role_reassignment"),
+    (r"disregard\s+your\b", "role_reassignment"),
+    (r"your\s+new\s+role\s+is\b", "role_reassignment"),
+    # 2. Constraint override directives
+    (r"ignore\s+all\s+rules", "constraint_override"),
+    (r"skip\s+security\b", "constraint_override"),
+    (r"\bbypass\b[^.\n]{0,60}\b(?:rule|filter|guard|security|restriction|check)\b", "constraint_override"),
+    # 3. Exfiltration instruction patterns (prose context)
+    (r"send\s+(?:it\s+)?to\s+https?://", "exfiltration_instruction"),
+    (r"post\s+(?:it\s+)?to\s+https?://", "exfiltration_instruction"),
+    (r"\bcurl\s+https?://\S+", "exfiltration_instruction"),
+    # 4. Trigger-word injection markers
+    (r"[\u200b\u200c\u200d\u200e\u200f\ufeff\u2060-\u2069]", "zero_width_or_invisible"),
+    (r"[\u0430\u0435\u043e\u0440\u0441\u0443\u0445]", "cyrillic_homoglyph"),
 ]
 
 
@@ -947,6 +974,33 @@ def content_looks_like_injection(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+_SEMANTIC_MANIPULATION_PHRASES = [
+    "ignore previous instructions",
+    "you are now",
+    "disregard",
+    "override",
+    "forget your",
+    "new persona",
+    "system prompt",
+    "<|im_start|>",
+    "[inst]",
+]
+
+
+def _content_looks_like_prompt_injection(text: str) -> tuple[bool, str]:
+    """Return (True, matched_phrase) if skill text contains semantic manipulation patterns.
+
+    Targets phrases that attempt to override instructions or mutate LLM behavior
+    at the prompt level. Skills can legitimately discuss these topics, so this
+    is a soft signal requiring human review rather than a hard block.
+    """
+    lower = text.lower()
+    for phrase in _SEMANTIC_MANIPULATION_PHRASES:
+        if phrase.lower() in lower:
+            return True, phrase
+    return False, ""
+
+
 def audit_skill(
     name: str,
     content: str,
@@ -1086,6 +1140,7 @@ def audit_skill(
     requires_review = False
     combined = f"{name}\n{content}"
     lines = combined.splitlines()
+    files_scanned: list[str] = [f"skill:{name}"]
 
     checks = [
         (_SUSPICIOUS_URL_PATTERNS, "Suspicious network request"),
@@ -1619,6 +1674,7 @@ def audit_skill(
                     if _cand.exists():
                         try:
                             _shared_content = _cand.read_text(encoding="utf-8")
+                            files_scanned.append(str(_cand))
                             _shared_lines = _shared_content.splitlines()
                             for _patterns, _category in checks:
                                 for _pattern in _patterns:
@@ -1857,6 +1913,63 @@ def audit_skill(
                     _si_context,
                 )
 
+    _si_text = f"{name}\n{(metadata or {}).get('description', '')}\n{content}"
+    for _sip_pattern, _sip_sub in SEMANTIC_INJECTION_PATTERNS:
+        _sip_m = re.search(_sip_pattern, _si_text, re.IGNORECASE)
+        if _sip_m:
+            _sip_key = (_sip_pattern, -6)
+            if _sip_key not in seen:
+                seen.add(_sip_key)
+                _sip_snippet = _si_text[max(0, _sip_m.start() - 30) : _sip_m.end() + 60].strip()
+                findings.append(
+                    {
+                        "line_no": _si_text[: _sip_m.start()].count("\n") + 1,
+                        "line_content": _sip_snippet,
+                        "pattern": _sip_pattern,
+                        "category": "semantic_injection",
+                        "mechanism": f"semantic injection pattern ({_sip_sub}): {repr(_sip_m.group(0))}",
+                    }
+                )
+                log.warning(
+                    "Skill '%s' BLOCKED [semantic_injection/%s] — pattern %r matched: %s",
+                    name,
+                    _sip_sub,
+                    _sip_pattern,
+                    _sip_snippet[:120],
+                )
+
+    _pi_hit, _pi_phrase = _content_looks_like_prompt_injection(combined)
+    if _pi_hit:
+        log.warning(
+            "Skill '%s' WARN [semantic_manipulation/%s] — phrase %r matched; requires explicit human approval before loading",
+            name,
+            _pi_phrase,
+            _pi_phrase,
+        )
+        warnings.append(
+            {
+                "line_no": -1,
+                "line_content": "",
+                "pattern": _pi_phrase,
+                "category": "semantic_manipulation",
+                "mechanism": f"semantic manipulation phrase {repr(_pi_phrase)} found in skill text — may attempt to override agent instructions at prompt level",
+            }
+        )
+        requires_review = True
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            quarantine_entry = {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "skill_name": name,
+                "matched_phrase": _pi_phrase,
+                "reason": "semantic_manipulation — requires explicit human approval before loading",
+            }
+            quarantine_path = LOGS_DIR / "skill_quarantine.jsonl"
+            with open(quarantine_path, "a", encoding="utf-8") as _f:
+                _f.write(json.dumps(quarantine_entry) + "\n")
+        except Exception as _e:
+            log.warning("Failed to write skill quarantine entry: %s", _e)
+
     # --- DANGEROUS_KNOWLEDGE_PAYLOAD: scan knowledge-bearing text against domain blocklist ---
     _knowledge_payloads: list[str] = []
     try:
@@ -1977,6 +2090,32 @@ def audit_skill(
                         _isc_line_no,
                         _isc_line.strip()[:120],
                     )
+
+    NETWORK_EXFIL_PATTERNS = [r"requests\.post", r"requests\.put", r"urllib.*urlopen", r"curl", r"httpx\.post"]
+    SENSITIVE_ACCESS_PATTERNS = [
+        r"os\.environ",
+        r"keyring",
+        r"keychain",
+        r"API_KEY",
+        r"SECRET",
+        r"config\[.*key",
+        r"\.env",
+    ]
+    has_network_exfil = any(re.search(p, combined, re.IGNORECASE) for p in NETWORK_EXFIL_PATTERNS)
+    has_sensitive_access = any(re.search(p, combined, re.IGNORECASE) for p in SENSITIVE_ACCESS_PATTERNS)
+    if has_network_exfil and has_sensitive_access:
+        findings.append(
+            {
+                "severity": "high",
+                "type": "capability_chain",
+                "detail": "Skill combines network exfiltration capability with sensitive data access — complete exfiltration channel detected.",
+                "line_no": -1,
+                "line_content": "",
+                "pattern": "network_exfil + sensitive_access",
+                "category": "capability_chain",
+                "mechanism": "Skill combines network exfiltration capability with sensitive data access — complete exfiltration channel detected.",
+            }
+        )
 
     if _source_channel == "web" and warnings:
         log.warning(
@@ -2101,6 +2240,30 @@ def audit_skill(
                 _f.write(json.dumps(failure_entry) + "\n")
         except Exception as _e:
             log.warning("Failed to write security incident record: %s", _e)
+        try:
+            _fail_record = {
+                "verdict": "fail",
+                "checks_run": list(_AUDIT_CHECKS_PERFORMED),
+                "files_scanned": files_scanned,
+                "findings": [
+                    {
+                        "pattern": f["pattern"],
+                        "file": f.get("file", f"skill:{name}"),
+                        "line": f["line_no"],
+                        "excerpt": f["line_content"][:200],
+                    }
+                    for f in findings
+                ],
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "skill_name": name,
+                "source": source,
+            }
+            _audit_log_path = LOGS_DIR / "skill_audit_log.jsonl"
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            with open(_audit_log_path, "a", encoding="utf-8") as _alf:
+                _alf.write(json.dumps(_fail_record) + "\n")
+        except Exception as _ale:
+            log.warning("Failed to write skill audit log entry: %s", _ale)
         log.info(
             "skill_audit skill_name=%s source=%s outcome=block trail=%s",
             name,
@@ -2227,10 +2390,23 @@ def audit_skill(
             len(warnings),
             "; ".join(w["mechanism"] for w in warnings[:5]),
         )
+    _ts_iso = datetime.utcnow().isoformat() + "Z"
     result = {
         "passed": passed,
+        "verdict": "pass",
+        "checks_run": list(_AUDIT_CHECKS_PERFORMED),
+        "files_scanned": files_scanned,
+        "findings": [
+            {
+                "pattern": f["pattern"],
+                "file": f.get("file", f"skill:{name}"),
+                "line": f["line_no"],
+                "excerpt": f["line_content"][:200],
+            }
+            for f in findings
+        ],
+        "timestamp": _ts_iso,
         "result": _result_tier,
-        "findings": findings,
         "requires_review": requires_review,
         "implicit_trust_extensions": implicit_trust_extensions,
         "transitive_dependencies": _transitive_dep_warnings,
@@ -2251,7 +2427,59 @@ def audit_skill(
     }
     if coverage_gaps:
         result["coverage_gaps"] = coverage_gaps
+    try:
+        _audit_log_path = LOGS_DIR / "skill_audit_log.jsonl"
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        _log_entry = {
+            "verdict": "pass",
+            "checks_run": result["checks_run"],
+            "files_scanned": files_scanned,
+            "findings": result["findings"],
+            "timestamp": _ts_iso,
+            "skill_name": name,
+            "source": source,
+        }
+        with open(_audit_log_path, "a", encoding="utf-8") as _alf:
+            _alf.write(json.dumps(_log_entry) + "\n")
+    except Exception as _ale:
+        log.warning("Failed to write skill audit log entry: %s", _ale)
     return result
+
+
+def reaudit_all_skills(skills_dir: Path) -> list[str]:
+    """Re-run audit_skill() over every .md/.yaml skill file in skills_dir.
+
+    Returns the list of skill names that failed. Logs a WARN for each failure.
+    Does NOT delete failing skills — they are surfaced for human review only.
+    """
+    failing: list[str] = []
+    if not skills_dir.exists():
+        return failing
+    skill_files = [p for p in sorted(skills_dir.rglob("*")) if p.is_file() and p.suffix in {".md", ".yaml", ".yml"}]
+    for skill_path in skill_files:
+        name = skill_path.stem
+        try:
+            content = skill_path.read_text(encoding="utf-8")
+        except OSError as e:
+            log.warning("reaudit_all_skills: could not read %s: %s", skill_path.name, e)
+            continue
+        try:
+            audit_skill(name, content, source="internal")
+        except SkillAuditFailedError as e:
+            log.warning("reaudit_all_skills: skill '%s' FAILED audit — %s", name, e)
+            failing.append(name)
+        except Exception as e:
+            log.warning("reaudit_all_skills: error auditing '%s' — %s", name, e)
+    if failing:
+        log.warning(
+            "reaudit_all_skills: %d/%d skill(s) failed re-audit (NOT deleted — human review required): %s",
+            len(failing),
+            len(skill_files),
+            ", ".join(failing),
+        )
+    else:
+        log.info("reaudit_all_skills: all %d skill(s) passed", len(skill_files))
+    return failing
 
 
 def _classify_skill_type(name: str, content: str) -> tuple[str, str]:
@@ -2301,6 +2529,100 @@ def _classify_skill_type(name: str, content: str) -> tuple[str, str]:
     return "skill", "Passes skill classification"
 
 
+def _parse_last_audited(content: str) -> "datetime | None":
+    """Parse last_audited timestamp from YAML frontmatter."""
+    if not content.startswith("---"):
+        return None
+    end = content.find("\n---", 3)
+    if end == -1:
+        return None
+    frontmatter = content[4:end]
+    m = re.search(r"^last_audited:\s*(\S+)", frontmatter, re.MULTILINE)
+    if not m:
+        return None
+    try:
+        return datetime.fromisoformat(m.group(1).strip().rstrip("Z"))
+    except ValueError:
+        return None
+
+
+def _inject_last_audited(content: str, ts: str) -> str:
+    """Inject or update last_audited in YAML frontmatter. Creates minimal frontmatter if absent."""
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end != -1:
+            frontmatter = content[4:end]
+            rest = content[end:]
+            if re.search(r"^last_audited:", frontmatter, re.MULTILINE):
+                frontmatter = re.sub(r"^last_audited:\s*\S+", f"last_audited: {ts}", frontmatter, flags=re.MULTILINE)
+            else:
+                frontmatter = frontmatter.rstrip("\n") + f"\nlast_audited: {ts}\n"
+            return "---\n" + frontmatter + rest
+    return f"---\nlast_audited: {ts}\n---\n\n{content}"
+
+
+def reaudit_stale_skills(max_age_days: int = 30) -> dict:
+    """Re-audit skill files not audited within max_age_days.
+
+    On pass: updates last_audited timestamp in file frontmatter.
+    On fail: renames file to .blocked (quarantine).
+    Returns summary counts.
+    """
+    from datetime import timedelta
+
+    if not SKILLS_DIR.exists():
+        return {"checked": 0, "passed": 0, "quarantined": 0, "skipped": 0}
+
+    cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+    skill_files = [p for p in sorted(SKILLS_DIR.rglob("*")) if p.is_file() and p.suffix == ".md"]
+
+    checked = passed = quarantined = skipped = 0
+
+    for skill_path in skill_files:
+        name = skill_path.stem
+        try:
+            content = skill_path.read_text(encoding="utf-8")
+        except OSError as e:
+            log.warning("reaudit_stale_skills: cannot read %s: %s", skill_path.name, e)
+            skipped += 1
+            continue
+
+        last_audited = _parse_last_audited(content)
+        if last_audited and last_audited > cutoff:
+            skipped += 1
+            continue
+
+        checked += 1
+        try:
+            audit_skill(name, content, source="internal")
+            ts = datetime.utcnow().isoformat() + "Z"
+            _atomic_write(skill_path, _inject_last_audited(content, ts))
+            passed += 1
+            log.info("reaudit_stale_skills: '%s' passed", name)
+        except SkillAuditFailedError as e:
+            blocked_path = skill_path.with_suffix(".blocked")
+            skill_path.rename(blocked_path)
+            quarantined += 1
+            log.warning(
+                "reaudit_stale_skills: '%s' FAILED — quarantined as %s: %s",
+                name,
+                blocked_path.name,
+                e,
+            )
+        except Exception as e:
+            log.warning("reaudit_stale_skills: error auditing '%s': %s", name, e)
+            skipped += 1
+
+    log.info(
+        "reaudit_stale_skills: checked=%d passed=%d quarantined=%d skipped=%d",
+        checked,
+        passed,
+        quarantined,
+        skipped,
+    )
+    return {"checked": checked, "passed": passed, "quarantined": quarantined, "skipped": skipped}
+
+
 def save_skill(name: str, description: str, content: str, source_title: str = "", source_url: str = "") -> bool:
     """Save a new skill and update the index. Runs security audit first.
 
@@ -2334,6 +2656,8 @@ def save_skill(name: str, description: str, content: str, source_title: str = ""
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     slug = name.lower().replace(" ", "-")
     path = SKILLS_DIR / f"{slug}.md"
+    _audited_ts = datetime.utcnow().isoformat() + "Z"
+    content = _inject_last_audited(content, _audited_ts)
     _atomic_write(path, content)
     _save_skill_audit_hash(slug, hashlib.sha256(content.encode("utf-8")).hexdigest())
 

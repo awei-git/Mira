@@ -133,6 +133,26 @@ def preflight_check(action_type: str, context: dict) -> PreflightResult:
     )
     log.info("PREFLIGHT %s: %s", "PASS" if passed else "BLOCKED", result.summary())
     log.info("PREFLIGHT_TRACE [%s]: %s", action_type, json.dumps(verification_trace))
+    try:
+        import datetime as _dt
+
+        _logs_dir = Path(config.LOGS_DIR) if not isinstance(config.LOGS_DIR, Path) else config.LOGS_DIR
+        _logs_dir.mkdir(parents=True, exist_ok=True)
+        _preflight_record = {
+            "timestamp": _dt.datetime.utcnow().isoformat() + "Z",
+            "action_type": action_type,
+            "verdict": "pass" if passed else "fail",
+            "fields_validated": {
+                k: (str(v)[:300] if isinstance(v, str) else v) for k, v in context.items() if k != "instruction"
+            },
+            "checks": [{"name": c.name, "passed": c.passed, "message": c.message} for c in checks],
+            "blocking_reasons": blockers,
+        }
+        _pf_log = _logs_dir / "publish_preflight_log.jsonl"
+        with open(_pf_log, "a", encoding="utf-8") as _f:
+            _f.write(json.dumps(_preflight_record) + "\n")
+    except Exception as _pe:
+        log.warning("Failed to write preflight log entry: %s", _pe)
     return result
 
 

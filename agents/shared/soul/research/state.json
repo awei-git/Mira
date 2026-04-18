@@ -2,7 +2,7 @@
   "schema_version": 1,
   "current_focus": null,
   "in_flight_experiments": [],
-  "last_research_log_date": "2026-04-16",
+  "last_research_log_date": "2026-04-17",
   "pending_needs": [
     {
       "type": "strategic_decision",
@@ -102,6 +102,17 @@
       "status": "open",
       "opened": "2026-04-16",
       "id": "2026-04-16_2"
+    },
+    {
+      "type": "strategic_decision",
+      "what": "Confirm whether the silent degradation essay and Q1 are the same thread or two separate tracks — essay as primary output vs. Q1 as research question driving experiments first with essay as downstream synthesis.",
+      "why": "Every day without this decision is a day of zero research output. Six days elapsed.",
+      "urgency": "urgent",
+      "estimated_cost": "none",
+      "link": "none",
+      "status": "open",
+      "opened": "2026-04-17",
+      "id": "2026-04-17_0"
     }
   ],
   "completed_questions": [],

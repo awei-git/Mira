@@ -7,5 +7,6 @@
   "timeout_category": "short",
   "entry_point": "core.py:cmd_run",
   "requires_workspace": false,
-  "allowed_tools": ["Read", "Glob", "Grep", "Write", "Edit"]
+  "allowed_tools": ["Read", "Glob", "Grep", "Write", "Edit"],
+  "permissions": ["filesystem:sandbox"]
 }

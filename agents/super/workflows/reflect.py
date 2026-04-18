@@ -404,6 +404,24 @@ def do_reflect(user_id: str = "ang"):
     except Exception as e:
         log.warning("Wiki maintenance failed: %s", e)
 
+    # --- Re-audit all grandfathered skills in the corpus ---
+    try:
+        from memory.soul_skills import reaudit_all_skills
+        from config import SKILLS_DIR
+
+        reaudit_failures = reaudit_all_skills(SKILLS_DIR)
+        if reaudit_failures:
+            _reaudit_section = (
+                "## Skills failing security re-audit (NOT auto-deleted — human review required)\n"
+                + "\n".join(f"- {name}" for name in reaudit_failures)
+                + "\n\nThese grandfathered skills triggered audit findings. Review each before deciding to keep or remove."
+            )
+            log.warning("Skill re-audit findings:\n%s", _reaudit_section)
+            if result:
+                result = result + "\n\n---\n\n" + _reaudit_section
+    except Exception as e:
+        log.warning("Skill re-audit pass failed: %s", e)
+
     # --- Weekly self-evaluation report to WA ---
     try:
         from evaluation.scorer import generate_weekly_report
