@@ -5,8 +5,18 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from bridge_gateway import BridgeMessage
-from bridge_gateway.adapters.notes import NotesBridgeAdapter
+import pytest
+
+# NotesBridgeAdapter wraps lib/bridge.py::Mira, which imports the
+# `mira_bridge` Python module from the sibling MiraBridge repo. CI
+# runners only check out Mira/, so the module isn't importable there
+# and any instantiation of NotesBridgeAdapter fails at __init__. Skip
+# this module on hosts without MiraBridge; locally it passes because
+# MiraBridge is on PYTHONPATH via Mira/lib/pathsetup.py.
+pytest.importorskip("mira_bridge", reason="MiraBridge sibling repo not installed")
+
+from bridge_gateway import BridgeMessage  # noqa: E402
+from bridge_gateway.adapters.notes import NotesBridgeAdapter  # noqa: E402
 
 
 def _seed_bridge_layout(tmp_path):
