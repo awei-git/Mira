@@ -18,7 +18,13 @@ import subprocess
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
-from defusedxml import ElementTree as ET  # B314/B405: defused for podcast RSS
+from xml.etree import ElementTree as ET
+
+# defusedxml exposes a secure-parse subset (no Element/SubElement/indent/
+# register_namespace), so we use it ONLY for parsing untrusted RSS input.
+# Element creation + write path stays on stdlib ET (no XML-injection risk
+# on data we generate ourselves). See _parse_feed_xml() below.
+import defusedxml.ElementTree as _safe_ET  # noqa: E402
 
 from config import PODCAST_REPOS_DIR
 
@@ -233,7 +239,7 @@ def _load_or_create_feed(feed_path: Path, lang: str = "zh") -> ET.Element:
             raw,
             flags=re.DOTALL,
         )
-        return ET.fromstring(raw)
+        return _safe_ET.fromstring(raw)  # defused parse of untrusted RSS
 
     # Build skeleton using per-language config
     cfg = _get_config(lang)

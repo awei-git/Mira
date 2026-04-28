@@ -9,7 +9,11 @@ All params are little-endian packed C structs, encoded as hex or gz-base64.
 import struct
 import zlib
 import base64
-import defusedxml.ElementTree as ET  # B314/B405: defused for darktable XMP sidecars
+import xml.etree.ElementTree as ET
+
+# This module *generates* XMP sidecars (Element/SubElement) — no parse of
+# untrusted XML, so defusedxml's secure-parse subset isn't applicable.
+# All XML produced here comes from data we control.
 from pathlib import Path
 
 
