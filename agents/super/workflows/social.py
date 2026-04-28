@@ -117,6 +117,21 @@ def do_growth_cycle():
     except Exception as e:
         log.error("Growth cycle failed: %s", e)
 
+    # Bluesky: standalone post + proactive niche replies + metric poll.
+    # Imported as bluesky_agent (the lib package `bluesky` shadows the name).
+    try:
+        from bluesky_agent import run_bluesky_cycle
+
+        bsky_result = run_bluesky_cycle()
+        log.info(
+            "Bluesky cycle: posted=%s replies=%d reason=%s",
+            bsky_result.get("posted"),
+            bsky_result.get("replies_posted", 0),
+            bsky_result.get("reason") or "-",
+        )
+    except Exception as e:
+        log.error("Bluesky cycle failed: %s", e)
+
     # Collect Substack engagement as evolution reward signals
     try:
         from evolution import collect_substack_rewards

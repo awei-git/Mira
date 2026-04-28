@@ -142,6 +142,71 @@ def fetch_publication_stats(*, force: bool = False, min_interval_hours: float = 
         return {"articles": [], "notes": [], "fetched_at": None, "error": str(e)[:120]}
 
 
+def fetch_subscriber_snapshot() -> dict:
+    """Fetch inbound subscriber count + details from the writer dashboard.
+
+    Uses the dashboard XHR endpoints:
+    - /api/v1/publish-dashboard/summary-v2?range=30 — total/paid subs + 30d delta
+    - /api/v1/subscriber-stats — per-subscriber rows (name, uid, rating, signup)
+
+    Returns dict with keys: total, paid, delta_30d, subscribers (list).
+    Empty dict on failure.
+    """
+    cfg = _get_substack_config()
+    subdomain = cfg.get("subdomain", "")
+    cookie = cfg.get("cookie", "")
+    if not subdomain or not cookie:
+        return {}
+
+    headers = {
+        "Cookie": f"substack.sid={cookie}",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    }
+
+    result: dict = {"total": 0, "paid": 0, "delta_30d": 0, "subscribers": []}
+
+    try:
+        req = urllib.request.Request(
+            f"https://{subdomain}.substack.com/api/v1/publish-dashboard/summary-v2?range=30",
+            headers=headers,
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            s = json.loads(r.read().decode("utf-8"))
+        result["total"] = int(s.get("totalSubscribersEnd") or 0)
+        result["paid"] = int(s.get("paidSubscribersEnd") or 0)
+        start = int(s.get("totalSubscribersStart") or 0)
+        result["delta_30d"] = result["total"] - start
+    except Exception as e:
+        log.warning("summary-v2 fetch failed: %s", e)
+
+    try:
+        # Note: /api/v1/subscriber-stats takes POST in browser but GET also works
+        req = urllib.request.Request(
+            f"https://{subdomain}.substack.com/api/v1/subscriber-stats",
+            data=b"{}",
+            headers={**headers, "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            s = json.loads(r.read().decode("utf-8"))
+        subs = s.get("subscribers", []) or []
+        result["subscribers"] = [
+            {
+                "name": x.get("user_name"),
+                "user_id": x.get("user_id"),
+                "email": x.get("user_email_address"),
+                "activity_rating": x.get("activity_rating"),
+                "signup_at": x.get("subscription_created_at"),
+                "interval": x.get("subscription_interval"),
+            }
+            for x in subs
+        ]
+    except Exception as e:
+        log.warning("subscriber-stats fetch failed: %s", e)
+
+    return result
+
+
 def _fetch_publication_stats_inner() -> dict:
     from datetime import datetime, timezone
 
@@ -250,10 +315,20 @@ def _fetch_publication_stats_inner() -> dict:
     if best_title:
         summary_parts.append(f'Best performing: "{best_title}" ({best_views} views)')
 
+    # --- Subscribers (inbound) ---
+    subscriber_snapshot = fetch_subscriber_snapshot()
+    if subscriber_snapshot:
+        summary_parts.append(
+            f"Subscribers: {subscriber_snapshot.get('total', 0)} "
+            f"(+{subscriber_snapshot.get('delta_30d', 0)} in 30d, "
+            f"{subscriber_snapshot.get('paid', 0)} paid)"
+        )
+
     result = {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "articles": articles,
         "notes": notes_entries,
+        "subscribers": subscriber_snapshot,
         "summary": ". ".join(summary_parts),
     }
 

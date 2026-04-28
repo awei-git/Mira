@@ -155,7 +155,10 @@ def get_stuck_articles(timeout_minutes: int = 120) -> list[dict]:
     now = datetime.now(timezone.utc)
     for entry in manifest.get("articles", {}).values():
         status = entry.get("status", "")
-        if status in ("complete", ""):
+        # Terminal or explicitly parked statuses are not "stuck".
+        # blocked_language = semantic block (CJK body during English-only window);
+        # get_next_pending won't pick these up, so they're not waiting on pipeline.
+        if status in ("complete", "blocked_language", ""):
             continue
         ts_str = entry.get("timestamps", {}).get(status)
         if not ts_str:

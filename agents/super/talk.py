@@ -523,9 +523,25 @@ def do_talk():
             elif cmd_type == "comment":
                 parent_id = cmd.get("parent_id", "")
                 disc_id = f"disc_{uuid.uuid4().hex[:8]}"
+                if not _check_inbound_command_safety(bridge, cmd, disc_id, f"Re: {title}", content):
+                    continue
                 bridge.create_discussion(
                     disc_id, f"Re: {title}", content, sender=sender, tags=["feed-comment"], parent_id=parent_id
                 )
+                # Dispatch a worker so Mira actually replies to the comment.
+                # Pre-2026-04-27: discussion was created but no worker spawned,
+                # so feed comments never got a response.
+                workspace = TASKS_DIR / _talk_slug(content, disc_id)
+                msg = Message(
+                    id=disc_id,
+                    sender=sender,
+                    timestamp=cmd.get("timestamp", ""),
+                    content=content,
+                    thread_id=disc_id,
+                )
+                result = _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd)
+                if result == "busy":
+                    break
             elif cmd_type == "cancel" and item_id:
                 bridge.update_status(
                     item_id, "failed", error={"code": "cancelled", "message": "Cancelled by user", "retryable": False}

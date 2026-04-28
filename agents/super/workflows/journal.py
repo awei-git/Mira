@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
@@ -108,22 +108,27 @@ def do_journal(user_id: str = "ang"):
     except Exception as e:
         log.warning("Could not fetch publication stats: %s", e)
 
-    # 5. Today's sparks (idle-think observations)
+    # 5. Today's sparks — read from sparks log file (not home feed; the 9pm
+    # consolidation flow writes Mira's Day digest below from this same source)
     sparks_summary = ""
+    spark_entries: list[dict] = []
     try:
-        bridge = Mira(MIRA_DIR, user_id=user_id)
-        mira_item_id = f"feed_mira_{today.replace('-', '')}"
-        mira_item = bridge._read_item(mira_item_id)
-        if mira_item and mira_item.get("messages"):
-            spark_texts = [
-                m["content"]
-                for m in mira_item["messages"]
-                if m.get("sender") == "agent" and m.get("kind", "text") == "text" and "Spark" in m["content"][:20]
-            ]
-            if spark_texts:
-                sparks_summary = f"今天产生了 {len(spark_texts)} 条 spark。以下是部分内容：\n\n"
-                sparks_summary += "\n---\n".join(spark_texts[:20])  # cap at 20
-                log.info("Loaded %d sparks for journal context", len(spark_texts))
+        import json as _json
+
+        sparks_path = MIRA_DIR / "users" / user_id / "sparks" / f"{today}.jsonl"
+        if sparks_path.exists():
+            for line in sparks_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    spark_entries.append(_json.loads(line))
+                except _json.JSONDecodeError:
+                    continue
+        if spark_entries:
+            sparks_summary = f"今天产生了 {len(spark_entries)} 条 spark：\n\n"
+            sparks_summary += "\n---\n".join(s.get("content", "")[:600] for s in spark_entries[:20])
+            log.info("Loaded %d sparks for journal context", len(spark_entries))
     except Exception as e:
         log.warning("Failed to load sparks for journal: %s", e)
 
@@ -275,18 +280,43 @@ def do_journal(user_id: str = "ang"):
     # Copy to briefings dir so iOS can read it (with verification)
     _copy_to_briefings(artifact_name_for_user(f"{today}_journal.md", user_id), journal_content)
 
-    # Push journal as standalone feed item (visible in home)
+    # Push journal as the canonical "Mira's Day" home item.
+    # Uses the same id (feed_mira_{date}) that sparks would have used so any
+    # legacy in-progress accumulator is replaced by this consolidated digest.
     try:
         bridge = Mira(MIRA_DIR, user_id=user_id)
-        item_id = f"feed_journal_{today.replace('-', '')}"
-        if not bridge.item_exists(item_id):
-            bridge.create_item(
-                item_id, "feed", f"Mira's Day Summary {today}", journal_content, tags=["mira", "journal", "summary"]
-            )
-            bridge.update_status(item_id, "done")
-        log.info("Journal pushed as standalone feed item")
+        item_id = f"feed_mira_{today.replace('-', '')}"
+        legacy_id = f"feed_journal_{today.replace('-', '')}"
+        title = f"Mira's Day {today}"
+        if bridge.item_exists(item_id):
+            # Replace messages with the consolidated journal
+            existing = bridge._read_item(item_id) or {}
+            existing["title"] = title
+            existing["status"] = "done"
+            existing["tags"] = sorted(set((existing.get("tags") or []) + ["mira", "journal", "digest"]))
+            existing["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            existing["messages"] = [
+                {
+                    "id": f"{abs(hash(item_id + today)) % 0xFFFFFFFF:08x}",
+                    "sender": "agent",
+                    "content": journal_content,
+                    "timestamp": existing["updated_at"],
+                    "kind": "text",
+                }
+            ]
+            bridge._write_item(existing)
+            bridge._update_manifest(existing)
+        else:
+            bridge.create_feed(item_id, title, journal_content, tags=["mira", "journal", "digest"])
+        # Archive the now-redundant "Mira's Day Summary" legacy item if present
+        if bridge.item_exists(legacy_id):
+            try:
+                bridge.update_status(legacy_id, "archived")
+            except Exception:
+                pass
+        log.info("Mira's Day digest written as %s", item_id)
     except Exception as e:
-        log.warning("Failed to push journal feed item: %s", e)
+        log.warning("Failed to push Mira's Day digest: %s", e)
 
     # --- Social media daily report (standalone, NOT inside journal) ---
     try:

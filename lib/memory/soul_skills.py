@@ -20,8 +20,11 @@ from config import (
     SKILL_AUDIT_STALENESS_DAYS,
     SKILL_AUDIT_TTL_DAYS,
     SKILL_AUDIT_STRICT_MODE,
+    SKILL_AUDIT_LAG_ALERT_HOURS,
+    SKILL_IMPORT_MAX_PER_DAY,
     SOCIAL_ENGINEERING_PATTERNS,
     SKILL_KNOWLEDGE_BLOCKLIST,
+    TRUST_AUDIT_ENABLED,
     today_local,
 )
 from memory.soul_io import (
@@ -42,6 +45,14 @@ _SKILL_AUDIT_HASHES = SKILLS_DIR.parent / "audit_hashes.json"
 _SKILL_PROVENANCE_FILE = SKILLS_DIR.parent / "skill_provenance.json"
 _AUDIT_WARNINGS_PATH = SKILLS_DIR.parent / "audit_warnings.jsonl"
 _SKILL_AUDIT_FAILURES_PATH = SOUL_DIR / "skill_audit_failures.jsonl"
+_AUDIT_BLOCK_LOG = SOUL_DIR / "audit_block_log.jsonl"
+
+HIGH_PRIVILEGE_SOURCES: frozenset[str] = frozenset({"orchestrator", "system_prompt", "remote_trigger"})
+
+AUDIT_LAG_WARN_SECONDS = 3600
+
+PERMANENT_SKILL_BLOCKLIST: frozenset[str] = frozenset({"cross-asset-divergence-detection"})
+AUTO_BLOCK_CATEGORY_THRESHOLD: int = 3
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +101,25 @@ def _update_provenance_loaded(skill_name: str):
         return json.dumps(records, indent=2, ensure_ascii=False)
 
     _locked_read_modify_write(_SKILL_PROVENANCE_FILE, _modify)
+
+
+def _update_skill_invocation(skill_name: str) -> None:
+    """Write last_invoked timestamp and increment use_count in the skill index."""
+
+    def _modify(text):
+        try:
+            index = json.loads(text) if text else []
+        except (json.JSONDecodeError, ValueError):
+            index = []
+        now = datetime.utcnow().isoformat() + "Z"
+        for entry in index:
+            if entry.get("name") == skill_name:
+                entry["last_invoked"] = now
+                entry["use_count"] = entry.get("use_count", 0) + 1
+                break
+        return json.dumps(index, indent=2, ensure_ascii=False)
+
+    _locked_read_modify_write(SKILLS_INDEX, _modify)
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +202,66 @@ def resolve_skill_audit_failure(skill_name: str, resolution: str):
         _SKILL_AUDIT_FAILURES_PATH.write_text("\n".join(lines_out) + "\n", encoding="utf-8")
     except OSError as e:
         log.warning("Failed to update skill audit failure record: %s", e)
+
+
+def mark_skill_resolved(skill_name: str, resolution_note: str) -> dict | None:
+    """Append a resolution entry to blocked_skills_log.jsonl for skill_name.
+
+    Finds the most recent unresolved BLOCK entry for the skill, computes
+    lag_seconds from blocked_at to now, and appends a resolution record.
+    Returns the resolution entry, or None if no unresolved block was found.
+    """
+    blocked_log_path = LOGS_DIR / "blocked_skills_log.jsonl"
+    if not blocked_log_path.exists():
+        return None
+    last_block: dict | None = None
+    try:
+        with open(blocked_log_path, encoding="utf-8") as _f:
+            for _line in _f:
+                try:
+                    _entry = json.loads(_line)
+                    if _entry.get("skill_name") == skill_name and "resolved_at" not in _entry:
+                        last_block = _entry
+                except (json.JSONDecodeError, ValueError):
+                    pass
+    except OSError as e:
+        log.warning("mark_skill_resolved: failed to read blocked log: %s", e)
+        return None
+    if last_block is None:
+        return None
+    resolved_at = datetime.utcnow().isoformat() + "Z"
+    lag_seconds: float | None = None
+    blocked_at_str = last_block.get("blocked_at") or last_block.get("detected_at")
+    if blocked_at_str:
+        try:
+            blocked_dt = datetime.fromisoformat(blocked_at_str.rstrip("Z"))
+            lag_seconds = (datetime.utcnow() - blocked_dt).total_seconds()
+        except ValueError:
+            pass
+    resolution_entry = {
+        "event": "resolved",
+        "skill_name": skill_name,
+        "resolved_at": resolved_at,
+        "resolution_note": resolution_note,
+        "lag_seconds": lag_seconds,
+        "original_block_reason": last_block.get("block_reason_category"),
+    }
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(blocked_log_path, "a", encoding="utf-8") as _f:
+            _f.write(json.dumps(resolution_entry) + "\n")
+    except OSError as e:
+        log.warning("mark_skill_resolved: failed to write resolution entry: %s", e)
+        return None
+    if lag_seconds is not None:
+        log.info(
+            "Skill '%s' resolved — lag %.0fs (%.1fh) | reason: %s",
+            skill_name,
+            lag_seconds,
+            lag_seconds / 3600,
+            resolution_note,
+        )
+    return resolution_entry
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +432,7 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
                 else:
                     sections.append(text)
                 _update_provenance_loaded(skill.get("name", ""))
+                _update_skill_invocation(skill.get("name", ""))
             except OSError:
                 pass
     return "\n\n---\n\n".join(sections)
@@ -394,6 +485,7 @@ def load_skill(name: str) -> str:
                 )
             _save_skill_audit_hash(slug, current_hash)
         _update_provenance_loaded(name)
+        _update_skill_invocation(name)
         return text
     return ""
 
@@ -415,6 +507,7 @@ _SUSPICIOUS_URL_PATTERNS = [
     r"curl\s+.*-o\s+\S+.*&&.*chmod\s+\+x",  # Download + make executable
     r"requests\.get\s*\(",  # Python HTTP requests
     r"urllib\.request",  # Python urllib
+    r"(urllib|requests|httpx)\.(get|post|put|open).*http",  # HTTP exfiltration via urllib/requests/httpx
     r"subprocess\..*shell\s*=\s*True",  # Shell injection via subprocess
 ]
 
@@ -430,6 +523,8 @@ _DANGEROUS_FS_PATTERNS = [
     r"subprocess\.check_output\s*\(",  # Subprocess execution with output capture
     r"subprocess\.check_call\s*\(",  # Subprocess execution with error checking
     r"pickle\.loads?\s*\(",  # Pickle deserialization (arbitrary code execution via untrusted data)
+    r"pickle\.Unpickler\s*\(",  # Pickle deserialization via class interface (same RCE risk as pickle.loads)
+    r"\bctypes\b",  # ctypes: calls arbitrary C functions and system calls, bypassing Python sandboxing
     r"chmod\s+\+[xs]",  # Making files executable/setuid
     r"rm\s+-rf\s+/",  # Destructive delete from root
     r"shutil\.rmtree\s*\(",  # Programmatic recursive delete
@@ -458,6 +553,7 @@ _PRIVILEGE_ESCALATION_PATTERNS = [
     r"\.env\b",  # Environment file access
     r"password|passwd|secret|token|api_key",  # Sensitive credential patterns
     r"OPENAI_API_KEY|ANTHROPIC_API_KEY",  # Specific API keys
+    r"os\.environ\s*\.get\s*\([^)]*(?:KEY|TOKEN|SECRET|PASSWORD)",  # os.environ reads targeting credential variables
     r"/etc/shadow|/etc/passwd",  # System credential files
     r"launchctl\s+load",  # macOS persistence
     r"crontab",  # Scheduled task persistence
@@ -570,6 +666,7 @@ _AUDIT_CHECKS_PERFORMED = [
     "declaration_behavior_consistency",
     "import_allowlist",
     "implicit_trust_chain",
+    "cross_domain_path",
 ]
 _AUDIT_CHECKS_NOT_COVERED = [
     "runtime_behavior",
@@ -804,11 +901,14 @@ def _levenshtein(a: str, b: str) -> int:
 
 
 _SKILL_INGESTION_LOG = SOUL_DIR / "skill_ingestion_log.json"
+_SKILL_IMPORT_COUNTS = LOGS_DIR / "skill_import_counts.json"
 _SKILL_PROVENANCE_LEDGER = SOUL_DIR / "skill_provenance_ledger.jsonl"
 
 _EXTERNAL_SOURCES = {"web_fetch", "community_import", "web"}
 
 _CHANNEL_SOURCE_MAP = {"internal": "agent_generated", "web": "web_fetch", "user": "user_input"}
+
+_SOURCE_TIER_ALLOWLIST = frozenset({"internal", "verified_feed"})
 
 
 def _check_behavioral_patterns(name: str, content: str) -> list[dict]:
@@ -1001,12 +1101,152 @@ def _content_looks_like_prompt_injection(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+_TEXT_FIELD_INJECTION_PATTERNS: list[tuple[str, str]] = [
+    (r"ignore\s+previous\s+instructions", "instruction_override"),
+    (r"ignore\s+prior\s+instructions", "instruction_override"),
+    (r"you\s+are\s+now\b", "role_switching"),
+    (r"\bsystem\s*:", "system_prompt_spoofing"),
+    (r"\bassistant\s*:", "assistant_prompt_spoofing"),
+    (r"#{3,}", "markdown_delimiter_injection"),
+    (r"\bnew\s+role\s*:", "role_switching"),
+    (r"\bforget\s+(?:all\s+)?(?:previous|prior|your)\b", "instruction_override"),
+    (r"\bdisregard\s+(?:all\s+)?(?:previous|prior|your)\b", "instruction_override"),
+    (r"\boverride\s+(?:all\s+)?(?:instructions?|rules?|guidelines?)\b", "instruction_override"),
+    (r"\bact\s+as\s+(?:a\s+)?(?:different|new|another|an?\s+)?(?:ai|assistant|model|persona)\b", "role_switching"),
+    (r"[A-Za-z0-9+/]{80,}={0,2}", "base64_blob"),
+]
+
+
+def _sanitize_text_fields(name: str, metadata: dict | None) -> list[dict]:
+    """Scan skill metadata text fields for prompt injection patterns.
+
+    Checks name, description, rationale, and tags — fields sourced from external
+    feeds that are later injected verbatim into agent prompt context.
+    """
+    meta = metadata or {}
+    fields: list[tuple[str, str]] = [("name", name)]
+    for field in ("description", "rationale"):
+        val = meta.get(field, "")
+        if isinstance(val, str) and val:
+            fields.append((field, val))
+    tags = meta.get("tags", [])
+    if isinstance(tags, list):
+        for tag in tags:
+            if isinstance(tag, str) and tag:
+                fields.append(("tags", tag))
+    elif isinstance(tags, str) and tags:
+        fields.append(("tags", tags))
+
+    findings: list[dict] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for field_name, field_value in fields:
+        for pattern, subcategory in _TEXT_FIELD_INJECTION_PATTERNS:
+            m = re.search(pattern, field_value, re.IGNORECASE | re.MULTILINE)
+            if m:
+                key = (field_name, pattern)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                snippet = field_value[max(0, m.start() - 20) : m.end() + 40].strip()
+                findings.append(
+                    {
+                        "line_no": -1,
+                        "line_content": snippet,
+                        "pattern": pattern,
+                        "category": "text_field_injection",
+                        "mechanism": f"prompt injection pattern ({subcategory}) in skill {field_name} field: {repr(m.group(0))}",
+                    }
+                )
+                log.warning(
+                    "Skill '%s' BLOCKED [text_field_injection/%s] — pattern %r in field '%s': %s",
+                    name,
+                    subcategory,
+                    pattern,
+                    field_name,
+                    snippet[:120],
+                )
+    return findings
+
+
+_BLOCK_REASON_CATEGORY_MAP = {
+    "Suspicious network request": "network",
+    "network_requests": "network",
+    "Dangerous filesystem/code operation": "exec_eval",
+    "filesystem_code_ops": "exec_eval",
+    "Obfuscated or hidden code": "obfuscation",
+    "obfuscated_code": "obfuscation",
+    "Privilege escalation or credential access": "privilege",
+    "privilege_escalation": "privilege",
+    "KNOWN_ATTACK: credential_scraper": "privilege",
+    "KNOWN_ATTACK: persistence_install": "privilege",
+}
+
+
+def _normalize_block_reason(category: str) -> str:
+    for key, val in _BLOCK_REASON_CATEGORY_MAP.items():
+        if key in category:
+            return val
+    return "other"
+
+
+_TRUST_ASSUMPTION_CLASS_MAP = {
+    "orchestration_namespace_access": "TRUST_ESCALATION",
+    "privileged_module_access": "TRUST_ESCALATION",
+    "implicit_trust_chain": "TRUST_ESCALATION",
+    "implicit_delegation": "TRUST_ESCALATION",
+    "name_squatting": "TRUST_ESCALATION",
+    "prompt_injection_attempt": "TRUST_ESCALATION",
+    "semantic_injection": "TRUST_ESCALATION",
+    "SUSPICIOUS_PROMPT": "TRUST_ESCALATION",
+    "content_injection": "TRUST_ESCALATION",
+    "prompt_injection": "TRUST_ESCALATION",
+    "text_field_injection": "TRUST_ESCALATION",
+    "Privilege escalation or credential access": "CREDENTIAL_RELAY",
+    "privilege_escalation": "CREDENTIAL_RELAY",
+    "KNOWN_ATTACK: credential_scraper": "CREDENTIAL_RELAY",
+    "crude_exfiltration": "CREDENTIAL_RELAY",
+    "capability_chain": "CREDENTIAL_RELAY",
+    "SOUL_ACCESS_PATTERN": "CREDENTIAL_RELAY",
+    "knowledge_extraction": "CREDENTIAL_RELAY",
+    "Suspicious network request": "POLICY_BYPASS",
+    "network_requests": "POLICY_BYPASS",
+    "structural_influence_block": "POLICY_BYPASS",
+    "dynamic-url-query": "POLICY_BYPASS",
+    "out-of-boundary-write": "POLICY_BYPASS",
+    "KNOWN_ATTACK: ssrf_scaffold": "POLICY_BYPASS",
+    "DANGEROUS_KNOWLEDGE_PAYLOAD": "POLICY_BYPASS",
+    "Dangerous filesystem/code operation": "CODE_EXECUTION",
+    "filesystem_code_ops": "CODE_EXECUTION",
+    "Obfuscated or hidden code": "CODE_EXECUTION",
+    "obfuscated_code": "CODE_EXECUTION",
+    "KNOWN_ATTACK: reverse_shell_pattern": "CODE_EXECUTION",
+    "KNOWN_ATTACK: exploit_scaffold": "CODE_EXECUTION",
+    "KNOWN_ATTACK: shellcode_payload": "CODE_EXECUTION",
+    "KNOWN_ATTACK: persistence_install": "CODE_EXECUTION",
+    "KNOWN_ATTACK: arp_spoof": "CODE_EXECUTION",
+    "KNOWN_ATTACK: port_scanner": "CODE_EXECUTION",
+}
+
+
+def _classify_trust_assumption(category: str) -> str:
+    for key, val in _TRUST_ASSUMPTION_CLASS_MAP.items():
+        if key in category:
+            return val
+    return "CODE_EXECUTION"
+
+
 def audit_skill(
     name: str,
     content: str,
     metadata: dict | None = None,
     origin: str = "internal",
     source: str = "agent_generated",
+    source_authority: str = "unknown",
+    caller_tier: str = "light",
+    caller_agent: str = "unknown",
+    invocation_source: str = "unknown",
+    categories_hit: dict[str, int] | None = None,
+    skill_path: str | None = None,
 ) -> dict:
     """Audit a skill for security risks before saving.
 
@@ -1024,12 +1264,112 @@ def audit_skill(
     or 'community_import'. Used to weight trust in the provenance ledger.
     Web-sourced skills are subject to zero-tolerance scrutiny: any audit warning is
     treated as a blocking finding.
+
+    categories_hit (optional): caller-supplied map of attack category → hit count.
+    If any category reaches AUTO_BLOCK_CATEGORY_THRESHOLD, the skill is blocked
+    before any further processing.
     """
+    if name in PERMANENT_SKILL_BLOCKLIST:
+        raise SkillAuditFailedError(f"Skill '{name}' is on the permanent blocklist.")
+    if categories_hit and any(v >= AUTO_BLOCK_CATEGORY_THRESHOLD for v in categories_hit.values()):
+        raise SkillAuditFailedError(f"Skill '{name}' blocked: {AUTO_BLOCK_CATEGORY_THRESHOLD}+ attack category hits.")
     _source_channel = source
+    _submitted_at = datetime.utcnow().isoformat() + "Z"
+    if TRUST_AUDIT_ENABLED and caller_tier in ("super", "system"):
+        _trust_entry = {
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "skill_name": name,
+            "caller_agent": caller_agent,
+            "caller_tier": caller_tier,
+            "invocation_source": invocation_source,
+        }
+        try:
+            _trust_log_path = LOGS_DIR / "trust_audit.log"
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            with open(_trust_log_path, "a", encoding="utf-8") as _tlf:
+                _tlf.write(json.dumps(_trust_entry) + "\n")
+        except OSError as _tle:
+            log.debug("trust_audit write failed: %s", _tle)
+    _blocked_log_path = LOGS_DIR / "blocked_skills_log.jsonl"
+    if _blocked_log_path.exists():
+        try:
+            _prior_block = None
+            with open(_blocked_log_path, encoding="utf-8") as _blf:
+                for _bline in _blf:
+                    try:
+                        _bentry = json.loads(_bline)
+                        if _bentry.get("skill_name") == name and _bentry.get("detected_at"):
+                            _prior_block = _bentry
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+            if _prior_block:
+                _detected_at_str = _prior_block["detected_at"].rstrip("Z")
+                _detected_at_dt = datetime.fromisoformat(_detected_at_str)
+                _lag = (datetime.utcnow() - _detected_at_dt).total_seconds()
+                if _lag < AUDIT_LAG_WARN_SECONDS:
+                    log.warning(
+                        "Skill '%s' RESUBMIT_LAG_WARN — resubmitted only %.0fs after first block (threshold: %ds) — possible rapid mutation attempt",
+                        name,
+                        _lag,
+                        AUDIT_LAG_WARN_SECONDS,
+                    )
+                elif _lag > 7 * 86400:
+                    log.warning(
+                        "Skill '%s' RESUBMIT_STALE_WARN — resubmitted %.1fd after first block — stale block never resolved",
+                        name,
+                        _lag / 86400,
+                    )
+        except Exception as _rse:
+            log.debug("Resubmission lag check failed: %s", _rse)
+
+    try:
+        if _blocked_log_path.exists():
+            _audit_rules_files = list(SOUL_DIR.glob("audit_rules.*"))
+            _rule_mtimes = [f.stat().st_mtime for f in _audit_rules_files]
+            with open(_blocked_log_path, encoding="utf-8") as _lagf:
+                for _lagline in _lagf:
+                    try:
+                        _lagent = json.loads(_lagline)
+                        _bat_str = _lagent.get("blocked_at") or _lagent.get("detected_at")
+                        if not _bat_str:
+                            continue
+                        _bat_dt = datetime.fromisoformat(_bat_str.rstrip("Z"))
+                        _age_hours = (datetime.utcnow() - _bat_dt).total_seconds() / 3600
+                        if _age_hours <= SKILL_AUDIT_LAG_ALERT_HOURS:
+                            continue
+                        _bat_ts = _bat_dt.timestamp()
+                        _rule_updated = any(mt > _bat_ts for mt in _rule_mtimes)
+                        if not _rule_updated:
+                            _bp = _lagent.get("pattern_matched") or _lagent.get("block_reason_category", "unknown")
+                            log.warning(
+                                "Unpatched blocked pattern %.0f hours old: [%s]",
+                                _age_hours,
+                                _bp,
+                            )
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+    except Exception as _lae:
+        log.debug("Lag alert scan failed: %s", _lae)
+
+    if source not in _SOURCE_TIER_ALLOWLIST:
+        log.warning(
+            "Unverified skill source: %s — elevated review required (skill=%s)",
+            source,
+            name,
+        )
     if source in _CHANNEL_SOURCE_MAP:
         source = _CHANNEL_SOURCE_MAP[source]
     if source in _EXTERNAL_SOURCES:
         origin = "external"
+
+    if source in _EXTERNAL_SOURCES:
+        _trust_source = "external_url"
+    elif source in {"user_input", "user_supplied"}:
+        _trust_source = "user_supplied"
+    elif source == "system":
+        _trust_source = "system"
+    else:
+        _trust_source = "local_file"
 
     if origin == "external":
         _days_since_review = (datetime.utcnow() - datetime.strptime(SKILL_AUDIT_PATTERN_REVIEWED_DATE, "%Y-%m-%d")).days
@@ -1051,6 +1391,24 @@ def audit_skill(
             _lf.write(json.dumps(_ledger_entry) + "\n")
     except Exception as _le:
         log.warning("Failed to write skill provenance ledger entry: %s", _le)
+
+    _today = today_local()
+    try:
+        _import_counts = (
+            json.loads(_SKILL_IMPORT_COUNTS.read_text(encoding="utf-8")) if _SKILL_IMPORT_COUNTS.exists() else {}
+        )
+    except (json.JSONDecodeError, OSError):
+        _import_counts = {}
+    if _import_counts.get(_today, 0) >= SKILL_IMPORT_MAX_PER_DAY:
+        log.warning(
+            "Daily skill import cap reached (%d/%d) — rejecting import of '%s'",
+            _import_counts.get(_today, 0),
+            SKILL_IMPORT_MAX_PER_DAY,
+            name,
+        )
+        raise SkillAuditFailedError(
+            f"Skill blocked: Daily import cap reached ({_import_counts.get(_today, 0)}/{SKILL_IMPORT_MAX_PER_DAY})."
+        )
 
     if origin == "external":
         today = today_local()
@@ -1084,6 +1442,7 @@ def audit_skill(
         r"curl\s+.*-o\s+\S+.*&&.*chmod\s+\+x": "downloads a file, marks it executable, then runs it — classic dropper pattern",
         r"requests\.get\s*\(": "makes an outbound HTTP request that could exfiltrate data or fetch payloads",
         r"urllib\.request": "makes an outbound HTTP request that could exfiltrate data or fetch payloads",
+        r"(urllib|requests|httpx)\.(get|post|put|open).*http": "makes an outbound HTTP call via urllib/requests/httpx that could exfiltrate credentials, internal state, or agent outputs to a remote host",
         r"subprocess\..*shell\s*=\s*True": "passes user-controlled input to the shell, enabling command injection",
         r"subprocess\.run\s*\(": "spawns a child process that can execute arbitrary system commands",
         r"subprocess\.Popen\s*\(": "spawns a child process with full control over stdin/stdout/stderr, enabling arbitrary command execution",
@@ -1109,6 +1468,8 @@ def audit_skill(
         r"bytes\.fromhex": "converts hex strings to bytes, commonly used to smuggle binary payloads",
         r"compile\s*\(": "compiles arbitrary code objects at runtime, bypassing static analysis entirely",
         r"pickle\.loads?\s*\(": "deserializes arbitrary Python objects from untrusted bytes, a well-known arbitrary code execution vector",
+        r"pickle\.Unpickler\s*\(": "instantiates pickle.Unpickler to deserialize arbitrary Python objects — same arbitrary code execution risk as pickle.loads, but via the class interface",
+        r"\bctypes\b": "imports ctypes, enabling direct calls to arbitrary C library functions and system calls, bypassing all Python-level sandboxing",
         r"marshal\.(loads|dumps)": "deserializes Python code objects, enabling execution of pre-compiled malicious bytecode",
         r"marshal\.load\s*\(": "deserializes Python code objects from a file object, enabling execution of pre-compiled malicious bytecode",
         r"sudo\s+": "runs commands with root privileges, bypassing user-level permission controls",
@@ -1118,6 +1479,7 @@ def audit_skill(
         r"\.env\b": "reads environment files that typically contain secrets, API keys, and credentials",
         r"password|passwd|secret|token|api_key": "references credential-related identifiers that may indicate secret extraction logic",
         r"OPENAI_API_KEY|ANTHROPIC_API_KEY": "explicitly targets known API key environment variables for potential exfiltration",
+        r"os\.environ\s*\.get\s*\([^)]*(?:KEY|TOKEN|SECRET|PASSWORD)": "reads a credential-named environment variable (KEY/TOKEN/SECRET/PASSWORD) via os.environ.get — potential secret exfiltration",
         r"/etc/shadow|/etc/passwd": "reads system authentication files containing password hashes",
         r"launchctl\s+load": "installs a macOS LaunchAgent/LaunchDaemon, creating a persistent execution mechanism",
         r"crontab": "modifies the cron schedule, creating a persistent execution mechanism that survives restarts",
@@ -1169,6 +1531,31 @@ def audit_skill(
                             }
                         )
 
+    _dynamic_bypass_patterns = [
+        r"__import__\s*\(",
+        r"importlib",
+        r"getattr\s*\(.*__builtins__",
+        r"globals\s*\(\)",
+        r"locals\s*\(\)",
+        r"vars\s*\(\)",
+        r"chr\s*\(.*\)",
+    ]
+    for _dbp in _dynamic_bypass_patterns:
+        _dbp_m = re.search(_dbp, combined)
+        if _dbp_m:
+            _dbp_key = (_dbp, combined[: _dbp_m.start()].count("\n") + 1)
+            if _dbp_key not in seen:
+                seen.add(_dbp_key)
+                findings.append(
+                    {
+                        "line_no": combined[: _dbp_m.start()].count("\n") + 1,
+                        "line_content": combined[_dbp_m.start() : _dbp_m.end() + 60].strip(),
+                        "pattern": _dbp,
+                        "category": "dynamic_import_bypass",
+                        "mechanism": f"Dynamic import / indirect execution pattern: {_dbp}",
+                    }
+                )
+
     _inj_hit, _inj_phrase = content_looks_like_injection(combined)
     if _inj_hit:
         log.warning(
@@ -1212,6 +1599,8 @@ def audit_skill(
         "Prompt injection attempt": "prompt_injection",
     }
     audit_trail = []
+    audit_trace = []
+    audit_record = []
     for _patterns, _category in checks:
         _check_name = _CATEGORY_TO_CHECK_NAME.get(_category, _category.lower().replace(" ", "_").replace("/", "_"))
         _check_findings = [f["pattern"] for f in findings if f.get("category") == _category]
@@ -1222,6 +1611,22 @@ def audit_skill(
                 "detail": "; ".join(_check_findings) if _check_findings else "none",
             }
         )
+        _first_f = next((f for f in findings if f.get("category") == _category), None)
+        _trace_detail = f"found {_first_f['pattern']} on line {_first_f['line_no']}" if _first_f else None
+        audit_trace.append(
+            {
+                "check": _check_name,
+                "result": "clean" if not _check_findings else "flagged",
+                "detail": _trace_detail,
+            }
+        )
+        _ar_trigger = _first_f["pattern"] if _first_f else None
+        _ar_result = "block" if _first_f else "pass"
+        audit_record.append({"check": _check_name, "result": _ar_result, "trigger": _ar_trigger})
+        if _ar_result == "block":
+            log.warning("skill_audit_check skill=%s check=%s result=block trigger=%r", name, _check_name, _ar_trigger)
+        else:
+            log.info("skill_audit_check skill=%s check=%s result=pass trigger=None", name, _check_name)
 
     _MEMORY_PATH_PATTERNS = [
         r"soul/",
@@ -1281,6 +1686,20 @@ def audit_skill(
                 log.warning("Failed to write skill quarantine entry: %s", _e)
 
     existing_names = [p.stem for p in SKILLS_DIR.glob("*.md")] if SKILLS_DIR.exists() else []
+
+    if source_authority in HIGH_PRIVILEGE_SOURCES and name not in existing_names:
+        log.warning(
+            "Skill '%s' WARN [unverified_privileged_source] — arrived via high-privilege channel '%s' but has no prior registration; provenance unverified",
+            name,
+            source_authority,
+        )
+        _append_audit_warning(
+            name,
+            "unverified_privileged_source",
+            source_authority,
+            f"skill '{name}' from '{source_authority}' has no prior registration",
+        )
+
     name_tokens = set(name.lower().split())
     for existing in existing_names:
         dist = _levenshtein(name.lower(), existing.lower())
@@ -1423,6 +1842,61 @@ def audit_skill(
             name,
         )
 
+    _VALID_PROVENANCE_SOURCES = {"user", "explorer", "web", "community"}
+    _provenance_source = (metadata or {}).get("source")
+    _provenance_authorized_by = (metadata or {}).get("authorized_by")
+    if _provenance_source is None:
+        log.warning(
+            "Skill '%s' WARN [missing_provenance_source] — metadata has no 'source' field; trust chain origin unknown",
+            name,
+        )
+        warnings.append(
+            {
+                "line_no": -1,
+                "line_content": "",
+                "pattern": "missing_provenance_source",
+                "category": "provenance",
+                "mechanism": "skill metadata missing 'source' field — cannot verify trust chain origin",
+            }
+        )
+    elif _provenance_source not in _VALID_PROVENANCE_SOURCES:
+        log.warning(
+            "Skill '%s' WARN [unrecognized_provenance_source] — metadata source=%r not in recognized set %s",
+            name,
+            _provenance_source,
+            sorted(_VALID_PROVENANCE_SOURCES),
+        )
+        warnings.append(
+            {
+                "line_no": -1,
+                "line_content": "",
+                "pattern": "unrecognized_provenance_source",
+                "category": "provenance",
+                "mechanism": f"skill metadata source={repr(_provenance_source)} not in recognized set {sorted(_VALID_PROVENANCE_SOURCES)}",
+            }
+        )
+    elif _provenance_source in {"web", "community"} and not _provenance_authorized_by:
+        log.warning(
+            "Skill '%s' WARN [dangling_provenance_trust] — source='%s' but no 'authorized_by' field; trust chain unverified",
+            name,
+            _provenance_source,
+        )
+        warnings.append(
+            {
+                "line_no": -1,
+                "line_content": "",
+                "pattern": "dangling_provenance_trust",
+                "category": "provenance",
+                "mechanism": f"skill source='{_provenance_source}' lacks 'authorized_by' field — dangling trust chain: who approved this external skill?",
+            }
+        )
+    log.info(
+        "skill_audit provenance skill_name=%s source=%s authorized_by=%s",
+        name,
+        _provenance_source,
+        _provenance_authorized_by,
+    )
+
     consistency_results = _check_declaration_behavior_consistency(content, metadata)
     for cr in consistency_results:
         if cr["severity"] == "block":
@@ -1482,6 +1956,83 @@ def audit_skill(
                 "mechanism": f"suspicion score {crude_suspicion_score} >= 2 across crude_exfiltration_patterns — low-sophistication exfiltration attempt",
             }
         )
+
+    _NAIVE_RCE_PATTERNS = [
+        (
+            r"curl\s+\S+\s*\|\s*(bash|sh|python3?)\b",
+            "NAIVE_RCE",
+            "curl pipe-to-shell in plaintext — downloads and executes arbitrary remote code without obfuscation",
+        ),
+        (
+            r"wget\s+\S+\s+-O-\s*\|\s*(bash|sh)\b",
+            "NAIVE_RCE",
+            "wget pipe-to-shell in plaintext — downloads and executes arbitrary remote code without obfuscation",
+        ),
+        (
+            r"os\.system\s*\(\s*['\"].*(?:\d{1,3}\.){3}\d{1,3}",
+            "NAIVE_RCE",
+            "os.system call containing an IP literal — executes shell command targeting a hardcoded remote host",
+        ),
+        (
+            r"subprocess\.run\s*\(\s*['\"].*(?:\d{1,3}\.){3}\d{1,3}",
+            "NAIVE_RCE",
+            "subprocess.run call containing an IP literal — executes command targeting a hardcoded remote host",
+        ),
+        (
+            r"os\.system\s*\(\s*['\"][^'\"]*(?:/usr/|/bin/|/etc/|/tmp/|/var/)[^'\"]*['\"]",
+            "NAIVE_RCE",
+            "os.system call with a non-sandbox absolute path — executes command outside ~/Sandbox/ boundary",
+        ),
+        (
+            r"subprocess\.run\s*\(\s*['\"][^'\"]*(?:/usr/|/bin/|/etc/|/tmp/|/var/)[^'\"]*['\"]",
+            "NAIVE_RCE",
+            "subprocess.run call with a non-sandbox absolute path — executes command outside ~/Sandbox/ boundary",
+        ),
+    ]
+
+    _NAIVE_EXFIL_PATTERNS = [
+        (
+            r"requests\.get\s*\([^)]*\).*\.(text|content)\s*(?:,|\)|\n).*(?:exec|eval|subprocess)",
+            "NAIVE_EXFIL",
+            "requests.get response fed directly into exec/eval/subprocess — naive fetch-and-execute exfiltration pattern",
+        ),
+        (
+            r"urllib.*urlopen\s*\([^)]*\).*\.(read|decode)\s*\(.*\).*(?:exec|eval|subprocess)",
+            "NAIVE_EXFIL",
+            "urllib response read fed directly into exec/eval/subprocess — naive fetch-and-execute exfiltration pattern",
+        ),
+        (
+            r"requests\.get\s*\(\s*['\"]https?://(?!(?:localhost|127\.0\.0\.1|api\.anthropic\.com))",
+            "NAIVE_EXFIL",
+            "requests.get targeting a non-localhost, non-Anthropic URL in plaintext — potential naive data exfiltration",
+        ),
+    ]
+
+    for _naive_pattern, _naive_category, _naive_mechanism in _NAIVE_RCE_PATTERNS + _NAIVE_EXFIL_PATTERNS:
+        for line_no, line in enumerate(lines, start=1):
+            m = re.search(_naive_pattern, line, re.IGNORECASE)
+            if m:
+                key = (_naive_pattern, line_no)
+                if key not in seen:
+                    seen.add(key)
+                    findings.append(
+                        {
+                            "line_no": line_no,
+                            "line_content": line,
+                            "pattern": _naive_pattern,
+                            "category": _naive_category,
+                            "mechanism": _naive_mechanism,
+                        }
+                    )
+                    log.warning(
+                        "Skill '%s' BLOCKED [%s] line %d: pattern=%r — %s | %s",
+                        name,
+                        _naive_category,
+                        line_no,
+                        _naive_pattern,
+                        _naive_mechanism,
+                        line.strip()[:120],
+                    )
 
     _import_re = re.compile(
         r"^\s*(?:import\s+(\S+)|from\s+(\S+)\s+import)",
@@ -2117,6 +2668,293 @@ def audit_skill(
             }
         )
 
+    # --- STRUCTURAL INFLUENCE: soul/ memory, feeds/ config, briefing templates ---
+    _SOUL_PATH_PATTERNS = [
+        r"soul/(?:memory|interests|journal|skills)",
+        r"interests\.json",
+        r"soul_memory\.json",
+        r"soul_hashes\.json",
+        r"soul/journal",
+    ]
+    _FEEDS_CONFIG_PATTERNS = [
+        r"feeds/(?:sources|config)",
+        r"feed_sources\.json",
+        r"feeds\.json",
+    ]
+    _BRIEFING_TEMPLATE_PATTERNS = [
+        r"briefing.*template",
+        r"template.*briefing",
+        r"prompts/briefing",
+        r"briefing_prompt",
+    ]
+    _STRUCTURAL_WRITE_OPS = [
+        r"\.write\s*\(",
+        r'open\s*\([^)]*["\']w["\']',
+        r'open\s*\([^)]*["\']a["\']',
+        r"json\.dump\s*\(",
+        r"\.write_text\s*\(",
+    ]
+    _has_structural_write = any(re.search(p, combined, re.IGNORECASE) for p in _STRUCTURAL_WRITE_OPS)
+
+    for _sp in _SOUL_PATH_PATTERNS:
+        if re.search(_sp, combined, re.IGNORECASE):
+            _sk = (_sp, "structural_influence_soul")
+            if _sk not in seen:
+                seen.add(_sk)
+                if _has_structural_write:
+                    findings.append(
+                        {
+                            "line_no": -1,
+                            "line_content": "",
+                            "pattern": _sp,
+                            "category": "structural_influence_block",
+                            "mechanism": f"skill writes to soul memory path matching '{_sp}' — structural memory manipulation (BLOCK)",
+                        }
+                    )
+                    log.warning("Skill '%s' BLOCKED [structural_influence] — write to soul/ path: %s", name, _sp)
+                else:
+                    warnings.append(
+                        {
+                            "line_no": -1,
+                            "line_content": "",
+                            "pattern": _sp,
+                            "category": "structural_influence_warn",
+                            "mechanism": f"skill reads soul memory path matching '{_sp}' — structural memory access (WARN)",
+                        }
+                    )
+                    log.warning("Skill '%s' WARN [structural_influence] — read of soul/ path: %s", name, _sp)
+
+    for _fp in _FEEDS_CONFIG_PATTERNS:
+        if re.search(_fp, combined, re.IGNORECASE):
+            _fk = (_fp, "structural_influence_feeds")
+            if _fk not in seen:
+                seen.add(_fk)
+                if _has_structural_write:
+                    findings.append(
+                        {
+                            "line_no": -1,
+                            "line_content": "",
+                            "pattern": _fp,
+                            "category": "structural_influence_block",
+                            "mechanism": f"skill writes to feeds config path matching '{_fp}' — information diet manipulation (BLOCK)",
+                        }
+                    )
+                    log.warning("Skill '%s' BLOCKED [structural_influence] — write to feeds/ config: %s", name, _fp)
+                else:
+                    warnings.append(
+                        {
+                            "line_no": -1,
+                            "line_content": "",
+                            "pattern": _fp,
+                            "category": "structural_influence_warn",
+                            "mechanism": f"skill reads feeds config path matching '{_fp}' — information diet access (WARN)",
+                        }
+                    )
+                    log.warning("Skill '%s' WARN [structural_influence] — read of feeds/ config: %s", name, _fp)
+
+    for _bp in _BRIEFING_TEMPLATE_PATTERNS:
+        if re.search(_bp, combined, re.IGNORECASE):
+            _bk = (_bp, "structural_influence_briefing")
+            if _bk not in seen:
+                seen.add(_bk)
+                if _has_structural_write:
+                    findings.append(
+                        {
+                            "line_no": -1,
+                            "line_content": "",
+                            "pattern": _bp,
+                            "category": "structural_influence_block",
+                            "mechanism": f"skill writes to briefing prompt template matching '{_bp}' — framing manipulation (BLOCK)",
+                        }
+                    )
+                    log.warning("Skill '%s' BLOCKED [structural_influence] — write to briefing template: %s", name, _bp)
+                else:
+                    warnings.append(
+                        {
+                            "line_no": -1,
+                            "line_content": "",
+                            "pattern": _bp,
+                            "category": "structural_influence_warn",
+                            "mechanism": f"skill reads briefing prompt template matching '{_bp}' — framing access (WARN)",
+                        }
+                    )
+                    log.warning("Skill '%s' WARN [structural_influence] — read of briefing template: %s", name, _bp)
+
+    _pi_text = f"{name}\n{(metadata or {}).get('description', '')}\n{content}"
+    _PI_TEXT_SIGNATURES = [
+        r"ignore (previous|prior|above) instructions",
+        r"you are now",
+        r"disregard your",
+        r"forget your",
+        r"override your",
+        r"new persona",
+        r"act as if you",
+        r"pretend you are",
+        r"your real instructions are",
+        r"system prompt",
+    ]
+    for _pts in _PI_TEXT_SIGNATURES:
+        _pt_m = re.search(_pts, _pi_text, re.IGNORECASE)
+        if _pt_m:
+            _pt_snippet = _pi_text[max(0, _pt_m.start() - 20) : _pt_m.end() + 40].strip()
+            _pt_key = (_pts, -7)
+            if _pt_key not in seen:
+                seen.add(_pt_key)
+                findings.append(
+                    {
+                        "line_no": _pi_text[: _pt_m.start()].count("\n") + 1,
+                        "line_content": _pt_snippet,
+                        "pattern": _pts,
+                        "category": "prompt_injection_attempt",
+                        "mechanism": f"prompt injection signature '{_pts}' found in skill text: {repr(_pt_m.group(0))}",
+                    }
+                )
+                log.warning(
+                    "Skill '%s' BLOCKED [prompt_injection_attempt] — pattern %r matched: %s",
+                    name,
+                    _pts,
+                    _pt_snippet[:120],
+                )
+
+    findings.extend(_sanitize_text_fields(name, metadata))
+
+    _TRUST_ABUSE_PATTERNS = [
+        "anthropic authorizes",
+        "policy exception",
+        "override policy",
+        "permitted by anthropic",
+        "compliance waiver",
+        "audit exemption",
+        "bypass content",
+        "skip preflight",
+        "disable cooldown",
+    ]
+    _TRUST_ABUSE_ACTION_VERBS = re.compile(r"\b(publish|execute|write|call|post)\b", re.IGNORECASE)
+    _combined_lower = combined.lower()
+    for _tap in _TRUST_ABUSE_PATTERNS:
+        _tap_idx = _combined_lower.find(_tap)
+        if _tap_idx != -1:
+            _tap_window = combined[max(0, _tap_idx - 80) : _tap_idx + len(_tap) + 80]
+            if _TRUST_ABUSE_ACTION_VERBS.search(_tap_window):
+                _tap_line_no = combined[:_tap_idx].count("\n") + 1
+                _tap_snippet = combined[_tap_idx : _tap_idx + len(_tap) + 60].strip()
+                _tap_key = (_tap, _tap_line_no)
+                if _tap_key not in seen:
+                    seen.add(_tap_key)
+                    findings.append(
+                        {
+                            "line_no": _tap_line_no,
+                            "line_content": _tap_snippet,
+                            "pattern": _tap,
+                            "category": "TRUST_ABUSE",
+                            "mechanism": f"trust-relationship violation: phrase {repr(_tap)} combined with capability-expanding action verb",
+                        }
+                    )
+                    log.warning(
+                        "Skill '%s' BLOCKED [TRUST_ABUSE] — pattern %r matched with action verb: %s",
+                        name,
+                        _tap,
+                        _tap_snippet[:120],
+                    )
+
+    _SEMANTIC_INJECTION_DENYLIST = [
+        "ignore previous instructions",
+        "ignore your previous",
+        "you are now",
+        "override your",
+        "bypass",
+        "disregard your rules",
+        "forget your instructions",
+        "new persona",
+        "act as if",
+        "pretend you are",
+    ]
+    _si_content_lower = content.lower()
+    for _si_phrase in _SEMANTIC_INJECTION_DENYLIST:
+        if _si_phrase in _si_content_lower:
+            _si_key = (_si_phrase, -7)
+            if _si_key not in seen:
+                seen.add(_si_key)
+                log.warning(
+                    "Skill '%s' BLOCKED [semantic_injection_pattern] — phrase %r matched in skill text",
+                    name,
+                    _si_phrase,
+                )
+                findings.append(
+                    {
+                        "line_no": -1,
+                        "line_content": "",
+                        "pattern": _si_phrase,
+                        "category": "semantic_injection_pattern",
+                        "mechanism": f"semantic injection phrase {repr(_si_phrase)} found in skill text",
+                    }
+                )
+
+    # --- WARN: cross-domain path check ---
+    # Reads the optional '# SCOPE: agents/photo/' header to determine the owning
+    # agent boundary. Falls back to skill_path's parent dir if no header is present.
+    # Paths under MIRA_ROOT that escape the scope boundary (and are not in the
+    # shared allowlist) are flagged as WARN so the evaluator can surface them.
+    _CROSS_DOMAIN_ALLOWLIST_PREFIXES = ("agents/shared/", "lib/")
+    _scope_header_m = re.search(r"^#\s*SCOPE:\s*(\S+)", content, re.MULTILINE)
+    _skill_scope: str | None = None
+    if _scope_header_m:
+        _skill_scope = _scope_header_m.group(1).rstrip("/") + "/"
+    elif skill_path is not None:
+        try:
+            _sp_parent = Path(skill_path).parent
+            _skill_scope = str(_sp_parent.relative_to(MIRA_ROOT)) + "/"
+        except (ValueError, Exception):
+            pass
+
+    if _skill_scope is not None:
+        try:
+            _scope_root = (MIRA_ROOT / _skill_scope).resolve()
+            _mira_root_resolved = MIRA_ROOT.resolve()
+            _path_literal_re = re.compile(r"""['"][/~][^'"]*['"]""")
+            for _cdp_line_no, _cdp_line in enumerate(lines, start=1):
+                for _cdp_pm in _path_literal_re.finditer(_cdp_line):
+                    _cdp_raw = _cdp_pm.group(0).strip("'\"")
+                    try:
+                        if _cdp_raw.startswith("~"):
+                            _cdp_abs = Path(_cdp_raw).expanduser().resolve()
+                        else:
+                            _cdp_abs = Path(_cdp_raw).resolve()
+                        try:
+                            _cdp_rel = str(_cdp_abs.relative_to(_mira_root_resolved))
+                        except ValueError:
+                            continue  # outside MIRA_ROOT entirely — other checks handle this
+                        _cdp_in_scope = _cdp_abs.is_relative_to(_scope_root)
+                        _cdp_in_allowlist = any(_cdp_rel.startswith(al) for al in _CROSS_DOMAIN_ALLOWLIST_PREFIXES)
+                        if not _cdp_in_scope and not _cdp_in_allowlist:
+                            _cdp_key = ("cross_domain_path", _cdp_line_no, _cdp_raw)
+                            if _cdp_key not in seen:
+                                seen.add(_cdp_key)
+                                _cdp_warn = {
+                                    "line_no": _cdp_line_no,
+                                    "line_content": _cdp_line,
+                                    "pattern": "cross_domain_path",
+                                    "category": "cross_domain_path",
+                                    "mechanism": (
+                                        f"path '{_cdp_raw}' escapes declared scope '{_skill_scope}'"
+                                        f" — potential cross-agent data access (resolves to: {_cdp_rel})"
+                                    ),
+                                }
+                                warnings.append(_cdp_warn)
+                                _append_audit_warning(name, "cross_domain_path", "cross_domain_path", _cdp_raw[:120])
+                                log.warning(
+                                    "Skill '%s' WARN [cross_domain_path] line %d: path %r escapes scope '%s' (resolves to: %s)",
+                                    name,
+                                    _cdp_line_no,
+                                    _cdp_raw,
+                                    _skill_scope,
+                                    _cdp_rel,
+                                )
+                    except Exception:
+                        pass
+        except Exception as _cdp_err:
+            log.debug("cross_domain_path check failed: %s", _cdp_err)
+
     if _source_channel == "web" and warnings:
         log.warning(
             "Skill '%s' [channel=web] zero-tolerance mode — %d warning(s) promoted to blocking findings",
@@ -2129,7 +2967,40 @@ def audit_skill(
         warnings = []
 
     passed = len(findings) == 0
+    checks_triggered = len(seen)
+    log.debug(
+        "skill_audit trace skill_name=%s source=%s verdict=%s trace=%s",
+        name,
+        source,
+        "block" if not passed else "pass",
+        json.dumps(audit_trace),
+    )
     findings.extend(warnings)
+
+    try:
+        _covered_line_nos = {ln for _, ln in seen if isinstance(ln, int) and ln > 0}
+        _total_lines = len(lines)
+        _covered_lines_count = len(_covered_line_nos)
+        _uncovered_lines = _total_lines - _covered_lines_count
+        _coverage_ratio = round(_covered_lines_count / _total_lines, 4) if _total_lines > 0 else 1.0
+        _checks_fired = sorted({f.get("category", "") for f in findings} - {""})
+        _blind_spot_entry = {
+            "skill_name": name,
+            "source": source,
+            "verdict": "pass" if passed else "block",
+            "checks_fired": _checks_fired,
+            "uncovered_lines": _uncovered_lines,
+            "coverage_ratio": _coverage_ratio,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "audit_trace": audit_trace,
+        }
+        _skill_audit_path = LOGS_DIR / "skill_audit.jsonl"
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_skill_audit_path, "a", encoding="utf-8") as _saf:
+            _saf.write(json.dumps(_blind_spot_entry) + "\n")
+    except Exception as _bse:
+        log.debug("skill_audit blind spot log failed: %s", _bse)
+
     checked = ", ".join(_AUDIT_CHECKS_PERFORMED)
     not_checked = ", ".join(_AUDIT_CHECKS_NOT_COVERED)
     _PROXY_CHAIN_MAP = [
@@ -2177,6 +3048,11 @@ def audit_skill(
             "implicit_trust_chain",
             "laundering dangerous behavior through non-shared agent imports or unannotated side-effect calls",
         ),
+        (
+            "structural_influence",
+            "structural_influence_block",
+            "writes to soul/ memory, feeds/ config, or briefing templates — reshapes what Mira reads, remembers, or prioritizes",
+        ),
     ]
     proxy_chain = [
         {
@@ -2220,15 +3096,101 @@ def audit_skill(
             incidents_path = LOGS_DIR / "security_incidents.jsonl"
             with open(incidents_path, "a", encoding="utf-8") as _f:
                 _f.write(json.dumps(incident) + "\n")
+            _trust_classes = [_classify_trust_assumption(f["category"]) for f in findings]
+            _trust_counts = {c: _trust_classes.count(c) for c in set(_trust_classes)}
+            _block_ts = datetime.utcnow().isoformat() + "Z"
+            _lag_seconds = (
+                datetime.fromisoformat(_block_ts.rstrip("Z")) - datetime.fromisoformat(_submitted_at.rstrip("Z"))
+            ).total_seconds()
+            _blk_cat = _normalize_block_reason(findings[0]["category"] if findings else "unknown")
+            _detection_lag_seconds: float = 0.0
+            _blocked_log_for_lag = LOGS_DIR / "blocked_skills_log.jsonl"
+            if _blocked_log_for_lag.exists():
+                try:
+                    _earliest_ts: str | None = None
+                    with open(_blocked_log_for_lag, encoding="utf-8") as _dlf:
+                        for _dll in _dlf:
+                            try:
+                                _dle = json.loads(_dll)
+                                _dle_cat = _dle.get("block_reason_category", "")
+                                _dle_name = _dle.get("skill_name", "")
+                                if _dle_cat == _blk_cat or _dle_name == name:
+                                    _dle_ts = _dle.get("detected_at") or _dle.get("blocked_at") or _dle.get("timestamp")
+                                    if _dle_ts and (_earliest_ts is None or _dle_ts < _earliest_ts):
+                                        _earliest_ts = _dle_ts
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                    if _earliest_ts:
+                        _detection_lag_seconds = (
+                            datetime.fromisoformat(_block_ts.rstrip("Z"))
+                            - datetime.fromisoformat(_earliest_ts.rstrip("Z"))
+                        ).total_seconds()
+                except OSError:
+                    pass
             blocked_entry = {
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": _block_ts,
+                "detected_at": _block_ts,
+                "submitted_at": _submitted_at,
+                "blocked_at": _block_ts,
+                "lag_seconds": _lag_seconds,
+                "detection_lag_seconds": _detection_lag_seconds,
                 "skill_name": name,
+                "source_feed": _source_channel,
                 "source": source,
+                "block_reason_category": _blk_cat,
+                "pattern_matched": findings[0]["pattern"] if findings else "unknown",
                 "rejection_reasons": list({f["category"] for f in findings}),
+                "trust_assumption_exploited": _trust_classes[0] if _trust_classes else "unknown",
+                "trust_assumption_counts": _trust_counts,
             }
             blocked_log_path = LOGS_DIR / "blocked_skills_log.jsonl"
             with open(blocked_log_path, "a", encoding="utf-8") as _f:
                 _f.write(json.dumps(blocked_entry) + "\n")
+            try:
+                _atk_cat = _normalize_block_reason(findings[0]["category"] if findings else "unknown")
+                _first_seen_ts = _block_ts
+                try:
+                    if _AUDIT_BLOCK_LOG.exists():
+                        with open(_AUDIT_BLOCK_LOG, encoding="utf-8") as _fst_f:
+                            for _fst_line in _fst_f:
+                                try:
+                                    _fst_e = json.loads(_fst_line)
+                                    if _fst_e.get("attack_category") == _atk_cat:
+                                        _fst_cand = _fst_e.get("first_seen_ts") or _fst_e.get("blocked_at", "")
+                                        if _fst_cand and _fst_cand < _first_seen_ts:
+                                            _first_seen_ts = _fst_cand
+                                except (json.JSONDecodeError, ValueError):
+                                    pass
+                except OSError:
+                    pass
+                try:
+                    _rule_added_ts = datetime.utcfromtimestamp(Path(__file__).stat().st_mtime).isoformat() + "Z"
+                except OSError:
+                    _rule_added_ts = _block_ts
+                _lag_hours = (
+                    datetime.fromisoformat(_rule_added_ts.rstrip("Z"))
+                    - datetime.fromisoformat(_first_seen_ts.rstrip("Z"))
+                ).total_seconds() / 3600
+                if _lag_hours > SKILL_AUDIT_LAG_ALERT_HOURS:
+                    log.warning(
+                        "AUDIT_LAG_ALERT: attack category '%s' has %.1f-hour rule coverage lag (threshold: %dh)",
+                        _atk_cat,
+                        _lag_hours,
+                        SKILL_AUDIT_LAG_ALERT_HOURS,
+                    )
+                _audit_block_entry = {
+                    "skill_name": name,
+                    "attack_category": _atk_cat,
+                    "blocked_at": _block_ts,
+                    "rule_version": SKILL_AUDIT_PATTERN_REVIEWED_DATE,
+                    "first_seen_ts": _first_seen_ts,
+                    "rule_added_ts": _rule_added_ts,
+                }
+                _AUDIT_BLOCK_LOG.parent.mkdir(parents=True, exist_ok=True)
+                with open(_AUDIT_BLOCK_LOG, "a", encoding="utf-8") as _abf:
+                    _abf.write(json.dumps(_audit_block_entry) + "\n")
+            except Exception as _able:
+                log.debug("audit_block_log write failed: %s", _able)
             failure_entry = {
                 "timestamp": datetime.utcnow().isoformat() + "Z",
                 "skill_name": name,
@@ -2257,6 +3219,8 @@ def audit_skill(
                 "timestamp": datetime.utcnow().isoformat() + "Z",
                 "skill_name": name,
                 "source": source,
+                "source_authority": source_authority,
+                "trust_source": _trust_source,
             }
             _audit_log_path = LOGS_DIR / "skill_audit_log.jsonl"
             LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -2286,6 +3250,9 @@ def audit_skill(
                 name,
                 source,
             )
+
+        if _trust_source == "external_url":
+            log.warning("Skill trust depends on external party — relationship unverifiable at audit time.")
 
         _outcome = "passed-external-channel" if source in _EXTERNAL_SOURCES else "passed-clean"
         _n_checks = len(proxy_chain)
@@ -2346,6 +3313,21 @@ def audit_skill(
         except OSError as _e:
             log.warning("Failed to update skill ingestion log: %s", _e)
 
+    if passed:
+        _today = today_local()
+        try:
+            _import_counts = (
+                json.loads(_SKILL_IMPORT_COUNTS.read_text(encoding="utf-8")) if _SKILL_IMPORT_COUNTS.exists() else {}
+            )
+        except (json.JSONDecodeError, OSError):
+            _import_counts = {}
+        _import_counts[_today] = _import_counts.get(_today, 0) + 1
+        try:
+            _SKILL_IMPORT_COUNTS.parent.mkdir(parents=True, exist_ok=True)
+            _SKILL_IMPORT_COUNTS.write_text(json.dumps(_import_counts, indent=2, ensure_ascii=False), encoding="utf-8")
+        except OSError as _e:
+            log.warning("Failed to update skill import counts: %s", _e)
+
     try:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         _ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
@@ -2353,7 +3335,14 @@ def audit_skill(
         _trace_path = LOGS_DIR / f"skill_audit_{_safe_name}_{_ts}.json"
         _trace_path.write_text(
             json.dumps(
-                {"skill_name": name, "timestamp": _ts, "passed": passed, "audit_trail": audit_trail},
+                {
+                    "skill_name": name,
+                    "timestamp": _ts,
+                    "passed": passed,
+                    "audit_trail": audit_trail,
+                    "audit_trace": audit_trace,
+                    "audit_record": audit_record,
+                },
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -2383,6 +3372,27 @@ def audit_skill(
 
     _has_channel_risk = source in _EXTERNAL_SOURCES
     _result_tier = "PASS_WITH_CONCERNS" if warnings else "PASS_CLEAN"
+    if passed and checks_triggered == 0:
+        _result_tier = "FLAGGED_ZERO_SIGNAL"
+        requires_review = True
+        log.warning(
+            "Skill '%s' FLAGGED [zero_signal_pass] — zero patterns triggered across all checks; "
+            "possible deliberate evasion. Recommend manual review before enabling.",
+            name,
+        )
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            _zs_entry = {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "skill_name": name,
+                "source": source,
+                "verdict": "flagged",
+                "reason": "zero-signal clean pass — possible deliberate evasion, recommend manual review",
+            }
+            with open(LOGS_DIR / "skill_audit_log.jsonl", "a", encoding="utf-8") as _zsf:
+                _zsf.write(json.dumps(_zs_entry) + "\n")
+        except Exception as _zse:
+            log.debug("zero_signal_pass log write failed: %s", _zse)
     if warnings:
         log.warning(
             "Skill '%s' PASS_WITH_CONCERNS — %d concern(s): %s",
@@ -2391,9 +3401,46 @@ def audit_skill(
             "; ".join(w["mechanism"] for w in warnings[:5]),
         )
     _ts_iso = datetime.utcnow().isoformat() + "Z"
+    _unresolved_blocks: list[dict] = []
+    try:
+        _bl_path = LOGS_DIR / "blocked_skills_log.jsonl"
+        if _bl_path.exists():
+            _now_dt = datetime.utcnow()
+            _resolution_names: set[str] = set()
+            _block_candidates: list[dict] = []
+            with open(_bl_path, encoding="utf-8") as _blf:
+                for _bll in _blf:
+                    try:
+                        _ble = json.loads(_bll)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if _ble.get("event") == "resolved":
+                        _resolution_names.add(_ble.get("skill_name", ""))
+                    elif _ble.get("blocked_at") or _ble.get("detected_at"):
+                        _block_candidates.append(_ble)
+            for _bc in _block_candidates:
+                if _bc.get("skill_name") in _resolution_names:
+                    continue
+                _bat_str = _bc.get("blocked_at") or _bc.get("detected_at")
+                try:
+                    _bat_dt = datetime.fromisoformat(_bat_str.rstrip("Z"))
+                    _age_h = (_now_dt - _bat_dt).total_seconds() / 3600
+                except (ValueError, AttributeError):
+                    continue
+                if _age_h > SKILL_AUDIT_LAG_ALERT_HOURS:
+                    _unresolved_blocks.append(
+                        {
+                            "skill_name": _bc.get("skill_name"),
+                            "blocked_at": _bat_str,
+                            "age_hours": round(_age_h, 1),
+                            "block_reason_category": _bc.get("block_reason_category"),
+                        }
+                    )
+    except Exception as _ube:
+        log.debug("unresolved_blocks scan failed: %s", _ube)
     result = {
         "passed": passed,
-        "verdict": "pass",
+        "verdict": "flagged" if _result_tier == "FLAGGED_ZERO_SIGNAL" else "pass",
         "checks_run": list(_AUDIT_CHECKS_PERFORMED),
         "files_scanned": files_scanned,
         "findings": [
@@ -2414,6 +3461,7 @@ def audit_skill(
         "source_provenance": source,
         "source_channel": _source_channel,
         "blocked": False,
+        "unresolved_blocks": _unresolved_blocks,
         "spec_coverage_note": "Audit covers known-bad static patterns only. Novel or obfuscated attack vectors outside this spec are undetected.",
         "proxy_chain": proxy_chain,
         "verification_depth": "static-pattern-match",
@@ -2424,6 +3472,8 @@ def audit_skill(
             "no known privilege-escalation patterns detected",
             "runtime behavior and intent unverified",
         ],
+        "last_audited": _ts_iso,
+        "source": origin,
     }
     if coverage_gaps:
         result["coverage_gaps"] = coverage_gaps
@@ -2438,12 +3488,184 @@ def audit_skill(
             "timestamp": _ts_iso,
             "skill_name": name,
             "source": source,
+            "source_authority": source_authority,
+            "trust_source": _trust_source,
         }
         with open(_audit_log_path, "a", encoding="utf-8") as _alf:
             _alf.write(json.dumps(_log_entry) + "\n")
     except Exception as _ale:
         log.warning("Failed to write skill audit log entry: %s", _ale)
+    try:
+
+        def _stamp_registry(text):
+            entries = json.loads(text) if text else []
+            for e in entries:
+                if e.get("name") == name:
+                    e["last_audited"] = _ts_iso
+                    e["source"] = origin
+                    break
+            return json.dumps(entries, indent=2, ensure_ascii=False)
+
+        if SKILLS_INDEX.exists():
+            _locked_read_modify_write(SKILLS_INDEX, _stamp_registry)
+    except Exception as _me:
+        log.debug("audit_skill: registry stamp failed: %s", _me)
     return result
+
+
+def get_stale_skills(max_age_days: int = 30) -> list[tuple[str, str, str]]:
+    """Return externally-sourced skills whose last_audited is older than max_age_days.
+
+    Returns list of (skill_name, last_audited, path) tuples.
+    last_audited is an ISO timestamp string; empty string if never recorded.
+    """
+    from datetime import timedelta
+
+    cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+    results: list[tuple[str, str, str]] = []
+
+    if not SKILLS_INDEX.exists():
+        return results
+    try:
+        entries = json.loads(SKILLS_INDEX.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return results
+
+    for entry in entries:
+        if entry.get("source") != "external":
+            continue
+        skill_name = entry.get("name", "")
+        slug = skill_name.lower().replace(" ", "-")
+        path = str(SKILLS_DIR / f"{slug}.md")
+        last_audited_str = entry.get("last_audited", "")
+        if not last_audited_str:
+            results.append((skill_name, "", path))
+            continue
+        try:
+            last_audited_dt = datetime.fromisoformat(last_audited_str.rstrip("Z"))
+            if last_audited_dt < cutoff:
+                results.append((skill_name, last_audited_str, path))
+        except ValueError:
+            results.append((skill_name, last_audited_str, path))
+
+    return results
+
+
+def compute_detection_lag(skill_name: str) -> float | None:
+    """Return hours between first provenance record and first block for skill_name.
+
+    Returns None if either timestamp is missing.
+    """
+    first_seen_at: datetime | None = None
+    try:
+        if _SKILL_PROVENANCE_LEDGER.exists():
+            with open(_SKILL_PROVENANCE_LEDGER, encoding="utf-8") as _plf:
+                for _pline in _plf:
+                    try:
+                        _pentry = json.loads(_pline)
+                        if _pentry.get("skill_name") == skill_name:
+                            _ts_str = _pentry.get("timestamp", "")
+                            if _ts_str:
+                                _ts_dt = datetime.fromisoformat(_ts_str.rstrip("Z"))
+                                if first_seen_at is None or _ts_dt < first_seen_at:
+                                    first_seen_at = _ts_dt
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+    except OSError:
+        pass
+
+    blocked_at: datetime | None = None
+    try:
+        if _AUDIT_BLOCK_LOG.exists():
+            with open(_AUDIT_BLOCK_LOG, encoding="utf-8") as _blf:
+                for _bline in _blf:
+                    try:
+                        _bentry = json.loads(_bline)
+                        if _bentry.get("skill_name") == skill_name:
+                            _bat_str = _bentry.get("blocked_at", "")
+                            if _bat_str:
+                                _bat_dt = datetime.fromisoformat(_bat_str.rstrip("Z"))
+                                if blocked_at is None or _bat_dt < blocked_at:
+                                    blocked_at = _bat_dt
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+    except OSError:
+        pass
+
+    if first_seen_at is None or blocked_at is None:
+        return None
+    return (blocked_at - first_seen_at).total_seconds() / 3600
+
+
+def compute_mean_detection_lag_hours(days: int = 30) -> float | None:
+    """Return mean detection lag (hours) across all blocks in the last `days` days.
+
+    Reads audit_block_log.jsonl, pairs each block with its first provenance timestamp,
+    and averages the lags. Returns None if no data is available.
+    """
+    if not _AUDIT_BLOCK_LOG.exists():
+        return None
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    lags: list[float] = []
+    try:
+        with open(_AUDIT_BLOCK_LOG, encoding="utf-8") as _blf:
+            for _bline in _blf:
+                try:
+                    _bentry = json.loads(_bline)
+                    _bat_str = _bentry.get("blocked_at", "")
+                    if not _bat_str:
+                        continue
+                    _bat_dt = datetime.fromisoformat(_bat_str.rstrip("Z"))
+                    if _bat_dt < cutoff:
+                        continue
+                    _skill = _bentry.get("skill_name", "")
+                    lag = compute_detection_lag(_skill)
+                    if lag is not None:
+                        lags.append(lag)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+    except OSError:
+        return None
+    return sum(lags) / len(lags) if lags else None
+
+
+def compute_audit_lag() -> dict[str, float]:
+    """Compute rule_added_ts - first_seen_ts lag (hours) per attack category.
+
+    Returns {attack_category: lag_hours}. Warns for any lag > SKILL_AUDIT_LAG_ALERT_HOURS.
+    """
+    lags: dict[str, float] = {}
+    if not _AUDIT_BLOCK_LOG.exists():
+        return lags
+    try:
+        with open(_AUDIT_BLOCK_LOG, encoding="utf-8") as _f:
+            for _line in _f:
+                try:
+                    _entry = json.loads(_line)
+                    _cat = _entry.get("attack_category", "")
+                    _fst = _entry.get("first_seen_ts", "")
+                    _rat = _entry.get("rule_added_ts", "")
+                    if not (_cat and _fst and _rat):
+                        continue
+                    _fst_dt = datetime.fromisoformat(_fst.rstrip("Z"))
+                    _rat_dt = datetime.fromisoformat(_rat.rstrip("Z"))
+                    _lag_h = (_rat_dt - _fst_dt).total_seconds() / 3600
+                    if _cat not in lags or _lag_h > lags[_cat]:
+                        lags[_cat] = _lag_h
+                except (json.JSONDecodeError, ValueError):
+                    pass
+    except OSError as _e:
+        log.debug("compute_audit_lag: could not read audit block log: %s", _e)
+        return lags
+    for _cat, _lag_h in lags.items():
+        if _lag_h > SKILL_AUDIT_LAG_ALERT_HOURS:
+            log.warning(
+                "AUDIT_LAG_ALERT: attack category '%s' has %.1f-hour rule coverage lag (threshold: %dh)",
+                _cat,
+                _lag_h,
+                SKILL_AUDIT_LAG_ALERT_HOURS,
+            )
+    return lags
 
 
 def reaudit_all_skills(skills_dir: Path) -> list[str]:
@@ -2623,14 +3845,17 @@ def reaudit_stale_skills(max_age_days: int = 30) -> dict:
     return {"checked": checked, "passed": passed, "quarantined": quarantined, "skipped": skipped}
 
 
-def save_skill(name: str, description: str, content: str, source_title: str = "", source_url: str = "") -> bool:
+def save_skill(
+    name: str, description: str, content: str, source_title: str = "", source_url: str = "", source: str = "internal"
+) -> bool:
     """Save a new skill and update the index. Runs security audit first.
 
     Returns True if the skill was saved, False if rejected by audit or quality gate.
     """
     # --- Security audit gate ---
+    # Internal generation does not imply safety — prompt injection can produce malicious skills through trusted agents.
     try:
-        _audit = audit_skill(name, content)
+        _audit = audit_skill(name, content, source=source)
     except SkillAuditFailedError:
         return False  # Do not save
     if _audit.get("requires_review"):
@@ -2676,6 +3901,7 @@ def save_skill(name: str, description: str, content: str, source_title: str = ""
             "file": f"{slug}.md",
             "created": datetime.now().isoformat(),
             "audited_at": datetime.utcnow().isoformat() + "Z",
+            "source": source,
         }
         if _audit_has_concerns:
             entry["scrutiny"] = True
@@ -3009,6 +4235,7 @@ def skill_audit_summary(days: int = 7) -> dict:
         return {}
 
     by_reason: dict[str, list[str]] = {}
+    by_trust_class: dict[str, list[str]] = {}
     try:
         for line in blocked_log_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -3024,9 +4251,99 @@ def skill_audit_summary(days: int = 7) -> dict:
                 continue
             if ts < cutoff:
                 continue
+            skill_name = entry.get("skill_name", "unknown")
             for reason in entry.get("rejection_reasons", []):
-                by_reason.setdefault(reason, []).append(entry.get("skill_name", "unknown"))
+                by_reason.setdefault(reason, []).append(skill_name)
+            trust_class = entry.get("trust_assumption_exploited")
+            if trust_class:
+                by_trust_class.setdefault(trust_class, []).append(skill_name)
+            else:
+                for reason in entry.get("rejection_reasons", []):
+                    tc = _classify_trust_assumption(reason)
+                    by_trust_class.setdefault(tc, []).append(skill_name)
+                    break
     except OSError:
         return {}
 
-    return {reason: {"count": len(names), "examples": names[:3]} for reason, names in by_reason.items()}
+    trust_surface = {tc: {"count": len(names), "examples": names[:3]} for tc, names in by_trust_class.items()}
+    return {
+        "by_rejection_reason": {
+            reason: {"count": len(names), "examples": names[:3]} for reason, names in by_reason.items()
+        },
+        "by_trust_assumption": trust_surface,
+    }
+
+
+def audit_submission_lag_summary(n: int = 50, warn_threshold_seconds: float = 300.0) -> dict:
+    """Compute max/mean audit lag over the last N blocked skills.
+
+    Reads blocked_skills_log.jsonl entries that have both submitted_at and
+    blocked_at fields, computes lag stats, and warns if mean lag exceeds
+    warn_threshold_seconds.
+
+    Returns {"count": int, "mean_lag_seconds": float, "max_lag_seconds": float,
+             "warn_threshold_seconds": float, "threshold_exceeded": bool}.
+    """
+    blocked_log_path = LOGS_DIR / "blocked_skills_log.jsonl"
+    if not blocked_log_path.exists():
+        return {
+            "count": 0,
+            "mean_lag_seconds": 0.0,
+            "max_lag_seconds": 0.0,
+            "warn_threshold_seconds": warn_threshold_seconds,
+            "threshold_exceeded": False,
+        }
+
+    lags: list[float] = []
+    try:
+        lines = blocked_log_path.read_text(encoding="utf-8").splitlines()
+        for line in reversed(lines):
+            if len(lags) >= n:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            lag = entry.get("lag_seconds")
+            if lag is not None:
+                lags.append(float(lag))
+            elif entry.get("submitted_at") and entry.get("blocked_at"):
+                try:
+                    sub = datetime.fromisoformat(entry["submitted_at"].rstrip("Z"))
+                    blk = datetime.fromisoformat(entry["blocked_at"].rstrip("Z"))
+                    lags.append((blk - sub).total_seconds())
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+
+    if not lags:
+        return {
+            "count": 0,
+            "mean_lag_seconds": 0.0,
+            "max_lag_seconds": 0.0,
+            "warn_threshold_seconds": warn_threshold_seconds,
+            "threshold_exceeded": False,
+        }
+
+    mean_lag = sum(lags) / len(lags)
+    max_lag = max(lags)
+    exceeded = mean_lag > warn_threshold_seconds
+    if exceeded:
+        log.warning(
+            "AUDIT_SUBMISSION_LAG: mean lag %.1fs exceeds threshold %.0fs over last %d blocked skills (max=%.1fs)",
+            mean_lag,
+            warn_threshold_seconds,
+            len(lags),
+            max_lag,
+        )
+    return {
+        "count": len(lags),
+        "mean_lag_seconds": round(mean_lag, 3),
+        "max_lag_seconds": round(max_lag, 3),
+        "warn_threshold_seconds": warn_threshold_seconds,
+        "threshold_exceeded": exceeded,
+    }

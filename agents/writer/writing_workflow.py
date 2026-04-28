@@ -90,7 +90,9 @@ def _load_project(ws: Path) -> dict:
 
 
 def _save_project(ws: Path, p: dict):
-    p["updated"] = datetime.now().isoformat()
+    now_iso = datetime.now().isoformat()
+    p["updated"] = now_iso
+    p["last_advanced_at"] = now_iso
     (ws / "project.json").write_text(
         json.dumps(p, indent=2, ensure_ascii=False),
         encoding="utf-8",

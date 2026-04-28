@@ -188,6 +188,40 @@ def do_reflect(user_id: str = "ang"):
     except Exception as _ae:
         log.warning("Skill audit summary failed: %s", _ae)
 
+    blocked_skill_alerts: list[str] = []
+    try:
+        from datetime import timedelta
+        from config import LOGS_DIR
+
+        _blocked_log = LOGS_DIR / "blocked_skills_log.jsonl"
+        if _blocked_log.exists():
+            _cutoff = datetime.utcnow() - timedelta(days=7)
+            _counts: dict[tuple, int] = {}
+            for _line in _blocked_log.read_text(encoding="utf-8").splitlines():
+                _line = _line.strip()
+                if not _line:
+                    continue
+                try:
+                    _entry = json.loads(_line)
+                except json.JSONDecodeError:
+                    continue
+                try:
+                    _ts = datetime.fromisoformat(_entry["timestamp"].rstrip("Z"))
+                except (KeyError, ValueError):
+                    continue
+                if _ts < _cutoff:
+                    continue
+                _feed = _entry.get("source_feed", _entry.get("source", "unknown"))
+                _reason = _entry.get("block_reason_category", "other")
+                _counts[(_feed, _reason)] = _counts.get((_feed, _reason), 0) + 1
+            for (_feed, _reason), _n in _counts.items():
+                if _n >= 2:
+                    blocked_skill_alerts.append(
+                        f"Security: {_feed} blocked {_n}x for {_reason} — consider deprioritizing."
+                    )
+    except Exception as _bae:
+        log.warning("Blocked skill pattern check failed: %s", _bae)
+
     prompt = reflect_prompt(soul_ctx, recent_briefings, recent_work)
     if audit_summary:
         prompt += (
@@ -195,6 +229,8 @@ def do_reflect(user_id: str = "ang"):
             f"{json.dumps(audit_summary, indent=2)}\n\n"
             f"Are any of these patterns worth adding to the audit ruleset?"
         )
+    if blocked_skill_alerts:
+        prompt += "\n\n---\n\n## Blocked skill feed alerts\n" + "\n".join(blocked_skill_alerts)
     result = claude_think(prompt, timeout=300, tier="heavy")
 
     if not result:

@@ -545,25 +545,14 @@ def do_soul_question(user_id: str = "ang"):
 
     log.info("Generated soul question:\n%s", question)
 
-    # Send to app feed as a discussion item
+    # send_to_user creates a discussion item ("今天的灵魂问题 ...") which is
+    # the canonical home-feed surface for the soul question. We do NOT
+    # additionally create a "灵魂问题" feed item — having both was a duplicate.
     sent = mod.send_to_user(question, user_id=user_id)
     if sent:
         history.append(question[:120])
         mod._save_history(history, user_id=user_id)
         log.info("Soul question sent and saved")
-
-    # Also create a feed spark for the Mira app
-    try:
-        bridge = Mira(MIRA_DIR, user_id=user_id)
-        bridge.create_feed(
-            f"feed_soul_question_{datetime.now().strftime('%Y%m%d')}",
-            f"灵魂问题 {datetime.now().strftime('%m/%d')}",
-            question[:2000],
-            tags=["soul-question", "philosophy", "discussion"],
-        )
-        log.info("Soul question feed item created")
-    except Exception as e:
-        log.warning("Failed to create soul question feed: %s", e)
 
     state[f"soul_question_{today}"] = datetime.now().isoformat()
     state[f"soul_question_{today}_actor"] = "soul-question/claude-think"
@@ -655,12 +644,18 @@ def do_book_review():
             text=True,
             timeout=900,
         )
+        # 2026-04-23 fix: always surface stderr tail. Previously we only logged
+        # on non-zero exit, so silent no-op runs (LLM returned empty) showed
+        # "completed" for two days while writing nothing.
+        stderr_tail = (result.stderr or "").strip()[-800:]
         if result.returncode != 0:
-            log.error("Book review failed (rc=%d): %s", result.returncode, result.stderr[-500:])
+            log.error("Book review failed (rc=%d): %s", result.returncode, stderr_tail)
         else:
-            log.info("Book review completed")
-            if result.stdout:
-                log.info("Output: %s", result.stdout[-300:])
+            log.info("Book review exit 0")
+            if stderr_tail:
+                # daily_book_review.py logs to stderr via StreamHandler — so
+                # stderr here contains the real run-log.
+                log.info("Book review log tail: %s", stderr_tail)
     except Exception as e:
         log.error("Book review exception: %s", e)
 
@@ -711,47 +706,95 @@ def do_analyst(slot: str = ""):
     except Exception as e:
         log.warning("Analyst RAG recall failed: %s", e)
 
+    # ── Tetra data feed ─────────────────────────────────────────────────────
+    # Tetra runs its own data ingestion (prices, news with sentiment, IV,
+    # holdings P/L, portfolio snapshot, debate). We consume its briefing as
+    # structured raw input rather than running a duplicate ingestion here.
+    tetra_input = ""
+    try:
+        from pathlib import Path as _P
+
+        tetra_md = _P(f"/Users/angwei/Sandbox/Tetra/output/premarket_{today}.md")
+        if not tetra_md.exists():
+            # post-market: same file, since Tetra only generates premarket md;
+            # for post we still consume it as the morning's data baseline.
+            yest = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            alt = _P(f"/Users/angwei/Sandbox/Tetra/output/premarket_{yest}.md")
+            if alt.exists():
+                tetra_md = alt
+        if tetra_md.exists():
+            tetra_input = tetra_md.read_text(encoding="utf-8")
+            log.info("Analyst: loaded Tetra data feed (%d chars) from %s", len(tetra_input), tetra_md.name)
+        else:
+            log.warning("Analyst: no Tetra premarket file for %s", today)
+    except Exception as e:
+        log.warning("Analyst: Tetra ingest failed: %s", e)
+
     # Build analyst prompt — different focus for pre-market vs post-market
     if session_type == "pre-market":
-        focus = """这是**开市前分析**。重点关注：
-1. **隔夜动态** — 亚洲/欧洲市场、重要新闻、政策变化
-2. **今日预期** — 今天可能影响市场的事件、数据发布
-3. **持仓建议** — 基于隔夜信息，有什么需要调整的
-4. **关注信号** — 今天盯什么指标
-5. **风险预警** — 可能的意外风险"""
+        focus = """这是**开市前深度分析**。要求覆盖全部以下板块，每板块至少 200-400 字，不要 bullet list 充数：
+
+1. **隔夜叙事主线** — 不是新闻复述。识别出 1-2 个真正驱动情绪的主线（地缘、央行、单一公司、流动性事件），结合 Tetra 数据里的 sentiment 分数、yields、VIX、breadth。说清楚"市场在 price in 什么"和"还没 price in 什么"。
+2. **数据反差** — Tetra 提供的 sentiment / breadth / volatility / yield curve / commodity 指标里，找出彼此矛盾的信号（比如 sentiment 极负但 VIX 没动；breadth 疲劳但 SPY 还在涨）。这种反差通常是机会或陷阱。
+3. **今日 catalyst 时间表** — earnings、经济数据、央行讲话、地缘节点。每个写上时间（具体到小时如可能）+ 你的 base case + tail risk + 怎么影响哪只持仓。
+4. **持仓逐项审视** — 把 Tetra 提供的 holdings 列表过一遍，每只仓位写：当前在面对什么风险/机会、是否动作（hold / trim / add），动作的触发条件（具体水位）。不要笼统说"AI 持仓 intact"——具体到 META、GOOGL、PLTR 各自的 setup。
+5. **关键水位** — SPY、QQQ、VIX、10Y、DXY、Gold、Oil、BTC 各自的 support / resistance / 你今天要盯的 trigger level。给数字。
+6. **场景化推演** — 写出 3 个场景：bull case / base case / bear case，各场景下市场怎么走、你怎么对应。
+7. **真正的不确定性** — 列出 2-3 个你不知道答案的问题，今天观察什么能帮助回答它们。
+
+写作要求：
+- 不要总分总结构。直接进入观察。
+- 每段第一句必须包含具体数字或名字。
+- 反对意见 / 自我修正出现 1-2 次（"我之前以为 X，但 Tetra 数据显示 Y"）。
+- 不写"建议你..."这类教练口吻；写"我会..."第一人称，或客观的"今日 setup 是..."。
+- 给出长度：3000 字以上。"""
     else:
-        focus = """这是**收市后分析**。重点关注：
-1. **今日回顾** — 市场实际表现 vs 早间预期，哪些预判对了/错了
-2. **趋势信号** — 今天的走势确认或否定了什么趋势
-3. **异常信号** — 有没有反常的走势或数据
-4. **明日展望** — 基于今天的表现，明天关注什么
-5. **学到什么** — 今天的市场行为教了你什么"""
+        focus = """这是**收市后深度分析**。要求覆盖以下板块，每板块至少 250-400 字：
+
+1. **早间 base case 回顾** — 今天早晨的判断哪些对了、哪些错了。具体到哪个数据点 / 哪个水位 / 哪个 catalyst。如果错得离谱，说为什么。
+2. **盘中真正发生了什么** — 不是 OHLC 数字，是 narrative 的演化。情绪从哪个状态变到哪个状态，催化剂是什么。
+3. **数据 vs 价格** — 今天的关键数据（earnings、经济数据、政策声明）和市场反应是否匹配。错配是信号。
+4. **板块轮动** — Tech vs Energy vs Defensive vs Cyclical 今天的相对强弱，说明什么。
+5. **持仓评估** — 每只仓位今天的相对表现，结构性问题（比如某仓位连续 3 天承压）有没有显现。
+6. **明日 setup** — 基于今天的收盘格局，明天什么是关键，已 confirmed 的趋势 / 还在拉锯的主题各列 1-2 个。
+7. **我学到什么** — 今天市场行为里有没有让你修正先前判断的东西。具体写出来。
+
+写作要求：
+- 复盘不是事后诸葛。要识别"昨天/今早不可知但现在已知"的部分。
+- 每段第一句必须包含具体数字或名字。
+- 给出长度：3000 字以上。"""
 
     prompt = f"""你是一个专业的市场分析师。以下是你的身份背景:
-{soul_ctx[:800]}
+{soul_ctx[:1200]}
 
 ## 你的分析能力
-{skills_ctx[:2000]}
+{skills_ctx[:3000]}
 
-## 最近的 briefing 内容 (供参考趋势)
-{recent[:2000]}
+## ── Tetra 数据源 ──
+以下是 Tetra pipeline 生成的结构化数据 + 初步 briefing。这是你今天分析的**主要数据输入**——
+你的工作不是复述它，是基于它给出更深、更结构化的分析。引用具体数字时直接引用 Tetra 的数据。
 
-## 相关的历史分析和记忆
+{tetra_input[:18000] if tetra_input else '(Tetra 数据源不可用——此次分析将基于通用市场常识，标注 "无数据源" 警告)'}
+
+## 最近 3 天的市场分析 (趋势参考)
+{recent[:3000]}
+
+## 相关历史分析和记忆 (RAG)
 {related[:1500] if related else '(无)'}
 
 ## 今日任务
 
 {focus}
 
-要求:
+格式要求:
 - 用中文输出
-- Markdown 格式
-- 分析要有深度，不是简单的新闻复述
-- 给出你自己的判断和推荐
-- 标题用 "# {today} {session_type} 市场分析"
+- 标题用 "# {today} {'开市前' if session_type == 'pre-market' else '收市后'}市场深度分析"
+- 用 ## 二级标题分上述板块
+- 必须 cite Tetra 数据源里的具体数字 / 公司名 / sentiment 分数 / 价格水位
+- 不允许出现"建议你..."这类教练口吻；用第一人称分析或客观陈述
 """
 
-    result = claude_think(prompt, timeout=300, tier="heavy")
+    result = claude_think(prompt, timeout=600, tier="heavy")
 
     if not result:
         log.error("Analyst briefing failed: empty response")
@@ -769,13 +812,16 @@ def do_analyst(slot: str = ""):
     BRIEFINGS_DIR.mkdir(parents=True, exist_ok=True)
     (BRIEFINGS_DIR / f"{today}_{suffix}.md").write_text(result, encoding="utf-8")
 
-    # Push as standalone feed item
+    # Sole owner of the home-feed market item per session. Stable id so
+    # multiple agent runs in the same session update the same card.
     bridge = Mira()
-    item_id = f"feed_market_{today.replace('-', '')}_{slot or '0000'}"
+    session_key = "pre" if session_type == "pre-market" else "post"
+    item_id = f"feed_market_{today.replace('-', '')}_{session_key}"
     title = f"{'开市前' if session_type == 'pre-market' else '收市后'}市场分析 {today}"
-    if not bridge.item_exists(item_id):
-        bridge.create_item(item_id, "feed", title, result, tags=["market", "analyst", session_type])
-        bridge.update_status(item_id, "done")
+    if bridge.item_exists(item_id):
+        bridge.append_message(item_id, "agent", result)
+    else:
+        bridge.create_feed(item_id, title, result, tags=["market", "analyst", session_type])
 
     # Mark this slot as done
     actor = f"analyst-{slot or 'default'}/claude-think-heavy"

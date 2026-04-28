@@ -8,3 +8,13 @@
 {"timestamp": "2026-04-16T00:02:00.820313+00:00", "problems": ["photo pipeline: 6 failures in 7 days", "planner pipeline: 8 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.024}, "status": "pending"}
 {"timestamp": "2026-04-17T00:01:44.117773+00:00", "problems": ["photo pipeline: 6 failures in 7 days", "planner pipeline: 8 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.035}, "status": "pending"}
 {"timestamp": "2026-04-18T00:01:03.986378+00:00", "problems": ["Crash rate is 6.1% (target: < 5%)", "photo pipeline: 6 failures in 7 days", "planner pipeline: 5 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.061}, "status": "pending"}
+{"timestamp": "2026-04-19T00:00:36.655338+00:00", "problems": ["photo pipeline: 5 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.035}, "status": "pending"}
+{"timestamp": "2026-04-20T00:01:19.747106+00:00", "problems": ["photo pipeline: 5 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.011}, "status": "pending"}
+{"timestamp": "2026-04-21T00:00:32.848413+00:00", "problems": ["photo pipeline: 4 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.026}, "status": "pending"}
+{"timestamp": "2026-04-22T00:00:48.524570+00:00", "problems": ["photo pipeline: 5 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.03}, "status": "pending"}
+{"timestamp": "2026-04-23T00:00:33.384430+00:00", "problems": ["photo pipeline: 6 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.039}, "status": "pending"}
+{"timestamp": "2026-04-24T00:00:45.710531+00:00", "problems": ["photo pipeline: 7 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.03}, "status": "pending"}
+{"timestamp": "2026-04-25T00:01:45.585749+00:00", "problems": ["photo pipeline: 7 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.024}, "status": "pending"}
+{"timestamp": "2026-04-26T00:01:58.637595+00:00", "problems": ["photo pipeline: 7 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.035}, "status": "pending"}
+{"timestamp": "2026-04-27T00:00:45.670916+00:00", "problems": ["photo pipeline: 7 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.026}, "status": "pending"}
+{"timestamp": "2026-04-28T00:00:50.001327+00:00", "problems": ["photo pipeline: 8 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.027}, "status": "pending"}

@@ -191,7 +191,8 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     dive = _extract_deep_dive(briefing)
     if dive and MAX_DEEP_DIVES > 0:
         log.info("Deep diving into: %s", dive["title"])
-        _do_deep_dive(soul_ctx, dive)
+        url_to_item = {item["url"]: item for item in items if item.get("url")}
+        _do_deep_dive(soul_ctx, dive, url_to_item=url_to_item)
 
     # 7. Extract comment suggestions and run growth cycle
     comment_suggestions = _extract_comment_suggestions(briefing)
@@ -248,8 +249,10 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     save_state(state)
 
 
-def _do_deep_dive(soul_ctx: str, dive: dict):
+def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None):
     """Deep-dive into one item from the briefing."""
+    import time as _time
+
     prompt = deep_dive_prompt(soul_ctx, dive["title"], dive["url"], dive.get("note", ""))
     result = claude_act(prompt, agent_id="explorer")
 
@@ -283,6 +286,33 @@ def _do_deep_dive(soul_ctx: str, dive: dict):
         name = skill_match.group(1).strip()
         desc = skill_match.group(2).strip()
         content = skill_match.group(3).strip()
+        source_item = (url_to_item or {}).get(dive.get("url", ""), {})
+        published_ts = source_item.get("published_ts")
+        if published_ts:
+            discovery_lag_seconds = int(_time.time() - published_ts)
+            if content.startswith("---"):
+                end = content.find("\n---", 3)
+                if end != -1:
+                    content = content[:end] + f"\ndiscovery_lag_s: {discovery_lag_seconds}" + content[end:]
+            else:
+                content = f"---\ndiscovery_lag_s: {discovery_lag_seconds}\n---\n\n{content}"
+            feed_source = source_item.get("source", dive.get("url", "?"))
+            log.info("skill_ingested skill=%s source=%s lag_s=%d", name, feed_source, discovery_lag_seconds)
+            try:
+                from core import load_state, save_state
+
+                _state = load_state()
+                _key = f"feed_lag_samples_{feed_source}"
+                _samples = _state.get(_key, [])
+                _samples.append(discovery_lag_seconds)
+                _samples = _samples[-50:]
+                _state[_key] = _samples
+                _sorted = sorted(_samples)
+                _p95_idx = max(0, int(len(_sorted) * 0.95) - 1)
+                _state[f"feed_lag_p95_{feed_source}"] = _sorted[_p95_idx]
+                save_state(_state)
+            except Exception:
+                pass
         save_skill(name, desc, content)
         log.info("Learned new skill from deep dive: %s", name)
 

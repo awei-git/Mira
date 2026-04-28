@@ -131,6 +131,20 @@ def parse_idea(idea_path: Path) -> dict:
     parts = text.split("<!-- AUTO-MANAGED BELOW")
     result["content_above"] = parts[0].strip() if parts else text.strip()
 
+    # Persona-gate fields: Position, Human-writability test, Lens vs topic
+    # Must all be non-empty (more than placeholder bracket text) for the idea to advance.
+    gate_fields = {}
+    for heading in ["Position", "Human-writability test", "Lens vs topic"]:
+        pattern = rf"##\s+{re.escape(heading)}\s*\n+(.+?)(?=\n##\s+|\n---|\Z)"
+        m = re.search(pattern, text, re.DOTALL)
+        if m:
+            body = m.group(1).strip()
+            # Reject placeholder text (square-bracket only)
+            if body and not (body.startswith("[") and body.endswith("]")):
+                gate_fields[heading] = body
+    result["persona_gate"] = gate_fields
+    result["persona_gate_passed"] = len(gate_fields) == 3
+
     return result
 
 
@@ -824,6 +838,12 @@ def advance_idea(idea: dict) -> bool:
         return step_scaffold(idea, is_restart=True)
 
     if state == "new":
+        if not idea.get("persona_gate_passed"):
+            log.warning(
+                "Idea %s missing persona-gate fields (Position / Human-writability / Lens-vs-topic). Skipping.",
+                idea["slug"],
+            )
+            return False
         return step_scaffold(idea)
     if state == "scaffolded":
         return step_draft(idea, round_num or 1)

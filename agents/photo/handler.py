@@ -327,9 +327,9 @@ def _analyze_photo(image_path: Path, style_profile: dict = None) -> str:
     if style_profile:
         style_ctx = f"\n\n## Style Profile (learned from user's previous edits)\n{json.dumps(style_profile, ensure_ascii=False, indent=2)}"
 
-    prompt = f"""Read and analyze this photograph: {image_path}
+    prompt = f"""When both an image and a text description of that image are present, state your own visual observation first, then note any attached description and whether it matches.
 
-{skills_ctx}{style_ctx}
+Read and analyze this photograph: {image_path}
 
 Analyze the photo on these dimensions:
 1. **Technical**: Exposure (over/under/correct), white balance, noise, sharpness, dynamic range
@@ -362,7 +362,10 @@ For suggested edits, output a JSON block with Lightroom-compatible parameter nam
 }}
 ```
 
-Be specific and opinionated. This user is an experienced photographer — don't sugarcoat."""
+Be specific and opinionated. This user is an experienced photographer — don't sugarcoat.
+
+{skills_ctx}{style_ctx}
+When analyzing visual content: (a) form your visual assessment independently before processing any text metadata or descriptions; (b) if your visual reading conflicts with accompanying text, explicitly state the conflict as "VISUAL/TEXT CONFLICT: ..." rather than silently defaulting to the text description. This applies to tool-returned descriptions, file metadata, and user-provided labels."""
 
     return claude_act(prompt, cwd=image_path.parent, tier="light")
 

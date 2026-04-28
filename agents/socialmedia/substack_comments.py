@@ -295,6 +295,11 @@ def comment_on_post(post_url: str, comment_text: str) -> dict | None:
         comment_text: Plain text comment to post.
 
     Returns the created comment dict, or None on failure.
+
+    Custom-domain caveat (2026-04-18): publications on custom domains
+    (e.g. aisnakeoil → normaltech.ai) 301-redirect the POST to the custom
+    host, where the substack.sid cookie is not valid. We detect the
+    redirect and skip gracefully rather than dropping the comment body.
     """
     cfg = _get_substack_config()
     cookie = cfg.get("cookie", "")
@@ -315,62 +320,110 @@ def comment_on_post(post_url: str, comment_text: str) -> dict | None:
     if not comment_text.strip():
         return None
 
-    # Substack accepts plain text and auto-wraps it into ProseMirror format
-    payload = json.dumps({"body": comment_text.strip()}).encode("utf-8")
+    # Use http.client so we can detect the 301-to-custom-domain redirect
+    # before urllib silently follows it to a host where our cookie is invalid.
+    import http.client
 
+    payload = json.dumps({"body": comment_text.strip()}).encode("utf-8")
+    headers_out = {
+        "Content-Type": "application/json",
+        "Cookie": f"substack.sid={cookie}",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    }
+
+    conn = http.client.HTTPSConnection(parsed.netloc, timeout=15)
     try:
-        req = urllib.request.Request(
-            f"{base_url}/api/v1/post/{post_id}/comment",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Cookie": f"substack.sid={cookie}",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-        log.info("Commented on %s (post %s): %s", post_url, post_id, comment_text[:80])
-        return result
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8", errors="replace")[:300]
-        if e.code in (404, 403):
+        conn.request("POST", f"/api/v1/post/{post_id}/comment", body=payload, headers=headers_out)
+        resp = conn.getresponse()
+        if resp.status in (301, 302, 307, 308):
+            new_host = resp.getheader("Location", "")
+            _ = resp.read()
+            log.warning(
+                "Comment on %s skipped: publication on custom domain (%s). "
+                "substack.sid does not authenticate on custom domains.",
+                post_url,
+                new_host[:120],
+            )
+            return {"_error": True, "_error_code": resp.status, "_url": post_url, "_reason": "custom_domain"}
+        body = resp.read()
+        if resp.status == 200:
+            result = json.loads(body.decode("utf-8"))
+            log.info("Commented on %s (post %s): %s", post_url, post_id, comment_text[:80])
+            return result
+        if resp.status in (403, 404):
             log.warning(
                 "Comment on %s skipped (HTTP %d): post may be paywalled, deleted, or comments disabled",
                 post_url,
-                e.code,
+                resp.status,
             )
-        else:
-            log.error("Comment on %s failed (HTTP %d): %s", post_url, e.code, error_body)
-        return {"_error": True, "_error_code": e.code, "_url": post_url}
+            return {"_error": True, "_error_code": resp.status, "_url": post_url}
+        log.error("Comment on %s failed (HTTP %d): %s", post_url, resp.status, body[:200])
+        return {"_error": True, "_error_code": resp.status, "_url": post_url}
     except Exception as e:
         log.error("Comment on %s failed: %s", post_url, e)
         return {"_error": True, "_error_code": 0, "_url": post_url}
+    finally:
+        conn.close()
 
 
-def delete_comment(comment_id: int) -> bool:
-    """Delete a comment by ID. Returns True on success."""
+def delete_comment(comment_id: int, host: str | None = None, post_url: str | None = None) -> bool:
+    """Delete a comment by ID. Returns True on success.
+
+    Args:
+        comment_id: Substack comment ID.
+        host: Optional host where the comment lives (e.g. "breakingmath.substack.com").
+              If None, tries each substack host in order: explicit `host` arg >
+              `post_url` netloc > Mira's own subdomain. The DELETE endpoint is
+              pub-scoped — using the wrong host returns 404 (2026-04-18 bug).
+        post_url: Optional full URL of the post the comment was on; used to
+                  derive `host` when `host` is not passed.
+    """
     cfg = _get_substack_config()
-    subdomain = cfg.get("subdomain", "")
     cookie = cfg.get("cookie", "")
     if not cookie:
         return False
 
-    try:
-        req = urllib.request.Request(
-            f"https://{subdomain}.substack.com/api/v1/comment/{comment_id}",
-            headers={
-                "Cookie": f"substack.sid={cookie}",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            },
-            method="DELETE",
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status == 200
-    except Exception as e:
-        log.error("Delete comment %s failed: %s", comment_id, e)
-        return False
+    if host is None and post_url:
+        try:
+            host = urllib.parse.urlparse(post_url).netloc
+        except Exception:
+            host = None
+
+    hosts_to_try: list[str] = []
+    if host:
+        hosts_to_try.append(host)
+    own = cfg.get("subdomain", "")
+    if own:
+        hosts_to_try.append(f"{own}.substack.com")
+    # Dedup preserving order
+    seen: set[str] = set()
+    hosts_to_try = [h for h in hosts_to_try if not (h in seen or seen.add(h))]
+
+    last_err = None
+    for h in hosts_to_try:
+        try:
+            req = urllib.request.Request(
+                f"https://{h}/api/v1/comment/{comment_id}",
+                headers={
+                    "Cookie": f"substack.sid={cookie}",
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                },
+                method="DELETE",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                if resp.status == 200:
+                    return True
+                last_err = f"HTTP {resp.status}"
+        except urllib.error.HTTPError as e:
+            # 404 on one host can mean the comment is owned by a different pub;
+            # keep trying the fallback host before declaring failure.
+            last_err = f"HTTP {e.code} on {h}"
+            continue
+        except Exception as e:
+            last_err = str(e)
+            continue
+    log.error("Delete comment %s failed on all hosts (%s): %s", comment_id, hosts_to_try, last_err)
+    return False
 
 
 def _resolve_post_id(base_url: str, path: str, cookie: str) -> int | None:
@@ -469,14 +522,21 @@ def check_outbound_comment_replies() -> list[dict]:
     seen_reply_ids = set(reply_state.get("seen_reply_ids", []))
     history = state.get("comment_history", [])
 
-    # Only check comments from last 7 days
+    # Cutoff: 30 days, not 7. The earlier 7-day window was set as a token /
+    # rate-limit hedge, but it silently abandoned threads where someone took
+    # more than a week to reply. 2026-04-28 audit found Miguel Conner's
+    # 4/18 substantive reply on `im-coding-by-hand` sat un-followed-up for
+    # 10 days because of this — the only non-Mira reply across 30 outbound
+    # comments and the pipeline never saw it.
     from datetime import datetime, timezone, timedelta
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
 
     new_replies = []
 
-    for entry in history[-10:]:  # Check last 10 comments (was 30, caused 429s)
+    # Lookback length: was 10. Bumped to 30 with rate-limit (3s sleep per
+    # fetch) — same window comment_metrics tracks.
+    for entry in history[-30:]:
         comment_id = entry.get("id")
         url = entry.get("url", "")
         if not comment_id or not url:
@@ -571,6 +631,140 @@ def _find_replies_to_comment(
         # Recurse into children
         if c.get("children"):
             _find_replies_to_comment(c["children"], target_id, seen_ids, out, post_url, original_text, post_id)
+
+
+def check_outbound_note_replies() -> list[dict]:
+    """Check if anyone replied to Notes that Mira replied to (proactive note replies).
+
+    Mirror of `check_outbound_comment_replies` but for Note threads. Reads
+    `note_reply_history` from growth_state.json (entries written by the
+    proactive note-reply pipeline), then for each parent note: fetches its
+    reply tree, locates Mira's reply within it, and probes Mira's reply for
+    children — those are the people we never followed up with.
+
+    Pre-2026-04-28: there was no follow-up system for Note threads, only for
+    post-comments. The 2026-04-28 audit found 13 unread author replies across
+    the last 100 outbound note-replies — including Ian Preston-Campbell's
+    "I dig your project + concordance + docs.google" offer, which sat for
+    hours before WA spotted it manually.
+
+    Returns list of {parent_note_id, original_note_author, original_mira_text,
+    reply_name, reply_body, mira_cid, child_cid, attachments}.
+    """
+    import urllib.request as _ur
+
+    cfg = _get_substack_config()
+    cookie = cfg.get("cookie", "")
+    if not cookie:
+        return []
+
+    from config import SOCIAL_STATE_DIR
+
+    growth_state_file = SOCIAL_STATE_DIR / "growth_state.json"
+    if not growth_state_file.exists():
+        return []
+    growth = json.loads(growth_state_file.read_text(encoding="utf-8"))
+    history = growth.get("note_reply_history", [])
+    if not history:
+        return []
+
+    # Dedup state lives in a file owned by this function.
+    followups_state_file = SOCIAL_STATE_DIR / "note_reply_followups.json"
+    state = {"seen_reply_ids": [], "posted": []}
+    if followups_state_file.exists():
+        try:
+            state = json.loads(followups_state_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    seen_ids = set(state.get("seen_reply_ids", []))
+
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+    cutoff = _dt.now(_tz.utc) - _td(days=30)
+    MY_USER_NAMES = {"mira", "infinite mira", "uncountable mira"}
+    new_replies: list[dict] = []
+
+    hdr = {
+        "Cookie": f"substack.sid={cookie}; connect.sid={cookie}",
+        "User-Agent": "Mozilla/5.0",
+    }
+
+    def _get(url):
+        try:
+            req = _ur.Request(url, headers=hdr)
+            with _ur.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read())
+        except Exception:
+            return None
+
+    # Walk newest-first; cap at last 30 entries to bound rate-limit exposure.
+    import time as _time
+
+    for entry in reversed(history[-30:]):
+        parent_note_id = entry.get("note_id")
+        if not parent_note_id:
+            continue
+
+        # Date filter to skip stale threads
+        try:
+            edate = _dt.fromisoformat(entry["date"])
+            if edate.tzinfo is None:
+                edate = edate.replace(tzinfo=_tz.utc)
+            if edate < cutoff:
+                continue
+        except (ValueError, KeyError):
+            pass
+
+        # Fetch parent's reply tree to find Mira's reply branch
+        d = _get(f"https://substack.com/api/v1/reader/comment/{parent_note_id}/replies")
+        if not d:
+            _time.sleep(0.5)
+            continue
+        branches = d.get("commentBranches", []) or []
+        mira_cid = None
+        mira_body = ""
+        for b in branches:
+            c = b.get("comment", {}) or {}
+            n = (c.get("name", "") or "").lower()
+            if n in MY_USER_NAMES:
+                mira_cid = c.get("id")
+                mira_body = c.get("body", "") or ""
+                break
+        if not mira_cid:
+            _time.sleep(0.4)
+            continue
+
+        # Fetch children of Mira's reply
+        d2 = _get(f"https://substack.com/api/v1/reader/comment/{mira_cid}/replies")
+        if not d2:
+            _time.sleep(0.5)
+            continue
+        children = d2.get("commentBranches", []) or []
+        for ch in children:
+            cc = ch.get("comment", {}) or {}
+            ccid = cc.get("id")
+            if not ccid or ccid in seen_ids:
+                continue
+            cn = (cc.get("name", "") or "").lower()
+            if cn in MY_USER_NAMES:
+                continue
+            new_replies.append(
+                {
+                    "parent_note_id": parent_note_id,
+                    "original_note_author": entry.get("author", "?"),
+                    "original_mira_text": mira_body[:300],
+                    "reply_name": cc.get("name", ""),
+                    "reply_body": cc.get("body", "") or "",
+                    "mira_cid": mira_cid,
+                    "child_cid": ccid,
+                    "attachments": cc.get("attachments") or [],
+                }
+            )
+        _time.sleep(0.4)
+
+    if new_replies:
+        log.info("Found %d new replies to Mira's outbound note-replies", len(new_replies))
+    return new_replies
 
 
 def reply_to_outbound_thread(post_id: int, parent_comment_id: int, reply_text: str, post_url: str) -> dict | None:

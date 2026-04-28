@@ -23,6 +23,7 @@ from config import (
     WRITINGS_DIR,
     LOGS_DIR,
     ZA_FILE,
+    SOURCE_TRUST_TIERS,
 )
 from user_paths import artifact_name_for_user, user_journal_dir
 
@@ -51,24 +52,17 @@ def _append_to_daily_feed(
     tags: list[str] | None = None,
     user_id: str = "ang",
 ):
-    """Append content to a daily feed item (one item per type per day).
+    """Append content to a daily feed item.
 
-    feed_type: 'explore' or 'mira' — determines which daily item to append to.
-      - explore: external sources (briefings from Substack, arxiv, Reddit, etc.)
-      - mira: agent's own output (sparks, report, journal, reflections)
+    feed_type:
+      - 'explore': home-feed item, pinned, updates throughout day.
+      - 'mira'  : NOT published incrementally — appended to a sparks log only.
+                  The 9pm journal workflow consolidates the log into a single
+                  "Mira's Day {date}" feed item; that's the only thing the
+                  user sees on home.
     """
     today = datetime.now().strftime("%Y%m%d")
     date_str = datetime.now().strftime("%Y-%m-%d")
-    bridge = Mira(MIRA_DIR, user_id=user_id)
-
-    if feed_type == "explore":
-        feed_id = f"feed_explore_{today}"
-        feed_title = f"Explore Digest {date_str}"
-        default_tags = ["explore", "briefing"]
-    else:
-        feed_id = f"feed_mira_{today}"
-        feed_title = f"Mira's Day {date_str}"
-        default_tags = ["mira", "digest"]
 
     # Format section with header
     header = f"## {section_title}"
@@ -76,10 +70,41 @@ def _append_to_daily_feed(
         header += f"  [{source}]"
     section = f"{header}\n\n{content}"
 
+    if feed_type == "mira":
+        _log_spark_to_file(date_str, section_title, content, source, user_id)
+        return
+
+    bridge = Mira(MIRA_DIR, user_id=user_id)
+    feed_id = f"feed_explore_{today}"
+    feed_title = f"Explore Digest {date_str}"
+    default_tags = ["explore", "briefing"]
+
     if bridge.item_exists(feed_id):
         bridge.append_message(feed_id, "agent", section)
+        bridge.set_pinned(feed_id, True)
     else:
-        bridge.create_feed(feed_id, feed_title, section, tags=tags or default_tags)
+        bridge.create_feed(feed_id, feed_title, section, tags=tags or default_tags, pinned=True)
+
+
+def _log_spark_to_file(date_str: str, title: str, content: str, source: str, user_id: str):
+    """Append a spark to today's spark log (NOT to the home feed).
+
+    The 9pm journal job aggregates all sparks for the day and posts a single
+    Mira's Day digest. Sparks are only visible on home AFTER consolidation.
+    """
+    import json as _json
+
+    sparks_dir = MIRA_DIR / "users" / user_id / "sparks"
+    sparks_dir.mkdir(parents=True, exist_ok=True)
+    log_path = sparks_dir / f"{date_str}.jsonl"
+    entry = {
+        "title": title,
+        "source": source,
+        "content": content,
+        "ts": datetime.now().isoformat(),
+    }
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def _copy_to_briefings(filename: str, content: str):
@@ -166,11 +191,16 @@ def _format_feed_items(items: list[dict]) -> str:
     """Format feed items as text for Claude."""
     lines = []
     for i, item in enumerate(items, 1):
-        lines.append(f"[{i}] {item.get('source', '?')} | {item.get('title', '?')}")
+        source = item.get("source", "?")
+        lines.append(f"[{i}] {source} | {item.get('title', '?')}")
         if item.get("summary"):
             lines.append(f"    {item['summary'][:200]}")
         if item.get("url"):
             lines.append(f"    {item['url']}")
+        source_key = source.split("/")[0].lower().replace("r/", "") if source.startswith("r/") else source.lower()
+        tier = SOURCE_TRUST_TIERS.get(source_key, SOURCE_TRUST_TIERS.get(source.lower(), "community"))
+        if tier in ("community", "aggregator"):
+            lines.append("    trust_caveat: community-aggregated signal — verify against primary source")
         lines.append("")
     return "\n".join(lines)
 

@@ -95,44 +95,70 @@ def _run_health_check():
         except Exception as e:
             log.warning("Health summary for %s failed: %s", uid, e)
 
-    # --- 4. Anomaly detection -> DB + bridge ---
+    # --- 4. Anomaly detection ---
 
     all_bridges = Mira.for_all_users()
     bridges_by_user = {b.user_id: b for b in all_bridges}
 
-    alerts_by_user = check_all_users(store, user_ids)
-    for uid, alerts in (alerts_by_user or {}).items():
-        bridge = bridges_by_user.get(uid)
-        if not bridge:
-            continue
-        message = format_alerts(uid, alerts)
-        store.upsert_insight(uid, today, "alert", message)
-        _write_health_feed(bridge, f"health_alert_{uid}", "健康提醒", message, ["health", "alert"])
-        log.info("Health alert sent to %s: %d alerts", uid, len(alerts))
-
+    alerts_by_user = check_all_users(store, user_ids) or {}
+    for uid, alerts in alerts_by_user.items():
+        store.upsert_insight(uid, today, "alert", format_alerts(uid, alerts))
+        log.info("Health alerts for %s: %d", uid, len(alerts))
     if not alerts_by_user:
         log.info("Health check: all clear for all users")
 
-    # --- 5. Daily GPT insight -> DB + bridge ---
+    # --- 5. Daily insight + alert combined into ONE feed item ---
+    # Previously the user saw "健康提醒" and "今日健康洞察" as two separate cards.
+    # Both now render inside a single item titled "今日健康" with two sections.
 
     for uid in user_ids:
         bridge = bridges_by_user.get(uid)
         if not bridge:
             continue
-        # Skip if already generated today (check DB, not bridge)
-        existing = store.get_latest_insight(uid, "daily")
-        if existing and existing["insight_date"] == today:
-            log.info("Health insight for %s already exists today, skipping", uid)
+
+        alerts = alerts_by_user.get(uid, [])
+        alert_block = format_alerts(uid, alerts) if alerts else ""
+
+        existing_insight = store.get_latest_insight(uid, "daily")
+        insight_text = ""
+        if existing_insight and existing_insight["insight_date"] == today:
+            insight_text = existing_insight.get("content", "")
+        else:
+            try:
+                generated = generate_daily_insight(store, uid, model=HEALTH_REPORT_MODEL)
+                if generated:
+                    insight_text = generated
+                    store.upsert_insight(uid, today, "daily", generated, model=HEALTH_REPORT_MODEL)
+            except Exception as e:
+                log.warning("Daily insight for %s failed: %s", uid, e)
+
+        if not alert_block and not insight_text:
             continue
-        try:
-            insight = generate_daily_insight(store, uid, model=HEALTH_REPORT_MODEL)
-            if not insight:
-                continue
-            store.upsert_insight(uid, today, "daily", insight, model=HEALTH_REPORT_MODEL)
-            _write_health_feed(bridge, f"health_insight_{uid}", "今日健康洞察", insight, ["health", "insight"])
-            log.info("Daily health insight sent to %s", uid)
-        except Exception as e:
-            log.warning("Daily health insight for %s failed: %s", uid, e)
+
+        sections = []
+        if alert_block:
+            sections.append(alert_block)
+        if insight_text:
+            sections.append("## 今日洞察\n\n" + insight_text)
+        combined = "\n\n".join(sections)
+
+        # Tag with both 'alert' and 'insight' so the iOS HealthAlertBanner +
+        # HealthInsightCard both pick it up — but it is now a single item.
+        item_tags = ["health", "insight"]
+        if alerts:
+            item_tags.append("alert")
+        title = "今日健康" if alerts else "今日健康洞察"
+        _write_health_feed(bridge, f"health_today_{uid}", title, combined, item_tags)
+
+        # Best-effort cleanup: archive legacy split items so they don't linger.
+        for legacy_id in (f"health_alert_{uid}", f"health_insight_{uid}"):
+            try:
+                if bridge.item_exists(legacy_id):
+                    bridge.update_status(legacy_id, "archived")
+            except Exception:
+                pass
+
+        log.info("Health digest sent to %s (alerts=%d, insight=%d chars)", uid, len(alerts), len(insight_text))
 
     store.close()
 

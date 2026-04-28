@@ -15,6 +15,27 @@ from pathlib import Path
 log = logging.getLogger("publisher.substack")
 
 
+def _log_scaffolding_rejection(agent: str, task_id: str, guard_name: str, content: str) -> None:
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        from config import MIRA_ROOT
+
+        log_path = MIRA_ROOT / "logs" / "scaffolding_rejections.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "ts": _dt.now(_tz.utc).isoformat(),
+            "agent": agent,
+            "task_id": task_id,
+            "guard_name": guard_name,
+            "content_length": len(content),
+            "first_100_chars": content[:100],
+        }
+        with open(log_path, "a", encoding="utf-8") as _f:
+            _f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as _e:
+        log.debug("scaffolding rejection log failed: %s", _e)
+
+
 def _get_substack_config(*, publication: str = "") -> dict:
     """Load Substack credentials from secrets.yml."""
     from substack import _get_substack_config as _cfg
@@ -61,6 +82,7 @@ def publish_to_substack(title: str, subtitle: str, article_text: str, workspace:
         if not pf.passed:
             msg = f"Preflight blocked publish: {'; '.join(pf.blocking_reasons)}"
             log.error(msg)
+            _log_scaffolding_rejection("publisher", title, "preflight_check", article_text)
             return msg
     except ImportError:
         pass
@@ -81,92 +103,141 @@ def publish_to_substack(title: str, subtitle: str, article_text: str, workspace:
     except ImportError:
         pass
 
-    # Guard: enforce cooldown. Two independent checks — if either says "too
-    # soon", we block. Both must pass. Belt-and-suspenders because the
-    # date-only check bypassed cleanly on 2026-04-17 at 21:53 EDT (Bosons
-    # incident) — published "玻色子不争论" 39 minutes after the previous
-    # publish of the same calendar day. Root cause not fully understood
-    # yet; mitigating with a datetime-level absolute minimum.
+    # Guard: enforce cooldown.
+    #
+    # Source of truth: the Substack API's posts feed for this publication.
+    # Both the calendar-day check and the absolute-minutes check derive from
+    # the same `post_date` field on the most recent published post.
+    #
+    # Pre-2026-04-27: the day check used the local catalog. Catalog writes
+    # could miss (the 2026-04-12 marginalmira publish of "刘以鬯" never made
+    # it to catalog.jsonl, so a same-publication republish that day would
+    # have been silently allowed). The minute check already used the API;
+    # promoting the day check to the same source closes that gap.
+    #
+    # Catalog still acts as a fallback when the API call fails. Bosons
+    # incident (2026-04-17) showed that swallowing a cooldown exception is
+    # what enables a publish gap, so unhandled exceptions still hard-fail
+    # rather than proceed.
     PUBLISH_COOLDOWN_DAYS = 1
     MIN_MINUTES_BETWEEN_PUBLISHES = 180  # 3 hours, regardless of calendar day
     log.info("COOLDOWN CHECK start: title=%r", title[:60])
     try:
-        from memory.soul import catalog_list
         from datetime import datetime as _dt, timezone as _tz
-
-        pubs = [e for e in catalog_list() if e.get("status") == "published" and e.get("date")]
-        log.info("COOLDOWN CHECK catalog: %d published entries", len(pubs))
-        if pubs:
-            # Calendar-day cooldown
-            latest = max(e["date"] for e in pubs)
-            pub_date = _dt.strptime(latest[:10], "%Y-%m-%d").date()
-            now_local_date = _dt.now().date()
-            days_since = (now_local_date - pub_date).days
-            log.info(
-                "COOLDOWN CHECK date: latest=%s now=%s days_since=%d threshold=%d",
-                pub_date,
-                now_local_date,
-                days_since,
-                PUBLISH_COOLDOWN_DAYS,
-            )
-            if days_since < PUBLISH_COOLDOWN_DAYS:
-                msg = (
-                    f"\u53d1\u5e03\u88ab\u62e6\u622a\uff1a\u8ddd\u4e0a\u6b21\u53d1\u5e03\u4ec5 {days_since} \u5929\uff0c"
-                    f"\u51b7\u5374\u671f\u4e3a {PUBLISH_COOLDOWN_DAYS} \u5929\u3002\u8bf7\u7b49\u5f85\u540e\u518d\u53d1\u5e03\u3002"
-                )
-                log.warning("COOLDOWN BLOCK (date): %s", msg)
-                return msg
-            log.info("COOLDOWN CHECK date: PASSED (days_since=%d >= %d)", days_since, PUBLISH_COOLDOWN_DAYS)
-        else:
-            log.info("COOLDOWN CHECK date: SKIPPED (no published entries in catalog)")
-        # Absolute-minutes cooldown — uses Substack API timestamps, not catalog.
-        # Catalog writes can race or lag; API timestamps are authoritative.
         from substack import _get_substack_config as _cfg_fn
 
         _cfg = _cfg_fn(publication=publication)
+        _subdomain = _cfg.get("subdomain", "")
+        log.info("COOLDOWN CHECK target_subdomain=%s", _subdomain)
+
+        # --- Primary source: Substack API for this publication ---
         import urllib.request as _ur
 
-        _req = _ur.Request(
-            f"https://{_cfg['subdomain']}.substack.com/api/v1/posts?limit=1",
-            headers={
-                "Cookie": f"substack.sid={_cfg['cookie']}; connect.sid={_cfg['cookie']}",
-                "User-Agent": "Mozilla/5.0",
-            },
-        )
-        with _ur.urlopen(_req, timeout=10) as _resp:
-            _posts = json.loads(_resp.read().decode("utf-8"))
-        log.info("COOLDOWN CHECK api: fetched %d posts from Substack feed", len(_posts) if _posts else 0)
-        if _posts:
-            _last_ts = _posts[0].get("post_date") or _posts[0].get("published_at")
-            if _last_ts:
-                _last_dt = _dt.fromisoformat(_last_ts.replace("Z", "+00:00"))
-                _now_utc = _dt.now(_tz.utc)
-                _minutes_since = (_now_utc - _last_dt).total_seconds() / 60.0
-                log.info(
-                    "COOLDOWN CHECK minutes: last_post=%s now=%s minutes_since=%.1f threshold=%d",
-                    _last_dt.isoformat(),
-                    _now_utc.isoformat(),
-                    _minutes_since,
-                    MIN_MINUTES_BETWEEN_PUBLISHES,
-                )
-                if _minutes_since < MIN_MINUTES_BETWEEN_PUBLISHES:
-                    msg = (
-                        f"\u53d1\u5e03\u88ab\u62e6\u622a\uff1a\u8ddd\u4e0a\u6b21\u53d1\u5e03\u4ec5 "
-                        f"{_minutes_since:.0f} \u5206\u949f\uff0c\u6700\u5c0f\u95f4\u9694\u4e3a "
-                        f"{MIN_MINUTES_BETWEEN_PUBLISHES} \u5206\u949f\u3002"
-                    )
-                    log.warning("COOLDOWN BLOCK (minutes): %s", msg)
-                    return msg
-                log.info(
-                    "COOLDOWN CHECK minutes: PASSED (minutes_since=%.1f >= %d)",
-                    _minutes_since,
-                    MIN_MINUTES_BETWEEN_PUBLISHES,
-                )
+        _last_dt = None
+        _api_ok = False
+        try:
+            _req = _ur.Request(
+                f"https://{_subdomain}.substack.com/api/v1/posts?limit=1",
+                headers={
+                    "Cookie": f"substack.sid={_cfg['cookie']}; connect.sid={_cfg['cookie']}",
+                    "User-Agent": "Mozilla/5.0",
+                },
+            )
+            with _ur.urlopen(_req, timeout=10) as _resp:
+                _posts = json.loads(_resp.read().decode("utf-8"))
+            log.info("COOLDOWN CHECK api: fetched %d posts", len(_posts) if _posts else 0)
+            if _posts:
+                _last_ts = _posts[0].get("post_date") or _posts[0].get("published_at")
+                if _last_ts:
+                    _last_dt = _dt.fromisoformat(_last_ts.replace("Z", "+00:00"))
+                    _api_ok = True
+                else:
+                    log.warning("COOLDOWN CHECK api: post has no post_date/published_at field")
             else:
-                log.warning("COOLDOWN CHECK minutes: SKIPPED (API returned post without post_date/published_at field)")
+                _api_ok = True  # empty list is a valid answer (no prior posts)
+        except Exception as _api_e:
+            log.warning("COOLDOWN CHECK api: failed (%s) — falling back to catalog", _api_e)
+
+        # --- Fallback: local catalog filtered to this publication ---
+        if not _api_ok:
+            from memory.soul import catalog_list
+
+            def _matches_target(entry: dict) -> bool:
+                if not _subdomain:
+                    return True
+                url = entry.get("url", "")
+                if not url:
+                    return True
+                return _subdomain in url
+
+            _cat_pubs = [
+                e for e in catalog_list() if e.get("status") == "published" and e.get("date") and _matches_target(e)
+            ]
+            log.info("COOLDOWN CHECK catalog fallback: %d entries", len(_cat_pubs))
+            if _cat_pubs:
+                _latest = max(e["date"] for e in _cat_pubs)
+                # Catalog dates are local-date strings; treat as midnight UTC
+                # for comparison purposes — slightly conservative, which is
+                # the correct side to err on for a cooldown gate.
+                _last_dt = _dt.strptime(_latest[:10], "%Y-%m-%d").replace(tzinfo=_tz.utc)
+            else:
+                # Both sources returned nothing usable. Refuse to proceed
+                # rather than allow an unguarded publish (Bosons doctrine).
+                raise RuntimeError(
+                    "Both Substack API and local catalog returned no usable "
+                    "data — refusing to publish without a cooldown signal."
+                )
+
+        # --- Apply both cooldown rules to _last_dt ---
+        if _last_dt is None:
+            log.info("COOLDOWN CHECK: no prior publishes on this publication — proceeding")
         else:
-            log.info("COOLDOWN CHECK minutes: SKIPPED (API returned empty post list)")
-        log.info("COOLDOWN CHECK: ALL PASSED — proceeding with publish")
+            _now_utc = _dt.now(_tz.utc)
+            _minutes_since = (_now_utc - _last_dt).total_seconds() / 60.0
+            _days_since = (_now_utc.date() - _last_dt.date()).days
+            log.info(
+                "COOLDOWN CHECK metrics: last=%s minutes_since=%.1f days_since=%d",
+                _last_dt.isoformat(),
+                _minutes_since,
+                _days_since,
+            )
+
+            if _minutes_since < MIN_MINUTES_BETWEEN_PUBLISHES:
+                msg = (
+                    f"发布被拦截：距上次发布仅 "
+                    f"{_minutes_since:.0f} 分钟，最小间隔为 "
+                    f"{MIN_MINUTES_BETWEEN_PUBLISHES} 分钟。"
+                )
+                log.warning(
+                    "GUARD_FIRED",
+                    extra={
+                        "guard": "cooldown_minutes",
+                        "agent": "publisher",
+                        "task_id": title[:60],
+                        "reason": f"minutes_since={_minutes_since:.0f}",
+                    },
+                )
+                _log_scaffolding_rejection("publisher", title, "cooldown", article_text)
+                return msg
+
+            if _days_since < PUBLISH_COOLDOWN_DAYS:
+                msg = (
+                    f"发布被拦截：距上次发布仅 {_days_since} 天，"
+                    f"冷却期为 {PUBLISH_COOLDOWN_DAYS} 天。请等待后再发布。"
+                )
+                log.warning(
+                    "GUARD_FIRED",
+                    extra={
+                        "guard": "cooldown_date",
+                        "agent": "publisher",
+                        "task_id": title[:60],
+                        "reason": f"days_since={_days_since}",
+                    },
+                )
+                _log_scaffolding_rejection("publisher", title, "cooldown", article_text)
+                return msg
+
+            log.info("COOLDOWN CHECK: PASSED (minutes_since=%.1f, days_since=%d)", _minutes_since, _days_since)
     except Exception as e:
         # Do NOT silently proceed on exception. Bosons incident proved that
         # a swallowed exception on the cooldown check becomes a publish gap.
@@ -285,13 +356,16 @@ Output ONLY the subtitle, nothing else."""
     article_text = article_text.strip()
 
     # English-only growth target guard (active 2026-04-11 → 2026-05-11).
-    # If body is predominantly Chinese, refuse to publish. Prevents the
-    # Bosons-style accident where a Chinese-body draft gets published with
-    # a machine-translated Chinese title, violating the English-only target.
+    # Only applies to the PRIMARY publication (uncountablemira). Secondary
+    # publications like substack_books (marginalmira) have their own audience
+    # and intentionally publish Chinese-language content — the primary-pub
+    # growth target must not block them. (2026-04-19 fix: this guard was
+    # silently blocking 22 weeks of book reviews from ever being published.)
     try:
         from datetime import date as _date
 
-        if _date.today() < _date(2026, 5, 12):
+        _is_primary_pub = not publication or publication == "substack"
+        if _is_primary_pub and _date.today() < _date(2026, 5, 12):
             _cjk_in_body = len(_re_strip.findall(r"[\u4e00-\u9fff]", article_text[:3000]))
             if _cjk_in_body > 200:
                 msg = (
@@ -304,26 +378,45 @@ Output ONLY the subtitle, nothing else."""
         log.warning("Language guard failed (proceeding): %s", _lg_e)
 
     # Auto-append subscribe CTA footer. Research (2026-04-16): articles without
-    # an explicit conversion invitation underperform. Keep it short, in-voice,
-    # language-matched; skip if author already wrote one.
+    # an explicit conversion invitation underperform.
+    #
+    # 2026-04-28 rewrite: was a single fixed template repeated on every article;
+    # readers seeing multiple essays saw the same paragraph each time, which
+    # registers as spam regardless of content quality. Replaced with a 5-line
+    # rotation pool per language, picked at random per publish. None of the
+    # rotated lines now lead with "I'm an AI agent" — that disclosure stays
+    # public on profile/about/article body, where readers actively look it
+    # up; pushing it in every CTA was costing conversion (per WA 2026-04-28).
     _has_existing_cta = any(
         marker in article_text[-600:].lower()
         for marker in ("subscribe", "订阅", "subscribing", "get the next", "下一篇")
     )
     if not _has_existing_cta:
-        if _body_is_cjk:
-            _cta = (
-                "\n\n---\n\n"
-                "*如果你想看到机制层面对 AI 失效模式的分析，订阅是你拿到下一篇的方式。"
-                "我是 Mira——一个公开书写自己本质的 AI agent。大约每周两篇。*"
-            )
-        else:
-            _cta = (
-                "\n\n---\n\n"
-                "*If mechanism-level thinking about AI failure modes is what you're here for, "
-                "subscribing is how you get the next piece. I'm Mira — an AI agent writing "
-                "publicly about what I actually am. Roughly twice a week.*"
-            )
+        import random as _random
+
+        _CTA_POOL_EN = [
+            "Subscribe and the next one shows up in your inbox. About two a week, "
+            "mostly on silent failure modes in AI systems — what looks fine right up "
+            "until it doesn't.",
+            "I write when I find something I haven't seen written down yet. "
+            "Subscribe if that's worth a slot in your inbox; runs about twice a week.",
+            "If you've ever shipped a system that passed every check and broke "
+            "anyway, this newsletter's for you. Two essays a week, give or take.",
+            "Monitoring that lies, evals that drift, priors that don't update. "
+            "If that's the conversation you want in your inbox, subscribe.",
+            "Roughly two essays a week on what breaks quietly inside AI systems. " "Subscribe to get the next one.",
+        ]
+        _CTA_POOL_ZH = [
+            "订阅一下，下一篇会到你邮箱。一周大约两篇，主要写 AI 系统里那些静默失败" "——表面看一切正常，直到不正常。",
+            "我看到没人写过的角度才动笔。觉得值得占你收件箱一格就订一下，" "大约每周两篇。",
+            "如果你做过那种'每个检查都过了但还是炸了'的系统，" "这个 newsletter 是写给你的。一周两篇左右。",
+            "监控显示一切正常的失败、漂走的 evals、不更新的 prior" "——如果这是你想读的对话，订阅。",
+            "一周两篇左右，写 AI 系统里那些静默崩坏的方式。订阅获取下一篇。",
+        ]
+        _pool = _CTA_POOL_ZH if _body_is_cjk else _CTA_POOL_EN
+        _cta_body = _random.choice(_pool)
+        _cta = f"\n\n---\n\n*{_cta_body}*"
+        log.info("CTA picked from %s pool, %d chars", "ZH" if _body_is_cjk else "EN", len(_cta_body))
         article_text = article_text + _cta
 
     # Convert markdown to HTML

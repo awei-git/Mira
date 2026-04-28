@@ -78,6 +78,11 @@ def build_summary(store, person_id: str) -> dict:
         "sedentary_hours",
         "workout",
         "resilience_level",
+        "temperature_deviation",
+        "respiratory_rate",
+        "sleep_recovery",
+        "daytime_recovery",
+        "resting_hr_lowest",
     ]:
         data = store.get_recent_metrics(person_id, mtype, days=30)
         if data:

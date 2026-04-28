@@ -23,6 +23,10 @@ if str(_AGENTS_DIR / "writer") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 if str(_AGENTS_DIR / "general") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "general"))
+# `persona`, `memory`, etc. live under agents/shared/ — needed for the
+# `from persona.persona_context import ...` style imports below.
+if str(_AGENTS_DIR / "shared") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
 from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR
 from agent_registry import get_registry

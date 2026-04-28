@@ -414,7 +414,14 @@ def auto_implement(proposal: dict, proposal_path: Path) -> dict:
     except OSError:
         pass
 
-    return {"success": True, "reason": "Implemented and tests passed"}
+    return {
+        "success": True,
+        "reason": "Implemented and tests passed",
+        "title": proposal.get("title", ""),
+        "summary": proposal.get("summary", "") or proposal.get("description", ""),
+        "source_note": proposal.get("source_note", ""),
+        "files_changed": list(changed),
+    }
 
 
 def _revert_files(backups: dict[str, str]):
@@ -486,59 +493,92 @@ def _run_tests() -> bool:
 
 
 def send_report(proposals: list[dict], implementations: list[dict], date: str):
-    """Send a feed item summarizing today's self-evolution results."""
+    """Send a feed item ONLY when something was actually implemented.
+
+    Reports always include enough context for WA to understand what changed and
+    what's still queued — no opaque "1 change shipped" with no detail.
+    """
     try:
         from config import MIRA_DIR
         from bridge import Mira
 
-        bridge = Mira(MIRA_DIR)
-
-        if not proposals and not implementations:
-            # Don't spam if nothing happened
-            log.info("No proposals or implementations — skipping report")
+        successful = [i for i in (implementations or []) if i.get("success")]
+        if not successful:
+            log.info("Self-evolve: no successful implementations — skipping feed report")
             return
 
-        lines = [f"Self-Evolution Report {date}", ""]
+        bridge = Mira(MIRA_DIR)
 
-        if proposals:
-            lines.append(f"Analyzed {len(proposals)} reading note(s), generated proposals:")
-            for p in proposals:
+        sections: list[str] = [f"# Self-Evolution Landed {date}", ""]
+
+        # ── Section 1: shipped changes ────────────────────────────────────
+        sections.append(f"## ✅ Shipped ({len(successful)})")
+        sections.append("")
+        for i, impl in enumerate(successful, 1):
+            title = impl.get("title") or "(untitled proposal)"
+            sections.append(f"**{i}. {title}**")
+            if impl.get("summary"):
+                sections.append(f"  - {impl['summary'].strip()[:600]}")
+            if impl.get("source_note"):
+                sections.append(f"  - from: `{impl['source_note']}`")
+            files = impl.get("files_changed") or []
+            if files:
+                files_disp = files if len(files) <= 8 else files[:7] + [f"… +{len(files)-7} more"]
+                sections.append(f"  - files: {', '.join(files_disp)}")
+            if impl.get("commit_sha"):
+                sections.append(f"  - commit: `{impl['commit_sha'][:8]}`")
+            sections.append("")
+
+        # ── Section 2: deferred proposals (the rest) ──────────────────────
+        # `successful` correspond to proposals whose status got set to
+        # "implemented"; everything else is deferred. Surface ALL of them so
+        # WA can manually review.
+        deferred = [p for p in (proposals or []) if p.get("status") != "implemented"]
+        if deferred:
+            sections.append(f"## ⏸ Deferred ({len(deferred)})")
+            sections.append("")
+            sections.append(
+                "_Not auto-implemented because risk_level != low, or impl attempt failed. Manual review needed._"
+            )
+            sections.append("")
+            for i, p in enumerate(deferred, 1):
+                title = p.get("title", "(untitled)")
                 risk = p.get("risk_level", "?")
-                status = p.get("status", "proposed")
-                lines.append(f"  [{risk}] {p.get('title', '?')} — {status}")
-                lines.append(f"    Source: {p.get('source_note', '?')}")
-            lines.append("")
+                sections.append(f"**{i}. [{risk}] {title}**")
+                if p.get("summary") or p.get("description"):
+                    desc = (p.get("summary") or p.get("description") or "").strip()
+                    sections.append(f"  - {desc[:500]}")
+                if p.get("source_note"):
+                    sections.append(f"  - from: `{p['source_note']}`")
+                if p.get("rationale"):
+                    sections.append(f"  - why: {p['rationale'].strip()[:300]}")
+                if p.get("expected_impact"):
+                    sections.append(f"  - impact: {p['expected_impact'].strip()[:200]}")
+                sections.append("")
 
-        if implementations:
-            lines.append("Auto-implemented:")
-            for impl in implementations:
-                success = "OK" if impl.get("success") else "FAILED"
-                lines.append(f"  {success}: {impl.get('reason', '?')}")
-            lines.append("")
+        # ── Failed implementations (if any) ───────────────────────────────
+        failures = [i for i in (implementations or []) if not i.get("success")]
+        if failures:
+            sections.append(f"## ⚠ Implementation Failures ({len(failures)})")
+            sections.append("")
+            for i, f in enumerate(failures, 1):
+                sections.append(f"**{i}. {f.get('title', '(untitled)')}**")
+                sections.append(f"  - reason: {f.get('reason', 'unknown')}")
+                sections.append("")
 
-        if not implementations and proposals:
-            # All proposals were medium/high risk
-            risk_counts = {}
-            for p in proposals:
-                r = p.get("risk_level", "unknown")
-                risk_counts[r] = risk_counts.get(r, 0) + 1
-            if "low" not in risk_counts:
-                lines.append("No low-risk proposals today — all require manual review.")
-
-        content = "\n".join(lines)
-
+        content = "\n".join(sections).rstrip() + "\n"
         bridge.create_item(
             item_id=f"self-evolve-{date.replace('-', '')}",
             item_type="feed",
-            title=f"Self-Evolution: {date}",
+            title=f"Self-Evolution Landed: {date}",
             first_message=content,
             sender="agent",
-            tags=["self-evolve", "system"],
+            tags=["self-evolve", "code", "shipped"],
             origin="agent",
         )
-        log.info("Report sent to user via bridge")
+        log.info("Self-evolve report sent: %d landed, %d deferred", len(successful), len(deferred))
     except Exception as e:
-        log.error("Failed to send report: %s", e)
+        log.error("Failed to send self-evolve report: %s", e)
 
 
 # ---------------------------------------------------------------------------

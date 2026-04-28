@@ -16,6 +16,7 @@ from config import (
     CLAUDE_SONNET_MODEL,
     CLAUDE_OPUS_MODEL,
 )
+from prompts import CONCISENESS_INSTRUCTION
 
 log = logging.getLogger("mira")
 
@@ -72,7 +73,9 @@ def _fallback_think(prompt: str, timeout: int, tier: str = "light") -> str:
     return _api_call(cfg["provider"], cfg["model_id"], prompt, timeout=timeout, reasoning_effort=effort)
 
 
-def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK, tier: str = "light") -> str:
+def claude_think(
+    prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK, tier: str = "light", max_tokens: int | None = None
+) -> str:
     """Call Claude CLI for thinking — no tools, just reasoning.
 
     Args:
@@ -91,12 +94,23 @@ def claude_think(prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK, tier: str = "
     if _force_local():
         return _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=timeout)
     model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
+    if tier == "light":
+        prompt = CONCISENESS_INSTRUCTION + "\n\n" + prompt
+        if max_tokens is None:
+            max_tokens = 1024
+    cmd = [CLAUDE_BIN, "-p", prompt, "--setting-sources", "user", "--model", model_id]
+    # Claude CLI removed --max-tokens (2026-04 release). Budget is now
+    # controlled via --max-budget-usd or --effort. We keep max_tokens as
+    # an internal hint for the light-tier fallback but do not pass it to
+    # the CLI. Passing it causes exit 1 and triggers OpenAI fallback —
+    # which burns quota unnecessarily (2026-04-19 incident).
+    _ = max_tokens  # reserved; used only by fallback paths
     # Strip CLAUDECODE env var to allow nested Claude CLI sessions (LaunchAgent)
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     _start = time.monotonic()
     try:
         result = subprocess.run(
-            [CLAUDE_BIN, "-p", prompt, "--setting-sources", "user", "--model", model_id],
+            cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -167,7 +181,12 @@ def _resolve_allowed_tools(agent_id: str | None) -> str:
 
 
 def claude_act(
-    prompt: str, cwd: Path = None, timeout: int = CLAUDE_TIMEOUT_ACT, tier: str = "light", agent_id: str = None
+    prompt: str,
+    cwd: Path = None,
+    timeout: int = CLAUDE_TIMEOUT_ACT,
+    tier: str = "light",
+    agent_id: str = None,
+    max_tokens: int | None = None,
 ) -> str:
     """Call Claude CLI with tool access — can read/write files, run commands.
 
@@ -190,6 +209,10 @@ def claude_act(
     if _force_local():
         return _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=timeout)
     model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
+    if tier == "light":
+        prompt = CONCISENESS_INSTRUCTION + "\n\n" + prompt
+        if max_tokens is None:
+            max_tokens = 1024
     allowed_tools = _resolve_allowed_tools(agent_id)
     cmd = [
         CLAUDE_BIN,
@@ -200,6 +223,12 @@ def claude_act(
         "--allowedTools",
         allowed_tools,
     ]
+    # Claude CLI removed --max-tokens (2026-04 release). Budget is now
+    # controlled via --max-budget-usd or --effort. We keep max_tokens as
+    # an internal hint for the light-tier fallback but do not pass it to
+    # the CLI. Passing it causes exit 1 and triggers OpenAI fallback —
+    # which burns quota unnecessarily (2026-04-19 incident).
+    _ = max_tokens  # reserved; used only by fallback paths
 
     # Strip CLAUDECODE env var to allow nested Claude CLI sessions (LaunchAgent)
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}

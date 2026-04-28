@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
+
+from config import SOUL_DIR as _SOUL_DIR
 
 log = logging.getLogger("mira.persona")
-
-_SOUL_DIR = Path(__file__).resolve().parent.parent / "soul"
 
 
 @dataclass

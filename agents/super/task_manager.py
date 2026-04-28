@@ -17,7 +17,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import MIRA_DIR, TASK_TIMEOUT, TASK_TIMEOUT_LONG, MAX_CONCURRENT_TASKS, TASK_MAX_RETRIES
+from config import MIRA_DIR, TASK_TIMEOUT, TASK_TIMEOUT_LONG, MAX_CONCURRENT_TASKS, TASK_MAX_RETRIES, MAX_SUBTASK_DEPTH
 from execution.runtime_contract import derive_workflow_id, normalize_task_status
 
 # Timeout resolution: first check registry manifest, then fall back to tag keywords
@@ -67,6 +67,11 @@ def _resolve_timeout(tags: list[str]) -> float:
 
 
 log = logging.getLogger("mira")
+
+
+class TaskDepthExceeded(Exception):
+    pass
+
 
 # Task workspaces stored locally (NOT on iCloud bridge)
 from config import TASKS_DIR
@@ -166,7 +171,16 @@ class TaskManager:
         """Check if all concurrent task slots are occupied."""
         return self.get_active_count() >= MAX_CONCURRENT_TASKS
 
-    def dispatch(self, msg, workspace_dir: Path, *, attempt_count: int = 1, max_attempts: int | None = None) -> str:
+    def dispatch(
+        self,
+        msg,
+        workspace_dir: Path,
+        *,
+        attempt_count: int = 1,
+        max_attempts: int | None = None,
+        depth: int = 0,
+        task_chain: list[str] | None = None,
+    ) -> str:
         """Spawn a background worker for a message. Returns task_id.
 
         Supports up to MAX_CONCURRENT_TASKS parallel workers.
@@ -175,7 +189,21 @@ class TaskManager:
         Args:
             msg: talk_bridge.Message instance
             workspace_dir: directory for task output files
+            depth: current subtask nesting depth (0 = top-level)
+            task_chain: ordered list of ancestor task IDs for observability
         """
+        chain = list(task_chain or [])
+        if depth >= MAX_SUBTASK_DEPTH:
+            chain_str = " -> ".join(chain) if chain else "(empty)"
+            log.error(
+                "TaskDepthExceeded: depth=%d >= MAX_SUBTASK_DEPTH=%d for msg %s; chain: %s",
+                depth,
+                MAX_SUBTASK_DEPTH,
+                msg.id,
+                chain_str,
+            )
+            raise TaskDepthExceeded(f"Subtask depth {depth} reached limit {MAX_SUBTASK_DEPTH}. Chain: {chain_str}")
+
         if self.is_busy():
             log.info(
                 "TaskManager busy (%d/%d slots), deferring task for msg %s",
@@ -204,6 +232,8 @@ class TaskManager:
         msg_payload = dict(msg.to_dict())
         msg_payload["workflow_id"] = workflow_id
         msg_payload["user_id"] = getattr(msg, "user_id", "ang") or "ang"
+        msg_payload["subtask_depth"] = depth
+        msg_payload["task_chain"] = chain + [msg.id]
         msg_file.write_text(json.dumps(msg_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # Spawn worker as a detached process

@@ -21,6 +21,8 @@ STALENESS_HOURS = {
     "stress_high": 36,
     "temperature_deviation": 36,
     "sleep_score": 36,
+    "resilience_level": 36,
+    "respiratory_rate": 36,
 }
 
 
@@ -233,6 +235,8 @@ def check_person(store, person_id: str, rules: dict | None = None) -> list[dict]
     alerts.extend(_check_stress(store, person_id))
     alerts.extend(_check_temperature(store, person_id))
     alerts.extend(_check_sleep_score(store, person_id))
+    alerts.extend(_check_resilience(store, person_id))
+    alerts.extend(_check_respiratory_rate(store, person_id))
 
     # Recent symptoms check
     alerts.extend(_check_symptoms(store, person_id))
@@ -670,37 +674,111 @@ def _check_stress(store, person_id: str) -> list[dict]:
 
 
 def _check_temperature(store, person_id: str) -> list[dict]:
-    """Oura temperature deviation — significant changes may indicate illness."""
+    """Oura temperature deviation contributor (0-100). Below 50 is what Oura
+    surfaces as 'Pay attention'; below 30 is the 'major issue' band."""
     alerts = []
     if _is_suppressed("temperature_deviation"):
         return alerts
     data = store.get_recent_metrics(person_id, "temperature_deviation", days=7)
-    if len(data) < 2:
+    if not data:
         return alerts
     if _is_stale(data[0], "temperature_deviation"):
         return alerts
 
     latest = data[0]["value"]
-    prev_values = [d["value"] for d in data[1:]]
-    avg = sum(prev_values) / len(prev_values)
+    prev_values = [d["value"] for d in data[1:]] if len(data) > 1 else []
+    avg = (sum(prev_values) / len(prev_values)) if prev_values else latest
 
-    # Big drop in temperature score = body temperature deviation (Oura reports as contributor score 0-100)
-    if latest < avg * 0.5 and avg > 30:
+    if latest < 30:
         alerts.append(
             {
-                "title": "体温偏差异常",
-                "message": f"体温偏差指标 {latest:.0f}（近期均值 {avg:.0f}），身体可能有异常，建议测量体温确认",
+                "title": "体温偏差严重 (Oura major issue)",
+                "message": f"体温偏差指标 {latest:.0f}/100，Oura 标记为重大问题。可能在生病或免疫负担大，建议测体温、降低强度、多休息。",
+                "severity": "critical",
+                "metric": "temperature_deviation",
+            }
+        )
+    elif latest < 50:
+        alerts.append(
+            {
+                "title": "体温偏差偏大",
+                "message": f"体温偏差指标 {latest:.0f}/100（近7天均值 {avg:.0f}），Oura 标为需要关注。注意是否有不适。",
                 "severity": "warning",
                 "metric": "temperature_deviation",
             }
         )
-    elif latest < avg * 0.7 and avg > 30:
+    elif prev_values and avg > 60 and latest < avg * 0.65:
+        # Sudden drop from healthy baseline (still > 50 but trend is sharp)
         alerts.append(
             {
-                "title": "体温偏差偏大",
-                "message": f"体温偏差指标 {latest:.0f}（近期均值 {avg:.0f}），注意观察",
+                "title": "体温偏差骤降",
+                "message": f"今日 {latest:.0f}/100 vs 近期均值 {avg:.0f}，下降明显，留意身体信号。",
                 "severity": "info",
                 "metric": "temperature_deviation",
+            }
+        )
+    return alerts
+
+
+def _check_resilience(store, person_id: str) -> list[dict]:
+    """Oura resilience: 1=limited, 2=adequate, 3=solid, 4=strong, 5=exceptional.
+    Limited (=1) for multiple days = chronic recovery debt."""
+    alerts = []
+    if _is_suppressed("resilience_level"):
+        return alerts
+    data = store.get_recent_metrics(person_id, "resilience_level", days=7)
+    if not data:
+        return alerts
+    if _is_stale(data[0], "resilience_level"):
+        return alerts
+
+    latest = data[0]["value"]
+    if latest <= 1:
+        # Single day at "limited"
+        limited_days = sum(1 for d in data if d["value"] <= 1)
+        if limited_days >= 3:
+            alerts.append(
+                {
+                    "title": "韧性持续偏弱",
+                    "message": f"过去7天有 {limited_days} 天韧性为 'limited'，恢复债务在累积。明显减量、早睡、补水、补碳水。",
+                    "severity": "warning",
+                    "metric": "resilience_level",
+                }
+            )
+        else:
+            alerts.append(
+                {
+                    "title": "今日韧性偏弱",
+                    "message": "Oura 韧性等级 'limited'，今天身体储备不足。",
+                    "severity": "info",
+                    "metric": "resilience_level",
+                }
+            )
+    return alerts
+
+
+def _check_respiratory_rate(store, person_id: str) -> list[dict]:
+    """Sleeping respiratory rate — sudden upswing is an early illness signal."""
+    alerts = []
+    if _is_suppressed("respiratory_rate"):
+        return alerts
+    data = store.get_recent_metrics(person_id, "respiratory_rate", days=14)
+    if len(data) < 5:
+        return alerts
+    if _is_stale(data[0], "hrv"):  # reuse 36h staleness
+        return alerts
+
+    latest = data[0]["value"]
+    baseline = [d["value"] for d in data[1:]]
+    avg = sum(baseline) / len(baseline)
+    # > 1 brpm above baseline is meaningful in sleeping respiratory rate
+    if latest - avg >= 1.5:
+        alerts.append(
+            {
+                "title": "呼吸频率上升",
+                "message": f"睡眠呼吸 {latest:.1f}/min vs 近期均值 {avg:.1f}/min，可能在生病/即将生病的早期信号。",
+                "severity": "warning" if latest - avg >= 2.0 else "info",
+                "metric": "respiratory_rate",
             }
         )
     return alerts

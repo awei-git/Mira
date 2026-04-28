@@ -22,6 +22,22 @@ _AGENTS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 sys.path.insert(0, str(_AGENTS_DIR / "general"))
+# `persona`, `memory`, etc. are under agents/shared/. Worker subprocesses
+# need this on path or `from persona.persona_context import ...` (in
+# handlers_legacy + downstream) crashes with ModuleNotFoundError.
+sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+
+# Register the running script under both its `__main__` identity AND the
+# `task_worker` name so the circular import in handlers_legacy.py
+# (`from task_worker import _write_result, ...`) finds this in-progress
+# module instead of trying to re-import task_worker.py from disk and
+# recursively re-entering line 788. Without this alias, the reentry hits
+# `from handlers_legacy import handle_discussion` while handlers_legacy is
+# only at line 39 (handle_discussion is defined at line 289), so the
+# import fails. This pattern is the standard fix for "main script imported
+# by a module that also imports back."
+if __name__ == "__main__":
+    sys.modules.setdefault("task_worker", sys.modules["__main__"])
 
 from config import (
     MIRA_DIR,
@@ -29,10 +45,15 @@ from config import (
     ARTIFACTS_DIR,
     JOURNAL_DIR,
     BRIEFINGS_DIR,
+    LOGS_DIR,
     MEMORY_FILE,
     WORLDVIEW_FILE,
     CLAUDE_TIMEOUT_THINK,
     CLAUDE_TIMEOUT_ACT,
+    TOKEN_BUDGET_WARN_LIGHT,
+    TOKEN_BUDGET_WARN_HEAVY,
+    MAX_TASK_HORIZON_STEPS,
+    MAX_TASK_HORIZON_STEPS_HEAVY,
     record_phase_duration,
 )
 from execution.runtime_contract import derive_workflow_id, normalize_task_status
@@ -45,7 +66,7 @@ from memory.soul import (
     recall_context,
     save_knowledge_note,
 )
-from llm import claude_act, claude_think, ClaudeTimeoutError
+from llm import claude_act, claude_think, ClaudeTimeoutError, reset_session_tokens, get_session_tokens, _log_efficiency
 
 # Handler functions extracted to handlers_legacy.py (imported after all helpers
 # are defined to avoid circular import — see bottom of file)
@@ -396,6 +417,7 @@ def main():
 
     log.info("Worker started: task=%s thread=%s", args.task_id, args.thread_id)
     task_start = time.time()
+    _perf_start = time.perf_counter()
 
     # Read message
     try:
@@ -542,6 +564,17 @@ def main():
             return
         log.warning("Edit handler returned empty, falling through to task planning")
 
+    # --- Fast-path for conversational discussions (no planner, no agent
+    # routing — just a direct reply via handle_discussion). Soul questions,
+    # threads, comment-replies all hit this. Avoids 2+ minutes of planning
+    # overhead for what should be a 30s response.
+    if task_data.get("type") == "discussion":
+        log.info("Discussion fast-path for task %s", args.task_id)
+        _emit_status(args.task_id, "Thinking...", "bubble.left.and.text.bubble.right")
+        handle_discussion(task_data, workspace, args.task_id, thread_id, tier="light")
+        log.info("Worker exiting (discussion fast-path)")
+        return
+
     # --- Fixed startup: read progress from prior runs ---
     progress = ""
     progress_file = workspace / "progress.md"
@@ -575,6 +608,8 @@ def main():
     if progress:
         planning_context = f"## Progress from prior session\n{progress}\n\n{planning_context}"
 
+    _perf_dispatch_ms = round((time.perf_counter() - _perf_start) * 1000)
+    _perf_inference_t0 = time.perf_counter()
     _think_start = time.time()
     plan = _plan_task(
         msg_content,
@@ -585,6 +620,7 @@ def main():
         content_filter=_content_filter,
     )
     _think_duration = time.time() - _think_start
+    _perf_inference_ms = round((time.perf_counter() - _perf_inference_t0) * 1000)
     task_agent = plan[0].get("agent", "unknown") if plan else "unknown"
     log.info(
         "PHASE_TIMING task_id=%s agent=%s phase=think configured_timeout_s=%d actual_duration_s=%.2f",
@@ -598,7 +634,19 @@ def main():
     plan = _enrich_plan_with_runtime_policy(plan)
     log.info("Plan: %s", plan)
 
+    _HEAVY_HORIZON_AGENTS = {"analyst", "researcher", "writer", "podcast"}
+    _horizon_agent = plan[0].get("agent", "unknown") if plan else "unknown"
+    _horizon_limit = MAX_TASK_HORIZON_STEPS_HEAVY if _horizon_agent in _HEAVY_HORIZON_AGENTS else MAX_TASK_HORIZON_STEPS
+    _horizon_exceeded = len(plan) > _horizon_limit
+    if _horizon_exceeded:
+        log.info(
+            "Horizon limit: truncating plan from %d to %d steps for agent %s", len(plan), _horizon_limit, _horizon_agent
+        )
+        plan = plan[:_horizon_limit]
+
+    reset_session_tokens()
     _act_start = time.time()
+    _perf_tools_t0 = time.perf_counter()
     _execute_plan(
         plan,
         workspace,
@@ -612,7 +660,14 @@ def main():
         model_restriction=_model_restriction,
         workflow_id=workflow_id,
     )
+    if _horizon_exceeded:
+        _checkpoint_msg = f"Task paused: horizon limit of {_horizon_limit} steps reached for {_horizon_agent}. Checkpoint saved — resume to continue."
+        _emit_status(args.task_id, _checkpoint_msg, "pause.circle")
+        _write_result(workspace, args.task_id, "paused_horizon_limit", _checkpoint_msg)
+        log.info("Worker exiting (paused_horizon_limit: %s steps > %d)", len(plan), _horizon_limit)
+        return
     _act_duration = time.time() - _act_start
+    _perf_tools_ms = round((time.perf_counter() - _perf_tools_t0) * 1000)
     log.info(
         "PHASE_TIMING task_id=%s agent=%s phase=act configured_timeout_s=%d actual_duration_s=%.2f",
         args.task_id,
@@ -621,6 +676,48 @@ def main():
         _act_duration,
     )
     record_phase_duration(task_agent, "act", CLAUDE_TIMEOUT_ACT, _act_duration)
+
+    _in_tok, _out_tok, _model_id = get_session_tokens()
+    _result_words = 0
+    _out_md = workspace / "output.md"
+    if _out_md.exists():
+        try:
+            _result_words = len(_out_md.read_text(encoding="utf-8", errors="ignore").split())
+        except OSError:
+            pass
+    _efficiency = _out_tok / max(1, _result_words)
+    _heavy_agents = {"writer", "researcher", "podcast", "socialmedia"}
+    _tier = "heavy" if task_agent in _heavy_agents else "light"
+    _budget = TOKEN_BUDGET_WARN_HEAVY if _tier == "heavy" else TOKEN_BUDGET_WARN_LIGHT
+    _total_tok = _in_tok + _out_tok
+    log.info(
+        "TOKEN_EFFICIENCY task_id=%s agent=%s model=%s input_tokens=%d output_tokens=%d total_tokens=%d words=%d efficiency=%.2f",
+        args.task_id,
+        task_agent,
+        _model_id,
+        _in_tok,
+        _out_tok,
+        _total_tok,
+        _result_words,
+        _efficiency,
+    )
+    _log_efficiency(
+        task_id=args.task_id,
+        agent=task_agent,
+        model=_model_id,
+        input_tokens=_in_tok,
+        output_tokens=_out_tok,
+        words=_result_words,
+    )
+    if _total_tok > _budget:
+        log.warning(
+            "TOKEN_BUDGET_WARN task_id=%s agent=%s tier=%s total_tokens=%d budget=%d",
+            args.task_id,
+            task_agent,
+            _tier,
+            _total_tok,
+            _budget,
+        )
 
     # --- Write progress.md for next session ---
     _write_progress(workspace, args.task_id, msg_content)
@@ -660,6 +757,7 @@ def main():
                 "configured_timeout_s": configured_timeout,
                 "actual_duration_s": round(elapsed, 2),
                 "utilization_pct": round(utilization_pct, 1),
+                "token_usage": {"input": _in_tok, "output": _out_tok},
             },
             ensure_ascii=False,
         )
@@ -668,6 +766,33 @@ def main():
     except Exception as _e:
         log.debug("Failed to write timing stats: %s", _e)
 
+    try:
+        _result_file = workspace / "result.json"
+        if _result_file.exists():
+            _result = json.loads(_result_file.read_text(encoding="utf-8"))
+            _result["token_usage"] = {"input": _in_tok, "output": _out_tok}
+            _tmp = _result_file.with_suffix(".tmp")
+            _tmp.write_text(json.dumps(_result, ensure_ascii=False, indent=2), encoding="utf-8")
+            _tmp.rename(_result_file)
+    except Exception as _e:
+        log.debug("Failed to write token_usage to result.json: %s", _e)
+
+    _perf_total_ms = round((time.perf_counter() - _perf_start) * 1000)
+    _phase_record = {
+        "task_id": args.task_id,
+        "agent": task_agent,
+        "phase_dispatch_ms": _perf_dispatch_ms,
+        "phase_inference_ms": _perf_inference_ms,
+        "phase_tools_ms": _perf_tools_ms,
+        "total_ms": _perf_total_ms,
+    }
+    log.info("PHASE_BREAKDOWN %s", json.dumps(_phase_record, ensure_ascii=False))
+    try:
+        _phase_log = LOGS_DIR / "task_phase_timing.jsonl"
+        with open(_phase_log, "a", encoding="utf-8") as _pf:
+            _pf.write(json.dumps({**_phase_record, "ts": _utc_iso()}, ensure_ascii=False) + "\n")
+    except Exception as _pe:
+        log.debug("Phase timing log write failed: %s", _pe)
     log.info("Worker exiting")
 
 

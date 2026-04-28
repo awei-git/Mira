@@ -131,4 +131,5 @@ from substack_comments import (  # noqa: E402, F401
     check_outbound_comment_replies,
     _find_replies_to_comment,
     reply_to_outbound_thread,
+    check_outbound_note_replies,
 )

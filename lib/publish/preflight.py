@@ -7,6 +7,7 @@ side effect actually happened.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -153,6 +154,43 @@ def preflight_check(action_type: str, context: dict) -> PreflightResult:
             _f.write(json.dumps(_preflight_record) + "\n")
     except Exception as _pe:
         log.warning("Failed to write preflight log entry: %s", _pe)
+    if not passed:
+        try:
+            import datetime as _dt2
+
+            _rej_dir = Path(config.MIRA_ROOT) / "logs" / "scaffold_rejections"
+            _rej_dir.mkdir(parents=True, exist_ok=True)
+            _rej_entry = {
+                "timestamp": _dt2.datetime.utcnow().isoformat() + "Z",
+                "agent_id": context.get("agent_id", "unknown"),
+                "pipeline_stage": action_type,
+                "rejection_reason": "; ".join(blockers),
+                "content_preview": str(context.get("content", ""))[:200],
+            }
+            _rej_file = _rej_dir / f"{_dt2.date.today().isoformat()}.jsonl"
+            with open(_rej_file, "a", encoding="utf-8") as _f:
+                _f.write(json.dumps(_rej_entry, ensure_ascii=False) + "\n")
+        except Exception as _re:
+            log.warning("Failed to write scaffold rejection: %s", _re)
+        try:
+            import datetime as _dt3
+
+            _content_bytes = str(context.get("content", "")).encode("utf-8", errors="replace")
+            _audit_entry = {
+                "timestamp": _dt3.datetime.utcnow().isoformat() + "Z",
+                "guard_name": "preflight_check",
+                "trigger_reason": "; ".join(blockers),
+                "content_length": len(str(context.get("content", ""))),
+                "severity": "blocked",
+                "task_id": context.get("task_id", ""),
+                "content_hash": hashlib.sha1(_content_bytes).hexdigest()[:8],
+            }
+            _audit_log = Path(config.MIRA_ROOT) / "logs" / "scaffolding_audit.jsonl"
+            _audit_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(_audit_log, "a", encoding="utf-8") as _f:
+                _f.write(json.dumps(_audit_entry, ensure_ascii=False) + "\n")
+        except Exception as _ae:
+            log.warning("Failed to write scaffolding audit entry: %s", _ae)
     return result
 
 

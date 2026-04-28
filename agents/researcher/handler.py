@@ -316,7 +316,9 @@ Synthesize the research findings into a comprehensive report:
 - Mark confidence: strong (multiple sources agree), moderate (single source), uncertain
 - Structure with clear headings
 - End with key takeaways and open questions
-- Markdown format"""
+- Markdown format
+
+Epistemic calibration: When making factual claims, distinguish (1) things you know with high confidence from primary evidence, (2) things you infer with moderate confidence, and (3) things you are genuinely uncertain about. Use hedged language ("likely", "the evidence suggests", "I'm uncertain whether") for categories 2-3. Do not assert category 2 or 3 claims as if they were category 1."""
 
     report = claude_think(synth_prompt, timeout=RESEARCHER_SYNTHESIS_TIMEOUT, tier="heavy")
     if not report:

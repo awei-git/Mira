@@ -170,10 +170,28 @@ def fetch_and_store(store, access_token: str, person_id: str, days_back: int = 1
         log.warning("Oura daily sleep fetch failed: %s", e)
 
     # 3. Detailed sleep — HRV average
+    # Oura returns multiple sleep sessions per day (long_sleep + naps). Only the
+    # long_sleep session is the real nightly sleep — naps must NOT overwrite it
+    # for sleep_hours/HRV/respiratory rate. Group by day, prefer long_sleep,
+    # fall back to the longest session if no long_sleep present.
     try:
         sleep_detail = client.get_sleep(start, end)
+        # Group sessions by day, pick best per day
+        by_day: dict[str, dict] = {}
         for s in sleep_detail:
             day = s.get("day", start)
+            stype = s.get("type", "")
+            duration = s.get("total_sleep_duration") or 0
+            current = by_day.get(day)
+            # Prefer long_sleep; otherwise prefer the longest session
+            if (
+                current is None
+                or (stype == "long_sleep" and current.get("type") != "long_sleep")
+                or (current.get("type") != "long_sleep" and duration > (current.get("total_sleep_duration") or 0))
+            ):
+                by_day[day] = s
+
+        for day, s in by_day.items():
             recorded = datetime.fromisoformat(f"{day}T08:00:00+00:00")
 
             hrv = s.get("average_hrv")
@@ -181,7 +199,6 @@ def fetch_and_store(store, access_token: str, person_id: str, days_back: int = 1
                 store.insert_metric(person_id, "hrv", float(hrv), unit="ms", source="oura", recorded_at=recorded)
                 count += 1
 
-            # Sleep hours
             total_seconds = s.get("total_sleep_duration")
             if total_seconds:
                 hours = total_seconds / 3600.0
@@ -190,13 +207,6 @@ def fetch_and_store(store, access_token: str, person_id: str, days_back: int = 1
                 )
                 count += 1
 
-            # Note: temperature deviation comes from readiness contributors, not sleep
-            resp_rate = s.get("average_breath")  # respiratory rate, not temperature
-            if s.get("average_heart_rate"):
-                # Average sleeping HR is more useful than single resting
-                pass  # already captured above
-
-            # Respiratory rate
             if s.get("average_breath"):
                 store.insert_metric(
                     person_id,
@@ -208,7 +218,6 @@ def fetch_and_store(store, access_token: str, person_id: str, days_back: int = 1
                 )
                 count += 1
 
-            # Lowest resting HR
             if s.get("lowest_heart_rate"):
                 store.insert_metric(
                     person_id,

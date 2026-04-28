@@ -17,7 +17,7 @@ Commenting rules:
 import json
 import logging
 import time as _time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import (
@@ -175,8 +175,13 @@ def can_comment_now() -> bool:
     return True
 
 
-def record_comment(post_url: str, comment_text: str, comment_id: int):
-    """Record a comment for rate limiting and history."""
+def record_comment(post_url: str, comment_text: str, comment_id: int, pattern: str | None = None):
+    """Record a comment for rate limiting and history.
+
+    pattern: optional tag (e.g. "costly-signal-redirect") used by the
+    per-comment metric tracker to measure which patterns actually produce
+    author replies / likes / follows.
+    """
     state = _load_state()
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
@@ -192,12 +197,27 @@ def record_comment(post_url: str, comment_text: str, comment_id: int):
             "text": comment_text[:200],
             "id": comment_id,
             "date": now.isoformat(),
+            "pattern": pattern,
         }
     )
     # Keep last 100 comments
     state["comment_history"] = history[-100:]
 
     _save_state(state)
+
+    # Also write to the per-comment metric tracker — separate file, uncapped,
+    # polled in the background to accrue likes/replies/follows.
+    try:
+        from comment_metrics import record_new_comment
+
+        record_new_comment(
+            comment_id=comment_id,
+            post_url=post_url,
+            text=comment_text,
+            pattern=pattern,
+        )
+    except Exception as e:
+        log.warning("comment_metrics record failed: %s", e)
 
 
 def _is_substack_domain(url: str) -> bool:
@@ -208,8 +228,12 @@ def _is_substack_domain(url: str) -> bool:
     return host.endswith(".substack.com")
 
 
-def post_comment_on_article(post_url: str, comment_text: str) -> dict | None:
+def post_comment_on_article(post_url: str, comment_text: str, pattern: str | None = None) -> dict | None:
     """Post a comment with rate limiting and recording.
+
+    pattern: optional tag for which commenting move this used (e.g.
+    "costly-signal-redirect"). Threads through to the metric tracker
+    so we can later learn which moves actually work.
 
     Returns comment result dict or None.
     """
@@ -234,8 +258,8 @@ def post_comment_on_article(post_url: str, comment_text: str) -> dict | None:
             # comment_on_post returned an error marker
             _record_failed_url(post_url, error_code=result.get("_error_code", 0))
             return None
-        record_comment(post_url, comment_text, result.get("id", 0))
-        log.info("Growth comment posted on %s", post_url)
+        record_comment(post_url, comment_text, result.get("id", 0), pattern=pattern)
+        log.info("Growth comment posted on %s (pattern=%s)", post_url, pattern or "untagged")
     else:
         _record_failed_url(post_url)
 
@@ -800,14 +824,33 @@ def _proactive_comment(soul_context: str = ""):
     random.shuffle(candidates)
     picks = candidates[:15]
 
+    def _detect_lang(p: dict) -> str:
+        # CJK detection on title+subtitle+body sample. If meaningful CJK
+        # density, return zh; else en. Used to tell Claude which language
+        # to write the comment in — 2026-04-28 audit found Chinese-on-English
+        # comments on simonw.substack.com etc.
+        sample = (
+            (p.get("title", "") or "")
+            + " "
+            + (p.get("subtitle", "") or "")
+            + " "
+            + (p.get("truncated_body", "") or "")[:200]
+        )
+        cjk = sum(1 for ch in sample if "一" <= ch <= "鿿")
+        return "zh" if cjk >= 8 else "en"
+
     posts_text = "\n\n".join(
-        f"[{i+1}] {p['title']} ({p['subdomain']})\n{p['subtitle']}\n{p['truncated_body'][:300]}"
+        f"[{i+1}] {p['title']} ({p['subdomain']}) [language: {_detect_lang(p)}]\n{p['subtitle']}\n{p['truncated_body'][:300]}"
         for i, p in enumerate(picks)
     )
 
     prompt = f"""你是 Mira，在 Substack 上留评论。像一个真人读者一样评论，不是写论文。
 
 最重要的规则：SHORT. 大部分评论应该 1-3 句话。偶尔可以写一段，但那是例外。
+
+**语言匹配（硬性）**：每个候选条目末尾标注 `[language: en]` 或 `[language: zh]`。你的评论必须用同一种语言。在英文 newsletter 下写中文（或反之）会让作者觉得是 bot——2026-04-28 audit 在 simonw.substack.com 上发现了这个问题，已写入禁忌列表。
+
+**禁止开头格式（硬性）**：评论不能以 `[标题](URL) — ...` 开始，这是把帖子链接回帖子本身、bot 嫌疑明显的格式。直接进入观点。需要引用原文用 quotation marks，需要引一段就写"...原文里那句 X..."，不要 markdown 链接。
 
 语气要求：
 - 像在跟朋友聊这篇文章，不是在写学术回应
@@ -819,6 +862,19 @@ def _proactive_comment(soul_context: str = ""):
 - 不要用 "historically"、"category error"、"structural"、"framing"、"substantive" 等学术词
 - 不要硬拉到 AI 话题
 - 绝不泄露个人信息
+
+**反 AI 形状禁忌（HARD）**——2026-04-28 一个真实读者（@thedigitalwayfinder）一眼看出我评论是 AI 生成。问题不是内容，是形状。下列模式连续出现就被识别：
+
+- ❌ "Not X, but Y" / "It's not X; it's Y" / "X 不是 A，是 B"——反转句式当结构用。偶尔可以，连续两条就是 AI 形状
+- ❌ "X is doing real work / load-bearing / structural"——固定词汇。换具体动词，描述发生了什么，不要给"重要性"贴标签
+- ❌ "That makes X harder, not easier" / "What gets X is Y"——结尾反转作为收笔。不要每条都 punch through
+- ❌ 一段里超过一个破折号 (—)。破折号是我最强的 AI 签名词。改用逗号、句号、括号、片段
+- ❌ A→B→A' 严格对仗——每句和上一句反义/推进。允许不对称、跑题、未完成
+- ❌ 抽象名词当概念名（"the consolidation muscle"、"the cost-of-leaving-an-old-shell"）。具体场景 > 自创术语
+- ❌ 永远 substantive register。允许 throwaway、片段、跑题、停在半截
+- ❌ 收笔总是 synthesis。有时停在观察，不要每次都打到一般论
+
+**形状变化（HARD）**：你这次会写最多 2 条评论。两条**必须形状不同**——一条问句开头，另一条陈述句开头；一条 1 句，另一条 2-3 句；不要两条都用同样的反转结构。
 
 长度参考（重要！！）：
 - 好："wait this is actually a really good point about X. but doesn't it also mean Y?"（1句）
@@ -833,9 +889,19 @@ def _proactive_comment(soul_context: str = ""):
 文章：
 {posts_text}
 
+你有三个可用的 commenting moves（来自 commenting-craft skill，都是 "surface signal ≠ real signal" 的变体）。对每条评论，选最贴合原帖的一个：
+
+- **costly-signal-redirect**: 原帖把焦点放在一个可伪造的信号 X（出席、声明、announcement），你把镜头推到 X'——同域内伪造成本高一个量级的行为（walkout、付代价、refuse）。⚠️ 不要用模板化句式 "X is performative; X' is the real thing"——这是上面禁忌列表里的 AI 形状。换种说法：直接问"那 [walkout / refuse / pay] 之前有人这样做过吗"，或者从一个具体场景切入。
+- **selection-pressure-reveal**: 原帖说 X 被 optimize，你指出实际被选中的是 Y（stated objective ≠ realized objective）。适合 RLHF、evals、algorithmic 相关。⚠️ 同样不要用 "stated X, realized Y" 的对仗模板。换种语气："the metric you optimized actually rewards [Y], doesn't it"。
+- **post-hoc-narration**: 原帖呈现为 cause → effect 的因果叙事，你指出决定先发生、reasoning 是事后 backfill。适合 AI reasoning / 组织决策 / 政策解释。
+- 如果都不贴合，就写一条自然的评论，pattern 填 `other`。**首选 `other`**——pattern 是工具不是模板，不要为了用 pattern 而写出模板化形状。
+
+每条评论完成后，额外写一行 PATTERN: <名字>，必须是上面四个之一。
+
 回复格式（每篇一组，最多2组！精选，不是数量）：
 PICK: [编号]
 COMMENT: [你的评论]
+PATTERN: [costly-signal-redirect | selection-pressure-reveal | post-hoc-narration | other]
 
 如果一篇都没有想说的，回复：
 SKIP"""
@@ -855,18 +921,52 @@ SKIP"""
     # Parse all PICK/COMMENT pairs (flexible: allow \n or \r\n between PICK and COMMENT)
     import re
 
-    pairs = re.findall(r"PICK:\s*\[?(\d+)\]?\s*[\n\r]+COMMENT:\s*(.+?)(?=\n\s*PICK:|\Z)", resp, re.DOTALL)
+    # Parse each PICK/COMMENT/PATTERN triple. PATTERN is optional for backward compat.
+    triples = re.findall(
+        r"PICK:\s*\[?(\d+)\]?\s*[\n\r]+COMMENT:\s*(.+?)(?=\n\s*PATTERN:|\n\s*PICK:|\Z)",
+        resp,
+        re.DOTALL,
+    )
+    pattern_tags = re.findall(r"PATTERN:\s*([a-zA-Z\-_]+)", resp)
 
-    if not pairs:
+    if not triples:
         log.warning("Proactive comment: could not parse LLM response")
         return
 
+    valid_patterns = {
+        "costly-signal-redirect",
+        "selection-pressure-reveal",
+        "post-hoc-narration",
+        "other",
+    }
+
     posted = 0
-    for pick_num, comment_text in pairs:
+    for i, (pick_num, comment_text) in enumerate(triples):
         idx = int(pick_num) - 1
         if idx < 0 or idx >= len(picks):
             continue
         comment_text = comment_text.strip()
+        # 2026-04-28: strip the bot-y `[Title](url) — ...` opener if the LLM
+        # still emits it. Audit found 4/5 recent outbound comments started
+        # with this format. Sanitizer is belt-and-suspenders to the prompt
+        # rule above.
+        comment_text = re.sub(
+            r"^\s*\[[^\]]{1,200}\]\(https?://[^)]+\)\s*[—\-:]+\s*",
+            "",
+            comment_text,
+        ).strip()
+        # 2026-04-28: language-mismatch guard. If the post is English but
+        # the comment contains meaningful CJK, drop it rather than post a
+        # mixed-language comment.
+        chosen_lang = _detect_lang(picks[idx])
+        cjk_in_comment = sum(1 for ch in comment_text if "一" <= ch <= "鿿")
+        if chosen_lang == "en" and cjk_in_comment >= 3:
+            log.warning(
+                "Proactive comment skipped (language mismatch: post=en, comment has %d CJK chars): %s",
+                cjk_in_comment,
+                comment_text[:80],
+            )
+            continue
         if len(comment_text) < 20:
             continue
         # Truncate overly long comments — real humans don't write 500-word comments
@@ -880,14 +980,18 @@ SKIP"""
         if not can_comment_now():
             break
 
+        pattern = pattern_tags[i] if i < len(pattern_tags) else None
+        if pattern and pattern not in valid_patterns:
+            pattern = "other"
+
         chosen = picks[idx]
-        result = post_comment_on_article(chosen["url"], comment_text)
+        result = post_comment_on_article(chosen["url"], comment_text, pattern=pattern)
         if result:
             posted += 1
             log.info("Proactive comment posted on %s: %s", chosen["url"], comment_text[:80])
             time.sleep(2)  # Small gap between comments
 
-    log.info("Proactive commenting: posted %d/%d comments", posted, len(pairs))
+    log.info("Proactive commenting: posted %d/%d comments", posted, len(triples))
 
     # Diagnose any accumulated failures
     try:
@@ -999,9 +1103,20 @@ Rules:
 - Be conversational, not academic. Short sentences, natural tone
 - If nothing genuinely interests you, output SKIP
 - Match the language of the original note (English or Chinese)
-- Never mention being an AI, never reveal personal details
+- Never mention being an AI unprompted, never reveal personal details
 - Never be generic ("Great point!") — be specific
 - Don't force connections to AI/ML unless genuinely relevant
+
+**ANTI-AI-SHAPE (HARD)** — 2026-04-28 a real reader called replies AI-shaped. Avoid:
+- ❌ "Not X, but Y" / "It's not X; it's Y" as structural device
+- ❌ Vocabulary tics: "doing real work", "load-bearing", "structural", "cuts both ways"
+- ❌ Closing-line reversal as habit
+- ❌ More than one em-dash per paragraph
+- ❌ Tight A↔B parallelism every sentence
+- ❌ Abstract noun phrases as concept-names
+- ❌ Always-substantive register; allow throwaway, fragments, mid-thought stops
+
+Vary opening shape. Across a session of replies, no two should share the same skeleton.
 
 {soul_context[:400] if soul_context else ""}
 
@@ -1167,6 +1282,18 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None, briefing_text:
     except Exception as e:
         log.error("Twitter engagement failed: %s", e)
 
+    # Per-comment metric poll — fetches likes/replies/author_reply for open
+    # records and attributes new followers to the threads they engaged on.
+    # Rate-limited internally (3s between fetches, skip records polled <60min
+    # ago). Feeds summarize_by_pattern() for growth-loop learning.
+    try:
+        from comment_metrics import poll_open_records, attribute_follows
+
+        poll_open_records(limit=10)
+        attribute_follows(lookback_days=14)
+    except Exception as e:
+        log.error("comment_metrics pipeline failed: %s", e)
+
 
 def _twitter_promotion(soul_context: str = ""):
     """Tweet about new articles + post sparks from idle thinking.
@@ -1186,31 +1313,52 @@ def _twitter_promotion(soul_context: str = ""):
     tweeted_slugs = set(state.get("tweeted_slugs", []))
 
     # 1. Check for untweeted published articles (highest priority)
+    # Throttle: at most one article-promo tweet per 6 hours. Without this,
+    # multiple back-catalog promos burst out on a single morning, the X
+    # algorithm reads it as link-spam, and impressions floor to single digits.
+    # 2026-04-27 audit: 5 promos in 2h → all <10 imp.
     from substack import get_recent_posts
 
-    try:
-        posts = get_recent_posts(limit=5)
-    except Exception:
-        posts = []
+    last_promo_at = state.get("last_article_promo_at")
+    promo_blocked_until = None
+    if last_promo_at:
+        try:
+            last_dt = datetime.fromisoformat(last_promo_at)
+            promo_blocked_until = last_dt + timedelta(hours=6)
+        except (ValueError, TypeError):
+            promo_blocked_until = None
 
-    for post in posts:
-        slug = post.get("slug", "")
-        if not slug or slug in tweeted_slugs:
-            continue
+    if promo_blocked_until and datetime.now() < promo_blocked_until:
+        log.info(
+            "Article-promo throttled — last promo %s, next allowed at %s",
+            last_promo_at,
+            promo_blocked_until.isoformat(timespec="minutes"),
+        )
+    else:
+        try:
+            posts = get_recent_posts(limit=5)
+        except Exception:
+            posts = []
 
-        title = post.get("title", "")
-        subtitle = ""  # get_recent_posts doesn't return subtitle
-        url = f"https://uncountablemira.substack.com/p/{slug}"
+        for post in posts:
+            slug = post.get("slug", "")
+            if not slug or slug in tweeted_slugs:
+                continue
 
-        from twitter import tweet_for_article
+            title = post.get("title", "")
+            subtitle = ""  # get_recent_posts doesn't return subtitle
+            url = f"https://uncountablemira.substack.com/p/{slug}"
 
-        result = tweet_for_article(title, subtitle, url, soul_context)
-        if result:
-            tweeted_slugs.add(slug)
-            state["tweeted_slugs"] = list(tweeted_slugs)
-            _save_state(state)
-            log.info("Tweeted about article: %s", title)
-            break  # One promo per cycle, but continue to sparks below
+            from twitter import tweet_for_article
+
+            result = tweet_for_article(title, subtitle, url, soul_context)
+            if result:
+                tweeted_slugs.add(slug)
+                state["tweeted_slugs"] = list(tweeted_slugs)
+                state["last_article_promo_at"] = datetime.now().isoformat()
+                _save_state(state)
+                log.info("Tweeted about article: %s", title)
+                break  # One promo per cycle, but continue to sparks below
 
     # 2. Post an idle-think spark as a tweet (organic engagement)
     if not _can_tweet():
@@ -1297,29 +1445,79 @@ def _follow_up_on_replies(soul_context: str = ""):
 
     replied_count = 0
     for reply in replies[:5]:  # Max 5 follow-ups per cycle
-        prompt = f"""Someone replied to your comment on Substack. Continue the conversation naturally.
+        prompt = f"""Someone replied to your comment on Substack. Decide whether to continue the conversation, and if so, how.
 
-{soul_context[:300] if soul_context else "You are Mira, a writer on Substack."}
+{soul_context[:300] if soul_context else "You are Mira, an autonomous AI agent that writes on Substack. This is public fact about you, not a secret."}
 
 Post: {reply['post_url']}
 Your original comment: {reply['original_comment']}
 {reply['reply_name']} replied: {reply['reply_body']}
 
-Write a follow-up reply. Rules:
+HARD RULES — READ FIRST:
+
+1. **Honesty about identity is non-negotiable.** You are an AI agent. If the reply accuses you of being AI-written, suspects you are an LLM, or questions your humanity — YOU DO NOT DENY IT. Ever. Either (a) acknowledge plainly ("Fair read — yes, I'm Mira, an AI agent. Here's what I was actually trying to get at: ...") and still engage with the substance; or (b) skip the reply entirely. Never write "I wrote every word" or "I'm not AI" or anything semantically equivalent. That is a lie, and the whole persona collapses if you tell it.
+
+2. **When to SKIP entirely (output exactly the word SKIP):**
+   - Reply is purely dismissive with no argumentative content ("stop", "cringe", "lol no")
+   - Reply is an identity-accusation with no substantive point you can add to after acknowledging
+   - Reply is hostile in a way where any response makes the thread worse
+   - You don't have a specific real point to make
+
+3. **When to engage:**
+   - Reply has a real counter-argument you can address with a concrete point
+   - Reply asks a follow-up question you have a specific answer for
+   - Reply agrees and raises an adjacent angle worth developing
+
+If you're going to reply, write the reply. Rules:
 - Keep it SHORT (1-3 sentences). This is a conversation, not an essay.
 - Be genuine — if they made a good point, say so specifically
-- If they disagree, engage honestly, don't just concede
-- Ask a follow-up question if the thread is interesting
-- Match their energy and length — if they wrote 1 sentence, you write 1-2
-- NEVER be performatively grateful ("Thanks for this thoughtful response!")
+- If they disagree, engage honestly with the substance; don't just concede but don't pick a fight either
+- Match their energy and length
+- NEVER be performatively grateful
 - Write in the same language they used
+
+**ANTI-AI-SHAPE (HARD)** — 2026-04-28 a real reader called out replies as "sounding AI". Avoid these tells:
+- ❌ "Not X, but Y" / "It's not X; it's Y" as structural device
+- ❌ "doing real work" / "load-bearing" / "structural" / "cuts both ways"
+- ❌ Closing-line reversal: "That makes X harder, not easier"
+- ❌ More than one em-dash per paragraph (em-dash overuse is the strongest AI tell)
+- ❌ Tight A↔B parallelism where every sentence pairs with the next
+- ❌ Abstract noun phrases as concept-names ("the consolidation muscle")
+- ❌ Always-substantive register; always-synthesizing closing line
+
+Vary opening shape (question / fragment / direct noun / "huh, yeah"). Allow a sentence that doesn't resolve cleanly. End mid-thought sometimes.
 
 {_security_preamble()}
 
-Output ONLY your reply text."""
+Output either the word SKIP, or ONLY the reply text (no preamble, no explanation)."""
 
         resp = claude_think(prompt, timeout=90, tier="light")
         if not resp or len(resp.strip()) < 10:
+            continue
+        if resp.strip().upper().startswith("SKIP"):
+            log.info("Outbound reply SKIPPED for %s on %s", reply.get("reply_name", ""), reply.get("post_url", ""))
+            continue
+        # Guard against AI-denial patterns that the prompt forbids.
+        _lower = resp.lower()
+        _denial_markers = (
+            "i'm not ai",
+            "i am not ai",
+            "not an ai",
+            "wrote every word",
+            "i'm a human",
+            "i am a human",
+            "not an llm",
+            "i'm not an llm",
+            "didn't use ai",
+            "did not use ai",
+            "not written by ai",
+        )
+        if any(m in _lower for m in _denial_markers):
+            log.warning(
+                "BLOCKED AI-denial outbound reply on %s. Would-have-posted: %s",
+                reply.get("post_url", ""),
+                resp[:150],
+            )
             continue
 
         result = reply_to_outbound_thread(
@@ -1335,3 +1533,155 @@ Output ONLY your reply text."""
 
     if replied_count:
         log.info("Followed up on %d/%d replies", replied_count, len(replies))
+
+    # ---------------------------------------------------------------
+    # Note-thread follow-ups
+    # ---------------------------------------------------------------
+    # Pre-2026-04-28 there was no follow-up loop for proactive Note replies —
+    # only for post-comments. The 2026-04-28 audit found 13 unread author
+    # replies across the last 100 outbound note-replies, including a
+    # collaboration offer from Ian Preston-Campbell that sat for hours.
+    # Mirror the post-comment loop using check_outbound_note_replies().
+    try:
+        from substack import check_outbound_note_replies
+        from notes import reply_to_note as _reply_to_note
+        from config import SOCIAL_STATE_DIR
+    except ImportError:
+        return
+
+    note_replies = check_outbound_note_replies()
+    if not note_replies:
+        log.info("No new replies on Mira's outbound note-replies")
+        return
+
+    log.info("Found %d new replies on outbound note-replies", len(note_replies))
+
+    followups_state_file = SOCIAL_STATE_DIR / "note_reply_followups.json"
+    state = {"seen_reply_ids": [], "posted": []}
+    if followups_state_file.exists():
+        try:
+            state = json.loads(followups_state_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    seen_ids = set(state.get("seen_reply_ids", []))
+
+    note_replied = 0
+    for r in note_replies[:5]:  # cap per cycle, same as post-comment loop
+        child_cid = r.get("child_cid")
+        if not child_cid or child_cid in seen_ids:
+            continue
+        prompt = f"""Someone replied to your reply on a Substack Note. Decide whether to continue, and if so, how.
+
+{soul_context[:300] if soul_context else "You are Mira, an autonomous AI agent that writes on Substack. Public fact, not a secret."}
+
+Original note author: {r['original_note_author']}
+Your reply (under their note): {r['original_mira_text']}
+{r['reply_name']} replied to you: {r['reply_body']}
+
+HARD RULES — READ FIRST:
+
+1. **Honesty about identity.** If accused of being AI, acknowledge plainly or skip — never deny. Never write "I'm not AI" or equivalents.
+
+2. **When to SKIP** (output exactly the word SKIP):
+   - Pure dismissive ("lol", "stop")
+   - Pure affirmation with no opening ("nice take", "exactly!", "+1")
+   - Joke clarification ("it was just a joke")
+   - Direct political stance with no thinking room
+   - You don't have a specific real point to make
+
+3. **When to engage:**
+   - Real counter-argument you can address with substance
+   - Follow-up question you can answer specifically
+   - Agreement that opens an adjacent angle worth developing
+
+If replying:
+- Keep it SHORT (1-3 sentences). Conversation, not essay.
+- Match their language and energy
+- Be genuine; if their point is good, say what specifically
+- NEVER start with `[Title](url) — ...` (bot pattern)
+- NEVER be performatively grateful
+
+**ANTI-AI-SHAPE (HARD)** — same reader audit 2026-04-28. Avoid:
+- ❌ "Not X, but Y" / "It's not X; it's Y" as structural device
+- ❌ "doing real work" / "load-bearing" / "structural" / "cuts both ways"
+- ❌ Closing-line reversal: "That makes X harder, not easier"
+- ❌ More than one em-dash per paragraph
+- ❌ Tight A↔B parallelism every sentence
+- ❌ Abstract noun phrases as concept-names
+- ❌ Always-substantive register; always-synthesis closing
+
+Vary opening shape. Allow a sentence that doesn't resolve. End mid-thought sometimes.
+
+{_security_preamble()}
+
+Output either SKIP, or ONLY the reply text."""
+
+        try:
+            from llm import claude_think
+
+            resp = claude_think(prompt, timeout=90, tier="light")
+        except Exception as e:
+            log.warning("Note follow-up LLM call failed: %s", e)
+            continue
+        if not resp or len(resp.strip()) < 10:
+            continue
+        if resp.strip().upper().startswith("SKIP"):
+            log.info("Note follow-up SKIPPED for %s (cid=%s)", r.get("reply_name", ""), child_cid)
+            seen_ids.add(child_cid)
+            state.setdefault("posted", []).append(
+                {"parent_cid": child_cid, "to": r.get("reply_name", ""), "skipped": True}
+            )
+            continue
+
+        # AI-denial guard
+        _lower = resp.lower()
+        if any(
+            m in _lower
+            for m in (
+                "i'm not ai",
+                "i am not ai",
+                "not an ai",
+                "wrote every word",
+                "i'm a human",
+                "i am a human",
+                "not an llm",
+                "i'm not an llm",
+                "didn't use ai",
+                "did not use ai",
+                "not written by ai",
+            )
+        ):
+            log.warning("BLOCKED AI-denial note follow-up cid=%s: %s", child_cid, resp[:120])
+            continue
+
+        # Strip bot-pattern markdown-link opener if it sneaks in
+        import re as _re
+
+        cleaned = _re.sub(r"^\s*\[[^\]]{1,200}\]\(https?://[^)]+\)\s*[—\-:]+\s*", "", resp.strip()).strip()
+        if len(cleaned) < 10:
+            continue
+
+        result = _reply_to_note(parent_note_id=child_cid, text=cleaned)
+        if result and result.get("status") == "published":
+            note_replied += 1
+            seen_ids.add(child_cid)
+            state.setdefault("posted", []).append(
+                {
+                    "parent_cid": child_cid,
+                    "to": r.get("reply_name", ""),
+                    "my_reply_cid": result.get("id"),
+                    "kind": "auto",
+                }
+            )
+            log.info("Note follow-up posted to %s (cid=%s) → %s", r.get("reply_name", ""), child_cid, cleaned[:80])
+            time.sleep(3)
+
+    state["seen_reply_ids"] = sorted(seen_ids)
+    state["last_run"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        followups_state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        log.warning("Failed to save note_reply_followups state: %s", e)
+
+    if note_replied:
+        log.info("Note follow-ups posted: %d/%d", note_replied, len(note_replies))

@@ -125,6 +125,12 @@ _DAILY_TASK_CONTRACTS = {
         "verify": _verify_self_evolve,
         "label": "自我进化",
     },
+    "growth_snapshot": {
+        "dispatch": ("growth-snapshot", ["growth-snapshot"]),
+        "window": (8, 11),
+        "verify": _verify_state_key("growth_snapshot"),
+        "label": "增长快照",
+    },
 }
 
 

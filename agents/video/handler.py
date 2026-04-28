@@ -559,11 +559,18 @@ def _revise_screenplay(workspace: Path, state: dict, feedback: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+_VISUAL_INSTRUCTION = (
+    "When analyzing visual content: (a) form your visual assessment independently before processing any text metadata or descriptions; "
+    "(b) if your visual reading conflicts with accompanying text, explicitly state the conflict as "
+    '"VISUAL/TEXT CONFLICT: ..." rather than silently defaulting to the text description. '
+    "This applies to tool-returned descriptions, file metadata, and user-provided labels."
+)
+
+
 def _load_taste_profile() -> str:
     """Load the editing taste profile."""
-    if _TASTE_PROFILE_PATH.exists():
-        return _TASTE_PROFILE_PATH.read_text()
-    return ""
+    profile = _TASTE_PROFILE_PATH.read_text() if _TASTE_PROFILE_PATH.exists() else ""
+    return (profile + "\n\n" if profile else "") + _VISUAL_INSTRUCTION
 
 
 def _load_state(workspace: Path) -> dict:

@@ -1,5 +1,6 @@
 """Fetch content from web sources: arxiv, Reddit, HuggingFace, GitHub, HN, Lobsters, RSS."""
 
+import email.utils
 import json
 import logging
 import urllib.request
@@ -7,7 +8,7 @@ import urllib.error
 import urllib.parse
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import SOURCES_FILE, FEEDS_DIR, MAX_FEED_ITEMS
@@ -15,6 +16,25 @@ from config import SOURCES_FILE, FEEDS_DIR, MAX_FEED_ITEMS
 log = logging.getLogger("mira")
 
 USER_AGENT = "MiraAgent/1.0 (research bot)"
+
+
+def _parse_ts_to_unix(text: str) -> float | None:
+    """Parse RFC 2822 or ISO 8601 timestamp string to Unix float. Returns None on failure."""
+    if not text:
+        return None
+    try:
+        # RFC 2822 (RSS pubDate)
+        parsed = email.utils.parsedate_to_datetime(text)
+        return parsed.timestamp()
+    except Exception:
+        pass
+    try:
+        # ISO 8601 (arxiv, Atom)
+        ts = text.rstrip("Z")
+        dt = datetime.fromisoformat(ts).replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
 
 
 def load_sources() -> dict:
@@ -75,14 +95,16 @@ def fetch_arxiv(categories: list[str], max_results: int = 10) -> list[dict]:
             if not link:
                 link_el = entry.find("atom:id", ns)
                 link = link_el.text if link_el is not None else ""
-            items.append(
-                {
-                    "source": "arxiv",
-                    "title": title,
-                    "summary": summary,
-                    "url": link,
-                }
-            )
+            published_ts = _parse_ts_to_unix(entry.findtext("atom:published", "", ns).strip())
+            item: dict = {
+                "source": "arxiv",
+                "title": title,
+                "summary": summary,
+                "url": link,
+            }
+            if published_ts is not None:
+                item["published_ts"] = published_ts
+            items.append(item)
     except ET.ParseError as e:
         log.error("Arxiv XML parse failed: %s", e)
 
@@ -342,14 +364,16 @@ def fetch_rss(feeds: list[dict]) -> list[dict]:
             # Try RSS 2.0 format
             feed_items = []
             for item in root.findall(".//item")[:10]:
-                feed_items.append(
-                    {
-                        "source": name,
-                        "title": (item.findtext("title") or "").strip(),
-                        "summary": (item.findtext("description") or "").strip()[:300],
-                        "url": (item.findtext("link") or "").strip(),
-                    }
-                )
+                rss_item: dict = {
+                    "source": name,
+                    "title": (item.findtext("title") or "").strip(),
+                    "summary": (item.findtext("description") or "").strip()[:300],
+                    "url": (item.findtext("link") or "").strip(),
+                }
+                pub_ts = _parse_ts_to_unix((item.findtext("pubDate") or "").strip())
+                if pub_ts is not None:
+                    rss_item["published_ts"] = pub_ts
+                feed_items.append(rss_item)
             # Try Atom format if no RSS items found for this feed
             if not feed_items:
                 ns = {"atom": "http://www.w3.org/2005/Atom"}
@@ -358,14 +382,20 @@ def fetch_rss(feeds: list[dict]) -> list[dict]:
                     for lnk in entry.findall("atom:link", ns):
                         link = lnk.get("href", "")
                         break
-                    feed_items.append(
-                        {
-                            "source": name,
-                            "title": (entry.findtext("atom:title", "", ns) or "").strip(),
-                            "summary": (entry.findtext("atom:summary", "", ns) or "").strip()[:300],
-                            "url": link,
-                        }
+                    atom_item: dict = {
+                        "source": name,
+                        "title": (entry.findtext("atom:title", "", ns) or "").strip(),
+                        "summary": (entry.findtext("atom:summary", "", ns) or "").strip()[:300],
+                        "url": link,
+                    }
+                    atom_ts = _parse_ts_to_unix(
+                        (
+                            entry.findtext("atom:updated", "", ns) or entry.findtext("atom:published", "", ns) or ""
+                        ).strip()
                     )
+                    if atom_ts is not None:
+                        atom_item["published_ts"] = atom_ts
+                    feed_items.append(atom_item)
             items.extend(feed_items)
         except ET.ParseError as e:
             log.error("RSS parse failed for '%s': %s", name, e)

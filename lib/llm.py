@@ -22,6 +22,7 @@ from config import (
     CLAUDE_TIMEOUT_THINK,
     OMLX_DEFAULT_MODEL,
     LOGS_DIR,
+    TOKEN_USAGE_LOG_PATH,
 )
 
 # ---------------------------------------------------------------------------
@@ -91,6 +92,7 @@ def redact_secrets(text: str) -> str:
 # Thread-local caller context: set by task_worker before dispatching
 _caller_agent = threading.local()
 _model_policy = threading.local()
+_session_usage = threading.local()
 
 
 def set_usage_agent(agent_name: str):
@@ -100,6 +102,22 @@ def set_usage_agent(agent_name: str):
 
 def _get_usage_agent() -> str:
     return getattr(_caller_agent, "name", "unknown")
+
+
+def reset_session_tokens():
+    """Reset per-task token accumulator (call before each agent run)."""
+    _session_usage.input = 0
+    _session_usage.output = 0
+    _session_usage.model = ""
+
+
+def get_session_tokens() -> tuple[int, int, str]:
+    """Return (input_tokens, output_tokens, model_id) accumulated since last reset."""
+    return (
+        getattr(_session_usage, "input", 0),
+        getattr(_session_usage, "output", 0),
+        getattr(_session_usage, "model", ""),
+    )
 
 
 def set_model_policy(policy: str | None):
@@ -144,6 +162,10 @@ def _estimate_cost(provider: str, model: str, prompt_tokens: int, completion_tok
 
 def _log_usage(provider: str, model: str, prompt_tokens: int, completion_tokens: int, estimated: bool = False):
     """Append one usage record to the daily JSONL log with cost estimate."""
+    _session_usage.input = getattr(_session_usage, "input", 0) + prompt_tokens
+    _session_usage.output = getattr(_session_usage, "output", 0) + completion_tokens
+    if model:
+        _session_usage.model = model
     try:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         today = datetime.now().strftime("%Y-%m-%d")
@@ -162,6 +184,16 @@ def _log_usage(provider: str, model: str, prompt_tokens: int, completion_tokens:
         }
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        usage_record = {
+            "ts": record["ts"],
+            "agent_name": record["agent"],
+            "task_type": record["agent"],
+            "model_id": model,
+            "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens,
+        }
+        with open(TOKEN_USAGE_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(usage_record, ensure_ascii=False) + "\n")
     except (OSError, ValueError):
         pass  # Never break the call for logging
 
@@ -220,6 +252,91 @@ def usage_summary(date: str = "") -> dict:
         "by_provider": by_provider,
         "by_agent": by_agent,
     }
+
+
+def _log_efficiency(task_id: str, agent: str, model: str, input_tokens: int, output_tokens: int, words: int):
+    """Append a per-task token efficiency record to token_efficiency.jsonl."""
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        path = LOGS_DIR / "token_efficiency.jsonl"
+        record = {
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "task_id": task_id,
+            "agent": agent,
+            "model": model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "words": words,
+            "efficiency": round(output_tokens / max(1, words), 4),
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, ValueError):
+        pass
+
+
+def token_efficiency_summary() -> dict:
+    """Compare current vs prior 7-day token efficiency by model version.
+
+    Flags models with >20% regression in output_tokens/word ratio.
+    Returns: {by_model: {model: {avg_efficiency, samples, regression, ...}}, regressions: [...]}
+    """
+    from datetime import timedelta
+
+    path = LOGS_DIR / "token_efficiency.jsonl"
+    if not path.exists():
+        return {"status": "no_data", "by_model": {}, "regressions": []}
+
+    now = datetime.now(timezone.utc)
+    cutoff_recent = now - timedelta(days=7)
+    cutoff_prior = now - timedelta(days=14)
+
+    recent: dict[str, list[float]] = {}
+    prior: dict[str, list[float]] = {}
+
+    for line in path.read_text(encoding="utf-8").strip().splitlines():
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        ts_str = r.get("ts", "")
+        try:
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        model = r.get("model", "unknown")
+        eff = r.get("efficiency", 0.0)
+        if ts >= cutoff_recent:
+            recent.setdefault(model, []).append(eff)
+        elif ts >= cutoff_prior:
+            prior.setdefault(model, []).append(eff)
+
+    by_model: dict[str, dict] = {}
+    regressions: list[str] = []
+    for model, effs in recent.items():
+        avg_recent = sum(effs) / len(effs)
+        prior_effs = prior.get(model, [])
+        entry: dict = {"avg_efficiency": round(avg_recent, 4), "samples": len(effs), "regression": False}
+        if prior_effs:
+            avg_prior = sum(prior_effs) / len(prior_effs)
+            change = (avg_recent - avg_prior) / max(avg_prior, 1e-9)
+            entry["prior_avg_efficiency"] = round(avg_prior, 4)
+            entry["pct_change"] = round(change * 100, 1)
+            if change < -0.20:
+                entry["regression"] = True
+                regressions.append(model)
+        by_model[model] = entry
+
+    if regressions:
+        log.warning(
+            "TOKEN_EFFICIENCY_REGRESSION models=%s — output quality per token dropped >20%% vs prior 7-day avg",
+            ",".join(regressions),
+        )
+
+    return {"by_model": by_model, "regressions": regressions}
 
 
 # ---------------------------------------------------------------------------

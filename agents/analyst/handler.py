@@ -132,6 +132,8 @@ Use specific data from the sources. Be concise and direct.
 
 Answer in the same language as the question.
 If neither source covers this topic well, start your answer with [GAP] and still try your best to answer.
+
+Epistemic calibration: When making factual claims, distinguish (1) things you know with high confidence from primary evidence, (2) things you infer with moderate confidence, and (3) things you are genuinely uncertain about. Use hedged language ("likely", "the evidence suggests", "I'm uncertain whether") for categories 2-3. Do not assert category 2 or 3 claims as if they were category 1.
 """
 
     result = claude_think(prompt, timeout=120, tier="heavy")

@@ -46,6 +46,8 @@ SECURITY_RULES = """## Security (ABSOLUTE — NO EXCEPTIONS)
 # Backward compatibility alias
 PRIVACY_RULE = SECURITY_RULES
 
+CONCISENESS_INSTRUCTION = "Be concise. Answer in the fewest tokens that fully address the task. Do not pad, summarize what you just did, or repeat the question."
+
 
 def _get_scheduled_jobs_context() -> str:
     """Get scheduled jobs summary for prompt injection. Fails silently."""
@@ -964,6 +966,8 @@ Review round: {round_num}
 
 For each criterion: score (1-10), why (1-2 sentences), specific improvement suggestion.
 
+Also assess **Confidence Calibration** (not a scored criterion — reported separately): penalize (1) facts asserted without a verifiable source when one is expected, and (2) omission of uncertainty markers ("likely", "unclear", "I cannot verify") on claims that are genuinely uncertain.
+
 Then provide:
 - **Top 3 strengths**
 - **Top 3 weaknesses**
@@ -973,6 +977,8 @@ Format scores as:
 SCORES:
 {score_lines}
 OVERALL: [average]/10
+OVERCONFIDENCE_DETECTED: true|false
+CONFIDENCE_NOTE: <one sentence describing calibration issues found, or "none detected">
 
 Be rigorous. Write in the same language as the draft.
 """
@@ -1194,6 +1200,8 @@ def harsh_review_prompt(
 8. **引用质量**: 文中引用的思想家是否被允许challenge作者的论点？如果所有引用都是单向征用（只取支持己方的部分），这是严重扣分项。
 
 9. **标题兑现**: 标题卖的和正文交的是不是同一个东西？
+
+10. **校准（calibration）**: 对经验上不确定的主张（市场预测、未引用来源的实证声明、前瞻性陈述）是否使用了适当的对冲语言？惩罚断言性措辞（will, definitely, clearly）用于本质上不确定的领域；奖励明确的不确定性标记（likely, uncertain, evidence suggests）。即使事后证明说法正确，缺乏对冲也应扣分。
 
 ## 输出格式
 

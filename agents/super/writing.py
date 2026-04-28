@@ -8,7 +8,7 @@ import json
 import logging
 from datetime import datetime
 
-from config import LOGS_DIR
+from config import LOGS_DIR, STALE_PROJECT_DAYS
 from writing_workflow import check_writing_responses, advance_project
 
 log = logging.getLogger("mira")
@@ -33,6 +33,7 @@ def _log_writer_selection(considered: list, selected: list, skipped: list, ratio
 
 def _run_canonical_writing_pipeline() -> int:
     """Advance canonical writing_workflow projects that are ready to move."""
+    now = datetime.now()
     advanced = 0
     responses = check_writing_responses()
     considered = [resp["project"].get("title", resp["workspace"].name) for resp in responses]
@@ -42,6 +43,20 @@ def _run_canonical_writing_pipeline() -> int:
     for resp in responses:
         phase = resp["project"].get("phase", "")
         title = resp["project"].get("title", "")
+        last_advanced_str = resp["project"].get("last_advanced_at") or resp["project"].get("updated", "")
+        if last_advanced_str:
+            try:
+                last_advanced = datetime.fromisoformat(last_advanced_str)
+                days_since = (now - last_advanced).days
+                if days_since > STALE_PROJECT_DAYS:
+                    log.warning(
+                        "STALE PROJECT: '%s' has not been advanced in %d days (phase: %s)",
+                        title,
+                        days_since,
+                        phase,
+                    )
+            except (ValueError, TypeError):
+                pass
         if phase == "plan_ready":
             log.info("Auto-advancing canonical writing project: %s", title)
             advance_project(resp["workspace"])

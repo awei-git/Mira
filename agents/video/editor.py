@@ -56,9 +56,16 @@ def _get_fps(path: Path) -> float:
         return 30.0
 
 
-def _ts_to_seconds(ts: str) -> float:
-    """Convert MM:SS or HH:MM:SS timestamp to seconds."""
-    parts = ts.strip().split(":")
+def _ts_to_seconds(ts) -> float:
+    """Convert MM:SS / HH:MM:SS string, or raw int/float seconds, to seconds."""
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    parts = str(ts).strip().split(":")
+    if len(parts) == 1:
+        try:
+            return float(parts[0])
+        except ValueError:
+            return 0.0
     if len(parts) == 2:
         return int(parts[0]) * 60 + float(parts[1])
     elif len(parts) == 3:

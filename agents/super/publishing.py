@@ -73,6 +73,21 @@ def _check_pending_publish():
             workspace=workspace,
         )
 
+        # Detect LANGUAGE GUARD block separately from cooldown. Cooldown is
+        # transient (retry later). Language block is semantic — retrying
+        # every 40 seconds for a week just fills the log. Mark the entry
+        # as 'blocked_language' so it stops being picked up by get_next_pending
+        # until the CJK body is translated or the growth target expires.
+        # (2026-04-19 incident: single Chinese draft looped 40+ times/hour.)
+        if "English-only growth target" in result or "CJK" in result:
+            log.warning(
+                "LANGUAGE BLOCK — parking '%s' as blocked_language (will not retry until translated): %s",
+                entry["slug"],
+                result[:120],
+            )
+            update_manifest(entry["slug"], status="blocked_language", error=result[:300])
+            return
+
         if "发布被拦截" in result or "cooldown" in result.lower():
             log.info("Publish cooldown active for '%s': %s", entry["slug"], result[:80])
             return  # still in cooldown, try next cycle

@@ -36,6 +36,10 @@ from config import (
     JOURNAL_DIR,
     WRITINGS_OUTPUT_DIR,
     WRITINGS_DIR,
+    PERF_STATS_FILE,
+    PERF_WARN_THRESHOLD,
+    LAST_OUTPUT_FILE,
+    STALE_THRESHOLDS,
     validate_config,
     get_known_user_ids,
     get_user_config,
@@ -133,6 +137,7 @@ from runtime.jobs import (
     get_jobs,
 )
 from execution.runtime_contract import normalize_task_status
+from soul_manager import log_authorization_event, check_audit_coverage
 
 # ---------------------------------------------------------------------------
 # Extracted sub-modules (pure structural refactor)
@@ -312,9 +317,49 @@ def cmd_run():
     import time as _time
 
     _cycle_start = _time.monotonic()
+    _cycle_wall_start = datetime.now(timezone.utc)
     log.info("=== Mira Agent wake ===")
 
     _check_invisible_dependencies()
+
+    try:
+        _sf_path = LOGS_DIR / "security_flags.jsonl"
+        if _sf_path.exists():
+            _sf_lines = _sf_path.read_text(encoding="utf-8").splitlines()[-20:]
+            _flagged_sources: set[str] = set()
+            for _sf_line in _sf_lines:
+                try:
+                    _sf_rec = json.loads(_sf_line)
+                    _sf_ts = datetime.fromisoformat(_sf_rec["timestamp"])
+                    if _sf_ts >= _cycle_wall_start:
+                        _flagged_sources.add(_sf_rec.get("skill_name", "unknown"))
+                        log.warning(
+                            "SECURITY_FLAG agent=%s skill=%s reason=%s",
+                            _sf_rec.get("agent_id", "unknown"),
+                            _sf_rec.get("skill_name", "unknown"),
+                            _sf_rec.get("block_reason"),
+                        )
+                except (json.JSONDecodeError, KeyError, ValueError):
+                    continue
+            if _flagged_sources:
+                log.warning(
+                    "SECURITY_FLAG_SUMMARY %d new block event(s) this cycle: %s",
+                    len(_flagged_sources),
+                    sorted(_flagged_sources),
+                )
+    except OSError as _sfe:
+        log.debug("security_flags read failed: %s", _sfe)
+
+    _stale_components = _check_stale_pipelines()
+    if _stale_components:
+        try:
+            _stale_path = LOGS_DIR / "pipeline_stale.json"
+            _stale_path.write_text(
+                json.dumps({"stale": _stale_components, "checked_at": time.time()}),
+                encoding="utf-8",
+            )
+        except Exception as _se:
+            log.debug("pipeline_stale write failed: %s", _se)
 
     try:
         from notes_bridge import check_bridge_staleness
@@ -354,11 +399,19 @@ def cmd_run():
 
     # Mira first (lightweight, fast) — CRITICAL PATH
     _t0 = _time.monotonic()
+    _llm_t0 = time.perf_counter()
+    _talk_ok = True
+    log_authorization_event("talk", "iphone_bridge", "high", bypassed_check=False)
     try:
         do_talk()
     except Exception as e:
         log.error("Mira failed: %s", e)
-    _phase_times["talk"] = round((_time.monotonic() - _t0) * 1000)
+        _talk_ok = False
+    _talk_llm_ms = round((time.perf_counter() - _llm_t0) * 1000)
+    _model_wait_ms += _talk_llm_ms
+    _talk_dur = _time.monotonic() - _t0
+    _phase_times["talk"] = round(_talk_dur * 1000)
+    _record_perf_stat("talk", "talk", _talk_dur, _talk_ok)
 
     if should_shutdown():
         log.info("Shutdown requested — exiting after talk phase")
@@ -369,11 +422,16 @@ def cmd_run():
     if _elapsed < 8:
         # Auto-advance writing projects stuck in plan_ready (no more Notes approval)
         _t0 = _time.monotonic()
+        _write_ok = True
         try:
             _run_canonical_writing_pipeline()
         except Exception as e:
             log.error("Writing response check failed: %s", e)
-        _phase_times["writing_responses"] = round((_time.monotonic() - _t0) * 1000)
+            _write_ok = False
+        _write_dur = _time.monotonic() - _t0
+        _phase_times["writing_responses"] = round(_write_dur * 1000)
+        _record_perf_stat("writer", "writing_pipeline", _write_dur, _write_ok)
+        _write_last_output("writer")
 
         # Sync Mira's own status + read all app feeds
         _t0 = _time.monotonic()
@@ -413,6 +471,7 @@ def cmd_run():
 
     # --- Publishing pipeline: publish -> podcast -> sweep ---
     _t0 = _time.monotonic()
+    log_authorization_event("pending_publish", "internal", "normal", bypassed_check=False)
     _check_pending_publish()
     _check_pending_podcast()
     _sweep_publish_pipeline()
@@ -420,6 +479,7 @@ def cmd_run():
 
     # --- All heavy work below runs through the declarative scheduler ---
     _t0 = _time.monotonic()
+    log_authorization_event("scheduled_jobs", "cron", "normal", bypassed_check=False)
     _dispatch_scheduled_jobs(_session_new)
 
     # Weekly health report — Monday morning
@@ -443,6 +503,16 @@ def cmd_run():
                 reaudit_stale_skills()
             except Exception as e:
                 log.error("Skill re-audit failed: %s", e)
+            try:
+                _unaudited = check_audit_coverage()
+                if _unaudited:
+                    log.warning(
+                        "SKILL_AUDIT_COVERAGE: %d skill file(s) have no audit record: %s",
+                        len(_unaudited),
+                        ", ".join(_unaudited),
+                    )
+            except Exception as e:
+                log.error("Skill audit coverage check failed: %s", e)
 
     _phase_times["dispatch"] = round((_time.monotonic() - _t0) * 1000)
 
@@ -497,7 +567,117 @@ def cmd_run():
     except Exception as _te:
         log.debug("Timing log write failed: %s", _te)
 
+    try:
+        _lt_log = LOGS_DIR / "llm_timing.jsonl"
+        _lt_ts = datetime.now().isoformat()
+        with open(_lt_log, "a", encoding="utf-8") as _ltf:
+            _ltf.write(
+                json.dumps(
+                    {
+                        "ts": _lt_ts,
+                        "stage": "talk",
+                        "llm_ms": _talk_llm_ms,
+                        "orchestration_ms": _phase_times["talk"] - _talk_llm_ms,
+                        "total_ms": _phase_times["talk"],
+                    }
+                )
+                + "\n"
+            )
+            _ltf.write(
+                json.dumps(
+                    {
+                        "ts": _lt_ts,
+                        "stage": "cycle",
+                        "llm_ms": _model_wait_ms,
+                        "orchestration_ms": _orch_ms - _model_wait_ms,
+                        "total_ms": _cycle_ms,
+                    }
+                )
+                + "\n"
+            )
+    except Exception as _lte:
+        log.debug("llm_timing log write failed: %s", _lte)
+
+    try:
+        _phase_log = LOGS_DIR / "task_phase_timing.jsonl"
+        if _phase_log.exists():
+            _phase_lines = _phase_log.read_text(encoding="utf-8").splitlines()[-50:]
+            _pagg = {"dispatch_ms": 0, "inference_ms": 0, "tools_ms": 0, "total_ms": 0, "n": 0}
+            for _pl in _phase_lines:
+                try:
+                    _pr = json.loads(_pl)
+                    _pagg["dispatch_ms"] += _pr.get("phase_dispatch_ms", 0)
+                    _pagg["inference_ms"] += _pr.get("phase_inference_ms", 0)
+                    _pagg["tools_ms"] += _pr.get("phase_tools_ms", 0)
+                    _pagg["total_ms"] += _pr.get("total_ms", 0)
+                    _pagg["n"] += 1
+                except (json.JSONDecodeError, KeyError):
+                    continue
+            if _pagg["n"]:
+                log.info(
+                    "PHASE_TOTALS tasks=%d dispatch_ms=%d inference_ms=%d tools_ms=%d total_ms=%d",
+                    _pagg["n"],
+                    _pagg["dispatch_ms"],
+                    _pagg["inference_ms"],
+                    _pagg["tools_ms"],
+                    _pagg["total_ms"],
+                )
+    except Exception as _pae:
+        log.debug("Phase totals logging failed: %s", _pae)
     log.info("=== Mira Agent sleep ===")
+
+
+def _record_perf_stat(agent: str, task_type: str, duration_s: float, success: bool) -> None:
+    """Append one perf entry to perf_stats.jsonl and warn if p90 exceeds threshold."""
+    from config import CLAUDE_TIMEOUT_THINK, CLAUDE_TIMEOUT_ACT
+
+    _AGENT_TIMEOUTS = {
+        "talk": CLAUDE_TIMEOUT_THINK,
+        "writer": CLAUDE_TIMEOUT_ACT,
+    }
+    configured_timeout = _AGENT_TIMEOUTS.get(agent, CLAUDE_TIMEOUT_ACT)
+
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "agent": agent,
+        "task_type": task_type,
+        "duration_s": round(duration_s, 2),
+        "success": success,
+    }
+    try:
+        PERF_STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(PERF_STATS_FILE, "a", encoding="utf-8") as _pf:
+            _pf.write(json.dumps(entry) + "\n")
+    except OSError as _e:
+        log.debug("perf_stats write failed: %s", _e)
+        return
+
+    try:
+        lines = PERF_STATS_FILE.read_text(encoding="utf-8").splitlines()
+        agent_durations: list[float] = []
+        for _line in reversed(lines):
+            if not _line.strip():
+                continue
+            try:
+                _rec = json.loads(_line)
+            except json.JSONDecodeError:
+                continue
+            if _rec.get("agent") == agent:
+                agent_durations.append(float(_rec["duration_s"]))
+                if len(agent_durations) >= 50:
+                    break
+        if len(agent_durations) >= 10:
+            _sorted = sorted(agent_durations)
+            p90 = _sorted[int(len(_sorted) * 0.9)]
+            if p90 > configured_timeout * PERF_WARN_THRESHOLD:
+                log.warning(
+                    "PERF_DRIFT: %s p90=%.1fs threshold=%ds — consider raising timeout or reducing task scope",
+                    agent,
+                    p90,
+                    configured_timeout,
+                )
+    except OSError as _e:
+        log.debug("perf_stats read failed: %s", _e)
 
 
 def _log_outcome_success_rates():
@@ -538,6 +718,46 @@ def _log_outcome_success_rates():
             sum(window),
             len(window),
         )
+
+
+def _read_last_outputs() -> dict:
+    try:
+        if LAST_OUTPUT_FILE.exists():
+            return json.loads(LAST_OUTPUT_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _write_last_output(component: str) -> None:
+    try:
+        data = _read_last_outputs()
+        data[component] = time.time()
+        LAST_OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _tmp = LAST_OUTPUT_FILE.with_suffix(".tmp")
+        _tmp.write_text(json.dumps(data), encoding="utf-8")
+        _tmp.rename(LAST_OUTPUT_FILE)
+    except Exception as _e:
+        log.debug("last_output write failed: %s", _e)
+
+
+def _check_stale_pipelines() -> list[str]:
+    _now = time.time()
+    _data = _read_last_outputs()
+    _stale: list[str] = []
+    for _component, _threshold in STALE_THRESHOLDS.items():
+        _last = _data.get(_component)
+        if _last is None:
+            continue
+        _gap = _now - float(_last)
+        if _gap > _threshold:
+            log.warning(
+                "%s has produced no output in %ds — possible silent marginalization",
+                _component,
+                int(_gap),
+            )
+            _stale.append(_component)
+    return _stale
 
 
 def _refresh_operator_dashboards():
@@ -619,10 +839,13 @@ def main():
         sources = flags.get("sources", "").split(",") if flags.get("sources") else None
         slot = flags.get("slot", "")
         do_explore(source_names=sources, slot_name=slot)
+        _write_last_output("explorer")
     elif command == "reflect":
         do_reflect(user_id=flags.get("user", "ang"))
+        _write_last_output("reflect")
     elif command == "journal":
         do_journal(user_id=flags.get("user", "ang"))
+        _write_last_output("journal")
     elif command == "research-log":
         do_research_log(user_id=flags.get("user", "ang"))
     elif command == "research-cycle":
@@ -686,6 +909,11 @@ def main():
         do_book_review()
     elif command == "daily-photo":
         do_daily_photo()
+    elif command == "growth-snapshot":
+        from growth_snapshot import run_snapshot
+
+        run_snapshot()
+        _write_last_output("growth_snapshot")
     elif command == "skill-study":
         group_idx = int(flags.get("group", "0"))
         do_skill_study(group_idx=group_idx, user_id=flags.get("user", "ang"))
@@ -715,15 +943,21 @@ def main():
 
 
 def _send_crash_notification(error: str):
-    """Send crash notification to default user's items/. Minimal deps."""
+    """Record a crash to the user's archive (NOT the main inbox).
+
+    Pre-2026-04-27: crashes wrote to items/, surfacing every timeout as a
+    red 'Agent Crash' in the iOS home feed — 60+ accumulated. Crashes are
+    diagnostic signals for me, not actionable items for WA. They live in
+    archive/ now so I can still find them, but they don't pollute the feed.
+    """
     try:
         import json, uuid
         from pathlib import Path
         from datetime import datetime, timezone as tz
         from config import MIRA_DIR
 
-        items_dir = MIRA_DIR / "users" / "ang" / "items"
-        items_dir.mkdir(parents=True, exist_ok=True)
+        archive_dir = MIRA_DIR / "users" / "ang" / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
         msg_id = uuid.uuid4().hex[:8]
         iso = datetime.now(tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         short_err = error[:500] if len(error) > 500 else error
@@ -731,7 +965,7 @@ def _send_crash_notification(error: str):
             "id": f"req_crash_{msg_id}",
             "type": "request",
             "title": "Agent Crash",
-            "status": "failed",
+            "status": "archived",
             "tags": ["system", "crash"],
             "origin": "agent",
             "pinned": False,
@@ -751,7 +985,7 @@ def _send_crash_notification(error: str):
             "error": {"code": "crash", "message": short_err, "retryable": False, "timestamp": iso},
             "result_path": None,
         }
-        path = items_dir / f"req_crash_{msg_id}.json"
+        path = archive_dir / f"req_crash_{msg_id}.json"
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(item, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.rename(path)

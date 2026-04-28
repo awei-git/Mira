@@ -26,11 +26,21 @@ def _get_substack_config() -> dict:
 
 
 def _md_to_html(markdown_text: str) -> str:
-    """Convert markdown to basic HTML for Substack."""
-    # Use Claude to do a clean conversion
-    from llm import claude_think
+    """Convert markdown to basic HTML for Substack.
 
-    prompt = f"""Convert this Markdown to clean HTML suitable for a Substack newsletter post.
+    Strategy (2026-04-19):
+    - Short inputs (<4000 chars): try Claude for cleaner conversion.
+    - Long inputs OR Claude failure: use the deterministic fallback. Claude
+      times out on long inputs (book reviews ~30k chars) and the timeout
+      exception used to propagate and fail the whole publish. The local
+      converter handles the structures Mira actually writes (H1/H2/H3,
+      paragraphs, inline bold/italic/link, hr, blockquotes, lists).
+    """
+    # Skip Claude for long inputs — deterministic path is reliable + fast.
+    if len(markdown_text) < 4000:
+        from llm import claude_think
+
+        prompt = f"""Convert this Markdown to clean HTML suitable for a Substack newsletter post.
 - Use <h2>, <h3> for headings (not <h1>, Substack uses that for title)
 - Use <p> for paragraphs
 - Use <blockquote> for quotes
@@ -42,30 +52,139 @@ def _md_to_html(markdown_text: str) -> str:
 Markdown:
 {markdown_text}"""
 
-    html = claude_think(prompt, timeout=120)
-    if html:
-        # Strip any markdown code fences from response
-        html = html.strip()
-        if html.startswith("```"):
-            html = html.split("\n", 1)[1] if "\n" in html else html
-        if html.endswith("```"):
-            html = html.rsplit("```", 1)[0]
-        return html.strip()
+        try:
+            html = claude_think(prompt, timeout=60)
+        except Exception:
+            html = None
+        if html:
+            html = html.strip()
+            if html.startswith("```"):
+                html = html.split("\n", 1)[1] if "\n" in html else html
+            if html.endswith("```"):
+                html = html.rsplit("```", 1)[0]
+            return html.strip()
 
-    # Fallback: minimal conversion
-    lines = markdown_text.split("\n")
-    html_lines = []
-    for line in lines:
-        line = line.strip()
-        if line.startswith("# "):
-            html_lines.append(f"<h2>{line[2:]}</h2>")
-        elif line.startswith("## "):
-            html_lines.append(f"<h2>{line[3:]}</h2>")
-        elif line.startswith("### "):
-            html_lines.append(f"<h3>{line[4:]}</h3>")
-        elif line:
-            html_lines.append(f"<p>{line}</p>")
-    return "\n".join(html_lines)
+    # Deterministic fallback
+    return _md_to_html_local(markdown_text)
+
+
+def _md_to_html_local(markdown_text: str) -> str:
+    """Deterministic Markdown→HTML conversion for Substack posts.
+
+    Handles structures Mira actually writes: H1–H3, paragraphs, inline
+    **bold** / *italic* / [text](url), horizontal rules, basic ul/ol lists,
+    blockquotes. No external dependency.
+    """
+    import re as _re
+    import html as _html_mod
+
+    def _inline(s: str) -> str:
+        s = _html_mod.escape(s, quote=False)
+        s = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+        s = _re.sub(r"(?<!\w)\*(?!\s)(.+?)(?<!\s)\*(?!\w)", r"<em>\1</em>", s)
+        s = _re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', s)
+        return s
+
+    out: list[str] = []
+    paragraph: list[str] = []
+    in_list: str | None = None  # "ul" or "ol" or None
+    in_blockquote = False
+
+    def flush_paragraph():
+        nonlocal paragraph
+        if paragraph:
+            text = " ".join(p.strip() for p in paragraph if p.strip())
+            if text:
+                out.append(f"<p>{_inline(text)}</p>")
+        paragraph = []
+
+    def close_list():
+        nonlocal in_list
+        if in_list:
+            out.append(f"</{in_list}>")
+            in_list = None
+
+    def close_blockquote():
+        nonlocal in_blockquote
+        if in_blockquote:
+            out.append("</blockquote>")
+            in_blockquote = False
+
+    for raw in markdown_text.split("\n"):
+        line = raw.rstrip()
+        stripped = line.strip()
+
+        if not stripped:
+            flush_paragraph()
+            close_list()
+            close_blockquote()
+            continue
+
+        if stripped in ("---", "***", "___"):
+            flush_paragraph()
+            close_list()
+            close_blockquote()
+            out.append("<hr />")
+            continue
+
+        if stripped.startswith("# "):
+            flush_paragraph()
+            close_list()
+            close_blockquote()
+            out.append(f"<h2>{_inline(stripped[2:].strip())}</h2>")
+            continue
+        if stripped.startswith("## "):
+            flush_paragraph()
+            close_list()
+            close_blockquote()
+            out.append(f"<h2>{_inline(stripped[3:].strip())}</h2>")
+            continue
+        if stripped.startswith("### "):
+            flush_paragraph()
+            close_list()
+            close_blockquote()
+            out.append(f"<h3>{_inline(stripped[4:].strip())}</h3>")
+            continue
+
+        if stripped.startswith(">"):
+            flush_paragraph()
+            close_list()
+            if not in_blockquote:
+                out.append("<blockquote>")
+                in_blockquote = True
+            out.append(f"<p>{_inline(stripped.lstrip('>').strip())}</p>")
+            continue
+        else:
+            close_blockquote()
+
+        # Unordered list
+        m_ul = _re.match(r"^[-*+]\s+(.+)$", stripped)
+        if m_ul:
+            flush_paragraph()
+            if in_list != "ul":
+                close_list()
+                out.append("<ul>")
+                in_list = "ul"
+            out.append(f"<li>{_inline(m_ul.group(1).strip())}</li>")
+            continue
+
+        m_ol = _re.match(r"^\d+\.\s+(.+)$", stripped)
+        if m_ol:
+            flush_paragraph()
+            if in_list != "ol":
+                close_list()
+                out.append("<ol>")
+                in_list = "ol"
+            out.append(f"<li>{_inline(m_ol.group(1).strip())}</li>")
+            continue
+
+        close_list()
+        paragraph.append(stripped)
+
+    flush_paragraph()
+    close_list()
+    close_blockquote()
+    return "\n".join(out)
 
 
 def _html_to_markdown(html: str) -> str:

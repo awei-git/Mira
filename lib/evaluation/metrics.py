@@ -245,11 +245,17 @@ def _llm_eval(text: str, eval_type: str, criteria: dict[str, str]) -> dict[str, 
         f"Think about whether this work reflects who you want to be.\n\n"
         f"TEXT TO EVALUATE:\n{text[:3000]}\n\n"
         f"SCORE EACH (0-10, use decimals):\n{criteria_str}\n\n"
+        f"Additional rubric criterion (applies to every evaluation):\n"
+        f"- Epistemic calibration (0-10): Does the response hedge appropriately where evidence is incomplete? "
+        f"Deduct points for assertions of certainty unsupported by cited evidence or verifiable fact. "
+        f'Reward explicit uncertainty markers ("evidence suggests", "likely", "uncertain") '
+        f"when the underlying claim is genuinely uncertain.\n\n"
         f"Guidelines:\n"
         f"- 7 is solid, competent work. Don't default to 7 for everything.\n"
         f"- 9-10 means you genuinely surprised yourself.\n"
         f"- 3-4 means you know you can do much better.\n"
-        f"- Think about *why* before scoring. What specifically makes this good or weak?\n\n"
+        f"- Think about *why* before scoring. What specifically makes this good or weak?\n"
+        f"- Do not reward confident tone as a proxy for correctness — a well-hedged uncertain answer scores higher than a confidently stated wrong one.\n\n"
         f"Output ONLY valid JSON mapping each key to a number. No explanation.\n"
         f'Example: {{"{list(criteria.keys())[0]}": 6.5}}'
     )

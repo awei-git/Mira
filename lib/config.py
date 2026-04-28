@@ -140,6 +140,11 @@ SOUL_DIR = DATA_DIR / "soul"
 
 LOGS_DIR = DATA_DIR / "logs"
 TIMING_LOG = LOGS_DIR / "timing.jsonl"
+PERF_STATS_FILE = LOGS_DIR / "perf_stats.jsonl"
+PERF_WARN_THRESHOLD = 0.8
+TOKEN_USAGE_LOG_PATH = LOGS_DIR / "token_usage.jsonl"
+LAST_OUTPUT_FILE = LOGS_DIR / "last_output.json"
+STALE_THRESHOLDS: dict[str, int] = {"writer": 172800, "explorer": 21600, "reflect": 691200}
 FEEDS_DIR = DATA_DIR / "feeds"
 SOURCES_FILE = MIRA_ROOT / "sources.json"
 
@@ -235,6 +240,7 @@ MAX_CONCURRENT_TASKS = _limits.get("max_concurrent_tasks", 2)  # parallel sub-ag
 MAX_TASKS_PER_CYCLE = int(os.environ.get("MIRA_MAX_TASKS_PER_CYCLE", _limits.get("max_tasks_per_cycle", 5)))
 CLEANUP_DAYS = _limits.get("cleanup_days", 3)
 LOG_RETENTION_DAYS = int(os.environ.get("MIRA_LOG_RETENTION_DAYS", _limits.get("log_retention_days", 30)))
+MAX_SUBTASK_DEPTH = int(os.environ.get("MIRA_MAX_SUBTASK_DEPTH", _limits.get("max_subtask_depth", 3)))
 MAX_EXTERNAL_SKILLS_PER_DAY = _limits.get("max_external_skills_per_day", 5)
 MAX_SKILLS_PER_AGENT = _limits.get("max_skills_per_agent", 12)
 SKILL_REAUDIT_DAYS = _limits.get("skill_reaudit_days", 30)
@@ -242,7 +248,12 @@ SKILL_AUDIT_PATTERN_REVIEWED_DATE = _limits.get("skill_audit_pattern_reviewed_da
 SKILL_AUDIT_STALENESS_DAYS = _limits.get("skill_audit_staleness_days", 30)
 SKILL_AUDIT_TTL_DAYS = _limits.get("skill_audit_ttl_days", 30)
 SKILL_AUDIT_STRICT_MODE = _limits.get("skill_audit_strict_mode", False)
+SKILL_IMPORT_MAX_PER_DAY = _limits.get("skill_import_max_per_day", 8)
+SKILL_AUDIT_LAG_ALERT_HOURS = _limits.get("skill_audit_lag_alert_hours", 72)
 SKILL_STALENESS_DAYS = _limits.get("skill_staleness_days", 30)
+SKILL_REVERIFICATION_DAYS = _limits.get("skill_reverification_days", 30)
+TRUST_AUDIT_ENABLED = _limits.get("trust_audit_enabled", True)
+SKILL_MIN_AGE_HOURS = _limits.get("skill_min_age_hours", 48)
 
 # Secrets file (API keys — always gitignored)
 SECRETS_FILE = _PROJECT_ROOT / "secrets.yml"
@@ -615,6 +626,16 @@ RESEARCH_LOG_TIME = _parse_times([_sched.get("research_log_time", "21:00")])[0]
 # 杂.md — philosophical fragments for mining
 ZA_FILE = WRITINGS_DIR / "ideas" / "_杂.md"
 
+SOURCE_TRUST_TIERS: dict[str, str] = {
+    "arxiv": "primary",
+    "huggingface": "primary",
+    "hackernews": "community",
+    "lobsters": "community",
+    "github_trending": "aggregator",
+    "devto": "aggregator",
+    "duckduckgo": "aggregator",
+}
+
 # Limits
 MAX_FEED_ITEMS = _limits.get("max_feed_items", 50)
 MAX_BRIEFING_ITEMS = _limits.get("max_briefing_items", 7)
@@ -659,6 +680,11 @@ BROWSER_TYPING_DELAY_MS = _timeouts.get("browser_typing_delay_ms", 50)
 _api_models = _cfg.get("api_models", {})
 CLAUDE_SONNET_MODEL = _api_models.get("claude_sonnet", "claude-sonnet-4-6")
 CLAUDE_OPUS_MODEL = _api_models.get("claude_opus", "claude-opus-4-6")
+
+TIER_MODEL_MAP = {
+    "light": os.getenv("MODEL_LIGHT", "claude-sonnet-4-6"),
+    "heavy": os.getenv("MODEL_HEAVY", "claude-sonnet-4-6"),
+}
 GPT5_MODEL = _api_models.get("gpt5", "gpt-5.4")
 DEEPSEEK_CHAT_MODEL = _api_models.get("deepseek_chat", "deepseek-chat")
 DEEPSEEK_REASONER_MODEL = _api_models.get("deepseek_reasoner", "deepseek-reasoner")
@@ -783,6 +809,9 @@ WRITING_MIN_PUBLISH_CHARS = _thresholds.get("writing_min_publish_chars", 200)
 WRITING_MIN_ARTICLE_BYTES = _thresholds.get("writing_min_article_bytes", 3000)
 WRITING_MIN_SCORE_3RD_ROUND = _thresholds.get("writing_min_score_3rd_round", 9.0)
 WRITER_MAX_STEPS_PER_RUN = _thresholds.get("writer_max_steps_per_run", 3)
+STALE_PROJECT_DAYS = _thresholds.get("stale_project_days", 7)
+MAX_TASK_HORIZON_STEPS = _thresholds.get("max_task_horizon_steps", 40)
+MAX_TASK_HORIZON_STEPS_HEAVY = _thresholds.get("max_task_horizon_steps_heavy", 20)
 # Research
 RESEARCHER_MAX_ITERATIONS = _thresholds.get("researcher_max_iterations", 4)
 RESEARCHER_MAX_SOURCES = _thresholds.get("researcher_max_sources", 3)
@@ -798,6 +827,11 @@ HEALTH_MAX_ALERTS_INFRA = _thresholds.get("health_max_alerts_infra", 3)
 HEALTH_HISTORY_CAP = _thresholds.get("health_history_cap", 10)
 HEALTH_MAX_ALERTS_PERSONAL = _thresholds.get("health_max_alerts_personal", 10)
 EVALUATOR_MIN_ISSUE_SEVERITY = _thresholds.get("evaluator_min_issue_severity", "medium")
+EVAL_SCORE_TTL_DAYS = _thresholds.get("eval_score_ttl_days", 30)
+SUSPENDED_METRICS: list[str] = ["reading_volume", "hallucination_rate", "emotional_range"]
+DISABLED_RUBRICS: set[str] = {"reading_volume", "hallucination_rate", "emotional_range", "rubric_calibration"}
+MISCALIBRATION_FLAG_THRESHOLD: int = _thresholds.get("miscalibration_flag_threshold", 3)
+SCAFFOLDING_CATCH_RATE_WINDOW_HOURS: int = _limits.get("scaffolding_catch_rate_window_hours", 24)
 
 # ---------------------------------------------------------------------------
 # Token / output limits (from config.yml token_limits: section)
@@ -809,6 +843,8 @@ GEMINI_FRAME_ANALYZER_MAX_TOKENS = _token_limits.get("gemini_frame_analyzer_max"
 DEEPSEEK_MAX_TOKENS = _token_limits.get("deepseek_max", 8192)
 PODCAST_FALLBACK_MAX_TOKENS = _token_limits.get("podcast_fallback_max", 16000)
 MINIMAX_SAMPLE_RATE = _token_limits.get("minimax_sample_rate", 32000)
+TOKEN_BUDGET_WARN_LIGHT = _token_limits.get("token_budget_warn_light", 8000)
+TOKEN_BUDGET_WARN_HEAVY = _token_limits.get("token_budget_warn_heavy", 40000)
 
 # ---------------------------------------------------------------------------
 # Model parameters (from config.yml model_params: section)
