@@ -19,8 +19,16 @@ def _make_store(initial_beliefs=None):
 
 
 def test_load_seeded_beliefs():
-    """Verify the actual beliefs.json file loads correctly."""
-    from knowledge.beliefs import BeliefStore
+    """Verify the actual beliefs.json file loads correctly.
+
+    Skipped on hosts where the soul data isn't checked in (data/ is in
+    .gitignore, so CI runners don't have the seeded beliefs.json).
+    """
+    import pytest
+    from knowledge.beliefs import _BELIEFS_FILE, BeliefStore
+
+    if not _BELIEFS_FILE.exists():
+        pytest.skip(f"No seeded beliefs at {_BELIEFS_FILE}")
 
     store = BeliefStore()
     assert len(store) >= 10, f"Expected at least 10 seeded beliefs, got {len(store)}"
