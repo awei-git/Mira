@@ -52,9 +52,9 @@ jobs:
 
       - name: Run security scan
         run: |
-          bandit -r agents/ lib/ web/ -f json -o bandit-report.json \
-            --skip B101 -x "*/test_*,*/tests/*" || true
-          bandit -r agents/ lib/ web/ --skip B101 -x "*/test_*,*/tests/*" -ll
+          bandit -r agents/ lib/ web/ -c .bandit -f json -o bandit-report.json \
+            -x "*/test_*,*/tests/*" || true
+          bandit -r agents/ lib/ web/ -c .bandit -x "*/test_*,*/tests/*" -ll
 
       - name: Upload security report
         if: always()

@@ -18,7 +18,7 @@ import subprocess
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
-from xml.etree import ElementTree as ET
+from defusedxml import ElementTree as ET  # B314/B405: defused for podcast RSS
 
 from config import PODCAST_REPOS_DIR
 

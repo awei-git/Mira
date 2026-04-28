@@ -19,7 +19,7 @@ import sys
 import tempfile
 import urllib.request
 import urllib.error
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET  # B314/B405: defused for untrusted XML
 import zipfile
 from datetime import datetime, timedelta
 from html.parser import HTMLParser

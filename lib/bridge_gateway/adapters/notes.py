@@ -31,8 +31,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import MIRA_DIR
-from bridge import Mira
 
+# Lazy import: `bridge` pulls in the `mira_bridge` sibling package
+# (lives in the MiraBridge/ repo, not on PyPI). CI doesn't have that
+# repo cloned, so importing it at module load fails the
+# `from bridge_gateway import ...` chain. The class instance is the
+# only thing that needs Mira, so defer the import until __init__.
 from ..adapter import BridgeAdapter, BridgeMessage
 
 log = logging.getLogger("mira.bridge_gateway.notes")
@@ -44,6 +48,8 @@ class NotesBridgeAdapter(BridgeAdapter):
     def __init__(self, bridge_dir: Path | str | None = None, user_id: str = "ang"):
         self._bridge_dir = Path(bridge_dir) if bridge_dir else MIRA_DIR
         self._user_id = user_id
+        from bridge import Mira  # lazy: see top-of-file note
+
         self._mira = Mira(bridge_dir=self._bridge_dir, user_id=user_id)
 
     # ---- read_incoming: intentionally passive ---------------------------

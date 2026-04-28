@@ -6,7 +6,7 @@ import logging
 import urllib.request
 import urllib.error
 import urllib.parse
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET  # B314/B405: defused for untrusted RSS/Atom XML
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path

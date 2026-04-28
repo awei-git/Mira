@@ -9,7 +9,7 @@ All params are little-endian packed C structs, encoded as hex or gz-base64.
 import struct
 import zlib
 import base64
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET  # B314/B405: defused for darktable XMP sidecars
 from pathlib import Path
 
 
