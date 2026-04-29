@@ -70,11 +70,10 @@ def test_dispatch_scheduled_jobs_uses_registry(monkeypatch):
     dispatched = []
     session_new = []
 
-    monkeypatch.setattr(jobs, "get_jobs", lambda: _job_list)
-    monkeypatch.setattr(jobs, "evaluate_job_payload", lambda job, **kw: payloads.get(job.name))
+    monkeypatch.setattr("jobs.get_jobs", lambda: _job_list)
+    monkeypatch.setattr("jobs.evaluate_job_payload", lambda job, **kw: payloads.get(job.name))
     monkeypatch.setattr(
-        jobs,
-        "build_job_dispatch",
+        "jobs.build_job_dispatch",
         lambda job, payload, python_executable, core_path, **kw: {
             "explore": (
                 "explore-arxiv_hf",
@@ -85,15 +84,14 @@ def test_dispatch_scheduled_jobs_uses_registry(monkeypatch):
         }[job.name],
     )
     monkeypatch.setattr(
-        jobs,
-        "build_job_session_record",
+        "jobs.build_job_session_record",
         lambda job, payload: {
             "explore": {"action": "explore", "detail": "arxiv_hf"},
             "substack-growth": {"action": "growth_cycle", "detail": ""},
             "skill-study": None,
         }[job.name],
     )
-    monkeypatch.setattr(jobs, "_dispatch_background", lambda name, cmd, **kw: dispatched.append((name, cmd)))
+    monkeypatch.setattr("jobs._dispatch_background", lambda name, cmd, **kw: dispatched.append((name, cmd)))
 
     core._dispatch_scheduled_jobs(session_new)
 
@@ -119,9 +117,9 @@ def test_dispatch_scheduled_jobs_runs_inline_jobs(monkeypatch):
     ]
     ran = []
 
-    monkeypatch.setattr(jobs, "get_jobs", lambda: _job_list)
-    monkeypatch.setattr(jobs, "evaluate_job_payload", lambda job, **kw: True)
-    monkeypatch.setattr(jobs, "_run_inline_scheduled_job", lambda job, payload: ran.append(job.name))
+    monkeypatch.setattr("jobs.get_jobs", lambda: _job_list)
+    monkeypatch.setattr("jobs.evaluate_job_payload", lambda job, **kw: True)
+    monkeypatch.setattr("jobs._run_inline_scheduled_job", lambda job, payload: ran.append(job.name))
 
     core._dispatch_scheduled_jobs([])
 
@@ -132,7 +130,7 @@ def test_load_state_user_namespace_round_trip(monkeypatch, tmp_path):
     import core
 
     state_file = tmp_path / ".agent_state.json"
-    monkeypatch.setattr(state, "STATE_FILE", state_file)
+    monkeypatch.setattr("state.STATE_FILE", state_file)
 
     core.save_state({"global_flag": True})
     core.save_state({"last_spark_check": "2026-04-05T00:00:00"}, user_id="liquan")
@@ -148,7 +146,7 @@ def test_load_state_user_namespace_falls_back_to_legacy_flat_keys(monkeypatch, t
     import core
 
     state_file = tmp_path / ".agent_state.json"
-    monkeypatch.setattr(state, "STATE_FILE", state_file)
+    monkeypatch.setattr("state.STATE_FILE", state_file)
     state_file.write_text(
         json.dumps(
             {
@@ -173,7 +171,7 @@ def test_save_state_user_namespace_preserves_existing_users(monkeypatch, tmp_pat
     import core
 
     state_file = tmp_path / ".agent_state.json"
-    monkeypatch.setattr(state, "STATE_FILE", state_file)
+    monkeypatch.setattr("state.STATE_FILE", state_file)
     state_file.write_text(
         json.dumps(
             {
@@ -201,27 +199,24 @@ def test_dispatch_scheduled_jobs_dispatches_per_user_jobs(monkeypatch):
     dispatched = []
     session_new = []
 
-    monkeypatch.setattr(jobs, "get_jobs", lambda: _job_list)
-    monkeypatch.setattr(jobs, "get_known_user_ids", lambda: ["ang", "liquan"])
+    monkeypatch.setattr("jobs.get_jobs", lambda: _job_list)
+    monkeypatch.setattr("jobs.get_known_user_ids", lambda: ["ang", "liquan"])
     monkeypatch.setattr(
-        jobs,
-        "evaluate_job_payload",
+        "jobs.evaluate_job_payload",
         lambda job, user_id=None: True if user_id == "liquan" else None,
     )
     monkeypatch.setattr(
-        jobs,
-        "build_job_dispatch",
+        "jobs.build_job_dispatch",
         lambda job, payload, python_executable, core_path, user_id=None: (
             f"idle-think-{user_id}",
             ["python", "core.py", "idle-think", "--user", user_id],
         ),
     )
     monkeypatch.setattr(
-        jobs,
-        "build_job_session_record",
+        "jobs.build_job_session_record",
         lambda job, payload: {"action": "idle_think", "detail": ""},
     )
-    monkeypatch.setattr(jobs, "_dispatch_background", lambda name, cmd, **kw: dispatched.append((name, cmd)))
+    monkeypatch.setattr("jobs._dispatch_background", lambda name, cmd, **kw: dispatched.append((name, cmd)))
 
     core._dispatch_scheduled_jobs(session_new)
 
@@ -245,20 +240,19 @@ def test_dispatch_scheduled_jobs_records_state_only_after_success(monkeypatch):
     )
     saved = []
 
-    monkeypatch.setattr(jobs, "get_jobs", lambda: [job])
-    monkeypatch.setattr(jobs, "evaluate_job_payload", lambda job, **kw: True)
+    monkeypatch.setattr("jobs.get_jobs", lambda: [job])
+    monkeypatch.setattr("jobs.evaluate_job_payload", lambda job, **kw: True)
     monkeypatch.setattr(
-        jobs,
-        "build_job_dispatch",
+        "jobs.build_job_dispatch",
         lambda job, payload, python_executable, core_path, **kw: (
             "backlog-executor",
             ["python", "core.py", "backlog-executor"],
         ),
     )
-    monkeypatch.setattr(jobs, "_dispatch_background", lambda name, cmd, **kw: True)
-    monkeypatch.setattr(jobs, "build_job_session_record", lambda job, payload: None)
-    monkeypatch.setattr(jobs, "load_state", lambda user_id=None: {})
-    monkeypatch.setattr(jobs, "save_state", lambda state, user_id=None: saved.append((state, user_id)))
+    monkeypatch.setattr("jobs._dispatch_background", lambda name, cmd, **kw: True)
+    monkeypatch.setattr("jobs.build_job_session_record", lambda job, payload: None)
+    monkeypatch.setattr("jobs.load_state", lambda user_id=None: {})
+    monkeypatch.setattr("jobs.save_state", lambda state, user_id=None: saved.append((state, user_id)))
 
     core._dispatch_scheduled_jobs([])
 
@@ -279,20 +273,19 @@ def test_dispatch_scheduled_jobs_does_not_record_state_when_dispatch_fails(monke
     )
     saved = []
 
-    monkeypatch.setattr(jobs, "get_jobs", lambda: [job])
-    monkeypatch.setattr(jobs, "evaluate_job_payload", lambda job, **kw: True)
+    monkeypatch.setattr("jobs.get_jobs", lambda: [job])
+    monkeypatch.setattr("jobs.evaluate_job_payload", lambda job, **kw: True)
     monkeypatch.setattr(
-        jobs,
-        "build_job_dispatch",
+        "jobs.build_job_dispatch",
         lambda job, payload, python_executable, core_path, **kw: (
             "restore-dry-run",
             ["python", "core.py", "restore-dry-run"],
         ),
     )
-    monkeypatch.setattr(jobs, "_dispatch_background", lambda name, cmd, **kw: False)
-    monkeypatch.setattr(jobs, "build_job_session_record", lambda job, payload: None)
-    monkeypatch.setattr(jobs, "load_state", lambda user_id=None: {})
-    monkeypatch.setattr(jobs, "save_state", lambda state, user_id=None: saved.append((state, user_id)))
+    monkeypatch.setattr("jobs._dispatch_background", lambda name, cmd, **kw: False)
+    monkeypatch.setattr("jobs.build_job_session_record", lambda job, payload: None)
+    monkeypatch.setattr("jobs.load_state", lambda user_id=None: {})
+    monkeypatch.setattr("jobs.save_state", lambda state, user_id=None: saved.append((state, user_id)))
 
     core._dispatch_scheduled_jobs([])
 
@@ -370,9 +363,9 @@ def test_do_talk_routes_completed_task_to_matching_user_bridge(monkeypatch):
             pass
 
     monkeypatch.setattr(core.Mira, "for_all_users", classmethod(lambda cls: [ang, liquan]))
-    monkeypatch.setattr(talk, "TaskManager", FakeTaskManager)
-    monkeypatch.setattr(talk, "_status_footer", lambda task_mgr: "")
-    monkeypatch.setattr(talk, "_sweep_stuck_items", lambda bridge, task_mgr: None)
+    monkeypatch.setattr("talk.TaskManager", FakeTaskManager)
+    monkeypatch.setattr("talk._status_footer", lambda task_mgr: "")
+    monkeypatch.setattr("talk._sweep_stuck_items", lambda bridge, task_mgr: None)
 
     core.do_talk()
 
@@ -477,12 +470,12 @@ def test_do_talk_stops_other_legacy_inboxes_when_busy(monkeypatch):
             return True
 
     monkeypatch.setattr(core.Mira, "for_all_users", classmethod(lambda cls: [ang, liquan]))
-    monkeypatch.setattr(talk, "TaskManager", FakeTaskManager)
-    monkeypatch.setattr(talk, "_sweep_stuck_items", lambda bridge, task_mgr: None)
-    monkeypatch.setattr(core, "_is_meta_command", lambda content: False)
-    monkeypatch.setattr(core, "_talk_slug", lambda content, task_id: task_id)
+    monkeypatch.setattr("talk.TaskManager", FakeTaskManager)
+    monkeypatch.setattr("talk._sweep_stuck_items", lambda bridge, task_mgr: None)
+    monkeypatch.setattr("core._is_meta_command", lambda content: False)
+    monkeypatch.setattr("core._talk_slug", lambda content, task_id: task_id)
     external_inputs = []
-    monkeypatch.setattr(emptiness, "on_external_input", lambda user_id: external_inputs.append(user_id))
+    monkeypatch.setattr("evaluation.emptiness.on_external_input", lambda user_id: external_inputs.append(user_id))
 
     core.do_talk()
 
@@ -602,11 +595,11 @@ def test_do_talk_stops_retry_when_retry_ceiling_reached(monkeypatch):
 
     bridge = FakeBridge()
     monkeypatch.setattr(core.Mira, "for_all_users", classmethod(lambda cls: [bridge]))
-    monkeypatch.setattr(talk, "TaskManager", FakeTaskManager)
-    monkeypatch.setattr(talk, "_sweep_stuck_items", lambda bridge, task_mgr: None)
-    monkeypatch.setattr(core, "_is_meta_command", lambda content: False)
-    monkeypatch.setattr(core, "_talk_slug", lambda content, task_id: task_id)
-    monkeypatch.setattr(emptiness, "on_external_input", lambda user_id: None)
+    monkeypatch.setattr("talk.TaskManager", FakeTaskManager)
+    monkeypatch.setattr("talk._sweep_stuck_items", lambda bridge, task_mgr: None)
+    monkeypatch.setattr("core._is_meta_command", lambda content: False)
+    monkeypatch.setattr("core._talk_slug", lambda content, task_id: task_id)
+    monkeypatch.setattr("evaluation.emptiness.on_external_input", lambda user_id: None)
 
     core.do_talk()
 
@@ -627,14 +620,13 @@ def test_canonical_writing_pipeline_only_advances_plan_ready(monkeypatch, tmp_pa
     workspace_b.mkdir()
 
     monkeypatch.setattr(
-        writing,
-        "check_writing_responses",
+        "writing.check_writing_responses",
         lambda: [
             {"workspace": workspace_a, "project": {"title": "Plan", "phase": "plan_ready"}},
             {"workspace": workspace_b, "project": {"title": "Draft", "phase": "draft_ready"}},
         ],
     )
-    monkeypatch.setattr(writing, "advance_project", lambda workspace: advanced.append(workspace))
+    monkeypatch.setattr("writing.advance_project", lambda workspace: advanced.append(workspace))
 
     count = core._run_canonical_writing_pipeline()
 
@@ -666,10 +658,11 @@ def test_run_autowrite_pipeline_auto_approves_and_marks_done(monkeypatch, tmp_pa
         manifest_updates.append((slug, fields))
         return {"slug": slug, **fields}
 
-    monkeypatch.setattr(writing, "_TASKS_DIR", tmp_path / "tasks")
-    monkeypatch.setattr(writing, "Mira", lambda: bridge)
+    monkeypatch.setattr("workflows.writing._TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr("workflows.writing.Mira", lambda: bridge)
     monkeypatch.setattr(
-        writing, "run_full_pipeline", lambda title, body: (project_dir, final_file.read_text(encoding="utf-8"))
+        "workflows.writing.run_full_pipeline",
+        lambda title, body: (project_dir, final_file.read_text(encoding="utf-8")),
     )
     monkeypatch.setattr(publish_manifest, "update_manifest", fake_update_manifest)
     # Belt-and-suspenders: redirect any unmocked manifest writes to a tmp file

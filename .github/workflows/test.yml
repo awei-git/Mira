@@ -25,21 +25,15 @@ jobs:
           mkdir -p /tmp/mira-test/threads
           mkdir -p /tmp/mira-test/users/ang/items
 
-      - name: Run fast tests with coverage (informational)
-        # 2026-04-28: tests run for visibility but failures DO NOT block
-        # merges. Years of accumulated rot — stale monkeypatches, runtime-
-        # state assumptions, heavy import cascades — make this suite
-        # unreliable as a merge gate. Real reliability work is a focused
-        # follow-up; meanwhile `security` remains the merge gate.
-        #
-        # `continue-on-error: true` → the step can fail without failing
-        # the workflow. Visible in logs, no red check, no email blast.
-        # Removed `-x` so the report shows ALL failures, not just the
-        # first one — easier to triage in one pass.
-        continue-on-error: true
+      - name: Run fast tests with coverage
         run: |
+          # `not runtime` excludes tests that depend on local agent state
+          # (data/, secrets.yml, config.yml — .gitignored, absent on CI).
+          # See pytest.ini for marker definitions and tests/super/test_core.py
+          # for the string-path monkeypatch convention that survives
+          # refactors (vs. module-object patches that silently drift).
           python -m pytest tests/ -m "not slow and not runtime" -q --tb=line \
-            --cov=agents --cov=lib --cov-report=term-missing --cov-report=xml || true
+            --cov=agents --cov=lib --cov-report=term-missing --cov-report=xml
 
       - name: Upload coverage report
         if: always()
