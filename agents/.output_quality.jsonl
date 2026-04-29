@@ -20,3 +20,9 @@
 {"agent": "writer", "status": "done", "length": 13, "has_content": false, "ts": "2026-04-17T02:31:21Z"}
 {"agent": "writer", "status": "done", "length": 4, "has_content": false, "ts": "2026-04-17T02:31:37Z"}
 {"agent": "discussion", "status": "done", "length": 5, "has_content": false, "ts": "2026-04-28T21:18:47Z"}
+{"agent": "socialmedia", "status": "needs-input", "length": 16, "has_content": false, "ts": "2026-04-29T01:27:41Z"}
+{"agent": "writer", "status": "done", "length": 13, "has_content": false, "ts": "2026-04-29T01:27:43Z"}
+{"agent": "general", "status": "failed", "length": 213, "has_content": true, "ts": "2026-04-29T01:27:57Z"}
+{"agent": "discussion", "status": "done", "length": 5, "has_content": false, "ts": "2026-04-29T01:28:00Z"}
+{"agent": "writer", "status": "done", "length": 13, "has_content": false, "ts": "2026-04-29T01:28:17Z"}
+{"agent": "writer", "status": "done", "length": 4, "has_content": false, "ts": "2026-04-29T01:28:32Z"}
