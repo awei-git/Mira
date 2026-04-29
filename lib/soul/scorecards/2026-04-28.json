@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-28T22:06:49.466807",
+  "generated_at": "2026-04-28T22:44:00.068397",
   "period_days": 7,
   "agents": {
     "writer": {
@@ -46,7 +46,7 @@
       "success_rate": 1.0,
       "guard_fires": 0,
       "guard_fire_rate": 0.0,
-      "guard_fired_count": 15,
+      "guard_fired_count": 25,
       "scores": {
         "task_success": 1.0,
         "guard_fire_rate": 0.0,
@@ -93,9 +93,9 @@
     "component": "super",
     "period_days": 7,
     "scores": {
-      "crash_rate": 0.023,
-      "cycles_today": 1905,
-      "heartbeat_age_seconds": 27,
+      "crash_rate": 0.022,
+      "cycles_today": 1959,
+      "heartbeat_age_seconds": 11,
       "heartbeat_ok": true,
       "routing_accuracy": 0.75,
       "total_tasks": 8,
@@ -110,11 +110,11 @@
     "overall_success_rate": 1.0,
     "total_tasks": 1,
     "active_agents": 1,
-    "crash_rate": 0.023,
+    "crash_rate": 0.022,
     "heartbeat_ok": true,
-    "daily_cost_usd": 9.4156,
-    "daily_tokens": 2595977,
-    "daily_calls": 619,
+    "daily_cost_usd": 9.7327,
+    "daily_tokens": 2652082,
+    "daily_calls": 644,
     "stale_score_count": 0,
     "scaffolding_catch_rate_per_hour": 0.0,
     "scaffolding_rejection_count": 0,

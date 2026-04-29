@@ -84,3 +84,17 @@
 {"agent": "general", "status": "done", "length": 14, "has_content": false, "ts": "2026-04-29T02:07:13Z"}
 {"agent": "writer", "status": "done", "length": 13, "has_content": false, "ts": "2026-04-29T02:07:15Z"}
 {"agent": "writer", "status": "done", "length": 4, "has_content": false, "ts": "2026-04-29T02:07:21Z"}
+{"agent": "socialmedia", "status": "needs-input", "length": 16, "has_content": false, "ts": "2026-04-29T02:42:48Z"}
+{"agent": "writer", "status": "done", "length": 13, "has_content": false, "ts": "2026-04-29T02:42:52Z"}
+{"agent": "general", "status": "failed", "length": 213, "has_content": true, "ts": "2026-04-29T02:43:05Z"}
+{"agent": "discussion", "status": "done", "length": 5, "has_content": false, "ts": "2026-04-29T02:43:08Z"}
+{"agent": "general", "status": "done", "length": 14, "has_content": false, "ts": "2026-04-29T02:43:11Z"}
+{"agent": "writer", "status": "done", "length": 13, "has_content": false, "ts": "2026-04-29T02:43:15Z"}
+{"agent": "writer", "status": "done", "length": 4, "has_content": false, "ts": "2026-04-29T02:43:23Z"}
+{"agent": "socialmedia", "status": "needs-input", "length": 16, "has_content": false, "ts": "2026-04-29T02:44:01Z"}
+{"agent": "writer", "status": "done", "length": 13, "has_content": false, "ts": "2026-04-29T02:44:03Z"}
+{"agent": "general", "status": "failed", "length": 213, "has_content": true, "ts": "2026-04-29T02:44:16Z"}
+{"agent": "discussion", "status": "done", "length": 5, "has_content": false, "ts": "2026-04-29T02:44:18Z"}
+{"agent": "general", "status": "done", "length": 14, "has_content": false, "ts": "2026-04-29T02:44:22Z"}
+{"agent": "writer", "status": "done", "length": 13, "has_content": false, "ts": "2026-04-29T02:44:28Z"}
+{"agent": "writer", "status": "done", "length": 4, "has_content": false, "ts": "2026-04-29T02:44:34Z"}

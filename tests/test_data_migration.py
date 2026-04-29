@@ -91,50 +91,43 @@ class TestConfigPaths:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.runtime
 class TestDataFilesExist:
-    """Local agent-runtime state checks. data/ is .gitignored so none of
-    these files exist on CI; skip when absent rather than fail. The
-    assertion is meaningful only on a checkout where Mira has actually
-    run. (Design note: these tests don't test code behavior at all —
-    they test runtime side effects. Should arguably move to a local-only
-    suite, but skip-on-absent is the cheap fix.)"""
+    """Local agent-runtime state checks (marker: `runtime`).
+
+    These verify *side effects* of the agent having run, not code
+    behavior. data/ is .gitignored so none of these files exist on CI
+    runners. Excluded from CI via `-m "not runtime"` in test.yml.
+    """
 
     def test_state_file_exists(self):
         from config import STATE_FILE
 
-        if not STATE_FILE.exists():
-            pytest.skip(f"{STATE_FILE} absent (not a local runtime)")
+        assert STATE_FILE.exists(), f"Missing: {STATE_FILE}"
 
     def test_session_file_exists(self):
         from config import SESSION_FILE
 
-        if not SESSION_FILE.exists():
-            pytest.skip(f"{SESSION_FILE} absent (not a local runtime)")
+        assert SESSION_FILE.exists(), f"Missing: {SESSION_FILE}"
 
     def test_health_file_exists(self):
         from config import HEALTH_FILE
 
-        if not HEALTH_FILE.exists():
-            pytest.skip(f"{HEALTH_FILE} absent (not a local runtime)")
+        assert HEALTH_FILE.exists(), f"Missing: {HEALTH_FILE}"
 
     def test_soul_identity_exists(self):
         from config import SOUL_DIR
 
-        if not (SOUL_DIR / "identity.md").exists():
-            pytest.skip(f"{SOUL_DIR}/identity.md absent (not a local runtime)")
+        assert (SOUL_DIR / "identity.md").exists()
 
     def test_soul_learned_exists(self):
         from config import SKILLS_DIR
 
-        # data/soul/learned/ is .gitignored — absent on CI runners. Skip
-        # rather than fail; the assertion is meaningful only on local
-        # checkouts where Mira has actually run and seeded skills.
-        if not SKILLS_DIR.exists():
-            pytest.skip(f"{SKILLS_DIR} absent (not a local agent runtime)")
         # rglob so quarantined skills (under quarantine/) and .blocked
         # variants both count toward "learned skills present" — empty
-        # top-level glob was producing false negatives once the audit
+        # top-level glob produced false negatives once the audit
         # workflow moved approved skills around.
+        assert SKILLS_DIR.exists()
         md_count = len(list(SKILLS_DIR.rglob("*.md")))
         blocked_count = len(list(SKILLS_DIR.glob("*.blocked")))
         assert (md_count + blocked_count) > 0, "No learned skills found"
@@ -142,12 +135,9 @@ class TestDataFilesExist:
     def test_social_state_files_exist(self):
         from config import SOCIAL_STATE_DIR
 
-        if not SOCIAL_STATE_DIR.exists():
-            pytest.skip(f"{SOCIAL_STATE_DIR} absent (not a local runtime)")
         expected = ["twitter_state.json", "growth_state.json", "notes_state.json"]
-        missing = [n for n in expected if not (SOCIAL_STATE_DIR / n).exists()]
-        if missing:
-            pytest.skip(f"Missing local state files: {missing}")
+        for name in expected:
+            assert (SOCIAL_STATE_DIR / name).exists(), f"Missing: {SOCIAL_STATE_DIR / name}"
 
 
 # ---------------------------------------------------------------------------
@@ -230,40 +220,26 @@ class TestNoStaleReferences:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.runtime
 class TestOldLocationsClean:
-    def test_no_root_dotfiles(self):
-        """Root should not have .agent_state.json etc.
+    """Asserts no legacy state files exist at pre-migration paths.
 
-        These are .gitignored legacy paths — long-running local checkouts
-        may still have them. The CI assertion holds (clean checkout never
-        creates them) so the rule is: warn-but-don't-fail on local where a
-        legacy file is still hanging around.
-        """
-        stale = []
+    Marker: `runtime`. These are .gitignored locations — long-running
+    local checkouts may have leftover legacy files; CI's clean checkout
+    enforces the assertion. Excluded from CI via `-m "not runtime"`
+    because the assertion is "is the migration clean here", which only
+    makes sense to evaluate on a real checkout (CI is by definition
+    clean and would always pass).
+    """
+
+    def test_no_root_dotfiles(self):
         for name in [".agent_state.json", ".session_context.json", ".bg_health.json", ".pending_publish.json"]:
-            if (_MIRA_ROOT / name).exists():
-                stale.append(name)
-        if stale:
-            # Allow stale files locally (long-running dev tree); CI sees none.
-            if (_MIRA_ROOT / ".git").exists() and (_MIRA_ROOT / "secrets.yml").exists():
-                pytest.skip(f"Local checkout has legacy files {stale}; CI is clean")
-            assert not stale, f"Stale files in root: {stale}"
+            assert not (_MIRA_ROOT / name).exists(), f"Stale file: {_MIRA_ROOT / name}"
 
     def test_no_socialmedia_state_in_agent_dir(self):
-        """agents/socialmedia/ should not have state files.
-
-        Same rationale as test_no_root_dotfiles — local checkouts may have
-        legacy files; the CI assertion is what matters.
-        """
         sm_dir = _MIRA_ROOT / "agents" / "socialmedia"
-        stale = []
         for name in ["twitter_state.json", "growth_state.json", "notes_state.json", "comment_state.json"]:
-            if (sm_dir / name).exists():
-                stale.append(name)
-        if stale:
-            if (_MIRA_ROOT / ".git").exists() and (_MIRA_ROOT / "secrets.yml").exists():
-                pytest.skip(f"Local checkout has legacy files {stale}; CI is clean")
-            assert not stale, f"Stale socialmedia state files: {stale}"
+            assert not (sm_dir / name).exists(), f"Stale file: {sm_dir / name}"
 
 
 # ---------------------------------------------------------------------------

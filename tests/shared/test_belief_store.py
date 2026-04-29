@@ -5,6 +5,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 _SHARED = Path(__file__).resolve().parent.parent
 
 
@@ -18,17 +20,13 @@ def _make_store(initial_beliefs=None):
     return BeliefStore(path=tmp), tmp
 
 
+@pytest.mark.runtime
 def test_load_seeded_beliefs():
     """Verify the actual beliefs.json file loads correctly.
 
-    Skipped on hosts where the soul data isn't checked in (data/ is in
-    .gitignore, so CI runners don't have the seeded beliefs.json).
+    Marker: `runtime`. data/soul/beliefs.json is .gitignored — absent on CI.
     """
-    import pytest
-    from knowledge.beliefs import _BELIEFS_FILE, BeliefStore
-
-    if not _BELIEFS_FILE.exists():
-        pytest.skip(f"No seeded beliefs at {_BELIEFS_FILE}")
+    from knowledge.beliefs import BeliefStore
 
     store = BeliefStore()
     assert len(store) >= 10, f"Expected at least 10 seeded beliefs, got {len(store)}"

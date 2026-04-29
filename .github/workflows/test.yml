@@ -27,7 +27,10 @@ jobs:
 
       - name: Run fast tests with coverage
         run: |
-          python -m pytest tests/ -m "not slow" -x -q --tb=short \
+          # Exclude `slow` (real LLM calls) and `runtime` (local-only data
+          # state, .gitignored). Runtime tests pass locally where Mira has
+          # actually run, skip on CI.
+          python -m pytest tests/ -m "not slow and not runtime" -x -q --tb=short \
             --cov=agents --cov=lib --cov-report=term-missing --cov-report=xml
 
       - name: Upload coverage report

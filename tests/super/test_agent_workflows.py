@@ -252,17 +252,13 @@ Reply with ONLY the agent name, nothing else."""
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.runtime
 def test_config_validates():
     """Config validation should pass in the real environment.
 
-    LOGS_DIR is auto-created on first config import (other modules call
-    LOGS_DIR.mkdir at import time), so its existence isn't a reliable
-    "is this a real local checkout" signal. Use config.yml + secrets.yml
-    instead — those are .gitignored so absent on CI runners.
+    Marker: `runtime`. config.yml + secrets.yml are .gitignored —
+    absent on CI runners.
     """
-    import pytest
-    from config import validate_config, _CONFIG_FILE, SECRETS_FILE
+    from config import validate_config
 
-    if not _CONFIG_FILE.exists() or not SECRETS_FILE.exists():
-        pytest.skip("config.yml/secrets.yml absent — not a local checkout")
     assert validate_config(), "Config validation failed — check paths"
