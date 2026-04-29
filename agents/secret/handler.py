@@ -11,14 +11,15 @@ Capabilities:
 Route here for: personal finance, health, legal, passwords, family matters,
 anything the user wouldn't want sent to OpenAI/Anthropic/DeepSeek servers.
 """
+
 import json
 import logging
 import re
 from pathlib import Path
 
 from config import OMLX_DEFAULT_MODEL, SECRET_MAX_FILE_CHARS, SECRET_MAX_FILES
-from preflight import preflight_check
-from sub_agent import _omlx_call
+from publish.preflight import preflight_check
+from llm import _omlx_call
 
 log = logging.getLogger("secret_agent")
 
@@ -37,9 +38,20 @@ _SEARCH_DIRS = [
 
 # File types we can safely read as text
 _TEXT_EXTENSIONS = {
-    ".txt", ".md", ".csv", ".json", ".yaml", ".yml",
-    ".py", ".js", ".html", ".xml", ".log",
-    ".rtf", ".tex", ".tsv",
+    ".txt",
+    ".md",
+    ".csv",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".py",
+    ".js",
+    ".html",
+    ".xml",
+    ".log",
+    ".rtf",
+    ".tex",
+    ".tsv",
 }
 
 # Max total chars across all files to inject into prompt
@@ -50,9 +62,9 @@ _MAX_FILES = SECRET_MAX_FILES
 
 def _has_explicit_file_reference(query: str) -> bool:
     """Return True when the user explicitly referenced a concrete file/path."""
-    if re.search(r'@file:\S+', query):
+    if re.search(r"@file:\S+", query):
         return True
-    if re.search(r'(\S+\.(?:pdf|csv|txt|xlsx?|docx?|md|json))', query, re.IGNORECASE):
+    if re.search(r"(\S+\.(?:pdf|csv|txt|xlsx?|docx?|md|json))", query, re.IGNORECASE):
         return True
     for match in re.findall(r'["\']([^"\']+)["\']', query):
         if "/" in match or match.startswith("~") or Path(match).suffix:
@@ -77,9 +89,9 @@ Extract file location info. Return JSON only:
 
 JSON only."""
 
-    result = _omlx_call(OMLX_DEFAULT_MODEL, parse_prompt,
-                         system="Extract file paths from natural language. JSON only.",
-                         timeout=30)
+    result = _omlx_call(
+        OMLX_DEFAULT_MODEL, parse_prompt, system="Extract file paths from natural language. JSON only.", timeout=30
+    )
     if not result:
         return {"directory_hints": [], "file_patterns": [], "year": ""}
 
@@ -99,7 +111,7 @@ def _find_files(query: str) -> list[Path]:
         p = Path(m).expanduser()
         if p.exists() and p.is_file():
             found.append(p)
-    for m in re.findall(r'(\S+\.(?:pdf|csv|txt|xlsx?|docx?|md|json))', query, re.IGNORECASE):
+    for m in re.findall(r"(\S+\.(?:pdf|csv|txt|xlsx?|docx?|md|json))", query, re.IGNORECASE):
         p = Path(m).expanduser()
         if p.exists() and p.is_file():
             found.append(p)
@@ -192,8 +204,7 @@ def _find_files(query: str) -> list[Path]:
     return found[:_MAX_FILES]
 
 
-def preflight(workspace: Path, task_id: str, content: str,
-              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
     """Block empty or explicitly broken private file-analysis requests."""
     result = preflight_check(
         "file_write",
@@ -230,6 +241,7 @@ def _read_file(path: Path, max_chars: int = 4000) -> str:
     if suffix == ".pdf":
         try:
             import subprocess
+
             # Try pdftotext first (better quality), fall back to textutil
             for cmd in [
                 ["pdftotext", str(path), "-"],
@@ -252,9 +264,15 @@ def _read_file(path: Path, max_chars: int = 4000) -> str:
     return f"[Unsupported file type: {path.suffix}]"
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str,
-           thread_history: str = "", thread_memory: str = "") -> str | None:
+def handle(
+    workspace: Path,
+    task_id: str,
+    content: str,
+    sender: str,
+    thread_id: str,
+    thread_history: str = "",
+    thread_memory: str = "",
+) -> str | None:
     """Handle a privacy-sensitive request using only local oMLX.
 
     If the message references files, uses local LLM to parse the description,
@@ -270,6 +288,7 @@ def handle(workspace: Path, task_id: str, content: str,
             log.info("Tax request detected with %d PDFs — using taxcalc pipeline", len(pdf_files))
             try:
                 from tax_calc import run_tax_pipeline
+
                 result = run_tax_pipeline(pdf_files, OMLX_DEFAULT_MODEL)
                 if result:
                     return result
@@ -303,8 +322,13 @@ def handle(workspace: Path, task_id: str, content: str,
 
     prompt = content + extra
     prompt_len = len(prompt)
-    log.info("Secret agent: task %s, %d chars (incl. %d files), model=%s",
-             task_id, prompt_len, len(files), OMLX_DEFAULT_MODEL)
+    log.info(
+        "Secret agent: task %s, %d chars (incl. %d files), model=%s",
+        task_id,
+        prompt_len,
+        len(files),
+        OMLX_DEFAULT_MODEL,
+    )
 
     # Adjust timeout based on prompt size
     timeout = min(600, max(120, prompt_len // 50))

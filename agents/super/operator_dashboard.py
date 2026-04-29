@@ -1,4 +1,5 @@
 """Operator dashboard summary for Mira production runtime."""
+
 from __future__ import annotations
 
 import json
@@ -7,10 +8,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import LOGS_DIR, MIRA_DIR
-from failure_log import load_recent_failures
-from action_backlog import ActionBacklog
+from ops.failure_log import load_recent_failures
+from ops.backlog import ActionBacklog
 from execution.runtime_contract import normalize_task_status
-from publish_manifest import get_stuck_articles, load_manifest
+from publish.manifest import get_stuck_articles, load_manifest
 from task_manager import HISTORY_FILE, STATUS_FILE
 
 log = logging.getLogger("mira.operator_dashboard")
@@ -62,9 +63,7 @@ def build_operator_summary(user_id: str = "ang") -> dict:
     manifest = load_manifest()
     articles = list(manifest.get("articles", {}).values())
     publish_queue = [
-        _publish_entry(entry)
-        for entry in articles
-        if entry.get("status") and entry.get("status") != "complete"
+        _publish_entry(entry) for entry in articles if entry.get("status") and entry.get("status") != "complete"
     ]
     publish_queue.sort(key=lambda item: item.get("updated_at", ""))
 

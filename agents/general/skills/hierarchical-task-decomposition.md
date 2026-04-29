@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when faced with an ambiguous or complex goal that must be broken into a dependency-ordered tree of concrete, verifiable subtasks before execution begins."
+---
+
 # Hierarchical Task Decomposition
 
 **Tags:** agents, task-planning, problem-solving, workflow

@@ -26,7 +26,7 @@ def _load_module(name, path):
 _wcfg = _load_module("writing_config", _writing_dir / "writer_config.py")
 _wprompts = _load_module("writing_prompts", _writing_dir / "writer_prompts.py")
 
-_shared_dir = str(_writing_dir.parent / "shared")
+_shared_dir = str(_writing_dir.parent.parent / "lib")
 if _shared_dir not in sys.path:
     sys.path.insert(0, _shared_dir)
 _super_dir = str(_writing_dir.parent / "super")
@@ -34,7 +34,7 @@ if _super_dir not in sys.path:
     sys.path.insert(0, _super_dir)
 
 from config import CLAUDE_FALLBACK_MODEL
-from sub_agent import model_think
+from llm import model_think
 
 CLAUDE_BIN = _wcfg.CLAUDE_BIN
 CLAUDE_MAX_RETRIES = _wcfg.CLAUDE_MAX_RETRIES
@@ -73,10 +73,10 @@ def _log_writing_failure(slug: str, step: str, error_msg: str):
     try:
         import sys as _sys
 
-        _shared = str(Path(__file__).resolve().parents[1] / "shared")
+        _shared = str(Path(__file__).resolve().parents[1].parent / "lib")
         if _shared not in _sys.path:
             _sys.path.insert(0, _shared)
-        from failure_log import record_failure
+        from ops.failure_log import record_failure
 
         record_failure(
             pipeline="writing",
@@ -130,6 +130,20 @@ def parse_idea(idea_path: Path) -> dict:
 
     parts = text.split("<!-- AUTO-MANAGED BELOW")
     result["content_above"] = parts[0].strip() if parts else text.strip()
+
+    # Persona-gate fields: Position, Human-writability test, Lens vs topic
+    # Must all be non-empty (more than placeholder bracket text) for the idea to advance.
+    gate_fields = {}
+    for heading in ["Position", "Human-writability test", "Lens vs topic"]:
+        pattern = rf"##\s+{re.escape(heading)}\s*\n+(.+?)(?=\n##\s+|\n---|\Z)"
+        m = re.search(pattern, text, re.DOTALL)
+        if m:
+            body = m.group(1).strip()
+            # Reject placeholder text (square-bracket only)
+            if body and not (body.startswith("[") and body.endswith("]")):
+                gate_fields[heading] = body
+    result["persona_gate"] = gate_fields
+    result["persona_gate_passed"] = len(gate_fields) == 3
 
     return result
 
@@ -369,15 +383,13 @@ def resolve_type(raw_type: str) -> str:
 def _check_topic_overlap(idea: dict) -> str | None:
     """Check if a similar article has already been published."""
     try:
-        from soul_manager import catalog_list
-        from sub_agent import claude_think
+        from memory.soul import catalog_list
+        from llm import claude_think
     except ImportError:
         return None
 
     published = [
-        entry
-        for entry in catalog_list()
-        if entry.get("status") == "published" and entry.get("type") == "article"
+        entry for entry in catalog_list() if entry.get("status") == "published" and entry.get("type") == "article"
     ]
     if not published:
         return None
@@ -826,6 +838,12 @@ def advance_idea(idea: dict) -> bool:
         return step_scaffold(idea, is_restart=True)
 
     if state == "new":
+        if not idea.get("persona_gate_passed"):
+            log.warning(
+                "Idea %s missing persona-gate fields (Position / Human-writability / Lens-vs-topic). Skipping.",
+                idea["slug"],
+            )
+            return False
         return step_scaffold(idea)
     if state == "scaffolded":
         return step_draft(idea, round_num or 1)

@@ -1,4 +1,5 @@
 """Health data ingestion — consume Apple Health exports and checkup PDFs."""
+
 import json
 import logging
 import os
@@ -22,11 +23,21 @@ def ingest_apple_health(bridge_dir: Path, person_id: str, store) -> int:
     except OSError as e:
         if e.errno == 11:  # EDEADLK — retry once after brief pause
             import time
+
             time.sleep(0.5)
             try:
                 data = json.loads(export_file.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError) as e2:
-                log.warning("Health export retry failed for %s: %s", person_id, e2)
+                from logging_util import throttled_warning
+
+                throttled_warning(
+                    log,
+                    "Health export retry failed for %s: %s",
+                    person_id,
+                    e2,
+                    key=f"health:retry:{person_id}",
+                    interval_seconds=1800,
+                )
                 return 0
         else:
             log.error("Failed to read health export for %s: %s", person_id, e)
@@ -68,7 +79,7 @@ def parse_checkup_pdf(pdf_path: Path, person_id: str, store) -> dict:
     Returns the parsed JSON dict. Also stores results in the database.
     """
     from config import OMLX_DEFAULT_MODEL
-    from sub_agent import _omlx_call
+    from llm import _omlx_call
 
     # Extract text from PDF
     text = _extract_pdf_text(pdf_path)
@@ -110,6 +121,7 @@ Report text:
 
     # Store in database
     from datetime import date
+
     report_date_str = parsed.get("report_date", "")
     try:
         report_date = date.fromisoformat(report_date_str)
@@ -136,15 +148,18 @@ Report text:
         try:
             value = float(item.get("value", ""))
             store.insert_metric(
-                person_id, item["name"], value,
+                person_id,
+                item["name"],
+                value,
                 unit=item.get("unit", ""),
                 source="checkup",
             )
         except (ValueError, TypeError):
             continue
 
-    log.info("Parsed checkup for %s: %d items, %d abnormal",
-             person_id, len(parsed.get("items", [])), len(summary_items))
+    log.info(
+        "Parsed checkup for %s: %d items, %d abnormal", person_id, len(parsed.get("items", [])), len(summary_items)
+    )
     return parsed
 
 
@@ -167,6 +182,7 @@ def parse_checkup_images(image_paths: list[Path], person_id: str, store) -> dict
         log.warning("No text extracted from checkup images for %s", person_id)
         # Store the report record even without parsing
         from datetime import date
+
         store.insert_report(
             person_id=person_id,
             report_date=date.today(),
@@ -178,7 +194,7 @@ def parse_checkup_images(image_paths: list[Path], person_id: str, store) -> dict
 
     # Parse extracted text into structured data
     from config import OMLX_DEFAULT_MODEL
-    from sub_agent import _omlx_call
+    from llm import _omlx_call
 
     prompt = f"""Extract all test results from this medical checkup report.
 For each test item, extract:
@@ -212,6 +228,7 @@ Report text:
 
     # Store in database
     from datetime import date
+
     report_date_str = parsed.get("report_date", "")
     try:
         report_date = date.fromisoformat(report_date_str)
@@ -221,8 +238,7 @@ Report text:
     summary_items = []
     for item in parsed.get("items", []):
         if item.get("flag") and item["flag"] != "normal":
-            summary_items.append(
-                f"{item['name']}: {item.get('value','?')}{item.get('unit','')} ({item['flag']})")
+            summary_items.append(f"{item['name']}: {item.get('value','?')}{item.get('unit','')} ({item['flag']})")
 
     summary = "异常指标: " + "; ".join(summary_items) if summary_items else "各项指标正常"
 
@@ -238,15 +254,21 @@ Report text:
         try:
             value = float(item.get("value", ""))
             store.insert_metric(
-                person_id, item["name"], value,
+                person_id,
+                item["name"],
+                value,
                 unit=item.get("unit", ""),
                 source="checkup",
             )
         except (ValueError, TypeError):
             continue
 
-    log.info("Parsed checkup images for %s: %d items, %d abnormal",
-             person_id, len(parsed.get("items", [])), len(summary_items))
+    log.info(
+        "Parsed checkup images for %s: %d items, %d abnormal",
+        person_id,
+        len(parsed.get("items", [])),
+        len(summary_items),
+    )
     return parsed
 
 
@@ -255,6 +277,7 @@ def _extract_image_text(image_path: Path) -> str:
     try:
         import pytesseract
         from PIL import Image
+
         img = Image.open(str(image_path))
         # Use Chinese + English for medical reports
         text = pytesseract.image_to_string(img, lang="chi_sim+eng")
@@ -270,6 +293,7 @@ def _extract_pdf_text(pdf_path: Path) -> str:
     """Extract text from a PDF file."""
     try:
         import pypdf
+
         reader = pypdf.PdfReader(str(pdf_path))
         text = ""
         for page in reader.pages:
@@ -279,6 +303,7 @@ def _extract_pdf_text(pdf_path: Path) -> str:
         log.warning("pypdf not available, trying pdfplumber")
     try:
         import pdfplumber
+
         with pdfplumber.open(str(pdf_path)) as pdf:
             return "\n".join(page.extract_text() or "" for page in pdf.pages).strip()
     except ImportError:

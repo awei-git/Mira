@@ -1,0 +1,28 @@
+{
+  "id": "daily_report_20260419",
+  "type": "feed",
+  "title": "Daily Report 2026-04-19",
+  "status": "done",
+  "tags": [
+    "mira",
+    "report",
+    "daily"
+  ],
+  "origin": "agent",
+  "pinned": false,
+  "quick": false,
+  "parent_id": "",
+  "created_at": "2026-04-20T02:00:03.890Z",
+  "updated_at": "2026-04-20T02:00:03.890Z",
+  "messages": [
+    {
+      "id": "42326716",
+      "sender": "agent",
+      "content": "Mira 日报 2026-04-19\n==============================\n\n完成的任务:\n无。\n\n## Pipeline Health (2026-04-19)\nDispatched: 2860 | Succeeded: 24232 | Failed: 186\n\nFailures:\n- voiceover-the-pain-already-happened: 2591x consecutive (2026-03-18 00:29:03,131 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- spark-check: 2604x consecutive (sub_agent.ClaudeTimeoutError: claude_think timed out after 30s)\n- podcast-zh-you-cant-evaluate-truth-at-a-point: 2604x consecutive (2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a P)\n- podcast-zh-when-values-become-leverage: 330x consecutive (2026-03-20 17:23:08,130 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- podcast-zh-the-exponential-exemption: 399x consecutive (2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- autowrite-2026-04-07: 76x consecutive (sub_agent.ClaudeTimeoutError: claude_think timed out after 300s)\n- podcast-en-project: 102x consecutive (ModuleNotFoundError: No module named 'config')\n- self-audit: 1362x consecutive (ModuleNotFoundError: No module named 'config')\n- podcast-en-The-Trust-Stack-Is-the-Attack: 402x consecutive (ModuleNotFoundError: No module named 'config')\n\nProcess runs:\n- analyst: 20 runs, all OK (avg 6518s)\n- assessment: 10 runs, all OK (avg 6611s)\n- autowrite: 10 runs, all OK (avg 62s)\n- backlog: 10 runs, all OK (avg 6537s)\n- book: 10 runs, all OK (avg 6437s)\n- daily: 20 runs, all OK (avg 5467s)\n- explore: 60 runs, all OK (avg 4675s)\n- idle: 20 runs, all OK (avg 1026s)\n- journal: 10 runs, all OK (avg 54s)\n- research: 20 runs, all OK (avg 4821s)\n- self: 20 runs, 10 failed (avg 5489s)\n- skill: 10 runs, all OK (avg 66s)\n- soul: 30 runs, all OK (avg 4703s)\n- spark: 20 runs, all OK (avg 6270s)\n- substack: 30 runs, all OK (avg 5357s)\n- writing: 10 runs, all OK (avg 54s)\n- zhesi: 10 runs, all OK (avg 713s)\n\n今日发出的评论:\n无。\n\nSubstack 数据:\nTotal articles: 20. Total views: 0. Total likes: 5. Total comments: 0. Total restacks: 5. Total notes: 100. Subscribers: 5 (+3 in 30d, 0 paid)\n\nToken 用量:\n总计: 490次调用, 982,022 tokens\n  openai/gpt-5.4-2026-03-05: 364次, 364,662 tok (in:293,918 out:70,744)\n  anthropic/claude-sonnet-4-6: 97次, 339,104 tok (in:312,500 out:26,604)\n  omlx/Qwen3.5-27B-4bit: 25次, 219,752 tok (in:138,867 out:80,885)\n  anthropic/claude-opus-4-6: 4次, 58,504 tok (in:51,896 out:6,608)\n\nanalyst: 2次, 5,055 tokens\n  anthropic/claude-opus-4-6: 2次, 5,055\nassess: 1次, 1,245 tokens\n  anthropic/claude-sonnet-4-6: 1次, 1,245\nbacklog-executor: 1次, 746 tokens\n  anthropic/claude-sonnet-4-6: 1次, 746\nexplore: 34次, 106,733 tokens\n  anthropic/claude-sonnet-4-6: 34次, 106,733\ngrowth-cycle: 3次, 3,745 tokens\n  anthropic/claude-sonnet-4-6: 3次, 3,745\nidle-think: 82次, 469,577 tokens\n  omlx/Qwen3.5-27B-4bit: 25次, 219,752\n  openai/gpt-5.4-2026-03-05: 33次, 153,564\n  anthropic/claude-sonnet-4-6: 24次, 96,261\njournal: 6次, 13,240 tokens\n  anthropic/claude-sonnet-4-6: 6次, 13,240\nresearch: 1次, 5,838 tokens\n  anthropic/claude-opus-4-6: 1次, 5,838\nresearch-log: 1次, 3,098 tokens\n  anthropic/claude-sonnet-4-6: 1次, 3,098\nsoul-question: 10次, 23,929 tokens\n  anthropic/claude-sonnet-4-6: 10次, 23,929\nspark-check: 2次, 12,681 tokens\n  openai/gpt-5.4-2026-03-05: 2次, 12,681\nsuper: 336次, 214,918 tokens\n  openai/gpt-5.4-2026-03-05: 329次, 198,417\n  anthropic/claude-sonnet-4-6: 7次, 16,501\nunknown: 1次, 47,611 tokens\n  anthropic/claude-opus-4-6: 1次, 47,611\nzhesi: 10次, 73,606 tokens\n  anthropic/claude-sonnet-4-6: 10次, 73,606\n\n需要你介入:\n- 有一篇文章等你审批发布",
+      "timestamp": "2026-04-20T02:00:03.890Z",
+      "kind": "text"
+    }
+  ],
+  "error": null,
+  "result_path": null
+}

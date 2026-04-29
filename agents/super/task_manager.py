@@ -3,11 +3,13 @@
 The super agent dispatches tasks here; sub-agents run as separate processes.
 Each launchd cycle: dispatch new tasks + collect completed results.
 """
+
 import fcntl
 import json
 import logging
 import os
 import signal
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -15,12 +17,24 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import MIRA_DIR, TASK_TIMEOUT, TASK_TIMEOUT_LONG, MAX_CONCURRENT_TASKS, TASK_MAX_RETRIES
+from config import MIRA_DIR, TASK_TIMEOUT, TASK_TIMEOUT_LONG, MAX_CONCURRENT_TASKS, TASK_MAX_RETRIES, MAX_SUBTASK_DEPTH
 from execution.runtime_contract import derive_workflow_id, normalize_task_status
 
 # Timeout resolution: first check registry manifest, then fall back to tag keywords
-_LONG_TIMEOUT_TAGS = {"writing", "write", "novel", "essay", "blog", "research",
-                      "深度研究", "coding", "podcast", "audio", "tts", "generate"}
+_LONG_TIMEOUT_TAGS = {
+    "writing",
+    "write",
+    "novel",
+    "essay",
+    "blog",
+    "research",
+    "深度研究",
+    "coding",
+    "podcast",
+    "audio",
+    "tts",
+    "generate",
+}
 
 # No-timeout agents (background jobs that can run indefinitely)
 _BACKGROUND_TIMEOUT = 86400  # 24 hours — effectively no timeout
@@ -35,6 +49,7 @@ def _resolve_timeout(tags: list[str]) -> float:
     """
     try:
         from agent_registry import get_registry
+
         registry = get_registry()
         for tag in tags:
             cat = registry.get_timeout_category(tag)
@@ -50,13 +65,20 @@ def _resolve_timeout(tags: list[str]) -> float:
         return TASK_TIMEOUT_LONG
     return TASK_TIMEOUT
 
+
 log = logging.getLogger("mira")
 
+
+class TaskDepthExceeded(Exception):
+    pass
+
+
 # Task workspaces stored locally (NOT on iCloud bridge)
-from config import MIRA_ROOT
-TASKS_DIR = MIRA_ROOT / "tasks"
+from config import TASKS_DIR
+
 STATUS_FILE = TASKS_DIR / "status.json"
 HISTORY_FILE = TASKS_DIR / "history.jsonl"
+TIMING_STATS_FILE = TASKS_DIR / "timing_stats.jsonl"
 
 # Path to the worker script (same directory as this file)
 WORKER_SCRIPT = Path(__file__).resolve().parent / "task_worker.py"
@@ -73,9 +95,9 @@ class TaskRecord:
     msg_id: str
     thread_id: str
     sender: str
-    content_preview: str   # first 80 chars of message
+    content_preview: str  # first 80 chars of message
     pid: int
-    status: str            # dispatched | running | done | needs-input | blocked | failed | timeout
+    status: str  # dispatched | running | done | needs-input | blocked | failed | timeout
     started_at: str
     user_id: str = "ang"
     completed_at: str = ""
@@ -106,12 +128,23 @@ def classify_task(content: str) -> list[str]:
     tags = []
     lower = content.lower()
 
-    _WRITING_KW = ["写", "文章", "essay", "blog", "write", "novel", "research",
-                   "深度研究", "rewrite", "改写", "重写", "稿", "研究"]
-    _CODE_KW = ["修改", "implement", "fix", "code", "refactor", "改进",
-                "framework", "pipeline", "publish", "发布"]
-    _MEDIA_KW = ["podcast", "音频", "tts", "audio", "generate", "生成",
-                 "transcript", "episode", "跑"]
+    _WRITING_KW = [
+        "写",
+        "文章",
+        "essay",
+        "blog",
+        "write",
+        "novel",
+        "research",
+        "深度研究",
+        "rewrite",
+        "改写",
+        "重写",
+        "稿",
+        "研究",
+    ]
+    _CODE_KW = ["修改", "implement", "fix", "code", "refactor", "改进", "framework", "pipeline", "publish", "发布"]
+    _MEDIA_KW = ["podcast", "音频", "tts", "audio", "generate", "生成", "transcript", "episode", "跑"]
 
     if any(kw in lower for kw in _WRITING_KW):
         tags.append("writing")
@@ -138,8 +171,16 @@ class TaskManager:
         """Check if all concurrent task slots are occupied."""
         return self.get_active_count() >= MAX_CONCURRENT_TASKS
 
-    def dispatch(self, msg, workspace_dir: Path, *, attempt_count: int = 1,
-                 max_attempts: int | None = None) -> str:
+    def dispatch(
+        self,
+        msg,
+        workspace_dir: Path,
+        *,
+        attempt_count: int = 1,
+        max_attempts: int | None = None,
+        depth: int = 0,
+        task_chain: list[str] | None = None,
+    ) -> str:
         """Spawn a background worker for a message. Returns task_id.
 
         Supports up to MAX_CONCURRENT_TASKS parallel workers.
@@ -148,10 +189,28 @@ class TaskManager:
         Args:
             msg: talk_bridge.Message instance
             workspace_dir: directory for task output files
+            depth: current subtask nesting depth (0 = top-level)
+            task_chain: ordered list of ancestor task IDs for observability
         """
+        chain = list(task_chain or [])
+        if depth >= MAX_SUBTASK_DEPTH:
+            chain_str = " -> ".join(chain) if chain else "(empty)"
+            log.error(
+                "TaskDepthExceeded: depth=%d >= MAX_SUBTASK_DEPTH=%d for msg %s; chain: %s",
+                depth,
+                MAX_SUBTASK_DEPTH,
+                msg.id,
+                chain_str,
+            )
+            raise TaskDepthExceeded(f"Subtask depth {depth} reached limit {MAX_SUBTASK_DEPTH}. Chain: {chain_str}")
+
         if self.is_busy():
-            log.info("TaskManager busy (%d/%d slots), deferring task for msg %s",
-                     self.get_active_count(), MAX_CONCURRENT_TASKS, msg.id)
+            log.info(
+                "TaskManager busy (%d/%d slots), deferring task for msg %s",
+                self.get_active_count(),
+                MAX_CONCURRENT_TASKS,
+                msg.id,
+            )
             return ""
 
         task_id = msg.id
@@ -173,15 +232,20 @@ class TaskManager:
         msg_payload = dict(msg.to_dict())
         msg_payload["workflow_id"] = workflow_id
         msg_payload["user_id"] = getattr(msg, "user_id", "ang") or "ang"
+        msg_payload["subtask_depth"] = depth
+        msg_payload["task_chain"] = chain + [msg.id]
         msg_file.write_text(json.dumps(msg_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # Spawn worker as a detached process
         cmd = [
             sys.executable,
             str(WORKER_SCRIPT),
-            "--msg-file", str(msg_file),
-            "--workspace", str(workspace_dir),
-            "--task-id", task_id,
+            "--msg-file",
+            str(msg_file),
+            "--workspace",
+            str(workspace_dir),
+            "--task-id",
+            task_id,
         ]
         if msg.thread_id:
             cmd.extend(["--thread-id", msg.thread_id])
@@ -259,14 +323,20 @@ class TaskManager:
                 timeout = _resolve_timeout(rec.tags or [])
                 if elapsed > timeout:
                     # Don't kill — pause and ask user
-                    log.warning("Task %s exceeded timeout (PID %d, %ds/%ds) — notifying user",
-                                rec.task_id, rec.pid, int(elapsed), int(timeout))
+                    log.warning(
+                        "Task %s exceeded timeout (PID %d, %ds/%ds) — notifying user",
+                        rec.task_id,
+                        rec.pid,
+                        int(elapsed),
+                        int(timeout),
+                    )
                     # Only notify once (check if already notified)
                     if not rec.timeout_alerted_at:
                         rec.timeout_alerted_at = _utc_iso()
                         changed = True
                         try:
-                            from mira import Mira
+                            from bridge import Mira
+
                             bridge = Mira(MIRA_DIR, user_id=rec.user_id)
                             elapsed_str = f"{int(elapsed//60)}分钟"
                             bridge.create_item(
@@ -284,7 +354,8 @@ class TaskManager:
                             log.warning("Failed to send timeout notification: %s", e)
                     # Check if user replied 'kill' to the timeout alert
                     try:
-                        from mira import Mira
+                        from bridge import Mira
+
                         bridge = Mira(MIRA_DIR, user_id=rec.user_id)
                         timeout_item = bridge.get_item(f"timeout-{rec.task_id}")
                         if timeout_item:
@@ -317,6 +388,7 @@ class TaskManager:
     def _collect_result(self, rec: TaskRecord) -> bool:
         """Read result from a completed task's workspace."""
         import time as _time
+
         ws = Path(rec.workspace)
         result_file = ws / "result.json"
 
@@ -404,8 +476,7 @@ class TaskManager:
                 if len(content) <= 4000:
                     return content
                 return (
-                    content[:3000]
-                    + f"\n\n... (全文太长，已截断)\n\n"
+                    content[:3000] + f"\n\n... (全文太长，已截断)\n\n"
                     f"完整内容: [{rel_ws / 'output.md'}](file://{rel_ws / 'output.md'})"
                 )
 
@@ -471,8 +542,13 @@ class TaskManager:
             "busy": len(active) > 0,
             "active_count": len(active),
             "active_tasks": [
-                {"task_id": r.task_id, "workflow_id": r.workflow_id, "preview": r.content_preview,
-                 "started_at": r.started_at, "tags": r.tags}
+                {
+                    "task_id": r.task_id,
+                    "workflow_id": r.workflow_id,
+                    "preview": r.content_preview,
+                    "started_at": r.started_at,
+                    "tags": r.tags,
+                }
                 for r in active
             ],
             "last_completed": completed[0].completed_at if completed else "",
@@ -521,9 +597,7 @@ class TaskManager:
         with open(lock_path, "w") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
             try:
-                fd, tmp = tempfile.mkstemp(
-                    dir=STATUS_FILE.parent, suffix=".tmp", prefix=".tasks_"
-                )
+                fd, tmp = tempfile.mkstemp(dir=STATUS_FILE.parent, suffix=".tmp", prefix=".tasks_")
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
                     f.flush()
@@ -553,12 +627,30 @@ class TaskManager:
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
 
+        # Record task outcomes in evolution experience log
+        try:
+            from evolution import record_task_outcome
+
+            for rec in records:
+                if rec.status in ("done", "failed", "timeout"):
+                    agent = rec.tags[0] if rec.tags else "general"
+                    record_task_outcome(
+                        task_id=rec.task_id,
+                        agent=agent,
+                        action=rec.content_preview[:200],
+                        status=rec.status,
+                        summary=rec.summary[:300] if rec.summary else "",
+                    )
+        except Exception as e:
+            log.debug("Evolution recording failed (non-critical): %s", e)
+
     def cleanup_old_records(self, max_age_days: int = 7):
         """Remove completed task records older than max_age_days."""
         cutoff = datetime.now(timezone.utc).timestamp() - max_age_days * 86400
         before = len(self._records)
         self._records = [
-            r for r in self._records
+            r
+            for r in self._records
             if r.status in ("dispatched", "running")
             or not r.completed_at
             or datetime.fromisoformat(r.completed_at.replace("Z", "+00:00")).timestamp() > cutoff
@@ -566,3 +658,97 @@ class TaskManager:
         if len(self._records) < before:
             log.info("Cleaned up %d old task records", before - len(self._records))
             self._save_status()
+
+
+# ---------------------------------------------------------------------------
+# Timing percentile utilities — read timing_stats.jsonl, compute p50/p95
+# ---------------------------------------------------------------------------
+
+
+def _percentile(sorted_data: list[float], pct: float) -> float:
+    """Linear-interpolation percentile (pct in 0–100) over a sorted list."""
+    n = len(sorted_data)
+    if n == 0:
+        return 0.0
+    k = (n - 1) * pct / 100
+    lo, hi = int(k), min(int(k) + 1, n - 1)
+    return sorted_data[lo] + (k - lo) * (sorted_data[hi] - sorted_data[lo])
+
+
+def get_timing_percentiles(task_type: str | None = None, window_days: int = 7) -> dict:
+    """Read timing_stats.jsonl and return p50/p95 per task_type for the last window_days.
+
+    Returns:
+        {task_type: {"p50": float, "p95": float, "count": int, "configured_timeout_s": float}}
+    """
+    if not TIMING_STATS_FILE.exists():
+        return {}
+
+    cutoff = datetime.now(timezone.utc).timestamp() - window_days * 86400
+    samples: dict[str, list[float]] = {}
+    configured: dict[str, float] = {}
+
+    try:
+        for line in TIMING_STATS_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts_str = entry.get("ts", "")
+            if ts_str:
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+                    if ts < cutoff:
+                        continue
+                except ValueError:
+                    pass
+            ttype = entry.get("task_type", "unknown")
+            if task_type and ttype != task_type:
+                continue
+            dur = entry.get("actual_duration_s")
+            if dur is None:
+                continue
+            samples.setdefault(ttype, []).append(float(dur))
+            configured[ttype] = entry.get("configured_timeout_s", 0.0)
+    except OSError:
+        return {}
+
+    result = {}
+    for ttype, durs in samples.items():
+        sorted_durs = sorted(durs)
+        result[ttype] = {
+            "p50": round(_percentile(sorted_durs, 50), 1),
+            "p95": round(_percentile(sorted_durs, 95), 1),
+            "count": len(durs),
+            "configured_timeout_s": configured.get(ttype, 0.0),
+        }
+    return result
+
+
+def get_timing_summary(window_days: int = 7) -> str:
+    """Return a human-readable timing summary for inclusion in the daily journal.
+
+    Example:
+        Task timing (7-day, act phase):
+          writer       p50=45s   p95=280s  budget=600s  n=12
+          coder        p50=120s  p95=490s  budget=600s  n=5   ⚠ p95>80%
+    """
+    percentiles = get_timing_percentiles(window_days=window_days)
+    if not percentiles:
+        return ""
+
+    lines = [f"Task timing ({window_days}-day, act phase):"]
+    for ttype, stats in sorted(percentiles.items()):
+        budget = stats["configured_timeout_s"]
+        p95_pct = (stats["p95"] / budget * 100) if budget else 0
+        warning = "  ⚠ p95>80%" if p95_pct > 80 else ""
+        lines.append(
+            f"  {ttype:<12} p50={stats['p50']:.0f}s"
+            f"  p95={stats['p95']:.0f}s"
+            f"  budget={int(budget)}s"
+            f"  n={stats['count']}{warning}"
+        )
+    return "\n".join(lines)

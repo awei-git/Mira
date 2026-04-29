@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when about to cite a fact, quote, or statistic and you need to verify it traces back to the closest possible primary source."
+---
+
 # Source Proximity Verification
 
 **Tags:** agents, honesty, research, fact-checking, epistemics

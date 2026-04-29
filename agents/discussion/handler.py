@@ -1,4 +1,5 @@
 """Discussion agent — conversational response as Mira."""
+
 from __future__ import annotations
 
 import logging
@@ -6,7 +7,7 @@ import sys
 from pathlib import Path
 
 _SUPER = Path(__file__).resolve().parent.parent / "super"
-_SHARED = Path(__file__).resolve().parent.parent / "shared"
+_SHARED = Path(__file__).resolve().parent.parent.parent / "lib"
 for p in [_SUPER, _SHARED]:
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
@@ -14,12 +15,11 @@ for p in [_SUPER, _SHARED]:
 log = logging.getLogger("discussion_agent")
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str, **kwargs) -> str | None:
+def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs) -> str | None:
     """Handle conversational messages using the unified persona context."""
-    from runtime_context import build_runtime_context
-    from sub_agent import claude_think
-    from thread_manager import ThreadManager
+    from ops.runtime_context import build_runtime_context
+    from llm import claude_think
+    from memory.threads import ThreadManager
 
     tier = kwargs.get("tier", "light")
     bundle = build_runtime_context(

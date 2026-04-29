@@ -3,6 +3,7 @@
 Tracks dispatch/outcome of background processes, detects repeated failures,
 sends alerts via iPhone bridge, and generates daily health summaries.
 """
+
 import fcntl
 import json
 import logging
@@ -14,12 +15,13 @@ from pathlib import Path
 log = logging.getLogger("mira.health")
 
 # Paths
+from config import PIDS_DIR, LOGS_DIR, HEALTH_FILE, ARTIFACTS_DIR as _ARTIFACTS_DIR
+
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
 _MIRA_ROOT = _AGENTS_DIR.parent
-_BG_PID_DIR = _MIRA_ROOT / "agents" / ".bg_pids"
-_LOGS_DIR = _MIRA_ROOT / "logs"
-_HEALTH_FILE = _MIRA_ROOT / ".bg_health.json"
-from config import ARTIFACTS_DIR as _ARTIFACTS_DIR
+_BG_PID_DIR = PIDS_DIR
+_LOGS_DIR = LOGS_DIR
+_HEALTH_FILE = HEALTH_FILE
 _BRIEFINGS_DIR = _ARTIFACTS_DIR / "briefings"
 _PUBLISHED_DIR = _ARTIFACTS_DIR / "writings" / "_published"
 
@@ -37,6 +39,7 @@ CRITICAL_PROCESSES = {"journal", "reflect", "writing-pipeline"}
 # Health file I/O
 # ---------------------------------------------------------------------------
 
+
 def _load_health() -> dict:
     try:
         return json.loads(_HEALTH_FILE.read_text(encoding="utf-8"))
@@ -52,8 +55,7 @@ def _save_health(health: dict):
             fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
             try:
                 tmp = _HEALTH_FILE.with_suffix(".tmp")
-                tmp.write_text(json.dumps(health, indent=2, ensure_ascii=False),
-                               encoding="utf-8")
+                tmp.write_text(json.dumps(health, indent=2, ensure_ascii=False), encoding="utf-8")
                 tmp.replace(_HEALTH_FILE)
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
@@ -64,6 +66,7 @@ def _save_health(health: dict):
 # ---------------------------------------------------------------------------
 # Recording dispatch and outcomes
 # ---------------------------------------------------------------------------
+
 
 def record_dispatch(name: str, pid: int):
     """Record that a background process was dispatched."""
@@ -90,7 +93,7 @@ def record_outcome(name: str):
     today = now.strftime("%Y-%m-%d")
 
     # Determine success/failure from PID file exit code + fatal log errors
-    pid_file = _LOGS_DIR.parent / "bg_pids" / f"{name}.pid"
+    pid_file = _BG_PID_DIR / f"{name}.pid"
     log_file = _LOGS_DIR / f"bg-{name}.log"
     failed = False
     reason = ""
@@ -100,9 +103,12 @@ def record_outcome(name: str):
     if last_pid:
         try:
             import subprocess
+
             result = subprocess.run(
                 ["ps", "-p", str(last_pid), "-o", "stat="],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             # If ps returns nothing, process exited — check log for fatal errors only
         except Exception:
@@ -174,14 +180,17 @@ def record_outcome(name: str):
     return not failed
 
 
-def harvest_all():
+def harvest_all() -> list[str]:
     """Check all PID files for dead processes and record their outcomes.
 
     Called from cmd_run() to catch processes that finished between cycles.
+    Returns list of bg-names that completed *successfully* this cycle
+    (used by pipeline chaining to trigger follow-up jobs).
     """
     if not _BG_PID_DIR.exists():
-        return
+        return []
 
+    completed: list[str] = []
     for pid_file in _BG_PID_DIR.glob("*.pid"):
         name = pid_file.stem
         try:
@@ -189,12 +198,16 @@ def harvest_all():
             os.kill(pid, 0)  # still alive
         except (OSError, ValueError):
             # Process is dead — record outcome
-            record_outcome(name)
+            ok = record_outcome(name)
+            if ok:
+                completed.append(name)
+    return completed
 
 
 # ---------------------------------------------------------------------------
 # Alerting
 # ---------------------------------------------------------------------------
+
 
 def _maybe_alert(name: str, health: dict | None = None):
     """Send an alert if failure threshold is exceeded, with dedup."""
@@ -233,18 +246,16 @@ def _maybe_alert(name: str, health: dict | None = None):
 
     # Send alert via Mira bridge
     reason = proc.get("last_failure_reason", "unknown error")
-    msg = (
-        f"⚠️ {name} 连续失败 {consecutive} 次\n"
-        f"错误: {reason}\n"
-        f"日志: logs/bg-{name}.log"
-    )
+    msg = f"⚠️ {name} 连续失败 {consecutive} 次\n" f"错误: {reason}\n" f"日志: logs/bg-{name}.log"
 
     try:
         import sys
-        shared_dir = str(_AGENTS_DIR / "shared")
+
+        shared_dir = str(_AGENTS_DIR.parent / "lib")
         if shared_dir not in sys.path:
             sys.path.insert(0, shared_dir)
-        from mira import Mira
+        from bridge import Mira
+
         bridge = Mira()
         bridge.post(msg)
         log.warning("Health alert sent for '%s': %d consecutive failures", name, consecutive)
@@ -262,6 +273,7 @@ def _maybe_alert(name: str, health: dict | None = None):
 # ---------------------------------------------------------------------------
 # Anomaly detection
 # ---------------------------------------------------------------------------
+
 
 def check_anomalies():
     """Detect abnormal absences — processes that should have run but didn't.
@@ -289,7 +301,8 @@ def check_anomalies():
     # 1. Explore should run at least 2x per day by evening
     if now.hour >= 20:
         explore_count = sum(
-            1 for p, data in health.get("processes", {}).items()
+            1
+            for p, data in health.get("processes", {}).items()
             if p.startswith("explore-") and data.get("last_success", "")[:10] == today
         )
         if explore_count < 2:
@@ -348,10 +361,12 @@ def _maybe_anomaly_alert(message: str, health: dict):
 
     try:
         import sys
-        shared_dir = str(_AGENTS_DIR / "shared")
+
+        shared_dir = str(_AGENTS_DIR.parent / "lib")
         if shared_dir not in sys.path:
             sys.path.insert(0, shared_dir)
-        from mira import Mira
+        from bridge import Mira
+
         bridge = Mira()
         bridge.post(f"⚠️ 异常检测: {message}")
         log.warning("Anomaly alert: %s", message)
@@ -368,6 +383,7 @@ def _maybe_anomaly_alert(message: str, health: dict):
 # ---------------------------------------------------------------------------
 # Health summary for journal
 # ---------------------------------------------------------------------------
+
 
 def generate_health_summary() -> str:
     """Generate a plain-text health summary for inclusion in the daily journal."""
@@ -430,6 +446,7 @@ def generate_health_summary() -> str:
 # ---------------------------------------------------------------------------
 # Cleanup — prune old daily stats
 # ---------------------------------------------------------------------------
+
 
 def prune_old_stats(keep_days: int = 7):
     """Remove daily stats older than keep_days. Called from reflect or journal."""

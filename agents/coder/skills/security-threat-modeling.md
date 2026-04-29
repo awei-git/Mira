@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when a change introduces a new API endpoint, modifies auth logic, touches a data store, or crosses a service trust boundary."
+---
+
 # Security Threat Modeling at Design/Review Time
 
 **Tags:** coding, security, threat-modeling, architecture, review

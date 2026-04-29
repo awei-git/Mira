@@ -6,6 +6,7 @@ Phase 5 of the enhanced video pipeline:
 Scores on 8 dimensions and returns specific per-clip fix proposals
 for iterative refinement without full re-render.
 """
+
 import json
 import logging
 import sys
@@ -15,11 +16,12 @@ import urllib.error
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-if str(_AGENTS_DIR / "shared") not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+if str(_AGENTS_DIR.parent / "lib") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
-    GEMINI_VIDEO_MODEL, GEMINI_VIDEO_REVIEWER_MAX_TOKENS,
+    GEMINI_VIDEO_MODEL,
+    GEMINI_VIDEO_REVIEWER_MAX_TOKENS,
     GEMINI_REVIEWER_TEMPERATURE,
 )
 
@@ -86,9 +88,9 @@ Return ONLY this JSON:
 }}"""
 
 
-def review_rough_cut(video_path: Path, edit_plan: dict,
-                     taste_profile: str, api_key: str,
-                     work_dir: Path = None) -> dict:
+def review_rough_cut(
+    video_path: Path, edit_plan: dict, taste_profile: str, api_key: str, work_dir: Path = None
+) -> dict:
     """Review a rough cut video using Gemini native video analysis.
 
     Args:
@@ -107,8 +109,7 @@ def review_rough_cut(video_path: Path, edit_plan: dict,
 
     file_size = video_path.stat().st_size
     if file_size > 2 * 1024 * 1024 * 1024:  # 2GB safety limit for review
-        log.warning("Video too large for review upload: %.1f GB",
-                    file_size / (1024**3))
+        log.warning("Video too large for review upload: %.1f GB", file_size / (1024**3))
         return _empty_review("Video too large for review")
 
     # Upload video
@@ -134,18 +135,20 @@ def review_rough_cut(video_path: Path, edit_plan: dict,
     )
 
     payload = {
-        "contents": [{
-            "role": "user",
-            "parts": [
-                {
-                    "file_data": {
-                        "file_uri": file_uri,
-                        "mime_type": "video/mp4",
-                    }
-                },
-                {"text": prompt},
-            ],
-        }],
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "file_data": {
+                            "file_uri": file_uri,
+                            "mime_type": "video/mp4",
+                        }
+                    },
+                    {"text": prompt},
+                ],
+            }
+        ],
         "generationConfig": {
             "maxOutputTokens": GEMINI_VIDEO_REVIEWER_MAX_TOKENS,
             "temperature": GEMINI_REVIEWER_TEMPERATURE,
@@ -154,7 +157,8 @@ def review_rough_cut(video_path: Path, edit_plan: dict,
 
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        endpoint, data=body,
+        endpoint,
+        data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -194,8 +198,7 @@ def _parse_review_response(result: dict) -> dict:
 
         # Ensure overall score exists
         if "overall" not in review and "scores" in review:
-            scores = [s["score"] for s in review["scores"].values()
-                      if isinstance(s, dict) and "score" in s]
+            scores = [s["score"] for s in review["scores"].values() if isinstance(s, dict) and "score" in s]
             review["overall"] = round(sum(scores) / len(scores), 1) if scores else 5.0
 
         return review
@@ -207,10 +210,19 @@ def _parse_review_response(result: dict) -> dict:
 def _empty_review(reason: str) -> dict:
     """Return a neutral review when analysis fails."""
     return {
-        "scores": {dim: {"score": 5, "reason": reason}
-                   for dim in ["pacing", "color_consistency", "narrative_arc",
-                               "music_sync", "transitions", "clip_selection",
-                               "emotional_impact", "overall_polish"]},
+        "scores": {
+            dim: {"score": 5, "reason": reason}
+            for dim in [
+                "pacing",
+                "color_consistency",
+                "narrative_arc",
+                "music_sync",
+                "transitions",
+                "clip_selection",
+                "emotional_impact",
+                "overall_polish",
+            ]
+        },
         "overall": 5.0,
         "summary": f"Review unavailable: {reason}",
         "strengths": [],

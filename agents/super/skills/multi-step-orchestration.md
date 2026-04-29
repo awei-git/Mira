@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when determining whether a task genuinely requires multiple sequential agent steps due to real data dependencies, or can be handled atomically."
+---
+
 # Multi-Step Orchestration
 
 **Tags:** agents, orchestration, planning, dependencies, super-agent

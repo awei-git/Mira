@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when retouching a portrait to enhance rather than erase — removing only distractions while preserving identity, texture, and natural features."
+---
+
 # Portrait Retouching Philosophy
 
 **Tags:** photo, editing, retouching, portrait, skin

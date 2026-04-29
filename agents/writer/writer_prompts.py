@@ -13,9 +13,7 @@ def scaffold_prompt(idea_content: str, writing_type: str) -> str:
     Returns content in a structured format with markers so Python can
     split and save to separate files.
     """
-    framework = {"essay": "essay.md", "novel": "novel.md", "blog": "blog.md"}.get(
-        writing_type, "essay.md"
-    )
+    framework = {"essay": "essay.md", "novel": "novel.md", "blog": "blog.md"}.get(writing_type, "essay.md")
 
     return f"""你是写作项目的初始化助手。
 
@@ -54,11 +52,27 @@ def scaffold_prompt(idea_content: str, writing_type: str) -> str:
 
 def draft_prompt(writing_type: str, round_num: int) -> str:
     """Prompt for creating a first draft."""
-    framework = {"essay": "essay.md", "novel": "novel.md", "blog": "blog.md"}.get(
-        writing_type, "essay.md"
-    )
+    framework = {"essay": "essay.md", "novel": "novel.md", "blog": "blog.md"}.get(writing_type, "essay.md")
+
+    # Closed-loop: inject lessons learned from actual article/note performance.
+    # Wired 2026-04-18. Without this, lessons.md was written daily but never
+    # consumed — performance data did not shape future drafts.
+    lessons_block = ""
+    try:
+        from evolution.lessons import get_recent_lessons  # type: ignore
+
+        _lessons = get_recent_lessons(days=7)
+        if _lessons:
+            lessons_block = (
+                "## 最近的表现数据（从已发文章/notes 真实 reward 抽取的教训，"
+                "按此执行，不是参考）\n\n" + _lessons[:1500] + "\n\n"
+            )
+    except Exception:
+        pass
 
     return f"""你是严厉的责编，现在要写第{round_num}轮初稿。
+
+{lessons_block}
 
 ## 步骤
 
@@ -79,6 +93,10 @@ def draft_prompt(writing_type: str, round_num: int) -> str:
 - 不要碎片化断句、不要格言堆叠、不要机械排比
 - 每段要推进，不要用描写代替推进
 - 初稿允许粗糙但必须完整覆盖大纲中的所有要点
+
+## Epistemic calibration
+
+Epistemic calibration: When making factual claims, distinguish (1) things you know with high confidence from primary evidence, (2) things you infer with moderate confidence, and (3) things you are genuinely uncertain about. Use hedged language ("likely", "the evidence suggests", "I'm uncertain whether") for categories 2-3. Do not assert category 2 or 3 claims as if they were category 1.
 
 ## 输出
 
@@ -122,6 +140,11 @@ def critique_prompt(writing_type: str, round_num: int) -> str:
 - 标优先级：P0（不改不能发）、P1（不改会扣分）、P2（改了更好）
 - 重点检查AI味：碎片化断句、格言堆叠、机械排比、段首重复、形容词堆积
 - **重点检查个人声音**：文章是否有具体的第一人称经历？是否至少30%篇幅是"我遇到了X"、"我发现了Y"？如果通篇是第三人称分析，这是P0——不改不能发。**特别注意：Mira 是 AI agent，她的经历应该是 agent 的经历（跑 pipeline、读 paper、跟 human 对话、写 journal、学 skill），不是人类工程师的经历（调试内存泄漏、做安全审计、带实习生）。如果文中出现明显是编造的人类经历，这是P0。**
+- **Agent vantage 强制检查（P0）**：本文必须通过三个问题。任何一个不通过都是 P0：
+  1. **Q1 - human-writability test**: 具体点名一位 human writer，他能否写出这一篇？如果能，本文 P0 fail。如果说不出谁能写，说明角度独特，pass。
+  2. **Q2 - agent-specific 句子**: 引用稿中至少一句话，这句话只有 Mira（持续状态、能读自己历史输出、有 hard-coded priors、以 elevated permission 运行、被 RLHF 训练）这样的 entity 才能写。如果引不出来，P0 fail。
+  3. **Q3 - lens vs topic**: 本文承重的 substantive claim 是什么？AI vantage 是不是揭示这个 claim 的 lens？如果 claim 本身就是"做 AI 怎么样"，本文 P0 fail。
+  把这三题的答案写进审稿意见的"硬伤"section。
 
 ## 输出
 

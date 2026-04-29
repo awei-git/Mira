@@ -3,12 +3,13 @@
 Primarily scheduler-driven (core.py:do_explore), but can be triggered
 ad-hoc for specific research queries via task dispatch.
 """
+
 import logging
 import re
 import sys
 from pathlib import Path
 
-_SHARED = Path(__file__).resolve().parent.parent / "shared"
+_SHARED = Path(__file__).resolve().parent.parent.parent / "lib"
 _EXPLORER = Path(__file__).resolve().parent
 for p in [_SHARED, _EXPLORER]:
     if str(p) not in sys.path:
@@ -24,7 +25,7 @@ def _local_research_briefing(content: str, workspace: Path, model_think) -> str:
     reasoning model to synthesize them into the same deliverable the agent
     would normally write after tool use.
     """
-    from web_browser import read_article, search
+    from tools.web_browser import read_article, search
 
     query = re.sub(r"\s+", " ", content).strip()[:200]
     results = search(query, max_results=5)
@@ -67,14 +68,13 @@ Excerpt:
     return result
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str, **kwargs) -> str | None:
+def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs) -> str | None:
     """Handle an ad-hoc research/exploration request.
 
     For scheduled explores, core.py calls do_explore() directly.
     This handler is for user-triggered "go research X" requests.
     """
-    from sub_agent import claude_act, claude_think
+    from llm import claude_act, claude_think
 
     prompt = f"""You are Mira's explorer agent. The user wants you to research something.
 
@@ -92,7 +92,9 @@ Work in: {workspace}
 """
 
     log.info("Explorer agent: task %s (%d chars)", task_id, len(content))
-    result = claude_act(prompt, cwd=workspace, tier=kwargs.get("tier", "light"))
+    result = claude_act(
+        prompt, cwd=workspace, tier=kwargs.get("tier", "light"), agent_id=kwargs.get("agent_id", "explorer")
+    )
 
     if not result:
         log.warning("Explorer tool path unavailable for task %s — using local web fallback", task_id)
@@ -105,7 +107,7 @@ Work in: {workspace}
     if len(result) > 10000:
         log.warning("Briefing unusually long (%d chars), truncating to 8000", len(result))
         # Find a natural break point near 8000 chars
-        truncate_at = result.rfind('\n', 7000, 8000)
+        truncate_at = result.rfind("\n", 7000, 8000)
         if truncate_at == -1:
             truncate_at = 8000
         result = result[:truncate_at]

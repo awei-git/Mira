@@ -5,6 +5,7 @@ Phase 2: scene_log.json → Claude → screenplay.md + edit_plan.json
 Enhanced version injects taste profile, beat map, and editing skills
 to produce both a human-readable screenplay and a machine-parseable edit plan.
 """
+
 import json
 import logging
 from pathlib import Path
@@ -79,9 +80,7 @@ Be specific about timestamps and filenames. Only use scenes from the log.
 """
 
 
-def generate_screenplay(scene_log: dict, work_dir: Path,
-                        target_minutes: float = 4.0,
-                        claude_think_fn=None) -> str:
+def generate_screenplay(scene_log: dict, work_dir: Path, target_minutes: float = 4.0, claude_think_fn=None) -> str:
     """Generate a screenplay from the scene log.
 
     Args:
@@ -164,10 +163,10 @@ def generate_screenplay(scene_log: dict, work_dir: Path,
         target_minutes=target_minutes,
     )
 
-    log.info("Generating screenplay (target: %.1f min, %d scenes)",
-             target_minutes, len(visual_scenes))
+    log.info("Generating screenplay (target: %.1f min, %d scenes)", target_minutes, len(visual_scenes))
     # Use Gemini for speed; fall back to claude_think_fn if needed
-    from sub_agent import model_think
+    from llm import model_think
+
     screenplay = model_think(prompt, model_name="gemini", timeout=120)
     if not screenplay and claude_think_fn:
         screenplay = claude_think_fn(prompt, timeout=120)
@@ -264,10 +263,14 @@ Return ONLY this JSON (no markdown, no explanation):
 """
 
 
-def generate_edit_plan(scene_log: dict, beat_map: dict,
-                       taste_profile: str, work_dir: Path,
-                       content_mode: str = "family",
-                       claude_think_fn=None) -> tuple:
+def generate_edit_plan(
+    scene_log: dict,
+    beat_map: dict,
+    taste_profile: str,
+    work_dir: Path,
+    content_mode: str = "family",
+    claude_think_fn=None,
+) -> tuple:
     """Generate a structured edit plan with taste + beat awareness.
 
     Args:
@@ -324,15 +327,17 @@ def generate_edit_plan(scene_log: dict, beat_map: dict,
 
     # Beat summary
     from beat_analyzer import summarize_beat_map
+
     beat_summary = summarize_beat_map(beat_map)
 
     # Pacing instruction based on mode
     if content_mode == "travel":
-        pacing = ("Travel mode: cut on individual BEATS (2-3s per clip). "
-                  "Fast, driving momentum. Beat-synced cuts.")
+        pacing = "Travel mode: cut on individual BEATS (2-3s per clip). " "Fast, driving momentum. Beat-synced cuts."
     else:
-        pacing = ("Family mode: cut on PHRASES (3-5s per clip). "
-                  "Unhurried, observational. Phrase-synced cuts, NOT beat-synced.")
+        pacing = (
+            "Family mode: cut on PHRASES (3-5s per clip). "
+            "Unhurried, observational. Phrase-synced cuts, NOT beat-synced."
+        )
 
     # Trim scene summary if too large (keep under ~4000 chars)
     if len(scene_summary) > 4000:
@@ -356,11 +361,16 @@ def generate_edit_plan(scene_log: dict, beat_map: dict,
         content_mode_pacing=pacing,
     )
 
-    log.info("Generating edit plan (mode: %s, %d scenes, %d phrases)",
-             content_mode, len(visual_scenes), len(beat_map.get("phrases", [])))
+    log.info(
+        "Generating edit plan (mode: %s, %d scenes, %d phrases)",
+        content_mode,
+        len(visual_scenes),
+        len(beat_map.get("phrases", [])),
+    )
 
     # Use Gemini for edit plan (fast, good at structured JSON)
-    from sub_agent import model_think
+    from llm import model_think
+
     result = model_think(prompt, model_name="gemini", timeout=120)
 
     if not result:
@@ -373,7 +383,8 @@ def generate_edit_plan(scene_log: dict, beat_map: dict,
 
     # Also generate human-readable screenplay using original function
     screenplay = generate_screenplay(
-        scene_log, work_dir,
+        scene_log,
+        work_dir,
         target_minutes=beat_map.get("duration", 180) / 60,
         claude_think_fn=claude_think_fn,
     )
@@ -384,14 +395,16 @@ def generate_edit_plan(scene_log: dict, beat_map: dict,
         total_dur = sum(c.get("duration", 0) for c in clips)
         target_dur = beat_map.get("duration", 180)
         if total_dur < target_dur * 0.8:
-            log.warning("Edit plan too short: %.0fs vs %.0fs target. Regenerating with stronger constraint.",
-                        total_dur, target_dur)
+            log.warning(
+                "Edit plan too short: %.0fs vs %.0fs target. Regenerating with stronger constraint.",
+                total_dur,
+                target_dur,
+            )
             # Retry with even stronger prompt
             retry_prompt = (
                 f"The previous edit plan only had {len(clips)} clips totaling {total_dur:.0f}s. "
                 f"The song is {target_dur:.0f}s. You need ~{clip_count_est} clips. "
-                f"Generate a COMPLETE edit plan with enough clips to fill the entire song.\n\n"
-                + prompt
+                f"Generate a COMPLETE edit plan with enough clips to fill the entire song.\n\n" + prompt
             )
             result2 = model_think(retry_prompt, model_name="gemini", timeout=120)
             if result2:
@@ -399,22 +412,24 @@ def generate_edit_plan(scene_log: dict, beat_map: dict,
                 retry_total = sum(c.get("duration", 0) for c in retry_plan.get("clips", []))
                 if retry_total > total_dur:
                     edit_plan = retry_plan
-                    log.info("Retry: %d clips, %.0fs (was %d clips, %.0fs)",
-                             len(retry_plan.get("clips", [])), retry_total,
-                             len(clips), total_dur)
+                    log.info(
+                        "Retry: %d clips, %.0fs (was %d clips, %.0fs)",
+                        len(retry_plan.get("clips", [])),
+                        retry_total,
+                        len(clips),
+                        total_dur,
+                    )
 
     # ── Self-review pass ──
     if edit_plan.get("clips"):
         log.info("Self-review pass on edit plan (%d clips)", len(edit_plan["clips"]))
-        edit_plan = _self_review_plan(
-            edit_plan, taste_profile, beat_map, content_mode, claude_think_fn)
+        edit_plan = _self_review_plan(edit_plan, taste_profile, beat_map, content_mode, claude_think_fn)
 
     # Save edit plan
     work_dir.mkdir(parents=True, exist_ok=True)
     plan_path = work_dir / "edit_plan.json"
     plan_path.write_text(json.dumps(edit_plan, indent=2, ensure_ascii=False))
-    log.info("Edit plan saved: %s (%d clips)", plan_path,
-             len(edit_plan.get("clips", [])))
+    log.info("Edit plan saved: %s (%d clips)", plan_path, len(edit_plan.get("clips", [])))
 
     return screenplay, edit_plan
 
@@ -452,9 +467,7 @@ Fix any issues you find. Only change what's necessary — don't rewrite clips th
 Return ONLY the JSON."""
 
 
-def _self_review_plan(edit_plan: dict, taste_profile: str,
-                      beat_map: dict, content_mode: str,
-                      claude_think_fn) -> dict:
+def _self_review_plan(edit_plan: dict, taste_profile: str, beat_map: dict, content_mode: str, claude_think_fn) -> dict:
     """Self-review pass: check edit plan against taste profile and fix issues."""
     clips = edit_plan.get("clips", [])
     if not clips:
@@ -488,7 +501,8 @@ def _self_review_plan(edit_plan: dict, taste_profile: str,
         plan_summary=plan_summary,
     )
 
-    from sub_agent import model_think
+    from llm import model_think
+
     result = model_think(prompt, model_name="gemini", timeout=120)
     if not result:
         log.warning("Self-review returned empty, keeping original plan")
@@ -536,6 +550,7 @@ def _normalize_clip_keys(plan: dict):
         # Compute duration if missing
         if "duration" not in c and c.get("start_time") and c.get("end_time"):
             from scene_analyzer import _parse_ts
+
             st = str(c["start_time"])
             et = str(c["end_time"])
             c["start_time"] = st

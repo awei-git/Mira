@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when building, reviewing, or stress-testing a DCF model to derive an intrinsic value or price target for a security."
+---
+
 # Intrinsic Valuation (DCF)
 
 **Tags:** analyst, finance, valuation, dcf, equity

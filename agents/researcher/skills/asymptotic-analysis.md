@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when you need to extract dominant behavior of a quantity as a parameter grows large, using Laplace, saddle-point, or Watson's lemma for integral asymptotics."
+---
+
 # Asymptotic Analysis
 
 **Tags:** math, analysis, asymptotics, big-O, Laplace-method, saddle-point, Stirling

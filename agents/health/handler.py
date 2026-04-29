@@ -4,6 +4,7 @@ Tracks weight, sleep, vitals, symptoms, and checkup reports.
 All data processing uses LOCAL LLM (oMLX) only — raw health data
 never leaves localhost.
 """
+
 import json
 import logging
 import os
@@ -13,21 +14,29 @@ from pathlib import Path
 log = logging.getLogger("health_agent")
 
 from config import OMLX_DEFAULT_MODEL, DATABASE_URL
-from preflight import preflight_check
-from sub_agent import _omlx_call
+from publish.preflight import preflight_check
+from llm import _omlx_call
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str,
-           thread_history: str = "", thread_memory: str = "",
-           tier: str = "light") -> str | None:
+def handle(
+    workspace: Path,
+    task_id: str,
+    content: str,
+    sender: str,
+    thread_id: str,
+    thread_history: str = "",
+    thread_memory: str = "",
+    tier: str = "light",
+) -> str | None:
     """Main entry point for the health agent."""
     # Force local LLM for all health data processing (privacy boundary)
-    from sub_agent import set_model_policy
+    from llm import set_model_policy
+
     set_model_policy("omlx")
     log.info("Health agent: task=%s content=%s", task_id, content[:80])
 
     from health_store import HealthStore
+
     store = HealthStore(DATABASE_URL)
 
     # Resolve person_id: sender from iOS is device name (e.g. "iphone"),
@@ -74,8 +83,7 @@ def _extract_checkup_dir(content: str, workspace: Path) -> Path | None:
     return bridge_path / rel_path
 
 
-def preflight(workspace: Path, task_id: str, content: str,
-              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
     """Block malformed health tasks before we write to the DB or bridge files."""
     result = preflight_check(
         "file_write",
@@ -93,7 +101,9 @@ def preflight(workspace: Path, task_id: str, content: str,
         if checkup_dir is not None:
             if not checkup_dir.exists():
                 return False, f"PREFLIGHT BLOCKED [health]: 体检报告目录不存在: {checkup_dir}"
-            images = list(checkup_dir.glob("*.jpg")) + list(checkup_dir.glob("*.jpeg")) + list(checkup_dir.glob("*.png"))
+            images = (
+                list(checkup_dir.glob("*.jpg")) + list(checkup_dir.glob("*.jpeg")) + list(checkup_dir.glob("*.png"))
+            )
             if not images:
                 return False, f"PREFLIGHT BLOCKED [health]: 体检报告目录里没有可解析图片: {checkup_dir}"
 
@@ -163,16 +173,14 @@ Return ONLY the JSON object, no explanation."""
         return {"type": "query", "person": sender}
 
 
-def _handle_metric(store, workspace: Path, task_id: str,
-                   intent: dict, person: str) -> str:
+def _handle_metric(store, workspace: Path, task_id: str, intent: dict, person: str) -> str:
     """Record a health metric."""
     metric_type = intent.get("metric_type", "unknown")
     value = intent.get("value")
     unit = intent.get("unit", "")
 
     if value is None:
-        return _write_result(workspace, task_id,
-                             "I couldn't parse the value. Please try: 记录体重 72.5")
+        return _write_result(workspace, task_id, "I couldn't parse the value. Please try: 记录体重 72.5")
 
     store.insert_metric(person, metric_type, float(value), unit)
 
@@ -180,6 +188,7 @@ def _handle_metric(store, workspace: Path, task_id: str,
     try:
         from summary import write_summary_to_bridge
         from config import MIRA_DIR
+
         write_summary_to_bridge(store, Path(MIRA_DIR), person)
     except Exception:
         pass
@@ -197,8 +206,7 @@ def _handle_metric(store, workspace: Path, task_id: str,
     # Generate advice for concerning metrics (blood pressure, blood sugar)
     advice = None
     if metric_type in ("blood_pressure_sys", "blood_pressure_dia", "blood_sugar", "temperature"):
-        advice = _generate_on_demand_advice(
-            store, person, f"{metric_type}: {value}{unit}{trend_msg}", "metric")
+        advice = _generate_on_demand_advice(store, person, f"{metric_type}: {value}{unit}{trend_msg}", "metric")
 
     response = f"已记录 {person} 的{metric_type}: {value}{unit}{trend_msg}"
     if advice:
@@ -206,8 +214,7 @@ def _handle_metric(store, workspace: Path, task_id: str,
     return _write_result(workspace, task_id, response)
 
 
-def _handle_note(store, workspace: Path, task_id: str,
-                 intent: dict, person: str) -> str:
+def _handle_note(store, workspace: Path, task_id: str, intent: dict, person: str) -> str:
     """Record a health note (symptom, medication, etc.) and generate advice."""
     category = intent.get("category", "general")
     note_content = intent.get("content", "")
@@ -223,13 +230,19 @@ def _handle_note(store, workspace: Path, task_id: str,
     return _write_result(workspace, task_id, response)
 
 
-def _handle_query(store, workspace: Path, task_id: str,
-                  content: str, person: str) -> str:
+def _handle_query(store, workspace: Path, task_id: str, content: str, person: str) -> str:
     """Answer a health data query using local LLM."""
     # Gather recent data
     metrics_30d = {}
-    for metric_type in ["weight", "sleep_hours", "steps", "heart_rate",
-                        "blood_pressure_sys", "blood_pressure_dia", "blood_sugar"]:
+    for metric_type in [
+        "weight",
+        "sleep_hours",
+        "steps",
+        "heart_rate",
+        "blood_pressure_sys",
+        "blood_pressure_dia",
+        "blood_sugar",
+    ]:
         data = store.get_recent_metrics(person, metric_type, days=30)
         if data:
             metrics_30d[metric_type] = data
@@ -272,16 +285,15 @@ def _handle_query(store, workspace: Path, task_id: str,
     return _write_result(workspace, task_id, response)
 
 
-def _handle_report_request(store, workspace: Path, task_id: str,
-                           content: str, person: str) -> str:
+def _handle_report_request(store, workspace: Path, task_id: str, content: str, person: str) -> str:
     """Generate a health summary report."""
     from report import generate_weekly_report
+
     report = generate_weekly_report(store, person)
     return _write_result(workspace, task_id, report)
 
 
-def _handle_checkup(store, workspace: Path, task_id: str,
-                    content: str, person: str) -> str:
+def _handle_checkup(store, workspace: Path, task_id: str, content: str, person: str) -> str:
     """Handle uploaded checkup report — parse images and generate advice."""
     from ingest import parse_checkup_images
 
@@ -318,23 +330,26 @@ def _handle_checkup(store, workspace: Path, task_id: str,
     return _write_result(workspace, task_id, response)
 
 
-def _generate_on_demand_advice(store, person: str, input_text: str,
-                               category: str = "symptom") -> str | None:
+def _generate_on_demand_advice(store, person: str, input_text: str, category: str = "symptom") -> str | None:
     """Generate immediate GPT advice based on new input + existing health data.
 
     Unlike the daily scheduled insight, this runs on-demand whenever the user
     submits symptoms, notes, or checkup data — so they get actionable advice
     right away instead of waiting for the next daily check.
     """
-    from sub_agent import model_think
+    from llm import model_think
 
     # Gather context: recent metrics + notes + checkup
     data_parts = []
     for metric_name, label in [
-        ("weight", "体重(kg)"), ("body_fat", "体脂(%)"),
-        ("sleep_hours", "睡眠(h)"), ("heart_rate", "静息心率(bpm)"),
-        ("hrv", "HRV(ms)"), ("blood_oxygen", "血氧(%)"),
-        ("blood_pressure_sys", "收缩压(mmHg)"), ("blood_pressure_dia", "舒张压(mmHg)"),
+        ("weight", "体重(kg)"),
+        ("body_fat", "体脂(%)"),
+        ("sleep_hours", "睡眠(h)"),
+        ("heart_rate", "静息心率(bpm)"),
+        ("hrv", "HRV(ms)"),
+        ("blood_oxygen", "血氧(%)"),
+        ("blood_pressure_sys", "收缩压(mmHg)"),
+        ("blood_pressure_dia", "舒张压(mmHg)"),
         ("blood_sugar", "血糖(mmol/L)"),
     ]:
         latest = store.get_latest_metric(person, metric_name)
@@ -342,8 +357,7 @@ def _generate_on_demand_advice(store, person: str, input_text: str,
             data_parts.append(f"- {label}: {latest['value']:.1f}")
 
     notes = store.get_recent_notes(person, days=7)
-    note_parts = [f"- [{n.get('category','')}] {n.get('date','')}: {n.get('content','')}"
-                  for n in notes[:5]]
+    note_parts = [f"- [{n.get('category','')}] {n.get('date','')}: {n.get('content','')}" for n in notes[:5]]
 
     checkup_text = "无"
     reports = store.get_recent_reports(person, limit=1)
@@ -395,7 +409,8 @@ def _generate_on_demand_advice(store, person: str, input_text: str,
         # Temporarily allow cloud LLM for advice generation.
         # Raw health data was already stored locally; the prompt contains
         # only aggregated summaries, no PII beyond person_id.
-        from sub_agent import set_model_policy
+        from llm import set_model_policy
+
         set_model_policy(None)  # lift local-model restriction for this call
         try:
             result = model_think(prompt, model_name="gpt5", timeout=60)
@@ -416,6 +431,5 @@ def _write_result(workspace: Path, task_id: str, response: str) -> str:
         "summary": response[:500],
         "agent": "health",
     }
-    (workspace / "result.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    (workspace / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return response

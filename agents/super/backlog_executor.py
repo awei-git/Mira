@@ -1,11 +1,12 @@
 """Minimal executor for production-approved self-improvement actions."""
+
 from __future__ import annotations
 
 import json
 import logging
 from pathlib import Path
 
-from action_backlog import ActionBacklog
+from ops.backlog import ActionBacklog
 
 log = logging.getLogger("mira.backlog_executor")
 

@@ -11,6 +11,7 @@ Usage:
     # For LLM planner prompt:
     descriptions = registry.get_agent_descriptions()
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -21,15 +22,17 @@ from pathlib import Path
 from typing import Callable
 
 _SUPER_DIR = Path(__file__).resolve().parent
-_SHARED_DIR = _SUPER_DIR.parent / "shared"
+_SHARED_DIR = _SUPER_DIR.parent.parent / "lib"
 if str(_SHARED_DIR) not in sys.path:
     sys.path.insert(0, str(_SHARED_DIR))
 
-from capability_policy import get_capability_policy, resolve_capability_class
+from ops.policy import get_capability_policy, resolve_capability_class
 
 log = logging.getLogger("mira.registry")
 
 _AGENTS_DIR = _SUPER_DIR.parent  # agents/
+
+
 class AgentManifest:
     """Parsed agent manifest."""
 
@@ -46,6 +49,10 @@ class AgentManifest:
             self.name,
             data.get("capability_class"),
         )
+        # Tool access control: if absent, defaults to full access (legacy compat)
+        self.allowed_tools: list[str] | None = data.get("allowed_tools")
+        # Permission scopes: machine-readable resource/API access declarations
+        self.permissions: list[str] = data.get("permissions", [])
         self.agent_dir: Path = agent_dir
 
     def handler_path(self) -> tuple[Path, str]:
@@ -118,7 +125,7 @@ class AgentRegistry:
             sys.path.insert(0, agent_dir)
 
         # Also ensure shared is in path
-        shared_dir = str(self._agents_dir / "shared")
+        shared_dir = str(self._agents_dir.parent / "lib")
         if shared_dir not in sys.path:
             sys.path.insert(0, shared_dir)
 
@@ -170,6 +177,13 @@ class AgentRegistry:
             manifest.capability_class if manifest else None,
         )
         return policy.requires_preflight
+
+    def get_allowed_tools(self, name: str) -> list[str] | None:
+        """Return the allowed_tools list for an agent, or None if unrestricted."""
+        manifest = self._manifests.get(name)
+        if not manifest:
+            return None
+        return manifest.allowed_tools
 
     def get_capability_class(self, name: str) -> str:
         manifest = self._manifests.get(name)

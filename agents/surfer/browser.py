@@ -10,6 +10,7 @@ Capabilities beyond web_browser.py:
 - Multi-tab sessions
 - Cookie/auth persistence
 """
+
 import base64
 import json
 import logging
@@ -20,12 +21,14 @@ from pathlib import Path
 from typing import Optional
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-if str(_AGENTS_DIR / "shared") not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+if str(_AGENTS_DIR.parent / "lib") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
-    BROWSER_DEFAULT_TIMEOUT_MS, BROWSER_NETWORKIDLE_TIMEOUT_MS,
-    BROWSER_DOMCONTENTLOADED_TIMEOUT_MS, BROWSER_SCROLL_WAIT_MS,
+    BROWSER_DEFAULT_TIMEOUT_MS,
+    BROWSER_NETWORKIDLE_TIMEOUT_MS,
+    BROWSER_DOMCONTENTLOADED_TIMEOUT_MS,
+    BROWSER_SCROLL_WAIT_MS,
     BROWSER_TYPING_DELAY_MS,
 )
 
@@ -55,8 +58,9 @@ class BrowserResult:
 class BrowserSession:
     """Manages a Playwright browser session with persistent state."""
 
-    def __init__(self, headless: bool = True, timeout: int = BROWSER_DEFAULT_TIMEOUT_MS,
-                 screenshots_dir: Optional[Path] = None):
+    def __init__(
+        self, headless: bool = True, timeout: int = BROWSER_DEFAULT_TIMEOUT_MS, screenshots_dir: Optional[Path] = None
+    ):
         self._headless = headless
         self._timeout = timeout
         self._screenshots_dir = screenshots_dir
@@ -75,6 +79,7 @@ class BrowserSession:
 
     def start(self):
         from playwright.sync_api import sync_playwright
+
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(headless=self._headless)
         self._context = self._browser.new_context(
@@ -197,13 +202,15 @@ class BrowserSession:
         """Extract readable text from the current page."""
         self._ensure_page()
         try:
-            text = self._page.evaluate("""() => {
+            text = self._page.evaluate(
+                """() => {
                 const remove = ['script', 'style', 'noscript', 'svg', 'iframe'];
                 remove.forEach(tag => {
                     document.querySelectorAll(tag).forEach(el => el.remove());
                 });
                 return document.body.innerText;
-            }""")
+            }"""
+            )
             return _clean_text(text or "")
         except Exception as e:
             log.warning("get_page_text failed: %s", e)
@@ -213,7 +220,8 @@ class BrowserSession:
         """Extract visible links from the current page."""
         self._ensure_page()
         try:
-            links = self._page.evaluate(f"""() => {{
+            links = self._page.evaluate(
+                f"""() => {{
                 const anchors = Array.from(document.querySelectorAll('a[href]'));
                 return anchors
                     .filter(a => a.offsetParent !== null && a.textContent.trim())
@@ -222,7 +230,8 @@ class BrowserSession:
                         text: a.textContent.trim().substring(0, 100),
                         href: a.href,
                     }}));
-            }}""")
+            }}"""
+            )
             return links or []
         except Exception:
             return []
@@ -231,7 +240,8 @@ class BrowserSession:
         """Extract visible form fields from the current page."""
         self._ensure_page()
         try:
-            fields = self._page.evaluate("""() => {
+            fields = self._page.evaluate(
+                """() => {
                 const inputs = Array.from(document.querySelectorAll(
                     'input, textarea, select, button[type="submit"]'
                 ));
@@ -250,7 +260,8 @@ class BrowserSession:
                                  : el.name ? `[name="${el.name}"]`
                                  : '',
                     }));
-            }""")
+            }"""
+            )
             return fields or []
         except Exception:
             return []
@@ -264,7 +275,10 @@ class BrowserSession:
             text = self.get_page_text()
             links = self.get_links(max_links=30)
             return BrowserResult(
-                url=url, title=title, text=text, links=links,
+                url=url,
+                title=title,
+                text=text,
+                links=links,
             )
         except Exception as e:
             return BrowserResult(error=f"Snapshot failed: {e}")

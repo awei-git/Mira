@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when moving from observed patterns to a precisely stated, falsifiable conjecture that should be stress-tested before any proof attempt."
+---
+
 # Conjecture Formulation and Testing
 
 **Tags:** math, research, conjectures, counterexamples, discovery, problem-solving

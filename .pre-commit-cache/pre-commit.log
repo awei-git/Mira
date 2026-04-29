@@ -13,7 +13,7 @@ sys.platform: darwin
 ### error information
 
 ```
-An error has occurred: InvalidConfigError: 
+An error has occurred: InvalidConfigError:
 =====> .pre-commit-config.yaml is not a file
 ```
 
@@ -38,6 +38,6 @@ Traceback (most recent call last):
     yield
   File "/opt/homebrew/lib/python3.12/site-packages/cfgv.py", line 435, in load_from_filename
     raise ValidationError(f'{display_filename} is not a file')
-pre_commit.clientlib.InvalidConfigError: 
+pre_commit.clientlib.InvalidConfigError:
 =====> .pre-commit-config.yaml is not a file
 ```

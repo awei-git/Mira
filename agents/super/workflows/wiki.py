@@ -3,22 +3,29 @@
 Called after journal (daily) and during reflect (weekly maintenance).
 Creates and updates topic-indexed wiki pages from reading notes.
 """
+
 import logging
 import sys
 from datetime import datetime
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
-from sub_agent import claude_think
-from soul_manager import load_soul, format_soul
+from llm import claude_think, model_think
+from memory.soul import load_soul, format_soul
 
-from wiki_manager import (
+from knowledge.wiki import (
     WIKI_DIR,
-    list_wiki_pages, load_wiki_page, save_wiki_page,
-    detect_wiki_candidates, get_notes_for_topic,
-    find_related_pages, rebuild_wiki_index, _load_meta,
+    list_wiki_pages,
+    load_wiki_page,
+    save_wiki_page,
+    detect_wiki_candidates,
+    get_notes_for_topic,
+    find_related_pages,
+    rebuild_wiki_index,
+    _load_meta,
+    _save_meta,
 )
 
 log = logging.getLogger("mira")
@@ -108,8 +115,8 @@ Reply with ONLY the category name, nothing else.
 # Main workflow
 # ---------------------------------------------------------------------------
 
-def do_wiki_update(trigger: str = "journal", new_content: str = "",
-                   user_id: str = "ang"):
+
+def do_wiki_update(trigger: str = "journal", new_content: str = "", user_id: str = "ang"):
     """Update the wiki with today's knowledge.
 
     Called after journal (daily) or manually.
@@ -141,20 +148,19 @@ def do_wiki_update(trigger: str = "journal", new_content: str = "",
                 if not today_notes:
                     continue
 
-                new_material = "\n\n---\n\n".join(
-                    f"### {n['title']}\n{n['content'][:800]}"
-                    for n in today_notes[:5]
-                )
+                new_material = "\n\n---\n\n".join(f"### {n['title']}\n{n['content'][:800]}" for n in today_notes[:5])
 
                 prompt = _UPDATE_PAGE_PROMPT.format(
                     current_content=current[:3000],
                     new_material=new_material[:2000],
                     date=datetime.now().strftime("%Y-%m-%d"),
                 )
-                updated = claude_think(prompt, timeout=60, tier="light")
+                updated = model_think(prompt, model_name="omlx", timeout=90)
                 if updated and len(updated) > len(current) * 0.5:
                     save_wiki_page(
-                        slug, title, updated,
+                        slug,
+                        title,
+                        updated,
                         source_count=page_info.get("source_count", 0) + len(today_notes),
                         reason=f"updated with {len(today_notes)} new notes",
                     )
@@ -193,8 +199,7 @@ def _create_new_page(candidate: dict, user_id: str = "ang"):
 
     # Format source material
     sources_text = "\n\n---\n\n".join(
-        f"### {n['title']}\n*{n['date']}*\n\n{n['content'][:800]}"
-        for n in source_notes[:8]
+        f"### {n['title']}\n*{n['date']}*\n\n{n['content'][:800]}" for n in source_notes[:8]
     )
 
     # Load soul for identity context
@@ -210,7 +215,7 @@ def _create_new_page(candidate: dict, user_id: str = "ang"):
         n_sources=len(source_notes),
     )
 
-    content = claude_think(prompt, timeout=90, tier="light")
+    content = model_think(prompt, model_name="omlx", timeout=120)
     if not content or len(content) < 200:
         log.warning("Wiki: page creation for '%s' produced insufficient content", topic)
         return
@@ -225,27 +230,29 @@ def _create_new_page(candidate: dict, user_id: str = "ang"):
             desc = line.strip("> ").strip()
             break
 
-    save_wiki_page(slug, topic, content,
-                   description=desc,
-                   category=category,
-                   source_count=len(source_notes),
-                   reason=f"created from {len(source_notes)} notes")
+    save_wiki_page(
+        slug,
+        topic,
+        content,
+        description=desc,
+        category=category,
+        source_count=len(source_notes),
+        reason=f"created from {len(source_notes)} notes",
+    )
 
     # Create knowledge links
     _create_wiki_links(slug, source_notes, user_id=user_id)
-    log.info("Wiki: created page '%s' (%s) from %d notes",
-             topic, slug, len(source_notes))
+    log.info("Wiki: created page '%s' (%s) from %d notes", topic, slug, len(source_notes))
 
 
 def _categorize_topic(topic: str, description: str) -> str:
     """Categorize a topic using a lightweight LLM call."""
     try:
         prompt = _CATEGORIZE_PROMPT.format(topic=topic, description=description)
-        result = claude_think(prompt, timeout=15, tier="light")
+        result = model_think(prompt, model_name="omlx", timeout=30)
         if result:
             cat = result.strip().lower().split()[0]
-            valid = {"technology", "philosophy", "craft", "markets",
-                     "society", "science", "personal"}
+            valid = {"technology", "philosophy", "craft", "markets", "society", "science", "personal"}
             if cat in valid:
                 return cat
     except Exception:
@@ -256,10 +263,19 @@ def _categorize_topic(topic: str, description: str) -> str:
 def _create_wiki_links(slug: str, source_notes: list[dict], user_id: str = "ang"):
     """Create knowledge links between a wiki page and its source notes."""
     try:
-        from knowledge_links import add_link
+        from knowledge.links import add_link
+
         for note in source_notes[:10]:
-            add_link("wiki", slug, "reading_note", note.get("path", ""),
-                     "related", confidence=0.7, created_by="wiki", user_id=user_id)
+            add_link(
+                "wiki",
+                slug,
+                "reading_note",
+                note.get("path", ""),
+                "related",
+                confidence=0.7,
+                created_by="wiki",
+                user_id=user_id,
+            )
     except Exception as e:
         log.debug("Wiki link creation failed: %s", e)
 
@@ -267,6 +283,7 @@ def _create_wiki_links(slug: str, source_notes: list[dict], user_id: str = "ang"
 # ---------------------------------------------------------------------------
 # Weekly maintenance
 # ---------------------------------------------------------------------------
+
 
 def do_wiki_maintenance(user_id: str = "ang"):
     """Weekly wiki health check — run during reflect.
@@ -302,8 +319,9 @@ def do_wiki_maintenance(user_id: str = "ang"):
                 page_path.unlink()
             del pages[slug]
             pruned += 1
-            log.info("Wiki maintenance: pruned thin stale page '%s' (%d words, %d days old)",
-                     slug, word_count, age_days)
+            log.info(
+                "Wiki maintenance: pruned thin stale page '%s' (%d words, %d days old)", slug, word_count, age_days
+            )
 
     if pruned:
         meta["pages"] = pages
@@ -316,11 +334,19 @@ def do_wiki_maintenance(user_id: str = "ang"):
             related = find_related_pages(content, exclude_slug=slug)
             if related:
                 try:
-                    from knowledge_links import add_link
+                    from knowledge.links import add_link
+
                     for r_slug in related:
-                        add_link("wiki", slug, "wiki", r_slug,
-                                 "related", confidence=0.5, created_by="wiki-maintenance",
-                                 user_id=user_id)
+                        add_link(
+                            "wiki",
+                            slug,
+                            "wiki",
+                            r_slug,
+                            "related",
+                            confidence=0.5,
+                            created_by="wiki-maintenance",
+                            user_id=user_id,
+                        )
                 except Exception:
                     pass
 

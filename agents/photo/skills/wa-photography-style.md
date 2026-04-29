@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when editing, selecting, or scoring WA's photos to align with his established cinematic, light-chasing, warm-cool separation aesthetic."
+---
+
 # WA Photography Style — Learned from 1162 Photos
 
 **Tags:** photo, style, personal, editing, composition, selection

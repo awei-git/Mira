@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when choosing how to expose a scene where dynamic range exceeds sensor capacity, or diagnosing a RAW file with exposure or highlight/shadow issues."
+---
+
 # Expose for Recovery
 
 **Tags:** photo, exposure, histogram, ETTR, dynamic-range, sensor-physics

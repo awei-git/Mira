@@ -14,13 +14,13 @@ for repo in "${REPOS[@]}"; do
         continue
     fi
     cd "$repo"
-    
+
     # Skip if nothing to commit
     if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
         echo "SKIP $repo (clean)"
         continue
     fi
-    
+
     git add -A
     git commit -m "nightly auto-commit $(date +%Y-%m-%d)" || true
     git push || echo "WARN: push failed for $repo"

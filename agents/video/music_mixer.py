@@ -5,6 +5,7 @@ Phase 4: rough_cut.mp4 + music file → final.mp4
 Includes auto-download of royalty-free music from Incompetech (Kevin MacLeod)
 when no music file is provided. CC BY 3.0 license.
 """
+
 import json
 import logging
 import random
@@ -42,21 +43,26 @@ def get_duration(file_path: Path) -> float:
     """Get media duration in seconds."""
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-show_entries",
-             "format=duration", "-of", "csv=p=0", str(file_path)],
-            capture_output=True, text=True, timeout=10,
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", str(file_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return float(result.stdout.strip() or 0)
     except Exception:
         return 0
 
 
-def mix_music(video_path: Path, music_path: Path, output_path: Path,
-              music_volume: float = 0.3,
-              original_volume: float = 0.15,
-              fade_in: float = 2.0,
-              fade_out: float = 3.0,
-              speech_segments: list[dict] | None = None) -> bool:
+def mix_music(
+    video_path: Path,
+    music_path: Path,
+    output_path: Path,
+    music_volume: float = 0.3,
+    original_volume: float = 0.15,
+    fade_in: float = 2.0,
+    fade_out: float = 3.0,
+    speech_segments: list[dict] | None = None,
+) -> bool:
     """Mix background music with video's original audio, with auto-ducking.
 
     When speech_segments are provided (from Whisper transcription), the music
@@ -86,12 +92,8 @@ def mix_music(video_path: Path, music_path: Path, output_path: Path,
 
         # Build volume expression that boosts original audio during speech
         # and keeps it low otherwise
-        speech_vol_expr = _build_speech_volume_expr(speech_segments,
-                                                     speech_vol=0.85,
-                                                     silent_vol=original_volume)
-        music_duck_expr = _build_speech_volume_expr(speech_segments,
-                                                     speech_vol=0.08,
-                                                     silent_vol=music_volume)
+        speech_vol_expr = _build_speech_volume_expr(speech_segments, speech_vol=0.85, silent_vol=original_volume)
+        music_duck_expr = _build_speech_volume_expr(speech_segments, speech_vol=0.08, silent_vol=music_volume)
 
         filter_complex = (
             # Original audio: loud during speech, quiet otherwise
@@ -118,21 +120,35 @@ def mix_music(video_path: Path, music_path: Path, output_path: Path,
         )
 
     cmd = [
-        "ffmpeg", "-y",
-        "-i", str(video_path),
-        "-i", str(music_path),
-        "-filter_complex", filter_complex,
-        "-map", "0:v",
-        "-map", "[aout]",
-        "-c:v", "copy",
-        "-c:a", "aac", "-b:a", "192k",
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        "-i",
+        str(music_path),
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "0:v",
+        "-map",
+        "[aout]",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
         "-shortest",
         str(output_path),
     ]
 
-    log.info("Mixing music: %s + %s → %s%s",
-             video_path.name, music_path.name, output_path.name,
-             " (with ducking)" if has_speech else "")
+    log.info(
+        "Mixing music: %s + %s → %s%s",
+        video_path.name,
+        music_path.name,
+        output_path.name,
+        " (with ducking)" if has_speech else "",
+    )
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -141,9 +157,16 @@ def mix_music(video_path: Path, music_path: Path, output_path: Path,
             # Fallback: try without ducking if the volume expression was too complex
             if has_speech:
                 log.info("Retrying without ducking...")
-                return mix_music(video_path, music_path, output_path,
-                                music_volume, original_volume,
-                                fade_in, fade_out, speech_segments=None)
+                return mix_music(
+                    video_path,
+                    music_path,
+                    output_path,
+                    music_volume,
+                    original_volume,
+                    fade_in,
+                    fade_out,
+                    speech_segments=None,
+                )
             return False
         log.info("Music mix complete: %s (%.1fs)", output_path.name, video_dur)
         return True
@@ -155,10 +178,7 @@ def mix_music(video_path: Path, music_path: Path, output_path: Path,
         return False
 
 
-def _build_speech_volume_expr(segments: list[dict],
-                               speech_vol: float,
-                               silent_vol: float,
-                               pad: float = 0.3) -> str:
+def _build_speech_volume_expr(segments: list[dict], speech_vol: float, silent_vol: float, pad: float = 0.3) -> str:
     """Build an ffmpeg volume expression that switches based on speech timing.
 
     Creates a between(t,start,end) expression chain. Adds padding around each
@@ -190,9 +210,7 @@ def _build_speech_volume_expr(segments: list[dict],
         merged = sorted(merged[:30], key=lambda x: x[0])
 
     # Build expression: if any between() matches → speech_vol, else silent_vol
-    conditions = "+".join(
-        f"between(t,{s:.1f},{e:.1f})" for s, e in merged
-    )
+    conditions = "+".join(f"between(t,{s:.1f},{e:.1f})" for s, e in merged)
     return f"if({conditions},{speech_vol},{silent_vol})"
 
 
@@ -200,10 +218,7 @@ def find_music(music_dir: Path) -> list[Path]:
     """Find music files in a directory."""
     if not music_dir.exists():
         return []
-    return sorted([
-        f for f in music_dir.iterdir()
-        if f.suffix.lower() in MUSIC_EXTS and not f.name.startswith(".")
-    ])
+    return sorted([f for f in music_dir.iterdir() if f.suffix.lower() in MUSIC_EXTS and not f.name.startswith(".")])
 
 
 # ---------------------------------------------------------------------------
@@ -231,8 +246,9 @@ def _fetch_catalog() -> list[dict]:
         return []
 
 
-def search_music(mood: str = "default", min_duration: float = 60,
-                 max_duration: float = 300, genre: str = "") -> list[dict]:
+def search_music(
+    mood: str = "default", min_duration: float = 60, max_duration: float = 300, genre: str = ""
+) -> list[dict]:
     """Search Incompetech catalog by mood and duration.
 
     Args:
@@ -305,16 +321,14 @@ def download_music(track: dict, output_dir: Path) -> Path | None:
                 log.error("Download too small (%d bytes), likely 404", len(data))
                 return None
             local_path.write_bytes(data)
-            log.info("Downloaded: %s (%.1f MB)",
-                     filename, len(data) / (1024 * 1024))
+            log.info("Downloaded: %s (%.1f MB)", filename, len(data) / (1024 * 1024))
             return local_path
     except Exception as e:
         log.error("Download failed for %s: %s", filename, e)
         return None
 
 
-def auto_select_music(mood: str, video_duration: float,
-                      output_dir: Path) -> Path | None:
+def auto_select_music(mood: str, video_duration: float, output_dir: Path) -> Path | None:
     """Automatically find and download a matching track.
 
     Selects a track slightly longer than the video duration,
@@ -347,9 +361,12 @@ def auto_select_music(mood: str, video_duration: float,
         return None
 
     # Pick randomly from top 5 matches for variety
-    pick = random.choice(tracks[:min(5, len(tracks))])
-    log.info("Selected: '%s' by Kevin MacLeod (mood: %s, %.0fs)",
-             pick.get("title", "").strip(), pick.get("feel", ""),
-             float(pick.get("duration", 0)))
+    pick = random.choice(tracks[: min(5, len(tracks))])
+    log.info(
+        "Selected: '%s' by Kevin MacLeod (mood: %s, %.0fs)",
+        pick.get("title", "").strip(),
+        pick.get("feel", ""),
+        float(pick.get("duration", 0)),
+    )
 
     return download_music(pick, output_dir)

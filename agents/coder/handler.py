@@ -9,20 +9,39 @@ The coder agent:
 - Validates output: checks for syntax errors in generated/modified code
 - Prioritizes finding and fixing problems over writing new code
 """
+
 import ast
 import logging
 import re
 from pathlib import Path
 
-from soul_manager import load_soul, format_soul, load_skills_for_task
-from sub_agent import claude_act, claude_think
+from memory.soul import load_soul, format_soul, load_skills_for_task
+from llm import claude_act, claude_think
 
 log = logging.getLogger("coder_agent")
 
 _SNAPSHOT_SUFFIXES = {
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".md", ".txt",
-    ".yaml", ".yml", ".toml", ".sh", ".sql", ".go", ".rs", ".java",
-    ".c", ".cc", ".cpp", ".h", ".hpp",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".json",
+    ".md",
+    ".txt",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".sh",
+    ".sql",
+    ".go",
+    ".rs",
+    ".java",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".h",
+    ".hpp",
 }
 _SNAPSHOT_SKIP = {"output.md", "summary.txt", "worker.log", "result.json", "exec_log.jsonl"}
 _SNAPSHOT_FILE_LIMIT = 12
@@ -93,10 +112,17 @@ def _snapshot_workspace(workspace: Path) -> str:
     return "\n\n".join(blocks) if blocks else "No readable code files in workspace."
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str,
-           thread_history: str = "", thread_memory: str = "",
-           tier: str = "light") -> str | None:
+def handle(
+    workspace: Path,
+    task_id: str,
+    content: str,
+    sender: str,
+    thread_id: str,
+    thread_history: str = "",
+    thread_memory: str = "",
+    tier: str = "light",
+    agent_id: str = "coder",
+) -> str | None:
     """Handle a coding task. Returns output text or None on failure."""
     soul = load_soul()
     soul_ctx = format_soul(soul)
@@ -126,8 +152,8 @@ Work in: {workspace}
 Write results to {workspace}/output.md when done.
 """
 
-    log.info("Coder agent: task %s (tier=%s, %d chars)", task_id, tier, len(content))
-    result = claude_act(prompt, cwd=workspace, tier=tier)
+    log.info("Coder agent: task %s (tier=%s, agent=%s, %d chars)", task_id, tier, agent_id, len(content))
+    result = claude_act(prompt, cwd=workspace, tier=tier, agent_id=agent_id)
 
     if not result:
         log.warning("Coder agent tool path unavailable for task %s — using analysis fallback", task_id)

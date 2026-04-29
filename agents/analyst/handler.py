@@ -8,14 +8,15 @@ Feedback loop: when the briefing can't answer a question, the question
 is logged to tetra/feedback/gaps.jsonl. Tetra reads this on next run
 to improve coverage.
 """
+
 import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 from config import ARTIFACTS_DIR, LOCAL_TZ
-from soul_manager import load_skills_for_task
-from sub_agent import claude_think
+from memory.soul import load_skills_for_task
+from llm import claude_think
 
 log = logging.getLogger("analyst_agent")
 
@@ -49,8 +50,9 @@ def _find_latest_report() -> Path | None:
 def _web_supplement(content: str, max_chars: int = 4000) -> str:
     """Fetch live web data to supplement Tetra briefing."""
     try:
-        from web_browser import search_and_read
+        from tools.web_browser import search_and_read
         import re
+
         query = re.sub(r"[，。！？\n]", " ", content[:120]).strip()
         log.info("Fetching web supplement for analyst: %s", query[:60])
         result = search_and_read(query, max_results=3, max_chars_per_page=1500)
@@ -61,9 +63,15 @@ def _web_supplement(content: str, max_chars: int = 4000) -> str:
     return ""
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str,
-           thread_history: str = "", thread_memory: str = "") -> str | None:
+def handle(
+    workspace: Path,
+    task_id: str,
+    content: str,
+    sender: str,
+    thread_id: str,
+    thread_history: str = "",
+    thread_memory: str = "",
+) -> str | None:
     """Answer a market question using Tetra briefing + live web data.
 
     1. Load latest Tetra briefing (real data from daily pipeline)
@@ -124,6 +132,8 @@ Use specific data from the sources. Be concise and direct.
 
 Answer in the same language as the question.
 If neither source covers this topic well, start your answer with [GAP] and still try your best to answer.
+
+Epistemic calibration: When making factual claims, distinguish (1) things you know with high confidence from primary evidence, (2) things you infer with moderate confidence, and (3) things you are genuinely uncertain about. Use hedged language ("likely", "the evidence suggests", "I'm uncertain whether") for categories 2-3. Do not assert category 2 or 3 claims as if they were category 1.
 """
 
     result = claude_think(prompt, timeout=120, tier="heavy")

@@ -1,15 +1,19 @@
 """Configuration constants for the writing pipeline."""
+
 from pathlib import Path
 import sys
 
 # Ensure shared config is importable
-_shared_dir = str(Path(__file__).resolve().parent.parent / "shared")
+_shared_dir = str(Path(__file__).resolve().parent.parent.parent / "lib")
 if _shared_dir not in sys.path:
     sys.path.insert(0, _shared_dir)
 
 from config import (
-    WRITINGS_OUTPUT_DIR, CLAUDE_BIN as _CLAUDE_BIN,
-    WRITER_CLAUDE_TIMEOUT, WRITER_MAX_RETRIES, WRITER_MAX_STEPS_PER_RUN,
+    WRITINGS_OUTPUT_DIR,
+    CLAUDE_BIN as _CLAUDE_BIN,
+    WRITER_CLAUDE_TIMEOUT,
+    WRITER_MAX_RETRIES,
+    WRITER_MAX_STEPS_PER_RUN,
 )
 
 # Base paths — writer agent directory (resources live here now)

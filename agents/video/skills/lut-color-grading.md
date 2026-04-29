@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when applying consistent 3D LUT color grading across video clips using ffmpeg lut3d filter for a specific mood or look."
+---
+
 # LUT Color Grading Pipeline
 
 **Tags:** video, color-grading, LUT, ffmpeg, post-production

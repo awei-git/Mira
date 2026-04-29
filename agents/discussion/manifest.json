@@ -6,5 +6,7 @@
   "tier": "light",
   "timeout_category": "short",
   "entry_point": "handler.py:handle",
-  "requires_workspace": false
+  "requires_workspace": false,
+  "allowed_tools": [],
+  "permissions": []
 }

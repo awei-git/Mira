@@ -8,7 +8,6 @@ Usage:
     python task_worker.py --msg-file <path> --workspace <path> --task-id <id> [--thread-id <id>]
 """
 import argparse
-import inspect
 import json
 import logging
 import re
@@ -20,20 +19,54 @@ from pathlib import Path
 
 # Add shared + sibling agent directories to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 sys.path.insert(0, str(_AGENTS_DIR / "general"))
+# `persona`, `memory`, etc. are under agents/shared/. Worker subprocesses
+# need this on path or `from persona.persona_context import ...` (in
+# handlers_legacy + downstream) crashes with ModuleNotFoundError.
+sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
-import shutil
+# Register the running script under both its `__main__` identity AND the
+# `task_worker` name so the circular import in handlers_legacy.py
+# (`from task_worker import _write_result, ...`) finds this in-progress
+# module instead of trying to re-import task_worker.py from disk and
+# recursively re-entering line 788. Without this alias, the reentry hits
+# `from handlers_legacy import handle_discussion` while handlers_legacy is
+# only at line 39 (handle_discussion is defined at line 289), so the
+# import fails. This pattern is the standard fix for "main script imported
+# by a module that also imports back."
+if __name__ == "__main__":
+    sys.modules.setdefault("task_worker", sys.modules["__main__"])
 
-from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR, MEMORY_FILE, WORLDVIEW_FILE
+from config import (
+    MIRA_DIR,
+    MIRA_ROOT,
+    ARTIFACTS_DIR,
+    JOURNAL_DIR,
+    BRIEFINGS_DIR,
+    LOGS_DIR,
+    MEMORY_FILE,
+    WORLDVIEW_FILE,
+    CLAUDE_TIMEOUT_THINK,
+    CLAUDE_TIMEOUT_ACT,
+    TOKEN_BUDGET_WARN_LIGHT,
+    TOKEN_BUDGET_WARN_HEAVY,
+    MAX_TASK_HORIZON_STEPS,
+    MAX_TASK_HORIZON_STEPS_HEAVY,
+    record_phase_duration,
+)
 from execution.runtime_contract import derive_workflow_id, normalize_task_status
-from preflight import verify_artifact
-from soul_manager import (load_soul, format_soul, append_memory, save_skill,
-                         save_episode, recall_context, save_knowledge_note)
-from sub_agent import claude_act, claude_think, ClaudeTimeoutError
-from prompts import respond_prompt
-from writing_workflow import run_full_pipeline
+from memory.soul import (
+    load_soul,
+    format_soul,
+    append_memory,
+    save_skill,
+    save_episode,
+    recall_context,
+    save_knowledge_note,
+)
+from llm import claude_act, claude_think, ClaudeTimeoutError, reset_session_tokens, get_session_tokens, _log_efficiency
 
 # Handler functions extracted to handlers_legacy.py (imported after all helpers
 # are defined to avoid circular import — see bottom of file)
@@ -41,22 +74,43 @@ from writing_workflow import run_full_pipeline
 
 log = logging.getLogger("task_worker")
 
-_ACTIVE_USER_ID = "ang"
+# Thread-safe task context — replaces bare globals
+import threading as _threading
+
+_ctx = _threading.local()
+
+
+def _get_active_user_id() -> str:
+    return getattr(_ctx, "user_id", "ang")
+
+
+def _get_active_workflow_id() -> str:
+    return getattr(_ctx, "workflow_id", "")
+
+
+# Legacy module-level names — now properties via __getattr__
+_ACTIVE_USER_ID = "ang"  # read by external callers; kept for import compat
 _ACTIVE_WORKFLOW_ID = ""
 
 
 def _set_active_user(user_id: str):
     global _ACTIVE_USER_ID
-    _ACTIVE_USER_ID = user_id or "ang"
+    _ctx.user_id = user_id or "ang"
+    _ACTIVE_USER_ID = _ctx.user_id  # keep module-level in sync for importers
+    # Keep task_support in sync
+    from task_support import _set_active_user_id_ref
+
+    _set_active_user_id_ref(user_id)
 
 
 def _set_active_workflow(workflow_id: str):
     global _ACTIVE_WORKFLOW_ID
-    _ACTIVE_WORKFLOW_ID = workflow_id or ""
+    _ctx.workflow_id = workflow_id or ""
+    _ACTIVE_WORKFLOW_ID = _ctx.workflow_id
 
 
 def _items_dir(user_id: str | None = None) -> Path:
-    return MIRA_DIR / "users" / (user_id or _ACTIVE_USER_ID) / "items"
+    return MIRA_DIR / "users" / (user_id or _get_active_user_id()) / "items"
 
 
 def _item_file(task_id: str, user_id: str | None = None) -> Path:
@@ -68,7 +122,7 @@ ITEMS_DIR = _items_dir()
 
 
 # Task workspaces stored locally
-TASKS_DIR = MIRA_ROOT / "tasks"
+from config import TASKS_DIR
 
 # ---------------------------------------------------------------------------
 # Planning functions extracted to planning/planner.py
@@ -87,6 +141,7 @@ def _emit_status(task_id: str, text: str, icon: str = "gear"):
     Writes directly to items/ with atomic write.
     """
     import uuid as _uuid
+
     status_content = json.dumps(
         {"type": "status", "text": text, "icon": icon},
         ensure_ascii=False,
@@ -106,8 +161,7 @@ def _emit_status(task_id: str, text: str, icon: str = "gear"):
             item["messages"].append(msg)
             item["updated_at"] = _utc_iso()
             tmp = item_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(item, ensure_ascii=False, indent=2),
-                           encoding="utf-8")
+            tmp.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.rename(item_file)
             return
         except (json.JSONDecodeError, OSError):
@@ -145,8 +199,7 @@ _PRIVATE_KEYWORDS = re.compile(
 )
 
 
-def _is_private_task(content: str, task_id: str = "",
-                     tags: list[str] | None = None) -> bool:
+def _is_private_task(content: str, task_id: str = "", tags: list[str] | None = None) -> bool:
     """Detect privacy-sensitive content using LOCAL keyword matching only.
 
     No LLM call, no network request. Pure regex + tag check.
@@ -218,9 +271,12 @@ from planning.plan_schema import (
 # Calibration functions extracted to execution/calibration.py
 # ---------------------------------------------------------------------------
 from execution.calibration import (
-    _CALIBRATION_FILE, _QUALITY_LOG,
-    _record_premortem, _record_postmortem,
-    _track_output_quality, detect_quality_regression,
+    _CALIBRATION_FILE,
+    _QUALITY_LOG,
+    _record_premortem,
+    _record_postmortem,
+    _track_output_quality,
+    detect_quality_regression,
 )
 
 
@@ -259,120 +315,67 @@ class _Heartbeat:
         self._schedule()
 
 
-def _load_exec_history(workspace: Path) -> str:
-    """Load execution history from previous dispatch rounds."""
-    log_file = workspace / "exec_log.jsonl"
-    if not log_file.exists():
-        return ""
-    try:
-        lines = log_file.read_text(encoding="utf-8").strip().splitlines()
-        if not lines:
-            return ""
-        entries = []
-        for line in lines[-10:]:  # last 10 entries
-            entry = json.loads(line)
-            entries.append(
-                f"- Round {entry.get('round', '?')}: agent={entry.get('agent', '?')}, "
-                f"status={entry.get('status', '?')}, "
-                f"output_preview={entry.get('output_preview', '')[:200]}"
-            )
-        return "## Previous execution rounds in this task\n" + "\n".join(entries)
-    except (json.JSONDecodeError, OSError):
-        return ""
+# ---------------------------------------------------------------------------
+# Imports from extracted modules (task_support, task_result, plan_executor)
+# ---------------------------------------------------------------------------
 
+from task_support import (
+    _load_exec_history,
+    _append_exec_log,
+    _verify_output,
+    _get_round_num,
+    smart_classify,
+    _enrich_plan_with_runtime_policy,
+    _result_metadata,
+    _safe_general_fallback,
+    try_extract_skill,
+    _register_runtime_tools_created,
+    _is_approval,
+    _is_rejection,
+    _execute_pending_publish,
+    _invoke_registry_handler,
+    _invoke_registry_preflight,
+)
 
-def _append_exec_log(workspace: Path, round_num: int, agent: str,
-                     status: str, output_preview: str):
-    """Append an entry to the execution log with output health metrics."""
-    # Compute lightweight output health (no LLM calls)
-    health = {}
-    if output_preview:
-        health["length"] = len(output_preview)
-        health["has_content"] = len(output_preview.strip()) > 50
+from task_result import (
+    _write_progress,
+    _validate_completion,
+    _extract_knowledge_writeback,
+    _step_id_from_metadata,
+    _serialize_checks,
+    _verification_payload_from_verify,
+    _verification_not_run,
+    _normalize_verification_payload,
+    _step_verification_payload,
+    _workspace_relative_artifact_paths,
+    _collect_result_artifacts,
+    _infer_failure_class,
+    _infer_next_action,
+    _canonicalize_result_payload,
+    _write_result,
+    _snapshot_file,
+    _verify_step_artifact,
+    _ensure_step_result,
+    _load_step_summary,
+    _update_thread_memory,
+)
 
-    log_file = workspace / "exec_log.jsonl"
-    entry = {
-        "round": round_num,
-        "agent": agent,
-        "status": status,
-        "output_preview": output_preview[:300],
-        "health": health,
-        "timestamp": _utc_iso(),
-    }
-    with open(log_file, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-    # Track output quality trends in a global file
-    _track_output_quality(agent, status, health)
-
-
-def _verify_output(output: str, workspace: Path) -> str:
-    """Verify agent output claims. Returns error string if hallucination detected, empty if OK."""
-    import re
-    issues = []
-
-    # Check for claimed file paths that don't exist
-    # Match patterns like: wrote to /path/to/file, saved to /path, created /path
-    file_claims = re.findall(
-        r'(?:wrote|saved|created|写入|保存|生成|写了)\s+(?:to\s+)?[`"\']*(/[^\s`"\',:]+(?:\.\w+))',
-        output, re.IGNORECASE
-    )
-    for path in file_claims:
-        if not Path(path).exists():
-            issues.append(f"Claimed file does not exist: {path}")
-
-    # Check for workspace-relative file claims
-    rel_claims = re.findall(
-        r'(?:wrote|saved|created|写入|保存)\s+(?:to\s+)?[`"\']*(?:output|result|summary|article)[\w.]*\.\w+',
-        output, re.IGNORECASE
-    )
-    for claim in rel_claims:
-        # Extract filename
-        fname_match = re.search(r'([\w.-]+\.\w+)', claim)
-        if fname_match:
-            fname = fname_match.group(1)
-            full_path = workspace / fname
-            if not full_path.exists() and fname != "output.md":  # output.md is the output itself
-                issues.append(f"Claimed workspace file does not exist: {fname}")
-
-    # Check for "写了一篇" / "wrote an article" claims without actual content
-    wrote_article = bool(re.search(
-        r'写了[一篇个]|wrote\s+(?:a|an|the)\s+(?:article|post|essay|piece)',
-        output, re.IGNORECASE
-    ))
-    if wrote_article:
-        # If claiming to have written an article, output should be substantial
-        # (not just a summary saying "I wrote X")
-        content_lines = [l for l in output.split('\n')
-                        if l.strip() and not l.startswith('#') and not l.startswith('---')]
-        if len(content_lines) < 5 and len(output) < 500:
-            issues.append("Claims to have written an article but output is too short to contain it")
-
-    return "; ".join(issues) if issues else ""
-
-
-def _get_round_num(workspace: Path) -> int:
-    """Get the next round number for this workspace."""
-    log_file = workspace / "exec_log.jsonl"
-    if not log_file.exists():
-        return 1
-    try:
-        lines = log_file.read_text(encoding="utf-8").strip().splitlines()
-        if not lines:
-            return 1
-        last = json.loads(lines[-1])
-        return last.get("round", 0) + 1
-    except (json.JSONDecodeError, OSError):
-        return 1
-
+from plan_executor import (
+    _execute_plan,
+    _execute_plan_steps,
+)
 
 # ---------------------------------------------------------------------------
 # Context helpers extracted to execution/context.py
 # ---------------------------------------------------------------------------
 from execution.context import (
-    load_task_conversation, load_thread_history, load_thread_memory,
-    compress_conversation, _truncate_messages,
-    _load_recent_journals, _load_recent_briefings,
+    load_task_conversation,
+    load_thread_history,
+    load_thread_memory,
+    compress_conversation,
+    _truncate_messages,
+    _load_recent_journals,
+    _load_recent_briefings,
 )
 from execution.plan_state import (
     initialize_plan_artifacts,
@@ -381,319 +384,9 @@ from execution.plan_state import (
 )
 
 
-def smart_classify(content: str, summary: str = "") -> list[str]:
-    """Use LLM to intelligently tag a task. Returns 1-5 short tags."""
-    prompt = f"""Given this task request and result, generate 1-5 short tags (each 1-3 words) that classify the task. Tags should be specific and useful for search/filtering. Mix Chinese and English as appropriate. Output ONLY a JSON array of strings, nothing else.
-
-Request: {content[:300]}
-Result: {summary[:300] if summary else '(pending)'}
-
-Example output: ["写作", "science-fiction", "自由意志"]"""
-
-    try:
-        result = claude_think(prompt, timeout=90)
-        if result:
-            # Extract JSON array from response
-            import re
-            match = re.search(r'\[.*?\]', result, re.DOTALL)
-            if match:
-                tags = json.loads(match.group())
-                # Ensure all tags are strings and reasonable length
-                return [str(t).strip()[:20] for t in tags if t and str(t).strip()][:5]
-    except Exception as e:
-        log.warning("Smart classification failed: %s", e)
-    return []
-
-
-def _enrich_plan_with_runtime_policy(plan: list[dict]) -> list[dict]:
-    """Attach capability class + runtime policy to each validated plan step."""
-    from agent_registry import get_registry
-
-    registry = get_registry()
-    enriched = []
-    for step in plan:
-        normalized = dict(step)
-        normalized["capability_class"] = registry.get_capability_class(step["agent"])
-        normalized["policy"] = registry.get_capability_policy(step["agent"])
-        enriched.append(normalized)
-    return enriched
-
-
-def _result_metadata(step: dict, *, step_index: int, step_count: int,
-                     declared_agent: str, execution_agent: str,
-                     workflow_id: str = "") -> dict:
-    return {
-        "workflow_id": workflow_id or _ACTIVE_WORKFLOW_ID,
-        "step_index": step_index,
-        "step_count": step_count,
-        "step_id": step.get("step_id", f"step-{step_index + 1:02d}"),
-        "declared_agent": declared_agent,
-        "execution_agent": execution_agent,
-        "capability_class": step.get("capability_class", "read-only"),
-        "policy": step.get("policy", {}),
-        "artifacts_expected": step.get("artifacts_expected", []),
-    }
-
-
-def _safe_general_fallback(
-    workspace: Path,
-    task_id: str,
-    instruction: str,
-    sender: str,
-    thread_id: str,
-    *,
-    tier: str,
-    step: dict,
-    step_index: int,
-    step_count: int,
-    declared_agent: str,
-    execution_agent: str,
-    workflow_id: str,
-) -> bool:
-    """Run general fallback and fail the current step cleanly if it crashes."""
-    try:
-        _handle_general(workspace, task_id, instruction, sender, thread_id, tier=tier)
-        return True
-    except Exception as e:
-        fallback_msg = f"general fallback failed while handling {declared_agent}: {e}"
-        log.error("%s", fallback_msg)
-        _write_result(
-            workspace,
-            task_id,
-            "error",
-            fallback_msg,
-            agent=execution_agent,
-            metadata=_result_metadata(
-                step,
-                step_index=step_index,
-                step_count=step_count,
-                declared_agent=declared_agent,
-                execution_agent=execution_agent,
-                workflow_id=workflow_id,
-            ),
-            failure_class="fallback_error",
-        )
-        mark_step_finished(
-            workspace,
-            step_index=step_index,
-            status="failed",
-            declared_agent=declared_agent,
-            execution_agent=execution_agent,
-            failure_reason=fallback_msg,
-        )
-        return False
-
-
-def try_extract_skill(task_summary: str, msg_content: str) -> None:
-    """Ask Claude to consider extracting a skill from the completed task."""
-    if not task_summary or len(task_summary) < 100:
-        return
-
-    prompt = f"""Based on this task and its result, is there a reusable skill to extract?
-
-Task request: {msg_content[:500]}
-
-Task result summary: {task_summary[:1000]}
-
-If yes, output EXACTLY in this format:
-```
-Name: [short skill name]
-Description: [one-liner]
-Content:
-[The full skill — technique, pattern, or method — written in your own words, ready to reuse]
-```
-
-If no reusable skill can be extracted, just say "No new skill from this task."
-"""
-    import re
-    result = claude_think(prompt, timeout=120)
-    if not result or "no new skill" in result.lower():
-        return
-
-    match = re.search(
-        r"Name:\s*(.+)\nDescription:\s*(.+)\nContent:\n(.+?)(?:\n```|$)",
-        result, re.DOTALL,
-    )
-    if match:
-        name = match.group(1).strip()
-        desc = match.group(2).strip()
-        content = match.group(3).strip()
-        save_skill(name, desc, content)
-        append_memory(f"Learned skill from TalkBridge task: {name}", user_id=_ACTIVE_USER_ID)
-        log.info("Extracted skill: %s", name)
-
-
-def _register_runtime_tools_created(workspace: Path) -> None:
-    """Scan workspace for Python tools the agent wrote to runtime_tools/ and register them.
-
-    Called after task completion to auto-index any tools the agent created
-    during execution but didn't formally register via tool_forge.
-    """
-    try:
-        from tool_forge import RUNTIME_TOOLS_DIR, list_tools, forge_tool
-    except ImportError:
-        return
-
-    if not RUNTIME_TOOLS_DIR.exists():
-        return
-
-    indexed = {t["file"] for t in list_tools()}
-    for py_file in RUNTIME_TOOLS_DIR.glob("*.py"):
-        if py_file.name == "__init__.py" or py_file.name in indexed:
-            continue
-        # New unindexed tool — try to extract metadata from docstring
-        code = py_file.read_text(encoding="utf-8")
-        name = py_file.stem.replace("_", " ")
-        desc = ""
-        # Extract first docstring
-        import re
-        doc_match = re.search(r'"""(.+?)"""', code, re.DOTALL)
-        if doc_match:
-            first_line = doc_match.group(1).strip().split("\n")[0]
-            desc = first_line[:200]
-        if not desc:
-            desc = f"Auto-discovered tool: {name}"
-        # Register it (forge_tool handles audit)
-        ok, msg = forge_tool(name, desc, code)
-        if ok:
-            log.info("Auto-registered runtime tool: %s", name)
-            append_memory(f"Created runtime tool: {name}", user_id=_ACTIVE_USER_ID)
-        else:
-            log.warning("Failed to register tool %s: %s", name, msg)
-
-
 # ---------------------------------------------------------------------------
 # Discussion mode — conversational exchange, not task execution
 # ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Approval detection — user confirms a pending action
-# ---------------------------------------------------------------------------
-
-_APPROVAL_PHRASES = [
-    "可以", "好的", "发吧", "发", "同意", "ok", "yes", "确认", "approve",
-    "go ahead", "continue", "继续", "行", "没问题", "可以发了", "lgtm",
-    "approved", "ship it", "好", "嗯", "对",
-]
-
-
-def _is_approval(content: str) -> bool:
-    """Detect if a message is approving/confirming a pending action."""
-    stripped = content.strip().lower()
-    # Short affirmative → approval
-    if len(stripped) < 30 and any(stripped == p or stripped.startswith(p) for p in _APPROVAL_PHRASES):
-        return True
-    return False
-
-
-_REJECTION_PHRASES = [
-    "reject", "cancel", "取消", "不发", "不要发", "别发", "停",
-    "no", "nope", "算了", "不了",
-]
-
-
-def _is_rejection(content: str) -> bool:
-    """Detect if a message is rejecting/cancelling a pending action."""
-    stripped = content.strip().lower()
-    if len(stripped) < 30 and any(stripped == p or stripped.startswith(p) for p in _REJECTION_PHRASES):
-        return True
-    return False
-
-
-def _execute_pending_publish(pending_pub_file: Path, workspace: Path,
-                              task_id: str, thread_id: str):
-    """Execute a pending Substack publish after user approval.
-
-    Reads the pending_publish.json, calls publish_to_substack(), then clears
-    the pending file so the same article can't be published twice.
-    """
-    import re as _re
-    try:
-        pending = json.loads(pending_pub_file.read_text(encoding="utf-8"))
-    except Exception as e:
-        log.error("Failed to read pending publish file: %s", e)
-        _write_result(workspace, task_id, "error", f"无法读取待发布记录: {e}")
-        return
-
-    pub_title = pending.get("pub_title", "")
-    subtitle = pending.get("subtitle", "")
-    source = pending.get("source", "auto")
-    article_path = pending.get("article_path", "")
-    project_dir = pending.get("project_dir", str(workspace))
-
-    # Get article text: from file path (auto) or inline (manual)
-    article_text = ""
-    if article_path:
-        try:
-            article_text = Path(article_path).read_text(encoding="utf-8")
-            # Strip revision tables
-            article_text = _re.sub(
-                r'\n---\s*\n+## 修改记录.*', '', article_text, flags=_re.DOTALL
-            )
-        except Exception as e:
-            log.error("Failed to read article file %s: %s", article_path, e)
-
-    if not article_text:
-        article_text = pending.get("article_text", "")
-
-    if not article_text:
-        _write_result(workspace, task_id, "error", "待发布文章内容为空，无法发布。")
-        return
-
-    # Delete pending file BEFORE publishing to prevent double-publish on retry
-    try:
-        pending_pub_file.unlink()
-        log.info("Pending publish file cleared before publishing")
-    except Exception as e:
-        log.warning("Could not clear pending publish file: %s", e)
-
-    # Publish to Substack
-    try:
-        sm_dir = str(_AGENTS_DIR / "socialmedia")
-        if sm_dir not in sys.path:
-            sys.path.insert(0, sm_dir)
-        from substack import publish_to_substack
-
-        proj_path = Path(project_dir)
-        log.info("Executing approved publish: '%s' (source=%s)", pub_title, source)
-        pub_result = publish_to_substack(
-            title=pub_title,
-            subtitle=subtitle,
-            article_text=article_text,
-            workspace=proj_path,
-        )
-        log.info("Publish complete: %s", pub_result[:120])
-
-        (workspace / "output.md").write_text(pub_result, encoding="utf-8")
-        _write_result(workspace, task_id, "done", pub_result, tags=["publish"])
-        if thread_id:
-            _update_thread_memory(thread_id, "approve publish", pub_result)
-
-        # Queue 5 Notes for the new article (posted gradually over next cycles)
-        try:
-            notes_dir = str(_AGENTS_DIR / "socialmedia")
-            if notes_dir not in sys.path:
-                sys.path.insert(0, notes_dir)
-            from notes import queue_notes_for_article
-            pub_json = proj_path / "published.json"
-            pub_post_id = None
-            if pub_json.exists():
-                pub_info = json.loads(pub_json.read_text(encoding="utf-8"))
-                pub_post_id = pub_info.get("draft_id")
-            queue_notes_for_article(
-                title=pub_title,
-                article_text=article_text[:3000],
-                post_url=pub_info.get("url", "") if pub_json.exists() else "",
-                post_id=pub_post_id,
-            )
-        except Exception as e:
-            log.error("Notes queueing failed for '%s': %s", pub_title, e)
-
-    except Exception as e:
-        log.error("Publish on approval failed for '%s': %s", pub_title, e)
-        _write_result(workspace, task_id, "error", f"发布失败: {e}")
-
-
 
 # _EDIT_MARKERS, _is_edit_request, _handle_edit_artifact -> handlers_legacy.py
 
@@ -723,6 +416,8 @@ def main():
     )
 
     log.info("Worker started: task=%s thread=%s", args.task_id, args.thread_id)
+    task_start = time.time()
+    _perf_start = time.perf_counter()
 
     # Read message
     try:
@@ -749,9 +444,15 @@ def main():
     _model_restriction = msg_data.get("model_restriction")
     _content_filter = msg_data.get("content_filter", False)
     _allowed_agents = msg_data.get("allowed_agents", [])
-    log.info("User context: workflow=%s user=%s role=%s model_restriction=%s content_filter=%s allowed_agents=%s",
-             workflow_id, _user_id, _user_role, _model_restriction, _content_filter,
-             ",".join(_allowed_agents) if _allowed_agents else "all")
+    log.info(
+        "User context: workflow=%s user=%s role=%s model_restriction=%s content_filter=%s allowed_agents=%s",
+        workflow_id,
+        _user_id,
+        _user_role,
+        _model_restriction,
+        _content_filter,
+        ",".join(_allowed_agents) if _allowed_agents else "all",
+    )
 
     # Load conversation history and execution history for context
     conversation = load_task_conversation(args.task_id, user_id=_user_id)
@@ -766,10 +467,19 @@ def main():
             pending_plan_file.unlink()  # consumed
             plan = _enrich_plan_with_runtime_policy(plan)
             log.info("Resuming pending plan (%d steps): %s", len(plan), plan)
-            _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
-                         user_id=_user_id, allowed_agents=_allowed_agents,
-                         content_filter=_content_filter, model_restriction=_model_restriction,
-                         workflow_id=workflow_id)
+            _execute_plan(
+                plan,
+                workspace,
+                args.task_id,
+                msg_content,
+                msg_sender,
+                thread_id,
+                user_id=_user_id,
+                allowed_agents=_allowed_agents,
+                content_filter=_content_filter,
+                model_restriction=_model_restriction,
+                workflow_id=workflow_id,
+            )
             log.info("Worker exiting")
             return
         except (json.JSONDecodeError, OSError) as e:
@@ -777,8 +487,7 @@ def main():
 
     # --- Check for article comment (comment_YYYY-MM-DD_suffix thread ID) ---
     if thread_id.startswith("comment_"):
-        _handle_article_comment(workspace, args.task_id, thread_id,
-                                msg_content, msg_sender)
+        _handle_article_comment(workspace, args.task_id, thread_id, msg_content, msg_sender)
         log.info("Worker exiting (comment)")
         return
 
@@ -814,14 +523,22 @@ def main():
                 plan = json.loads(pending_plan_file.read_text(encoding="utf-8"))
                 pending_plan_file.unlink()
                 plan = _enrich_plan_with_runtime_policy(plan)
-                _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
-                         user_id=_user_id, allowed_agents=_allowed_agents,
-                         content_filter=_content_filter, model_restriction=_model_restriction,
-                         workflow_id=workflow_id)
+                _execute_plan(
+                    plan,
+                    workspace,
+                    args.task_id,
+                    msg_content,
+                    msg_sender,
+                    thread_id,
+                    user_id=_user_id,
+                    allowed_agents=_allowed_agents,
+                    content_filter=_content_filter,
+                    model_restriction=_model_restriction,
+                    workflow_id=workflow_id,
+                )
             except (json.JSONDecodeError, OSError) as e:
                 log.warning("Failed to load pending plan on approval: %s", e)
-                _write_result(workspace, args.task_id, "error",
-                              f"Could not resume: {e}")
+                _write_result(workspace, args.task_id, "error", f"Could not resume: {e}")
             log.info("Worker exiting (approval)")
             return
 
@@ -841,12 +558,22 @@ def main():
     if _is_edit_request(msg_content, task_data):
         log.info("Edit-artifact mode detected for task %s", args.task_id)
         _emit_status(args.task_id, "Editing...", "pencil")
-        response = _handle_edit_artifact(task_data, workspace, args.task_id,
-                                          msg_content, msg_sender, thread_id)
+        response = _handle_edit_artifact(task_data, workspace, args.task_id, msg_content, msg_sender, thread_id)
         if response:
             log.info("Worker exiting (edit)")
             return
         log.warning("Edit handler returned empty, falling through to task planning")
+
+    # --- Fast-path for conversational discussions (no planner, no agent
+    # routing — just a direct reply via handle_discussion). Soul questions,
+    # threads, comment-replies all hit this. Avoids 2+ minutes of planning
+    # overhead for what should be a 30s response.
+    if task_data.get("type") == "discussion":
+        log.info("Discussion fast-path for task %s", args.task_id)
+        _emit_status(args.task_id, "Thinking...", "bubble.left.and.text.bubble.right")
+        handle_discussion(task_data, workspace, args.task_id, thread_id, tier="light")
+        log.info("Worker exiting (discussion fast-path)")
+        return
 
     # --- Fixed startup: read progress from prior runs ---
     progress = ""
@@ -881,1466 +608,200 @@ def main():
     if progress:
         planning_context = f"## Progress from prior session\n{progress}\n\n{planning_context}"
 
-    plan = _plan_task(msg_content, conversation=conversation, exec_history=exec_history,
-                      prior_context=planning_context,
-                      allowed_agents=_allowed_agents,
-                      content_filter=_content_filter)
+    _perf_dispatch_ms = round((time.perf_counter() - _perf_start) * 1000)
+    _perf_inference_t0 = time.perf_counter()
+    _think_start = time.time()
+    plan = _plan_task(
+        msg_content,
+        conversation=conversation,
+        exec_history=exec_history,
+        prior_context=planning_context,
+        allowed_agents=_allowed_agents,
+        content_filter=_content_filter,
+    )
+    _think_duration = time.time() - _think_start
+    _perf_inference_ms = round((time.perf_counter() - _perf_inference_t0) * 1000)
+    task_agent = plan[0].get("agent", "unknown") if plan else "unknown"
+    log.info(
+        "PHASE_TIMING task_id=%s agent=%s phase=think configured_timeout_s=%d actual_duration_s=%.2f",
+        args.task_id,
+        task_agent,
+        CLAUDE_TIMEOUT_THINK,
+        _think_duration,
+    )
+    record_phase_duration(task_agent, "think", CLAUDE_TIMEOUT_THINK, _think_duration)
+
     plan = _enrich_plan_with_runtime_policy(plan)
     log.info("Plan: %s", plan)
 
-    _execute_plan(plan, workspace, args.task_id, msg_content, msg_sender, thread_id,
-                 user_id=_user_id, allowed_agents=_allowed_agents,
-                 content_filter=_content_filter, model_restriction=_model_restriction,
-                 workflow_id=workflow_id)
+    _HEAVY_HORIZON_AGENTS = {"analyst", "researcher", "writer", "podcast"}
+    _horizon_agent = plan[0].get("agent", "unknown") if plan else "unknown"
+    _horizon_limit = MAX_TASK_HORIZON_STEPS_HEAVY if _horizon_agent in _HEAVY_HORIZON_AGENTS else MAX_TASK_HORIZON_STEPS
+    _horizon_exceeded = len(plan) > _horizon_limit
+    if _horizon_exceeded:
+        log.info(
+            "Horizon limit: truncating plan from %d to %d steps for agent %s", len(plan), _horizon_limit, _horizon_agent
+        )
+        plan = plan[:_horizon_limit]
+
+    reset_session_tokens()
+    _act_start = time.time()
+    _perf_tools_t0 = time.perf_counter()
+    _execute_plan(
+        plan,
+        workspace,
+        args.task_id,
+        msg_content,
+        msg_sender,
+        thread_id,
+        user_id=_user_id,
+        allowed_agents=_allowed_agents,
+        content_filter=_content_filter,
+        model_restriction=_model_restriction,
+        workflow_id=workflow_id,
+    )
+    if _horizon_exceeded:
+        _checkpoint_msg = f"Task paused: horizon limit of {_horizon_limit} steps reached for {_horizon_agent}. Checkpoint saved — resume to continue."
+        _emit_status(args.task_id, _checkpoint_msg, "pause.circle")
+        _write_result(workspace, args.task_id, "paused_horizon_limit", _checkpoint_msg)
+        log.info("Worker exiting (paused_horizon_limit: %s steps > %d)", len(plan), _horizon_limit)
+        return
+    _act_duration = time.time() - _act_start
+    _perf_tools_ms = round((time.perf_counter() - _perf_tools_t0) * 1000)
+    log.info(
+        "PHASE_TIMING task_id=%s agent=%s phase=act configured_timeout_s=%d actual_duration_s=%.2f",
+        args.task_id,
+        task_agent,
+        CLAUDE_TIMEOUT_ACT,
+        _act_duration,
+    )
+    record_phase_duration(task_agent, "act", CLAUDE_TIMEOUT_ACT, _act_duration)
+
+    _in_tok, _out_tok, _model_id = get_session_tokens()
+    _result_words = 0
+    _out_md = workspace / "output.md"
+    if _out_md.exists():
+        try:
+            _result_words = len(_out_md.read_text(encoding="utf-8", errors="ignore").split())
+        except OSError:
+            pass
+    _efficiency = _out_tok / max(1, _result_words)
+    _heavy_agents = {"writer", "researcher", "podcast", "socialmedia"}
+    _tier = "heavy" if task_agent in _heavy_agents else "light"
+    _budget = TOKEN_BUDGET_WARN_HEAVY if _tier == "heavy" else TOKEN_BUDGET_WARN_LIGHT
+    _total_tok = _in_tok + _out_tok
+    log.info(
+        "TOKEN_EFFICIENCY task_id=%s agent=%s model=%s input_tokens=%d output_tokens=%d total_tokens=%d words=%d efficiency=%.2f",
+        args.task_id,
+        task_agent,
+        _model_id,
+        _in_tok,
+        _out_tok,
+        _total_tok,
+        _result_words,
+        _efficiency,
+    )
+    _log_efficiency(
+        task_id=args.task_id,
+        agent=task_agent,
+        model=_model_id,
+        input_tokens=_in_tok,
+        output_tokens=_out_tok,
+        words=_result_words,
+    )
+    if _total_tok > _budget:
+        log.warning(
+            "TOKEN_BUDGET_WARN task_id=%s agent=%s tier=%s total_tokens=%d budget=%d",
+            args.task_id,
+            task_agent,
+            _tier,
+            _total_tok,
+            _budget,
+        )
 
     # --- Write progress.md for next session ---
     _write_progress(workspace, args.task_id, msg_content)
 
+    task_type = task_agent
+    configured_timeout = CLAUDE_TIMEOUT_ACT
+    elapsed = time.time() - task_start
+    utilization_pct = elapsed / configured_timeout * 100
+    log.info(
+        "task_timing task_type=%s configured_timeout_s=%d actual_duration_s=%.2f utilization_pct=%.1f",
+        task_type,
+        configured_timeout,
+        elapsed,
+        utilization_pct,
+    )
+    if utilization_pct > 80:
+        log.warning(
+            "Timeout pressure: %s used %.0f%% of %ds budget",
+            task_type,
+            utilization_pct,
+            configured_timeout,
+        )
+    elif utilization_pct < 5:
+        log.warning(
+            "Timeout over-provisioned: %s used only %.1f%% of %ds budget",
+            task_type,
+            utilization_pct,
+            configured_timeout,
+        )
+    try:
+        _stats_file = TASKS_DIR / "timing_stats.jsonl"
+        _stats_entry = json.dumps(
+            {
+                "ts": _utc_iso(),
+                "task_type": task_type,
+                "phase": "act",
+                "configured_timeout_s": configured_timeout,
+                "actual_duration_s": round(elapsed, 2),
+                "utilization_pct": round(utilization_pct, 1),
+                "token_usage": {"input": _in_tok, "output": _out_tok},
+            },
+            ensure_ascii=False,
+        )
+        with open(_stats_file, "a", encoding="utf-8") as _sf:
+            _sf.write(_stats_entry + "\n")
+    except Exception as _e:
+        log.debug("Failed to write timing stats: %s", _e)
+
+    try:
+        _result_file = workspace / "result.json"
+        if _result_file.exists():
+            _result = json.loads(_result_file.read_text(encoding="utf-8"))
+            _result["token_usage"] = {"input": _in_tok, "output": _out_tok}
+            _tmp = _result_file.with_suffix(".tmp")
+            _tmp.write_text(json.dumps(_result, ensure_ascii=False, indent=2), encoding="utf-8")
+            _tmp.rename(_result_file)
+    except Exception as _e:
+        log.debug("Failed to write token_usage to result.json: %s", _e)
+
+    _perf_total_ms = round((time.perf_counter() - _perf_start) * 1000)
+    _phase_record = {
+        "task_id": args.task_id,
+        "agent": task_agent,
+        "phase_dispatch_ms": _perf_dispatch_ms,
+        "phase_inference_ms": _perf_inference_ms,
+        "phase_tools_ms": _perf_tools_ms,
+        "total_ms": _perf_total_ms,
+    }
+    log.info("PHASE_BREAKDOWN %s", json.dumps(_phase_record, ensure_ascii=False))
+    try:
+        _phase_log = LOGS_DIR / "task_phase_timing.jsonl"
+        with open(_phase_log, "a", encoding="utf-8") as _pf:
+            _pf.write(json.dumps({**_phase_record, "ts": _utc_iso()}, ensure_ascii=False) + "\n")
+    except Exception as _pe:
+        log.debug("Phase timing log write failed: %s", _pe)
     log.info("Worker exiting")
 
 
 # _plan_task → imported from planning/planner.py above
 
-
-def _execute_plan(plan: list[dict], workspace: Path, task_id: str,
-                  content: str, sender: str, thread_id: str,
-                  user_id: str = "ang", allowed_agents: list | None = None,
-                  content_filter: bool = False, model_restriction: str | None = None,
-                  workflow_id: str = ""):
-    """Execute a multi-step plan. Each step's output feeds into the next."""
-    initialize_plan_artifacts(
-        workspace,
-        task_id=task_id,
-        workflow_id=workflow_id,
-        user_id=user_id,
-        request=content,
-        plan=plan,
-    )
-    prev_output = None
-    is_multi = len(plan) > 1
-    round_num = _get_round_num(workspace)
-
-    # Start heartbeat for long tasks (emits status every 60s)
-    heartbeat = _Heartbeat(task_id)
-    heartbeat.start()
-    try:
-        _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
-                           prev_output, is_multi, round_num,
-                           user_id=user_id, allowed_agents=allowed_agents or [],
-                           content_filter=content_filter,
-                           model_restriction=model_restriction,
-                           workflow_id=workflow_id)
-    finally:
-        heartbeat.stop()
-
-
-def _execute_plan_steps(plan, workspace, task_id, content, sender, thread_id,
-                        prev_output, is_multi, round_num, *,
-                        user_id: str = "ang", allowed_agents: list | None = None,
-                        content_filter: bool = False, model_restriction: str | None = None,
-                        workflow_id: str = ""):
-    """Inner loop extracted so heartbeat can be stopped in finally block."""
-    # Set thread-local task_id so agents can emit progress via emit_progress()
-    _set_streaming_task_id(task_id)
-    if not (workspace / "step_states.json").exists():
-        initialize_plan_artifacts(
-            workspace,
-            task_id=task_id,
-            workflow_id=workflow_id,
-            user_id=user_id,
-            request=content,
-            plan=plan,
-        )
-    from agent_registry import get_registry
-
-    registry = get_registry()
-    step_count = len(plan)
-
-    for i, step in enumerate(plan):
-        declared_agent = step["agent"]
-        execution_agent = declared_agent
-        step.setdefault("capability_class", registry.get_capability_class(declared_agent))
-        step.setdefault("policy", registry.get_capability_policy(declared_agent))
-        policy = step["policy"]
-        capability_class = step["capability_class"]
-        instruction = step["instruction"]
-        tier = step.get("tier", "light")
-        prediction = step.get("prediction")
-        is_last = (i == len(plan) - 1)
-        log.info("Step %d/%d: agent=%s tier=%s capability=%s instruction=%s",
-                 i + 1, len(plan), declared_agent, tier, capability_class, instruction[:80])
-
-        # Record pre-mortem prediction before execution
-        _record_premortem(task_id, i, declared_agent, instruction, prediction)
-
-        # If previous step produced output, append it as context
-        if prev_output and declared_agent != "clarify":
-            instruction = f"{instruction}\n\n--- 上一步的输出 ---\n{prev_output[:3000]}"
-
-        # Emit status card for current step
-        _step_icons = {
-            "briefing": ("Fetching feeds...", "newspaper"),
-            "writing": ("Writing...", "doc.text"),
-            "publish": ("Publishing...", "paperplane"),
-            "analyst": ("Analyzing...", "chart.bar"),
-            "video": ("Processing video...", "film"),
-            "photo": ("Editing photo...", "camera"),
-            "podcast": ("Generating audio...", "waveform"),
-            "socialmedia": ("Checking Substack...", "at"),
-            "surfer": ("Browsing...", "globe"),
-            "discussion": ("Thinking...", "bubble.left.and.text.bubble.right"),
-            "general": ("Working...", "gear"),
-            "secret": ("Private mode...", "lock.shield"),
-            "clarify": ("Need your input", "questionmark.bubble"),
-        }
-        status_text, status_icon = _step_icons.get(declared_agent, ("Working...", "gear"))
-        if is_multi:
-            status_text = f"Step {i+1}/{len(plan)}: {status_text}"
-        _emit_status(task_id, status_text, status_icon)
-        mark_step_running(
-            workspace,
-            step_index=i,
-            declared_agent=declared_agent,
-            execution_agent=execution_agent,
-            input_summary=instruction,
-        )
-
-        # Special case: clarify (not a real agent, just asks user)
-        if declared_agent == "clarify":
-            (workspace / "output.md").write_text(instruction, encoding="utf-8")
-            _write_result(
-                workspace,
-                task_id,
-                "needs-input",
-                instruction,
-                tags=["clarify"],
-                metadata=_result_metadata(
-                    step,
-                    step_index=i,
-                    step_count=step_count,
-                    declared_agent=declared_agent,
-                    execution_agent=execution_agent,
-                ),
-                failure_class="needs_input",
-                next_action="await-user-input",
-            )
-            mark_step_finished(
-                workspace,
-                step_index=i,
-                status="needs-input",
-                declared_agent=declared_agent,
-                execution_agent=execution_agent,
-                output_summary=instruction,
-            )
-            _append_exec_log(workspace, round_num, "clarify", "needs-input", instruction)
-            return
-
-        # --- Access control: verify agent is allowed for this user ---
-        # NOTE: allowed_agents is loaded fresh from get_user_config() at dispatch time
-        # (in core.py), so permission revocation takes effect on next message cycle.
-        if allowed_agents and declared_agent not in allowed_agents and declared_agent not in ("clarify", "discussion"):
-            log.warning("ACCESS DENIED: user=%s agent=%s not in allowed_agents=%s",
-                        user_id, declared_agent, allowed_agents)
-            denied_msg = (
-                f"Sorry, you don't have access to the {declared_agent} agent. "
-                f"Available: {', '.join(allowed_agents)}"
-            )
-            _write_result(
-                workspace,
-                task_id,
-                "blocked",
-                denied_msg,
-                metadata=_result_metadata(
-                    step,
-                    step_index=i,
-                    step_count=step_count,
-                    declared_agent=declared_agent,
-                    execution_agent=execution_agent,
-                ),
-                failure_class="access_denied",
-                next_action="await-user-input",
-            )
-            mark_step_finished(
-                workspace,
-                step_index=i,
-                status="blocked",
-                declared_agent=declared_agent,
-                execution_agent=execution_agent,
-                failure_reason=denied_msg,
-            )
-            return
-
-        # --- Content filter: prepend safety prompt for child users ---
-        if content_filter:
-            from config import CHILD_SAFETY_PROMPT
-            instruction = f"{CHILD_SAFETY_PROMPT}\n\n---\n\n{instruction}"
-
-        # --- Model restriction: force local model for restricted users ---
-        from sub_agent import set_usage_agent, set_model_policy
-        if model_restriction:
-            set_model_policy(model_restriction)
-            log.info("Model policy: %s for user=%s", model_restriction, user_id)
-        else:
-            set_model_policy(None)
-
-        # Registry-based dispatch: load handler dynamically from manifest
-        requires_preflight = bool(policy.get("requires_preflight"))
-        fail_closed = bool(policy.get("fail_closed"))
-        allow_fallback = bool(policy.get("allow_fallback_to_general"))
-        set_usage_agent(declared_agent)
-
-        output_file = workspace / "output.md"
-        result_file = workspace / "result.json"
-        output_snapshot = _snapshot_file(output_file)
-        handler_result = None
-        used_fallback = False
-        preflight_fn = None
-
-        try:
-            try:
-                preflight_fn = getattr(registry, "load_preflight", lambda name: None)(declared_agent)
-            except KeyError:
-                if requires_preflight or fail_closed:
-                    preflight_msg = f"{declared_agent} preflight missing from registry"
-                    log.error("%s", preflight_msg)
-                    (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
-                    _write_result(
-                        workspace,
-                        task_id,
-                        "blocked",
-                        preflight_msg,
-                        agent=declared_agent,
-                        metadata=_result_metadata(
-                            step,
-                            step_index=i,
-                            step_count=step_count,
-                            declared_agent=declared_agent,
-                            execution_agent=execution_agent,
-                        ),
-                        failure_class="preflight_blocked",
-                        next_action="resolve-preflight-block",
-                    )
-                    mark_step_finished(
-                        workspace,
-                        step_index=i,
-                        status="blocked",
-                        declared_agent=declared_agent,
-                        execution_agent=execution_agent,
-                        failure_reason=preflight_msg,
-                    )
-                    return
-                log.warning("Agent '%s' not in registry during preflight load, falling back to general", declared_agent)
-                execution_agent = "general"
-                if not _safe_general_fallback(
-                    workspace,
-                    task_id,
-                    instruction,
-                    sender,
-                    thread_id,
-                    tier=tier,
-                    step=step,
-                    step_index=i,
-                    step_count=step_count,
-                    declared_agent=declared_agent,
-                    execution_agent=execution_agent,
-                    workflow_id=workflow_id,
-                ):
-                    return
-                used_fallback = True
-            except ImportError as e:
-                if fail_closed:
-                    preflight_msg = f"{declared_agent} preflight load failed: {e}"
-                    log.error("%s", preflight_msg)
-                    (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
-                    _write_result(
-                        workspace,
-                        task_id,
-                        "blocked",
-                        preflight_msg,
-                        agent=declared_agent,
-                        metadata=_result_metadata(
-                            step,
-                            step_index=i,
-                            step_count=step_count,
-                            declared_agent=declared_agent,
-                            execution_agent=execution_agent,
-                        ),
-                        failure_class="preflight_blocked",
-                        next_action="resolve-preflight-block",
-                    )
-                    mark_step_finished(
-                        workspace,
-                        step_index=i,
-                        status="blocked",
-                        declared_agent=declared_agent,
-                        execution_agent=execution_agent,
-                        failure_reason=preflight_msg,
-                    )
-                    return
-                log.error("ImportError loading preflight for agent '%s': %s — falling back to general", declared_agent, e)
-                execution_agent = "general"
-                if not _safe_general_fallback(
-                    workspace,
-                    task_id,
-                    instruction,
-                    sender,
-                    thread_id,
-                    tier=tier,
-                    step=step,
-                    step_index=i,
-                    step_count=step_count,
-                    declared_agent=declared_agent,
-                    execution_agent=execution_agent,
-                    workflow_id=workflow_id,
-                ):
-                    return
-                used_fallback = True
-            except Exception as e:
-                if fail_closed:
-                    preflight_msg = f"{declared_agent} preflight load failed: {e}"
-                    log.error("%s", preflight_msg)
-                    (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
-                    _write_result(
-                        workspace,
-                        task_id,
-                        "blocked",
-                        preflight_msg,
-                        agent=declared_agent,
-                        metadata=_result_metadata(
-                            step,
-                            step_index=i,
-                            step_count=step_count,
-                            declared_agent=declared_agent,
-                            execution_agent=execution_agent,
-                        ),
-                        failure_class="preflight_blocked",
-                        next_action="resolve-preflight-block",
-                    )
-                    mark_step_finished(
-                        workspace,
-                        step_index=i,
-                        status="blocked",
-                        declared_agent=declared_agent,
-                        execution_agent=execution_agent,
-                        failure_reason=preflight_msg,
-                    )
-                    return
-                log.error("Registry preflight for '%s' failed to load: %s — falling back to general", declared_agent, e)
-                execution_agent = "general"
-                if not _safe_general_fallback(
-                    workspace,
-                    task_id,
-                    instruction,
-                    sender,
-                    thread_id,
-                    tier=tier,
-                    step=step,
-                    step_index=i,
-                    step_count=step_count,
-                    declared_agent=declared_agent,
-                    execution_agent=execution_agent,
-                    workflow_id=workflow_id,
-                ):
-                    return
-                used_fallback = True
-
-            if not used_fallback and not preflight_fn and requires_preflight:
-                preflight_msg = f"{declared_agent} preflight missing"
-                log.error("%s", preflight_msg)
-                (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
-                _write_result(
-                    workspace,
-                    task_id,
-                    "blocked",
-                    preflight_msg,
-                    agent=declared_agent,
-                    metadata=_result_metadata(
-                        step,
-                        step_index=i,
-                        step_count=step_count,
-                        declared_agent=declared_agent,
-                        execution_agent=execution_agent,
-                    ),
-                    failure_class="preflight_blocked",
-                    next_action="resolve-preflight-block",
-                )
-                mark_step_finished(
-                    workspace,
-                    step_index=i,
-                    status="blocked",
-                    declared_agent=declared_agent,
-                    execution_agent=execution_agent,
-                    failure_reason=preflight_msg,
-                )
-                return
-
-            if not used_fallback and preflight_fn:
-                try:
-                    passed, preflight_msg = _invoke_registry_preflight(
-                        preflight_fn, workspace, task_id, instruction, sender, thread_id, tier,
-                        user_id=user_id,
-                    )
-                except Exception as e:
-                    preflight_msg = f"{declared_agent} preflight failed: {e}"
-                    log.error("Preflight for '%s' raised: %s", declared_agent, e)
-                    (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
-                    _write_result(
-                        workspace,
-                        task_id,
-                        "error",
-                        preflight_msg,
-                        agent=declared_agent,
-                        metadata=_result_metadata(
-                            step,
-                            step_index=i,
-                            step_count=step_count,
-                            declared_agent=declared_agent,
-                            execution_agent=execution_agent,
-                        ),
-                        failure_class="preflight_error",
-                    )
-                    mark_step_finished(
-                        workspace,
-                        step_index=i,
-                        status="failed",
-                        declared_agent=declared_agent,
-                        execution_agent=execution_agent,
-                        failure_reason=preflight_msg,
-                    )
-                    return
-                if not passed:
-                    log.warning("Preflight blocked agent '%s': %s", declared_agent, preflight_msg)
-                    (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
-                    _write_result(
-                        workspace,
-                        task_id,
-                        "blocked",
-                        preflight_msg,
-                        agent=declared_agent,
-                        metadata=_result_metadata(
-                            step,
-                            step_index=i,
-                            step_count=step_count,
-                            declared_agent=declared_agent,
-                            execution_agent=execution_agent,
-                        ),
-                        failure_class="preflight_blocked",
-                        next_action="resolve-preflight-block",
-                    )
-                    mark_step_finished(
-                        workspace,
-                        step_index=i,
-                        status="blocked",
-                        declared_agent=declared_agent,
-                        execution_agent=execution_agent,
-                        failure_reason=preflight_msg,
-                    )
-                    return
-
-            if not used_fallback:
-                try:
-                    handler_fn = registry.load_handler(declared_agent)
-                    handler_result = _invoke_registry_handler(
-                        handler_fn, workspace, task_id, instruction, sender, thread_id, tier,
-                        user_id=user_id,
-                    )
-                except KeyError as e:
-                    handler_msg = f"{declared_agent} handler missing from registry"
-                    if fail_closed or not allow_fallback:
-                        log.error("%s", handler_msg)
-                        _write_result(
-                            workspace,
-                            task_id,
-                            "error",
-                            handler_msg,
-                            agent=declared_agent,
-                            metadata=_result_metadata(
-                                step,
-                                step_index=i,
-                                step_count=step_count,
-                                declared_agent=declared_agent,
-                                execution_agent=execution_agent,
-                            ),
-                            failure_class="handler_error",
-                        )
-                        mark_step_finished(
-                            workspace,
-                            step_index=i,
-                            status="failed",
-                            declared_agent=declared_agent,
-                            execution_agent=execution_agent,
-                            failure_reason=handler_msg,
-                        )
-                        return
-                    log.warning("Agent '%s' not in registry, falling back to general: %s", declared_agent, e)
-                    execution_agent = "general"
-                    if not _safe_general_fallback(
-                        workspace,
-                        task_id,
-                        instruction,
-                        sender,
-                        thread_id,
-                        tier=tier,
-                        step=step,
-                        step_index=i,
-                        step_count=step_count,
-                        declared_agent=declared_agent,
-                        execution_agent=execution_agent,
-                        workflow_id=workflow_id,
-                    ):
-                        return
-                except ImportError as e:
-                    handler_msg = f"{declared_agent} handler load failed: {e}"
-                    if fail_closed or not allow_fallback:
-                        log.error("%s", handler_msg)
-                        _write_result(
-                            workspace,
-                            task_id,
-                            "error",
-                            handler_msg,
-                            agent=declared_agent,
-                            metadata=_result_metadata(
-                                step,
-                                step_index=i,
-                                step_count=step_count,
-                                declared_agent=declared_agent,
-                                execution_agent=execution_agent,
-                            ),
-                            failure_class="handler_error",
-                        )
-                        mark_step_finished(
-                            workspace,
-                            step_index=i,
-                            status="failed",
-                            declared_agent=declared_agent,
-                            execution_agent=execution_agent,
-                            failure_reason=handler_msg,
-                        )
-                        return
-                    log.error("ImportError loading agent '%s': %s — falling back to general", declared_agent, e)
-                    execution_agent = "general"
-                    if not _safe_general_fallback(
-                        workspace,
-                        task_id,
-                        instruction,
-                        sender,
-                        thread_id,
-                        tier=tier,
-                        step=step,
-                        step_index=i,
-                        step_count=step_count,
-                        declared_agent=declared_agent,
-                        execution_agent=execution_agent,
-                        workflow_id=workflow_id,
-                    ):
-                        return
-                except Exception as e:
-                    handler_msg = f"{declared_agent} handler failed to load: {e}"
-                    if fail_closed or not allow_fallback:
-                        log.error("%s", handler_msg)
-                        _write_result(
-                            workspace,
-                            task_id,
-                            "error",
-                            handler_msg,
-                            agent=declared_agent,
-                            metadata=_result_metadata(
-                                step,
-                                step_index=i,
-                                step_count=step_count,
-                                declared_agent=declared_agent,
-                                execution_agent=execution_agent,
-                            ),
-                            failure_class="handler_error",
-                        )
-                        mark_step_finished(
-                            workspace,
-                            step_index=i,
-                            status="failed",
-                            declared_agent=declared_agent,
-                            execution_agent=execution_agent,
-                            failure_reason=handler_msg,
-                        )
-                        return
-                    log.error("Registry handler for '%s' failed: %s — falling back to general", declared_agent, e)
-                    execution_agent = "general"
-                    if not _safe_general_fallback(
-                        workspace,
-                        task_id,
-                        instruction,
-                        sender,
-                        thread_id,
-                        tier=tier,
-                        step=step,
-                        step_index=i,
-                        step_count=step_count,
-                        declared_agent=declared_agent,
-                        execution_agent=execution_agent,
-                        workflow_id=workflow_id,
-                    ):
-                        return
-        finally:
-            set_model_policy(None)  # always reset after step
-
-        # Check if this step failed (result.json says failed)
-        # Also stamp the agent name for evaluator tracking
-        _ensure_step_result(
-            workspace,
-            task_id,
-            execution_agent,
-            content,
-            handler_result,
-            output_snapshot,
-            metadata=_result_metadata(
-                step,
-                step_index=i,
-                step_count=step_count,
-                declared_agent=declared_agent,
-                execution_agent=execution_agent,
-            ),
-        )
-        step_status = "done"
-        step_output_preview = ""
-        step_retry_count = 0
-        if result_file.exists():
-            try:
-                r = json.loads(result_file.read_text(encoding="utf-8"))
-                # Stamp agent name for evaluator tracking
-                changed = False
-                if "agent" not in r:
-                    r["agent"] = execution_agent
-                    changed = True
-                if "declared_agent" not in r:
-                    r["declared_agent"] = declared_agent
-                    changed = True
-                if "execution_agent" not in r:
-                    r["execution_agent"] = execution_agent
-                    changed = True
-                if "capability_class" not in r:
-                    r["capability_class"] = capability_class
-                    changed = True
-                if "policy" not in r:
-                    r["policy"] = policy
-                    changed = True
-                if changed:
-                    result_file.write_text(
-                        json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")
-                execution_agent = r.get("agent", execution_agent)
-                step_status = normalize_task_status(r.get("status", "done"))
-                step_output_preview = r.get("summary", "")[:200]
-                step_retry_count = int(r.get("retry_count", 0) or 0)
-                if step_status in ("failed", "blocked", "needs-input"):
-                    outcome = "failed" if step_status == "failed" else step_status
-                    _record_postmortem(task_id, i, declared_agent, prediction, outcome,
-                                       step_output_preview)
-                    _append_exec_log(workspace, round_num, execution_agent, step_status,
-                                     r.get("summary", ""))
-                    mark_step_finished(
-                        workspace,
-                        step_index=i,
-                        status=step_status,
-                        declared_agent=declared_agent,
-                        execution_agent=execution_agent,
-                        output_summary=step_output_preview,
-                        failure_reason=r.get("summary", "") if step_status != "needs-input" else "",
-                        retry_count=step_retry_count,
-                    )
-                    log.error("Step %d/%d stopped plan with status=%s: %s",
-                              i + 1, len(plan), step_status, r.get("summary", ""))
-                    return
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        # Read output from this step for chaining
-        if output_file.exists():
-            prev_output = output_file.read_text(encoding="utf-8")
-            step_output_preview = prev_output[:200]
-            # Verify output — detect hallucinated file/action claims
-            verification = _verify_output(prev_output, workspace)
-            if verification:
-                log.warning("HALLUCINATION DETECTED: %s", verification)
-                prev_output += f"\n\n⚠️ VERIFICATION FAILED: {verification}"
-                _append_exec_log(workspace, round_num, execution_agent, "unverified",
-                                 f"HALLUCINATION: {verification}")
-                _record_postmortem(task_id, i, declared_agent, prediction,
-                                   "hallucination", step_output_preview)
-            else:
-                _append_exec_log(workspace, round_num, execution_agent, "done",
-                                 prev_output[:300])
-                _record_postmortem(task_id, i, declared_agent, prediction,
-                                   "done", step_output_preview)
-            # Emit intermediate result to iOS app (streaming progress)
-            if not is_last and prev_output.strip():
-                snippet = prev_output.strip()[:300]
-                emit_progress(f"Step {i+1} done: {snippet}", "checkmark.circle")
-            # Save numbered copy so future rounds don't lose it
-            numbered = workspace / f"output_r{round_num}.md"
-            shutil.copy2(output_file, numbered)
-
-        mark_step_finished(
-            workspace,
-            step_index=i,
-            status="done",
-            declared_agent=declared_agent,
-            execution_agent=execution_agent,
-            output_summary=step_output_preview,
-            retry_count=step_retry_count,
-        )
-
-        # For multi-step plans, delete intermediate result.json so next step writes fresh
-        if is_multi and not is_last and result_file.exists():
-            result_file.unlink()
-
-    # Synthesize outputs for multi-step plans
-    if is_multi and prev_output:
-        synthesized = _synthesize_outputs(content, plan, prev_output)
-        if synthesized:
-            (workspace / "output.md").write_text(synthesized, encoding="utf-8")
-            prev_output = synthesized
-
-    # Auto-register any runtime tools created during execution
-    try:
-        _register_runtime_tools_created(workspace)
-    except Exception as e:
-        log.warning("Runtime tool registration failed: %s", e)
-
-    log.info("Plan execution complete (%d steps)", len(plan))
-
-
 # _synthesize_outputs → imported from planning/planner.py above
 
 # Handler functions (_handle_briefing, _handle_writing, etc.) have been
 # extracted to handlers_legacy.py and are imported at the top of this file.
-
-
-def _write_progress(workspace: Path, task_id: str, user_request: str):
-    """Write progress.md summarizing what was done this session.
-
-    Next session reads this first to understand prior state.
-    """
-    result_file = workspace / "result.json"
-    output_file = workspace / "output.md"
-
-    status = "unknown"
-    summary = ""
-    if result_file.exists():
-        try:
-            r = json.loads(result_file.read_text(encoding="utf-8"))
-            status = r.get("status", "unknown")
-            summary = r.get("summary", "")[:500]
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    output_preview = ""
-    if output_file.exists():
-        try:
-            output_preview = output_file.read_text(encoding="utf-8")[:500]
-        except OSError:
-            pass
-
-    progress = f"""# Progress — {task_id}
-
-## User request
-{user_request[:300]}
-
-## Status: {status}
-
-## Summary
-{summary}
-
-## Output preview
-{output_preview}
-
-## Workspace files
-{', '.join(f.name for f in workspace.iterdir() if f.is_file() and not f.name.startswith('.'))}
-"""
-    (workspace / "progress.md").write_text(progress, encoding="utf-8")
-
-
-# Patterns that indicate garbage output ONLY when they dominate the response.
-# Short responses (< 80 chars) containing these are likely status/placeholder messages.
-# Longer responses containing these as substrings are valid content — don't reject them.
-_GARBAGE_PATTERNS = [
-    "有什么想说的吗", "这条消息长得像系统状态",
-    "summary.txt 已存在", "不需要重新", "两个文件都已存在",
-    "Agent: 空闲", "无需重新执行", "收到你的回答。已记录",
-]
-
-
-def _validate_completion(workspace: Path, task_id: str, summary: str) -> str | None:
-    """Check if task output is actually useful. Returns error message if garbage.
-
-    Only flags truly empty outputs or known garbage patterns.
-    Short but valid responses (confirmations, simple answers) are NOT garbage.
-    Longer responses (>= 80 chars) that happen to contain a garbage pattern as a
-    substring are treated as valid — the pattern is incidental, not dominant.
-    """
-    if not summary or len(summary.strip()) == 0:
-        return "Output is completely empty"
-
-    stripped = summary.strip()
-    # Only check garbage patterns for short responses where the pattern dominates
-    if len(stripped) < 80:
-        for pattern in _GARBAGE_PATTERNS:
-            if pattern in stripped:
-                return f"Output contains garbage pattern: '{pattern}'"
-
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Knowledge write-back — extract reusable knowledge from task outputs
-# ---------------------------------------------------------------------------
-
-_WRITEBACK_SKIP_TAGS = {"private", "status", "greeting", "podcast", "tts", "audio"}
-_WRITEBACK_MIN_OUTPUT_CHARS = 300
-
-_WRITEBACK_EXTRACTION_PROMPT = """\
-You are reviewing the output of a completed task. Determine if it contains
-reusable factual knowledge, a technique, a useful pattern, or a non-obvious insight
-that would be worth storing permanently.
-
-## Task output (truncated):
-{output}
-
-## Instructions:
-- If the output contains reusable knowledge, respond with a JSON object:
-  {{"title": "concise title", "content": "the extracted knowledge (2-5 paragraphs, focus on what's reusable)"}}
-- If the output is routine (status update, greeting, opinion, simple lookup, creative writing),
-  respond with exactly: NONE
-- Be selective — only extract knowledge that would help answer future questions.
-"""
-
-
-def _extract_knowledge_writeback(workspace: Path, task_id: str,
-                                 tags: list[str] | None = None):
-    """Extract and persist reusable knowledge from a completed task's output.
-
-    Runs a lightweight LLM call to judge whether the output contains
-    knowledge worth storing. If so, saves it as a reading note with provenance.
-    """
-    # Skip conditions
-    if tags and _WRITEBACK_SKIP_TAGS & set(tags):
-        return
-    output_path = workspace / "output.md"
-    if not output_path.exists():
-        return
-    try:
-        output_text = output_path.read_text(encoding="utf-8")
-    except OSError:
-        return
-    if len(output_text) < _WRITEBACK_MIN_OUTPUT_CHARS:
-        return
-
-    try:
-        prompt = _WRITEBACK_EXTRACTION_PROMPT.format(output=output_text[:3000])
-        result = claude_think(prompt, timeout=60, tier="light")
-        if not result or "NONE" in result[:20]:
-            return
-        # Parse JSON from response
-        # Find the JSON object in the response
-        start = result.find("{")
-        end = result.rfind("}") + 1
-        if start < 0 or end <= start:
-            return
-        extracted = json.loads(result[start:end])
-        title = extracted.get("title", "").strip()
-        content = extracted.get("content", "").strip()
-        if title and content and len(content) > 50:
-            save_knowledge_note(title, content, source_task_id=task_id, user_id=_ACTIVE_USER_ID)
-            log.info("Knowledge writeback: '%s' from task %s", title[:60], task_id)
-    except (json.JSONDecodeError, ClaudeTimeoutError) as e:
-        log.debug("Knowledge writeback skipped for %s: %s", task_id, e)
-    except Exception as e:
-        log.warning("Knowledge writeback failed for %s: %s", task_id, e)
-
-
-_RESULT_RUNTIME_METADATA_KEYS = {
-    "workflow_id",
-    "step_index",
-    "step_count",
-    "step_id",
-    "declared_agent",
-    "execution_agent",
-    "capability_class",
-    "policy",
-    "retry_count",
-    "artifacts_expected",
-}
-
-
-_RESULT_INTERNAL_FILES = {
-    "result.json",
-    "result.tmp",
-    "plan.json",
-    "step_states.json",
-    "exec_log.jsonl",
-    "progress.md",
-}
-
-
-def _step_id_from_metadata(metadata: dict | None) -> str:
-    if not metadata:
-        return ""
-    step_id = str(metadata.get("step_id", "")).strip()
-    if step_id:
-        return step_id
-    step_index = metadata.get("step_index")
-    if isinstance(step_index, int) and step_index >= 0:
-        return f"step-{step_index + 1:02d}"
-    return ""
-
-
-def _serialize_checks(checks: list | None) -> list[dict]:
-    serialized = []
-    for check in checks or []:
-        serialized.append({
-            "name": str(getattr(check, "name", ""))[:120],
-            "passed": bool(getattr(check, "passed", False)),
-            "message": str(getattr(check, "message", ""))[:500],
-        })
-    return serialized
-
-
-def _verification_payload_from_verify(verify, *, target: str = "") -> dict:
-    return {
-        "status": "verified" if getattr(verify, "verified", False) else "failed",
-        "verified": bool(getattr(verify, "verified", False)),
-        "artifact_type": str(getattr(verify, "artifact_type", "")),
-        "target": target,
-        "summary": str(verify.summary())[:500],
-        "checks": _serialize_checks(getattr(verify, "checks", [])),
-    }
-
-
-def _verification_not_run(reason: str) -> dict:
-    return {
-        "status": "not-run",
-        "verified": False,
-        "artifact_type": "",
-        "target": "",
-        "summary": reason[:500],
-        "checks": [],
-    }
-
-
-def _normalize_verification_payload(verification: dict | None) -> dict:
-    if not isinstance(verification, dict):
-        return _verification_not_run("verification not recorded")
-    normalized = {
-        "status": str(verification.get("status", "not-run"))[:50],
-        "verified": bool(verification.get("verified", False)),
-        "artifact_type": str(verification.get("artifact_type", ""))[:120],
-        "target": str(verification.get("target", ""))[:500],
-        "summary": str(verification.get("summary", ""))[:500],
-        "checks": [],
-    }
-    checks = verification.get("checks", [])
-    if isinstance(checks, list):
-        normalized["checks"] = [
-            {
-                "name": str(check.get("name", ""))[:120],
-                "passed": bool(check.get("passed", False)),
-                "message": str(check.get("message", ""))[:500],
-            }
-            for check in checks
-            if isinstance(check, dict)
-        ]
-    return normalized
-
-
-def _step_verification_payload(workspace: Path, status: str) -> dict:
-    if status not in ("done", "needs-input"):
-        return _verification_not_run("verification not required for this status")
-    output_file = workspace / "output.md"
-    verify = verify_artifact("file", str(output_file), {"min_size": 1})
-    return _verification_payload_from_verify(verify, target=str(output_file))
-
-
-def _workspace_relative_artifact_paths(metadata: dict | None) -> list[Path]:
-    candidates = []
-    if not metadata:
-        return candidates
-    for item in metadata.get("artifacts_expected", []) or []:
-        if isinstance(item, dict):
-            path_str = item.get("path", "")
-        else:
-            path_str = str(item)
-        path_str = str(path_str).strip()
-        if not path_str:
-            continue
-        path = Path(path_str)
-        if not path.is_absolute():
-            path = Path(path_str)
-        candidates.append(path)
-    return candidates
-
-
-def _collect_result_artifacts(workspace: Path, metadata: dict | None = None) -> list[dict]:
-    artifact_paths: list[Path] = []
-    for name in ("output.md", "summary.txt"):
-        path = workspace / name
-        if path.exists() and path.is_file():
-            artifact_paths.append(path)
-
-    for candidate in _workspace_relative_artifact_paths(metadata):
-        path = candidate if candidate.is_absolute() else workspace / candidate
-        try:
-            resolved = path.resolve()
-            resolved.relative_to(workspace.resolve())
-        except (OSError, ValueError):
-            continue
-        if resolved.exists() and resolved.is_file():
-            artifact_paths.append(resolved)
-
-    deduped: list[Path] = []
-    seen: set[str] = set()
-    for path in artifact_paths:
-        key = str(path)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(path)
-
-    artifacts = []
-    for path in deduped:
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        if path.name in _RESULT_INTERNAL_FILES or path.suffix == ".tmp":
-            continue
-        artifacts.append({
-            "type": "file",
-            "path": str(path),
-            "size_bytes": stat.st_size,
-        })
-    return artifacts
-
-
-def _infer_failure_class(status: str, verification: dict) -> str:
-    if status == "done":
-        return ""
-    if status == "needs-input":
-        return "needs_input"
-    if status == "blocked":
-        return "blocked"
-    if status == "timeout":
-        return "timeout"
-    if status == "failed":
-        if verification.get("status") == "failed":
-            return "verification_failed"
-        return "execution_failed"
-    if verification.get("status") == "failed":
-        return "verification_failed"
-    return "execution_error"
-
-
-def _infer_next_action(status: str, failure_class: str) -> str:
-    if status == "done":
-        return "proceed-to-next-step"
-    if status == "needs-input":
-        return "await-user-input"
-    if failure_class == "preflight_blocked":
-        return "resolve-preflight-block"
-    if failure_class == "verification_failed":
-        return "inspect-artifacts-and-retry"
-    if failure_class == "timeout":
-        return "retry-with-backoff-or-abort"
-    if status == "blocked":
-        return "unblock-and-retry"
-    return "inspect-error-and-retry"
-
-
-def _canonicalize_result_payload(
-    workspace: Path,
-    payload: dict,
-    *,
-    task_id: str,
-    status: str,
-    summary: str,
-    tags: list[str] | None = None,
-    agent: str | None = None,
-    metadata: dict | None = None,
-    verification: dict | None = None,
-    failure_class: str | None = None,
-    next_action: str | None = None,
-) -> dict:
-    result = dict(payload)
-    normalized_status = normalize_task_status(status)
-    result["task_id"] = task_id
-    result["workflow_id"] = str(
-        result.get("workflow_id")
-        or (metadata or {}).get("workflow_id")
-        or _ACTIVE_WORKFLOW_ID
-        or derive_workflow_id(task_id=task_id)
-    ).strip()
-    result["status"] = normalized_status
-    result["summary"] = summary
-    result["completed_at"] = result.get("completed_at") or _utc_iso()
-    if tags:
-        result["tags"] = tags
-    if agent:
-        result["agent"] = agent
-    if metadata:
-        for key in _RESULT_RUNTIME_METADATA_KEYS:
-            if key in metadata and key not in result:
-                result[key] = metadata[key]
-    result["step_id"] = str(result.get("step_id") or _step_id_from_metadata(metadata))
-    retry_count = result.get("retry_count", metadata.get("retry_count", 0) if metadata else 0)
-    try:
-        result["retry_count"] = int(retry_count or 0)
-    except (TypeError, ValueError):
-        result["retry_count"] = 0
-
-    normalized_verification = _normalize_verification_payload(
-        verification if verification is not None else result.get("verification")
-    )
-    result["verification"] = normalized_verification
-    result["artifacts_produced"] = _collect_result_artifacts(workspace, metadata=metadata)
-
-    inferred_failure_class = failure_class
-    if inferred_failure_class is None:
-        inferred_failure_class = str(result.get("failure_class", "")).strip()
-    if not inferred_failure_class:
-        inferred_failure_class = _infer_failure_class(normalized_status, normalized_verification)
-    result["failure_class"] = inferred_failure_class
-
-    inferred_next_action = next_action or str(result.get("next_action", "")).strip()
-    if not inferred_next_action:
-        inferred_next_action = _infer_next_action(normalized_status, inferred_failure_class)
-    result["next_action"] = inferred_next_action
-    return result
-
-
-def _write_result(workspace: Path, task_id: str, status: str, summary: str,
-                  tags: list[str] | None = None, agent: str | None = None,
-                  metadata: dict | None = None, verification: dict | None = None,
-                  failure_class: str | None = None, next_action: str | None = None):
-    """Write result JSON for TaskManager to collect."""
-    result = _canonicalize_result_payload(
-        workspace,
-        {},
-        task_id=task_id,
-        status=status,
-        summary=summary,
-        tags=tags,
-        agent=agent,
-        metadata=metadata,
-        verification=verification,
-        failure_class=failure_class,
-        next_action=next_action,
-    )
-    status = result["status"]
-    result_path = workspace / "result.json"
-    tmp_path = result_path.with_suffix(".tmp")
-    tmp_path.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    tmp_path.rename(result_path)
-
-    # Guard: verify output.md exists when claiming task is done
-    # (learned from real failures — agent claimed completion but produced no output)
-    if status == "done":
-        output_path = workspace / "output.md"
-        if not output_path.exists() or output_path.stat().st_size == 0:
-            log.warning("Task %s claimed done but output.md missing/empty — "
-                        "result.json written but output may be incomplete", task_id)
-
-    # --- Archive conversation as episode for long-term recall ---
-    # SKIP for private tasks — never persist sensitive content
-    if tags and "private" in tags:
-        return
-    if status in ("done", "completed", "failed"):
-        try:
-            # Try items/ first, fallback to legacy tasks/
-            item_file = _item_file(task_id)
-            task_file = TASKS_DIR / f"{task_id}.json"
-            src = item_file if item_file.exists() else task_file
-            if src.exists():
-                task_data = json.loads(src.read_text(encoding="utf-8"))
-                messages = task_data.get("messages", [])
-                title = task_data.get("title", task_id)
-                if len(messages) >= 2:  # Only archive meaningful conversations
-                    save_episode(task_id, title, messages, tags=tags, user_id=_ACTIVE_USER_ID)
-        except Exception as e:
-            log.warning("Episode archival failed for %s: %s", task_id, e)
-
-    # --- Knowledge write-back: extract reusable knowledge from successful tasks ---
-    if status == "done":
-        try:
-            _extract_knowledge_writeback(workspace, task_id, tags=tags)
-        except Exception as e:
-            log.debug("Knowledge writeback skipped: %s", e)
-
-    # --- Self-iteration: extract lessons from failures ---
-    if status == "failed":
-        try:
-            from self_iteration import extract_failure_lesson, save_failure_lesson
-            lesson = extract_failure_lesson(task_id, summary[:200], summary)
-            if lesson:
-                save_failure_lesson(lesson)
-        except Exception as e:
-            log.warning("Failure lesson extraction failed for %s: %s", task_id, e)
-
-    # --- Auto-flush context before worker exits ---
-    try:
-        from soul_manager import auto_flush
-        context_summary = (
-            f"Task {task_id} ({status}): {summary[:500]}\n"
-            f"Tags: {', '.join(tags) if tags else 'none'}"
-        )
-        auto_flush(context_summary)
-    except Exception as e:
-        log.debug("Auto-flush skipped: %s", e)
-
-
-def _snapshot_file(path: Path) -> tuple[int, int] | None:
-    """Return a cheap file snapshot used to detect whether a handler updated output."""
-    if not path.exists():
-        return None
-    stat = path.stat()
-    return (stat.st_mtime_ns, stat.st_size)
-
-
-def _verify_step_artifact(
-    workspace: Path,
-    task_id: str,
-    agent: str,
-    status: str,
-    *,
-    metadata: dict | None = None,
-    verification: dict | None = None,
-) -> bool:
-    """Require a real output artifact before claiming success or input-needed."""
-    if status not in ("done", "needs-input"):
-        return True
-
-    verification_payload = _normalize_verification_payload(
-        verification if verification is not None else _step_verification_payload(workspace, status)
-    )
-    if verification_payload.get("verified"):
-        return True
-
-    _write_result(
-        workspace,
-        task_id,
-        "failed",
-        f"{agent} produced no verifiable output: {verification_payload.get('summary', '')}",
-        agent=agent,
-        metadata=metadata,
-        verification=verification_payload,
-        failure_class="verification_failed",
-        next_action="inspect-artifacts-and-retry",
-    )
-    return False
-
-
-def _invoke_registry_handler(handler_fn, workspace: Path, task_id: str, instruction: str,
-                             sender: str, thread_id: str, tier: str,
-                             user_id: str = "ang"):
-    """Invoke a registry-loaded handler with optional runtime context kwargs.
-
-    Registry handlers have drifted signatures: some support `tier`, some also
-    accept `thread_history` / `thread_memory`, while others only accept the core
-    positional contract. Inspect the signature and pass only supported kwargs.
-    """
-    kwargs = {}
-    params = inspect.signature(handler_fn).parameters
-    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
-
-    if accepts_kwargs or "tier" in params:
-        kwargs["tier"] = tier
-    if accepts_kwargs or "user_id" in params:
-        kwargs["user_id"] = user_id
-
-    needs_thread_history = accepts_kwargs or "thread_history" in params
-    needs_thread_memory = accepts_kwargs or "thread_memory" in params
-    if needs_thread_history:
-        try:
-            kwargs["thread_history"] = load_thread_history(thread_id, user_id=user_id)
-        except TypeError:
-            kwargs["thread_history"] = load_thread_history(thread_id)
-    if needs_thread_memory:
-        try:
-            kwargs["thread_memory"] = load_thread_memory(thread_id, user_id=user_id)
-        except TypeError:
-            kwargs["thread_memory"] = load_thread_memory(thread_id)
-
-    return handler_fn(workspace, task_id, instruction, sender, thread_id, **kwargs)
-
-
-def _invoke_registry_preflight(preflight_fn, workspace: Path, task_id: str, instruction: str,
-                               sender: str, thread_id: str, tier: str,
-                               user_id: str = "ang"):
-    """Invoke an optional registry preflight hook with matching runtime kwargs."""
-    kwargs = {}
-    params = inspect.signature(preflight_fn).parameters
-    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
-
-    if accepts_kwargs or "tier" in params:
-        kwargs["tier"] = tier
-    if accepts_kwargs or "user_id" in params:
-        kwargs["user_id"] = user_id
-
-    needs_thread_history = accepts_kwargs or "thread_history" in params
-    needs_thread_memory = accepts_kwargs or "thread_memory" in params
-    if needs_thread_history:
-        try:
-            kwargs["thread_history"] = load_thread_history(thread_id, user_id=user_id)
-        except TypeError:
-            kwargs["thread_history"] = load_thread_history(thread_id)
-    if needs_thread_memory:
-        try:
-            kwargs["thread_memory"] = load_thread_memory(thread_id, user_id=user_id)
-        except TypeError:
-            kwargs["thread_memory"] = load_thread_memory(thread_id)
-
-    return preflight_fn(workspace, task_id, instruction, sender, thread_id, **kwargs)
-
-
-def _ensure_step_result(workspace: Path, task_id: str, agent: str, request: str,
-                        handler_result: str | None,
-                        output_snapshot: tuple[int, int] | None,
-                        metadata: dict | None = None) -> None:
-    """Backfill result.json for handlers that only return text/output.md."""
-    result_file = workspace / "result.json"
-    if result_file.exists():
-        try:
-            existing = json.loads(result_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            existing = {}
-        verification_payload = _step_verification_payload(workspace, str(existing.get("status", "")))
-        verified = _verify_step_artifact(
-            workspace,
-            task_id,
-            agent,
-            existing.get("status", ""),
-            metadata=metadata,
-            verification=verification_payload,
-        )
-        if not verified:
-            return
-        normalized = _canonicalize_result_payload(
-            workspace,
-            existing,
-            task_id=task_id,
-            status=str(existing.get("status", "failed")),
-            summary=str(existing.get("summary", "")),
-            agent=agent if "agent" not in existing else None,
-            metadata=metadata,
-            verification=verification_payload,
-        )
-        if normalized != existing:
-            result_file.write_text(
-                json.dumps(normalized, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        return
-
-    output_file = workspace / "output.md"
-    output_changed = _snapshot_file(output_file) != output_snapshot
-    result_text = handler_result.strip() if isinstance(handler_result, str) else ""
-
-    if result_text.startswith("NEEDS_APPROVAL:") or result_text.startswith("NEEDS_INPUT:"):
-        summary = result_text.split(":", 1)[1].strip()
-        if not output_changed:
-            output_file.write_text(summary, encoding="utf-8")
-        verification_payload = _step_verification_payload(workspace, "needs-input")
-        if not _verify_step_artifact(
-            workspace,
-            task_id,
-            agent,
-            "needs-input",
-            metadata=metadata,
-            verification=verification_payload,
-        ):
-            return
-        _write_result(
-            workspace,
-            task_id,
-            "needs-input",
-            summary,
-            tags=[agent],
-            agent=agent,
-            metadata=metadata,
-            verification=verification_payload,
-            failure_class="approval_required" if result_text.startswith("NEEDS_APPROVAL:") else "needs_input",
-            next_action="await-user-input",
-        )
-        return
-
-    summary = _load_step_summary(workspace)
-    if not summary and result_text:
-        summary = result_text
-    if not output_changed and result_text:
-        output_file.write_text(result_text, encoding="utf-8")
-        output_changed = True
-    if output_changed and not summary and output_file.exists():
-        summary = output_file.read_text(encoding="utf-8")[:300]
-
-    if summary:
-        tags = smart_classify(request, summary)
-        verification_payload = _step_verification_payload(workspace, "done")
-        if not _verify_step_artifact(
-            workspace,
-            task_id,
-            agent,
-            "done",
-            metadata=metadata,
-            verification=verification_payload,
-        ):
-            return
-        _write_result(
-            workspace,
-            task_id,
-            "done",
-            summary,
-            tags=tags,
-            agent=agent,
-            metadata=metadata,
-            verification=verification_payload,
-        )
-        return
-
-    _write_result(
-        workspace,
-        task_id,
-        "error",
-        f"{agent} handler returned no result or output",
-        agent=agent,
-        metadata=metadata,
-        failure_class="missing_output",
-    )
-
-
-def _load_step_summary(workspace: Path) -> str:
-    """Load a handler-provided summary if present."""
-    summary_file = workspace / "summary.txt"
-    if summary_file.exists():
-        try:
-            return summary_file.read_text(encoding="utf-8").strip()
-        except OSError:
-            return ""
-    return ""
-
-
-def _update_thread_memory(thread_id: str, request: str, summary: str):
-    """Append task summary to per-thread memory."""
-    thread_dir = MIRA_DIR / "threads" / thread_id
-    thread_dir.mkdir(parents=True, exist_ok=True)
-    mem_file = thread_dir / "memory.md"
-
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    entry = f"- [{ts}] Request: {request[:80]} → {summary[:120]}\n"
-
-    if mem_file.exists():
-        text = mem_file.read_text(encoding="utf-8")
-    else:
-        text = "# Thread Memory\n\n"
-    text += entry
-    mem_file.write_text(text, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

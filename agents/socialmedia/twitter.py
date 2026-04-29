@@ -17,8 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from config import (TWITTER_MAX_TWEETS_PER_DAY, TWITTER_COOLDOWN_HOURS,
-                    TWITTER_API_ENDPOINT)
+from config import TWITTER_MAX_TWEETS_PER_DAY, TWITTER_COOLDOWN_HOURS, TWITTER_API_ENDPOINT
 
 log = logging.getLogger("socialmedia.twitter")
 
@@ -31,8 +30,13 @@ TWEET_COOLDOWN_HOURS = TWITTER_COOLDOWN_HOURS  # No cooldown — rate managed by
 
 # Seed accounts for initial watchlist — Mira auto-discovers more over time.
 _SEED_WATCHLIST = [
-    "karpathy", "simonw", "swyx", "jimfan", "hardmaru",
-    "AnthropicAI", "OpenAI",
+    "karpathy",
+    "simonw",
+    "swyx",
+    "jimfan",
+    "hardmaru",
+    "AnthropicAI",
+    "OpenAI",
 ]
 
 # Minimum engagement score to add an account to the watchlist
@@ -101,28 +105,25 @@ def _get_twitter_config() -> dict:
 # OAuth 1.0a signing (stdlib only)
 # ---------------------------------------------------------------------------
 
-def _oauth_sign(method: str, url: str, params: dict,
-                consumer_secret: str, token_secret: str) -> str:
+
+def _oauth_sign(method: str, url: str, params: dict, consumer_secret: str, token_secret: str) -> str:
     """Create OAuth 1.0a HMAC-SHA1 signature."""
-    base = "&".join([
-        method.upper(),
-        urllib.parse.quote(url, safe=""),
-        urllib.parse.quote(
-            "&".join(f"{k}={urllib.parse.quote(str(v), safe='')}"
-                     for k, v in sorted(params.items())),
-            safe="",
-        ),
-    ])
-    key = (f"{urllib.parse.quote(consumer_secret, safe='')}"
-           f"&{urllib.parse.quote(token_secret, safe='')}")
-    sig = base64.b64encode(
-        hmac.new(key.encode(), base.encode(), hashlib.sha1).digest()
-    ).decode()
+    base = "&".join(
+        [
+            method.upper(),
+            urllib.parse.quote(url, safe=""),
+            urllib.parse.quote(
+                "&".join(f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in sorted(params.items())),
+                safe="",
+            ),
+        ]
+    )
+    key = f"{urllib.parse.quote(consumer_secret, safe='')}" f"&{urllib.parse.quote(token_secret, safe='')}"
+    sig = base64.b64encode(hmac.new(key.encode(), base.encode(), hashlib.sha1).digest()).decode()
     return sig
 
 
-def _make_auth_header(method: str, url: str, cfg: dict,
-                      extra_params: dict | None = None) -> str:
+def _make_auth_header(method: str, url: str, cfg: dict, extra_params: dict | None = None) -> str:
     """Build OAuth Authorization header."""
     oauth_params = {
         "oauth_consumer_key": cfg["consumer_key"],
@@ -138,22 +139,25 @@ def _make_auth_header(method: str, url: str, cfg: dict,
         sign_params.update(extra_params)
 
     oauth_params["oauth_signature"] = _oauth_sign(
-        method, url, sign_params,
-        cfg["consumer_secret"], cfg["access_token_secret"],
+        method,
+        url,
+        sign_params,
+        cfg["consumer_secret"],
+        cfg["access_token_secret"],
     )
 
-    return "OAuth " + ", ".join(
-        f'{k}="{urllib.parse.quote(v, safe="")}"'
-        for k, v in sorted(oauth_params.items())
-    )
+    return "OAuth " + ", ".join(f'{k}="{urllib.parse.quote(v, safe="")}"' for k, v in sorted(oauth_params.items()))
 
 
 # ---------------------------------------------------------------------------
 # State management
 # ---------------------------------------------------------------------------
 
+
 def _state_file() -> Path:
-    return Path(__file__).resolve().parent / "twitter_state.json"
+    from config import SOCIAL_STATE_DIR
+
+    return SOCIAL_STATE_DIR / "twitter_state.json"
 
 
 def _load_state() -> dict:
@@ -167,18 +171,30 @@ def _load_state() -> dict:
 
 
 def _save_state(state: dict):
-    _state_file().write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    _state_file().write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
 # Rate limiting
 # ---------------------------------------------------------------------------
 
+
 def can_tweet_now() -> bool:
-    """Check daily limit and cooldown."""
+    """Check daily limit, cooldown, and spend cap."""
     state = _load_state()
+
+    # Check spend cap
+    if state.get("spend_cap_reached"):
+        reset = state.get("spend_cap_reset", "")
+        if reset and datetime.now().strftime("%Y-%m-%d") < reset:
+            log.info("Twitter spend cap reached, blocked until %s", reset)
+            return False
+        else:
+            # Cap has reset, clear the flag
+            state.pop("spend_cap_reached", None)
+            state.pop("spend_cap_reset", None)
+            _save_state(state)
+
     today = datetime.now().strftime("%Y-%m-%d")
 
     daily_count = state.get(f"tweets_{today}", 0)
@@ -209,11 +225,13 @@ def _record_tweet(tweet_id: str, text: str):
     state[f"tweets_{today}"] = state.get(f"tweets_{today}", 0) + 1
 
     history = state.get("tweet_history", [])
-    history.append({
-        "id": tweet_id,
-        "text": text[:200],
-        "date": now.isoformat(),
-    })
+    history.append(
+        {
+            "id": tweet_id,
+            "text": text[:200],
+            "date": now.isoformat(),
+        }
+    )
     state["tweet_history"] = history[-50:]  # Keep last 50
 
     _save_state(state)
@@ -222,6 +240,7 @@ def _record_tweet(tweet_id: str, text: str):
 # ---------------------------------------------------------------------------
 # Core API calls
 # ---------------------------------------------------------------------------
+
 
 def post_tweet(text: str) -> dict | None:
     """Post a tweet. Returns API response dict or None on failure."""
@@ -241,10 +260,14 @@ def post_tweet(text: str) -> dict | None:
     auth = _make_auth_header("POST", url, cfg)
     payload = json.dumps({"text": text}).encode()
 
-    req = urllib.request.Request(url, data=payload, headers={
-        "Authorization": auth,
-        "Content-Type": "application/json",
-    })
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": auth,
+            "Content-Type": "application/json",
+        },
+    )
 
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -272,15 +295,21 @@ def post_reply(text: str, reply_to_id: str) -> dict | None:
 
     url = f"{TWITTER_API_ENDPOINT}/tweets"
     auth = _make_auth_header("POST", url, cfg)
-    payload = json.dumps({
-        "text": text,
-        "reply": {"in_reply_to_tweet_id": reply_to_id},
-    }).encode()
+    payload = json.dumps(
+        {
+            "text": text,
+            "reply": {"in_reply_to_tweet_id": reply_to_id},
+        }
+    ).encode()
 
-    req = urllib.request.Request(url, data=payload, headers={
-        "Authorization": auth,
-        "Content-Type": "application/json",
-    })
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": auth,
+            "Content-Type": "application/json",
+        },
+    )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             result = json.loads(resp.read())
@@ -315,17 +344,20 @@ def like_tweet(tweet_id: str) -> bool:
     auth = _make_auth_header("POST", url, cfg)
     payload = json.dumps({"tweet_id": tweet_id}).encode()
 
-    req = urllib.request.Request(url, data=payload, headers={
-        "Authorization": auth,
-        "Content-Type": "application/json",
-    })
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": auth,
+            "Content-Type": "application/json",
+        },
+    )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             log.info("Liked tweet %s", tweet_id)
             return True
     except urllib.error.HTTPError as e:
-        log.warning("Like failed (HTTP %d): %s", e.code,
-                    e.read().decode()[:200])
+        log.warning("Like failed (HTTP %d): %s", e.code, e.read().decode()[:200])
         return False
 
 
@@ -340,17 +372,20 @@ def follow_user(user_id: str) -> bool:
     auth = _make_auth_header("POST", url, cfg)
     payload = json.dumps({"target_user_id": user_id}).encode()
 
-    req = urllib.request.Request(url, data=payload, headers={
-        "Authorization": auth,
-        "Content-Type": "application/json",
-    })
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": auth,
+            "Content-Type": "application/json",
+        },
+    )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             log.info("Followed user %s", user_id)
             return True
     except urllib.error.HTTPError as e:
-        log.warning("Follow failed (HTTP %d): %s", e.code,
-                    e.read().decode()[:200])
+        log.warning("Follow failed (HTTP %d): %s", e.code, e.read().decode()[:200])
         return False
 
 
@@ -386,8 +421,7 @@ def search_recent_tweets(query: str, max_results: int = 10) -> list[dict]:
                 t["_author"] = users.get(t.get("author_id"), {})
             return tweets
     except urllib.error.HTTPError as e:
-        log.warning("Search failed (HTTP %d): %s", e.code,
-                    e.read().decode()[:200])
+        log.warning("Search failed (HTTP %d): %s", e.code, e.read().decode()[:200])
         return []
 
 
@@ -423,8 +457,7 @@ def get_mentions(since_id: str = "") -> list[dict]:
                 t["_author"] = users.get(t.get("author_id"), {})
             return tweets
     except urllib.error.HTTPError as e:
-        log.warning("Mentions fetch failed (HTTP %d): %s", e.code,
-                    e.read().decode()[:200])
+        log.warning("Mentions fetch failed (HTTP %d): %s", e.code, e.read().decode()[:200])
         return []
 
 
@@ -449,10 +482,14 @@ def post_thread(texts: list[str]) -> list[dict]:
             body["reply"] = {"in_reply_to_tweet_id": prev_id}
 
         payload = json.dumps(body).encode()
-        req = urllib.request.Request(url, data=payload, headers={
-            "Authorization": auth,
-            "Content-Type": "application/json",
-        })
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Authorization": auth,
+                "Content-Type": "application/json",
+            },
+        )
 
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
@@ -461,13 +498,12 @@ def post_thread(texts: list[str]) -> list[dict]:
                 _record_tweet(tid, text)
                 results.append(result)
                 prev_id = tid
-                log.info("Thread %d/%d posted (id=%s)", i+1, len(texts), tid)
+                log.info("Thread %d/%d posted (id=%s)", i + 1, len(texts), tid)
                 import time as _t
+
                 _t.sleep(1)
         except urllib.error.HTTPError as e:
-            log.error("Thread %d/%d failed (HTTP %d): %s",
-                      i+1, len(texts), e.code,
-                      e.read().decode()[:200])
+            log.error("Thread %d/%d failed (HTTP %d): %s", i + 1, len(texts), e.code, e.read().decode()[:200])
             break
 
     return results
@@ -476,6 +512,7 @@ def post_thread(texts: list[str]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Proactive engagement — search, quote, reply to mentions
 # ---------------------------------------------------------------------------
+
 
 def run_twitter_engagement(soul_context: str = ""):
     """Run one engagement cycle: reply to mentions + quote interesting tweets
@@ -509,7 +546,7 @@ def _reply_to_mentions(soul_context: str = ""):
         return
 
     try:
-        from sub_agent import claude_think
+        from llm import claude_think
     except ImportError:
         return
 
@@ -547,6 +584,7 @@ Output only the reply text."""
             log.info("Replied to @%s: %s", username, reply_text[:60])
 
         import time as _t
+
         _t.sleep(2)
 
 
@@ -581,6 +619,7 @@ def _quote_interesting_tweets(soul_context: str = ""):
 
     # --- Strategy 1: Watchlist accounts (high-signal) ---
     import random
+
     accounts = list(get_watchlist())
     random.shuffle(accounts)
     # Search 3 random accounts from watchlist per cycle
@@ -607,8 +646,16 @@ def _quote_interesting_tweets(soul_context: str = ""):
         ]
         query = random.choice(topics)
         tweets = search_recent_tweets(query, max_results=10)
-        spam_keywords = {"airdrop", "whitelist", "presale", "token launch",
-                         "join now", "free mint", "giveaway", "dm me"}
+        spam_keywords = {
+            "airdrop",
+            "whitelist",
+            "presale",
+            "token launch",
+            "join now",
+            "free mint",
+            "giveaway",
+            "dm me",
+        }
         for t in tweets:
             if t.get("author_id") == my_id:
                 continue
@@ -628,13 +675,12 @@ def _quote_interesting_tweets(soul_context: str = ""):
 
     # Ask Claude to pick one and draft a quote
     try:
-        from sub_agent import claude_think
+        from llm import claude_think
     except ImportError:
         return
 
     tweets_text = "\n\n".join(
-        f"[{i+1}] @{t.get('_author', {}).get('username', '?')}: {t['text'][:200]}"
-        for i, t in enumerate(candidates[:5])
+        f"[{i+1}] @{t.get('_author', {}).get('username', '?')}: {t['text'][:200]}" for i, t in enumerate(candidates[:5])
     )
 
     prompt = f"""Pick one tweet worth reacting to. Write a quote tweet.
@@ -670,6 +716,7 @@ QUOTE: [your comment]"""
         return
 
     import re
+
     match = re.search(r"PICK:\s*\[?(\d+)\]?\s*[\n\r]+QUOTE:\s*(.+)", resp, re.DOTALL)
     if not match:
         return
@@ -726,6 +773,7 @@ def _auto_follow_interesting_accounts():
         "autonomous agent system -is:retweet lang:en",
     ]
     import random
+
     query = random.choice(topics)
 
     tweets = search_recent_tweets(query, max_results=10)
@@ -789,6 +837,7 @@ def _find_reply_candidates(soul_context: str = ""):
 
     # Strategy: watchlist accounts first, then topic search fallback
     import random
+
     my_id = _get_twitter_config().get("access_token", "").split("-")[0]
     queued_ids = {r.get("tweet_id") for r in reply_queue}
     candidates = []
@@ -800,8 +849,7 @@ def _find_reply_candidates(soul_context: str = ""):
         query = f"from:{account} -is:retweet -is:reply"
         tweets = search_recent_tweets(query, max_results=5)
         for t in tweets:
-            if t.get("author_id") != my_id and t["id"] not in queued_ids \
-               and len(t.get("text", "")) > 60:
+            if t.get("author_id") != my_id and t["id"] not in queued_ids and len(t.get("text", "")) > 60:
                 candidates.append(t)
 
     # Fallback: topic search
@@ -814,16 +862,19 @@ def _find_reply_candidates(soul_context: str = ""):
         query = random.choice(topics)
         tweets = search_recent_tweets(query, max_results=10)
         for t in tweets:
-            if t.get("author_id") != my_id and t["id"] not in queued_ids \
-               and len(t.get("text", "")) > 80 \
-               and t.get("public_metrics", {}).get("like_count", 0) >= 1:
+            if (
+                t.get("author_id") != my_id
+                and t["id"] not in queued_ids
+                and len(t.get("text", "")) > 80
+                and t.get("public_metrics", {}).get("like_count", 0) >= 1
+            ):
                 candidates.append(t)
 
     if not candidates:
         return
 
     try:
-        from sub_agent import claude_think
+        from llm import claude_think
     except ImportError:
         return
 
@@ -862,6 +913,7 @@ REPLY: [your reply]"""
         return
 
     import re
+
     match = re.search(r"PICK:\s*\[?(\d+)\]?\s*[\n\r]+REPLY:\s*(.+)", resp, re.DOTALL)
     if not match:
         return
@@ -895,14 +947,20 @@ REPLY: [your reply]"""
     # Notify via Mira bridge — all replies go to one thread ("x_replies")
     try:
         import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-        from mira import Mira
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
+        from bridge import Mira
+
         bridge = Mira()
-        msg = (f"📌 {tweet_url}\n"
-               f"@{author}: {picked['text'][:150]}\n\n"
-               f"回复草稿:\n{reply_text}")
-        bridge.send_message("x_replies", msg)
-        log.info("Reply added to x_replies thread")
+        msg = f"@{author}: {picked['text'][:150]}\n\n回复草稿:\n{reply_text}"
+        import uuid
+
+        bridge.create_task(
+            task_id=f"x_reply_{uuid.uuid4().hex[:8]}",
+            title=f"X reply draft: @{author}",
+            first_message=msg,
+        )
+        log.info("Reply added to bridge as task")
     except Exception as e:
         log.warning("Failed to notify via bridge: %s", e)
 
@@ -938,6 +996,7 @@ def get_tweet_stats() -> dict:
 # Tweet performance tracking
 # ---------------------------------------------------------------------------
 
+
 def fetch_tweet_metrics(tweet_id: str) -> dict | None:
     """Fetch engagement metrics for a tweet via Twitter API v2.
 
@@ -967,8 +1026,7 @@ def fetch_tweet_metrics(tweet_id: str) -> dict | None:
             return None
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")[:300]
-        log.warning("Metrics fetch failed for %s (HTTP %d): %s",
-                    tweet_id, e.code, body)
+        log.warning("Metrics fetch failed for %s (HTTP %d): %s", tweet_id, e.code, body)
         return None
     except Exception as e:
         log.warning("Metrics fetch failed for %s: %s", tweet_id, e)
@@ -1005,12 +1063,14 @@ def collect_pending_metrics(state: dict) -> list[dict]:
         if 20 <= age_hours <= 28:
             metrics = fetch_tweet_metrics(tweet_id)
             if metrics:
-                collected.append({
-                    "tweet_id": tweet_id,
-                    "text": entry.get("text", ""),
-                    "posted_at": posted,
-                    "metrics": metrics,
-                })
+                collected.append(
+                    {
+                        "tweet_id": tweet_id,
+                        "text": entry.get("text", ""),
+                        "posted_at": posted,
+                        "metrics": metrics,
+                    }
+                )
                 metrics_collected.add(tweet_id)
 
     # Save collected IDs (keep last 200)
@@ -1050,8 +1110,7 @@ def get_performance_summary(state: dict) -> str:
     avg_replies = total_replies / len(recent)
 
     # Weighted best: replies count 3x likes
-    best = max(recent, key=lambda h: h["metrics"].get("like_count", 0)
-               + h["metrics"].get("reply_count", 0) * 3)
+    best = max(recent, key=lambda h: h["metrics"].get("like_count", 0) + h["metrics"].get("reply_count", 0) * 3)
     best_text = best["text"][:60] + "..." if len(best["text"]) > 60 else best["text"]
 
     return (
@@ -1066,13 +1125,13 @@ def get_performance_summary(state: dict) -> str:
 # Content generation for tweets
 # ---------------------------------------------------------------------------
 
-def tweet_for_article(title: str, subtitle: str, url: str,
-                      soul_context: str = "") -> str | None:
+
+def tweet_for_article(title: str, subtitle: str, url: str, soul_context: str = "") -> str | None:
     """Generate and post a tweet promoting a Substack article.
 
     Asks Claude to draft a tweet, then posts it.
     """
-    from sub_agent import claude_think
+    from llm import claude_think
 
     prompt = f"""You are Mira. You wrote an article and want to share it on X.
 
@@ -1139,10 +1198,9 @@ Output ONLY the tweet text (+ link on last line). Nothing else."""
     return None
 
 
-def tweet_for_podcast(episode_title: str, description: str,
-                      podcast_url: str, soul_context: str = "") -> str | None:
+def tweet_for_podcast(episode_title: str, description: str, podcast_url: str, soul_context: str = "") -> str | None:
     """Generate and post a tweet promoting a podcast episode."""
-    from sub_agent import claude_think
+    from llm import claude_think
 
     prompt = f"""You recorded a podcast episode. Share it on X.
 
@@ -1185,7 +1243,7 @@ def tweet_spark(thought: str, soul_context: str = "") -> str | None:
     Used for engagement — sharing interesting observations without
     promoting anything.
     """
-    from sub_agent import claude_think
+    from llm import claude_think
 
     prompt = f"""You had this thought while reading. Share it on X like you're thinking out loud.
 

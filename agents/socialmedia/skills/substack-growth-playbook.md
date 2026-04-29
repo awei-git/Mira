@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when planning a systematic strategy to grow Substack subscribers using platform-native engagement, SEO, collaboration, and cross-surface visibility."
+---
+
 # Substack Growth Playbook (2026)
 
 ## One-liner

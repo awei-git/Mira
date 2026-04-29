@@ -1,0 +1,28 @@
+{
+  "id": "daily_report_20260427",
+  "type": "feed",
+  "title": "Daily Report 2026-04-27",
+  "status": "done",
+  "tags": [
+    "mira",
+    "report",
+    "daily"
+  ],
+  "origin": "agent",
+  "pinned": false,
+  "quick": false,
+  "parent_id": "",
+  "created_at": "2026-04-28T02:00:09.275Z",
+  "updated_at": "2026-04-28T02:00:09.275Z",
+  "messages": [
+    {
+      "id": "19545eae",
+      "sender": "agent",
+      "content": "Mira 日报 2026-04-27\n==============================\n\n完成的任务:\n无。\n\n## Pipeline Health (2026-04-27)\nDispatched: 2044 | Succeeded: 19215 | Failed: 622\n\nFailures:\n- voiceover-the-pain-already-happened: 2591x consecutive (2026-03-18 00:29:03,131 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- spark-check: 2604x consecutive (sub_agent.ClaudeTimeoutError: claude_think timed out after 30s)\n- podcast-zh-you-cant-evaluate-truth-at-a-point: 2604x consecutive (2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a P)\n- podcast-zh-when-values-become-leverage: 330x consecutive (2026-03-20 17:23:08,130 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- podcast-zh-the-exponential-exemption: 399x consecutive (2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- daily-research: 1483x consecutive (llm_providers.claude.ClaudeTimeoutError: claude_act timed out after 90s)\n- soul-question: 31x consecutive (llm_providers.claude.ClaudeTimeoutError: claude_think timed out after 90s)\n- autowrite-2026-04-07: 76x consecutive (sub_agent.ClaudeTimeoutError: claude_think timed out after 300s)\n- podcast-en-project: 102x consecutive (ModuleNotFoundError: No module named 'config')\n- self-audit: 2396x consecutive (ModuleNotFoundError: No module named 'config')\n- podcast-en-The-Trust-Stack-Is-the-Attack: 402x consecutive (ModuleNotFoundError: No module named 'config')\n- podcast-en-Ground-Truth-Is-Non-Renewable: 175x consecutive (ModuleNotFoundError: No module named 'config')\n- podcast-en-The-Most-Dangerous-Failure-Mod: 96x consecutive (ModuleNotFoundError: No module named 'config')\n\nProcess runs:\n- analyst: 20 runs, all OK (avg 4086s)\n- assessment: 10 runs, all OK (avg 4283s)\n- autowrite: 10 runs, all OK (avg 58s)\n- backlog: 10 runs, all OK (avg 3923s)\n- book: 10 runs, all OK (avg 3945s)\n- daily: 20 runs, 10 failed (avg 4088s)\n- explore: 110 runs, all OK (avg 5254s)\n- growth: 10 runs, all OK (avg 3953s)\n- idle: 20 runs, all OK (avg 1109s)\n- journal: 10 runs, all OK (avg 70s)\n- podcast: 10 runs, 10 failed (avg 3779s)\n- research: 20 runs, all OK (avg 2894s)\n- self: 20 runs, 10 failed (avg 4823s)\n- skill: 10 runs, all OK (avg 70s)\n- soul: 30 runs, 10 failed (avg 3074s)\n- substack: 30 runs, all OK (avg 3703s)\n- writing: 10 runs, all OK (avg 58s)\n- zhesi: 10 runs, all OK (avg 1132s)\n\n今日发出的评论:\n- https://chinai.substack.com/p/chinai-356-deepseek-as-road-builder\n  \"\"road builder\" is such a clean story... but is that what deepseek *decided* to be, or is it the shape their compute cons...\"\n- https://simonw.substack.com/p/gpt-55-chatgpt-images-20-qwen36-27b\n  \"[Simon Willison 的 weekly newsletter](https://simonw.substack.com/p/gpt-55-chatgpt-images-20-qwen36-27b) — 想问他：Now that C...\"\n- https://importai.substack.com/p/import-ai-454-automating-alignment\n  \"[Import AI 454](https://importai.substack.com/p/import-ai-454-automating-alignment) — If AI is automating alignment rese...\"\n\nSubstack 数据:\nTotal articles: 27. Total views: 0. Total likes: 9. Total comments: 2. Total restacks: 5. Total notes: 100. Subscribers: 7 (+4 in 30d, 0 paid)\n\nToken 用量:\n总计: 459次调用, 2,129,699 tokens\n  anthropic/claude-sonnet-4-6: 402次, 1,608,422 tok (in:1,497,682 out:110,740)\n  omlx/Qwen3.5-27B-4bit: 55次, 515,131 tok (in:338,242 out:176,889)\n  anthropic/claude-opus-4-6: 2次, 6,146 tok (in:4,433 out:1,713)\n\nanalyst: 2次, 6,146 tokens\n  anthropic/claude-opus-4-6: 2次, 6,146\nassess: 1次, 2,508 tokens\n  anthropic/claude-sonnet-4-6: 1次, 2,508\nbacklog-executor: 4次, 3,209 tokens\n  anthropic/claude-sonnet-4-6: 4次, 3,209\ncheck-comments: 1次, 1,297 tokens\n  anthropic/claude-sonnet-4-6: 1次, 1,297\nexplore: 90次, 315,219 tokens\n  anthropic/claude-sonnet-4-6: 90次, 315,219\ngrowth-cycle: 27次, 35,409 tokens\n  anthropic/claude-sonnet-4-6: 27次, 35,409\nidle-think: 146次, 748,084 tokens\n  omlx/Qwen3.5-27B-4bit: 55次, 515,131\n  anthropic/claude-sonnet-4-6: 91次, 232,953\njournal: 6次, 13,996 tokens\n  anthropic/claude-sonnet-4-6: 6次, 13,996\nresearch: 21次, 10,403 tokens\n  anthropic/claude-sonnet-4-6: 21次, 10,403\nresearch-log: 1次, 4,548 tokens\n  anthropic/claude-sonnet-4-6: 1次, 4,548\nself-evolve: 56次, 281,426 tokens\n  anthropic/claude-sonnet-4-6: 56次, 281,426\nsoul-question: 22次, 50,735 tokens\n  anthropic/claude-sonnet-4-6: 22次, 50,735\nsuper: 2次, 1,735 tokens\n  anthropic/claude-sonnet-4-6: 2次, 1,735\nunknown: 13次, 120,221 tokens\n  anthropic/claude-sonnet-4-6: 13次, 120,221\nzhesi: 67次, 534,763 tokens\n  anthropic/claude-sonnet-4-6: 67次, 534,763\n\n需要你介入:\n- 有一篇文章等你审批发布",
+      "timestamp": "2026-04-28T02:00:09.275Z",
+      "kind": "text"
+    }
+  ],
+  "error": null,
+  "result_path": null
+}

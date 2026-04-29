@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when selecting the single best frame from a burst or sequence by evaluating gesture, geometry, and meaning rather than just technical quality."
+---
+
 # Decisive Moment Selection
 
 **Tags:** photo, editing, selection, street, curation

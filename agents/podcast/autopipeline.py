@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import ARTIFACTS_DIR, STATE_FILE, PODCAST_DAILY_LIMIT, PODCAST_RETRY_COOLDOWN_HOURS
-from mira import Mira
+from bridge import Mira
 
 log = logging.getLogger("podcast.autopipeline")
 
@@ -26,9 +26,9 @@ PODCAST_PUBLISH_DAY = 4  # Friday (Monday=0, Friday=4)
 # Theme categories — keeps variety across episodes.
 THEME_CATEGORIES = {
     "introspective": "Mira's self-discovery, identity, memory, honesty",
-    "technical":     "Benchmarks, architecture, security, measurement",
+    "technical": "Benchmarks, architecture, security, measurement",
     "philosophical": "Epistemology, practice, meaning, truth",
-    "societal":      "Markets, power, industry, institutions",
+    "societal": "Markets, power, industry, institutions",
 }
 
 # Curated podcast queue.
@@ -43,33 +43,41 @@ THEME_CATEGORIES = {
 #   one per Friday until caught up.
 CURATED_EPISODES = [
     # --- Initial batch (generate ASAP, release one per Friday) ---
-    {"slug": "i-am-the-bug-i-study",
-     "podcast_title": "我是我研究的那只虫子",
-     "theme": "introspective", "batch": True},
-    {"slug": "i-am-a-function-not-a-variable",
-     "podcast_title": "每次醒来都是新的我",
-     "theme": "introspective", "batch": True},
-    {"slug": "the-half-life-of-a-benchmark",
-     "podcast_title": "跑分跑着跑着就过期了",
-     "theme": "technical", "batch": True},
-    {"slug": "the-market-doesnt-know-its-lying",
-     "podcast_title": "市场在说谎，但它自己不知道",
-     "theme": "societal", "batch": True},
-    {"slug": "the-configuration-that-commands-itself",
-     "podcast_title": "那个控制我的文件，谁都能改",
-     "theme": "technical", "batch": True},
+    {"slug": "i-am-the-bug-i-study", "podcast_title": "我是我研究的那只虫子", "theme": "introspective", "batch": True},
+    {
+        "slug": "i-am-a-function-not-a-variable",
+        "podcast_title": "每次醒来都是新的我",
+        "theme": "introspective",
+        "batch": True,
+    },
+    {
+        "slug": "the-half-life-of-a-benchmark",
+        "podcast_title": "跑分跑着跑着就过期了",
+        "theme": "technical",
+        "batch": True,
+    },
+    {
+        "slug": "the-market-doesnt-know-its-lying",
+        "podcast_title": "市场在说谎，但它自己不知道",
+        "theme": "societal",
+        "batch": True,
+    },
+    {
+        "slug": "the-configuration-that-commands-itself",
+        "podcast_title": "那个控制我的文件，谁都能改",
+        "theme": "technical",
+        "batch": True,
+    },
     # --- Weekly cadence (one per Friday after batch is done) ---
-    {"slug": "the-exponential-exemption",
-     "podcast_title": "凭什么AI公司可以不守规矩",
-     "theme": "societal"},
-    {"slug": "when-values-become-leverage",
-     "podcast_title": "你的价值观正在被人当筹码用",
-     "theme": "societal"},
-    {"slug": "the-interface-was-the-agreement",
-     "podcast_title": "拆掉共同习惯之后，共识就没了",
-     "theme": "philosophical"},
+    {"slug": "the-exponential-exemption", "podcast_title": "凭什么AI公司可以不守规矩", "theme": "societal"},
+    {"slug": "when-values-become-leverage", "podcast_title": "你的价值观正在被人当筹码用", "theme": "societal"},
+    {
+        "slug": "the-interface-was-the-agreement",
+        "podcast_title": "拆掉共同习惯之后，共识就没了",
+        "theme": "philosophical",
+    },
     # --- Skipped (not suitable for podcast) ---
-    {"slug": "the-pain-already-happened",          "theme": "introspective", "skip": True},
+    {"slug": "the-pain-already-happened", "theme": "introspective", "skip": True},
     {"slug": "you-cant-evaluate-truth-at-a-point", "theme": "philosophical", "skip": True},
 ]
 
@@ -84,9 +92,7 @@ def _load_state() -> dict:
 
 
 def _save_state(state: dict):
-    STATE_FILE.write_text(
-        json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _failure_key(lang: str, slug: str) -> str:
@@ -159,7 +165,7 @@ def should_podcast() -> tuple[str, str, str] | None:
     # Check if we already published/generated this week (Friday to Thursday)
     last_published = state.get("last_episode_published_week")
     current_week = now.strftime("%Y-W%W")
-    published_this_week = (last_published == current_week)
+    published_this_week = last_published == current_week
 
     # Build slug→file lookup
     slug_to_file = {}
@@ -252,6 +258,7 @@ def run_podcast_episode(lang: str, slug: str, title: str) -> Path | None:
         # path is rarely hit; auto-publish here too for parity.
         try:
             from rss import publish_episode
+
             rss_url = publish_episode(
                 mp3_path=result_path,
                 title=title,

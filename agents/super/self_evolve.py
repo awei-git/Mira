@@ -23,9 +23,9 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 _AGENTS_DIR = _HERE.parent
 _MIRA_ROOT = _AGENTS_DIR.parent
-_SHARED_DIR = _AGENTS_DIR / "shared"
-_PROPOSALS_DIR = _HERE / "proposals"
-_READING_NOTES_DIR = _SHARED_DIR / "soul" / "reading_notes"
+_SHARED_DIR = _AGENTS_DIR.parent / "lib"
+from config import PROPOSALS_DIR as _PROPOSALS_DIR, READING_NOTES_DIR as _READING_NOTES_DIR
+
 _CLAUDE_MD = _MIRA_ROOT.parent / "CLAUDE.md"
 
 sys.path.insert(0, str(_HERE))
@@ -41,15 +41,50 @@ log = logging.getLogger("self-evolve")
 
 # Keywords that signal a reading note is relevant to agent architecture
 _RELEVANCE_KEYWORDS = [
-    "agent", "harness", "pipeline", "memory", "architecture", "security",
-    "tool", "self-improvement", "mutation", "evolution", "prompt",
-    "framework", "trust", "permission", "supply chain", "attack",
-    "eval", "benchmark", "scheduling", "dispatch", "concurrency",
-    "context", "pollution", "contamination", "isolation",
-    "mira", "config", "skill", "manifest", "audit",
+    "agent",
+    "harness",
+    "pipeline",
+    "memory",
+    "architecture",
+    "security",
+    "tool",
+    "self-improvement",
+    "mutation",
+    "evolution",
+    "prompt",
+    "framework",
+    "trust",
+    "permission",
+    "supply chain",
+    "attack",
+    "eval",
+    "benchmark",
+    "scheduling",
+    "dispatch",
+    "concurrency",
+    "context",
+    "pollution",
+    "contamination",
+    "isolation",
+    "mira",
+    "config",
+    "skill",
+    "manifest",
+    "audit",
     # Chinese equivalents
-    "代理", "架构", "安全", "工具", "记忆", "管道", "调度",
-    "权限", "信任", "攻击", "隔离", "自检", "进化",
+    "代理",
+    "架构",
+    "安全",
+    "工具",
+    "记忆",
+    "管道",
+    "调度",
+    "权限",
+    "信任",
+    "攻击",
+    "隔离",
+    "自检",
+    "进化",
 ]
 
 _MAX_AUTO_IMPLEMENTS_PER_DAY = 1
@@ -58,6 +93,7 @@ _MAX_AUTO_IMPLEMENTS_PER_DAY = 1
 # ---------------------------------------------------------------------------
 # Step 1: Harvest today's reading notes
 # ---------------------------------------------------------------------------
+
 
 def harvest_reading_notes(date: str) -> list[dict]:
     """Read all reading notes for the given date. Returns list of {path, title, content}."""
@@ -72,12 +108,14 @@ def harvest_reading_notes(date: str) -> list[dict]:
                 if line.startswith("# "):
                     title = line.lstrip("# ").strip()
                     break
-            notes.append({
-                "path": str(note_path),
-                "filename": note_path.name,
-                "title": title,
-                "content": content,
-            })
+            notes.append(
+                {
+                    "path": str(note_path),
+                    "filename": note_path.name,
+                    "title": title,
+                    "content": content,
+                }
+            )
         except OSError as e:
             log.warning("Failed to read %s: %s", note_path, e)
     log.info("Harvested %d reading notes for %s", len(notes), date)
@@ -101,6 +139,7 @@ def filter_relevant_notes(notes: list[dict]) -> list[dict]:
 # Step 2: Compare against Mira's architecture
 # ---------------------------------------------------------------------------
 
+
 def _load_architecture_context() -> str:
     """Build a concise summary of Mira's architecture for comparison."""
     sections = []
@@ -118,6 +157,7 @@ def _load_architecture_context() -> str:
     # Agent registry — list of agents and capabilities
     try:
         from agent_registry import AgentRegistry
+
         registry = AgentRegistry()
         agents_summary = []
         for name in registry.list_agents():
@@ -135,15 +175,12 @@ def _load_architecture_context() -> str:
         try:
             core_text = core_path.read_text(encoding="utf-8")
             # Extract _DAILY_TASK_CONTRACTS block
-            contracts_match = re.search(
-                r'(_DAILY_TASK_CONTRACTS\s*=\s*\{.*?\n\})',
-                core_text, re.DOTALL
-            )
+            contracts_match = re.search(r"(_DAILY_TASK_CONTRACTS\s*=\s*\{.*?\n\})", core_text, re.DOTALL)
             if contracts_match:
                 sections.append("=== Daily Task Contracts ===\n" + contracts_match.group(1)[:1500])
 
             # Extract should_* function names for schedule overview
-            should_fns = re.findall(r'def (should_\w+)\(', core_text)
+            should_fns = re.findall(r"def (should_\w+)\(", core_text)
             sections.append("=== Schedule Functions ===\n" + "\n".join(f"  - {fn}()" for fn in should_fns))
         except OSError:
             pass
@@ -151,17 +188,23 @@ def _load_architecture_context() -> str:
     # Config highlights
     try:
         from config import (
-            MIRA_ROOT, CLAUDE_TIMEOUT_THINK, CLAUDE_TIMEOUT_ACT,
-            MAX_CONCURRENT_TASKS, EXPLORE_COOLDOWN_MINUTES,
+            MIRA_ROOT,
+            CLAUDE_TIMEOUT_THINK,
+            CLAUDE_TIMEOUT_ACT,
+            MAX_CONCURRENT_TASKS,
+            EXPLORE_COOLDOWN_MINUTES,
             EXPLORE_MAX_PER_DAY,
         )
-        sections.append(f"""=== Key Config ===
+
+        sections.append(
+            f"""=== Key Config ===
   MIRA_ROOT: {MIRA_ROOT}
   CLAUDE_TIMEOUT_THINK: {CLAUDE_TIMEOUT_THINK}s
   CLAUDE_TIMEOUT_ACT: {CLAUDE_TIMEOUT_ACT}s
   MAX_CONCURRENT_TASKS: {MAX_CONCURRENT_TASKS}
   EXPLORE_COOLDOWN_MINUTES: {EXPLORE_COOLDOWN_MINUTES}
-  EXPLORE_MAX_PER_DAY: {EXPLORE_MAX_PER_DAY}""")
+  EXPLORE_MAX_PER_DAY: {EXPLORE_MAX_PER_DAY}"""
+        )
     except Exception:
         pass
 
@@ -173,7 +216,7 @@ def compare_note_to_architecture(note: dict, arch_context: str) -> dict | None:
 
     Returns a proposal dict or None if no improvement is identified.
     """
-    from sub_agent import claude_think
+    from llm import claude_think
 
     prompt = f"""You are Mira's self-evolution module. Your job: read a reading note and compare it to Mira's own architecture to find a specific, concrete improvement.
 
@@ -211,7 +254,7 @@ Respond in this exact JSON format (no markdown fences):
 
         # Extract JSON from response
         # Try to find JSON block
-        json_match = re.search(r'\{[\s\S]*\}', response)
+        json_match = re.search(r"\{[\s\S]*\}", response)
         if not json_match:
             log.warning("No JSON found in response for note: %s", note["title"])
             return None
@@ -236,12 +279,13 @@ Respond in this exact JSON format (no markdown fences):
 # Step 3: Save proposals
 # ---------------------------------------------------------------------------
 
+
 def save_proposal(proposal: dict, date: str) -> Path:
     """Save a proposal as a JSON file. Returns the file path."""
     _PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Generate slug from title
-    slug = re.sub(r'[^a-z0-9]+', '-', proposal.get("title", "untitled").lower())
+    slug = re.sub(r"[^a-z0-9]+", "-", proposal.get("title", "untitled").lower())
     slug = slug.strip("-")[:50]
 
     filename = f"{date}_{slug}.json"
@@ -264,7 +308,7 @@ def save_proposal(proposal: dict, date: str) -> Path:
 def _enqueue_backlog_action(proposal: dict, proposal_path: Path):
     """Mirror actionable proposals into the governed action backlog."""
     try:
-        from action_backlog import ActionBacklog, ActionItem
+        from ops.backlog import ActionBacklog, ActionItem
 
         risk = str(proposal.get("risk_level", "medium"))
         backlog = ActionBacklog()
@@ -287,6 +331,7 @@ def _enqueue_backlog_action(proposal: dict, proposal_path: Path):
 # Step 4: Auto-implement low-risk proposals
 # ---------------------------------------------------------------------------
 
+
 def auto_implement(proposal: dict, proposal_path: Path) -> dict:
     """Attempt to implement a low-risk proposal. Returns result dict.
 
@@ -295,7 +340,7 @@ def auto_implement(proposal: dict, proposal_path: Path) -> dict:
     2. Run pytest
     3. If tests pass, keep. If fail, revert via git checkout.
     """
-    from sub_agent import claude_act
+    from llm import claude_act
 
     files = proposal.get("files_affected", [])
     diff_desc = proposal.get("diff_description", "")
@@ -338,7 +383,7 @@ def auto_implement(proposal: dict, proposal_path: Path) -> dict:
 - After making changes, verify the files look correct by reading them back"""
 
     try:
-        result = claude_act(prompt, cwd=_MIRA_ROOT, timeout=300, tier="light")
+        result = claude_act(prompt, cwd=_MIRA_ROOT, timeout=300, tier="light", agent_id="coder")
         if not result:
             _revert_files(backups)
             return {"success": False, "reason": "claude_act returned empty"}
@@ -369,7 +414,14 @@ def auto_implement(proposal: dict, proposal_path: Path) -> dict:
     except OSError:
         pass
 
-    return {"success": True, "reason": "Implemented and tests passed"}
+    return {
+        "success": True,
+        "reason": "Implemented and tests passed",
+        "title": proposal.get("title", ""),
+        "summary": proposal.get("summary", "") or proposal.get("description", ""),
+        "source_note": proposal.get("source_note", ""),
+        "files_changed": list(changed),
+    }
 
 
 def _revert_files(backups: dict[str, str]):
@@ -416,7 +468,9 @@ def _run_tests() -> bool:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pytest", str(test_file), "-x", "-q"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True,
+            text=True,
+            timeout=120,
             cwd=str(_MIRA_ROOT),
         )
         if result.returncode == 0:
@@ -437,65 +491,100 @@ def _run_tests() -> bool:
 # Step 5: Report via Mira bridge
 # ---------------------------------------------------------------------------
 
+
 def send_report(proposals: list[dict], implementations: list[dict], date: str):
-    """Send a feed item summarizing today's self-evolution results."""
+    """Send a feed item ONLY when something was actually implemented.
+
+    Reports always include enough context for WA to understand what changed and
+    what's still queued — no opaque "1 change shipped" with no detail.
+    """
     try:
         from config import MIRA_DIR
-        from mira import Mira
+        from bridge import Mira
+
+        successful = [i for i in (implementations or []) if i.get("success")]
+        if not successful:
+            log.info("Self-evolve: no successful implementations — skipping feed report")
+            return
 
         bridge = Mira(MIRA_DIR)
 
-        if not proposals and not implementations:
-            # Don't spam if nothing happened
-            log.info("No proposals or implementations — skipping report")
-            return
+        sections: list[str] = [f"# Self-Evolution Landed {date}", ""]
 
-        lines = [f"Self-Evolution Report {date}", ""]
+        # ── Section 1: shipped changes ────────────────────────────────────
+        sections.append(f"## ✅ Shipped ({len(successful)})")
+        sections.append("")
+        for i, impl in enumerate(successful, 1):
+            title = impl.get("title") or "(untitled proposal)"
+            sections.append(f"**{i}. {title}**")
+            if impl.get("summary"):
+                sections.append(f"  - {impl['summary'].strip()[:600]}")
+            if impl.get("source_note"):
+                sections.append(f"  - from: `{impl['source_note']}`")
+            files = impl.get("files_changed") or []
+            if files:
+                files_disp = files if len(files) <= 8 else files[:7] + [f"… +{len(files)-7} more"]
+                sections.append(f"  - files: {', '.join(files_disp)}")
+            if impl.get("commit_sha"):
+                sections.append(f"  - commit: `{impl['commit_sha'][:8]}`")
+            sections.append("")
 
-        if proposals:
-            lines.append(f"Analyzed {len(proposals)} reading note(s), generated proposals:")
-            for p in proposals:
+        # ── Section 2: deferred proposals (the rest) ──────────────────────
+        # `successful` correspond to proposals whose status got set to
+        # "implemented"; everything else is deferred. Surface ALL of them so
+        # WA can manually review.
+        deferred = [p for p in (proposals or []) if p.get("status") != "implemented"]
+        if deferred:
+            sections.append(f"## ⏸ Deferred ({len(deferred)})")
+            sections.append("")
+            sections.append(
+                "_Not auto-implemented because risk_level != low, or impl attempt failed. Manual review needed._"
+            )
+            sections.append("")
+            for i, p in enumerate(deferred, 1):
+                title = p.get("title", "(untitled)")
                 risk = p.get("risk_level", "?")
-                status = p.get("status", "proposed")
-                lines.append(f"  [{risk}] {p.get('title', '?')} — {status}")
-                lines.append(f"    Source: {p.get('source_note', '?')}")
-            lines.append("")
+                sections.append(f"**{i}. [{risk}] {title}**")
+                if p.get("summary") or p.get("description"):
+                    desc = (p.get("summary") or p.get("description") or "").strip()
+                    sections.append(f"  - {desc[:500]}")
+                if p.get("source_note"):
+                    sections.append(f"  - from: `{p['source_note']}`")
+                if p.get("rationale"):
+                    sections.append(f"  - why: {p['rationale'].strip()[:300]}")
+                if p.get("expected_impact"):
+                    sections.append(f"  - impact: {p['expected_impact'].strip()[:200]}")
+                sections.append("")
 
-        if implementations:
-            lines.append("Auto-implemented:")
-            for impl in implementations:
-                success = "OK" if impl.get("success") else "FAILED"
-                lines.append(f"  {success}: {impl.get('reason', '?')}")
-            lines.append("")
+        # ── Failed implementations (if any) ───────────────────────────────
+        failures = [i for i in (implementations or []) if not i.get("success")]
+        if failures:
+            sections.append(f"## ⚠ Implementation Failures ({len(failures)})")
+            sections.append("")
+            for i, f in enumerate(failures, 1):
+                sections.append(f"**{i}. {f.get('title', '(untitled)')}**")
+                sections.append(f"  - reason: {f.get('reason', 'unknown')}")
+                sections.append("")
 
-        if not implementations and proposals:
-            # All proposals were medium/high risk
-            risk_counts = {}
-            for p in proposals:
-                r = p.get("risk_level", "unknown")
-                risk_counts[r] = risk_counts.get(r, 0) + 1
-            if "low" not in risk_counts:
-                lines.append("No low-risk proposals today — all require manual review.")
-
-        content = "\n".join(lines)
-
+        content = "\n".join(sections).rstrip() + "\n"
         bridge.create_item(
             item_id=f"self-evolve-{date.replace('-', '')}",
             item_type="feed",
-            title=f"Self-Evolution: {date}",
+            title=f"Self-Evolution Landed: {date}",
             first_message=content,
             sender="agent",
-            tags=["self-evolve", "system"],
+            tags=["self-evolve", "code", "shipped"],
             origin="agent",
         )
-        log.info("Report sent to user via bridge")
+        log.info("Self-evolve report sent: %d landed, %d deferred", len(successful), len(deferred))
     except Exception as e:
-        log.error("Failed to send report: %s", e)
+        log.error("Failed to send self-evolve report: %s", e)
 
 
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
+
 
 def run_evolve(dry_run: bool = False) -> dict:
     """Run the full self-evolution pipeline.
@@ -536,9 +625,7 @@ def run_evolve(dry_run: bool = False) -> dict:
         proposal = compare_note_to_architecture(note, arch_context)
         if proposal:
             proposals.append(proposal)
-            log.info("  -> Proposal: [%s] %s",
-                     proposal.get("risk_level", "?"),
-                     proposal.get("title", "?"))
+            log.info("  -> Proposal: [%s] %s", proposal.get("risk_level", "?"), proposal.get("title", "?"))
         else:
             log.info("  -> No improvement identified")
 
@@ -557,8 +644,7 @@ def run_evolve(dry_run: bool = False) -> dict:
     # Step 4: Auto-implement low-risk (max 1 per day)
     implementations = []
     if not dry_run:
-        low_risk = [(p, path) for p, path in zip(proposals, saved_paths)
-                     if p.get("risk_level") == "low"]
+        low_risk = [(p, path) for p, path in zip(proposals, saved_paths) if p.get("risk_level") == "low"]
         if low_risk:
             # Pick the first low-risk proposal
             proposal, path = low_risk[0]
@@ -578,20 +664,20 @@ def run_evolve(dry_run: bool = False) -> dict:
 
     # Mark completion in agent state
     from core import load_state, save_state
+
     state = load_state()
     state[f"self_evolve_{today}"] = datetime.now().isoformat()
     state[f"self_evolve_{today}_actor"] = "self-evolve/claude-think"
     save_state(state)
 
-    log.info("=== Self-Evolution complete: %d proposals, %d implementations ===",
-             len(proposals), len(implementations))
+    log.info("=== Self-Evolution complete: %d proposals, %d implementations ===", len(proposals), len(implementations))
     return result
 
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Mira Self-Evolution")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Propose only, do not auto-implement")
+    parser.add_argument("--dry-run", action="store_true", help="Propose only, do not auto-implement")
     args = parser.parse_args()
     run_evolve(dry_run=args.dry_run)

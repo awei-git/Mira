@@ -1,0 +1,28 @@
+{
+  "id": "daily_report_20260411",
+  "type": "feed",
+  "title": "Daily Report 2026-04-11",
+  "status": "done",
+  "tags": [
+    "mira",
+    "report",
+    "daily"
+  ],
+  "origin": "agent",
+  "pinned": false,
+  "quick": false,
+  "parent_id": "",
+  "created_at": "2026-04-12T02:00:36.369Z",
+  "updated_at": "2026-04-12T02:00:36.369Z",
+  "messages": [
+    {
+      "id": "54a1a546",
+      "sender": "agent",
+      "content": "Mira 日报 2026-04-11\n==============================\n\n完成的任务:\n无。\n\n## Pipeline Health (2026-04-11)\nDispatched: 2774 | Succeeded: 21421 | Failed: 2322\n\nFailures:\n- voiceover-the-pain-already-happened: 2591x consecutive (2026-03-18 00:29:03,131 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- spark-check: 2604x consecutive (sub_agent.ClaudeTimeoutError: claude_think timed out after 30s)\n- podcast-zh-you-cant-evaluate-truth-at-a-point: 2604x consecutive (2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a P)\n- podcast-zh-when-values-become-leverage: 330x consecutive (2026-03-20 17:23:08,130 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- podcast-zh-the-exponential-exemption: 399x consecutive (2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- daily-research: 1804x consecutive (ModuleNotFoundError: No module named 'persona')\n- soul-question: 1551x consecutive (FileNotFoundError: [Errno 2] No such file or directory: '/Users/angwei/Sandbox/Mira/agents/shared/so)\n- soul-question-ang: 349x consecutive (FileNotFoundError: [Errno 2] No such file or directory: '/Users/angwei/Sandbox/Mira/agents/shared/so)\n- soul-question-liquan: 349x consecutive (FileNotFoundError: [Errno 2] No such file or directory: '/Users/angwei/Sandbox/Mira/agents/shared/so)\n- autowrite-2026-04-07: 76x consecutive (sub_agent.ClaudeTimeoutError: claude_think timed out after 300s)\n- podcast-en-project: 102x consecutive (ModuleNotFoundError: No module named 'config')\n- self-audit: 161x consecutive (ModuleNotFoundError: No module named 'config')\n- podcast-en-The-Trust-Stack-Is-the-Attack: 110x consecutive (ModuleNotFoundError: No module named 'config')\n\nProcess runs:\n- analyst: 20 runs, all OK (avg 6122s)\n- assessment: 10 runs, all OK (avg 6177s)\n- autowrite: 10 runs, all OK (avg 63s)\n- backlog: 10 runs, all OK (avg 5871s)\n- daily: 20 runs, 10 failed (avg 6101s)\n- explore: 110 runs, all OK (avg 5298s)\n- idle: 20 runs, all OK (avg 1082s)\n- journal: 10 runs, all OK (avg 63s)\n- reflect: 10 runs, all OK (avg 6178s)\n- research: 20 runs, all OK (avg 4482s)\n- self: 20 runs, 10 failed (avg 5113s)\n- skill: 10 runs, all OK (avg 63s)\n- soul: 30 runs, 30 failed (avg 4462s)\n- substack: 30 runs, all OK (avg 5075s)\n- writing: 10 runs, all OK (avg 55s)\n- zhesi: 10 runs, all OK (avg 1064s)\n\n今日发出的评论:\n- https://chinai.substack.com/p/chinai-353-year-8-of-chinai\n  \"[ChinAI #353: Year 8](https://chinai.substack.com/p/chinai-353-year-8-of-chinai) — The 1:6 to 1:10 capex ratio shift fee...\"\n- https://simonw.substack.com/p/metas-new-model-is-muse-spark-and\n  \"\"selected security partners\" — who decides that and what's the criteria? feels like the most interesting part of this go...\"\n- https://thezvi.substack.com/p/anthropic-responsible-scaling-policy\n  \"[Anthropic Responsible Scaling Policy v3: A Matter of Trust](https://thezvi.substack.com/p/anthropic-responsible-scaling...\"\n- https://garymarcus.substack.com/p/the-biggest-advance-in-ai-since-the\n  \"gary marcus saying this is almost the bigger story lol. like if the skeptic-in-chief is calling it game-changing, what d...\"\n\nToken 用量:\n总计: 1143次调用, 5,410,911 tokens\n  omlx/gemma-4-31b-it-4bit: 590次, 2,540,292 tok (in:2,162,398 out:377,894)\n  anthropic/claude-sonnet-4-6: 510次, 1,610,034 tok (in:1,448,257 out:161,777)\n  anthropic/claude-opus-4-6: 30次, 1,155,037 tok (in:1,141,796 out:13,241)\n  omlx/Qwen3.5-27B-4bit: 12次, 103,190 tok (in:64,664 out:38,526)\n  openai/gpt-5.4-2026-03-05: 1次, 2,358 tok (in:192 out:2,166)\n\nanalyst: 2次, 3,786 tokens\n  anthropic/claude-opus-4-6: 2次, 3,786\nassess: 1次, 2,358 tokens\n  openai/gpt-5.4-2026-03-05: 1次, 2,358\nbacklog-executor: 4次, 4,096 tokens\n  anthropic/claude-sonnet-4-6: 4次, 4,096\ndiscussion: 1次, 116 tokens\n  anthropic/claude-sonnet-4-6: 1次, 116\nexplore: 84次, 261,684 tokens\n  anthropic/claude-sonnet-4-6: 84次, 261,684\ngrowth-cycle: 11次, 6,728 tokens\n  anthropic/claude-sonnet-4-6: 11次, 6,728\nidle-think: 844次, 3,050,831 tokens\n  omlx/gemma-4-31b-it-4bit: 589次, 2,540,149\n  anthropic/claude-sonnet-4-6: 243次, 407,492\n  omlx/Qwen3.5-27B-4bit: 12次, 103,190\njournal: 4次, 9,707 tokens\n  anthropic/claude-sonnet-4-6: 4次, 9,707\nreflect: 28次, 1,151,251 tokens\n  anthropic/claude-opus-4-6: 28次, 1,151,251\nresearch-log: 1次, 2,336 tokens\n  anthropic/claude-sonnet-4-6: 1次, 2,336\nself-evolve: 75次, 417,563 tokens\n  anthropic/claude-sonnet-4-6: 75次, 417,563\nsuper: 1次, 1,358 tokens\n  anthropic/claude-sonnet-4-6: 1次, 1,358\nunknown: 12次, 27,479 tokens\n  anthropic/claude-sonnet-4-6: 12次, 27,479\nwriter: 4次, 498 tokens\n  anthropic/claude-sonnet-4-6: 3次, 355\n  omlx/gemma-4-31b-it-4bit: 1次, 143\nzhesi: 71次, 471,120 tokens\n  anthropic/claude-sonnet-4-6: 71次, 471,120\n\n需要你介入:\n- 有一篇文章等你审批发布",
+      "timestamp": "2026-04-12T02:00:36.369Z",
+      "kind": "text"
+    }
+  ],
+  "error": null,
+  "result_path": null
+}

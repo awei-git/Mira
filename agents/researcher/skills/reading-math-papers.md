@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when reading a mathematics paper at any depth, to actively reconstruct the argument, check claims, and extract usable insight according to your specific reading goal."
+---
+
 # Reading Mathematics Papers
 
 **Tags:** math, reading, research, paper-reading, comprehension, strategy

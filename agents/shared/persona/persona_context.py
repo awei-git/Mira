@@ -4,15 +4,15 @@ Every agent that needs to "be Mira" should call get_persona_context()
 instead of assembling soul/worldview/beliefs independently. This ensures
 consistent personality across discussion, writer, researcher, etc.
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
+
+from config import SOUL_DIR as _SOUL_DIR
 
 log = logging.getLogger("mira.persona")
-
-_SOUL_DIR = Path(__file__).resolve().parent.parent / "soul"
 
 
 @dataclass
@@ -46,8 +46,7 @@ class PersonaContext:
         return text
 
 
-def get_persona_context(domains: list[str] | None = None,
-                        include_beliefs: bool = True) -> PersonaContext:
+def get_persona_context(domains: list[str] | None = None, include_beliefs: bool = True) -> PersonaContext:
     """Build the complete persona context from soul files + belief store.
 
     Args:
@@ -64,7 +63,8 @@ def get_persona_context(domains: list[str] | None = None,
     beliefs = ""
     if include_beliefs:
         try:
-            from belief_store import BeliefStore
+            from knowledge.beliefs import BeliefStore
+
             store = BeliefStore()
             beliefs = store.get_belief_context(domains)
         except (ImportError, OSError) as e:

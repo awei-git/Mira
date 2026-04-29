@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when considering adding, updating, auditing, or removing a third-party package or library from a codebase."
+---
+
 # Dependency Management
 
 **Tags:** coding, dependencies, security

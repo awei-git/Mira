@@ -1,4 +1,5 @@
 """Health report generator — weekly/monthly summaries."""
+
 import logging
 from datetime import date, timedelta
 
@@ -106,10 +107,58 @@ def generate_weekly_report(store, person_id: str) -> str:
             sections.append(f"- 摘要: {r['summary'][:200]}\n")
 
     if len(sections) == 1:
-        sections.append("暂无健康数据。开始记录: 发送 \"记录体重 72\" 或 \"今天睡了6小时\"。\n")
+        sections.append('暂无健康数据。开始记录: 发送 "记录体重 72" 或 "今天睡了6小时"。\n')
 
     sections.append("\n---\n*此报告由 Mira Health Agent 生成，仅供参考。重要健康问题请咨询专业医生。*")
     return "\n".join(sections)
+
+
+def _signal_summary(store, person_id: str) -> list[str]:
+    """Pick the 1-3 metrics that diverge most from the 14-day baseline.
+
+    Lets the prompt focus on what changed today, instead of reciting every metric.
+    Returns lines like: "睡眠: 5.2h (14d 均 7.4h, z=-2.3)".
+    """
+    import math
+
+    candidates = [
+        ("sleep_hours", "睡眠", "h", 1),
+        ("sleep_score", "睡眠分", "", 0),
+        ("hrv", "HRV", "ms", 0),
+        ("readiness_score", "准备度", "", 0),
+        ("temperature_deviation", "体温偏差", "", 0),
+        ("respiratory_rate", "呼吸频率", "/min", 1),
+        ("resting_hr_lowest", "最低心率", "bpm", 0),
+        ("heart_rate", "静息心率", "bpm", 0),
+        ("stress_high", "高压力(s)", "s", 0),
+        ("recovery_high", "恢复(s)", "s", 0),
+        ("sleep_recovery", "睡眠恢复", "", 0),
+        ("daytime_recovery", "日间恢复", "", 0),
+        ("blood_oxygen", "血氧", "%", 1),
+        ("steps", "步数", "", 0),
+        ("active_minutes", "活动", "min", 0),
+    ]
+
+    scored: list[tuple[float, str, dict]] = []
+    for metric, label, unit, decimals in candidates:
+        rows = store.get_recent_metrics(person_id, metric, days=14)
+        if len(rows) < 4:
+            continue
+        latest = rows[0]
+        baseline = [r["value"] for r in rows[1:]]
+        if not baseline:
+            continue
+        mean = sum(baseline) / len(baseline)
+        var = sum((x - mean) ** 2 for x in baseline) / len(baseline)
+        std = math.sqrt(var) if var > 0 else 0
+        if std == 0:
+            continue
+        z = (latest["value"] - mean) / std
+        line = f"- {label}: {latest['value']:.{decimals}f}{unit} " f"(14d 均 {mean:.{decimals}f}{unit}, z={z:+.1f})"
+        scored.append((abs(z), line, {"metric": metric, "z": z}))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [line for _, line, _ in scored[:3]]
 
 
 def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | None:
@@ -125,23 +174,32 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
 
     # Today's metrics — wearables + body composition
     for metric_name, label in [
-        ("weight", "体重(kg)"), ("body_fat", "体脂(%)"),
-        ("sleep_hours", "睡眠(h)"), ("sleep_score", "睡眠分数"),
-        ("steps", "步数"), ("heart_rate", "静息心率(bpm)"),
+        ("weight", "体重(kg)"),
+        ("body_fat", "体脂(%)"),
+        ("sleep_hours", "睡眠(h)"),
+        ("sleep_score", "睡眠分数"),
+        ("steps", "步数"),
+        ("heart_rate", "静息心率(bpm)"),
         ("resting_hr_lowest", "最低心率(bpm)"),
-        ("hrv", "HRV(ms)"), ("blood_oxygen", "血氧(%)"),
+        ("hrv", "HRV(ms)"),
+        ("blood_oxygen", "血氧(%)"),
         ("respiratory_rate", "呼吸频率(brpm)"),
         ("readiness_score", "准备度分数"),
         ("activity_score", "活动分数"),
-        ("active_calories", "活动消耗(kcal)"), ("total_calories", "总消耗(kcal)"),
-        ("active_minutes", "活动时间(min)"), ("sedentary_hours", "久坐时间(h)"),
+        ("active_calories", "活动消耗(kcal)"),
+        ("total_calories", "总消耗(kcal)"),
+        ("active_minutes", "活动时间(min)"),
+        ("sedentary_hours", "久坐时间(h)"),
         ("inactivity_alerts", "久坐提醒次数"),
-        ("stress_high", "高压力时间(min)"), ("recovery_high", "恢复时间(min)"),
+        ("stress_high", "高压力时间(min)"),
+        ("recovery_high", "恢复时间(min)"),
         ("stress_level", "压力等级(1恢复/2正常/3高压)"),
         ("resilience_level", "韧性等级(1-5)"),
-        ("sleep_recovery", "睡眠恢复度"), ("daytime_recovery", "日间恢复度"),
+        ("sleep_recovery", "睡眠恢复度"),
+        ("daytime_recovery", "日间恢复度"),
         ("temperature_deviation", "体温偏差"),
-        ("workout", "锻炼时长(min)"), ("workout_calories", "锻炼消耗(kcal)"),
+        ("workout", "锻炼时长(min)"),
+        ("workout_calories", "锻炼消耗(kcal)"),
     ]:
         latest = store.get_latest_metric(person_id, metric_name)
         if latest:
@@ -153,10 +211,16 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
     # 7-day trends
     trend_parts = []
     for metric_name, label in [
-        ("weight", "体重"), ("sleep_hours", "睡眠"), ("sleep_score", "睡眠分数"),
-        ("hrv", "HRV"), ("heart_rate", "心率"), ("blood_oxygen", "血氧"),
-        ("steps", "步数"), ("active_minutes", "活动时间"),
-        ("stress_high", "高压力"), ("recovery_high", "恢复"),
+        ("weight", "体重"),
+        ("sleep_hours", "睡眠"),
+        ("sleep_score", "睡眠分数"),
+        ("hrv", "HRV"),
+        ("heart_rate", "心率"),
+        ("blood_oxygen", "血氧"),
+        ("steps", "步数"),
+        ("active_minutes", "活动时间"),
+        ("stress_high", "高压力"),
+        ("recovery_high", "恢复"),
         ("readiness_score", "准备度"),
     ]:
         week_data = store.get_recent_metrics(person_id, metric_name, days=7)
@@ -183,6 +247,7 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
         parsed = r.get("parsed_json")
         if isinstance(parsed, str):
             import json
+
             try:
                 parsed = json.loads(parsed)
             except Exception:
@@ -197,7 +262,9 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
                 panel = panels.get(panel_name, {})
                 for test, info in panel.items():
                     if isinstance(info, dict) and info.get("flag"):
-                        checkup_text += f"\n  {test}: {info['value']} {info.get('unit','')} (参考: {info.get('ref','')}) ⚠️"
+                        checkup_text += (
+                            f"\n  {test}: {info['value']} {info.get('unit','')} (参考: {info.get('ref','')}) ⚠️"
+                        )
                     elif isinstance(info, dict) and "prev" in info:
                         checkup_text += f"\n  {test}: {info['value']} (上次: {info['prev']})"
 
@@ -206,32 +273,49 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
     trend_text = "\n".join(trend_parts) if trend_parts else "暂无足够趋势数据"
     notes_text = "\n".join(note_parts) if note_parts else "无"
 
-    prompt = f"""你是一个专业的私人健康顾问。以下是用户 {person_id} 的健康数据，请给出今日健康洞察。
+    # Signal summary — what diverges most from the 14-day baseline today
+    signal_lines = _signal_summary(store, person_id)
+    signal_text = "\n".join(signal_lines) if signal_lines else "今日各指标与近14天基线接近，没有明显偏离。"
 
-## 最新穿戴设备数据
+    # Recent insights to avoid repeating
+    history = store.get_recent_insights(person_id, "daily", limit=5)
+    recent_insights = "\n---\n".join(f"[{h['insight_date']}] {h['content'][:200]}" for h in history if h.get("content"))
+    if not recent_insights:
+        recent_insights = "(无历史)"
+
+    prompt = f"""你给 {person_id} 写今天的健康观察。
+
+## 偏离基线最大的指标（今天 vs 近14天）
+{signal_text}
+
+## 全部最新数据
 {data_text}
 
 ## 7天趋势
 {trend_text}
 
-## 最近体检报告
+## 最近体检
 {checkup_text}
 
 ## 近期症状/备注
 {notes_text}
 
-## 要求
-1. 先给一句整体评价（好/一般/需注意）
-2. 结合穿戴设备数据和体检报告，指出最值得关注的 1-2 个点
-3. 给出 2-3 条具体可执行的建议（今天可以做的事，不要空话）
-4. 如果体检有异常项（如高LDL、高ApoB），结合日常数据给出针对性建议（如饮食、运动）
-5. 如果某项指标连续恶化，直接警告
-6. 语气像一个关心你的朋友，不要像医生写报告
-7. 用中文，简洁，总共不超过 300 字
+## 你最近5次给过的洞察（不要重复角度、措辞或建议）
+{recent_insights}
+
+## 写作规则（严格遵守）
+1. 不要写"整体评价：好/一般/需注意"这种总评。直接进入观察。
+2. 第一句必须锁定"偏离基线最大的指标"中最显眼的一个，给具体数字 + 你怎么解读它。
+3. 不要列 2-3 条建议清单。给一条今天就能做、且和上面那个指标相关的具体动作。
+4. 如果今天数据和昨天差不多、最近5次洞察已经讲过同一件事——承认这一点，换一个尚未谈过的小角度（比如某个忽略的指标、某个矛盾的信号）。
+5. 不用 emoji，不用"建议你...""请你..."这种说教句式。像一个观察者写笔记，不像私人医生写报告。
+6. 用中文，120-180 字。短句优先。
+7. 如果体检/symptom 提示了未解决的问题，至少有一句把今天的数据和它对照。
 """
 
     try:
-        from sub_agent import model_think
+        from llm import model_think
+
         result = model_think(prompt, model_name=model, timeout=60)
         if result and len(result.strip()) > 30:
             return result.strip()

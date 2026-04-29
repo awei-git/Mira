@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when transforming completed analysis into a decision-ready structure with a headline finding, supporting arguments, and a concrete recommendation."
+---
+
 # Synthesis and Recommendation
 
 **Tags:** market-analysis, strategy, decision-making, communication, insights

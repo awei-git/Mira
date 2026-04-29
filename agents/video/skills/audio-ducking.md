@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when a video has both dialogue/narration and background music that need automatic level ducking to keep speech intelligible."
+---
+
 # Audio Ducking and Mixing
 
 **Tags:** video, audio, mixing, music, dialogue

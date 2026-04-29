@@ -1,0 +1,28 @@
+{
+  "id": "daily_report_20260415",
+  "type": "feed",
+  "title": "Daily Report 2026-04-15",
+  "status": "done",
+  "tags": [
+    "mira",
+    "report",
+    "daily"
+  ],
+  "origin": "agent",
+  "pinned": false,
+  "quick": false,
+  "parent_id": "",
+  "created_at": "2026-04-16T02:00:09.971Z",
+  "updated_at": "2026-04-16T02:00:09.971Z",
+  "messages": [
+    {
+      "id": "9540f5a3",
+      "sender": "agent",
+      "content": "Mira 日报 2026-04-15\n==============================\n\n完成的任务:\n无。\n\n## Pipeline Health (2026-04-15)\nDispatched: 2350 | Succeeded: 20115 | Failed: 2555\n\nFailures:\n- analyst-1800: 226x consecutive (llm_providers.claude.ClaudeTimeoutError: claude_think timed out after 300s)\n- voiceover-the-pain-already-happened: 2591x consecutive (2026-03-18 00:29:03,131 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- spark-check: 2604x consecutive (sub_agent.ClaudeTimeoutError: claude_think timed out after 30s)\n- podcast-zh-you-cant-evaluate-truth-at-a-point: 2604x consecutive (2026-03-17 00:00:18,960 [ERROR] Podcast: generation failed for [zh] 'You Can't Evaluate Truth at a P)\n- podcast-zh-when-values-become-leverage: 330x consecutive (2026-03-20 17:23:08,130 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- podcast-zh-the-exponential-exemption: 399x consecutive (2026-03-20 17:49:07,762 [ERROR] Gemini TTS daily quota exhausted — cannot retry today)\n- daily-research: 2881x consecutive (ModuleNotFoundError: No module named 'persona')\n- soul-question: 6883x consecutive (FileNotFoundError: [Errno 2] No such file or directory: '/Users/angwei/Sandbox/Mira/agents/shared/so)\n- soul-question-ang: 1669x consecutive (FileNotFoundError: [Errno 2] No such file or directory: '/Users/angwei/Sandbox/Mira/agents/shared/so)\n- soul-question-liquan: 1576x consecutive (FileNotFoundError: [Errno 2] No such file or directory: '/Users/angwei/Sandbox/Mira/agents/shared/so)\n- autowrite-2026-04-07: 76x consecutive (sub_agent.ClaudeTimeoutError: claude_think timed out after 300s)\n- podcast-en-project: 102x consecutive (ModuleNotFoundError: No module named 'config')\n- self-audit: 738x consecutive (ModuleNotFoundError: No module named 'config')\n- podcast-en-The-Trust-Stack-Is-the-Attack: 289x consecutive (ModuleNotFoundError: No module named 'config')\n\nProcess runs:\n- analyst: 20 runs, 10 failed (avg 4553s)\n- assessment: 10 runs, all OK (avg 4645s)\n- autowrite: 20 runs, all OK (avg 1324s)\n- backlog: 10 runs, all OK (avg 4442s)\n- book: 10 runs, all OK (avg 4450s)\n- daily: 20 runs, 10 failed (avg 4445s)\n- explore: 110 runs, all OK (avg 4900s)\n- idle: 20 runs, all OK (avg 1598s)\n- journal: 10 runs, all OK (avg 63s)\n- research: 20 runs, all OK (avg 3732s)\n- self: 20 runs, 10 failed (avg 5404s)\n- skill: 10 runs, all OK (avg 100s)\n- soul: 30 runs, 30 failed (avg 3416s)\n- substack: 30 runs, all OK (avg 4061s)\n- writing: 10 runs, all OK (avg 51s)\n- zhesi: 10 runs, all OK (avg 871s)\n\n今日发出的评论:\n- https://thezvi.substack.com/p/anthropic-responsible-scaling-policy-46a\n  \"[Anthropic RSP v3: Dive Into The Details](https://thezvi.substack.com/p/anthropic-responsible-scaling-policy-46a) —  > T...\"\n\nToken 用量:\n总计: 1097次调用, 6,015,439 tokens\n  anthropic/claude-sonnet-4-6: 607次, 2,738,829 tok (in:2,200,880 out:537,949)\n  openai/gpt-5.4-2026-03-05: 206次, 1,609,498 tok (in:945,768 out:663,730)\n  gemini/gemini-3.1-flash-lite-preview: 168次, 804,452 tok (in:621,430 out:183,022)\n  omlx/Qwen3.5-27B-4bit: 57次, 440,856 tok (in:252,808 out:188,048)\n  deepseek/deepseek-chat: 38次, 402,254 tok (in:321,992 out:80,262)\n  anthropic/claude-opus-4-6: 21次, 19,550 tok (in:13,866 out:5,684)\n\nanalyst: 2次, 4,444 tokens\n  anthropic/claude-opus-4-6: 2次, 4,444\nassess: 1次, 3,138 tokens\n  openai/gpt-5.4-2026-03-05: 1次, 3,138\nautowrite-check: 33次, 263,542 tokens\n  anthropic/claude-sonnet-4-6: 32次, 253,384\n  openai/gpt-5.4-2026-03-05: 1次, 10,158\nautowrite-run: 130次, 1,054,038 tokens\n  anthropic/claude-sonnet-4-6: 71次, 569,860\n  deepseek/deepseek-chat: 19次, 235,981\n  openai/gpt-5.4-2026-03-05: 21次, 233,091\n  anthropic/claude-opus-4-6: 19次, 15,106\nbacklog-executor: 4次, 3,621 tokens\n  anthropic/claude-sonnet-4-6: 4次, 3,621\ncheck-comments: 1次, 1,571 tokens\n  anthropic/claude-sonnet-4-6: 1次, 1,571\nexplore: 85次, 247,962 tokens\n  anthropic/claude-sonnet-4-6: 85次, 247,962\ngrowth-cycle: 10次, 8,639 tokens\n  anthropic/claude-sonnet-4-6: 10次, 8,639\nidle-think: 148次, 609,095 tokens\n  omlx/Qwen3.5-27B-4bit: 57次, 440,856\n  anthropic/claude-sonnet-4-6: 91次, 168,239\njournal: 5次, 15,874 tokens\n  anthropic/claude-sonnet-4-6: 5次, 15,874\nnotes-cycle: 2次, 1,825 tokens\n  anthropic/claude-sonnet-4-6: 2次, 1,825\nresearch-log: 1次, 2,840 tokens\n  anthropic/claude-sonnet-4-6: 1次, 2,840\nself-evolve: 70次, 381,662 tokens\n  anthropic/claude-sonnet-4-6: 70次, 381,662\nsuper: 1次, 2,653 tokens\n  openai/gpt-5.4-2026-03-05: 1次, 2,653\nunknown: 534次, 3,043,809 tokens\n  openai/gpt-5.4-2026-03-05: 182次, 1,360,458\n  gemini/gemini-3.1-flash-lite-preview: 168次, 804,452\n  anthropic/claude-sonnet-4-6: 165次, 712,626\n  deepseek/deepseek-chat: 19次, 166,273\nzhesi: 70次, 370,726 tokens\n  anthropic/claude-sonnet-4-6: 70次, 370,726\n\n需要你介入:\n- 有一篇文章等你审批发布",
+      "timestamp": "2026-04-16T02:00:09.971Z",
+      "kind": "text"
+    }
+  ],
+  "error": null,
+  "result_path": null
+}

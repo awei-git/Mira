@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "current": {
+    "implementation.task_success_rate": 10.0,
+    "reliability.promise_keeping": 3.0
+  },
+  "history": [
+    {
+      "date": "2026-04-10",
+      "scores": {
+        "implementation.task_success_rate": 10.0,
+        "reliability.promise_keeping": 3.0
+      },
+      "events": [
+        {
+          "type": "task_complete",
+          "time": "18:35",
+          "scores": {
+            "implementation.task_success_rate": 10.0,
+            "reliability.promise_keeping": 3.0
+          },
+          "meta": {
+            "task_id": "req_1",
+            "agent": "unknown"
+          }
+        },
+        {
+          "type": "task_complete",
+          "time": "18:35",
+          "scores": {
+            "implementation.task_success_rate": 10.0,
+            "reliability.promise_keeping": 3.0
+          },
+          "meta": {
+            "task_id": "req_1",
+            "agent": "unknown"
+          }
+        },
+        {
+          "type": "task_complete",
+          "time": "18:37",
+          "scores": {
+            "implementation.task_success_rate": 10.0,
+            "reliability.promise_keeping": 3.0
+          },
+          "meta": {
+            "task_id": "req_1",
+            "agent": "unknown"
+          }
+        },
+        {
+          "type": "task_complete",
+          "time": "18:38",
+          "scores": {
+            "implementation.task_success_rate": 10.0,
+            "reliability.promise_keeping": 3.0
+          },
+          "meta": {
+            "task_id": "req_1",
+            "agent": "unknown"
+          }
+        },
+        {
+          "type": "task_complete",
+          "time": "18:40",
+          "scores": {
+            "implementation.task_success_rate": 10.0,
+            "reliability.promise_keeping": 3.0
+          },
+          "meta": {
+            "task_id": "req_1",
+            "agent": "unknown"
+          }
+        }
+      ]
+    }
+  ],
+  "predictions": [],
+  "skill_usage": {},
+  "meta": {
+    "last_evaluated": "2026-04-10T18:40:12.134370",
+    "total_evaluations": 5,
+    "rubric_version": 1
+  }
+}

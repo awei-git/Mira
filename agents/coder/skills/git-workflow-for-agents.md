@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when making persistent changes to a git-tracked codebase that require committing, branching, or managing version history."
+---
+
 # Git Workflow for Agents
 
 **Tags:** coding, git, workflow, safety

@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when color grading video in DaVinci Resolve using a structured node tree for isolated, non-destructive, and reversible corrections."
+---
+
 # Node-Based Color Grading
 
 **Tags:** video, color-grading, davinci-resolve, cinematography, post-production

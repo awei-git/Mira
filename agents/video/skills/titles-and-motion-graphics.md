@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when designing on-screen titles, lower thirds, or graphic cards that must communicate information at the right moment without distracting from the story."
+---
+
 # Titles and Motion Graphics
 
 ## Title Card Types

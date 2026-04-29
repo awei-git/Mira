@@ -6,5 +6,7 @@
   "tier": "light",
   "timeout_category": "long",
   "entry_point": "handler.py:handle",
-  "requires_workspace": true
+  "requires_workspace": true,
+  "allowed_tools": ["Read", "Glob", "Grep", "WebFetch(url:*)", "Write", "Edit"],
+  "permissions": ["web:read", "filesystem:sandbox"]
 }

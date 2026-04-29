@@ -1,4 +1,5 @@
 """Shared runtime contract helpers for task state and trace IDs."""
+
 from __future__ import annotations
 
 

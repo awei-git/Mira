@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when evaluating whether a photo tells a story that creates an emotional response, not just a technically or compositionally correct image."
+---
+
 # Visual Storytelling
 
 **Tags:** photo, editing, storytelling, narrative, emotion

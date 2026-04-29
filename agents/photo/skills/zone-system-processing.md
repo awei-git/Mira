@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when processing landscape or black-and-white photos that require intentional tonal zone mapping before any slider adjustments."
+---
+
 # Zone System Processing
 
 **Tags:** photo, editing, tonal-range, exposure, landscape, black-and-white

@@ -3,14 +3,15 @@
 Used by task_worker when a message doesn't route to a specialized agent
 (writer, explorer, analyst, etc). This is the catch-all.
 """
+
 import logging
 import re
 from pathlib import Path
 
-from preflight import preflight_check
-from runtime_context import build_runtime_context
-from soul_manager import load_skills_for_task
-from sub_agent import claude_act, claude_think
+from publish.preflight import preflight_check
+from ops.runtime_context import build_runtime_context
+from memory.soul import load_skills_for_task
+from llm import claude_act, claude_think
 from prompts import respond_prompt
 
 log = logging.getLogger("general_agent")
@@ -29,8 +30,7 @@ _EFFECTFUL_HINTS = re.compile(
 )
 
 
-def preflight(workspace: Path, task_id: str, content: str,
-              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
     """General agent only handles low-risk tasks; effectful intents must route elsewhere."""
     instruction = (content or "").strip()
     if not instruction:
@@ -62,7 +62,8 @@ def _maybe_web_research(content: str, max_chars: int = 6000) -> str:
     if not _WEB_HINTS.search(content):
         return ""
     try:
-        from web_browser import search_and_read
+        from tools.web_browser import search_and_read
+
         # Extract a search query from the content (first 80 chars, cleaned)
         query = re.sub(r"[，。！？\n]", " ", content[:120]).strip()
         log.info("Pre-fetching web research for: %s", query[:60])
@@ -74,10 +75,17 @@ def _maybe_web_research(content: str, max_chars: int = 6000) -> str:
     return ""
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str,
-           thread_history: str = "", thread_memory: str = "",
-           tier: str = "light") -> str | None:
+def handle(
+    workspace: Path,
+    task_id: str,
+    content: str,
+    sender: str,
+    thread_id: str,
+    thread_history: str = "",
+    thread_memory: str = "",
+    tier: str = "light",
+    agent_id: str = "general",
+) -> str | None:
     """Handle a general request. Returns output text or None on failure."""
     bundle = build_runtime_context(
         content,
@@ -118,15 +126,14 @@ def handle(workspace: Path, task_id: str, content: str,
         str(workspace),
     )
 
-    log.info("Calling claude_act for task %s (tier=%s)", task_id, tier)
-    result = claude_act(prompt, cwd=workspace, tier=tier)
+    log.info("Calling claude_act for task %s (tier=%s, agent=%s)", task_id, tier, agent_id)
+    result = claude_act(prompt, cwd=workspace, tier=tier, agent_id=agent_id)
 
     if not result:
         log.warning("General agent tool path unavailable for task %s — using think-only fallback", task_id)
         fallback_prompt = (
-            prompt
-            + "\n\nTool execution is unavailable. Answer directly using only the context above. "
-              "Do not claim you edited files, ran commands, or fetched additional sources unless they are already included."
+            prompt + "\n\nTool execution is unavailable. Answer directly using only the context above. "
+            "Do not claim you edited files, ran commands, or fetched additional sources unless they are already included."
         )
         result = claude_think(fallback_prompt, timeout=120, tier=tier)
 

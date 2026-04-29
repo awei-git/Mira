@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when standard direct, contradiction, or induction approaches are insufficient and the problem's structure suggests compactness, probabilistic method, double counting, or topological invariants."
+---
+
 # Advanced Proof Tactics
 
 **Tags:** math, proof, compactness, probabilistic-method, double-counting, topology, analysis, combinatorics

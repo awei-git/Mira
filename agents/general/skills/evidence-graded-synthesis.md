@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when synthesizing information from multiple sources and each claim must be explicitly graded by evidence quality rather than treated with uniform confidence."
+---
+
 # Evidence-Graded Research Synthesis
 
 **Tags:** agents, research, synthesis, epistemics, writing

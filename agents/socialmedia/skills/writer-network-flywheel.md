@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when building Substack growth through strategic cross-recommendations and reciprocal collaborations with writers who have compatible but non-overlapping audiences."
+---
+
 # Writer Network Flywheel
 
 **Tags:** substack, growth, collaboration, recommendations, networking

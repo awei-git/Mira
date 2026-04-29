@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when implementing a concrete function or endpoint, fixing a reproducible bug, or any time the user asks for tests to be written first."
+---
+
 # Test-Driven Development: Red-Green-Refactor
 
 **Tags:** coding, testing, tdd, workflow, quality

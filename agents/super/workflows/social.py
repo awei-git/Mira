@@ -2,6 +2,7 @@
 
 Extracted from core.py — pure extraction, no logic changes.
 """
+
 import json
 import logging
 import re
@@ -10,19 +11,22 @@ from datetime import datetime
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import JOURNAL_DIR, MIRA_DIR
 from user_paths import user_journal_dir
+
 try:
-    from mira import Mira
+    from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
-from soul_manager import (
-    load_soul, format_soul, load_recent_reading_notes,
+from memory.soul import (
+    load_soul,
+    format_soul,
+    load_recent_reading_notes,
     get_memory_size,
 )
-from sub_agent import claude_think
+from llm import claude_think
 from prompts import spark_check_prompt
 
 from workflows.helpers import _append_to_daily_feed
@@ -49,6 +53,7 @@ def do_check_comments():
     try:
         sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
         from substack import check_and_reply_comments, sync_posts_for_ios
+
         # Sync posts list for iOS app display
         try:
             sync_posts_for_ios()
@@ -58,19 +63,18 @@ def do_check_comments():
         if replies:
             log.info("Replied to %d comments on own posts", len(replies))
             for r in replies:
-                log.info("  %s on '%s': %s",
-                         r["comment_name"], r["post_title"], r["reply"][:80])
+                log.info("  %s on '%s': %s", r["comment_name"], r["post_title"], r["reply"][:80])
         else:
             log.info("No new comments on own posts")
 
         # Also check Note replies
         from notes import check_and_reply_note_comments
+
         note_replies = check_and_reply_note_comments()
         if note_replies:
             log.info("Replied to %d Note comments", len(note_replies))
             for r in note_replies:
-                log.info("  %s on note %s: %s",
-                         r["commenter"], r["note_id"], r["reply"][:80])
+                log.info("  %s on note %s: %s", r["commenter"], r["note_id"], r["reply"][:80])
         else:
             log.info("No new Note comments")
     except Exception as e:
@@ -79,6 +83,7 @@ def do_check_comments():
     # Also run the growth cycle's reply follow-up (replies to Mira's outbound comments)
     try:
         from growth import _follow_up_on_replies
+
         soul = load_soul()
         soul_ctx = format_soul(soul)[:500]
         _follow_up_on_replies(soul_ctx)
@@ -99,22 +104,49 @@ def do_growth_cycle():
 
     try:
         sm_dir = str(Path(__file__).resolve().parent.parent.parent / "socialmedia")
-        shared_dir = str(Path(__file__).resolve().parent.parent.parent / "shared")
+        shared_dir = str(Path(__file__).resolve().parent.parent.parent.parent / "lib")
         import sys as _sys
+
         for d in (sm_dir, shared_dir):
             if d not in _sys.path:
                 _sys.path.insert(0, d)
 
         from growth import run_growth_cycle
+
         run_growth_cycle()
     except Exception as e:
         log.error("Growth cycle failed: %s", e)
+
+    # Bluesky: standalone post + proactive niche replies + metric poll.
+    # Imported as bluesky_agent (the lib package `bluesky` shadows the name).
+    try:
+        from bluesky_agent import run_bluesky_cycle
+
+        bsky_result = run_bluesky_cycle()
+        log.info(
+            "Bluesky cycle: posted=%s replies=%d reason=%s",
+            bsky_result.get("posted"),
+            bsky_result.get("replies_posted", 0),
+            bsky_result.get("reason") or "-",
+        )
+    except Exception as e:
+        log.error("Bluesky cycle failed: %s", e)
+
+    # Collect Substack engagement as evolution reward signals
+    try:
+        from evolution import collect_substack_rewards
+
+        collect_substack_rewards()
+    except Exception as e:
+        log.debug("Evolution Substack reward collection failed: %s", e)
 
     # Collect pending twitter metrics after engagement cycle
     try:
         from twitter import collect_pending_metrics
         import json as _json
-        _tw_state_path = Path(__file__).resolve().parent.parent.parent / "socialmedia" / "twitter_state.json"
+        from config import SOCIAL_STATE_DIR
+
+        _tw_state_path = SOCIAL_STATE_DIR / "twitter_state.json"
         if _tw_state_path.exists():
             _tw_state = _json.loads(_tw_state_path.read_text())
             collected = collect_pending_metrics(_tw_state)
@@ -175,9 +207,7 @@ def do_spark_check(user_id: str = "ang"):
     recent_journal = ""
     if JOURNAL_DIR.exists():
         journals = sorted(user_journal_dir(user_id).glob("*.md"), reverse=True)[:2]
-        recent_journal = "\n---\n".join(
-            j.read_text(encoding="utf-8")[:800] for j in journals
-        )
+        recent_journal = "\n---\n".join(j.read_text(encoding="utf-8")[:800] for j in journals)
 
     # Recent conversations with WA
     recent_conversations = ""
@@ -186,19 +216,14 @@ def do_spark_check(user_id: str = "ang"):
         if history_file.exists():
             lines = history_file.read_text(encoding="utf-8").strip().split("\n")
             recent = [json.loads(l) for l in lines if l.strip()]
-            recent = [
-                r for r in recent
-                if r.get("user_id") == user_id or
-                (not r.get("user_id") and user_id == "ang")
-            ][-5:]
-            recent_conversations = "\n".join(
-                f"- {r.get('content_preview', '')[:100]}" for r in recent
-            )
+            recent = [r for r in recent if r.get("user_id") == user_id or (not r.get("user_id") and user_id == "ang")][
+                -5:
+            ]
+            recent_conversations = "\n".join(f"- {r.get('content_preview', '')[:100]}" for r in recent)
     except Exception as e:
         log.debug("Spark-check conversation retrieval failed: %s", e)
 
-    prompt = spark_check_prompt(soul_ctx, recent_reading,
-                                recent_journal, recent_conversations)
+    prompt = spark_check_prompt(soul_ctx, recent_reading, recent_journal, recent_conversations)
     result = claude_think(prompt, timeout=120)
 
     # Update state regardless of result
@@ -211,7 +236,7 @@ def do_spark_check(user_id: str = "ang"):
 
     # Parse response
     try:
-        match = re.search(r'\{.*\}', result, re.DOTALL)
+        match = re.search(r"\{.*\}", result, re.DOTALL)
         if not match:
             return
         decision = json.loads(match.group())
@@ -219,8 +244,7 @@ def do_spark_check(user_id: str = "ang"):
         return
 
     if not decision.get("should_message"):
-        log.info("Spark check: nothing worth sharing (%s)",
-                 decision.get("reason", "")[:60])
+        log.info("Spark check: nothing worth sharing (%s)", decision.get("reason", "")[:60])
         return
 
     thought = decision.get("thought", "").strip()
@@ -228,8 +252,9 @@ def do_spark_check(user_id: str = "ang"):
         return
 
     # Append spark to daily digest
-    _append_to_daily_feed("mira", "Spark", thought[:2000],
-                         source="spark-check", tags=["mira", "spark"], user_id=user_id)
+    _append_to_daily_feed(
+        "mira", "Spark", thought[:2000], source="spark-check", tags=["mira", "spark"], user_id=user_id
+    )
 
     state[f"sparks_{today}"] = state.get(f"sparks_{today}", 0) + 1
     save_state(state, user_id=user_id)

@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when writing a briefing that must translate processed information into a key-judgment-first, confidence-graded, actionable summary."
+---
+
 # Intelligence Briefing Craft
 
 **Tags:** explorer, briefing, writing, analysis, communication

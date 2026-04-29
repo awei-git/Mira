@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when computing the expected number of zeros of a random Gaussian polynomial, harmonic function, or analytic function using the Rice/Kac-Rice formula."
+---
+
 # Random Zeros and Rice Formula
 
 **Tags:** probability, random-polynomials, complex-analysis, rice-formula, harmonic-polynomials

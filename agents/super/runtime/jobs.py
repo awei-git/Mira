@@ -5,6 +5,7 @@ job table. Each job declares its trigger, cooldown, priority, and handler.
 
 The scheduler iterates this table instead of a wall of if-statements.
 """
+
 from __future__ import annotations
 
 import logging
@@ -95,15 +96,17 @@ class JobSpec:
 
 BACKGROUND_JOBS: list[JobSpec] = [
     # === Content & Knowledge ===
+    # === Content & Knowledge (heavy — uses cloud API for synthesis) ===
     JobSpec(
         name="explore",
         command=["explore", "--sources", "{sources_csv}", "--slot", "{label}"],
         trigger="cooldown",
         trigger_name="should_explore",
         cooldown_hours=0,  # controlled by EXPLORE_COOLDOWN_MINUTES in config
-        window_start=6, window_end=23,
+        window_start=6,
+        window_end=23,
         priority=10,
-        blocking_group="content",
+        blocking_group="heavy",
         bg_name_pattern="explore-{label}",
         session_action="explore",
         session_detail_field="label",
@@ -115,7 +118,7 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger="conditional",  # always runs, internal logic decides
         trigger_name="always_run",
         priority=20,
-        blocking_group="content",
+        blocking_group="heavy",
         description="Advance writing projects through pipeline",
     ),
     JobSpec(
@@ -124,20 +127,23 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger="cooldown",
         trigger_name="should_check_writing",
         cooldown_hours=4,
-        window_start=10, window_end=22,
+        window_start=10,
+        window_end=22,
         state_key_pattern="last_autowrite_check",
+        blocking_group="heavy",
         description="Check for auto-writing opportunities",
     ),
-
     # === Reflection & Growth ===
     JobSpec(
         name="journal",
         command=["journal"],
         trigger="time_window",
         trigger_name="should_journal",
-        window_start=22, window_end=24,
+        window_start=22,
+        window_end=24,
         state_key_pattern="journal_{date}",
         priority=30,
+        blocking_group="heavy",
         description="Daily journal entry",
     ),
     JobSpec(
@@ -147,9 +153,11 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger_name="should_research_log",
         # Open window from 21:00 to end of day. Trigger has catch-up semantics
         # so a late deploy or restart still produces today's log.
-        window_start=21, window_end=24,
+        window_start=21,
+        window_end=24,
         state_key_pattern="research_log_{date}",
         priority=25,
+        blocking_group="heavy",
         description="Daily research progress report (research-build loop contract with WA)",
     ),
     JobSpec(
@@ -158,10 +166,11 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger="cooldown",
         trigger_name="should_research_cycle",
         cooldown_hours=3,
-        window_start=8, window_end=23,
+        window_start=8,
+        window_end=23,
         state_key_pattern="last_research_cycle",
         priority=20,
-        blocking_group="content",
+        blocking_group="heavy",
         description="Advance one research-queue question by one step (Mira's autonomous research engine)",
     ),
     JobSpec(
@@ -172,6 +181,7 @@ BACKGROUND_JOBS: list[JobSpec] = [
         cooldown_hours=6,
         priority=40,
         state_key_pattern="last_reflect",
+        blocking_group="heavy",
         description="Weekly reflection (worldview update)",
     ),
     JobSpec(
@@ -182,6 +192,7 @@ BACKGROUND_JOBS: list[JobSpec] = [
         state_key_pattern="soul_question_{date}",
         per_user=True,
         bg_name_pattern="soul-question-{user_id}",
+        blocking_group="light",
         description="Daily soul question for self-examination",
     ),
     JobSpec(
@@ -193,6 +204,7 @@ BACKGROUND_JOBS: list[JobSpec] = [
         state_key_pattern="last_spark_check",
         per_user=True,
         bg_name_pattern="spark-check-{user_id}",
+        blocking_group="light",
         description="Check for new sparks from memory growth",
     ),
     JobSpec(
@@ -203,18 +215,20 @@ BACKGROUND_JOBS: list[JobSpec] = [
         priority=90,
         per_user=True,
         bg_name_pattern="idle-think-{user_id}",
-        description="Think when idle (low priority)",
+        blocking_group="local",
+        description="Think when idle (low priority, mostly local LLM)",
     ),
-
-    # === Publishing & Social ===
+    # === Publishing & Social (light — short API calls) ===
     JobSpec(
         name="substack-comments",
         command=["check-comments"],
         trigger="cooldown",
         trigger_name="should_check_comments",
         cooldown_hours=2,
-        window_start=8, window_end=23,
+        window_start=8,
+        window_end=23,
         state_key_pattern="last_comment_check",
+        blocking_group="light",
         description="Check and reply to Substack comments",
     ),
     JobSpec(
@@ -223,9 +237,11 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger="cooldown",
         trigger_name="should_growth_cycle",
         cooldown_hours=2,
-        window_start=8, window_end=23,
+        window_start=8,
+        window_end=23,
         state_key_pattern="last_growth_cycle",
         session_action="growth_cycle",
+        blocking_group="light",
         description="Substack growth activities",
     ),
     JobSpec(
@@ -234,21 +250,24 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger="cooldown",
         trigger_name="should_post_notes",
         cooldown_hours=4,
-        window_start=9, window_end=22,
+        window_start=9,
+        window_end=22,
         state_key_pattern="last_notes_cycle",
+        blocking_group="light",
         description="Post Substack notes",
     ),
-
-    # === Analysis & Research ===
+    # === Analysis & Research (heavy — needs strong reasoning) ===
     JobSpec(
         name="analyst-pre",
         command=["analyst", "--slot", "{slot}"],
         trigger="time_window",
         trigger_name="should_analyst",
-        window_start=7, window_end=9,
+        window_start=7,
+        window_end=9,
         state_key_pattern="analyst_{date}_pre",
         bg_name_pattern="analyst-{slot}",
         payload_equals="0700",
+        blocking_group="heavy",
         description="Pre-market analysis",
     ),
     JobSpec(
@@ -256,10 +275,12 @@ BACKGROUND_JOBS: list[JobSpec] = [
         command=["analyst", "--slot", "{slot}"],
         trigger="time_window",
         trigger_name="should_analyst",
-        window_start=18, window_end=20,
+        window_start=18,
+        window_end=20,
         state_key_pattern="analyst_{date}_post",
         bg_name_pattern="analyst-{slot}",
         payload_equals="1800",
+        blocking_group="heavy",
         description="Post-market analysis",
     ),
     JobSpec(
@@ -268,6 +289,7 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger="time_window",
         trigger_name="should_research",
         state_key_pattern="research_{date}",
+        blocking_group="heavy",
         description="Daily research topic",
     ),
     JobSpec(
@@ -276,6 +298,7 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger="time_window",
         trigger_name="should_book_review",
         state_key_pattern="book_review_{date}",
+        blocking_group="heavy",
         description="Daily book review",
     ),
     JobSpec(
@@ -286,43 +309,46 @@ BACKGROUND_JOBS: list[JobSpec] = [
         cooldown_hours=4,
         state_key_pattern="last_skill_study",
         bg_name_pattern="skill-study-{domain}",
+        blocking_group="heavy",
         description="Study and extract skills from feed content",
     ),
-
-    # === Media ===
+    # === Media (heavy — uses vision API) ===
     JobSpec(
         name="daily-photo",
         command=["daily-photo"],
         trigger="time_window",
         trigger_name="should_daily_photo",
-        window_start=7, window_end=9,
+        window_start=7,
+        window_end=9,
         state_key_pattern="daily_photo_{date}",
+        blocking_group="heavy",
         description="Daily photo editing",
     ),
-
-    # === Health (inline) ===
+    # === Health (inline — no background process) ===
     JobSpec(
         name="health-check",
         command=["health-check"],
         trigger="time_window",
         trigger_name="should_health_check_or_pending_exports",
-        window_start=7, window_end=9,
+        window_start=7,
+        window_end=9,
         state_key_pattern="health_check_{date}",
         inline=True,
         inline_runner="health-check",
         description="Health data check and export",
     ),
-
-    # === Self-improvement ===
+    # === Self-improvement (light — short introspection calls) ===
     JobSpec(
         name="self-audit",
         command=[],
         trigger="time_window",
         trigger_name="_should_self_audit",
-        window_start=8, window_end=10,
+        window_start=8,
+        window_end=10,
         state_key_pattern="self_audit_{date}",
         launcher="script",
         script_path="self_audit.py",
+        blocking_group="light",
         description="Daily self-audit",
     ),
     JobSpec(
@@ -330,8 +356,10 @@ BACKGROUND_JOBS: list[JobSpec] = [
         command=["self-evolve"],
         trigger="time_window",
         trigger_name="_should_self_evolve",
-        window_start=13, window_end=16,
+        window_start=13,
+        window_end=16,
         state_key_pattern="self_evolve_{date}",
+        blocking_group="heavy",
         description="Self-evolution proposals",
     ),
     JobSpec(
@@ -341,6 +369,7 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger_name="_should_backlog_executor",
         cooldown_hours=2,
         state_key_pattern="last_backlog_executor",
+        blocking_group="light",
         description="Execute approved low-risk backlog actions",
     ),
     JobSpec(
@@ -349,6 +378,7 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger="conditional",
         trigger_name="_should_restore_dry_run",
         state_key_pattern="restore_dry_run_{date}",
+        blocking_group="light",
         description="Validate latest backup with a restore dry-run",
     ),
     JobSpec(
@@ -356,8 +386,10 @@ BACKGROUND_JOBS: list[JobSpec] = [
         command=["assess"],
         trigger="time_window",
         trigger_name="_should_daily_assessment",
-        window_start=20, window_end=22,
+        window_start=20,
+        window_end=22,
         state_key_pattern="assessment_{date}",
+        blocking_group="light",
         description="Daily performance assessment",
     ),
     JobSpec(
@@ -366,6 +398,7 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger="time_window",
         trigger_name="should_daily_report",
         state_key_pattern="daily_report_{date}",
+        blocking_group="light",
         description="Daily status report",
     ),
     JobSpec(
@@ -374,22 +407,47 @@ BACKGROUND_JOBS: list[JobSpec] = [
         trigger="time_window",
         trigger_name="should_zhesi",
         state_key_pattern="zhesi_{date}",
+        blocking_group="light",
         description="Daily philosophical reflection (哲思)",
     ),
-
-    # === Maintenance ===
+    # === Maintenance (inline — no background process) ===
     JobSpec(
         name="log-cleanup",
         command=["log-cleanup"],
         trigger="time_window",
         trigger_name="should_log_cleanup",
-        window_start=3, window_end=4,
+        window_start=3,
+        window_end=4,
         state_key_pattern="log_cleanup_{date}",
         inline=True,
         inline_runner="log-cleanup",
         description="Clean old log files",
     ),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Pipeline chains — when job A completes successfully, auto-dispatch job B.
+# Key = bg_name prefix of the completed job.
+# Value = list of job names to trigger next (bypasses cooldown/trigger checks).
+# ---------------------------------------------------------------------------
+
+PIPELINE_CHAINS: dict[str, list[str]] = {
+    "explore": ["autowrite-check"],
+    "autowrite-check": ["writing-pipeline"],
+    # writing-pipeline runs continuously; publish is handled by _check_pending_publish
+}
+
+
+def get_pipeline_followups(completed_bg_name: str) -> list[str]:
+    """Return job names to trigger after *completed_bg_name* finishes.
+
+    Matches on prefix so "explore-morning" triggers the chain for "explore".
+    """
+    for prefix, followups in PIPELINE_CHAINS.items():
+        if completed_bg_name == prefix or completed_bg_name.startswith(prefix + "-"):
+            return followups
+    return []
 
 
 def get_jobs(enabled_only: bool = True) -> list[JobSpec]:
@@ -430,8 +488,9 @@ def evaluate_job_payload(job: JobSpec, user_id: str | None = None):
     return payload
 
 
-def build_job_dispatch(job: JobSpec, payload, python_executable: str, core_path: str,
-                       user_id: str | None = None) -> tuple[str, list[str]]:
+def build_job_dispatch(
+    job: JobSpec, payload, python_executable: str, core_path: str, user_id: str | None = None
+) -> tuple[str, list[str]]:
     """Build background process name and command from a declarative job spec."""
     context = _payload_context(job, payload)
     if user_id is not None:

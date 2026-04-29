@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when solving a specific stochastic process problem that asks for a probability, expectation, bound, distribution, or proof of a property such as martingale or convergence."
+---
+
 # Stochastic Process Problem-Solving
 
 **Tags:** probability, stochastic-processes, brownian-motion, martingales, point-processes

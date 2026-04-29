@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when a bug keeps recurring after fixes, or when you know what broke but not why, and need to find the true root cause."
+---
+
 # Root Cause Analysis
 
 **Tags:** coding, debugging, analysis, workflow

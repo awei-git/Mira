@@ -25,8 +25,10 @@ Versioning:
             ...
         final.md            Finalized output
 """
+
 import json
 import logging
+import sys
 import random
 import re
 from datetime import datetime
@@ -34,17 +36,29 @@ from pathlib import Path
 
 from config import (
     WORKSPACE_DIR,
-    MODELS, WRITING_MODELS, REVIEW_MODELS, WRITING_CRITERIA,
-    MIN_REVIEW_ROUNDS, CLAUDE_TIMEOUT_PLAN,
-    WRITING_MIN_DRAFT_CHARS, WRITING_MIN_SCORE_3RD_ROUND,
+    MODELS,
+    WRITING_MODELS,
+    REVIEW_MODELS,
+    WRITING_CRITERIA,
+    MIN_REVIEW_ROUNDS,
+    MAX_REFLECTION_PASSES,
+    CLAUDE_TIMEOUT_PLAN,
+    WRITING_MIN_DRAFT_CHARS,
+    WRITING_MIN_SCORE_3RD_ROUND,
 )
-from sub_agent import model_think, claude_think
-from soul_manager import load_soul, format_soul
+from llm import model_think, claude_think
+from memory.soul import load_soul, format_soul, recall_context
 from prompts import (
-    analyze_writing_prompt, plan_propose_prompt, plan_critique_prompt,
-    plan_synthesize_prompt, write_draft_prompt, review_draft_prompt,
-    revise_draft_prompt, revise_with_feedback_prompt,
-    chapter_write_prompt, harsh_review_prompt,
+    analyze_writing_prompt,
+    plan_propose_prompt,
+    plan_critique_prompt,
+    plan_synthesize_prompt,
+    write_draft_prompt,
+    review_draft_prompt,
+    revise_draft_prompt,
+    revise_with_feedback_prompt,
+    chapter_write_prompt,
+    harsh_review_prompt,
 )
 
 log = logging.getLogger("mira")
@@ -54,10 +68,13 @@ def _log_workflow_failure(slug: str, step: str, error_msg: str):
     """Record a structured failure for post-mortem analysis."""
     try:
         import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
-        from failure_log import record_failure
-        record_failure(pipeline="writing", step=step, slug=slug,
-                       error_type="workflow_error", error_message=error_msg[:500])
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
+        from ops.failure_log import record_failure
+
+        record_failure(
+            pipeline="writing", step=step, slug=slug, error_type="workflow_error", error_message=error_msg[:500]
+        )
     except Exception:
         pass
 
@@ -66,15 +83,19 @@ def _log_workflow_failure(slug: str, step: str, error_msg: str):
 # Project state helpers
 # ---------------------------------------------------------------------------
 
+
 def _load_project(ws: Path) -> dict:
     f = ws / "project.json"
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
 
 
 def _save_project(ws: Path, p: dict):
-    p["updated"] = datetime.now().isoformat()
+    now_iso = datetime.now().isoformat()
+    p["updated"] = now_iso
+    p["last_advanced_at"] = now_iso
     (ws / "project.json").write_text(
-        json.dumps(p, indent=2, ensure_ascii=False), encoding="utf-8",
+        json.dumps(p, indent=2, ensure_ascii=False),
+        encoding="utf-8",
     )
 
 
@@ -88,6 +109,7 @@ def _vdir(ws: Path, v: int) -> Path:
 # START — analyze idea, plan via multi-agent discussion, post for approval
 # ---------------------------------------------------------------------------
 
+
 def start_project(title: str, body: str, workspace: Path):
     """Initialize a writing project: ANALYZE -> PLAN -> post for user approval."""
     log.info("Starting writing project: %s", title)
@@ -96,7 +118,8 @@ def start_project(title: str, body: str, workspace: Path):
     # --- Analyze ---
     analysis = _analyze(body)
     (workspace / "analysis.json").write_text(
-        json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8",
+        json.dumps(analysis, indent=2, ensure_ascii=False),
+        encoding="utf-8",
     )
 
     type_key = analysis.get("type", "essay")
@@ -105,6 +128,16 @@ def start_project(title: str, body: str, workspace: Path):
 
     # --- Plan (multi-agent: propose -> critique -> synthesize) ---
     soul_ctx = format_soul(load_soul())
+
+    # RAG: retrieve related past writings, briefings, research for richer planning
+    try:
+        related = recall_context(body[:500], max_chars=2000)
+        if related:
+            soul_ctx = soul_ctx + "\n\n" + related
+            log.info("Writing RAG: injected %d chars of related context", len(related))
+    except Exception as e:
+        log.warning("Writing RAG recall failed: %s", e)
+
     vd = _vdir(workspace, 1)
     plans_dir = vd / "plans"
     plans_dir.mkdir(parents=True, exist_ok=True)
@@ -138,8 +171,10 @@ def _analyze(body: str) -> dict:
     except Exception:
         log.warning("Failed to parse analysis JSON, using defaults")
         analysis = {
-            "type": "essay", "complexity": "medium",
-            "language": "zh", "suggested_word_count": 3000,
+            "type": "essay",
+            "complexity": "medium",
+            "language": "zh",
+            "suggested_word_count": 3000,
         }
 
     t = analysis.get("type", "essay")
@@ -157,26 +192,35 @@ def _plan(soul_ctx: str, analysis: dict, idea: str, plans_dir: Path) -> str:
 
     # Agent A proposes
     style_a = MODELS.get(agents[0], {}).get("style", "")
-    plan_a = model_think(
-        plan_propose_prompt(soul_ctx, analysis, idea, style_a),
-        model_name=agents[0], timeout=CLAUDE_TIMEOUT_PLAN,
-    ) or ""
+    plan_a = (
+        model_think(
+            plan_propose_prompt(soul_ctx, analysis, idea, style_a),
+            model_name=agents[0],
+            timeout=CLAUDE_TIMEOUT_PLAN,
+        )
+        or ""
+    )
     (plans_dir / f"plan_{agents[0]}.md").write_text(plan_a, encoding="utf-8")
     log.info("Plan proposed by %s: %d chars", agents[0], len(plan_a))
 
     # Agent B critiques and counter-proposes
     style_b = MODELS.get(agents[1], {}).get("style", "")
-    critique = model_think(
-        plan_critique_prompt(soul_ctx, analysis, idea, plan_a, style_b),
-        model_name=agents[1], timeout=CLAUDE_TIMEOUT_PLAN,
-    ) or ""
+    critique = (
+        model_think(
+            plan_critique_prompt(soul_ctx, analysis, idea, plan_a, style_b),
+            model_name=agents[1],
+            timeout=CLAUDE_TIMEOUT_PLAN,
+        )
+        or ""
+    )
     (plans_dir / f"plan_{agents[1]}.md").write_text(critique, encoding="utf-8")
     log.info("Plan critiqued by %s: %d chars", agents[1], len(critique))
 
     # Agent C synthesizes final plan
     merged = model_think(
         plan_synthesize_prompt(soul_ctx, idea, plan_a, critique),
-        model_name=agents[2], timeout=CLAUDE_TIMEOUT_PLAN,
+        model_name=agents[2],
+        timeout=CLAUDE_TIMEOUT_PLAN,
     )
     log.info("Plan synthesized by %s: %d chars", agents[2], len(merged or ""))
     return merged or plan_a or "Plan generation failed."
@@ -185,6 +229,7 @@ def _plan(soul_ctx: str, analysis: dict, idea: str, plans_dir: Path) -> str:
 # ---------------------------------------------------------------------------
 # ADVANCE — move project forward based on current phase
 # ---------------------------------------------------------------------------
+
 
 def advance_project(workspace: Path, user_input: str = "") -> str:
     """Advance a writing project. Returns new phase."""
@@ -221,14 +266,16 @@ def _on_plan_approved(ws: Path, p: dict, plan_text: str) -> str:
     p["phase"] = "writing"
     _save_project(ws, p)
 
-    writers = WRITING_MODELS[:max(3, len(WRITING_MODELS))]
+    writers = WRITING_MODELS[: max(3, len(WRITING_MODELS))]
     drafts = _write_drafts(soul_ctx, plan_text, p["idea"], vd, writers)
 
     # Filter out stub drafts
     drafts = {k: v for k, v in drafts.items() if len(v.strip()) >= WRITING_MIN_DRAFT_CHARS}
     if not drafts:
         log.error("All drafts are too short (< %d chars) or failed for '%s'", WRITING_MIN_DRAFT_CHARS, title)
-        _log_workflow_failure(ws.name, "write_drafts", f"All drafts failed or < {WRITING_MIN_DRAFT_CHARS} chars for '{title}'")
+        _log_workflow_failure(
+            ws.name, "write_drafts", f"All drafts failed or < {WRITING_MIN_DRAFT_CHARS} chars for '{title}'"
+        )
         p["phase"] = "error"
         _save_project(ws, p)
         return "error"
@@ -237,7 +284,7 @@ def _on_plan_approved(ws: Path, p: dict, plan_text: str) -> str:
     p["phase"] = "reviewing"
     _save_project(ws, p)
 
-    reviewers = REVIEW_MODELS[:max(3, len(REVIEW_MODELS))]
+    reviewers = REVIEW_MODELS[: max(3, len(REVIEW_MODELS))]
     final_draft = _review_cycle(vd, drafts, criteria, reviewers)
     (vd / "converged.md").write_text(final_draft, encoding="utf-8")
 
@@ -251,6 +298,11 @@ def _on_plan_approved(ws: Path, p: dict, plan_text: str) -> str:
 def _on_feedback(ws: Path, p: dict, feedback: str) -> str:
     """Handle user feedback: finalize if satisfied, else revise and re-review."""
     title = p["title"]
+
+    # Block further passes until a forced decision is recorded
+    if p.get("phase") == "FORCED_DECISION":
+        log.warning("Project '%s' requires a decision (publish or archive) before continuing", title)
+        return "FORCED_DECISION"
 
     # Check if user is satisfied
     done_signals = ["完成", "done", "满意", "定稿", "ok", "好了", "可以了", "finalize"]
@@ -273,7 +325,8 @@ def _on_feedback(ws: Path, p: dict, feedback: str) -> str:
 
     revised = model_think(
         revise_with_feedback_prompt(prev_draft, feedback, criteria),
-        model_name="claude", timeout=300,
+        model_name="claude",
+        timeout=300,
     )
     if not revised:
         revised = prev_draft  # fallback: keep previous
@@ -286,9 +339,25 @@ def _on_feedback(ws: Path, p: dict, feedback: str) -> str:
     p["phase"] = "reviewing"
     _save_project(ws, p)
 
-    reviewers = REVIEW_MODELS[:max(3, len(REVIEW_MODELS))]
+    reviewers = REVIEW_MODELS[: max(3, len(REVIEW_MODELS))]
     final_draft = _review_cycle(vd, {"revised": revised}, criteria, reviewers)
     (vd / "converged.md").write_text(final_draft, encoding="utf-8")
+
+    # --- Reflection ceiling guard ---
+    p["reflection_count"] = p.get("reflection_count", 0) + 1
+    current_word_count = len(final_draft.split())
+    last_word_count = p.get("last_word_count", 0)
+    if p["reflection_count"] >= MAX_REFLECTION_PASSES and current_word_count <= last_word_count:
+        p["phase"] = "FORCED_DECISION"
+        _save_project(ws, p)
+        log.warning(
+            "Project '%s' has exceeded reflection ceiling (%d passes) with no word-count growth "
+            "— forcing decision: publish or archive",
+            title,
+            MAX_REFLECTION_PASSES,
+        )
+        return "FORCED_DECISION"
+    p["last_word_count"] = current_word_count
 
     # Revised draft ready for feedback
     p["phase"] = "draft_ready"
@@ -310,9 +379,9 @@ def _strip_revision_metadata(text: str) -> str:
       ...
     """
     # Strip leading "# 修订稿 R{n}\n...\n---\n\n" block
-    text = re.sub(r'^# 修订稿.*?\n---\n\n', '', text, flags=re.DOTALL)
+    text = re.sub(r"^# 修订稿.*?\n---\n\n", "", text, flags=re.DOTALL)
     # Strip trailing "---\n\n## 修改记录\n..." section
-    text = re.sub(r'\n---\n\n## 修改记录\b[\s\S]*$', '', text)
+    text = re.sub(r"\n---\n\n## 修改记录\b[\s\S]*$", "", text)
     return text.strip()
 
 
@@ -337,18 +406,21 @@ def _finalize(ws: Path, p: dict) -> str:
 
     # --- Self-iteration: extract craft skills from finished article ---
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-        from self_iteration import on_article_complete
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
+        from evaluation.self_iteration import on_article_complete
+
         type_key = p.get("type", "essay")
         on_article_complete(title, final_text, type_key)
     except Exception as e:
         import logging
+
         logging.getLogger("writing").warning("Article skill distillation failed: %s", e)
 
     # --- Self-evaluation: score this piece ---
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-        from evaluator import evaluate_writing, record_event
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
+        from evaluation.scorer import evaluate_writing, record_event
+
         # Gather review scores from last round
         review_scores = []
         reviews_dir = ws / "versions" / f"v{v}" / "reviews"
@@ -359,12 +431,12 @@ def _finalize(ws: Path, p: dict) -> str:
                     review_scores = [float(s) for s in rd.get("scores", []) if s]
                 except (json.JSONDecodeError, ValueError):
                     pass
-        w_scores = evaluate_writing(review_scores, final_text[:4000],
-                                     {"title": title, "version": v})
+        w_scores = evaluate_writing(review_scores, final_text[:4000], {"title": title, "version": v})
         if w_scores:
             record_event("publish", w_scores, {"title": title})
     except Exception as e:
         import logging
+
         logging.getLogger("writing").warning("Writing self-evaluation failed: %s", e)
 
     return "done"
@@ -374,8 +446,8 @@ def _finalize(ws: Path, p: dict) -> str:
 # WRITE — multiple agents produce drafts
 # ---------------------------------------------------------------------------
 
-def _write_drafts(soul_ctx: str, plan: str, idea: str,
-                  vd: Path, writers: list[str]) -> dict[str, str]:
+
+def _write_drafts(soul_ctx: str, plan: str, idea: str, vd: Path, writers: list[str]) -> dict[str, str]:
     """Have 3+ agents write drafts following the plan (parallel)."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -387,7 +459,8 @@ def _write_drafts(soul_ctx: str, plan: str, idea: str,
         log.info("Writing draft: %s (%s)", model_name, style)
         draft = model_think(
             write_draft_prompt(soul_ctx, plan, idea, style),
-            model_name=model_name, timeout=600,
+            model_name=model_name,
+            timeout=600,
         )
         return model_name, draft or ""
 
@@ -399,7 +472,8 @@ def _write_drafts(soul_ctx: str, plan: str, idea: str,
             if draft:
                 drafts[model_name] = draft
                 (drafts_dir / f"draft_{model_name}.md").write_text(
-                    draft, encoding="utf-8",
+                    draft,
+                    encoding="utf-8",
                 )
                 log.info("Draft from %s: %d chars", model_name, len(draft))
             else:
@@ -412,8 +486,8 @@ def _write_drafts(soul_ctx: str, plan: str, idea: str,
 # REVIEW — iterative review/revise cycle
 # ---------------------------------------------------------------------------
 
-def _review_cycle(vd: Path, drafts: dict[str, str],
-                  criteria: dict, reviewers: list[str]) -> str:
+
+def _review_cycle(vd: Path, drafts: dict[str, str], criteria: dict, reviewers: list[str]) -> str:
     """Run MIN_REVIEW_ROUNDS of review/revise. Returns final draft."""
     reviews_dir = vd / "reviews"
     reviews_dir.mkdir(parents=True, exist_ok=True)
@@ -422,14 +496,17 @@ def _review_cycle(vd: Path, drafts: dict[str, str],
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    def _review_parallel(draft_text: str, criteria: dict, rnd: int,
-                         prev: str, reviewers: list[str]) -> tuple[list[str], dict]:
+    def _review_parallel(
+        draft_text: str, criteria: dict, rnd: int, prev: str, reviewers: list[str]
+    ) -> tuple[list[str], dict]:
         """Run all reviewers in parallel for one round. Returns (reviews, scores)."""
+
         def _do_review(rv: str) -> tuple[str, str, float]:
             style = MODELS.get(rv, {}).get("style", "")
             review = model_think(
                 review_draft_prompt(draft_text, criteria, rnd, prev, style),
-                model_name=rv, timeout=300,
+                model_name=rv,
+                timeout=300,
             )
             score = 0.0
             if review:
@@ -455,8 +532,7 @@ def _review_cycle(vd: Path, drafts: dict[str, str],
         all_reviews = {}
 
         for dname, dtxt in drafts.items():
-            draft_reviews, draft_scores = _review_parallel(
-                dtxt, criteria, 1, "", reviewers)
+            draft_reviews, draft_scores = _review_parallel(dtxt, criteria, 1, "", reviewers)
             all_reviews[dname] = "\n\n---\n\n".join(draft_reviews)
             scores[dname] = sum(draft_scores.values()) / max(len(draft_scores), 1)
 
@@ -477,7 +553,9 @@ def _review_cycle(vd: Path, drafts: dict[str, str],
         log.info("Review round %d/%d", rnd, MIN_REVIEW_ROUNDS)
 
         round_reviews, round_scores = _review_parallel(
-            current_draft, criteria, rnd,
+            current_draft,
+            criteria,
+            rnd,
             prev_reviews[-2000:] if prev_reviews else "",
             reviewers,
         )
@@ -496,7 +574,8 @@ def _review_cycle(vd: Path, drafts: dict[str, str],
         if rnd < MIN_REVIEW_ROUNDS:
             revised = model_think(
                 revise_draft_prompt(current_draft, combined, criteria, rnd),
-                model_name="claude", timeout=300,
+                model_name="claude",
+                timeout=300,
             )
             if revised and revised.strip() == current_draft.strip():
                 log.warning("Revision round %d produced no changes, stopping early", rnd)
@@ -504,7 +583,8 @@ def _review_cycle(vd: Path, drafts: dict[str, str],
             if revised:
                 current_draft = revised
                 (revisions_dir / f"round_{rnd:02d}.md").write_text(
-                    revised, encoding="utf-8",
+                    revised,
+                    encoding="utf-8",
                 )
                 prev_reviews = combined
 
@@ -519,13 +599,15 @@ def _save_review(reviews_dir: Path, rnd: int, scores: dict, reviews: dict):
         "reviews": {k: v[:5000] for k, v in reviews.items()},
     }
     (reviews_dir / f"round_{rnd:02d}.json").write_text(
-        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8",
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
     )
 
 
 # ---------------------------------------------------------------------------
 # CHECK for user responses to active writing projects
 # ---------------------------------------------------------------------------
+
 
 def check_writing_responses() -> list[dict]:
     """Check for writing projects awaiting feedback.
@@ -568,7 +650,7 @@ def _parse_chapter_structure(outline: str) -> list[dict]:
         return []
 
     try:
-        m = re.search(r'\[.*\]', result, re.DOTALL)
+        m = re.search(r"\[.*\]", result, re.DOTALL)
         if m:
             return json.loads(m.group())
         return json.loads(result)
@@ -577,8 +659,7 @@ def _parse_chapter_structure(outline: str) -> list[dict]:
         return []
 
 
-def _harsh_review_cycle(vd: Path, draft: str, outline: str,
-                        criteria: dict, writer_models: list[str]) -> str:
+def _harsh_review_cycle(vd: Path, draft: str, outline: str, criteria: dict, writer_models: list[str]) -> str:
     """Multiple rounds of harsh Claude review + GPT-5/DeepSeek revision."""
     reviews_dir = vd / "reviews"
     reviews_dir.mkdir(parents=True, exist_ok=True)
@@ -632,19 +713,19 @@ def _harsh_review_cycle(vd: Path, draft: str, outline: str,
 
             revised = model_think(
                 revise_draft_prompt(current_draft, review, criteria, rnd),
-                model_name=writer, timeout=600,
+                model_name=writer,
+                timeout=600,
             )
 
             if revised and len(revised) > len(current_draft) * 0.5:
                 current_draft = revised
-                (revisions_dir / f"round_{rnd:02d}.md").write_text(
-                    revised, encoding="utf-8"
-                )
+                (revisions_dir / f"round_{rnd:02d}.md").write_text(revised, encoding="utf-8")
                 prev_reviews = review[-3000:]
                 log.info("Revision by %s: %d chars", writer, len(revised))
             else:
-                log.warning("Revision by %s too short or failed (got %d chars), keeping current",
-                            writer, len(revised or ""))
+                log.warning(
+                    "Revision by %s too short or failed (got %d chars), keeping current", writer, len(revised or "")
+                )
                 prev_reviews = review[-3000:]
 
     return current_draft
@@ -717,9 +798,7 @@ def start_from_plan(title: str, plan_path: str, writing_type: str = "novel"):
         # Build context: outline + all previous chapters
         prev_text = "\n\n---\n\n".join(all_chapter_texts) if all_chapter_texts else ""
 
-        prompt = chapter_write_prompt(
-            plan_text, ch_info, i, total_chapters, prev_text
-        )
+        prompt = chapter_write_prompt(plan_text, ch_info, i, total_chapters, prev_text)
 
         chapter_text = model_think(prompt, model_name=writer, timeout=600)
 
@@ -754,16 +833,13 @@ def start_from_plan(title: str, plan_path: str, writing_type: str = "novel"):
     draft_text = "\n\n---\n\n".join(all_chapter_texts)
     draft_file = vd / "draft.md"
     draft_file.write_text(draft_text, encoding="utf-8")
-    log.info("Draft assembled: %d chars, %d/%d chapters",
-             len(draft_text), len(all_chapter_texts), total_chapters)
+    log.info("Draft assembled: %d chars, %d/%d chapters", len(draft_text), len(all_chapter_texts), total_chapters)
 
     # --- Step 4: Harsh review cycle (Claude reviews, GPT-5/DeepSeek revises) ---
     project["phase"] = "reviewing"
     _save_project(workspace, project)
 
-    final_draft = _harsh_review_cycle(
-        vd, draft_text, plan_text, criteria, writer_pool
-    )
+    final_draft = _harsh_review_cycle(vd, draft_text, plan_text, criteria, writer_pool)
     (vd / "converged.md").write_text(final_draft, encoding="utf-8")
 
     # --- Step 5: Draft ready ---
@@ -777,6 +853,7 @@ def start_from_plan(title: str, plan_path: str, writing_type: str = "novel"):
 # ---------------------------------------------------------------------------
 
 from config import WRITINGS_OUTPUT_DIR
+
 _WRITINGS_ROOT = WRITINGS_OUTPUT_DIR
 
 
@@ -809,7 +886,8 @@ def run_full_pipeline(
     # --- Analyze ---
     analysis = _analyze(plan_body)
     (ws / "analysis.json").write_text(
-        json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8",
+        json.dumps(analysis, indent=2, ensure_ascii=False),
+        encoding="utf-8",
     )
 
     type_key = analysis.get("type", "essay")
@@ -818,6 +896,16 @@ def run_full_pipeline(
 
     # --- Plan (multi-agent) ---
     soul_ctx = persona_prompt or format_soul(load_soul())
+
+    # RAG: retrieve related past writings, briefings, research
+    try:
+        related = recall_context(body[:500], max_chars=2000)
+        if related:
+            soul_ctx = soul_ctx + "\n\n" + related
+            log.info("Writing RAG: injected %d chars of related context", len(related))
+    except Exception as e:
+        log.warning("Writing RAG recall failed: %s", e)
+
     vd = _vdir(ws, 1)
     plans_dir = vd / "plans"
     plans_dir.mkdir(parents=True, exist_ok=True)
@@ -844,14 +932,16 @@ def run_full_pipeline(
     _save_project(ws, project)
 
     # --- Write (3+ agents) ---
-    writers = WRITING_MODELS[:max(3, len(WRITING_MODELS))]
+    writers = WRITING_MODELS[: max(3, len(WRITING_MODELS))]
     drafts = _write_drafts(soul_ctx, plan, plan_body, vd, writers)
 
     # Filter out stub drafts
     drafts = {k: v for k, v in drafts.items() if len(v.strip()) >= WRITING_MIN_DRAFT_CHARS}
     if not drafts:
         log.error("All drafts are too short (< %d chars) or failed for '%s'", WRITING_MIN_DRAFT_CHARS, title)
-        _log_workflow_failure(slug, "write_drafts", f"All drafts failed or < {WRITING_MIN_DRAFT_CHARS} chars for '{title}'")
+        _log_workflow_failure(
+            slug, "write_drafts", f"All drafts failed or < {WRITING_MIN_DRAFT_CHARS} chars for '{title}'"
+        )
         project["phase"] = "error"
         _save_project(ws, project)
         return ws, ""
@@ -860,7 +950,7 @@ def run_full_pipeline(
     project["phase"] = "reviewing"
     _save_project(ws, project)
 
-    reviewers = REVIEW_MODELS[:max(3, len(REVIEW_MODELS))]
+    reviewers = REVIEW_MODELS[: max(3, len(REVIEW_MODELS))]
     final_draft = _review_cycle(vd, drafts, criteria, reviewers)
     (vd / "converged.md").write_text(final_draft, encoding="utf-8")
 
@@ -877,14 +967,17 @@ def run_full_pipeline(
 
     # Add to content catalog
     try:
-        from soul_manager import catalog_add
-        catalog_add({
-            "type": type_key,
-            "title": title,
-            "path": str(ws / "final.md"),
-            "topics": [],
-            "status": "draft",
-        })
+        from memory.soul import catalog_add
+
+        catalog_add(
+            {
+                "type": type_key,
+                "title": title,
+                "path": str(ws / "final.md"),
+                "topics": [],
+                "status": "draft",
+            }
+        )
     except Exception as _e:
         log.warning("Catalog add failed: %s", _e)
 
@@ -912,7 +1005,6 @@ def find_active_projects() -> list[tuple[Path, dict]]:
         except Exception:
             continue
     return active
-
 
 
 # _parse_status() and _extract_content() removed — Apple Notes integration deleted.

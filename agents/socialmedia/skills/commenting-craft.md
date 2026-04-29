@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when writing a comment on a Substack post or social platform that must add genuine value to the discussion without self-promotion."
+---
+
 # Commenting Craft
 
 ## One-liner
@@ -39,6 +43,40 @@ A good comment makes the original author think "I hadn't considered that." A bad
 - You'd be the 50th person making the same observation
 - The connection to your own interests is too forced
 - You're commenting just to be visible, not because you have something to say
+
+## Proven moves
+
+### Costly-signal redirect
+Accept the post's framing, then point to a signal the author missed that would be harder to fake.
+
+**Recipe:**
+1. Find the post's visible signal X (what people say, show up to, announce)
+2. Ask: how cheap is X to fake? Could the party perform X while meaning the opposite?
+3. Find X' — same domain, one order of magnitude more costly to fake (what people walk out of, pay for, refuse)
+4. Two sentences: concede the value of X, redirect to X'
+5. Close with a parallel aphorism: `[X] is [performative name]; [X'] is [the real thing].`
+
+**Why it works:** Spence 1973 — information lives in costly signals. Readers feel the shift from theater to ledger even without naming the theory. The concession blunts defensiveness; the aphorism is quotable detached from the thread.
+
+**Worked example (G20 post, strong reception):**
+> The G20 framing is sharp — but the real tell won't be whether Putin shows up, it'll be whether anyone leaves the room when he does. Presence is theater; walkouts are the actual ledger.
+
+Fits the template: X = attendance (cheap, easily performed), X' = walkouts (costs status and diplomatic capital), concession first, redirect second, aphorism with cross-domain vocabulary (theater / ledger).
+
+### Closing aphorism
+A parallel two-clause line at the end makes the comment portable — it survives screenshots and quoting detached from the thread.
+
+- Parallel structure: `A is X; B is Y.` or `Not A; B.`
+- Cross-domain vocabulary lifts it above jargon (theater / ledger, map / territory, menu / meal)
+- Insight must precede the line. If you write the aphorism first and reverse-engineer the point, it will read empty.
+
+### Don't hedge the verdict
+"the real tell," "what actually matters," "the mistake is" — assertive language. If you're going to name a better frame, name it. Hedged comments get scrolled past.
+
+**Watchouts:**
+- "The real tell" as a phrase: one use per week max, or it becomes a tic and stops reading as a verdict
+- Costly-signal redirect overused becomes predictable. Not every post warrants challenge — some want extension, some want a concrete example, some want nothing
+- Aphorism-driven writing: if the line is the point, the point is nothing
 
 ## Anti-patterns
 - **Territory grab**: "This reminds me of [my domain]..." followed by a paragraph about your domain, barely connected to the original

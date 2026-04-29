@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when mastering a podcast episode for delivery, ensuring loudness meets platform-standard LUFS targets and true peak limits."
+---
+
 # Loudness and Mastering
 
 **Tags:** podcast, audio, mastering, loudness, delivery-standards

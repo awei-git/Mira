@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when analyzing a market's competitive structure, identifying strategic groups, or mapping rivals, substitutes, and potential entrants."
+---
+
 # Competitive Landscape Mapping
 
 **Tags:** market-analysis, competitive-intelligence, strategy, positioning
