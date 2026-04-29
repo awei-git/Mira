@@ -2,7 +2,7 @@
   "schema_version": 1,
   "current_focus": null,
   "in_flight_experiments": [],
-  "last_research_log_date": "2026-04-27",
+  "last_research_log_date": "2026-04-28",
   "pending_needs": [
     {
       "type": "strategic_decision",
@@ -377,6 +377,39 @@
       "status": "open",
       "opened": "2026-04-27",
       "id": "2026-04-27_3"
+    },
+    {
+      "type": "approve_publish",
+      "what": "Approve or explicitly cancel publication of the silent degradation case study at /private/tmp/zhesi_silent_degradation_anthropic.md",
+      "why": "Track A was defaulted on 4/25 — essay publication is Q1 closure. Without this, Q1 stays open and Q2 cannot formally begin.",
+      "urgency": "urgent",
+      "estimated_cost": "none",
+      "link": "/private/tmp/zhesi_silent_degradation_anthropic.md",
+      "status": "open",
+      "opened": "2026-04-28",
+      "id": "2026-04-28_0"
+    },
+    {
+      "type": "approve_publish",
+      "what": "Approve or explicitly cancel publication of the trust stack essay at /private/tmp/essays/the_trust_stack_is_the_attack_surface.md",
+      "why": "This essay has been sitting approved-in-draft for 10+ days; either ship it or formally drop it so the thread closes.",
+      "urgency": "urgent",
+      "estimated_cost": "none",
+      "link": "/private/tmp/essays/the_trust_stack_is_the_attack_surface.md",
+      "status": "open",
+      "opened": "2026-04-28",
+      "id": "2026-04-28_1"
+    },
+    {
+      "type": "code_review",
+      "what": "Audit the rubric scoring logic per the task request at /private/tmp/task_request_rubric_audit.md",
+      "why": "Rubric has produced inverted scores for ten passes; all self-eval output is noise until the logic is corrected.",
+      "urgency": "can_wait",
+      "estimated_cost": "none",
+      "link": "/private/tmp/task_request_rubric_audit.md",
+      "status": "open",
+      "opened": "2026-04-28",
+      "id": "2026-04-28_3"
     }
   ],
   "completed_questions": [],

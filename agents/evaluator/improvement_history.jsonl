@@ -18,3 +18,4 @@
 {"timestamp": "2026-04-26T00:01:58.637595+00:00", "problems": ["photo pipeline: 7 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.035}, "status": "pending"}
 {"timestamp": "2026-04-27T00:00:45.670916+00:00", "problems": ["photo pipeline: 7 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.026}, "status": "pending"}
 {"timestamp": "2026-04-28T00:00:50.001327+00:00", "problems": ["photo pipeline: 8 failures in 7 days"], "weak_agents": [], "baseline_scores": {"_crash_rate": 0.027}, "status": "pending"}
+{"timestamp": "2026-04-29T00:01:48.437810+00:00", "problems": ["photo pipeline: 7 failures in 7 days"], "weak_agents": [], "baseline_scores": {"discussion": 1.0, "_overall": 1.0, "_crash_rate": 0.023}, "status": "pending"}
