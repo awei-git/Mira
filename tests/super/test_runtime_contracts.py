@@ -10,6 +10,8 @@ _AGENTS = Path(__file__).resolve().parent.parent.parent / "agents"
 
 from agent_registry import AgentRegistry
 import task_worker
+import task_support
+import handlers_legacy
 from execution.plan_state import initialize_plan_artifacts, mark_step_finished
 
 
@@ -17,10 +19,10 @@ def _patch_task_worker_test_side_effects(monkeypatch):
     import memory.soul as soul_manager
 
     monkeypatch.setattr(task_worker, "_emit_status", lambda *args, **kwargs: None)
-    monkeypatch.setattr(task_worker, "_append_exec_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(task_support, "_append_exec_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(task_worker, "_record_premortem", lambda *args, **kwargs: None)
     monkeypatch.setattr(task_worker, "_record_postmortem", lambda *args, **kwargs: None)
-    monkeypatch.setattr(task_worker, "_verify_output", lambda *args, **kwargs: None)
+    monkeypatch.setattr(task_support, "_verify_output", lambda *args, **kwargs: None)
     monkeypatch.setattr(task_worker, "save_episode", lambda *args, **kwargs: None)
     monkeypatch.setattr(soul_manager, "auto_flush", lambda *args, **kwargs: None)
 
@@ -255,8 +257,8 @@ def test_execute_plan_steps_passes_tier_and_thread_context(tmp_path, monkeypatch
             return handler
 
     monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
-    monkeypatch.setattr(task_worker, "load_thread_history", lambda thread_id: "history block")
-    monkeypatch.setattr(task_worker, "load_thread_memory", lambda thread_id: "memory block")
+    monkeypatch.setattr(task_support, "load_thread_history", lambda thread_id: "history block")
+    monkeypatch.setattr(task_support, "load_thread_memory", lambda thread_id: "memory block")
     _patch_task_worker_test_side_effects(monkeypatch)
 
     plan = [
@@ -467,7 +469,7 @@ def test_execute_plan_steps_falls_back_when_preflight_load_errors(tmp_path, monk
         task_worker._write_result(ws, task_id, "done", "Fallback reply", agent="general")
 
     monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
-    monkeypatch.setattr(task_worker, "_handle_general", fake_general)
+    monkeypatch.setattr(handlers_legacy, "_handle_general", fake_general)
     _patch_task_worker_test_side_effects(monkeypatch)
 
     plan = [
@@ -524,7 +526,7 @@ def test_execute_plan_steps_blocks_when_required_preflight_load_fails(tmp_path, 
         raise AssertionError("general fallback should not run for required-preflight agents")
 
     monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
-    monkeypatch.setattr(task_worker, "_handle_general", fake_general)
+    monkeypatch.setattr(handlers_legacy, "_handle_general", fake_general)
     _patch_task_worker_test_side_effects(monkeypatch)
 
     task_worker._execute_plan_steps(
@@ -660,7 +662,9 @@ def test_ensure_step_result_reuses_cached_verification(tmp_path, monkeypatch):
         calls["count"] += 1
         return FakeVerify()
 
-    monkeypatch.setattr(task_worker, "verify_artifact", fake_verify)
+    import task_result
+
+    monkeypatch.setattr(task_result, "verify_artifact", fake_verify)
 
     task_worker._ensure_step_result(
         workspace,
@@ -719,7 +723,7 @@ def test_execute_plan_steps_marks_fallback_exception_as_failed(tmp_path, monkeyp
         raise RuntimeError("fallback exploded")
 
     monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
-    monkeypatch.setattr(task_worker, "_handle_general", fake_general)
+    monkeypatch.setattr(handlers_legacy, "_handle_general", fake_general)
     _patch_task_worker_test_side_effects(monkeypatch)
 
     task_worker._execute_plan_steps(
@@ -756,7 +760,9 @@ def test_execute_plan_steps_initializes_artifacts_once(tmp_path, monkeypatch):
     workspace.mkdir()
     calls = []
 
-    original_initialize = task_worker.initialize_plan_artifacts
+    import plan_executor
+
+    original_initialize = plan_executor.initialize_plan_artifacts
 
     def tracked_initialize(*args, **kwargs):
         calls.append(kwargs["task_id"])
@@ -770,7 +776,7 @@ def test_execute_plan_steps_initializes_artifacts_once(tmp_path, monkeypatch):
 
             return handler
 
-    monkeypatch.setattr(task_worker, "initialize_plan_artifacts", tracked_initialize)
+    monkeypatch.setattr(plan_executor, "initialize_plan_artifacts", tracked_initialize)
     monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
     _patch_task_worker_test_side_effects(monkeypatch)
 
