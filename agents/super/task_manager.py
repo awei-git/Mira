@@ -17,6 +17,7 @@ import tempfile
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from config import (
     CONTROL_RUNTIME_DB_ENABLED,
@@ -114,6 +115,30 @@ def _task_hash(task_id: str) -> str:
     return hashlib.sha1(task_id.encode("utf-8")).hexdigest()[:10]
 
 
+def _patch_metadata(workspace: Path, patch: dict) -> None:
+    meta_file = workspace / "metadata.json"
+    try:
+        existing = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
+        existing.update(patch)
+        meta_file.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
+def _write_completion_metadata(workspace: Path) -> None:
+    completed_ts = datetime.now(timezone.utc).timestamp()
+    patch = {"completed_at": completed_ts}
+    meta_file = workspace / "metadata.json"
+    try:
+        if meta_file.exists():
+            queued_at = json.loads(meta_file.read_text(encoding="utf-8")).get("queued_at")
+            if queued_at:
+                patch["latency_s"] = round(completed_ts - float(queued_at), 1)
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    _patch_metadata(workspace, patch)
+
+
 def _has_workspace_state(path: Path) -> bool:
     return any((path / name).exists() for name in _WORKSPACE_STATE_ARTIFACTS)
 
@@ -141,6 +166,46 @@ def _resolve_workspace_dir(requested: Path, task_id: str) -> Path:
     return requested
 
 
+def _pid_matches_worker(pid: int, task_id: str) -> bool:
+    """Return True only when pid still looks like this task_worker process."""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return True
+    if result.returncode != 0:
+        return False
+    command = (result.stdout or "").strip()
+    if not command:
+        return False
+    return str(WORKER_SCRIPT) in command and f"--task-id {task_id}" in command
+
+
+def _message_from_workspace(workspace: Path):
+    msg_file = workspace / "message.json"
+    try:
+        data = json.loads(msg_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return SimpleNamespace(
+        id=data.get("id") or data.get("task_id") or "",
+        thread_id=data.get("thread_id", ""),
+        sender=data.get("sender", "user"),
+        content=data.get("content", ""),
+        user_id=data.get("user_id", "ang"),
+        user_role=data.get("user_role", "admin"),
+        model_restriction=data.get("model_restriction"),
+        content_filter=data.get("content_filter", False),
+        allowed_agents=data.get("allowed_agents", []),
+        workflow_id=data.get("workflow_id", ""),
+        to_dict=lambda: data,
+    )
+
+
 @dataclass
 class TaskRecord:
     task_id: str
@@ -150,7 +215,7 @@ class TaskRecord:
     sender: str
     content_preview: str  # first 80 chars of message
     pid: int
-    status: str  # dispatched | running | done | needs-input | blocked | failed | timeout
+    status: str  # dispatched | running | completed_unverified | verified | needs-input | blocked | failed | timeout
     started_at: str
     user_id: str = "ang"
     completed_at: str = ""
@@ -161,6 +226,10 @@ class TaskRecord:
     max_attempts: int = TASK_MAX_RETRIES
     failure_class: str = ""
     timeout_alerted_at: str = ""
+    task_type: str = ""
+    verification: dict | None = None
+    outcome_verified: bool = False
+    verification_method: str = ""
 
     def __post_init__(self):
         if self.tags is None:
@@ -275,6 +344,7 @@ class TaskManager:
         workspace_dir = _resolve_workspace_dir(Path(workspace_dir), task_id)
         workspace_dir.mkdir(parents=True, exist_ok=True)
         (workspace_dir / WORKSPACE_TASK_MARKER).write_text(task_id + "\n", encoding="utf-8")
+        _patch_metadata(workspace_dir, {"queued_at": datetime.now(timezone.utc).timestamp()})
         run_started_at = _utc_iso()
         (workspace_dir / WORKSPACE_RUN_META).write_text(
             json.dumps(
@@ -332,6 +402,8 @@ class TaskManager:
             log.error("Failed to dispatch task %s: %s", task_id, e)
             return ""
 
+        _patch_metadata(workspace_dir, {"dispatched_at": datetime.now(timezone.utc).timestamp()})
+
         record = TaskRecord(
             task_id=task_id,
             workflow_id=workflow_id,
@@ -351,6 +423,8 @@ class TaskManager:
         self._records.append(record)
         self._save_status()
         self._mirror_record(record, event_type="task.dispatched")
+        self._append_trace(record, "task.dispatched", {"pid": proc.pid, "workspace": str(workspace_dir)})
+        self._start_dispatch_workflow(record)
 
         log.info(
             "Dispatched task %s workflow=%s user=%s (PID %d): %s",
@@ -362,6 +436,17 @@ class TaskManager:
         )
         return task_id
 
+    def _start_dispatch_workflow(self, record: TaskRecord) -> None:
+        if not CONTROL_RUNTIME_DB_ENABLED:
+            return
+        try:
+            from runtime.task_workflow import start_dispatch_workflow
+
+            workflow_run_id = start_dispatch_workflow(asdict(record))
+            log.info("DBOS dispatch workflow started task=%s workflow_run=%s", record.task_id, workflow_run_id)
+        except Exception as e:
+            log.warning("DBOS dispatch workflow start failed for %s: %s", record.task_id, e)
+
     # ------------------------------------------------------------------
     # Check / collect
     # ------------------------------------------------------------------
@@ -372,19 +457,32 @@ class TaskManager:
         changed = False
 
         for rec in self._records:
-            if rec.status in ("done", "failed", "timeout", "needs-input", "blocked"):
+            if rec.status in (
+                "done",
+                "completed_unverified",
+                "verified",
+                "failed",
+                "timeout",
+                "needs-input",
+                "blocked",
+            ):
                 continue
 
             # Check if process is still alive
             try:
                 os.kill(rec.pid, 0)  # signal 0 = check existence
-                alive = True
+                alive = _pid_matches_worker(rec.pid, rec.task_id)
             except OSError:
                 alive = False
 
             if not alive:
                 # Process exited — check for result
                 result = self._collect_result(rec)
+                if not result and rec.failure_class == "worker_crash" and rec.attempt_count < rec.max_attempts:
+                    self._mirror_record(rec, event_type="task.worker_crash")
+                    if self._retry_worker_crash(rec):
+                        changed = True
+                        continue
                 completed.append(rec)
             else:
                 # Check timeout
@@ -465,6 +563,7 @@ class TaskManager:
                         rec.status = "running"
                         changed = True
                         self._mirror_record(rec, event_type="task.running")
+                        self._append_trace(rec, "task.running", {"pid": rec.pid})
 
         if completed or changed:
             self._save_status()
@@ -494,8 +593,27 @@ class TaskManager:
                 rec.completed_at = data.get("completed_at", _utc_iso())
                 rec.failure_class = data.get("failure_class", "")
                 rec.workflow_id = data.get("workflow_id", rec.workflow_id) or rec.workflow_id
+                rec.task_type = data.get("task_type", rec.task_type) or rec.task_type
+                rec.verification = data.get("verification") if isinstance(data.get("verification"), dict) else None
+                rec.outcome_verified = bool(data.get("outcome_verified", False))
+                rec.verification_method = (
+                    data.get("verification_method", rec.verification_method) or rec.verification_method
+                )
                 if data.get("tags"):
                     rec.tags = data["tags"]
+                self._append_trace(
+                    rec,
+                    "task.result_collected",
+                    {
+                        "status": rec.status,
+                        "summary": rec.summary,
+                        "failure_class": rec.failure_class,
+                        "task_type": rec.task_type,
+                        "outcome_verified": rec.outcome_verified,
+                        "verification_method": rec.verification_method,
+                    },
+                )
+                _write_completion_metadata(ws)
                 return True
             except (json.JSONDecodeError, OSError) as e:
                 log.error("Failed to read result for task %s: %s", rec.task_id, e)
@@ -503,9 +621,15 @@ class TaskManager:
         # No result file — check if output.md exists as fallback
         output_file = ws / "output.md"
         if output_file.exists():
-            rec.status = "done"
+            rec.status = "completed_unverified"
             rec.summary = output_file.read_text(encoding="utf-8")[:200]
             rec.completed_at = _utc_iso()
+            self._append_trace(
+                rec,
+                "task.legacy_output_collected",
+                {"status": rec.status, "summary": rec.summary},
+            )
+            _write_completion_metadata(ws)
             return True
 
         # Process died without producing output — check stderr for crash info
@@ -527,6 +651,12 @@ class TaskManager:
             rec.summary = f"Worker crashed: {crash_info}"
         else:
             rec.summary = "Worker exited without producing output"
+        self._append_trace(
+            rec,
+            "task.worker_crashed",
+            {"status": rec.status, "summary": rec.summary, "failure_class": rec.failure_class},
+        )
+        _write_completion_metadata(ws)
         return False
 
     def _kill_task(self, rec: TaskRecord):
@@ -538,6 +668,34 @@ class TaskManager:
                 os.kill(rec.pid, signal.SIGKILL)
             except OSError:
                 pass
+
+    def _retry_worker_crash(self, rec: TaskRecord) -> bool:
+        """Retry a worker crash from its persisted message payload."""
+        workspace = Path(rec.workspace)
+        msg = _message_from_workspace(workspace)
+        if not msg or not getattr(msg, "id", ""):
+            log.warning("Cannot retry worker crash for %s: message.json unavailable", rec.task_id)
+            return False
+        try:
+            self._records.remove(rec)
+        except ValueError:
+            pass
+        self._save_status()
+        self._mirror_task_status(rec.user_id, rec.task_id, "queued", event_type="task.auto_retry_queued")
+        next_attempt = rec.attempt_count + 1
+        log.warning(
+            "Auto-retrying crashed worker task=%s attempt=%d/%d",
+            rec.task_id,
+            next_attempt,
+            rec.max_attempts,
+        )
+        dispatched = self.dispatch(
+            msg,
+            workspace,
+            attempt_count=next_attempt,
+            max_attempts=rec.max_attempts,
+        )
+        return bool(dispatched)
 
     # ------------------------------------------------------------------
     # Get results for replying
@@ -590,7 +748,15 @@ class TaskManager:
     def find_failed_task(self, task_id: str) -> TaskRecord | None:
         """Find a terminal task by task_id (for retry or inspection)."""
         for r in self._records:
-            if r.task_id == task_id and r.status in ("done", "failed", "timeout", "needs-input", "blocked"):
+            if r.task_id == task_id and r.status in (
+                "done",
+                "completed_unverified",
+                "verified",
+                "failed",
+                "timeout",
+                "needs-input",
+                "blocked",
+            ):
                 return r
         return None
 
@@ -707,6 +873,14 @@ class TaskManager:
                     rec["failure_class"] = ""
                 if "timeout_alerted_at" not in rec:
                     rec["timeout_alerted_at"] = ""
+                if "task_type" not in rec:
+                    rec["task_type"] = ""
+                if "verification" not in rec:
+                    rec["verification"] = None
+                if "outcome_verified" not in rec:
+                    rec["outcome_verified"] = False
+                if "verification_method" not in rec:
+                    rec["verification_method"] = ""
                 rec["status"] = normalize_task_status(rec.get("status", ""))
                 records.append(TaskRecord(**rec))
             return records
@@ -747,15 +921,51 @@ class TaskManager:
             with transaction() as conn:
                 repo = ControlRepository(conn)
                 repo.overlay_task_record(asdict(rec))
+                if normalize_task_status(rec.status) in {"verified", "completed_unverified", "done"}:
+                    repo.enqueue_request_verify(
+                        {
+                            "id": rec.task_id,
+                            "user_id": rec.user_id,
+                            "status": normalize_task_status(rec.status),
+                            "title": rec.content_preview or rec.task_id,
+                            "result_summary": rec.summary,
+                            "task_type": rec.task_type,
+                            "verification": rec.verification if isinstance(rec.verification, dict) else None,
+                            "outcome_verified": rec.outcome_verified,
+                        }
+                    )
                 repo.record_task_event(
                     rec.user_id,
                     rec.task_id,
                     event_type,
                     status=normalize_task_status(rec.status),
-                    payload={"pid": rec.pid, "workspace": rec.workspace, "summary": rec.summary},
+                    payload={
+                        "pid": rec.pid,
+                        "workspace": rec.workspace,
+                        "summary": rec.summary,
+                        "task_type": rec.task_type,
+                        "outcome_verified": rec.outcome_verified,
+                        "verification_method": rec.verification_method,
+                    },
                 )
         except Exception as e:
             log.warning("Control DB task mirror failed for %s: %s", rec.task_id, e)
+
+    def _append_trace(self, rec: TaskRecord, event_type: str, payload: dict | None = None) -> None:
+        try:
+            from runtime.trace import append_trace
+
+            base_payload = {
+                "workflow_id": rec.workflow_id,
+                "status": normalize_task_status(rec.status),
+                "attempt_count": rec.attempt_count,
+                "max_attempts": rec.max_attempts,
+            }
+            if payload:
+                base_payload.update(payload)
+            append_trace(rec.task_id, event_type, base_payload)
+        except Exception as e:
+            log.debug("Trace append failed for %s: %s", rec.task_id, e)
 
     def _mirror_task_status(self, user_id: str, task_id: str, status: str, *, event_type: str) -> None:
         if not CONTROL_RUNTIME_DB_ENABLED:
@@ -791,7 +1001,7 @@ class TaskManager:
             from evolution import record_task_outcome
 
             for rec in records:
-                if rec.status in ("done", "failed", "timeout"):
+                if rec.status in ("done", "verified", "completed_unverified", "failed", "timeout"):
                     agent = rec.tags[0] if rec.tags else "general"
                     record_task_outcome(
                         task_id=rec.task_id,

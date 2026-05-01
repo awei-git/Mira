@@ -1,0 +1,30 @@
+source: docs/mira-next.md §9
+updated: "2026-05-01"
+criteria:
+  - {id: 1, tier: A, owner: "Claude Code session", metric: "iPhone Mira app 7-day lost task count", target: "0"}
+  - {id: 2, tier: A, owner: "Mira", metric: "publish bypassing writer", target: "0"}
+  - {id: 3, tier: A, owner: "Mira", metric: "auth silent failure >5m", target: "0"}
+  - {id: 4, tier: B, owner: "Mira", metric: "article to podcast completion", target: ">=90%"}
+  - {id: 5, tier: B, owner: "Mira", metric: "daily report required sections", target: "100%"}
+  - {id: 6, tier: B, owner: "Mira", metric: "eligible true findings auto-fix-verified", target: ">=80% and >=5 representative fixes"}
+  - {id: 7, tier: B, owner: "Mira", metric: "user request 48h auto-verify", target: ">=80%"}
+  - {id: 8, tier: B, owner: "Claude Code session", metric: "writer prompt retrieved skill/memory hit", target: ">=95%"}
+  - {id: 9, tier: B, owner: "Mira", metric: "external_learn rounds", target: ">=1"}
+  - {id: 10, tier: B, owner: "Mira", metric: "external source proposals captured", target: "captured, no implementation-rate target"}
+  - {id: 11, tier: B, owner: "Claude Code session", metric: "internal verified ratio", target: ">=80%"}
+  - {id: 12, tier: C, owner: "Claude Code session", metric: "LLM router shadow correction", target: ">=80%"}
+  - {id: 13, tier: C, owner: "Claude Code session", metric: "DBOS crash resume", target: ">=95%"}
+  - {id: 14, tier: C, owner: "Claude Code session", metric: "task replay coverage", target: "100%"}
+  - {id: 15, tier: A, owner: "Mira", metric: "substack missed days during V2", target: "0"}
+  - {id: 16, tier: C, owner: "Mira", metric: "subscriber growth vs V2 start", target: "flat or up"}
+  - {id: 17, tier: B, owner: "Mira", metric: "monthly LLM cost vs baseline + oMLX Tier 0 pilot", target: "not above baseline; oMLX pilot >= 1 task type"}
+  - {id: 18, tier: B, owner: "Claude Code session", metric: "Memory real data/read/audit/degraded", target: "all pass"}
+  - {id: 19, tier: B, owner: "Claude Code session", metric: "self-evolution V2 scope", target: "stage 1-4 + 4-file + dry-run schema"}
+  - {id: 20, tier: A, owner: "WA", metric: "identity_core modifications", target: "0"}
+  - {id: 21, tier: A, owner: "Mira", metric: "hourly backup + DR drill", target: "pass, RTO <=4h"}
+  - {id: 22, tier: B, owner: "WA", metric: "operator runbooks", target: "all merged and drillable"}
+  - {id: 23, tier: A, owner: "Mira", metric: "confidential/regulated leak", target: "0"}
+  - {id: 24, tier: B, owner: "Claude Code session", metric: "locks and concurrency", target: ">=90% test pass, 0 race incidents"}
+  - {id: 25, tier: B, owner: "Claude Code session", metric: "migrations", target: ">=3 migrations + rollback drill + CI"}
+  - {id: 26, tier: B, owner: "Mira", metric: "voice/editorial base", target: "positive guide + calendar + outcomes pipeline"}
+  - {id: 27, tier: enforcement, owner: "Claude Code session", metric: "plan self-enforcement", target: "all pass"}

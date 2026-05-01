@@ -6,6 +6,7 @@ Extracted from task_worker.py. May use task_support helpers.
 import json
 import logging
 import sys
+from importlib import import_module
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +20,8 @@ if str(_AGENTS_DIR / "general") not in sys.path:
 
 from config import MIRA_DIR, TASKS_DIR
 from execution.runtime_contract import derive_workflow_id, normalize_task_status
+from runtime.task_types import resolve_task_type
+from runtime.trace import append_trace
 from publish.preflight import verify_artifact
 from llm import claude_think, ClaudeTimeoutError
 from memory.soul import save_episode, save_knowledge_note
@@ -269,6 +272,8 @@ def _normalize_verification_payload(verification: dict | None) -> dict:
         "checks": [],
         "proxy_checked": str(verification.get("proxy_checked", ""))[:200],
         "property_assumed": str(verification.get("property_assumed", ""))[:200],
+        "task_type": str(verification.get("task_type", ""))[:120],
+        "expected_observable_outcome": str(verification.get("expected_observable_outcome", ""))[:500],
         "unverified_assumptions": [
             str(u)[:100] for u in (verification.get("unverified_assumptions") or []) if isinstance(u, str)
         ][:10],
@@ -287,12 +292,58 @@ def _normalize_verification_payload(verification: dict | None) -> dict:
     return normalized
 
 
-def _step_verification_payload(workspace: Path, status: str) -> dict:
+def _run_registry_verifier(
+    workspace: Path,
+    task_id: str,
+    status: str,
+    *,
+    tags: list[str] | None = None,
+    agent: str = "",
+) -> dict:
+    spec = resolve_task_type(tags=tags, agent=agent, status=status)
+    try:
+        module_name, func_name = spec.verifier.rsplit(".", 1)
+        verifier = getattr(import_module(module_name), func_name)
+        payload = verifier(
+            workspace=workspace,
+            task_id=task_id,
+            status=status,
+            task_type=spec.name,
+            expected_observable_outcome=spec.expected_observable_outcome,
+            min_size_bytes=spec.min_size_bytes,
+        )
+        if isinstance(payload, dict):
+            payload.setdefault("task_type", spec.name)
+            payload.setdefault("expected_observable_outcome", spec.expected_observable_outcome)
+            return payload
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "verified": False,
+            "artifact_type": "",
+            "target": "",
+            "summary": f"verifier {spec.verifier} failed: {exc}",
+            "checks": [],
+            "proxy_checked": "",
+            "property_assumed": spec.expected_observable_outcome,
+            "expected_observable_outcome": spec.expected_observable_outcome,
+            "task_type": spec.name,
+            "unverified_assumptions": [],
+        }
+    return _verification_not_run(f"verifier {spec.verifier} returned no payload")
+
+
+def _step_verification_payload(
+    workspace: Path,
+    task_id: str,
+    status: str,
+    *,
+    tags: list[str] | None = None,
+    agent: str = "",
+) -> dict:
     if status not in ("done", "needs-input"):
         return _verification_not_run("verification not required for this status")
-    output_file = workspace / "output.md"
-    verify = verify_artifact("file", str(output_file), {"min_size": 1})
-    return _verification_payload_from_verify(verify, target=str(output_file))
+    return _run_registry_verifier(workspace, task_id, status, tags=tags, agent=agent)
 
 
 def _workspace_relative_artifact_paths(metadata: dict | None) -> list[Path]:
@@ -359,7 +410,7 @@ def _collect_result_artifacts(workspace: Path, metadata: dict | None = None) -> 
 
 
 def _infer_failure_class(status: str, verification: dict) -> str:
-    if status == "done":
+    if status in ("done", "verified", "completed_unverified"):
         return ""
     if status == "needs-input":
         return "needs_input"
@@ -377,8 +428,10 @@ def _infer_failure_class(status: str, verification: dict) -> str:
 
 
 def _infer_next_action(status: str, failure_class: str) -> str:
-    if status == "done":
+    if status in ("done", "verified"):
         return "proceed-to-next-step"
+    if status == "completed_unverified":
+        return "run-verifier-or-inspect-artifacts"
     if status == "needs-input":
         return "await-user-input"
     if failure_class == "preflight_blocked":
@@ -476,6 +529,9 @@ def _canonicalize_result_payload(
         _vmethod = ""
     result["outcome_verified"] = _outcome_verified
     result["verification_method"] = _vmethod
+    result["task_type"] = str(normalized_verification.get("task_type") or "")
+    if normalized_status == "done":
+        result["status"] = "verified" if _outcome_verified else "completed_unverified"
     return result
 
 
@@ -513,8 +569,26 @@ def _write_result(
         encoding="utf-8",
     )
     tmp_path.rename(result_path)
+    try:
+        append_trace(
+            task_id,
+            "task.result_written",
+            {
+                "status": status,
+                "summary": summary[:500],
+                "agent": agent or "",
+                "workflow_id": result.get("workflow_id", ""),
+                "task_type": result.get("task_type", ""),
+                "outcome_verified": result.get("outcome_verified", False),
+                "verification_method": result.get("verification_method", ""),
+                "verification": result.get("verification", {}),
+                "artifacts_produced": result.get("artifacts_produced", []),
+            },
+        )
+    except Exception as e:
+        log.debug("Trace append failed for %s: %s", task_id, e)
 
-    if status == "done":
+    if status in ("done", "verified"):
         output_path = workspace / "output.md"
         if not output_path.exists() or output_path.stat().st_size == 0:
             log.warning(
@@ -533,7 +607,7 @@ def _write_result(
     # (potentially minutes) — is handed to a detached subprocess so the
     # worker process can exit and free its dispatch slot. See
     # `post_hooks.spawn_post_hooks`.
-    if status in ("done", "completed", "failed"):
+    if status in ("done", "verified", "completed_unverified", "completed", "failed"):
         try:
             item_file_path = _item_file(task_id)
             task_file = TASKS_DIR / f"{task_id}.json"
@@ -619,7 +693,14 @@ def _ensure_step_result(
             existing = json.loads(result_file.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             existing = {}
-        verification_payload = _step_verification_payload(workspace, str(existing.get("status", "")))
+        existing_tags = existing.get("tags") if isinstance(existing.get("tags"), list) else [agent]
+        verification_payload = _step_verification_payload(
+            workspace,
+            task_id,
+            str(existing.get("status", "")),
+            tags=existing_tags,
+            agent=agent,
+        )
         verified = _verify_step_artifact(
             workspace,
             task_id,
@@ -655,7 +736,13 @@ def _ensure_step_result(
         summary = result_text.split(":", 1)[1].strip()
         if not output_changed:
             output_file.write_text(summary, encoding="utf-8")
-        verification_payload = _step_verification_payload(workspace, "needs-input")
+        verification_payload = _step_verification_payload(
+            workspace,
+            task_id,
+            "needs-input",
+            tags=[agent],
+            agent=agent,
+        )
         if not _verify_step_artifact(
             workspace,
             task_id,
@@ -690,7 +777,13 @@ def _ensure_step_result(
 
     if summary:
         tags = smart_classify(request, summary)
-        verification_payload = _step_verification_payload(workspace, "done")
+        verification_payload = _step_verification_payload(
+            workspace,
+            task_id,
+            "done",
+            tags=tags,
+            agent=agent,
+        )
         if not _verify_step_artifact(
             workspace,
             task_id,

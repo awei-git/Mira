@@ -26,6 +26,8 @@
    关键架构与产品决策日志。
 7. [runbooks/](./runbooks/)
    操作手册（operator dashboard、restore drill）。
+8. [dev-box-architecture-audit-2026-05-01.md](./dev-box-architecture-audit-2026-05-01.md)
+   当前 Mac Studio / external SSD / oMLX storage 状态；记录 dev box 与原始 family-ai-system 设计的偏移。
 
 使用规则：
 

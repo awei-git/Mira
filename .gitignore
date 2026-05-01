@@ -3,8 +3,16 @@ secrets.yml
 config.yml
 sources.json
 
-# Data directory — ALL runtime data, completely ignored
-data/
+# Data directory — runtime data is ignored by default. The V2 immutable
+# identity anchor is intentionally versioned because startup verifies it.
+data/*
+!data/soul/
+data/soul/*
+!data/soul/identity_core.md
+!data/soul/.identity_hash
+!data/v2_status/
+!data/v2_status/*.md
+!data/v2_status/*.yaml
 
 # Legacy locations
 agents/super/notes_inbox/
@@ -33,11 +41,14 @@ comparison/
 # Sync state files
 *.sync.json
 .notes_sync.json
+lib/soul/scorecards/*.json
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+.coverage
+coverage.xml
 
 # macOS
 .DS_Store

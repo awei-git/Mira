@@ -170,6 +170,7 @@ def test_artifact_routes_allow_listed_shared_sections_only(monkeypatch, tmp_path
 
 def test_reply_requires_existing_item_and_does_not_enqueue_command(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "ICLOUD_COMMAND_FALLBACK_ENABLED", True)
 
     resp = client.post("/api/ang/items/missing/reply", json={"content": "hello"})
 
@@ -237,6 +238,84 @@ def test_tasks_endpoint_uses_control_projection_without_mutating_bridge(monkeypa
     assert calls["sync"][0] == "ang"
     assert calls["list"] == ("ang", False, 200, 20)
     assert item_path.read_text(encoding="utf-8") == before
+    assert _command_files(tmp_path) == []
+
+
+def test_task_detail_endpoint_uses_control_projection(monkeypatch, tmp_path: Path):
+    import control.db as control_db
+    import control.repository as control_repository
+
+    client = _make_client(monkeypatch, tmp_path)
+    calls = {}
+
+    class FakeTx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def get_item(self, user_id, task_id, messages_per_item=None):
+            calls["get"] = (user_id, task_id, messages_per_item)
+            return {"id": task_id, "type": "request", "title": "Existing task", "status": "working"}
+
+    def fake_sync(user_id, *, user_dir, task_status_file):
+        calls["sync"] = (user_id, user_dir, task_status_file)
+
+    monkeypatch.setattr(control_repository, "sync_user_from_legacy", fake_sync)
+    monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
+
+    resp = client.get("/api/ang/tasks/req_123?messages_per_item=12")
+
+    assert resp.status_code == 200
+    assert resp.json()["item"]["id"] == "req_123"
+    assert calls["sync"][0] == "ang"
+    assert calls["get"] == ("ang", "req_123", 12)
+    assert _command_files(tmp_path) == []
+
+
+def test_threads_endpoint_uses_control_projection(monkeypatch, tmp_path: Path):
+    import control.db as control_db
+    import control.repository as control_repository
+
+    client = _make_client(monkeypatch, tmp_path)
+    calls = {}
+
+    class FakeTx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def list_items(self, user_id, *, include_archived=False, limit=200, messages_per_item=None):
+            calls["list"] = (user_id, include_archived, limit, messages_per_item)
+            return [{"id": "req_123", "type": "request", "title": "Existing task", "status": "working"}]
+
+    def fake_sync(user_id, *, user_dir, task_status_file):
+        calls["sync"] = (user_id, user_dir, task_status_file)
+
+    monkeypatch.setattr(control_repository, "sync_user_from_legacy", fake_sync)
+    monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
+
+    resp = client.get("/api/ang/threads?limit=10&messages_per_item=3")
+
+    assert resp.status_code == 200
+    assert resp.json()["threads"] == [
+        {"id": "req_123", "type": "request", "title": "Existing task", "status": "working"}
+    ]
+    assert calls["sync"][0] == "ang"
+    assert calls["list"] == ("ang", False, 10, 3)
     assert _command_files(tmp_path) == []
 
 
@@ -319,6 +398,56 @@ def test_tasks_write_endpoint_projects_to_db_and_exports_compat(monkeypatch, tmp
     item_path = tmp_path / "bridge" / "users" / "ang" / "items" / "req_abc123.json"
     assert item_path.exists()
     assert json.loads(item_path.read_text(encoding="utf-8"))["status"] == "queued"
+
+
+def test_legacy_request_endpoint_uses_canonical_api_when_icloud_commands_disabled(monkeypatch, tmp_path: Path):
+    import control.db as control_db
+    import control.repository as control_repository
+
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
+    monkeypatch.setattr(server, "ICLOUD_COMMAND_FALLBACK_ENABLED", False)
+    calls = {}
+
+    class FakeTx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def create_task(self, **kwargs):
+            calls["create_task"] = kwargs
+            return {
+                "id": kwargs["task_id"],
+                "type": "request",
+                "title": kwargs["title"],
+                "status": "queued",
+                "tags": kwargs["tags"],
+                "origin": "user",
+                "pinned": False,
+                "quick": kwargs["quick"],
+                "parent_id": None,
+                "created_at": kwargs["created_at"],
+                "updated_at": kwargs["created_at"],
+                "messages": [],
+                "error": None,
+                "result_path": None,
+            }
+
+    monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
+
+    resp = client.post("/api/ang/request", json={"title": "Old client", "content": "do it"})
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "queued"
+    assert calls["create_task"]["task_id"].startswith("req_")
+    assert _command_files(tmp_path) == []
 
 
 def test_task_pin_endpoint_updates_db_and_compat_item(monkeypatch, tmp_path: Path):
@@ -435,8 +564,151 @@ def test_task_retry_requires_runtime_db(monkeypatch, tmp_path: Path):
     assert resp.json()["detail"] == "Control runtime DB dispatch is disabled"
 
 
+def test_task_retry_endpoint_requeues_task(monkeypatch, tmp_path: Path):
+    import control.db as control_db
+    import control.repository as control_repository
+
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
+    monkeypatch.setattr(server, "CONTROL_RUNTIME_DB_ENABLED", True)
+    calls = {}
+
+    class FakeTaskManager:
+        def reset_for_retry(self, task_id):
+            calls["reset_for_retry"] = task_id
+            return object()
+
+    class FakeTx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def update_task_status(self, user_id, task_id, status, **kwargs):
+            calls["update_task_status"] = (user_id, task_id, status, kwargs)
+            return {
+                "id": task_id,
+                "type": "request",
+                "title": "Retry me",
+                "status": "queued",
+                "tags": [],
+                "origin": "user",
+                "pinned": False,
+                "quick": False,
+                "parent_id": None,
+                "created_at": "2026-04-30T00:00:00Z",
+                "updated_at": "2026-04-30T00:00:01Z",
+                "messages": [],
+                "error": None,
+                "result_path": None,
+            }
+
+    monkeypatch.setattr(server, "_task_manager", lambda: FakeTaskManager())
+    monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
+
+    resp = client.post("/api/ang/tasks/req_retry/retry")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "queued"
+    assert calls["reset_for_retry"] == "req_retry"
+    assert calls["update_task_status"][0:3] == ("ang", "req_retry", "queued")
+    assert calls["update_task_status"][3]["summary"] == "Retry requested"
+
+
+def test_v2_status_card_creates_app_visible_item(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+
+    resp = client.post(
+        "/api/ang/v2-status/cards",
+        json={
+            "card_type": "decision",
+            "title": "Cutover ready",
+            "body": "Shadow passed. Reply GO / WAIT / ABORT.",
+            "reply_options": ["GO", "WAIT", "ABORT"],
+            "default_action": "WAIT",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    item = body["item"]
+    assert body["status"] == "needs-input"
+    assert item["type"] == "v2_status"
+    assert item["channel"] == "v2_status"
+    assert item["card_type"] == "decision"
+    assert item["reply_options"] == ["GO", "WAIT", "ABORT"]
+    item_path = tmp_path / "bridge" / "users" / "ang" / "items" / f"{body['item_id']}.json"
+    assert item_path.exists()
+    manifest = json.loads((tmp_path / "bridge" / "users" / "ang" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["items"][0]["id"] == body["item_id"]
+
+
+def test_v2_status_reply_validates_options_and_records_command(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+    created = client.post(
+        "/api/ang/v2-status/cards",
+        json={
+            "card_type": "decision",
+            "title": "Cutover ready",
+            "body": "Shadow passed.",
+            "reply_options": ["GO", "WAIT", "ABORT"],
+        },
+    ).json()
+    card_id = created["item_id"]
+
+    bad = client.post(f"/api/ang/v2-status/cards/{card_id}/reply", json={"reply": "MAYBE"})
+    assert bad.status_code == 422
+
+    ok = client.post(f"/api/ang/v2-status/cards/{card_id}/reply", json={"reply": "go"})
+    assert ok.status_code == 200
+    item = ok.json()["item"]
+    assert item["status"] == "done"
+    assert item["messages"][-1]["kind"] == "v2_status_reply"
+    assert item["messages"][-1]["content"] == "GO"
+    cmd = json.loads(_command_files(tmp_path)[0].read_text(encoding="utf-8"))
+    assert cmd["type"] == "v2_status_reply"
+    assert cmd["reply"] == "GO"
+    assert cmd["item_id"] == card_id
+
+
+def test_start_mdns_advertisement_uses_mira_service(monkeypatch):
+    calls = []
+
+    class FakeProcess:
+        def terminate(self):
+            calls.append(("terminate",))
+
+    monkeypatch.setattr(server, "_mdns_process", None)
+    monkeypatch.setattr(server, "MDNS_ADVERTISE_ENABLED", True)
+    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/bin/dns-sd" if name == "dns-sd" else None)
+    monkeypatch.setattr(server.subprocess, "DEVNULL", object())
+    monkeypatch.setattr(server.subprocess, "run", lambda *args, **kwargs: None)
+
+    def fake_popen(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+
+    server._start_mdns_advertisement()
+
+    assert calls[0][0][:5] == ["/usr/bin/dns-sd", "-R", "Mira", "_mira._tcp", "local"]
+    assert str(server.WEBGUI_PORT) in calls[0][0]
+    assert "path=/api/heartbeat" in calls[0][0]
+
+    server._stop_mdns_advertisement()
+    assert calls[-1] == ("terminate",)
+
+
 def test_share_requires_existing_item_and_does_not_enqueue_command(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "ICLOUD_COMMAND_FALLBACK_ENABLED", True)
 
     resp = client.post("/api/ang/items/missing/share")
 
@@ -447,6 +719,7 @@ def test_share_requires_existing_item_and_does_not_enqueue_command(monkeypatch, 
 
 def test_reply_enqueues_command_for_existing_item(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "ICLOUD_COMMAND_FALLBACK_ENABLED", True)
     item_path = tmp_path / "bridge" / "users" / "ang" / "items" / "req_123.json"
     item_path.write_text(
         json.dumps(

@@ -9,6 +9,7 @@ import psycopg2.extras
 
 from execution.runtime_contract import normalize_task_status
 
+from .audit import AuditLogger
 from .db import dict_cursor, schema_name, transaction
 from .projection import item_from_rows
 
@@ -46,6 +47,9 @@ def _is_human_review_draft(item_id: str, item: dict | None = None) -> bool:
     return "x_reply" in tags or "needs-human" in tags
 
 
+_BACKLOG_PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+
 class ControlRepository:
     def __init__(self, conn):
         self.conn = conn
@@ -54,6 +58,7 @@ class ControlRepository:
     def _record_event(
         self, task_id: str, user_id: str, event_type: str, *, status: str | None = None, payload=None
     ) -> int:
+        payload = payload or {}
         with self.conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -61,9 +66,17 @@ class ControlRepository:
                 VALUES (%s, %s, %s, %s, %s::jsonb, %s)
                 RETURNING id
                 """,
-                (task_id, user_id, event_type, status, json.dumps(payload or {}), _utc_iso()),
+                (task_id, user_id, event_type, status, json.dumps(payload), _utc_iso()),
             )
-            return int(cur.fetchone()[0])
+            event_id = int(cur.fetchone()[0])
+        AuditLogger(self.conn).append(
+            event_type,
+            task_id=task_id,
+            workflow_id=task_id,
+            user_id=user_id,
+            payload={"status": status, **payload},
+        )
+        return event_id
 
     def record_task_event(
         self,
@@ -87,6 +100,10 @@ class ControlRepository:
         error_message: str | None = None,
         agent_message: str | None = None,
         message_kind: str = "text",
+        verification: dict | None = None,
+        task_type: str | None = None,
+        outcome_verified: bool | None = None,
+        verification_method: str | None = None,
     ) -> dict | None:
         now = _utc_iso()
         normalized = normalize_task_status(status) or status
@@ -98,14 +115,18 @@ class ControlRepository:
                 SET status = %s,
                     updated_at = %s,
                     completed_at = CASE
-                        WHEN %s IN ('done', 'failed', 'timeout', 'blocked', 'needs-input') THEN COALESCE(completed_at, %s)
+                        WHEN %s IN ('done', 'verified', 'completed_unverified', 'failed', 'timeout', 'blocked', 'needs-input') THEN COALESCE(completed_at, %s)
                         WHEN %s IN ('queued', 'dispatched', 'running') THEN NULL
                         ELSE completed_at
                     END,
                     error_code = CASE WHEN %s THEN %s ELSE NULL END,
                     error_message = CASE WHEN %s THEN %s ELSE NULL END,
                     retryable = %s,
-                    result_summary = COALESCE(%s, result_summary)
+                    result_summary = COALESCE(%s, result_summary),
+                    verification = COALESCE(%s::jsonb, verification),
+                    task_type = COALESCE(%s, task_type),
+                    outcome_verified = COALESCE(%s, outcome_verified),
+                    verification_method = COALESCE(%s, verification_method)
                 WHERE id = %s AND user_id = %s
                 RETURNING id
                 """,
@@ -121,13 +142,25 @@ class ControlRepository:
                     error_message or (summary if failed else None),
                     failed,
                     summary,
+                    json.dumps(verification) if verification is not None else None,
+                    task_type,
+                    outcome_verified,
+                    verification_method,
                     task_id,
                     user_id,
                 ),
             )
             if cur.fetchone() is None:
                 return None
-            if normalized in ("done", "failed", "timeout", "blocked", "needs-input"):
+            if normalized in (
+                "done",
+                "verified",
+                "completed_unverified",
+                "failed",
+                "timeout",
+                "blocked",
+                "needs-input",
+            ):
                 cur.execute(
                     f"""
                     DELETE FROM {self.schema}.messages
@@ -304,6 +337,210 @@ class ControlRepository:
         self._record_event(task_id, user_id, "task.archived", status="archived")
         return self.get_item(user_id, task_id)
 
+    def upsert_backlog_item(
+        self,
+        *,
+        item_id: str,
+        user_id: str,
+        kind: str,
+        executor: str,
+        title: str,
+        description: str,
+        task_id: str | None = None,
+        status: str = "proposed",
+        priority: str = "medium",
+        payload: dict | None = None,
+        verification_summary: str | None = None,
+        last_error: str | None = None,
+    ) -> dict:
+        now = _utc_iso()
+        normalized_priority = priority if priority in _BACKLOG_PRIORITY_ORDER else "medium"
+        with dict_cursor(self.conn) as cur:
+            cur.execute(
+                f"""
+                INSERT INTO {self.schema}.backlog_items (
+                    id, user_id, task_id, kind, executor, status, priority, title, description,
+                    payload, created_at, updated_at, verification_summary, last_error
+                )
+                VALUES (
+                    %(id)s, %(user_id)s, %(task_id)s, %(kind)s, %(executor)s, %(status)s,
+                    %(priority)s, %(title)s, %(description)s, %(payload)s::jsonb, %(now)s,
+                    %(now)s, %(verification_summary)s, %(last_error)s
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    user_id = EXCLUDED.user_id,
+                    task_id = EXCLUDED.task_id,
+                    kind = EXCLUDED.kind,
+                    executor = EXCLUDED.executor,
+                    status = CASE
+                        WHEN {self.schema}.backlog_items.status IN ('verified', 'rejected')
+                            THEN {self.schema}.backlog_items.status
+                        ELSE EXCLUDED.status
+                    END,
+                    priority = EXCLUDED.priority,
+                    title = EXCLUDED.title,
+                    description = EXCLUDED.description,
+                    payload = EXCLUDED.payload,
+                    updated_at = EXCLUDED.updated_at,
+                    verification_summary = COALESCE(EXCLUDED.verification_summary, {self.schema}.backlog_items.verification_summary),
+                    last_error = COALESCE(EXCLUDED.last_error, {self.schema}.backlog_items.last_error)
+                RETURNING *
+                """,
+                {
+                    "id": item_id,
+                    "user_id": user_id,
+                    "task_id": task_id,
+                    "kind": kind,
+                    "executor": executor,
+                    "status": status,
+                    "priority": normalized_priority,
+                    "title": title,
+                    "description": description,
+                    "payload": json.dumps(payload or {}),
+                    "now": now,
+                    "verification_summary": verification_summary,
+                    "last_error": last_error,
+                },
+            )
+            row = dict(cur.fetchone())
+        AuditLogger(self.conn).append(
+            "backlog.upserted",
+            task_id=task_id,
+            user_id=user_id,
+            payload={"backlog_id": item_id, "kind": kind, "executor": executor, "status": status},
+        )
+        return row
+
+    def enqueue_request_verify(self, task: dict) -> dict | None:
+        task_id = str(task.get("id") or "").strip()
+        user_id = str(task.get("user_id") or "").strip()
+        if not task_id or not user_id:
+            return None
+        status = str(task.get("status") or "")
+        if status not in {"verified", "completed_unverified", "done"}:
+            return None
+        verification = task.get("verification") if isinstance(task.get("verification"), dict) else {}
+        verified = bool(task.get("outcome_verified")) or bool(verification.get("verified"))
+        backlog_status = "verified" if verified else "proposed"
+        summary = str(verification.get("summary") or task.get("result_summary") or "")[:500]
+        return self.upsert_backlog_item(
+            item_id=f"request_verify:{task_id}",
+            user_id=user_id,
+            task_id=task_id,
+            kind="request_verify",
+            executor="request_verify.apply",
+            status=backlog_status,
+            priority="high" if not verified else "medium",
+            title=f"Verify request outcome: {task.get('title') or task_id}",
+            description="Confirm that the user-visible outcome matches the original request.",
+            payload={
+                "task_id": task_id,
+                "task_status": status,
+                "task_type": task.get("task_type") or "",
+                "expected_observable_outcome": verification.get("expected_observable_outcome") or "",
+                "verification": verification,
+            },
+            verification_summary=summary if verified else None,
+            last_error=None if verified else summary,
+        )
+
+    def claim_backlog_item(self, executor: str) -> dict | None:
+        now = _utc_iso()
+        with dict_cursor(self.conn) as cur:
+            cur.execute(
+                f"""
+                SELECT *
+                FROM {self.schema}.backlog_items
+                WHERE status = 'proposed' AND executor = %s
+                ORDER BY
+                    CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                    created_at ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+                """,
+                (executor,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            cur.execute(
+                f"""
+                UPDATE {self.schema}.backlog_items
+                SET status = 'in_progress', claimed_at = %s, updated_at = %s, last_error = NULL
+                WHERE id = %s
+                RETURNING *
+                """,
+                (now, now, row["id"]),
+            )
+            claimed = dict(cur.fetchone())
+        AuditLogger(self.conn).append(
+            "backlog.claimed",
+            task_id=claimed.get("task_id"),
+            user_id=claimed.get("user_id"),
+            payload={"backlog_id": claimed["id"], "executor": executor},
+        )
+        return claimed
+
+    def finish_backlog_item(
+        self,
+        item_id: str,
+        *,
+        success: bool,
+        verification_summary: str = "",
+        last_error: str = "",
+    ) -> bool:
+        now = _utc_iso()
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {self.schema}.backlog_items
+                SET status = %s,
+                    completed_at = %s,
+                    updated_at = %s,
+                    verification_summary = %s,
+                    last_error = %s
+                WHERE id = %s
+                RETURNING task_id, user_id
+                """,
+                (
+                    "verified" if success else "rejected",
+                    now,
+                    now,
+                    verification_summary,
+                    "" if success else last_error,
+                    item_id,
+                ),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return False
+        AuditLogger(self.conn).append(
+            "backlog.finished",
+            task_id=row[0],
+            user_id=row[1],
+            payload={"backlog_id": item_id, "success": success},
+        )
+        return True
+
+    def list_backlog_items(self, user_id: str, *, status: str | None = None, limit: int = 100) -> list[dict]:
+        where = "user_id = %s"
+        params: list[Any] = [user_id]
+        if status:
+            where += " AND status = %s"
+            params.append(status)
+        with dict_cursor(self.conn) as cur:
+            cur.execute(
+                f"""
+                SELECT *
+                FROM {self.schema}.backlog_items
+                WHERE {where}
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """,
+                params + [limit],
+            )
+            return [dict(row) for row in cur.fetchall()]
+
     def upsert_bridge_item(self, user_id: str, item: dict) -> None:
         item_id = str(item.get("id") or "").strip()
         if not item_id:
@@ -416,14 +653,16 @@ class ControlRepository:
                 INSERT INTO {self.schema}.tasks (
                     id, user_id, type, title, status, origin, tags, created_at, updated_at,
                     started_at, completed_at, worker_pid, workspace, workflow_id, attempt_count,
-                    max_attempts, failure_class, error_code, error_message, retryable, result_summary
+                    max_attempts, failure_class, error_code, error_message, retryable, result_summary,
+                    task_type, verification, outcome_verified, verification_method
                 )
                 VALUES (
                     %(id)s, %(user_id)s, 'request', %(title)s, %(status)s, 'user',
                     %(tags)s::jsonb, %(created_at)s, %(updated_at)s, %(started_at)s, %(completed_at)s,
                     %(worker_pid)s, %(workspace)s, %(workflow_id)s, %(attempt_count)s,
                     %(max_attempts)s, %(failure_class)s, %(error_code)s, %(error_message)s,
-                    %(retryable)s, %(summary)s
+                    %(retryable)s, %(summary)s, %(task_type)s, %(verification)s::jsonb,
+                    %(outcome_verified)s, %(verification_method)s
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     user_id = COALESCE(EXCLUDED.user_id, {self.schema}.tasks.user_id),
@@ -440,7 +679,11 @@ class ControlRepository:
                     error_code = EXCLUDED.error_code,
                     error_message = EXCLUDED.error_message,
                     retryable = EXCLUDED.retryable,
-                    result_summary = COALESCE(EXCLUDED.result_summary, {self.schema}.tasks.result_summary)
+                    result_summary = COALESCE(EXCLUDED.result_summary, {self.schema}.tasks.result_summary),
+                    task_type = COALESCE(EXCLUDED.task_type, {self.schema}.tasks.task_type),
+                    verification = COALESCE(EXCLUDED.verification, {self.schema}.tasks.verification),
+                    outcome_verified = EXCLUDED.outcome_verified,
+                    verification_method = COALESCE(EXCLUDED.verification_method, {self.schema}.tasks.verification_method)
                 """,
                 {
                     "id": task_id,
@@ -462,6 +705,12 @@ class ControlRepository:
                     "error_message": rec.get("summary") if failed else None,
                     "retryable": failed,
                     "summary": rec.get("summary") or None,
+                    "task_type": rec.get("task_type") or None,
+                    "verification": (
+                        json.dumps(rec.get("verification")) if isinstance(rec.get("verification"), dict) else None
+                    ),
+                    "outcome_verified": bool(rec.get("outcome_verified", False)),
+                    "verification_method": rec.get("verification_method") or None,
                 },
             )
 
@@ -547,7 +796,60 @@ class ControlRepository:
                 items.append(item)
             return items
 
-    def get_item(self, user_id: str, task_id: str) -> dict | None:
+    def claim_task_for_dispatch(self, user_id: str, task_id: str) -> bool:
+        """Atomically claim a queued task before spawning a worker.
+
+        The worker mirror will update pid/workspace immediately after spawn.
+        This pre-claim closes the overlap window where two launchd cycles can
+        list the same queued task and both dispatch it.
+        """
+        now = _utc_iso()
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {self.schema}.tasks
+                SET status = 'dispatched',
+                    updated_at = %s,
+                    started_at = COALESCE(started_at, %s),
+                    heartbeat_at = %s,
+                    attempt_count = GREATEST(attempt_count, 1)
+                WHERE id = %s
+                  AND user_id = %s
+                  AND status = 'queued'
+                  AND origin = 'user'
+                RETURNING id
+                """,
+                (now, now, now, task_id, user_id),
+            )
+            claimed = cur.fetchone() is not None
+        if claimed:
+            self._record_event(task_id, user_id, "task.dispatch_claimed", status="dispatched")
+        return claimed
+
+    def release_dispatch_claim(self, user_id: str, task_id: str, *, reason: str) -> None:
+        """Return a pre-claimed task to queued when worker spawn does not happen."""
+        now = _utc_iso()
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {self.schema}.tasks
+                SET status = 'queued',
+                    updated_at = %s,
+                    started_at = NULL,
+                    heartbeat_at = NULL,
+                    error_message = %s
+                WHERE id = %s
+                  AND user_id = %s
+                  AND status = 'dispatched'
+                  AND worker_pid IS NULL
+                """,
+                (now, reason, task_id, user_id),
+            )
+        self._record_event(
+            task_id, user_id, "task.dispatch_claim_released", status="queued", payload={"reason": reason}
+        )
+
+    def get_item(self, user_id: str, task_id: str, messages_per_item: int | None = None) -> dict | None:
         with dict_cursor(self.conn) as cur:
             cur.execute(
                 f"SELECT * FROM {self.schema}.tasks WHERE user_id = %s AND id = %s",
@@ -560,7 +862,10 @@ class ControlRepository:
                 f"SELECT * FROM {self.schema}.messages WHERE task_id = %s ORDER BY created_at ASC",
                 (task_id,),
             )
-            return item_from_rows(dict(task), [dict(msg) for msg in cur.fetchall()])
+            messages = [dict(msg) for msg in cur.fetchall()]
+            if messages_per_item is not None and len(messages) > messages_per_item:
+                messages = messages[-max(1, int(messages_per_item)) :]
+            return item_from_rows(dict(task), messages)
 
     def last_event_id(self, user_id: str) -> int:
         with self.conn.cursor() as cur:

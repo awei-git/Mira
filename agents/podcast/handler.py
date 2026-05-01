@@ -51,7 +51,6 @@ from config import (
     GEMINI_TTS_BACKOFF_MULTIPLIER,
     MINIMAX_TTS_MAX_RETRIES,
     MINIMAX_SAMPLE_RATE,
-    GPT5_MODEL,
     PODCAST_FALLBACK_MAX_TOKENS,
     GEMINI_AUTO_RETRIES,
     GEMINI_AUTO_RETRY_WAIT,
@@ -830,21 +829,19 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
 
     # Fallback: direct OpenAI call if Claude returns nothing
     if not result:
-        log.warning("Claude returned empty — trying OpenAI fallback...")
+        log.warning("Claude returned empty — trying LLMProvider fallback...")
         try:
-            import openai as _openai
-            from llm import _get_api_key
+            from llm_port import LLMMessage, complete
 
-            client = _openai.OpenAI(api_key=_get_api_key("openai"))
-            response = client.chat.completions.create(
-                model=GPT5_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                max_completion_tokens=PODCAST_FALLBACK_MAX_TOKENS,
+            response = complete(
+                [LLMMessage(role="user", content=prompt)],
+                model_class="premium",
+                max_tokens=PODCAST_FALLBACK_MAX_TOKENS,
                 timeout=600,
             )
-            result = response.choices[0].message.content
+            result = response.text
         except Exception as e:
-            log.error("Script generation (openai fallback) failed: %s", e)
+            log.error("Script generation (LLMProvider fallback) failed: %s", e)
 
     if not result:
         log.error("Conversation script generation failed (all providers)")

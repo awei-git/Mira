@@ -58,6 +58,7 @@ def _check_pending_publish():
     try:
         sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
         from substack import publish_to_substack
+        from publish.writer_gate import require_writer_gate
 
         final = Path(entry["final_md"])
         if not final.exists():
@@ -65,6 +66,11 @@ def _check_pending_publish():
             return
 
         workspace = Path(entry.get("workspace", final.parent))
+        if not entry.get("writer_gate_passed"):
+            gate_ok, gate_msg, _gate = require_writer_gate(workspace, channel="substack")
+            if not gate_ok:
+                update_manifest(entry["slug"], error=f"writer gate blocked publish: {gate_msg}")
+                return
         content = final.read_text(encoding="utf-8")
         result = publish_to_substack(
             title=entry["title"],

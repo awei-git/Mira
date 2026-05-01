@@ -77,3 +77,41 @@ def test_run_once_rejects_missing_proposal(monkeypatch, tmp_path: Path):
     rejected = reloaded.get_by_status("rejected")
     assert len(rejected) == 1
     assert "proposal missing" in rejected[0].last_error
+
+
+def test_execute_request_verify_accepts_existing_verified_payload():
+    import backlog_executor
+
+    result = backlog_executor._execute_request_verify(  # noqa: SLF001
+        repo=object(),
+        item={
+            "id": "request_verify:t1",
+            "task_id": "t1",
+            "user_id": "ang",
+            "payload": {"verification": {"verified": True, "summary": "artifact exists"}},
+        },
+    )
+
+    assert result["success"] is True
+    assert result["verification_summary"] == "artifact exists"
+
+
+def test_execute_request_verify_rejects_unverified_payload():
+    import backlog_executor
+
+    class Repo:
+        def get_item(self, user_id, task_id):
+            return {"outcome_verified": False, "verification": {"summary": "still not checked"}}
+
+    result = backlog_executor._execute_request_verify(  # noqa: SLF001
+        repo=Repo(),
+        item={
+            "id": "request_verify:t1",
+            "task_id": "t1",
+            "user_id": "ang",
+            "payload": {"verification": {"verified": False, "summary": "semantic intent not checked"}},
+        },
+    )
+
+    assert result["success"] is False
+    assert result["reason"] == "semantic intent not checked"

@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 import config
@@ -59,6 +61,14 @@ _PROTECTED_PATHS = {
     "identity.md",
     "worldview.md",
 }
+
+_BLOCKED_PUBLISH_SENSITIVITY = {"confidential", "regulated"}
+_SENSITIVE_TOPIC_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bTetra\b", re.I), "mentions Tetra"),
+    (re.compile(r"\b(portfolio|position size|cost basis|stop loss|take profit)\b", re.I), "portfolio/trading term"),
+    (re.compile(r"\b(buy|sell|long|short)\b.{0,80}\b(shares?|contracts?|position)\b", re.I), "trading action"),
+    (re.compile(r"[$¥]\s?\d[\d,]{3,}(?:\.\d+)?", re.I), "large financial amount"),
+)
 
 
 def preflight_check(action_type: str, context: dict) -> PreflightResult:
@@ -135,12 +145,10 @@ def preflight_check(action_type: str, context: dict) -> PreflightResult:
     log.info("PREFLIGHT %s: %s", "PASS" if passed else "BLOCKED", result.summary())
     log.info("PREFLIGHT_TRACE [%s]: %s", action_type, json.dumps(verification_trace))
     try:
-        import datetime as _dt
-
         _logs_dir = Path(config.LOGS_DIR) if not isinstance(config.LOGS_DIR, Path) else config.LOGS_DIR
         _logs_dir.mkdir(parents=True, exist_ok=True)
         _preflight_record = {
-            "timestamp": _dt.datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "action_type": action_type,
             "verdict": "pass" if passed else "fail",
             "fields_validated": {
@@ -157,28 +165,24 @@ def preflight_check(action_type: str, context: dict) -> PreflightResult:
         log.warning("Failed to write preflight log entry: %s", _pe)
     if not passed:
         try:
-            import datetime as _dt2
-
             _rej_dir = Path(config.MIRA_ROOT) / "logs" / "scaffold_rejections"
             _rej_dir.mkdir(parents=True, exist_ok=True)
             _rej_entry = {
-                "timestamp": _dt2.datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "agent_id": context.get("agent_id", "unknown"),
                 "pipeline_stage": action_type,
                 "rejection_reason": "; ".join(blockers),
                 "content_preview": str(context.get("content", ""))[:200],
             }
-            _rej_file = _rej_dir / f"{_dt2.date.today().isoformat()}.jsonl"
+            _rej_file = _rej_dir / f"{datetime.now(timezone.utc).date().isoformat()}.jsonl"
             with open(_rej_file, "a", encoding="utf-8") as _f:
                 _f.write(json.dumps(_rej_entry, ensure_ascii=False) + "\n")
         except Exception as _re:
             log.warning("Failed to write scaffold rejection: %s", _re)
         try:
-            import datetime as _dt3
-
             _content_bytes = str(context.get("content", "")).encode("utf-8", errors="replace")
             _audit_entry = {
-                "timestamp": _dt3.datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "guard_name": "preflight_check",
                 "trigger_reason": "; ".join(blockers),
                 "content_length": len(str(context.get("content", ""))),
@@ -254,6 +258,90 @@ def _check_publish(ctx: dict, checks: list, blockers: list):
                 assumes="length correlates with completeness",
             )
         )
+
+    _check_sensitivity(ctx, "publish", checks, blockers)
+
+
+def _iter_memory_sensitivities(ctx: dict) -> list[str]:
+    values: list[str] = []
+    for key in ("memories", "retrieved_memories", "memory_context"):
+        raw = ctx.get(key)
+        if isinstance(raw, dict):
+            raw = [raw]
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if isinstance(item, dict) and item.get("sensitivity"):
+                values.append(str(item["sensitivity"]).strip().lower())
+    if ctx.get("sensitivity"):
+        values.append(str(ctx["sensitivity"]).strip().lower())
+    return values
+
+
+def _record_sensitivity_block(ctx: dict, reason: str, channel: str) -> None:
+    try:
+        audit_dir = Path(config.DATA_DIR) / "audit"
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        content = str(ctx.get("content", ""))
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "channel": channel,
+            "reason": reason,
+            "task_id": ctx.get("task_id", ""),
+            "title": str(ctx.get("title", ""))[:200],
+            "content_hash": hashlib.sha1(content.encode("utf-8", errors="replace")).hexdigest()[:12],
+            "content_preview": content[:160],
+        }
+        with (audit_dir / "sensitivity_blocks.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        log.warning("Failed to write sensitivity block audit: %s", exc)
+
+
+def _check_sensitivity(ctx: dict, channel: str, checks: list, blockers: list) -> None:
+    sensitivities = _iter_memory_sensitivities(ctx)
+    blocked = sorted({s for s in sensitivities if s in _BLOCKED_PUBLISH_SENSITIVITY})
+    if blocked:
+        reason = f"blocked sensitivity in publish payload: {', '.join(blocked)}"
+        checks.append(
+            CheckResult(
+                "sensitivity_allowed",
+                False,
+                reason,
+                proves="publish payload does not include confidential or regulated memory",
+                assumes="memory sensitivity labels were assigned correctly upstream",
+            )
+        )
+        blockers.append(reason)
+        _record_sensitivity_block(ctx, reason, channel)
+        return
+
+    text = "\n".join(str(ctx.get(k, "")) for k in ("title", "content", "instruction"))
+    for pattern, label in _SENSITIVE_TOPIC_PATTERNS:
+        if pattern.search(text):
+            reason = f"sensitive topic blocked: {label}"
+            checks.append(
+                CheckResult(
+                    "sensitivity_topic",
+                    False,
+                    reason,
+                    proves="publish payload does not include obvious private trading/portfolio content",
+                    assumes="regex guard catches only high-confidence sensitive cases before LLM topic check exists",
+                )
+            )
+            blockers.append(reason)
+            _record_sensitivity_block(ctx, reason, channel)
+            return
+
+    checks.append(
+        CheckResult(
+            "sensitivity_allowed",
+            True,
+            "ok",
+            proves="no confidential/regulated memory labels or high-confidence sensitive topic patterns were found",
+            assumes="rule-level scan is a first-pass guard, not full semantic privacy review",
+        )
+    )
 
 
 def _check_file_write(ctx: dict, checks: list, blockers: list):

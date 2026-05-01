@@ -1,12 +1,15 @@
 """Mira Web GUI — lightweight FastAPI server reading from bridge files."""
 
 import asyncio
+import atexit
 import collections
 import json
+import shutil
+import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from secrets import compare_digest
 from typing import Optional
@@ -28,12 +31,17 @@ from config import (
     CONTROL_API_WRITES_ENABLED,
     CONTROL_RUNTIME_DB_ENABLED,
     CONTROL_SSE_ENABLED,
+    ICLOUD_COMMAND_FALLBACK_ENABLED,
+    MDNS_ADVERTISE_ENABLED,
     MIRA_DIR,
     TASKS_DIR,
     WEBGUI_ALLOW_LAN_WITHOUT_TOKEN,
     WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN,
     WEBGUI_HOST,
+    WEBGUI_HTTPS_ENABLED,
     WEBGUI_PORT,
+    WEBGUI_TLS_CERT_FILE,
+    WEBGUI_TLS_KEY_FILE,
     WEBGUI_TOKEN,
     get_known_user_ids,
     get_user_config,
@@ -44,6 +52,7 @@ BRIDGE = MIRA_DIR
 USERS_DIR = BRIDGE / "users"
 
 app = FastAPI(title="Mira", docs_url=None, redoc_url=None)
+_mdns_process: subprocess.Popen | None = None
 
 # ---------------------------------------------------------------------------
 # CORS — allow the web GUI and local dev origins
@@ -53,11 +62,72 @@ app.add_middleware(
     allow_origins=[
         f"http://localhost:{WEBGUI_PORT}",
         f"http://127.0.0.1:{WEBGUI_PORT}",
+        f"https://localhost:{WEBGUI_PORT}",
+        f"https://127.0.0.1:{WEBGUI_PORT}",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "X-Mira-Token", "Content-Type"],
 )
+
+
+@app.on_event("startup")
+def _verify_control_db_on_startup() -> None:
+    """Fail fast when the canonical control DB is required but unavailable."""
+    if not (CONTROL_API_WRITES_ENABLED or CONTROL_RUNTIME_DB_ENABLED or CONTROL_SSE_ENABLED):
+        return
+    try:
+        from migrations.runner import apply_migrations
+
+        apply_migrations()
+    except Exception as exc:
+        raise RuntimeError(f"Control DB unavailable at startup: {exc}") from exc
+    _start_mdns_advertisement()
+
+
+def _start_mdns_advertisement() -> None:
+    """Advertise the local API as `_mira._tcp` for the iOS app."""
+    global _mdns_process
+    if not MDNS_ADVERTISE_ENABLED or _mdns_process is not None:
+        return
+    dns_sd = shutil.which("dns-sd")
+    if not dns_sd:
+        return
+    try:
+        subprocess.run(
+            ["pkill", "-f", f"dns-sd -R Mira _mira._tcp local {WEBGUI_PORT}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+        scheme_txt = "scheme=https" if WEBGUI_HTTPS_ENABLED else "scheme=http"
+        _mdns_process = subprocess.Popen(
+            [
+                dns_sd,
+                "-R",
+                "Mira",
+                "_mira._tcp",
+                "local",
+                str(WEBGUI_PORT),
+                "path=/api/heartbeat",
+                scheme_txt,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        _mdns_process = None
+
+
+def _stop_mdns_advertisement() -> None:
+    global _mdns_process
+    if _mdns_process is None:
+        return
+    _mdns_process.terminate()
+    _mdns_process = None
+
+
+atexit.register(_stop_mdns_advertisement)
 
 # ---------------------------------------------------------------------------
 # Rate limiting — simple in-memory per-IP limiter
@@ -87,6 +157,10 @@ def _check_rate_limit(client_ip: str) -> bool:
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _iso_after_hours(hours: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _read_json(path: Path) -> dict | list | None:
@@ -274,6 +348,19 @@ class Followup(BaseModel):
     source: str = Field(default="user", pattern=r"^(user|agent)$")
 
 
+class V2StatusCard(BaseModel):
+    card_type: str = Field(..., pattern=r"^(daily_status|decision|sunday_gate|drift_alert|build_summary)$")
+    title: str = Field(..., min_length=1, max_length=300)
+    body: str = Field(..., min_length=1, max_length=4000)
+    reply_options: list[str] = Field(default=[], max_length=6)
+    default_action: str = Field(default="WAIT", max_length=80)
+    ttl_hours: int = Field(default=24, ge=1, le=168)
+
+
+class V2StatusReply(BaseModel):
+    reply: str = Field(..., min_length=1, max_length=200)
+
+
 @app.get("/api/{user_id}/todos")
 def get_todos(user_id: str):
     path = _user_dir(user_id) / "todos.json"
@@ -431,6 +518,47 @@ def get_tasks(user_id: str, include_archived: bool = False, limit: int = 200, me
             )
             last_event_id = repo.last_event_id(user_id)
         return {"items": items, "server_time": _utc_iso(), "last_event_id": last_event_id}
+    except Exception as exc:
+        raise HTTPException(503, f"Control DB unavailable: {exc}") from exc
+
+
+@app.get("/api/{user_id}/tasks/{task_id}")
+def get_task_detail(user_id: str, task_id: str, messages_per_item: int = 50):
+    """Return one canonical task projection from the control plane."""
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository, sync_user_from_legacy
+
+        sync_user_from_legacy(user_id, user_dir=_user_dir(user_id), task_status_file=TASKS_DIR / "status.json")
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            item = repo.get_item(user_id, task_id, messages_per_item=max(1, min(messages_per_item, 100)))
+        if not item:
+            raise HTTPException(404, "Task not found")
+        return {"item": item, "server_time": _utc_iso()}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(503, f"Control DB unavailable: {exc}") from exc
+
+
+@app.get("/api/{user_id}/threads")
+def get_threads(user_id: str, include_archived: bool = False, limit: int = 200, messages_per_item: int = 20):
+    """Return app thread projections backed by canonical tasks/messages."""
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository, sync_user_from_legacy
+
+        sync_user_from_legacy(user_id, user_dir=_user_dir(user_id), task_status_file=TASKS_DIR / "status.json")
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            threads = repo.list_items(
+                user_id,
+                include_archived=include_archived,
+                limit=max(1, min(limit, 500)),
+                messages_per_item=max(1, min(messages_per_item, 50)),
+            )
+        return {"threads": threads, "server_time": _utc_iso()}
     except Exception as exc:
         raise HTTPException(503, f"Control DB unavailable: {exc}") from exc
 
@@ -742,6 +870,24 @@ def _export_compat_item(user_id: str, item: dict) -> None:
     _rebuild_manifest(user_id)
 
 
+def _append_item_message(user_id: str, item_id: str, *, sender: str, content: str, kind: str = "text") -> dict:
+    item_path, item = _load_item_or_404(user_id, item_id)
+    now = _utc_iso()
+    item.setdefault("messages", []).append(
+        {
+            "id": f"msg_{uuid.uuid4().hex[:10]}",
+            "sender": sender,
+            "content": content,
+            "timestamp": now,
+            "kind": kind,
+        }
+    )
+    item["updated_at"] = now
+    _atomic_write(item_path, item)
+    _rebuild_manifest(user_id)
+    return item
+
+
 def _archive_compat_item(user_id: str, item: dict) -> None:
     archive_dir = _user_dir(user_id) / "archive"
     archive_dir.mkdir(exist_ok=True)
@@ -759,6 +905,78 @@ def _task_manager():
     from task_manager import TaskManager
 
     return TaskManager()
+
+
+@app.post("/api/{user_id}/v2-status/cards")
+def create_v2_status_card(user_id: str, card: V2StatusCard):
+    """Create an app-visible V2 status feed card.
+
+    This is a narrow operator channel for plan/gate/build status. It writes a
+    feed item, not a dispatch command, so it cannot accidentally enqueue work.
+    """
+    now = _utc_iso()
+    card_id = f"v2_{card.card_type}_{uuid.uuid4().hex[:10]}"
+    status = "needs-input" if card.reply_options else "done"
+    item = {
+        "id": card_id,
+        "type": "v2_status",
+        "title": card.title,
+        "status": status,
+        "tags": ["v2_status", card.card_type],
+        "origin": "agent",
+        "pinned": card.card_type in {"decision", "sunday_gate", "drift_alert"},
+        "quick": False,
+        "parent_id": None,
+        "created_at": now,
+        "updated_at": now,
+        "messages": [
+            {
+                "id": f"{card_id}_body",
+                "sender": "mira",
+                "content": card.body,
+                "timestamp": now,
+                "kind": "v2_status_card",
+            }
+        ],
+        "error": None,
+        "result_path": None,
+        "channel": "v2_status",
+        "card_type": card.card_type,
+        "reply_options": card.reply_options,
+        "default_action": card.default_action,
+        "expires_at": _iso_after_hours(card.ttl_hours),
+    }
+    _export_compat_item(user_id, item)
+    return {"status": status, "item_id": card_id, "item": item}
+
+
+@app.post("/api/{user_id}/v2-status/cards/{card_id}/reply")
+def reply_to_v2_status_card(user_id: str, card_id: str, reply: V2StatusReply):
+    """Record a WA reply to a V2 status card and emit a narrow operator command."""
+    item_path, item = _load_item_or_404(user_id, card_id)
+    if item.get("channel") != "v2_status":
+        raise HTTPException(404, "V2 status card not found")
+    options = item.get("reply_options") or []
+    normalized = reply.reply.strip().upper()
+    if options and normalized not in {str(opt).upper() for opt in options}:
+        raise HTTPException(422, f"Reply must be one of: {', '.join(options)}")
+    updated = _append_item_message(user_id, card_id, sender=user_id, content=normalized, kind="v2_status_reply")
+    updated["status"] = "done"
+    updated["updated_at"] = _utc_iso()
+    _atomic_write(item_path, updated)
+    _rebuild_manifest(user_id)
+    _write_command(
+        user_id,
+        {
+            "id": _command_id(),
+            "type": "v2_status_reply",
+            "timestamp": _utc_iso(),
+            "sender": user_id,
+            "item_id": card_id,
+            "reply": normalized,
+        },
+    )
+    return {"status": "recorded", "item": updated}
 
 
 @app.post("/api/{user_id}/tasks")
@@ -994,6 +1212,17 @@ def retry_task_api(user_id: str, task_id: str):
 
 @app.post("/api/{user_id}/request")
 def create_request(user_id: str, req: NewRequest):
+    if not ICLOUD_COMMAND_FALLBACK_ENABLED:
+        return create_task_api(
+            user_id,
+            NewTask(
+                type="request",
+                title=req.title,
+                content=req.content,
+                quick=req.quick,
+                tags=req.tags,
+            ),
+        )
     cmd_id = _command_id()
     item_id = f"req_{cmd_id}"
     cmd = {
@@ -1034,6 +1263,8 @@ def create_request(user_id: str, req: NewRequest):
 
 @app.post("/api/{user_id}/items/{item_id}/reply")
 def reply_to_item(user_id: str, item_id: str, reply: Reply):
+    if not ICLOUD_COMMAND_FALLBACK_ENABLED:
+        return reply_to_task_api(user_id, item_id, reply)
     item_path, item = _load_item_or_404(user_id, item_id)
     cmd_id = _command_id()
     cmd = {
@@ -1063,6 +1294,8 @@ def reply_to_item(user_id: str, item_id: str, reply: Reply):
 
 @app.post("/api/{user_id}/recall")
 def recall(user_id: str, q: RecallQuery):
+    if not ICLOUD_COMMAND_FALLBACK_ENABLED:
+        raise HTTPException(410, "Legacy command endpoint disabled; use canonical task API")
     cmd_id = uuid.uuid4().hex[:8]
     cmd = {
         "id": cmd_id,
@@ -1080,6 +1313,8 @@ def recall(user_id: str, q: RecallQuery):
 
 @app.post("/api/{user_id}/items/{item_id}/share")
 def share_item(user_id: str, item_id: str):
+    if not ICLOUD_COMMAND_FALLBACK_ENABLED:
+        raise HTTPException(410, "Legacy command endpoint disabled; use canonical task API")
     _load_item_or_404(user_id, item_id)
     cmd_id = uuid.uuid4().hex[:8]
     cmd = {
@@ -1359,4 +1594,7 @@ def index():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host=WEBGUI_HOST, port=WEBGUI_PORT)
+    ssl_kwargs = {}
+    if WEBGUI_HTTPS_ENABLED:
+        ssl_kwargs = {"ssl_certfile": str(WEBGUI_TLS_CERT_FILE), "ssl_keyfile": str(WEBGUI_TLS_KEY_FILE)}
+    uvicorn.run(app, host=WEBGUI_HOST, port=WEBGUI_PORT, **ssl_kwargs)

@@ -1,5 +1,8 @@
 # Mira Next-Phase Plan: From Research to OPC
 
+> **DEPRECATED — superseded by [mira-next.md](mira-next.md).**
+> This document is retained for historical context. Current execution work must follow [CURRENT_PLAN.md](CURRENT_PLAN.md).
+
 更新时间：2026-04-06
 状态：active execution plan
 版本：v2（替换 specialist-review-mesh 旧方向）

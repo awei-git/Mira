@@ -91,6 +91,15 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
         # _check_pending_publish() picks it up and publishes on the next cycle.
         try:
             from publish.manifest import update_manifest
+            from publish.writer_gate import record_writer_gate
+
+            record_writer_gate(
+                workspace,
+                channel="substack",
+                task_id=task_id,
+                artifact_path=meta["final_md"],
+                source="autowrite.pipeline",
+            )
 
             update_manifest(
                 meta["slug"],
@@ -100,6 +109,7 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
                 final_md=meta["final_md"],
                 item_id=task_id,
                 auto_podcast=True,
+                writer_gate_passed=True,
             )
             log.info("Auto-approved '%s' in publish_manifest", title)
         except Exception as e:

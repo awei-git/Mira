@@ -20,6 +20,7 @@ State file: data/social/activity_inbox_state.json — dedup by activity item key
 """
 
 import json
+import hashlib
 import logging
 import re
 import time
@@ -50,6 +51,13 @@ def _state_file() -> Path:
     return SOCIAL_STATE_DIR / "activity_inbox_state.json"
 
 
+def _shadow_file() -> Path:
+    from config import SOCIAL_STATE_DIR
+
+    SOCIAL_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    return SOCIAL_STATE_DIR / "reply_dedup_shadow.jsonl"
+
+
 def _load_state() -> dict:
     f = _state_file()
     if not f.exists():
@@ -65,6 +73,37 @@ def _save_state(state: dict):
     tmp = f.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(f)
+
+
+def _reply_fingerprint(item_key: str, ctx: dict) -> str:
+    raw = "|".join(
+        [
+            str(item_key or ""),
+            str(ctx.get("reply_cid") or ""),
+            str(ctx.get("reply_name") or ""),
+            str(ctx.get("reply_body") or ""),
+        ]
+    )
+    return hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _append_reply_shadow(item_key: str, ctx: dict, decision: str, *, already_replied: bool = False) -> None:
+    """Append-only shadow ledger for reply dedup decisions."""
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "item_key": item_key,
+        "reply_cid": ctx.get("reply_cid"),
+        "reply_name": ctx.get("reply_name"),
+        "fingerprint": _reply_fingerprint(item_key, ctx),
+        "decision": decision,
+        "already_replied": already_replied,
+    }
+    try:
+        f = _shadow_file()
+        with f.open("a", encoding="utf-8") as out:
+            out.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log.warning("activity_inbox: reply shadow write failed: %s", e)
 
 
 def _http_get(url: str, cookie: str) -> dict | None:
@@ -283,13 +322,19 @@ def process_activity_inbox() -> list[dict]:
         # Avoid replying to a reply we've already replied to:
         # if the actor's latest reply ALREADY has a Mira reply under it, skip.
         followups = _http_get(f"https://substack.com/api/v1/reader/comment/{ctx['reply_cid']}/replies", cookie)
+        already_replied = False
         if followups:
             existing_branches = followups.get("commentBranches", []) or []
-            if any((b.get("comment") or {}).get("name", "").lower() in MY_USER_NAMES for b in existing_branches):
+            already_replied = any(
+                (b.get("comment") or {}).get("name", "").lower() in MY_USER_NAMES for b in existing_branches
+            )
+            if already_replied:
+                _append_reply_shadow(item_key, ctx, "skip_existing_mira_reply", already_replied=True)
                 log.info("activity_inbox: already replied to %s, skipping", ctx["reply_cid"])
                 seen.add(item_key)
                 actions.append({"item_key": item_key, "action": "already_replied"})
                 continue
+        _append_reply_shadow(item_key, ctx, "candidate", already_replied=already_replied)
 
         # Draft via LLM
         draft = _draft_reply(soul_ctx, ctx)
@@ -321,6 +366,7 @@ def process_activity_inbox() -> list[dict]:
         # Post the reply
         result = reply_to_note(parent_note_id=ctx["reply_cid"], text=cleaned)
         if result and result.get("status") == "published":
+            _append_reply_shadow(item_key, ctx, "posted", already_replied=False)
             log.info(
                 "activity_inbox: replied to %s (cid=%s) -> %s",
                 ctx["reply_name"],

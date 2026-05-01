@@ -22,6 +22,7 @@ def _patch_task_worker_test_side_effects(monkeypatch):
     monkeypatch.setattr("task_worker._record_postmortem", lambda *args, **kwargs: None)
     monkeypatch.setattr("task_support._verify_output", lambda *args, **kwargs: None)
     monkeypatch.setattr("task_worker.save_episode", lambda *args, **kwargs: None)
+    monkeypatch.setattr("task_result.append_trace", lambda *args, **kwargs: None)
     monkeypatch.setattr("memory.soul.auto_flush", lambda *args, **kwargs: None)
 
 
@@ -160,7 +161,7 @@ def test_execute_plan_steps_backfills_done_result(tmp_path, monkeypatch):
     )
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
-    assert result["status"] == "done"
+    assert result["status"] == "verified"
     assert result["summary"] == "Draft ready"
     assert result["agent"] == "writer"
     assert result["step_id"] == "step-01"
@@ -493,7 +494,7 @@ def test_execute_plan_steps_falls_back_when_preflight_load_errors(tmp_path, monk
     )
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
-    assert result["status"] == "done"
+    assert result["status"] == "completed_unverified"
     assert result["agent"] == "general"
     assert called["general"] is True
     assert called["handler"] is False
@@ -630,7 +631,7 @@ def test_write_result_backfills_canonical_contract_for_legacy_calls(tmp_path, mo
     task_worker._write_result(workspace, "task129z", "done", "Legacy output", agent="general")
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
-    assert result["status"] == "done"
+    assert result["status"] == "completed_unverified"
     assert result["workflow_id"] == "task129z"
     assert result["step_id"] == ""
     assert result["failure_class"] == ""
@@ -648,23 +649,7 @@ def test_ensure_step_result_reuses_cached_verification(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    calls = {"count": 0}
-
-    class FakeVerify:
-        verified = True
-        artifact_type = "file"
-        checks = []
-
-        def summary(self):
-            return "VERIFY VERIFIED [file]: ok"
-
-    def fake_verify(*args, **kwargs):
-        calls["count"] += 1
-        return FakeVerify()
-
-    import task_result
-
-    monkeypatch.setattr("task_result.verify_artifact", fake_verify)
+    _patch_task_worker_test_side_effects(monkeypatch)
 
     task_worker._ensure_step_result(
         workspace,
@@ -677,8 +662,8 @@ def test_ensure_step_result_reuses_cached_verification(tmp_path, monkeypatch):
     )
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
-    assert calls["count"] == 1
     assert result["verification"]["status"] == "verified"
+    assert result["status"] == "verified"
     assert result["workflow_id"] == "task129za"
 
 
@@ -932,6 +917,9 @@ def test_socialmedia_handle_reuses_preflight_cache(tmp_path, monkeypatch):
 
     workspace = tmp_path / "task"
     workspace.mkdir()
+    from publish.writer_gate import record_writer_gate
+
+    record_writer_gate(workspace, channel="substack", task_id="task129", artifact_path="article.md")
 
     passed, msg = preflight(workspace, "task129", "publish it", "ang", "thread1")
     assert passed, msg
@@ -954,6 +942,31 @@ def test_socialmedia_handle_reuses_preflight_cache(tmp_path, monkeypatch):
     assert publish_calls, "handler should have called publish_to_substack"
     assert publish_calls[0]["title"] == "Approved Title"
     assert result.startswith("[TEST] Would publish")
+
+
+def test_socialmedia_preflight_blocks_without_writer_gate(tmp_path, monkeypatch):
+    registry = AgentRegistry()
+    preflight = registry.load_preflight("socialmedia")
+    assert preflight is not None
+    module_globals = preflight.__globals__
+    monkeypatch.setitem(
+        module_globals,
+        "_plan_publish",
+        lambda content: {
+            "platform": "substack",
+            "source": "article.md",
+            "title": "Approved Title",
+            "subtitle": "",
+        },
+    )
+    monkeypatch.setitem(module_globals, "_resolve_content", lambda source, content: "# Approved\n\nBody" * 40)
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+
+    passed, msg = preflight(workspace, "task_no_gate", "publish it", "ang", "thread1")
+
+    assert not passed
+    assert "writer gate missing" in msg
 
 
 def test_podcast_preflight_requires_real_article(tmp_path):
@@ -1260,4 +1273,4 @@ def test_autowrite_approval_prefers_metadata_file(tmp_path, monkeypatch):
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
     assert captured["slug"] == "title-slug"
     assert captured["fields"]["status"] == "approved"
-    assert result["status"] == "done"
+    assert result["status"] == "completed_unverified"

@@ -7,7 +7,9 @@ from control.repository import ControlRepository, _is_human_review_draft
 def test_app_status_maps_runtime_statuses_to_app_surface():
     assert app_status("dispatched") == "working"
     assert app_status("running") == "working"
-    assert app_status("completed") == "done"
+    assert app_status("completed") == "verifying"
+    assert app_status("completed_unverified") == "verifying"
+    assert app_status("verified") == "done"
     assert app_status("error") == "failed"
     assert app_status("paused_horizon_limit") == "needs-input"
     assert app_status("blocked") == "failed"
@@ -34,6 +36,10 @@ def test_item_projection_matches_mira_item_shape():
             "retryable": True,
             "completed_at": "2026-04-30T00:01:00Z",
             "result_path": None,
+            "task_type": "coding",
+            "verification": {"verified": False},
+            "outcome_verified": False,
+            "verification_method": "file_exists",
         },
         [
             {
@@ -55,6 +61,10 @@ def test_item_projection_matches_mira_item_shape():
         "retryable": True,
         "timestamp": "2026-04-30T00:01:00Z",
     }
+    assert item["task_type"] == "coding"
+    assert item["verification"] == {"verified": False}
+    assert item["outcome_verified"] is False
+    assert item["verification_method"] == "file_exists"
 
 
 def test_list_items_limits_messages_per_item(monkeypatch):

@@ -12,6 +12,7 @@ dependencies = [
     "feedparser>=6.0.12",
     "beautifulsoup4>=4.14.3",
     "psycopg2-binary>=2.9.11",
+    "dbos>=2.19.0",
     "fastapi>=0.135.1",
     "uvicorn>=0.42.0",
     "edge-tts>=7.2.8",

@@ -256,6 +256,9 @@ TRUST_AUDIT_ENABLED = _limits.get("trust_audit_enabled", True)
 SKILL_MIN_AGE_HOURS = _limits.get("skill_min_age_hours", 48)
 SKILL_AUDIT_BRANCH_THRESHOLD = _limits.get("skill_audit_branch_threshold", 15)
 SKILL_EXAMPLE_ORDER: str = _limits.get("skill_example_order", "relevance_first")
+SKILL_AUDIT_LOCKOUT_THRESHOLD = _limits.get("skill_audit_lockout_threshold", 5)
+SKILL_AUDIT_LOCKOUT_WINDOW_MINUTES = _limits.get("skill_audit_lockout_window_minutes", 60)
+SKILL_AUDIT_LOCKOUT_DURATION_MINUTES = _limits.get("skill_audit_lockout_duration_minutes", 30)
 
 # Secrets file (API keys — always gitignored)
 SECRETS_FILE = _PROJECT_ROOT / "secrets.yml"
@@ -298,20 +301,34 @@ CONTROL_DB_SCHEMA = os.environ.get("CONTROL_DB_SCHEMA") or str(
 CONTROL_PLANE_ENABLED = _env_bool("CONTROL_PLANE_ENABLED", bool(_control_cfg.get("enabled", True)))
 CONTROL_API_WRITES_ENABLED = _env_bool(
     "CONTROL_API_WRITES_ENABLED",
-    bool(_control_cfg.get("api_writes_enabled", False)),
+    bool(_control_cfg.get("api_writes_enabled", True)),
 )
 CONTROL_RUNTIME_DB_ENABLED = _env_bool(
     "CONTROL_RUNTIME_DB_ENABLED",
-    bool(_control_cfg.get("runtime_db_enabled", False)),
+    bool(_control_cfg.get("runtime_db_enabled", True)),
 )
 CONTROL_SSE_ENABLED = _env_bool("CONTROL_SSE_ENABLED", bool(_control_cfg.get("sse_enabled", False)))
 BRIDGE_COMPAT_EXPORT_ENABLED = _env_bool(
     "BRIDGE_COMPAT_EXPORT_ENABLED",
-    bool(_control_cfg.get("bridge_compat_export", True)),
+    bool(_control_cfg.get("bridge_compat_export", False)),
 )
 ICLOUD_COMMAND_FALLBACK_ENABLED = _env_bool(
     "ICLOUD_COMMAND_FALLBACK_ENABLED",
-    bool(_control_cfg.get("icloud_command_fallback", True)),
+    bool(_control_cfg.get("icloud_command_fallback", False)),
+)
+DBOS_SYSTEM_SCHEMA = os.environ.get("DBOS_SYSTEM_SCHEMA") or str(
+    _control_cfg.get("dbos_system_schema", "mira_dbos") or "mira_dbos"
+)
+DBOS_APPLICATION_VERSION = os.environ.get("DBOS_APPLICATION_VERSION") or str(
+    _control_cfg.get("dbos_application_version", "mira-v2-week1") or "mira-v2-week1"
+)
+DBOS_RUN_ADMIN_SERVER = _env_bool(
+    "DBOS_RUN_ADMIN_SERVER",
+    bool(_control_cfg.get("dbos_run_admin_server", False)),
+)
+MDNS_ADVERTISE_ENABLED = _env_bool(
+    "MDNS_ADVERTISE_ENABLED",
+    bool(_control_cfg.get("mdns_advertise_enabled", True)),
 )
 
 # ---------------------------------------------------------------------------
@@ -423,6 +440,22 @@ WEBGUI_PORT = _svc_cfg.get("webgui_port", 8384)
 WEBGUI_TOKEN = str(_svc_cfg.get("webgui_token", "") or "").strip()
 WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN = _svc_cfg.get("webgui_allow_loopback_without_token", True)
 WEBGUI_ALLOW_LAN_WITHOUT_TOKEN = _svc_cfg.get("webgui_allow_lan_without_token", True)
+WEBGUI_TLS_CERT_FILE = Path(
+    os.environ.get(
+        "WEBGUI_TLS_CERT_FILE",
+        str(_svc_cfg.get("webgui_tls_cert_file", MIRA_DIR / "data" / "certs" / "mira-bridge" / "server.crt")),
+    )
+).expanduser()
+WEBGUI_TLS_KEY_FILE = Path(
+    os.environ.get(
+        "WEBGUI_TLS_KEY_FILE",
+        str(_svc_cfg.get("webgui_tls_key_file", MIRA_DIR / "data" / "certs" / "mira-bridge" / "server.key")),
+    )
+).expanduser()
+WEBGUI_HTTPS_ENABLED = _env_bool(
+    "WEBGUI_HTTPS_ENABLED",
+    bool(_svc_cfg.get("webgui_https_enabled", WEBGUI_TLS_CERT_FILE.exists() and WEBGUI_TLS_KEY_FILE.exists())),
+)
 TETRA_API_PORT = _svc_cfg.get("tetra_api_port", 8000)
 
 # ---------------------------------------------------------------------------
@@ -766,6 +799,8 @@ GROWTH_MAX_FOLLOWS_PER_CYCLE = _rate_limits.get("growth_max_follows_per_cycle", 
 GROWTH_DISCOVERY_COOLDOWN_DAYS = _rate_limits.get("growth_discovery_cooldown_days", 3)
 GROWTH_MAX_LIKES_PER_CYCLE = _rate_limits.get("growth_max_likes_per_cycle", 20)
 SELF_EVOLVE_MAX_PER_DAY = _rate_limits.get("self_evolve_max_per_day", 1)
+IPHONE_BRIDGE_WARN_LATENCY_MS = _rate_limits.get("iphone_bridge_warn_latency_ms", 45000)
+BRIDGE_STALE_THRESHOLD = _rate_limits.get("bridge_stale_threshold", 600)
 
 # ---------------------------------------------------------------------------
 # Social engineering patterns for skill security audit

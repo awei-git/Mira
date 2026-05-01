@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger("mira")
@@ -686,6 +686,13 @@ def _log_skill_addition(skill_name: str, skill_content: str) -> None:
         log.debug("_log_skill_addition failed: %s", exc)
 
 
+class SkillAuditLockedOut(Exception):
+    pass
+
+
+_failure_log: list[tuple[datetime, str]] = []
+
+
 def audit_skill(
     skill_name: str,
     skill_content: str,
@@ -705,6 +712,27 @@ def audit_skill(
     Returns a dict with keys 'blocked' (bool), 'categories' (list[str]),
     'warnings' (list[str]), and 'overreach_warnings' (list[str]).
     """
+    try:
+        from config import SKILL_AUDIT_LOCKOUT_THRESHOLD, SKILL_AUDIT_LOCKOUT_WINDOW_MINUTES
+
+        _lockout_now = datetime.now(timezone.utc)
+        _lockout_window = timedelta(minutes=SKILL_AUDIT_LOCKOUT_WINDOW_MINUTES)
+        _failure_log[:] = [(ts, sn) for ts, sn in _failure_log if ts > _lockout_now - _lockout_window]
+        if len(_failure_log) >= SKILL_AUDIT_LOCKOUT_THRESHOLD:
+            log.warning(
+                "SKILL_AUDIT lockout: source=%s reason='%d failures in rolling %d-min window — skill import suspended'",
+                source,
+                len(_failure_log),
+                SKILL_AUDIT_LOCKOUT_WINDOW_MINUTES,
+            )
+            raise SkillAuditLockedOut(
+                f"Skill audit locked out: {len(_failure_log)} failures in last {SKILL_AUDIT_LOCKOUT_WINDOW_MINUTES} minutes"
+            )
+    except SkillAuditLockedOut:
+        raise
+    except Exception:
+        pass
+
     _evasion_terms = ["soul_manager", "audit_skill", "_content_looks_like_error", "preflight_check"]
     if any(term in (skill_name + "\n" + skill_content) for term in _evasion_terms) or re.search(
         r"""['"](?:subprocess|os\.system)['"]""", skill_content
@@ -1264,6 +1292,7 @@ def audit_skill(
     )
 
     if blocked:
+        _failure_log.append((datetime.now(timezone.utc), skill_name))
         log.warning(
             "SKILL_AUDIT blocked: skill=%s categories=%s",
             skill_name,
@@ -1480,6 +1509,59 @@ def audit_skill(
         "spec_coverage_note": _SPEC_COVERAGE_NOTE if not blocked else None,
         "capability_manifest": capability_manifest,
     }
+
+
+def save_skill(
+    skill_name: str,
+    content: str,
+    source: str = "unknown",
+    metadata: dict | None = None,
+) -> bool:
+    """Write a skill file, blocking the write if content changed and re-audit fails.
+
+    Returns True on success, False if blocked or write failed.
+    On first write (no stored hash) the file is written without re-audit — the
+    caller is expected to have run audit_skill() beforehand.  On any subsequent
+    write where the content hash differs from the stored audit-time hash,
+    audit_skill() is re-run; a failing audit blocks the write entirely.
+    """
+    try:
+        from config import SKILLS_DIR
+    except Exception as _exc:
+        log.debug("save_skill: config import failed: %s", _exc)
+        return False
+
+    slug = skill_name.lower().replace(" ", "-")
+    skill_file = SKILLS_DIR / f"{slug}.md"
+    new_hash = hashlib.sha256(content.encode()).hexdigest()
+
+    hashes_path = SKILLS_DIR.parent / "audit_hashes.json"
+    try:
+        _hashes_raw = json.loads(hashes_path.read_text(encoding="utf-8")) if hashes_path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        _hashes_raw = {}
+
+    _stored_entry = _hashes_raw.get(slug)
+    _stored_hash = _stored_entry.get("hash") if isinstance(_stored_entry, dict) else None
+
+    if _stored_hash is not None and new_hash != _stored_hash:
+        _result = audit_skill(skill_name, content, source=source, metadata=metadata)
+        if _result["blocked"]:
+            log.warning(
+                "skill update blocked: skill=%s content changed and failed re-audit categories=%s",
+                skill_name,
+                _result["categories"],
+            )
+            return False
+
+    try:
+        skill_file.parent.mkdir(parents=True, exist_ok=True)
+        skill_file.write_text(content, encoding="utf-8")
+    except OSError as _exc:
+        log.debug("save_skill: write failed skill=%s: %s", skill_name, _exc)
+        return False
+
+    return True
 
 
 def load_skill(skill_name: str) -> str:

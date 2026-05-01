@@ -89,6 +89,10 @@ def test_terminal_projection_writes_agent_message_to_control_db(monkeypatch):
                 "error_message": None,
                 "agent_message": "final answer",
                 "message_kind": "text",
+                "verification": None,
+                "task_type": None,
+                "outcome_verified": None,
+                "verification_method": None,
             },
         )
     ]
@@ -171,6 +175,8 @@ def test_load_status_backfills_missing_user_id(monkeypatch, tmp_path):
     assert mgr._records[0].workflow_id == "req_legacy"
     assert mgr._records[0].attempt_count == 1
     assert mgr._records[0].failure_class == ""
+    assert mgr._records[0].verification is None
+    assert mgr._records[0].outcome_verified is False
 
 
 def test_dispatch_allows_explicit_retry_attempts(monkeypatch, tmp_path):
@@ -401,6 +407,86 @@ def test_collect_result_normalizes_error_status_to_failed(monkeypatch, tmp_path)
     assert rec.status == "failed"
 
 
+def test_collect_result_treats_legacy_output_fallback_as_unverified(monkeypatch, tmp_path):
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "output.md").write_text("real output", encoding="utf-8")
+
+    mgr = task_manager.TaskManager()
+    rec = task_manager.TaskRecord(
+        task_id="req_done",
+        workflow_id="req_done",
+        msg_id="req_done",
+        thread_id="req_done",
+        sender="user",
+        content_preview="done",
+        pid=123,
+        status="running",
+        started_at="2026-04-05T00:00:00Z",
+        workspace=str(workspace),
+    )
+
+    mgr._collect_result(rec)
+
+    assert rec.status == "completed_unverified"
+
+
+def test_collect_result_preserves_verification_metadata(monkeypatch, tmp_path):
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    verification = {"verified": True, "task_type": "writing", "summary": "ok"}
+    (workspace / "result.json").write_text(
+        json.dumps(
+            {
+                "task_id": "req_verified",
+                "workflow_id": "req_verified",
+                "status": "verified",
+                "summary": "done",
+                "completed_at": "2026-04-05T00:05:00Z",
+                "task_type": "writing",
+                "verification": verification,
+                "outcome_verified": True,
+                "verification_method": "file_exists",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mgr = task_manager.TaskManager()
+    rec = task_manager.TaskRecord(
+        task_id="req_verified",
+        workflow_id="req_verified",
+        msg_id="req_verified",
+        thread_id="req_verified",
+        sender="user",
+        content_preview="done",
+        pid=123,
+        status="running",
+        started_at="2026-04-05T00:00:00Z",
+        workspace=str(workspace),
+    )
+
+    mgr._collect_result(rec)
+
+    assert rec.status == "verified"
+    assert rec.task_type == "writing"
+    assert rec.verification == verification
+    assert rec.outcome_verified is True
+    assert rec.verification_method == "file_exists"
+
+
 def test_check_tasks_wait_reply_keeps_running_status(monkeypatch, tmp_path):
     import sys
     import types
@@ -447,3 +533,107 @@ def test_check_tasks_wait_reply_keeps_running_status(monkeypatch, tmp_path):
     assert completed == []
     assert mgr._records[0].status == "running"
     assert mgr._records[0].timeout_alerted_at
+
+
+def test_check_tasks_does_not_trust_reused_pid(monkeypatch, tmp_path):
+    import subprocess
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+    monkeypatch.setattr(task_manager, "CONTROL_RUNTIME_DB_ENABLED", False)
+    monkeypatch.setattr(task_manager.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(
+        task_manager.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="/usr/bin/other-process\n"),
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "worker_stderr.log").write_text("Traceback\nboom\n", encoding="utf-8")
+    mgr = task_manager.TaskManager()
+    rec = task_manager.TaskRecord(
+        task_id="req_reused_pid",
+        workflow_id="req_reused_pid",
+        msg_id="req_reused_pid",
+        thread_id="req_reused_pid",
+        sender="user",
+        content_preview="crash",
+        pid=12345,
+        status="running",
+        started_at="2026-04-05T00:00:00Z",
+        workspace=str(workspace),
+        max_attempts=1,
+    )
+    mgr._records = [rec]
+
+    completed = mgr.check_tasks()
+
+    assert completed == [rec]
+    assert rec.status == "failed"
+    assert rec.failure_class == "worker_crash"
+
+
+def test_worker_crash_auto_retries_from_message_json(monkeypatch, tmp_path):
+    import subprocess
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+    monkeypatch.setattr(task_manager, "WORKER_SCRIPT", tmp_path / "task_worker.py")
+    monkeypatch.setattr(task_manager, "CONTROL_RUNTIME_DB_ENABLED", False)
+    monkeypatch.setattr(task_manager.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(
+        task_manager.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="/usr/bin/other-process\n"),
+    )
+
+    class FakeProcess:
+        pid = 24680
+
+    monkeypatch.setattr(task_manager.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "message.json").write_text(
+        json.dumps(
+            {
+                "id": "req_retry_crash",
+                "thread_id": "req_retry_crash",
+                "sender": "user",
+                "content": "retry crash",
+                "user_id": "ang",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / "worker_stderr.log").write_text("Traceback\nboom\n", encoding="utf-8")
+    mgr = task_manager.TaskManager()
+    rec = task_manager.TaskRecord(
+        task_id="req_retry_crash",
+        workflow_id="req_retry_crash",
+        msg_id="req_retry_crash",
+        thread_id="req_retry_crash",
+        sender="user",
+        content_preview="retry crash",
+        pid=12345,
+        status="running",
+        started_at="2026-04-05T00:00:00Z",
+        workspace=str(workspace),
+        attempt_count=1,
+        max_attempts=2,
+    )
+    mgr._records = [rec]
+
+    completed = mgr.check_tasks()
+
+    assert completed == []
+    assert len(mgr._records) == 1
+    assert mgr._records[0].task_id == "req_retry_crash"
+    assert mgr._records[0].pid == 24680
+    assert mgr._records[0].attempt_count == 2
+    assert mgr._records[0].status == "dispatched"

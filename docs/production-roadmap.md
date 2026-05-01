@@ -1,5 +1,8 @@
 # Mira Production Roadmap
 
+> **DEPRECATED — superseded by [mira-next.md](mira-next.md).**
+> This document is retained for historical context. Current execution work must follow [CURRENT_PLAN.md](CURRENT_PLAN.md).
+
 更新时间：2026-04-06
 
 ## 1. 这份文档是干什么的

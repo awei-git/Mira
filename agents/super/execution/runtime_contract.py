@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 _STATUS_ALIASES = {
-    "completed": "done",
+    "completed": "completed_unverified",
     "error": "failed",
     "needs_input": "needs-input",
     "paused_horizon_limit": "needs-input",

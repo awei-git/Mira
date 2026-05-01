@@ -2,21 +2,27 @@
 
 更新时间：2026-05-01
 状态：active execution plan
-版本：v2.8（取代 next-phase-plan-2026-04-06；不替代 north-star / system-design / objectives-and-metrics）
+版本：v2.9（取代 next-phase-plan-2026-04-06；不替代 north-star / system-design / objectives-and-metrics）
 延续 hard rules：[CLAUDE.md](../../CLAUDE.md) §HARD RULES 1–6 全部继承，本文档不放松其中任何一条
+
+v2.9 vs v2.8 的差别（dev-box / local LLM canonicalization）：
+- §0.5.7 Tier 0 local runtime 固定为 **oMLX + `gemma-4-31b-it-4bit`**，不再写泛化 `mlx` / Gemma 3 12B。
+- 本地模型 cache 固定在 **`/Volumes/aw_swap/omlx-cache`**；`HF_HOME` / `HF_HUB_CACHE` / `XDG_CACHE_HOME` 必须由 `homebrew.mxcl.omlx` LaunchAgent 持久化。
+- Ollama 明确为 legacy，不允许重新进入 Mira runtime / routing / recovery path。
+- 文档内 DB baseline 对齐当前 dev box：PostgreSQL 17。
 
 v2.8 vs v2.7 的差别（reviewer 第四轮反馈，防 V3 scope 漂入 V2）：
 - §0.5.7 routing.yaml 拆成 V2 actual + V3 target 两块；V2 块用 Tier 1 OpenAI 主接 routine；V3 块标 "目标态非 V2 deliverable"
 - §3.3.2 bridge contract iCloud 行改 "一次性 manual recovery importer"（与 §3.9 一致）
-- §3.12.2 identity_check：V2 用规则 + Tier 1 OpenAI gpt-5-mini；mlx 推 V3；degraded mode 仅依赖规则层
-- §3.15.3 sensitivity_topic_check：V2 用 Tier 1 OpenAI gpt-5-mini；mlx 推 V3
+- §3.12.2 identity_check：V2 用规则 + Tier 1 OpenAI gpt-5-mini；oMLX 推 V3；degraded mode 仅依赖规则层
+- §3.15.3 sensitivity_topic_check：V2 用 Tier 1 OpenAI gpt-5-mini；oMLX 推 V3
 - §4 mapping table：#4 skill mesh / #8 external_learn 改 V2 用 Tier 1，不再说 Tier 0
 - §0.5.6 "speculative execution" 拒绝理由改 "budget discipline"，不再说 "cost cap"
 
 v2.7 vs v2.6 的差别（reviewer 第三轮反馈，全 stale ref 清理）：
 - §0.5.7 cost-saving 章节：「Tier 0 默认接收口 + $200 cost cap」改为 V3 目标，V2 仅证明路径
 - 月度 cost 表：V1 / V2 持平 / V3 真省钱三栏分清；删 "节省 $80-150/月" 误导
-- §3.10.3 retrieval：embedding V2 用 OpenAI text-embedding-3-small；mlx 本地推 V3
+- §3.10.3 retrieval：embedding V2 用 OpenAI text-embedding-3-small；oMLX 本地推 V3
 - §3.10.11 Memory acceptance 与 §9 #18 一致：不强求 100 条；consolidation 改为 ≥ 2 次（Memory Week 4 才上）
 - §3.11.7 5-file 标准：V2 demo 凑齐 4-file；真实 5-file 闭环（含 7-day outcome）推 V3
 - §3.19.12 mini-tier 删，引用 §9 canonical 表（避免双 source 漂移）
@@ -24,8 +30,8 @@ v2.7 vs v2.6 的差别（reviewer 第三轮反馈，全 stale ref 清理）：
 - Bridge TLS 证书 expiry 加入 §3.5.3 daily auth_health check（< 30 天 warning，< 7 天 critical）
 
 v2.6 vs v2.5 的差别（reviewer 第二轮反馈）：
-- Block fix 7 条：calendar 残留 / dedupe V3 App Store / Memory degraded mode 仅覆盖 adapter 不覆盖 core Postgres / self-evolution V2 仅 4-file 不要求 5-file（7-day outcome 推 V3）/ Memory consolidation cron acceptance 改为 ≥2 次（Memory Week 4 才上）/ external_learn 1 round（4 rounds 推 V3）/ Tier 0 wording 统一（V2 Week 1 起 2 adapter，Week 5 补齐 6 adapter + mlx 1-2 task type 试点）
-- Design fix 6 条：HTTPS 自签证书 + iOS pinned cert / iCloud 旧 command path 改为 "一次性 recovery importer"（手动 CLI，永不入 dispatch loop）/ embedding V2 OpenAI text-embedding-3-small + V3 mlx local / Week 6 article cutover 必须 Day 1-2 否则 "not evaluated" / self_audit 改 "≥80% 真 finding verified + ≥5 representative" 防造假 / cost criterion 从 Tier A 移到 Tier B（reliability > cost）
+- Block fix 7 条：calendar 残留 / dedupe V3 App Store / Memory degraded mode 仅覆盖 adapter 不覆盖 core Postgres / self-evolution V2 仅 4-file 不要求 5-file（7-day outcome 推 V3）/ Memory consolidation cron acceptance 改为 ≥2 次（Memory Week 4 才上）/ external_learn 1 round（4 rounds 推 V3）/ Tier 0 wording 统一（V2 Week 1 起 2 adapter，Week 5 补齐 6 adapter + oMLX 1-2 task type 试点）
+- Design fix 6 条：HTTPS 自签证书 + iOS pinned cert / iCloud 旧 command path 改为 "一次性 recovery importer"（手动 CLI，永不入 dispatch loop）/ embedding V2 OpenAI text-embedding-3-small + V3 oMLX local / Week 6 article cutover 必须 Day 1-2 否则 "not evaluated" / self_audit 改 "≥80% 真 finding verified + ≥5 representative" 防造假 / cost criterion 从 Tier A 移到 Tier B（reliability > cost）
 
 v2.5 vs v2.4 的差别（基于第三方 reviewer 第一轮反馈）：
 - Must-fix 7 条修复（kernel count 7，no SQLite default，STABILITY 删 CKSyncEngine + CF Workers，iCloud 严格 backup-only，删 calendar block 残留，acceptance count 26）
@@ -141,13 +147,30 @@ V2 不上 App Store。但若未来要上，[Apple App Review Guidelines 2025-11]
 
 ### 0.5.7 LLM 访问政策 + 三层 routing（个人 use，省钱第一）
 
-参考：[Anthropic AUP](https://www.anthropic.com/legal/aup)、[Claude Code legal-and-compliance](https://code.claude.com/docs/en/legal-and-compliance)、Manus context engineering（KV-cache 友好）、本地推理（mlx-lm + Gemma）。
+参考：[Anthropic AUP](https://www.anthropic.com/legal/aup)、[Claude Code legal-and-compliance](https://code.claude.com/docs/en/legal-and-compliance)、Manus context engineering（KV-cache 友好）、本地推理（oMLX + Gemma 4 31B）。
 
 V2 不上 App Store，没有 reviewer 看 auth 的约束。WA 个人 Pro/Max 订阅在自己 Mac 跑自己的 agent 是 Anthropic docs 明说的 "ordinary individual usage"。
 
-**核心 cost-saving 思路：本地 Gemma 接住所有不需要 frontier 的活。**
+**核心 cost-saving 思路：本地 Gemma 4 31B 接住所有不需要 frontier 的活。**
 
-WA 已搭 oMLX + Gemma，长期闲置只跑 idle-think。V3 把它升级为 **Tier 0 默认接收口**：所有 routine / 重复 / 低质量 bar 的工作先发本地，本地接不住再上 cheap API，cheap API 不够再上 premium。这是月度 cost 真正能压低的关键。
+WA 已搭 oMLX + `gemma-4-31b-it-4bit`，长期闲置只跑 idle-think。V3 把它升级为 **Tier 0 默认接收口**：所有 routine / 重复 / 低质量 bar 的工作先发本地，本地接不住再上 cheap API，cheap API 不够再上 premium。这是月度 cost 真正能压低的关键。
+
+**本地 LLM canonical config（不再漂移）：**
+
+```text
+runtime: oMLX
+serving endpoint: http://127.0.0.1:8800/v1
+primary local chat model: gemma-4-31b-it-4bit
+local embedding model target: nomicai-modernbert-embed-base-4bit
+model/cache root: /Volumes/aw_swap/omlx-cache
+HF_HOME: /Volumes/aw_swap/omlx-cache/huggingface
+HF_HUB_CACHE: /Volumes/aw_swap/omlx-cache/huggingface/hub
+XDG_CACHE_HOME: /Volumes/aw_swap/omlx-cache/xdg
+LaunchAgent: homebrew.mxcl.omlx
+max-model-memory: 20GB
+```
+
+Ollama is legacy. Mira runtime、routing、recovery、docs 都不允许再把 Ollama 当本地 LLM path。
 
 **V2 仅证明 adapter + fallback 路径可用**（Week 5 试点 1-2 task type）；**V3 是 Tier 0 默认接收口、$200 月度 cost target 真正落地的版本**。
 
@@ -155,21 +178,21 @@ WA 已搭 oMLX + Gemma，长期闲置只跑 idle-think。V3 把它升级为 **Ti
 
 | Tier | 实现 | 计费 | 接的活 |
 |------|------|------|--------|
-| **Tier 0 — Local** | oMLX + Gemma（已部署）+ pgvector + 简单规则 | $0 增量 | routine 分类 / 格式 / 重复检测 / 简单生成 / similarity 排序 / log triage |
+| **Tier 0 — Local** | oMLX + `gemma-4-31b-it-4bit`（cache on `/Volumes/aw_swap`）+ pgvector + 简单规则 | $0 增量 | routine 分类 / 格式 / 重复检测 / 简单生成 / similarity 排序 / log triage |
 | **Tier 1 — Cheap API** | OpenAI gpt-5-mini / haiku 4.5 / Gemini Flash | $0.10–0.30 / M token | Tier 0 不够时的 fallback；轻量 reasoning；schema-strict JSON 输出 |
 | **Tier 2 — Premium** | claude-code OAuth（主）→ Anthropic API key（fallback）→ OpenAI o-series | flat $20/月 + 按需 API | 公开输出（substack）/ 长综合 / 复杂 routing decision / self-evolve |
 
 #### V2 vs V3 范围（reviewer 调整）
 
 **V2 范围：**
-- LLMProvider port + 6 adapter 最终全列：anthropic_oauth + anthropic_api + openai + gemini + minimax + mlx
-- **adapter 上线分两阶段：** Week 1 上 anthropic_oauth + anthropic_api 2 个；Week 5 补齐 openai + gemini + minimax + mlx 4 个
+- LLMProvider port + 6 adapter 最终全列：anthropic_oauth + anthropic_api + openai + gemini + minimax + omlx
+- **adapter 上线分两阶段：** Week 1 上 anthropic_oauth + anthropic_api 2 个；Week 5 补齐 openai + gemini + minimax + omlx 4 个
 - routing.yaml schema + Tier 1/2 routing 落地
-- **mlx adapter Week 5 试点：仅接 1-2 个低风险 task type**（如 substack inbox dedup classify + anti-AI guard scan），验证 quality fallback 机制可用
+- **oMLX adapter Week 5 试点：仅接 1-2 个低风险 task type**（如 substack inbox dedup classify + anti-AI guard scan），验证 quality fallback 机制可用
 - V2 cost target：**持平 V1 baseline**（不退步即合格），**不强求降 30%**
 
 **V3 范围：**
-- mlx adapter 大规模推广到下表全部 14 个 Tier 0 task type
+- oMLX adapter 大规模推广到下表全部 14 个 Tier 0 task type
 - cost target：降 ≥ 30%
 - 视 Tier 0 fallback rate 决定 fine-tune / 换更大本地模型
 
@@ -190,7 +213,7 @@ WA 已搭 oMLX + Gemma，长期闲置只跑 idle-think。V3 把它升级为 **Ti
 | JSON repair / schema validation | sonnet 跑 | Tier 0 |
 | heartbeat / status 报告格式化 | sonnet 跑 | Tier 0 |
 | 简单 verifier predicate（user 说 stop X，X 是否真停了）| 不存在 | Tier 0 deterministic check 优先；模糊 case Tier 1 |
-| idle-think | 已是 mlx | Tier 0 |
+| idle-think | 已是 oMLX | Tier 0 |
 | external_learn 第一遍筛（这论文跟 A2A trust 相关吗）| sonnet 跑 | Tier 0 first pass，只有 yes 才上 Tier 2 深读 |
 | trace replay simple verification | 没跑 | Tier 0 |
 | skill outcome scoring | 没跑 | Tier 0 |
@@ -233,45 +256,45 @@ defaults:
   on_quota_exceeded: tier_above_fallback
 
 tasks:
-  # === Tier 0 mlx 试点（Week 5 上线，仅 1-2 task type）===
+  # === Tier 0 oMLX 试点（Week 5 上线，仅 1-2 task type）===
   substack_dedup_classify:
-    primary: { tier: 0, adapter: mlx_gemma, model: gemma-3-12b-it }
+    primary: { tier: 0, adapter: omlx_gemma, model: gemma-4-31b-it-4bit }
     fallback: [{ tier: 1, adapter: openai, model: gpt-5-mini }]
 
   anti_ai_guard_scan:
-    primary: { tier: 0, adapter: rules_then_mlx }
+    primary: { tier: 0, adapter: rules_then_omlx }
     fallback: [{ tier: 1, adapter: openai, model: gpt-5-mini }]
 
   # === Tier 1 / Tier 2 routing（Week 1-5 落地，V2 主体）===
   identity_check:
     primary: { tier: 1, adapter: openai, model: gpt-5-mini }
     fallback: [{ tier: 2, adapter: anthropic_oauth, model: claude-sonnet-4.6 }]
-    # V3：mlx local
+    # V3：oMLX local
 
   sensitivity_topic_check:
     primary: { tier: 1, adapter: openai, model: gpt-5-mini }
-    # V3：mlx local
+    # V3：oMLX local
 
   skill_retrieval_rank:
     primary: { tier: 1, adapter: openai_embed, model: text-embedding-3-small }
-    # 仅写入时调 embedding；read 是 pgvector 本地查询；V3：mlx_embed local
+    # 仅写入时调 embedding；read 是 pgvector 本地查询；V3：omlx_embed local
 
   embedding_skill_catalog:
     primary: { tier: 1, adapter: openai, model: text-embedding-3-small }
-    # V3：mlx local nomic-embed-text
+    # V3：oMLX local nomicai-modernbert-embed-base-4bit
 
   embedding_memory_write:
     primary: { tier: 1, adapter: openai, model: text-embedding-3-small }
-    # V3：mlx local
+    # V3：oMLX local
 
   explore_feed_triage:
     primary: { tier: 1, adapter: openai, model: gpt-5-mini }
-    # V3：Tier 0 mlx_gemma
+    # V3：Tier 0 omlx_gemma
 
   external_learn_first_pass:
     primary: { tier: 1, adapter: openai, model: gpt-5-mini }
     fallback: [{ tier: 2, adapter: anthropic_oauth, model: claude-sonnet-4.6 }]
-    # V3：Tier 0 mlx_gemma first-pass
+    # V3：Tier 0 omlx_gemma first-pass
 
   external_learn_deep_compare:
     primary: { tier: 2, adapter: anthropic_oauth, model: claude-sonnet-4.6 }
@@ -296,8 +319,8 @@ tasks:
     fallback: [{ tier: 2, adapter: anthropic_api }]
 
   idle_think:
-    primary: { tier: 0, adapter: mlx_gemma }
-    # 现状已是 mlx，V2 维持
+    primary: { tier: 0, adapter: omlx_gemma, model: gemma-4-31b-it-4bit }
+    # 现状已是 oMLX，V2 维持
 
   zh_tts:
     primary: { tier: 1, adapter: minimax }
@@ -309,35 +332,35 @@ tasks:
 **V3 target routing（Tier 0 全推广后的目标态，非 V2 deliverable）：**
 
 ```yaml
-# V3 目标：Tier 1 routine work 大规模迁到 Tier 0 mlx_gemma
-# 触发条件：V2 完成 + mlx adapter 在 1-2 task type 验证 quality fallback 可靠
+# V3 目标：Tier 1 routine work 大规模迁到 Tier 0 omlx_gemma
+# 触发条件：V2 完成 + oMLX adapter 在 1-2 task type 验证 quality fallback 可靠
 tasks:
   identity_check:
-    primary: { tier: 0, adapter: mlx_gemma }
+    primary: { tier: 0, adapter: omlx_gemma }
     fallback: [{ tier: 1, adapter: openai, model: gpt-5-mini }]
 
   sensitivity_topic_check:
-    primary: { tier: 0, adapter: mlx_gemma }
+    primary: { tier: 0, adapter: omlx_gemma }
     fallback: [{ tier: 1, adapter: openai }]
 
   skill_retrieval_rank:
-    primary: { tier: 0, adapter: mlx_embed_rank }
+    primary: { tier: 0, adapter: omlx_embed_rank }
     # local-only，no API fallback
 
   embedding_skill_catalog:
-    primary: { tier: 0, adapter: mlx_embed, model: nomic-embed-text }
+    primary: { tier: 0, adapter: omlx_embed, model: nomicai-modernbert-embed-base-4bit }
     fallback: [{ tier: 1, adapter: openai, model: text-embedding-3-small }]
 
   embedding_memory_write:
-    primary: { tier: 0, adapter: mlx_embed, model: nomic-embed-text }
+    primary: { tier: 0, adapter: omlx_embed, model: nomicai-modernbert-embed-base-4bit }
     fallback: [{ tier: 1, adapter: openai }]
 
   explore_feed_triage:
-    primary: { tier: 0, adapter: mlx_gemma }
+    primary: { tier: 0, adapter: omlx_gemma }
     fallback: [{ tier: 1, adapter: openai }]
 
   external_learn_first_pass:
-    primary: { tier: 0, adapter: mlx_gemma }
+    primary: { tier: 0, adapter: omlx_gemma }
     fallback: [{ tier: 1, adapter: openai }]
 
   # ... 其余 Tier 0 候选活（log triage / JSON repair / heartbeat format / ...）
@@ -353,7 +376,7 @@ tasks:
 5. **业务代码不允许：**
    - 直接 `import anthropic` / `openai` / `google.genai` / `minimax`（必须经 LLMProvider port）
    - 直接 `subprocess.run(["claude-code", ...])`（必须经 anthropic_oauth_adapter）
-   - 直接 `mlx_lm.generate(...)`（必须经 mlx_adapter）
+   - 直接调用本地推理 SDK / CLI（必须经 `omlx_adapter`）
 
 #### Cost 预测
 
@@ -366,7 +389,7 @@ tasks:
 | OpenAI API | $0 | $30–60（含 Memory embedding） | $5（仅 fallback）|
 | Gemini API（TTS）| $30 | $30 | $30 |
 | MiniMax（TTS）| $40 | $40 | $40 |
-| Tier 0 本地（mlx Gemma）| $0（仅 idle-think）| $0（Week 5 试点 1-2 task type）| $0（接 14 task type）|
+| Tier 0 本地（oMLX Gemma 4 31B）| $0（仅 idle-think）| $0（Week 5 试点 1-2 task type）| $0（接 14 task type）|
 | **月度总计** | $90 | **$150–230**（持平到略涨，因 Memory embedding） | **$125–175**（Tier 0 真省钱）|
 
 **Cost-saving 是 V3 的收益，不是 V2 的 deliverable。** V2 证明 adapter + fallback 路径可用；V3 把节省真做出来。任何把 V2 内 cost 降 30% 当目标的话术都是 plan inflation。
@@ -440,7 +463,7 @@ V2 的全部架构动作 = 在 §3.0 内核之上解决 R1–R6。
 
 1. **Task Queue + Durable Dispatcher**
    - schema：`{task_id, workflow_id, agent, payload, schema_version, created_at, parent_task_id?}`。
-   - 实现：DBOS Transact（§0.5.2）+ **PostgreSQL 16 backend，mandatory（不许 SQLite，与 §3.0.4 tech stack 一致）**。
+   - 实现：DBOS Transact（§0.5.2）+ **PostgreSQL 17 backend，mandatory（不许 SQLite，与 §3.0.4 tech stack 一致）**。
    - 契约：任何 task 必须 schema-versioned，dispatcher 调度后写 workflow row。
    - 替换性：12 月内 DBOS 不动；如换 Temporal / Restate，workflow shape 不变，只换 backend。
 
@@ -458,7 +481,7 @@ V2 的全部架构动作 = 在 §3.0 内核之上解决 R1–R6。
      - `lib/llm/openai_adapter.py`（embedding + reasoning fallback）
      - `lib/llm/gemini_adapter.py`（EN TTS + 长 context fallback）
      - `lib/llm/minimax_adapter.py`（ZH TTS）
-     - `lib/llm/mlx_adapter.py`（local，routine + idle-think）
+     - `lib/llm/omlx_adapter.py`（local，routine + idle-think）
    - auth：OAuth（claude-code subprocess）OR API key（macOS Keychain / `.env`）。Routing 策略详见 §0.5.7 + `runtime/registry/llm_routing.yaml`。
    - 契约：handler 业务代码 **不允许**：
      - 直接 `import anthropic` / `openai` / `google.genai` / `minimax`（必须经端口）
@@ -514,7 +537,7 @@ Breaking either requires:
   2. Handler: handler(payload, ctx) -> Result{status, artifacts, verification, failure_class?}
   3. LLMProvider.complete(messages, model_class, ...) -> Response
      [implementation: 6 adapters (anthropic_oauth via claude-code CLI as primary,
-      anthropic_api / openai / gemini / minimax / mlx as fallbacks);
+      anthropic_api / openai / gemini / minimax / omlx as fallbacks);
       routed via runtime/registry/llm_routing.yaml;
       NO third-party OAuth wrapper / claude.ai session scrape;
       see docs/mira-next.md §0.5.7]
@@ -530,9 +553,9 @@ Breaking either requires:
 
 See docs/mira-next.md §3.0.4 for the full table. Fixed components:
   - Python 3.12+
-  - PostgreSQL 16 (via Postgres.app) — mandatory, no SQLite
+  - PostgreSQL 17 — mandatory, no SQLite
   - DBOS Transact + Postgres backend
-  - LLMProvider port: 6 adapters (anthropic_oauth primary, anthropic_api/openai/gemini/minimax/mlx fallbacks)
+  - LLMProvider port: 6 adapters (anthropic_oauth primary, anthropic_api/openai/gemini/minimax/omlx fallbacks)
   - SwiftUI + SwiftData (iOS message thread reliability)
   - mDNS/Bonjour + HTTPS API for app-Mac bridge
   - FastAPI (existing web server)
@@ -565,7 +588,7 @@ Everything else in this repo is replaceable without ADR.
 |----|------|------|----------|
 | **Backend 语言** | Python 3.12+ | 现有代码 / 生态 / Mac 原生 | 永久 |
 | **Backend runtime** | LaunchAgent (macOS) + asyncio | 单 Mac topology；HARD RULE 6 监控 | 永久 |
-| **主数据库** | **PostgreSQL 16**（取代当前 SQLite + jsonl 散落） | production-grade、ACID、DBOS 原生支持、可迁移、易备份 | 高 — 替换要全数据迁移 |
+| **主数据库** | **PostgreSQL 17**（取代当前 SQLite + jsonl 散落） | production-grade、ACID、DBOS 原生支持、可迁移、易备份 | 高 — 替换要全数据迁移 |
 | **Postgres 部署** | [Postgres.app](https://postgresapp.com/)（macOS native，不要 docker）| 单 Mac 不需要容器；GUI 管理；LaunchAgent 友好 | 中 |
 | **Durable execution** | DBOS Transact + Postgres backend | §0.5.2 论证；workflow durability 内核 | 高 |
 | **Cache / KV** | 不另建。Postgres 足够 | 单用户单机不需要 Redis | 低 |
@@ -807,8 +830,8 @@ V2 让每类 task 必须声明「成功的可观察后果」，由 type-aware ve
 2. **Runtime Skill Retrieval Service。**
    - `agents/shared/skills/retriever.py`：`retrieve(agent_name, task_context, k=3) -> list[SkillSnippet]`。
    - 实现：tag overlap（规则）+ embedding similarity（pgvector）+ recent_outcome_score 加权。
-   - embedding：**V2 用 OpenAI `text-embedding-3-small` API**（cost dust，便宜可靠）；mlx 本地 embedding 推 V3（§0.5.7 mlx adapter Week 5 仅试点 1-2 task type，embedding 不在试点范围）。
-   - **V3：** mlx 本地 nomic-embed-text 替代 OpenAI embedding，整个 retrieval 不走 API。
+   - embedding：**V2 用 OpenAI `text-embedding-3-small` API**（cost dust，便宜可靠）；oMLX 本地 embedding 推 V3（§0.5.7 oMLX adapter Week 5 仅试点 1-2 task type，embedding 不在试点范围）。
+   - **V3：** oMLX 本地 `nomicai-modernbert-embed-base-4bit` 替代 OpenAI embedding，整个 retrieval 不走 API。
    - **关键：注入到 user-message 段，不是 system prompt**。
      - 为什么：Manus 的教训（§0.5.1）—— hot-swap system prompt 杀 KV-cache。
      - 系统 prompt 保持稳定，skill 作为「这次任务相关的参考」放 user message 顶部。
@@ -1054,7 +1077,7 @@ retrieval score = recency × α₁ + importance × α₂ + relevance × α₃，
 
 默认 α₁=α₂=α₃=1.0，top-k=8。kind filter 必须传（写文章时不要拉 task memory；做计划时不要拉 belief memory）。
 
-**V2 实现（reviewer 调整）：** embedding 用 OpenAI `text-embedding-3-small` API（cost dust，便宜可靠）；similarity 计算 pgvector（本地）；importance scoring 用 Tier 1 OpenAI gpt-5-mini。**V3：** embedding 切到 mlx_adapter（本地 nomic-embed-text）；importance scoring 切到 mlx Gemma；整个 retrieval 走本地。
+**V2 实现（reviewer 调整）：** embedding 用 OpenAI `text-embedding-3-small` API（cost dust，便宜可靠）；similarity 计算 pgvector（本地）；importance scoring 用 Tier 1 OpenAI gpt-5-mini。**V3：** embedding 切到 omlx_adapter（本地 `nomicai-modernbert-embed-base-4bit`）；importance scoring 切到 oMLX `gemma-4-31b-it-4bit`；整个 retrieval 走本地。
 
 #### 3.10.4 Hot context layer：progress.txt + 注入格式
 
@@ -1139,7 +1162,7 @@ dashboard 显示：本周 retrieval count / memory_kind 分布 / 最常 access t
 V1 的 soul/ 文件结构保留，**但所有 read/write 必须经 Memory port**。Phase Week 4：
 
 1. 扫 `data/soul/` 全部文件 → 解析 frontmatter + content → bulk INSERT 到 `memories` 表
-2. 为每条计算 embedding（V2 用 OpenAI `text-embedding-3-small` API；本地 mlx embedding 推 V3，§0.5.7）
+2. 为每条计算 embedding（V2 用 OpenAI `text-embedding-3-small` API；本地 oMLX embedding 推 V3，§0.5.7）
 3. 启 file_mirror 双向 sync
 4. agent 代码用 `Memory.read()` 替换裸 `open(soul_file)`，走 §3.1 strangler
 
@@ -1417,7 +1440,7 @@ def Memory.write(kind="belief", content, ...):
 `identity_check()` 实现（V2 时间对齐，reviewer 修正）：
 - **第一层（永远先跑，不依赖 LLM）：** identity_core.md hash 校验 + 显式 forbidden phrases regex / forbidden patterns。规则命中 = violation，直接拒写。
 - **第二层（V2 Week 4 起）：** Tier 1 OpenAI gpt-5-mini 调用（routing.yaml `identity_check`），prompt 固定模板「下面这条 belief 是否与 identity_core 矛盾？返回 violation / tension / compatible + 一句 reason」。fallback Tier 2 anthropic_oauth。violation = 拒写；tension = 写但记 drift journal；compatible = 静默通过。
-- **V3：** 切到 Tier 0 mlx_gemma local（Week 5 mlx adapter 验证后）。
+- **V3：** 切到 Tier 0 omlx_gemma local（Week 5 oMLX adapter 验证后）。
 - **§3.10.10a degraded mode 内的 identity check** 仅依赖第一层规则，不依赖 LLM 任何 tier。
 
 #### 3.12.3 Self-Evolution × Identity
@@ -1656,7 +1679,7 @@ def dispatch(channel, payload):
 `sensitivity_scan` 三层：
 1. **Memory provenance check**：payload 中所有 retrieved memory 的 sensitivity 必须 ≤ channel 允许 level（substack channel 只允许 `public`；inbox reply 允许 `public`+ scoped `personal`）
 2. **PII regex**：full names other than Mira/WA self-references、addresses、phone、 financial numbers (>4 digits with $/¥/%)、account IDs
-3. **LLM 主题 check（V2 时间对齐，reviewer 修正）**：V2 用 **Tier 1 OpenAI gpt-5-mini**（routing.yaml `sensitivity_topic_check`）跑「下面这段是否包含 trading / portfolio / financial advice」→ 是 = block。**V3 切到 Tier 0 mlx_gemma local**（Week 5 mlx adapter 验证后）。
+3. **LLM 主题 check（V2 时间对齐，reviewer 修正）**：V2 用 **Tier 1 OpenAI gpt-5-mini**（routing.yaml `sensitivity_topic_check`）跑「下面这段是否包含 trading / portfolio / financial advice」→ 是 = block。**V3 切到 Tier 0 omlx_gemma local**（Week 5 oMLX adapter 验证后）。
 
 任意一层失败 = block + 写 `data/audit/sensitivity_blocks.jsonl` + bridge push WA（不阻塞下一次 publish 尝试，但写明确 needs_review）。
 
@@ -2300,7 +2323,7 @@ WA 完全不 reply = 没有任何 plan 能救。但本节的设计：
 | #2d podcast 链路从未自动跑完 | §3.7.3 article→podcast 特例 | 文章 published 后 7 天内必有 zh + en podcast |
 | #2e market report 只有 portfolio | §3.7.4 daily report sections registry（含 substack metrics） | required `market_briefing` + `substack_metrics` 不允许缺失 |
 | #3 self-correction 永远开环 | §3.4 闭环 backlog（DBOS）| 7 天内 ≥ 5 finding auto-fix-verified |
-| #4 skill 写了不用 | §3.6 runtime skill mesh（V2 用 Tier 1 OpenAI text-embedding-3-small 写入；read 走 pgvector 本地 cosine；mlx 本地 embedding 推 V3）；注入 user-message 不杀 KV-cache | 任意 writer task prompt log 中可见 retrieved skill |
+| #4 skill 写了不用 | §3.6 runtime skill mesh（V2 用 Tier 1 OpenAI text-embedding-3-small 写入；read 走 pgvector 本地 cosine；oMLX 本地 embedding 推 V3）；注入 user-message 不杀 KV-cache | 任意 writer task prompt log 中可见 retrieved skill |
 | #5 follow request 差 | §3.3.1 jobs.yaml + §3.4.4 request verify | user 说 stop X，48h 内 dashboard 自动 surface verify 结果 |
 | #6 app message thread 也做不好 | §3.3.2 bridge contract + §3.9 SwiftData 替代 ItemStore.swift | app 重启后 thread 完整 |
 | #7 永远在打补丁 | §3.0 内核锁定 + §3.1 strangler 强制 | PR check：禁止 hardcode IP / 散落 job 定义 / 绕过 writer / silent fix |
@@ -2435,7 +2458,7 @@ Week 3 闸门：
    - `Memory.read / write / supersede / consolidate / list_recent` 5 verb 跑通
    - **Mem0-style write pipeline**（ADD/UPDATE/DELETE/NOOP）
    - file_mirror 双向 sync
-   - 扫现有 `data/soul/` bulk INSERT；embedding 用 OpenAI `text-embedding-3-small`（mlx 本地推 V3）
+   - 扫现有 `data/soul/` bulk INSERT；embedding 用 OpenAI `text-embedding-3-small`（oMLX 本地推 V3）
    - **§3.10.10a degraded mode**：Memory 不可用时 routine task 继续 + memory-required task 入 pending queue + recovery 后 drain
    - 6 周内手动 disable memory_adapter 或 drop pgvector index 1 次验证 degraded mode（**不要 stop Postgres**，那是 §3.13 DR scenario）
 2. **§3.10.7 weekly consolidation cron**（周日跑）；**§3.10.8 retrieval audit log + decision provenance footer**。
@@ -2458,10 +2481,10 @@ Week 4 闸门：
 
 ### Week 5 — LLM Router Shadow + Skill Retrieval + Tier 0 试点（1-2 个 task type）
 
-目标：LLM router shadow vs keyword router；skill retrieval 作 Memory 子集；mlx adapter 试点 1-2 个 task type 验证 quality fallback 机制。
+目标：LLM router shadow vs keyword router；skill retrieval 作 Memory 子集；oMLX adapter 试点 1-2 个 task type 验证 quality fallback 机制。
 
 1. **§3.0.1 #3 LLMProvider 补齐其余 adapter**：openai / gemini / minimax 完整化（Week 1 已有 anthropic_oauth + anthropic_api）。
-2. **§3.0.1 #3 mlx_adapter 试点版**：能跑 Gemma 3 12B local；只接 1-2 个低风险 task type（建议 substack inbox dedup classify + anti-AI guard scan）；带 quality fallback（schema check / confidence threshold；fail 自动 fallback 到 openai gpt-5-mini）。**全面铺 V3**。
+2. **§3.0.1 #3 omlx_adapter 试点版**：能跑 Gemma 4 31B local；只接 1-2 个低风险 task type（建议 substack inbox dedup classify + anti-AI guard scan）；带 quality fallback（schema check / confidence threshold；fail 自动 fallback 到 openai gpt-5-mini）。**全面铺 V3**。
 3. **§3.6 skill retrieval = `Memory.read(kinds=['fact'], tags=['skill'])`**；writer / researcher / analyst / discussion 全 wire；注入 user-message 段（KV-cache 友好，§3.10.4 格式）。
 4. **§3.6.4 external_learn workflow** 上线，跑第一个 round（Tier 1 OpenAI gpt-5-mini 做 first-pass，只有 yes 上 Tier 2 深读）。
 5. **§3.8.2 manifest tools 字段补齐**；**§3.8.1 LLM router 上线（shadow 与 keyword router 并行）**。
@@ -2475,7 +2498,7 @@ Week 5 闸门：
 - ✅ 任意 writer task prompt 中可见 retrieved skill + positive_guide context
 - ✅ external_learn 1 round 完成
 - ✅ LLM router shadow 报告显示历史误路由 case ≥ 80% 纠正
-- ✅ mlx adapter 试点 task 走通；fallback rate < 50%（说明本地能用）
+- ✅ oMLX adapter 试点 task 走通；fallback rate < 50%（说明本地能用）
 - ✅ 至少 1 条 self-evolve proposal 通过 validate（stage 3+4 闭环）
 - ✅ substack notes cutover 后 1 天无 incident
 - ✅ 8 篇 runbook 全 merged
@@ -2567,7 +2590,7 @@ V2 不解决以下问题。
 
 ### 8.1 V2 6 周预算（OAuth 主路径，Tier 0 仅试点）
 
-reviewer 调整后：mlx adapter 仅试点 1-2 task type，**V2 cost 持平 V1 baseline 即合格**（Tier B，criterion #17；reviewer 调整：不放 Tier A，因为 task reliability + no leak + no silent auth 比 cost 更关键）。下降 ≥ 30% 是 V3 目标。
+reviewer 调整后：oMLX adapter 仅试点 1-2 task type，**V2 cost 持平 V1 baseline 即合格**（Tier B，criterion #17；reviewer 调整：不放 Tier A，因为 task reliability + no leak + no silent auth 比 cost 更关键）。下降 ≥ 30% 是 V3 目标。
 
 | 项 | V2 6 周预算 | 备注 |
 |----|-----------|------|
@@ -2577,7 +2600,7 @@ reviewer 调整后：mlx adapter 仅试点 1-2 task type，**V2 cost 持平 V1 b
 | Gemini API（EN TTS） | $40 | 现有 podcast 频率 |
 | MiniMax（ZH TTS） | $50 | 同上 |
 | Search APIs | $20 | external_learn 抓 source |
-| Postgres.app / 本地 mlx | $0 | macOS native + 已部署 |
+| PostgreSQL 17 / 本地 oMLX | $0 | macOS native + 已部署 |
 | 其他 / buffer | $40 | |
 | **6 周总计** | **$360** | hard cap（容许少许增量给 Memory + self-evolution propose 试跑）|
 
@@ -2660,7 +2683,7 @@ irreversible 节点 WA 必须 explicit APPROVE 才执行（不允许 24h default
 | 24 | 5 个 LOCK_ID 全用 + concurrency 测试套 ≥ 90% + 0 race condition incident | 全过 |
 | 25 | lib/migrations/ ≥ 3 migration + runbook + 1 rollback drill + CI rule | 全过 |
 | 26 | positive_guide.md draft merged + calendar 4 周 + engagement.yaml + publish_outcomes pipeline 跑起来；**完整 voice 度量 + 月度 auto-suggest 推 V3** | 全过 |
-| 17 | V2 末月度 LLM cost 持平 V1 baseline（不退步即合格）；mlx Tier 0 试点 ≥ 1 task type 跑通 quality fallback；下降 ≥ 30% **推 V3** | 全过 |
+| 17 | V2 末月度 LLM cost 持平 V1 baseline（不退步即合格）；oMLX Tier 0 试点 ≥ 1 task type 跑通 quality fallback；下降 ≥ 30% **推 V3** | 全过 |
 
 ### Tier C — Nice to have（≥ 3/4，fail 不阻塞 V3）
 
@@ -2702,7 +2725,7 @@ V2 做 14 件事（13 内容 + 1 enforcement）：
 1. **锁住 7 个内核接口 + tech stack**（§3.0 + STABILITY.md），让 V3 不再大改主干。
 2. **strangler fig 保住 substack 突破口**（§3.1 + §3.2），refactor 期间 0 天断档。
 3. **闭环 4 件最基础的事**（R1–R6），让 done 不再撒谎。
-4. **多 provider 三层 routing 路径打通**（§0.5.7），mlx adapter 试点 1-2 task type 验证 quality fallback；V2 cost 持平 V1（不退步即合格），**Tier 0 全推广 + cost 降 30% 推 V3**。
+4. **多 provider 三层 routing 路径打通**（§0.5.7），oMLX adapter 试点 1-2 task type 验证 quality fallback；V2 cost 持平 V1（不退步即合格），**Tier 0 全推广 + cost 降 30% 推 V3**。
 
 **记忆 + 学习类（2）：**
 5. **Memory 系统真上线**（§3.10），bi-temporal supersede + 5 kind + Mem0 写入 + KV-cache 友好注入。
@@ -2757,10 +2780,10 @@ V2 撑住底盘后，[north-star.md](north-star.md) §11.7 research workflow 才
 
 ### 11.4 Tier 0 全推广 + 本地模型升级（reviewer 调整：从 V2 推到 V3）
 
-- V2 仅 mlx adapter 试点 1-2 task type（验证 quality fallback 机制）
+- V2 仅 oMLX adapter 试点 1-2 task type（验证 quality fallback 机制）
 - V3 全推广：14 个 Tier 0 候选 task type 逐个迁移（dedup / triage / scan / classify / repair / status format / skill retrieval / external_learn first-pass / 等等）
 - 视 Tier 0 fallback rate 决定：
-  - 持续 fallback rate > 30% → 试 Gemma 3 27B / Llama 3.3 / Qwen 2.5
+  - 持续 fallback rate > 30% → 先检查 prompt/schema 与 `gemma-4-31b-it-4bit` context fit；仍不够再试同级或更强 oMLX 量化模型
   - 部分高频高质 bar task type → 用 Mira 自家数据 fine-tune
 - 目标：月度 LLM cost 较 V1 baseline 降 ≥ 30%（V2 不强求，V3 真做）
 

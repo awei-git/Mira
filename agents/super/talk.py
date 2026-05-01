@@ -15,6 +15,7 @@ from pathlib import Path
 from config import (
     BRIDGE_COMPAT_EXPORT_ENABLED,
     CONTROL_RUNTIME_DB_ENABLED,
+    ICLOUD_COMMAND_FALLBACK_ENABLED,
     MIRA_DIR,
     CLEANUP_DAYS,
     WRITINGS_DIR,
@@ -31,6 +32,7 @@ except (ImportError, ModuleNotFoundError):
 from task_manager import TaskManager, TASKS_DIR
 from memory.soul import check_prompt_injection
 from execution.runtime_contract import normalize_task_status
+from locks.advisory import AdvisoryLockTimeout, LOCK_DISPATCH_LOOP, advisory_lock
 
 from state import load_state, save_state
 
@@ -124,8 +126,12 @@ def _dispatch_control_plane_tasks(task_mgr, bridges_by_user: dict, default_bridg
         from control.repository import ControlRepository
 
         with transaction() as conn:
-            repo = ControlRepository(conn)
-            items = repo.list_dispatchable_tasks(limit=MAX_TASKS_PER_CYCLE)
+            with advisory_lock(LOCK_DISPATCH_LOOP, conn=conn, timeout_s=1):
+                repo = ControlRepository(conn)
+                items = repo.list_dispatchable_tasks(limit=MAX_TASKS_PER_CYCLE)
+    except AdvisoryLockTimeout:
+        log.info("Control DB dispatch scan skipped; another invocation holds dispatch lock")
+        return
     except Exception as exc:
         log.warning("Control DB dispatch scan failed: %s", exc)
         return
@@ -146,6 +152,16 @@ def _dispatch_control_plane_tasks(task_mgr, bridges_by_user: dict, default_bridg
             content = messages[-1].get("content", "")
         if not _check_inbound_command_safety(bridge, {"sender": user_id}, task_id, item.get("title", ""), content):
             continue
+        try:
+            with transaction() as conn:
+                repo = ControlRepository(conn)
+                claimed = repo.claim_task_for_dispatch(user_id, task_id)
+        except Exception as exc:
+            log.warning("Control DB dispatch claim failed for %s: %s", task_id, exc)
+            continue
+        if not claimed:
+            log.info("Control DB task %s already claimed or no longer queued", task_id)
+            continue
         msg = _message_from_control_item(item, user_id, user_cfg)
         workspace = TASKS_DIR / _talk_slug(msg.content, task_id)
         dispatched = task_mgr.dispatch(msg, workspace)
@@ -153,21 +169,11 @@ def _dispatch_control_plane_tasks(task_mgr, bridges_by_user: dict, default_bridg
             log.info("Control DB task %s dispatched from queued state", task_id)
         else:
             try:
-                from control.db import transaction
-                from control.repository import ControlRepository
-
                 with transaction() as conn:
                     repo = ControlRepository(conn)
-                    repo.update_task_status(
-                        user_id,
-                        task_id,
-                        "failed",
-                        summary="Worker process failed to start",
-                        error_code="dispatch_failed",
-                        error_message="Worker process failed to start",
-                    )
+                    repo.release_dispatch_claim(user_id, task_id, reason="worker process failed to start")
             except Exception as exc:
-                log.warning("Control DB dispatch failure update failed for %s: %s", task_id, exc)
+                log.warning("Control DB dispatch claim release failed for %s: %s", task_id, exc)
 
 
 def _quarantine_inbound_command(bridge, cmd: dict, item_id: str, title: str, content: str, reason: str):
@@ -409,7 +415,15 @@ def _status_footer(task_mgr) -> str:
     return "\n\n---\nAgent: 空闲"
 
 
-_TASK_TERMINAL_STATUSES = {"done", "failed", "timeout", "needs-input", "blocked"}
+_TASK_TERMINAL_STATUSES = {
+    "done",
+    "verified",
+    "completed_unverified",
+    "failed",
+    "timeout",
+    "needs-input",
+    "blocked",
+}
 
 
 def _find_task_record(task_mgr, task_id: str):
@@ -440,6 +454,10 @@ def _project_record_to_control_db(rec, status: str, *, agent_message: str = "", 
                 error_message=error_message or None,
                 agent_message=message,
                 message_kind="error" if error_message else "text",
+                verification=getattr(rec, "verification", None),
+                task_type=getattr(rec, "task_type", "") or None,
+                outcome_verified=getattr(rec, "outcome_verified", None),
+                verification_method=getattr(rec, "verification_method", "") or None,
             )
     except Exception as exc:
         log.warning("Control DB terminal projection failed for %s: %s", rec.task_id, exc)
@@ -465,10 +483,19 @@ def _project_record_to_bridge(bridge, task_mgr, rec) -> None:
         log.info("STATE %s: working -> needs-input", rec.task_id)
         return
 
-    if rec.status == "done":
+    if rec.status == "completed_unverified":
+        msg_text = (content + footer) if not is_comment else ""
+        bridge.update_status(rec.task_id, "verifying", agent_message=msg_text)
+        _project_record_to_control_db(rec, "completed_unverified", agent_message=msg_text)
+        if rec.tags:
+            bridge.set_tags(rec.task_id, rec.tags)
+        log.info("STATE %s: working -> verifying", rec.task_id)
+        return
+
+    if rec.status in ("done", "verified"):
         msg_text = (content + footer) if not is_comment else ""
         bridge.update_status(rec.task_id, "done", agent_message=msg_text)
-        _project_record_to_control_db(rec, "done", agent_message=msg_text)
+        _project_record_to_control_db(rec, "verified", agent_message=msg_text)
         if rec.tags:
             bridge.set_tags(rec.task_id, rec.tags)
         ws = Path(rec.workspace) if rec.workspace else None
@@ -594,8 +621,11 @@ def do_talk():
         except (ImportError, AttributeError) as e:
             log.debug("Task scoring skipped: %s", e)
 
-    # --- Phase B1: Process commands from all users ---
-    for user_bridge in all_bridges:
+    # --- Phase B1: Process legacy command files only when explicitly enabled ---
+    command_bridges = all_bridges if ICLOUD_COMMAND_FALLBACK_ENABLED else []
+    if not ICLOUD_COMMAND_FALLBACK_ENABLED:
+        log.debug("Legacy iCloud command polling disabled; using Postgres control-plane queue")
+    for user_bridge in command_bridges:
         all_cmds = user_bridge.poll_commands()
         if len(all_cmds) > MAX_TASKS_PER_CYCLE:
             log.warning(

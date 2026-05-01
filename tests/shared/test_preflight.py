@@ -54,6 +54,46 @@ def test_publish_preflight_short_content():
     assert any("short" in r for r in result.blocking_reasons)
 
 
+def test_publish_preflight_blocks_confidential_memory(monkeypatch, tmp_path):
+    import config
+    from publish.preflight import preflight_check
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    result = preflight_check(
+        "publish",
+        {
+            "instruction": "Publish article",
+            "title": "Do not leak this",
+            "content": "A" * 300,
+            "platform": "substack",
+            "memories": [{"id": "m1", "sensitivity": "confidential"}],
+        },
+    )
+
+    assert not result.passed
+    assert any("blocked sensitivity" in r for r in result.blocking_reasons)
+    assert (tmp_path / "audit" / "sensitivity_blocks.jsonl").exists()
+
+
+def test_publish_preflight_blocks_tetra_portfolio_payload(monkeypatch, tmp_path):
+    import config
+    from publish.preflight import preflight_check
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    result = preflight_check(
+        "publish",
+        {
+            "instruction": "Publish article",
+            "title": "Tetra portfolio note",
+            "content": "This includes Tetra portfolio details with $12345 of position context." * 8,
+            "platform": "substack",
+        },
+    )
+
+    assert not result.passed
+    assert any("sensitive topic" in r for r in result.blocking_reasons)
+
+
 def test_file_write_preflight_protected():
     from publish.preflight import preflight_check
 

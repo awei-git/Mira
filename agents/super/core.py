@@ -40,6 +40,8 @@ from config import (
     PERF_WARN_THRESHOLD,
     LAST_OUTPUT_FILE,
     STALE_THRESHOLDS,
+    IPHONE_BRIDGE_WARN_LATENCY_MS,
+    BRIDGE_STALE_THRESHOLD,
     validate_config,
     get_known_user_ids,
     get_user_config,
@@ -307,6 +309,29 @@ def _check_invisible_dependencies():
 # ---------------------------------------------------------------------------
 
 
+def _run_auth_health_if_due(interval_s: int = 300) -> None:
+    state = load_state()
+    now = time.time()
+    last = float(state.get("last_auth_health_check", 0) or 0)
+    if now - last < interval_s:
+        return
+    try:
+        from auth_health import run_auth_health_checks
+
+        results = run_auth_health_checks()
+        for result in results:
+            if result.severity in {"warning", "critical"}:
+                log.warning(
+                    "AUTH_HEALTH provider=%s status=%s detail=%s", result.provider, result.status, result.detail
+                )
+            else:
+                log.info("AUTH_HEALTH provider=%s status=%s", result.provider, result.status)
+        state["last_auth_health_check"] = now
+        save_state(state)
+    except Exception as exc:
+        log.warning("Auth health check failed: %s", exc)
+
+
 def cmd_run():
     """Full cycle: talk -> respond -> dispatch background work.
 
@@ -321,6 +346,7 @@ def cmd_run():
     log.info("=== Mira Agent wake ===")
 
     _check_invisible_dependencies()
+    _run_auth_health_if_due()
 
     try:
         _sf_path = LOGS_DIR / "security_flags.jsonl"
@@ -396,6 +422,44 @@ def cmd_run():
     except Exception as e:
         log.error("Journal sync check failed: %s", e)
     _phase_times["sync_journals"] = round((_time.monotonic() - _t0) * 1000)
+
+    # Log pickup latency for pending iPhone command files before processing
+    _bridge_commands_root = MIRA_DIR / "users"
+    if _bridge_commands_root.is_dir():
+        _pickup_now = datetime.now()
+        for _user_cmd_dir in _bridge_commands_root.iterdir():
+            _cmds_dir = _user_cmd_dir / "commands"
+            if not _cmds_dir.is_dir():
+                continue
+            for _msg_file in _cmds_dir.glob("*.json"):
+                if _msg_file.name.endswith(".tmp"):
+                    continue
+                try:
+                    _mtime = _msg_file.stat().st_mtime
+                    _latency_ms = round((_pickup_now - datetime.fromtimestamp(_mtime)).total_seconds() * 1000)
+                    if _latency_ms >= IPHONE_BRIDGE_WARN_LATENCY_MS:
+                        log.warning(
+                            "iphone_msg_pickup_latency_ms=%d file=%s",
+                            _latency_ms,
+                            _msg_file.name,
+                        )
+                    else:
+                        log.info(
+                            "iphone_msg_pickup_latency_ms=%d file=%s",
+                            _latency_ms,
+                            _msg_file.name,
+                        )
+                except OSError:
+                    pass
+
+    _bridge_hb = MIRA_DIR / "heartbeat"
+    if _bridge_hb.exists():
+        try:
+            _bridge_hb_age = time.time() - _bridge_hb.stat().st_mtime
+            if _bridge_hb_age > BRIDGE_STALE_THRESHOLD:
+                log.warning("icloud_bridge_heartbeat_stale age_seconds=%d", int(_bridge_hb_age))
+        except OSError:
+            pass
 
     # Mira first (lightweight, fast) — CRITICAL PATH
     _t0 = _time.monotonic()
@@ -846,6 +910,43 @@ def _dispatch_distribution_snapshot() -> None:
         log.debug("Dispatch history write failed: %s", _e)
 
 
+def _append_task_latency_to_journal() -> None:
+    cutoff = time.time() - 86400
+    latencies: list[float] = []
+    try:
+        for meta_file in TASKS_DIR.rglob("metadata.json"):
+            try:
+                if meta_file.stat().st_mtime < cutoff:
+                    continue
+                data = json.loads(meta_file.read_text(encoding="utf-8"))
+                queued_at = data.get("queued_at")
+                lat = data.get("latency_s")
+                if lat is not None and queued_at is not None and float(queued_at) >= cutoff:
+                    latencies.append(float(lat))
+            except (OSError, json.JSONDecodeError, ValueError):
+                continue
+    except Exception:
+        return
+    if not latencies:
+        return
+    s = sorted(latencies)
+    n = len(s)
+
+    def _pct(p):
+        k = (n - 1) * p / 100
+        lo, hi = int(k), min(int(k) + 1, n - 1)
+        return s[lo] + (k - lo) * (s[hi] - s[lo])
+
+    p50 = round(_pct(50))
+    p95 = round(_pct(95))
+    journal_path = JOURNAL_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.md"
+    try:
+        with open(journal_path, "a", encoding="utf-8") as _jf:
+            _jf.write(f"\n⏱ task latency p50/p95: {p50}s / {p95}s\n")
+    except OSError:
+        pass
+
+
 def _refresh_operator_dashboards():
     """Persist operator dashboard snapshots for each configured user."""
     try:
@@ -918,7 +1019,14 @@ def main():
             i += 1
 
     if command == "run":
-        cmd_run()
+        from locks.process import ProcessLockActive, launchagent_lock
+
+        try:
+            with launchagent_lock():
+                cmd_run()
+        except ProcessLockActive as exc:
+            log.info("%s", exc)
+            return
     elif command == "talk":
         do_talk()
     elif command == "explore":
@@ -932,6 +1040,7 @@ def main():
         _write_last_output("reflect")
     elif command == "journal":
         do_journal(user_id=flags.get("user", "ang"))
+        _append_task_latency_to_journal()
         _write_last_output("journal")
     elif command == "research-log":
         do_research_log(user_id=flags.get("user", "ang"))

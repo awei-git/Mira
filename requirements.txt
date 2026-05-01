@@ -18,6 +18,7 @@ beautifulsoup4==4.14.3
 
 # Memory / vector search
 psycopg2-binary==2.9.11
+dbos==2.19.0
 
 # Web GUI
 fastapi==0.135.1

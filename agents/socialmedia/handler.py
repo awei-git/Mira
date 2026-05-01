@@ -16,6 +16,7 @@ from pathlib import Path
 
 from config import ARTIFACTS_DIR, WRITINGS_OUTPUT_DIR, SUBSTACK_PUBLISHING_DISABLED, MIRA_ROOT
 from publish.preflight import preflight_check
+from publish.writer_gate import require_writer_gate
 from llm import claude_think
 from mira import log_scaffolding_audit, write_scaffold_rejection
 
@@ -64,6 +65,7 @@ def _write_publish_audit(sender: str, action: str, platform: str, title: str) ->
         "action": action,
         "platform": platform,
         "title": title,
+        "writer_gate_passed": True,
     }
     try:
         _AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -268,6 +270,9 @@ def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_i
         return False, "PREFLIGHT BLOCKED [publish]: could not determine publish target"
 
     platform = plan.get("platform", "substack")
+    gate_ok, gate_msg, _gate = require_writer_gate(workspace, channel=platform)
+    if not gate_ok:
+        return False, f"PREFLIGHT BLOCKED [publish]: {gate_msg}"
     title = plan.get("title", "") or "untitled"
     source = plan.get("source", "")
     article_text = _resolve_content(source, content)

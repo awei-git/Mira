@@ -35,6 +35,9 @@ jobs:
           python -m pytest tests/ -m "not slow and not runtime" -q --tb=line \
             --cov=agents --cov=lib --cov-report=term-missing --cov-report=xml
 
+      - name: Check V2 kernel boundaries
+        run: python scripts/check_v2_kernel_boundaries.py
+
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4

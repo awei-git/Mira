@@ -6,10 +6,12 @@ from typing import Any
 from execution.runtime_contract import normalize_task_status
 
 
-_APP_STATUSES = {"queued", "working", "needs-input", "done", "failed", "archived"}
+_APP_STATUSES = {"queued", "working", "verifying", "needs-input", "done", "failed", "archived"}
 _INTERNAL_STATUS_MAP = {
     "dispatched": "working",
     "running": "working",
+    "completed_unverified": "verifying",
+    "verified": "done",
     "blocked": "failed",
     "timeout": "failed",
     "cancelled": "failed",
@@ -78,4 +80,8 @@ def item_from_rows(task: dict, messages: list[dict]) -> dict:
         "messages": [_message_from_row(m) for m in messages],
         "error": error,
         "result_path": task.get("result_path"),
+        "task_type": task.get("task_type"),
+        "verification": task.get("verification") if isinstance(task.get("verification"), dict) else None,
+        "outcome_verified": bool(task.get("outcome_verified")),
+        "verification_method": task.get("verification_method"),
     }

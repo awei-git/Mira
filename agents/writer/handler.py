@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 
 from publish.preflight import preflight_check, verify_artifact
+from publish.writer_gate import record_writer_gate
 from ops.runtime_context import build_runtime_context
 from llm import claude_think
 from writing_workflow import run_full_pipeline
@@ -213,7 +214,9 @@ def _handle_quick_write(workspace: Path, content: str, title: str, bundle) -> st
     final_text = text if text.lstrip().startswith("#") else f"# {title}\n\n{text}"
     # POLICY (CLAUDE.md #5): every writing artifact must pass de-AI before disk.
     final_text = de_ai_pass(final_text, tier="light", timeout=180)
-    (workspace / "output.md").write_text(final_text, encoding="utf-8")
+    out_path = workspace / "output.md"
+    out_path.write_text(final_text, encoding="utf-8")
+    record_writer_gate(workspace, channel="publish", artifact_path=str(out_path), source="writer.quick")
 
     summary = f"Quick draft ready: {title} (~{len(final_text)} chars)"
     (workspace / "summary.txt").write_text(summary, encoding="utf-8")
@@ -271,6 +274,7 @@ def _handle_full_write(workspace: Path, content: str, title: str, bundle) -> str
     summary = f"Writing project complete: {title}. " f"Project: {project_dir}."
     (workspace / "summary.txt").write_text(summary, encoding="utf-8")
     (workspace / "project_path.txt").write_text(str(project_dir), encoding="utf-8")
+    record_writer_gate(workspace, channel="publish", artifact_path=str(workspace / "output.md"), source="writer.full")
     return summary
 
 
