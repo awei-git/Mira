@@ -9,6 +9,7 @@ import config
 
 _SCAFFOLDING_AUDIT_LOG = Path(config.MIRA_ROOT) / "logs" / "scaffolding_audit.jsonl"
 _SCAFFOLD_REJECTIONS_DIR = Path(config.MIRA_ROOT) / "logs" / "scaffold_rejections"
+_INTERFACE_LATENCY_FILE = Path(config.MIRA_ROOT) / "logs" / "interface_latency.json"
 _log = logging.getLogger("scaffolding_audit")
 
 
@@ -35,6 +36,26 @@ def log_scaffolding_audit(
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as e:
         _log.warning("scaffolding_audit write failed: %s", e)
+
+
+def update_interface_latency(latency_ms: int) -> float:
+    """Append latency_ms to a rolling 5-sample buffer and return the average."""
+    samples: list[int] = []
+    try:
+        if _INTERFACE_LATENCY_FILE.exists():
+            data = json.loads(_INTERFACE_LATENCY_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                samples = data
+    except Exception:
+        samples = []
+    samples.append(latency_ms)
+    samples = samples[-5:]
+    try:
+        _INTERFACE_LATENCY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _INTERFACE_LATENCY_FILE.write_text(json.dumps(samples), encoding="utf-8")
+    except Exception:
+        pass
+    return round(sum(samples) / len(samples))
 
 
 def write_scaffold_rejection(

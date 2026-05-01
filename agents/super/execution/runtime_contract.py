@@ -7,6 +7,7 @@ _STATUS_ALIASES = {
     "completed": "done",
     "error": "failed",
     "needs_input": "needs-input",
+    "paused_horizon_limit": "needs-input",
 }
 
 

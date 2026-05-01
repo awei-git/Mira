@@ -28,6 +28,8 @@ if str(_SHARED_DIR) not in sys.path:
 
 from ops.policy import get_capability_policy, resolve_capability_class
 
+from handler_contract import warn_on_violations
+
 log = logging.getLogger("mira.registry")
 
 _AGENTS_DIR = _SUPER_DIR.parent  # agents/
@@ -161,6 +163,7 @@ class AgentRegistry:
 
         self._handlers[name] = handler
         log.info("Loaded handler: %s → %s:%s", name, file_path.name, func_name)
+        warn_on_violations(handler, name)
         return handler
 
     def load_preflight(self, name: str) -> Callable | None:

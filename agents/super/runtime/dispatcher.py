@@ -95,17 +95,80 @@ def _group_members(group: str) -> set[str]:
         return set()
 
 
+def _proc_start_time(pid: int) -> str | None:
+    """Return process start time as `lstart` string, or None if pid not alive.
+
+    On macOS/Linux, `ps -o lstart= -p PID` returns a stable string that
+    differs across PID reuse. We use this to detect when a PID was reused
+    by an unrelated process, so we don't block retries for hours when the
+    original bg job died but the OS recycled its PID.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode != 0:
+            return None
+        out = result.stdout.strip()
+        return out or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _read_pid_file(pid_file: Path) -> tuple[int, str | None] | None:
+    """Read a pid file as (pid, expected_start_time). Backward compatible:
+    files written before this change contain only the PID; we treat
+    expected_start_time as None and fall back to the bare os.kill check."""
+    try:
+        raw = pid_file.read_text().strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    if ":" in raw:
+        pid_str, start = raw.split(":", 1)
+        try:
+            return int(pid_str), start.strip() or None
+        except ValueError:
+            return None
+    try:
+        return int(raw), None
+    except ValueError:
+        return None
+
+
 def _is_bg_running(name: str) -> bool:
-    """Check if a background process is still alive by its PID file."""
+    """Check if a background process is still alive AND is the one we started.
+
+    Detects PID reuse by checking the process start time (`ps lstart`).
+    Without this, a dead bg job whose PID got recycled by an unrelated
+    process would look "still running" forever, suppressing all retries.
+    Symptom on 2026-04-29: EOD market analysis missed its entire 4-hour
+    window because a stale PID was treated as live.
+    """
     pid_file = _get_bg_pid_dir() / f"{name}.pid"
     if not pid_file.exists():
         return False
+    parsed = _read_pid_file(pid_file)
+    if not parsed:
+        return False
+    old_pid, expected_start = parsed
     try:
-        old_pid = int(pid_file.read_text().strip())
         os.kill(old_pid, 0)
-        return True
     except (OSError, ValueError):
         return False
+    if expected_start is None:
+        # Legacy pid file (just the PID). Trust os.kill — pre-existing behavior.
+        return True
+    actual_start = _proc_start_time(old_pid)
+    if actual_start is None or actual_start != expected_start:
+        # PID was reused by a different process, or ps could not confirm.
+        # Treat as not running so the dispatcher retries.
+        return False
+    return True
 
 
 def _reap_stale_pids():
@@ -122,11 +185,21 @@ def _reap_stale_pids():
         return
     reaped = 0
     for pid_file in bg_dir.glob("*.pid"):
-        try:
-            old_pid = int(pid_file.read_text().strip())
-            os.kill(old_pid, 0)
-        except (OSError, ValueError):
-            # Process dead — check if stale (mtime > 1 hour)
+        parsed = _read_pid_file(pid_file)
+        alive = False
+        if parsed:
+            old_pid, expected_start = parsed
+            try:
+                os.kill(old_pid, 0)
+                if expected_start is None:
+                    alive = True
+                else:
+                    actual = _proc_start_time(old_pid)
+                    alive = actual is not None and actual == expected_start
+            except (OSError, ValueError):
+                alive = False
+        if not alive:
+            # Process dead (or PID reused) — check if stale (mtime > 1 hour)
             try:
                 age = _time.time() - pid_file.stat().st_mtime
                 if age > 3600:
@@ -163,13 +236,10 @@ def _dispatch_background(name: str, cmd: list[str], group: str = "default"):
 
     # Check if a previous run is still active or finished recently
     if pid_file.exists():
-        try:
-            old_pid = int(pid_file.read_text().strip())
-            os.kill(old_pid, 0)  # check if alive
-            log.info("Background '%s' still running (PID %d), skipping", name, old_pid)
+        if _is_bg_running(name):
+            parsed = _read_pid_file(pid_file)
+            log.info("Background '%s' still running (PID %s), skipping", name, parsed[0] if parsed else "?")
             return False
-        except (OSError, ValueError):
-            pass  # process gone, safe to start new one
 
         # Harvest outcome of the dead process
         try:
@@ -193,6 +263,21 @@ def _dispatch_background(name: str, cmd: list[str], group: str = "default"):
         except OSError:
             pass
 
+    # Propagate sys.path to the child via PYTHONPATH. Without this, bg
+    # subprocesses inherit only the default site-packages and crash on
+    # `from config import ...` at module load. Caught WA's podcast outage
+    # on 2026-04-29 — every podcast dispatch had been crashing on import
+    # for ~13 days, silently consuming the daily podcast slot. Setting
+    # PYTHONPATH at the dispatch boundary fixes every bg-spawned agent
+    # at once, not just podcast.
+    bg_env = os.environ.copy()
+    extra_paths = [
+        str(_MIRA_ROOT / "lib"),
+        str(_MIRA_ROOT / "agents" / "super"),
+    ]
+    existing = bg_env.get("PYTHONPATH", "")
+    bg_env["PYTHONPATH"] = os.pathsep.join([p for p in extra_paths if p] + ([existing] if existing else []))
+
     try:
         proc = subprocess.Popen(
             cmd,
@@ -200,8 +285,15 @@ def _dispatch_background(name: str, cmd: list[str], group: str = "default"):
             stderr=open(_LOGS_DIR / f"bg-{name}.log", "a"),
             start_new_session=True,
             cwd=str(_MIRA_ROOT / "agents" / "super"),
+            env=bg_env,
         )
-        pid_file.write_text(str(proc.pid))
+        # Capture the process start time so we can detect PID reuse later.
+        # Falls back to bare PID if `ps` fails for any reason.
+        start_time = _proc_start_time(proc.pid)
+        if start_time:
+            pid_file.write_text(f"{proc.pid}:{start_time}")
+        else:
+            pid_file.write_text(str(proc.pid))
         health_monitor.record_dispatch(name, proc.pid)
         log.info("Background '%s' dispatched (PID %d)", name, proc.pid)
         return True

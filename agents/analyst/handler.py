@@ -71,6 +71,7 @@ def handle(
     thread_id: str,
     thread_history: str = "",
     thread_memory: str = "",
+    **kwargs,
 ) -> str | None:
     """Answer a market question using Tetra briefing + live web data.
 
@@ -145,10 +146,17 @@ Epistemic calibration: When making factual claims, distinguish (1) things you kn
             result = result.replace("[GAP]", "", 1).strip()
 
         (workspace / "output.md").write_text(result, encoding="utf-8")
+        # `summary.txt` stays at 300 chars — it's the iPhone preview /
+        # status-card snippet. But the value RETURNED to the executor is
+        # the full result, so what lands in result.json + bridge feed
+        # matches what's on disk. Truncating to 300 here was the silent
+        # truncation that made every analyst pre-market feed only show
+        # an executive summary while the full 1700-word file sat in a
+        # `/tmp` path the iPhone couldn't read.
         summary = result[:300]
         (workspace / "summary.txt").write_text(summary, encoding="utf-8")
         log.info("Analyst task %s: answered (%d chars)", task_id, len(result))
-        return summary
+        return result
 
     return None
 

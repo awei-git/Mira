@@ -83,6 +83,43 @@ def test_profiles_are_filtered_to_known_users(monkeypatch, tmp_path: Path):
     assert resp.json() == {"profiles": [{"id": "ang", "display_name": "Ang", "agent_name": "Mira"}]}
 
 
+def test_heartbeat_top_level_status_uses_task_manager(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+    bridge = tmp_path / "bridge"
+    (bridge / "heartbeat.json").write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-05-01T14:16:25Z",
+                "status": "online",
+                "busy": False,
+                "active_count": 0,
+                "agent_status": {"busy": False, "active_count": 0, "active_tasks": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeTaskManager:
+        def get_status_summary(self):
+            return {
+                "busy": True,
+                "active_count": 1,
+                "active_tasks": [{"task_id": "req_todo_1cacf0e3"}],
+                "last_completed": "2026-04-30T13:34:34Z",
+            }
+
+    monkeypatch.setattr(server, "_task_manager", lambda: FakeTaskManager())
+
+    resp = client.get("/api/heartbeat")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["busy"] is True
+    assert data["active_count"] == 1
+    assert data["active_tasks"] == [{"task_id": "req_todo_1cacf0e3"}]
+    assert data["agent_status"]["busy"] is True
+
+
 def test_safe_join_rejects_parent_traversal(tmp_path: Path):
     base = tmp_path / "artifacts"
     base.mkdir()
@@ -138,7 +175,264 @@ def test_reply_requires_existing_item_and_does_not_enqueue_command(monkeypatch, 
 
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Item not found"
+
+
+def test_tasks_endpoint_uses_control_projection_without_mutating_bridge(monkeypatch, tmp_path: Path):
+    import control.db as control_db
+    import control.repository as control_repository
+
+    client = _make_client(monkeypatch, tmp_path)
+    item_path = tmp_path / "bridge" / "users" / "ang" / "items" / "req_123.json"
+    item_path.write_text(
+        json.dumps(
+            {
+                "id": "req_123",
+                "type": "request",
+                "title": "Existing task",
+                "status": "working",
+                "origin": "user",
+                "tags": [],
+                "quick": False,
+                "pinned": False,
+                "created_at": "2026-04-30T00:00:00Z",
+                "updated_at": "2026-04-30T00:00:00Z",
+                "messages": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = item_path.read_text(encoding="utf-8")
+    calls = {}
+
+    class FakeTx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def list_items(self, user_id, *, include_archived=False, limit=200, messages_per_item=None):
+            calls["list"] = (user_id, include_archived, limit, messages_per_item)
+            return [{"id": "req_123", "type": "request", "title": "Existing task", "status": "working"}]
+
+        def last_event_id(self, user_id):
+            return 42
+
+    def fake_sync(user_id, *, user_dir, task_status_file):
+        calls["sync"] = (user_id, user_dir, task_status_file)
+
+    monkeypatch.setattr(control_repository, "sync_user_from_legacy", fake_sync)
+    monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
+
+    resp = client.get("/api/ang/tasks")
+
+    assert resp.status_code == 200
+    assert resp.json()["items"] == [{"id": "req_123", "type": "request", "title": "Existing task", "status": "working"}]
+    assert resp.json()["last_event_id"] == 42
+    assert calls["sync"][0] == "ang"
+    assert calls["list"] == ("ang", False, 200, 20)
+    assert item_path.read_text(encoding="utf-8") == before
     assert _command_files(tmp_path) == []
+
+
+def test_tasks_write_endpoint_is_flagged_off_by_default(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", False)
+
+    resp = client.post("/api/ang/tasks", json={"title": "New task", "content": "do it"})
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Control API writes are disabled"
+    assert _command_files(tmp_path) == []
+
+
+def test_tasks_write_endpoint_projects_to_db_and_exports_compat(monkeypatch, tmp_path: Path):
+    import control.db as control_db
+    import control.repository as control_repository
+
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
+    monkeypatch.setattr(server, "BRIDGE_COMPAT_EXPORT_ENABLED", True)
+    calls = {}
+
+    class FakeTx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def create_task(self, **kwargs):
+            calls["create_task"] = kwargs
+            return {
+                "id": kwargs["task_id"],
+                "type": kwargs["item_type"],
+                "title": kwargs["title"],
+                "status": "queued",
+                "tags": kwargs["tags"],
+                "origin": "user",
+                "pinned": False,
+                "quick": kwargs["quick"],
+                "parent_id": None,
+                "created_at": kwargs["created_at"],
+                "updated_at": kwargs["created_at"],
+                "messages": [
+                    {
+                        "id": kwargs["message_id"],
+                        "sender": kwargs["sender"],
+                        "content": kwargs["content"],
+                        "timestamp": kwargs["created_at"],
+                        "kind": "text",
+                    }
+                ],
+                "error": None,
+                "result_path": None,
+            }
+
+    monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
+
+    resp = client.post(
+        "/api/ang/tasks",
+        json={"title": "New task", "content": "do it", "quick": True, "tags": ["api"], "client_request_id": "abc123"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["item_id"] == "req_abc123"
+    assert calls["create_task"]["task_id"] == "req_abc123"
+    assert calls["create_task"]["message_id"] == "abc123"
+    commands = _command_files(tmp_path)
+    assert len(commands) == 1
+    cmd = json.loads(commands[0].read_text(encoding="utf-8"))
+    assert cmd["type"] == "new_request"
+    assert cmd["item_id"] == "req_abc123"
+    item_path = tmp_path / "bridge" / "users" / "ang" / "items" / "req_abc123.json"
+    assert item_path.exists()
+    assert json.loads(item_path.read_text(encoding="utf-8"))["status"] == "queued"
+
+
+def test_task_pin_endpoint_updates_db_and_compat_item(monkeypatch, tmp_path: Path):
+    import control.db as control_db
+    import control.repository as control_repository
+
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
+    monkeypatch.setattr(server, "BRIDGE_COMPAT_EXPORT_ENABLED", True)
+
+    class FakeTx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def set_pinned(self, user_id, task_id, pinned):
+            return {
+                "id": task_id,
+                "type": "request",
+                "title": "Pinned",
+                "status": "queued",
+                "tags": [],
+                "origin": "user",
+                "pinned": pinned,
+                "quick": False,
+                "parent_id": None,
+                "created_at": "2026-04-30T00:00:00Z",
+                "updated_at": "2026-04-30T00:00:01Z",
+                "messages": [],
+                "error": None,
+                "result_path": None,
+            }
+
+    monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
+
+    resp = client.post("/api/ang/tasks/req_123/pin", json={"pinned": True})
+
+    assert resp.status_code == 200
+    assert resp.json()["pinned"] is True
+    compat_item = tmp_path / "bridge" / "users" / "ang" / "items" / "req_123.json"
+    assert json.loads(compat_item.read_text(encoding="utf-8"))["pinned"] is True
+    cmd = json.loads(_command_files(tmp_path)[0].read_text(encoding="utf-8"))
+    assert cmd["type"] == "pin"
+    assert cmd["pinned"] is True
+
+
+def test_task_cancel_endpoint_updates_runtime_db_and_exports_compat(monkeypatch, tmp_path: Path):
+    import control.db as control_db
+    import control.repository as control_repository
+
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
+    monkeypatch.setattr(server, "BRIDGE_COMPAT_EXPORT_ENABLED", True)
+    monkeypatch.setattr(
+        server, "_task_manager", lambda: type("TM", (), {"cancel_task": lambda self, *a, **k: object()})()
+    )
+
+    class FakeTx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def update_task_status(self, user_id, task_id, status, **kwargs):
+            return {
+                "id": task_id,
+                "type": "request",
+                "title": "Cancel me",
+                "status": "failed",
+                "tags": [],
+                "origin": "user",
+                "pinned": False,
+                "quick": False,
+                "parent_id": None,
+                "created_at": "2026-04-30T00:00:00Z",
+                "updated_at": "2026-04-30T00:00:01Z",
+                "messages": [],
+                "error": {"code": kwargs["error_code"], "message": kwargs["error_message"], "retryable": False},
+                "result_path": None,
+            }
+
+    monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
+
+    resp = client.post("/api/ang/tasks/req_cancel/cancel")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "cancelled"
+    cmd = json.loads(_command_files(tmp_path)[0].read_text(encoding="utf-8"))
+    assert cmd["type"] == "cancel"
+    assert cmd["item_id"] == "req_cancel"
+
+
+def test_task_retry_requires_runtime_db(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
+    monkeypatch.setattr(server, "CONTROL_RUNTIME_DB_ENABLED", False)
+
+    resp = client.post("/api/ang/tasks/req_retry/retry")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Control runtime DB dispatch is disabled"
 
 
 def test_share_requires_existing_item_and_does_not_enqueue_command(monkeypatch, tmp_path: Path):

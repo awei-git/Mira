@@ -254,6 +254,8 @@ SKILL_STALENESS_DAYS = _limits.get("skill_staleness_days", 30)
 SKILL_REVERIFICATION_DAYS = _limits.get("skill_reverification_days", 30)
 TRUST_AUDIT_ENABLED = _limits.get("trust_audit_enabled", True)
 SKILL_MIN_AGE_HOURS = _limits.get("skill_min_age_hours", 48)
+SKILL_AUDIT_BRANCH_THRESHOLD = _limits.get("skill_audit_branch_threshold", 15)
+SKILL_EXAMPLE_ORDER: str = _limits.get("skill_example_order", "relevance_first")
 
 # Secrets file (API keys — always gitignored)
 SECRETS_FILE = _PROJECT_ROOT / "secrets.yml"
@@ -279,6 +281,38 @@ OLLAMA_EMBED_MODEL = OMLX_EMBED_MODEL
 # ---------------------------------------------------------------------------
 _db_cfg = _cfg.get("database", {})
 DATABASE_URL = os.environ.get("DATABASE_URL") or _db_cfg.get("url") or "postgresql://localhost:5432/ai_system"
+_control_cfg = _cfg.get("control_plane", {})
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+CONTROL_DATABASE_URL = os.environ.get("CONTROL_DATABASE_URL") or _control_cfg.get("database_url") or DATABASE_URL
+CONTROL_DB_SCHEMA = os.environ.get("CONTROL_DB_SCHEMA") or str(
+    _control_cfg.get("schema", "mira_control") or "mira_control"
+)
+CONTROL_PLANE_ENABLED = _env_bool("CONTROL_PLANE_ENABLED", bool(_control_cfg.get("enabled", True)))
+CONTROL_API_WRITES_ENABLED = _env_bool(
+    "CONTROL_API_WRITES_ENABLED",
+    bool(_control_cfg.get("api_writes_enabled", False)),
+)
+CONTROL_RUNTIME_DB_ENABLED = _env_bool(
+    "CONTROL_RUNTIME_DB_ENABLED",
+    bool(_control_cfg.get("runtime_db_enabled", False)),
+)
+CONTROL_SSE_ENABLED = _env_bool("CONTROL_SSE_ENABLED", bool(_control_cfg.get("sse_enabled", False)))
+BRIDGE_COMPAT_EXPORT_ENABLED = _env_bool(
+    "BRIDGE_COMPAT_EXPORT_ENABLED",
+    bool(_control_cfg.get("bridge_compat_export", True)),
+)
+ICLOUD_COMMAND_FALLBACK_ENABLED = _env_bool(
+    "ICLOUD_COMMAND_FALLBACK_ENABLED",
+    bool(_control_cfg.get("icloud_command_fallback", True)),
+)
 
 # ---------------------------------------------------------------------------
 # User Access Control

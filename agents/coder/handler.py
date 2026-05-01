@@ -20,6 +20,20 @@ from llm import claude_act, claude_think
 
 log = logging.getLogger("coder_agent")
 
+
+def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+    """Coder preflight: ensure the task has actionable content.
+
+    The coder agent is `local-write` capability and `requires_preflight=True` per
+    capability_policy. Without this hook, every routed task got blocked with
+    'preflight missing' (root cause of 2026-04-30 Habermas EPUB failure).
+    """
+    instruction = (content or "").strip()
+    if not instruction:
+        return False, "PREFLIGHT BLOCKED [coder]: empty instruction"
+    return True, ""
+
+
 _SNAPSHOT_SUFFIXES = {
     ".py",
     ".js",
@@ -122,6 +136,7 @@ def handle(
     thread_memory: str = "",
     tier: str = "light",
     agent_id: str = "coder",
+    **kwargs,
 ) -> str | None:
     """Handle a coding task. Returns output text or None on failure."""
     soul = load_soul()

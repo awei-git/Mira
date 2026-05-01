@@ -35,6 +35,8 @@ _MISCALIBRATION_COUNTS_FILE = Path(__file__).parent / "miscalibration_counts.jso
 _VARIANCE_STATE_FILE = Path(__file__).parent / "variance_state.json"
 _VARIANCE_STD_THRESHOLD = 0.05
 _VARIANCE_CONSECUTIVE_K = 3
+_STATE_FILE = Path(__file__).parent / "state.json"
+RUBRIC_STALENESS_THRESHOLD = 3
 
 # ---------------------------------------------------------------------------
 # Per-agent criteria — each agent is scored on what MATTERS for its role
@@ -534,6 +536,21 @@ def _check_score_variance(success_rates: list[float]) -> None:
         _emit_variance_warning(std_dev, consecutive)
 
 
+def _model_family(model_name: str) -> str:
+    """Return a normalized family identifier for a model name."""
+    try:
+        from config import MODELS
+
+        provider = MODELS.get(model_name, {}).get("provider", "")
+        if provider:
+            return provider
+    except (ImportError, AttributeError):
+        pass
+    if model_name.startswith("claude"):
+        return "claude"
+    return model_name
+
+
 def score_all(days: int = 7) -> dict:
     """Full hierarchical assessment: per-agent + super + aggregate."""
     result = {
@@ -543,6 +560,54 @@ def score_all(days: int = 7) -> dict:
         "super": {},
         "aggregate": {},
     }
+
+    try:
+        from config import DEFAULT_MODEL
+
+        eval_model = DEFAULT_MODEL
+        eval_family = _model_family(eval_model)
+        flagged_agents = []
+        for name in AGENT_CRITERIA:
+            agent_model = AGENT_CRITERIA[name].get("model", eval_model)
+            if _model_family(agent_model) == eval_family:
+                flagged_agents.append(name)
+        if flagged_agents:
+            _mv_caveat = (
+                f"MEASUREMENT VALIDITY CAVEAT: evaluator and evaluated agents share the same model family "
+                f"({eval_family}). Scores may reflect training-distribution overlap rather than independent "
+                f"capability assessment. Treat numerical scores as relative rankings within this model family, "
+                f"not absolute quality measures."
+            )
+            log.warning(
+                "MEASUREMENT_VALIDITY eval_model=%s family=%s flagged_agents=%r",
+                eval_model,
+                eval_family,
+                flagged_agents,
+            )
+            result["measurement_validity_caveat"] = _mv_caveat
+    except (ImportError, AttributeError):
+        pass
+
+    _rubric_state: dict = {}
+    if _STATE_FILE.exists():
+        try:
+            _rubric_state = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    _rubric_count = _rubric_state.get("rubric_audit_cycle_count", 0) + 1
+    _rubric_state["rubric_audit_cycle_count"] = _rubric_count
+    try:
+        _STATE_FILE.write_text(json.dumps(_rubric_state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as _e:
+        log.debug("Could not save rubric audit state: %s", _e)
+    if _rubric_count > RUBRIC_STALENESS_THRESHOLD:
+        _rubric_warning = f"[RUBRIC UNVALIDATED — {_rubric_count} cycles since last confirmed audit]"
+        log.warning(
+            "RUBRIC_STALENESS cycle_count=%d threshold=%d — scores unvalidated, prefix applied",
+            _rubric_count,
+            RUBRIC_STALENESS_THRESHOLD,
+        )
+        result["rubric_unvalidated_warning"] = _rubric_warning
 
     # Score each agent
     all_success_rates = []
@@ -1016,6 +1081,22 @@ def flag_rubric_miscalibrated(rubric_name: str) -> None:
         )
 
 
+def confirm_rubric_audit() -> None:
+    """Reset the rubric audit cycle counter. Call only when WA confirms external rubric audit."""
+    state: dict = {}
+    if _STATE_FILE.exists():
+        try:
+            state = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    state["rubric_audit_cycle_count"] = 0
+    try:
+        _STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        log.info("Rubric audit confirmed — cycle count reset to 0")
+    except OSError as e:
+        log.warning("Could not save rubric audit state: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Top-down improvement: Mira diagnosis → targeted sub-agent fixes
 # ---------------------------------------------------------------------------
@@ -1337,6 +1418,7 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
         "## Per-Agent",
     ]
 
+    rubric_warning = assessment.get("rubric_unvalidated_warning", "")
     low_conf_agents = set(agg.get("low_confidence_agents", []))
     for name, card in sorted(assessment["agents"].items()):
         if card["task_count"] == 0:
@@ -1344,8 +1426,9 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
         else:
             emoji = "✅" if card["success_rate"] >= 0.8 else "⚠️" if card["success_rate"] >= 0.5 else "❌"
             suffix = " [low confidence — score history thin or stale]" if name in low_conf_agents else ""
+            score_prefix = f"{rubric_warning} " if rubric_warning else ""
             lines.append(
-                f"- **{name}** {emoji}: {card['success_rate']:.0%} "
+                f"- {score_prefix}**{name}** {emoji}: {card['success_rate']:.0%} "
                 f"({card['succeeded']}/{card['task_count']}){suffix}"
             )
 
@@ -1436,6 +1519,10 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
         lines.extend(["", "## Improvement Plan", plan])
 
     report = "\n".join(lines)
+
+    caveat = assessment.get("measurement_validity_caveat", "")
+    if caveat:
+        report = caveat + "\n\n" + report
 
     # Write to workspace
     (workspace / "output.md").write_text(report, encoding="utf-8")

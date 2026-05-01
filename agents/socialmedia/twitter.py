@@ -955,12 +955,14 @@ REPLY: [your reply]"""
         msg = f"@{author}: {picked['text'][:150]}\n\n回复草稿:\n{reply_text}"
         import uuid
 
-        bridge.create_task(
-            task_id=f"x_reply_{uuid.uuid4().hex[:8]}",
+        bridge.create_discussion(
+            disc_id=f"x_reply_{uuid.uuid4().hex[:8]}",
             title=f"X reply draft: @{author}",
             first_message=msg,
+            sender="agent",
+            tags=["socialmedia", "x_reply", "needs-human"],
         )
-        log.info("Reply added to bridge as task")
+        log.info("Reply added to bridge as discussion")
     except Exception as e:
         log.warning("Failed to notify via bridge: %s", e)
 

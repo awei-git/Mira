@@ -313,6 +313,20 @@ def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None):
                 save_state(_state)
             except Exception:
                 pass
+        feed_url = dive.get("url", "")
+        extracted_at = datetime.utcnow().isoformat() + "Z"
+        extraction_rationale = desc[:120]
+        provenance_yaml = (
+            f"provenance_source: {feed_url}\n"
+            f"provenance_extracted_at: {extracted_at}\n"
+            f"provenance_rationale: {extraction_rationale}"
+        )
+        if content.startswith("---"):
+            end = content.find("\n---", 3)
+            if end != -1:
+                content = content[:end] + "\n" + provenance_yaml + content[end:]
+        else:
+            content = f"---\n{provenance_yaml}\n---\n\n{content}"
         save_skill(name, desc, content)
         log.info("Learned new skill from deep dive: %s", name)
 

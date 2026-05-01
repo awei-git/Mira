@@ -272,6 +272,7 @@ def handle(
     thread_id: str,
     thread_history: str = "",
     thread_memory: str = "",
+    **kwargs,
 ) -> str | None:
     """Handle a privacy-sensitive request using only local oMLX.
 

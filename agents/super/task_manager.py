@@ -5,6 +5,7 @@ Each launchd cycle: dispatch new tasks + collect completed results.
 """
 
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -17,7 +18,15 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import MIRA_DIR, TASK_TIMEOUT, TASK_TIMEOUT_LONG, MAX_CONCURRENT_TASKS, TASK_MAX_RETRIES, MAX_SUBTASK_DEPTH
+from config import (
+    CONTROL_RUNTIME_DB_ENABLED,
+    MIRA_DIR,
+    TASK_TIMEOUT,
+    TASK_TIMEOUT_LONG,
+    MAX_CONCURRENT_TASKS,
+    TASK_MAX_RETRIES,
+    MAX_SUBTASK_DEPTH,
+)
 from execution.runtime_contract import derive_workflow_id, normalize_task_status
 
 # Timeout resolution: first check registry manifest, then fall back to tag keywords
@@ -82,10 +91,54 @@ TIMING_STATS_FILE = TASKS_DIR / "timing_stats.jsonl"
 
 # Path to the worker script (same directory as this file)
 WORKER_SCRIPT = Path(__file__).resolve().parent / "task_worker.py"
+WORKSPACE_TASK_MARKER = ".task_id"
+WORKSPACE_RUN_META = "run_meta.json"
+_WORKSPACE_STATE_ARTIFACTS = {
+    "message.json",
+    "plan.json",
+    "step_states.json",
+    "progress.md",
+    "result.json",
+    "output.md",
+    "summary.txt",
+    "worker.log",
+    "worker_stderr.log",
+}
 
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _task_hash(task_id: str) -> str:
+    return hashlib.sha1(task_id.encode("utf-8")).hexdigest()[:10]
+
+
+def _has_workspace_state(path: Path) -> bool:
+    return any((path / name).exists() for name in _WORKSPACE_STATE_ARTIFACTS)
+
+
+def _resolve_workspace_dir(requested: Path, task_id: str) -> Path:
+    """Return a workspace path that is owned by this task id.
+
+    Callers provide human-readable directories, but those names are not a
+    uniqueness boundary. A stale or colliding workspace must not leak
+    progress/result artifacts into a different task.
+    """
+    marker = requested / WORKSPACE_TASK_MARKER
+    if marker.exists():
+        try:
+            owner = marker.read_text(encoding="utf-8").strip()
+            if owner == task_id:
+                return requested
+        except OSError:
+            pass
+        return requested.with_name(f"{requested.name}_{_task_hash(task_id)}")
+
+    if requested.exists() and _has_workspace_state(requested):
+        return requested.with_name(f"{requested.name}_{_task_hash(task_id)}")
+
+    return requested
 
 
 @dataclass
@@ -219,10 +272,26 @@ class TaskManager:
             thread_id=getattr(msg, "thread_id", "") or "",
             workflow_id=getattr(msg, "workflow_id", "") or "",
         )
+        workspace_dir = _resolve_workspace_dir(Path(workspace_dir), task_id)
         workspace_dir.mkdir(parents=True, exist_ok=True)
+        (workspace_dir / WORKSPACE_TASK_MARKER).write_text(task_id + "\n", encoding="utf-8")
+        run_started_at = _utc_iso()
+        (workspace_dir / WORKSPACE_RUN_META).write_text(
+            json.dumps(
+                {
+                    "task_id": task_id,
+                    "workflow_id": workflow_id,
+                    "attempt_count": attempt_count,
+                    "started_at": run_started_at,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
         # Clean stale results from previous runs so worker doesn't skip execution
-        for stale in ("result.json", "result.tmp", "output.md", "summary.txt"):
+        for stale in ("result.json", "result.tmp", "output.md", "summary.txt", "heartbeat.json"):
             f = workspace_dir / stale
             if f.exists():
                 f.unlink()
@@ -273,7 +342,7 @@ class TaskManager:
             content_preview=msg.content[:80],
             pid=proc.pid,
             status="dispatched",
-            started_at=_utc_iso(),
+            started_at=run_started_at,
             workspace=str(workspace_dir),
             tags=classify_task(msg.content),
             attempt_count=attempt_count,
@@ -281,6 +350,7 @@ class TaskManager:
         )
         self._records.append(record)
         self._save_status()
+        self._mirror_record(record, event_type="task.dispatched")
 
         log.info(
             "Dispatched task %s workflow=%s user=%s (PID %d): %s",
@@ -339,13 +409,29 @@ class TaskManager:
 
                             bridge = Mira(MIRA_DIR, user_id=rec.user_id)
                             elapsed_str = f"{int(elapsed//60)}分钟"
+                            # Title format previously echoed `content_preview`
+                            # (the user's own command), so a "kill the job"
+                            # reply produced an alert titled "任务超时: kill
+                            # the job" — useless for identifying WHICH task
+                            # was stuck. Lead with the task_id (or a human
+                            # tag if available) and put the user content in
+                            # parentheses.
+                            primary_id = rec.task_id
+                            human_tag = ""
+                            if rec.tags:
+                                human_tag = " · " + ", ".join(rec.tags[:2])
+                            preview = (rec.content_preview or "")[:60]
+                            title = f"任务超时: {primary_id}{human_tag}"
+                            if preview:
+                                title += f" — {preview}"
                             bridge.create_item(
                                 f"timeout-{rec.task_id}",
                                 "alert",
-                                f"任务超时: {rec.content_preview}",
+                                title,
                                 f"任务已运行{elapsed_str}，超过预期时间。\n\n"
-                                f"回复 'kill' 终止任务，或 'wait' 继续等待。\n\n"
-                                f"任务ID: {rec.task_id}",
+                                f"任务ID: {rec.task_id}\n"
+                                f"消息内容: {preview}\n\n"
+                                f"回复 'kill' 终止任务，或 'wait' 继续等待。",
                                 sender="agent",
                                 tags=["timeout", "alert"],
                                 origin="agent",
@@ -370,6 +456,7 @@ class TaskManager:
                                     rec.completed_at = _utc_iso()
                                     rec.summary = "Task killed by user after timeout"
                                     completed.append(rec)
+                                    self._mirror_record(rec, event_type="task.timeout")
                                 # If user said 'wait', just let it keep running
                     except Exception:
                         pass
@@ -377,11 +464,14 @@ class TaskManager:
                     if rec.status != "running":
                         rec.status = "running"
                         changed = True
+                        self._mirror_record(rec, event_type="task.running")
 
         if completed or changed:
             self._save_status()
         if completed:
             self._append_history(completed)
+            for rec in completed:
+                self._mirror_record(rec, event_type=f"task.{rec.status}")
 
         return completed
 
@@ -517,8 +607,27 @@ class TaskManager:
             if r.task_id == task_id:
                 removed = self._records.pop(i)
                 self._save_status()
+                self._mirror_task_status(removed.user_id, task_id, "queued", event_type="task.retry_reset")
                 log.info("Reset task %s for retry", task_id)
                 return removed
+        return None
+
+    def cancel_task(self, task_id: str, *, reason: str = "Cancelled by user") -> TaskRecord | None:
+        """Cancel a task if known, killing the worker when it is still active."""
+        for rec in self._records:
+            if rec.task_id != task_id:
+                continue
+            if rec.status in ("dispatched", "running"):
+                self._kill_task(rec)
+            rec.status = "failed"
+            rec.completed_at = _utc_iso()
+            rec.summary = reason
+            rec.failure_class = "cancelled"
+            self._save_status()
+            self._append_history([rec])
+            self._mirror_record(rec, event_type="task.cancelled")
+            log.info("Cancelled task %s", task_id)
+            return rec
         return None
 
     def get_active_count(self) -> int:
@@ -538,6 +647,20 @@ class TaskManager:
         completed = [r for r in self._records if r.completed_at]
         completed.sort(key=lambda r: r.completed_at, reverse=True)
 
+        def _heartbeat_for(record: TaskRecord) -> dict:
+            heartbeat_file = Path(record.workspace) / "heartbeat.json" if record.workspace else None
+            if not heartbeat_file or not heartbeat_file.exists():
+                return {}
+            try:
+                data = json.loads(heartbeat_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                return {}
+            return {
+                "last_heartbeat_at": data.get("updated_at", ""),
+                "elapsed_seconds": data.get("elapsed_seconds", 0),
+                "heartbeat_count": data.get("heartbeat_count", 0),
+            }
+
         return {
             "busy": len(active) > 0,
             "active_count": len(active),
@@ -548,6 +671,7 @@ class TaskManager:
                     "preview": r.content_preview,
                     "started_at": r.started_at,
                     "tags": r.tags,
+                    **_heartbeat_for(r),
                 }
                 for r in active
             ],
@@ -611,6 +735,41 @@ class TaskManager:
                 raise
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
+
+    def _mirror_record(self, rec: TaskRecord, *, event_type: str = "task.updated") -> None:
+        """Best-effort Postgres mirror used during the DB runtime migration."""
+        if not CONTROL_RUNTIME_DB_ENABLED:
+            return
+        try:
+            from control.db import transaction
+            from control.repository import ControlRepository
+
+            with transaction() as conn:
+                repo = ControlRepository(conn)
+                repo.overlay_task_record(asdict(rec))
+                repo.record_task_event(
+                    rec.user_id,
+                    rec.task_id,
+                    event_type,
+                    status=normalize_task_status(rec.status),
+                    payload={"pid": rec.pid, "workspace": rec.workspace, "summary": rec.summary},
+                )
+        except Exception as e:
+            log.warning("Control DB task mirror failed for %s: %s", rec.task_id, e)
+
+    def _mirror_task_status(self, user_id: str, task_id: str, status: str, *, event_type: str) -> None:
+        if not CONTROL_RUNTIME_DB_ENABLED:
+            return
+        try:
+            from control.db import transaction
+            from control.repository import ControlRepository
+
+            with transaction() as conn:
+                repo = ControlRepository(conn)
+                repo.update_task_status(user_id, task_id, status)
+                repo.record_task_event(user_id, task_id, event_type, status=normalize_task_status(status))
+        except Exception as e:
+            log.warning("Control DB task status mirror failed for %s: %s", task_id, e)
 
     def _append_history(self, records: list[TaskRecord]):
         """Append completed task records to history.jsonl with lock."""

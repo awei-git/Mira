@@ -21,7 +21,7 @@ from config import DEFAULT_MODEL
 from execution.runtime_contract import normalize_task_status
 from execution.calibration import _record_premortem, _record_postmortem
 from execution.plan_state import initialize_plan_artifacts, mark_step_finished, mark_step_running
-from planning.planner import _synthesize_outputs
+from planning.planner import _plan_task, _synthesize_outputs
 
 LOCAL_ONLY_AGENTS: frozenset[str] = frozenset({"secret", "health"})
 LOCAL_MODEL_PATTERNS: tuple[str, ...] = ("mlx", "local", "ollama", "omlx")
@@ -60,7 +60,7 @@ def _execute_plan(
     workflow_id: str = "",
 ):
     """Execute a multi-step plan. Each step's output feeds into the next."""
-    from task_worker import _Heartbeat, _set_streaming_task_id, _emit_status
+    from task_worker import _set_streaming_task_id, _emit_status
 
     initialize_plan_artifacts(
         workspace,
@@ -74,27 +74,22 @@ def _execute_plan(
     is_multi = len(plan) > 1
     round_num = _get_round_num(workspace)
 
-    heartbeat = _Heartbeat(task_id)
-    heartbeat.start()
-    try:
-        _execute_plan_steps(
-            plan,
-            workspace,
-            task_id,
-            content,
-            sender,
-            thread_id,
-            prev_output,
-            is_multi,
-            round_num,
-            user_id=user_id,
-            allowed_agents=allowed_agents or [],
-            content_filter=content_filter,
-            model_restriction=model_restriction,
-            workflow_id=workflow_id,
-        )
-    finally:
-        heartbeat.stop()
+    _execute_plan_steps(
+        plan,
+        workspace,
+        task_id,
+        content,
+        sender,
+        thread_id,
+        prev_output,
+        is_multi,
+        round_num,
+        user_id=user_id,
+        allowed_agents=allowed_agents or [],
+        content_filter=content_filter,
+        model_restriction=model_restriction,
+        workflow_id=workflow_id,
+    )
 
 
 def _execute_plan_steps(
@@ -132,7 +127,16 @@ def _execute_plan_steps(
     registry = get_registry()
     step_count = len(plan)
 
-    for i, step in enumerate(plan):
+    # Steps that have already been replanned once after a preflight block.
+    # Bounded to one replan per step so a misbehaving planner can't loop.
+    replanned_steps: set[int] = set()
+
+    # Use an index-driven loop instead of `for i, step in enumerate(plan)` so
+    # a successful replan can mutate `plan[i]` and re-run the step body with
+    # the new agent without exiting the iteration.
+    i = 0
+    while i < step_count:
+        step = plan[i]
         declared_agent = step["agent"]
         execution_agent = declared_agent
         step.setdefault("capability_class", registry.get_capability_class(declared_agent))
@@ -271,7 +275,15 @@ def _execute_plan_steps(
 
         requires_preflight = bool(policy.get("requires_preflight"))
         fail_closed = bool(policy.get("fail_closed"))
-        allow_fallback = bool(policy.get("allow_fallback_to_general"))
+        policy_allow_fallback = bool(policy.get("allow_fallback_to_general"))
+        allow_fallback = policy_allow_fallback and capability_class == "read-only" and not requires_preflight
+        if policy_allow_fallback and not allow_fallback:
+            log.info(
+                "General fallback disabled for agent=%s capability=%s requires_preflight=%s",
+                declared_agent,
+                capability_class,
+                requires_preflight,
+            )
         set_usage_agent(declared_agent)
 
         output_file = workspace / "output.md"
@@ -285,7 +297,7 @@ def _execute_plan_steps(
             try:
                 preflight_fn = getattr(registry, "load_preflight", lambda name: None)(declared_agent)
             except KeyError:
-                if requires_preflight or fail_closed:
+                if requires_preflight or fail_closed or not allow_fallback:
                     preflight_msg = f"{declared_agent} preflight missing from registry"
                     log.error("%s", preflight_msg)
                     (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
@@ -333,7 +345,7 @@ def _execute_plan_steps(
                     return
                 used_fallback = True
             except ImportError as e:
-                if fail_closed:
+                if fail_closed or not allow_fallback:
                     preflight_msg = f"{declared_agent} preflight load failed: {e}"
                     log.error("%s", preflight_msg)
                     (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
@@ -383,7 +395,7 @@ def _execute_plan_steps(
                     return
                 used_fallback = True
             except Exception as e:
-                if fail_closed:
+                if fail_closed or not allow_fallback:
                     preflight_msg = f"{declared_agent} preflight load failed: {e}"
                     log.error("%s", preflight_msg)
                     (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
@@ -503,6 +515,40 @@ def _execute_plan_steps(
                     return
                 if not passed:
                     log.warning("Preflight blocked agent '%s': %s", declared_agent, preflight_msg)
+                    # Single re-plan attempt: ask the planner to pick a
+                    # different agent given the rejection reason. Without this
+                    # the task ends as status=blocked despite policy saying
+                    # auto_retry=true (fail_closed wins, so the user sees a
+                    # task that "ran" for 9s and silently failed). Bounded to
+                    # one replan per step via `replanned_steps`.
+                    if i not in replanned_steps:
+                        replanned_steps.add(i)
+                        try:
+                            new_plan = _plan_task(
+                                content,
+                                allowed_agents=allowed_agents,
+                                content_filter=content_filter,
+                                replan_hint=(
+                                    f"Agent '{declared_agent}' was rejected by preflight: " f"{preflight_msg}"
+                                ),
+                            )
+                        except Exception as exc:
+                            new_plan = None
+                            log.warning("Replan call failed: %s", exc)
+                        if new_plan and new_plan[0].get("agent") and new_plan[0]["agent"] != declared_agent:
+                            log.info(
+                                "Replan: step %d %s → %s (preflight reroute)",
+                                i,
+                                declared_agent,
+                                new_plan[0]["agent"],
+                            )
+                            plan[i] = new_plan[0]
+                            continue  # re-enter while loop with new agent
+                        log.info(
+                            "Replan produced no usable alternative (got %s); falling through to blocked",
+                            new_plan[0].get("agent") if new_plan else None,
+                        )
+
                     (workspace / "output.md").write_text(preflight_msg, encoding="utf-8")
                     _write_result(
                         workspace,
@@ -780,6 +826,8 @@ def _execute_plan_steps(
 
         if is_multi and not is_last and result_file.exists():
             result_file.unlink()
+
+        i += 1  # advance to next step (replan path uses `continue` to skip this)
 
     if is_multi and prev_output:
         synthesized = _synthesize_outputs(content, plan, prev_output)

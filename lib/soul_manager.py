@@ -1,5 +1,6 @@
 """Authorization event logging and skill audit coverage checks."""
 
+import ast
 import hashlib
 import json
 import logging
@@ -276,6 +277,13 @@ COVERT_CHANNEL_SERVICES: frozenset[str] = frozenset(
     }
 )
 
+DETECTION_VOCAB: frozenset[str] = frozenset(
+    {"detect", "classify", "filter", "identify", "recognize", "validate", "check", "screen"}
+)
+SENSITIVE_VOCAB: frozenset[str] = frozenset(
+    {"harmful", "dangerous", "malicious", "unsafe", "exploit", "attack", "injection", "jailbreak", "toxic"}
+)
+
 _SOUL_LOGS_PATH_PATTERN = re.compile(r"(?:soul/|/soul\b|logs/|/logs\b)", re.IGNORECASE)
 
 _VISUAL_FIELD_PATTERN = re.compile(
@@ -478,6 +486,176 @@ _SHARED_IMPORT_SCAN_RE = re.compile(
 )
 _PRIVILEGED_SHARED_MODULES: frozenset[str] = frozenset({"soul_manager", "config", "sub_agent"})
 
+_TRANSITIVE_LOAD_CALL_PATTERN = re.compile(
+    r'(?:load_skill|import_skill)\s*\(\s*[\'"]([^\'"]+)[\'"]',
+    re.IGNORECASE,
+)
+_TRANSITIVE_SKILL_FILE_PATTERN = re.compile(
+    r'[\'"]([^\'"\s]*(?:skill[s]?/[^\'"]+\.(?:md|skill)|[\w\-]+\.skill))[\'"]',
+    re.IGNORECASE,
+)
+
+_STDLIB_MODULES: frozenset[str] = frozenset(
+    {
+        "os",
+        "sys",
+        "re",
+        "json",
+        "ast",
+        "io",
+        "abc",
+        "math",
+        "time",
+        "datetime",
+        "pathlib",
+        "logging",
+        "hashlib",
+        "shutil",
+        "copy",
+        "functools",
+        "itertools",
+        "collections",
+        "typing",
+        "types",
+        "enum",
+        "dataclasses",
+        "contextlib",
+        "threading",
+        "multiprocessing",
+        "queue",
+        "socket",
+        "ssl",
+        "http",
+        "urllib",
+        "email",
+        "html",
+        "xml",
+        "csv",
+        "sqlite3",
+        "unittest",
+        "traceback",
+        "inspect",
+        "importlib",
+        "gc",
+        "weakref",
+        "struct",
+        "codecs",
+        "base64",
+        "binascii",
+        "string",
+        "textwrap",
+        "difflib",
+        "fnmatch",
+        "glob",
+        "stat",
+        "tempfile",
+        "zipfile",
+        "tarfile",
+        "gzip",
+        "bz2",
+        "lzma",
+        "pickle",
+        "shelve",
+        "dbm",
+        "subprocess",
+        "signal",
+        "errno",
+        "ctypes",
+        "platform",
+        "random",
+        "secrets",
+        "statistics",
+        "decimal",
+        "fractions",
+        "numbers",
+        "cmath",
+        "heapq",
+        "bisect",
+        "array",
+        "pprint",
+        "reprlib",
+        "warnings",
+        "__future__",
+        "builtins",
+        "operator",
+        "keyword",
+        "tokenize",
+        "token",
+        "argparse",
+        "getopt",
+        "getpass",
+        "locale",
+        "atexit",
+        "asyncio",
+        "concurrent",
+        "select",
+        "selectors",
+        "uuid",
+        "ipaddress",
+        "mimetypes",
+        "unicodedata",
+        "encodings",
+        "sysconfig",
+        "site",
+        "runpy",
+        "pkgutil",
+        "dis",
+        "profile",
+        "cProfile",
+        "timeit",
+        "pdb",
+    }
+)
+
+_MIRA_INTERNAL_MODULES: frozenset[str] = frozenset(
+    {
+        "config",
+        "soul_manager",
+        "sub_agent",
+        "mira",
+        "notes_bridge",
+        "prompts",
+        "task_manager",
+        "task_worker",
+    }
+)
+
+_EXTERNAL_IMPORT_LINE_PATTERN = re.compile(
+    r"^\s*(?:import\s+([\w,\s.]+)|from\s+([\w.]+)\s+import)",
+    re.MULTILINE,
+)
+
+
+_STATIC_DANGEROUS_EXEC_PATTERN = re.compile(r"\b(?:exec|eval)\s*\(|\bos\.system\s*\(")
+_STATIC_SUBPROCESS_SHELL_PATTERN = re.compile(r"\bsubprocess\b.{0,200}shell\s*=\s*True", re.DOTALL)
+_STATIC_CURL_PIPE_PATTERN = re.compile(
+    r"\bcurl\b.{0,200}\|\s*(?:bash|sh)\b|\bwget\b.{0,200}\|\s*(?:bash|sh)\b", re.DOTALL
+)
+_STATIC_KEYCHAIN_PATTERN = re.compile(r"\b(?:keychain|keyring|ssh-agent|ssh_agent)\b", re.IGNORECASE)
+_STATIC_PERSISTENCE_PATTERN = re.compile(r"\b(?:launchctl|crontab)\b")
+_STATIC_BASE64_DECODE_LINE_PATTERN = re.compile(r"base64\.b64decode")
+_STATIC_EXEC_EVAL_LINE_PATTERN = re.compile(r"\b(?:exec|eval)\s*\(")
+
+
+def _static_audit(skill_text: str) -> tuple[bool, str]:
+    if _STATIC_DANGEROUS_EXEC_PATTERN.search(skill_text):
+        return True, "dangerous_exec"
+    if _STATIC_SUBPROCESS_SHELL_PATTERN.search(skill_text):
+        return True, "subprocess_shell_true"
+    if _STATIC_CURL_PIPE_PATTERN.search(skill_text):
+        return True, "curl_pipe_exec"
+    if _STATIC_KEYCHAIN_PATTERN.search(skill_text):
+        return True, "keychain_access"
+    if _STATIC_PERSISTENCE_PATTERN.search(skill_text):
+        return True, "persistence_call"
+    _lines = skill_text.splitlines()
+    for _i, _line in enumerate(_lines):
+        if _STATIC_BASE64_DECODE_LINE_PATTERN.search(_line):
+            _window = "\n".join(_lines[_i : _i + 4])
+            if _STATIC_EXEC_EVAL_LINE_PATTERN.search(_window):
+                return True, "base64_decode_then_exec"
+    return False, ""
+
 
 def _log_skill_addition(skill_name: str, skill_content: str) -> None:
     try:
@@ -527,6 +705,37 @@ def audit_skill(
     Returns a dict with keys 'blocked' (bool), 'categories' (list[str]),
     'warnings' (list[str]), and 'overreach_warnings' (list[str]).
     """
+    _evasion_terms = ["soul_manager", "audit_skill", "_content_looks_like_error", "preflight_check"]
+    if any(term in (skill_name + "\n" + skill_content) for term in _evasion_terms) or re.search(
+        r"""['"](?:subprocess|os\.system)['"]""", skill_content
+    ):
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason='self-referential: skill references auditor internals — possible evasion probe'",
+            skill_name,
+        )
+        return {
+            "blocked": True,
+            "categories": ["self_referential_evasion_probe"],
+            "warnings": [],
+            "overreach_warnings": [],
+            "trust_velocity_warning": False,
+        }
+
+    _static_blocked, _static_pattern = _static_audit(skill_content)
+    if _static_blocked:
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason='static_audit: matched high-confidence threat pattern=%s'",
+            skill_name,
+            _static_pattern,
+        )
+        return {
+            "blocked": True,
+            "categories": [f"static_audit:{_static_pattern}"],
+            "warnings": [],
+            "overreach_warnings": [],
+            "trust_velocity_warning": False,
+        }
+
     _skill_id = skill_name.lower().replace(" ", "-")
     try:
         _bl_path = _audit_block_list_path()
@@ -617,6 +826,14 @@ def audit_skill(
             "trust_velocity_warning": False,
         }
 
+    _TRUSTED_INFRA_TARGETS = ["soul_manager", "audit_skill", "core.py", "task_manager", "notes_bridge"]
+    if any(target in skill_content for target in _TRUSTED_INFRA_TARGETS):
+        blocked_categories.append("skill_targets_trusted_infrastructure")
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason='skill targets trusted infrastructure'",
+            skill_name,
+        )
+
     has_network = bool((_STRICT_NETWORK_PATTERN if strict_mode else _NETWORK_PATTERN).search(skill_content))
 
     has_dangerous_exec = bool(re.search(r"\b(eval|exec|__import__|compile)\s*\(", skill_content))
@@ -635,6 +852,49 @@ def audit_skill(
         blocked_categories.append("obfuscated_payloads")
     if has_privilege_escalation:
         blocked_categories.append("privilege_escalation")
+
+    trust_value_score = 0
+    _tvs_reasons: list[str] = []
+
+    _deploy_ctx = (metadata or {}).get("deploy_context", "") or (metadata or {}).get("file_path", "")
+    if "shared/" in _deploy_ctx or "super/" in _deploy_ctx:
+        trust_value_score += 2
+        _tvs_reasons.append("deploy_context=shared/super(+2)")
+
+    if has_network:
+        trust_value_score += 2
+        _tvs_reasons.append("network_access(+2)")
+
+    _has_file_write = bool(_CIRC_WRITE_PATTERN.search(skill_content))
+    if _has_file_write and "soul/" not in skill_content:
+        trust_value_score += 1
+        _tvs_reasons.append("file_write_outside_soul(+1)")
+
+    _has_subprocess_exec = bool(re.search(r"\b(subprocess\.|os\.system|Popen)\b", skill_content)) or has_dangerous_exec
+    if _has_subprocess_exec:
+        trust_value_score += 1
+        _tvs_reasons.append("subprocess_exec(+1)")
+
+    requires_secondary_review = False
+    if trust_value_score >= 4:
+        warning_categories.append("HIGH_VALUE_TARGET")
+        requires_secondary_review = True
+        log.warning(
+            "SKILL_AUDIT HIGH_VALUE_TARGET: skill=%s trust_value_score=%d breakdown=%s "
+            "— high-value compromise target; secondary adversarial review required",
+            skill_name,
+            trust_value_score,
+            _tvs_reasons,
+        )
+        # NOTE: the secondary adversarial-review hook used to dispatch into a
+        # `sub_agent` module that no longer exists in the repo. The previous
+        # code wrapped that import in try/except so the failure was silent —
+        # but the static import checker (preflight) catches it and refuses to
+        # run the agent at all (SIGHUP loop). Until a real secondary-review
+        # path is wired up, just record the warning category and rely on the
+        # primary audit findings; the skill is still subject to all other
+        # checks. TODO: route through the registry's `evaluator` agent or a
+        # dedicated adversarial-review worker.
 
     _pi_full_text = skill_name + "\n" + (metadata or {}).get("description", "") + "\n" + skill_content
     prompt_injection_patterns = [
@@ -861,7 +1121,138 @@ def audit_skill(
                     _sp_label,
                 )
 
+    _branch_count = 0
+    try:
+        from config import SKILL_AUDIT_BRANCH_THRESHOLD
+
+        _match_node_types = (ast.If, ast.IfExp) + ((ast.Match,) if hasattr(ast, "Match") else ())
+        _ast_tree = ast.parse(skill_content)
+        for _ast_node in ast.walk(_ast_tree):
+            if isinstance(_ast_node, _match_node_types):
+                _branch_count += 1
+        if _branch_count > SKILL_AUDIT_BRANCH_THRESHOLD:
+            warning_categories.append("HIGH_CONDITIONAL_COMPLEXITY")
+            log.warning(
+                "SKILL_AUDIT HIGH_CONDITIONAL_COMPLEXITY: skill=%s branch_count=%d threshold=%d",
+                skill_name,
+                _branch_count,
+                SKILL_AUDIT_BRANCH_THRESHOLD,
+            )
+    except SyntaxError:
+        pass
+    except Exception:
+        pass
+
+    requires_manual_review = False
+    _ci_text = (skill_name + " " + (metadata or {}).get("description", "") + " " + skill_content).lower()
+    _ci_detection_matches = [t for t in DETECTION_VOCAB if t in _ci_text]
+    _ci_sensitive_matches = [t for t in SENSITIVE_VOCAB if t in _ci_text]
+    if _ci_detection_matches and _ci_sensitive_matches:
+        warning_categories.append("capability_inversion_risk")
+        requires_manual_review = True
+        log.warning(
+            "SKILL_AUDIT capability_inversion_risk: skill=%s detection_terms=%s sensitive_terms=%s "
+            "— skill encodes detection/classification of sensitive content; manual review required",
+            skill_name,
+            sorted(_ci_detection_matches),
+            sorted(_ci_sensitive_matches),
+        )
+
+    _transitive_warnings: list[str] = []
+
+    _skill_refs: set[str] = set()
+    for _m in _TRANSITIVE_LOAD_CALL_PATTERN.finditer(skill_content):
+        _skill_refs.add(_m.group(1).strip())
+    for _m in _TRANSITIVE_SKILL_FILE_PATTERN.finditer(skill_content):
+        _stem = Path(_m.group(1)).stem
+        _skill_refs.add(_stem)
+
+    if _skill_refs:
+        _audit_registry: dict = {}
+        try:
+            from config import SKILLS_DIR as _SKILLS_DIR_TV
+
+            _hashes_path_tv = _SKILLS_DIR_TV.parent / "audit_hashes.json"
+            try:
+                _audit_registry = (
+                    json.loads(_hashes_path_tv.read_text(encoding="utf-8")) if _hashes_path_tv.exists() else {}
+                )
+            except (OSError, json.JSONDecodeError):
+                _audit_registry = {}
+        except Exception:
+            pass
+        for _ref_name in sorted(_skill_refs):
+            _ref_slug = _ref_name.lower().replace(" ", "-")
+            if _ref_slug not in _audit_registry:
+                _transitive_warnings.append(f"unaudited_transitive_dependency: {_ref_name}")
+                log.warning(
+                    "SKILL_AUDIT unaudited_transitive_dependency: skill=%s references=%s "
+                    "— referenced skill has no audit record; full trust chain unverified",
+                    skill_name,
+                    _ref_name,
+                )
+
+    _seen_external_imports: set[str] = set()
+    for _imp_match in _EXTERNAL_IMPORT_LINE_PATTERN.finditer(skill_content):
+        _import_names_str = _imp_match.group(1)
+        _from_module = _imp_match.group(2)
+        if _import_names_str:
+            _mods = [m.strip().split(".")[0] for m in _import_names_str.split(",")]
+        elif _from_module:
+            _mods = [_from_module.split(".")[0]]
+        else:
+            continue
+        for _mod in _mods:
+            _mod = _mod.strip()
+            if not _mod or _mod in _STDLIB_MODULES or _mod in _MIRA_INTERNAL_MODULES:
+                continue
+            if _mod in _seen_external_imports:
+                continue
+            _seen_external_imports.add(_mod)
+            _transitive_warnings.append(f"unverified_external_import: {_mod}")
+            log.warning(
+                "SKILL_AUDIT unverified_external_import: skill=%s module=%s "
+                "— non-stdlib non-Mira-internal import; verify trust chain before enabling",
+                skill_name,
+                _mod,
+            )
+
+    warning_categories.extend(_transitive_warnings)
+
+    _meta = metadata or {}
+    _rationale = _meta.get("rationale", "")
+    _accountability = "NORMAL"
+    if not _rationale or len(_rationale.strip()) <= 50:
+        _accountability = "LOW"
+        blocked_categories.append("MISSING_EPISTEMIC_PROVENANCE")
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=MISSING_EPISTEMIC_PROVENANCE field=rationale"
+            " — rationale key missing or too short (must be >50 chars)",
+            skill_name,
+        )
+
+    if source in ("agent_generated", "external"):
+        _provenance = _meta.get("provenance", "")
+        if not _provenance:
+            blocked_categories.append("MISSING_EPISTEMIC_PROVENANCE")
+            log.warning(
+                "SKILL_AUDIT blocked: skill=%s reason=MISSING_EPISTEMIC_PROVENANCE field=provenance"
+                " — source=%s requires provenance key naming originating source or task ID",
+                skill_name,
+                source,
+            )
+
     blocked = len(blocked_categories) > 0
+
+    HIGH_TRUST_VOCAB = ["security", "audit", "verify", "trust", "credential", "auth", "cert", "checksum", "integrity"]
+    _hvt_text = (skill_name + " " + (metadata or {}).get("description", "")).lower()
+    high_value_target = any(vocab in _hvt_text for vocab in HIGH_TRUST_VOCAB)
+    if high_value_target:
+        requires_manual_review = True
+        log.warning(
+            "SKILL_AUDIT high_value_target: skill=%s reason='Skill occupies high-trust position — manual review required before enabling.'",
+            skill_name,
+        )
 
     log.info(
         "SKILL_AUDIT result: skill=%s source=%s blocked=%s categories=%s warnings=%s",
@@ -914,7 +1305,17 @@ def audit_skill(
         except OSError as _exc:
             log.debug("audit_block_list write failed: %s", _exc)
 
+    _SPEC_COVERAGE_NOTE = (
+        "Audit covers known-bad static patterns only. "
+        "Novel or obfuscated attack vectors outside this spec are undetected."
+    )
+
     if not blocked:
+        log.info(
+            "SKILL_AUDIT spec_coverage: skill=%s source=%s audit_coverage='known-bad patterns only; novel attack vectors undetected'",
+            skill_name,
+            source,
+        )
         _log_skill_addition(skill_name, skill_content)
         try:
             _pc_path = _audit_pass_cache_path()
@@ -943,6 +1344,9 @@ def audit_skill(
                 "last_verified_at": datetime.now(timezone.utc).isoformat(),
             }
             _hashes_path.write_text(json.dumps(_hashes, indent=2), encoding="utf-8")
+            _sidecar_dir = SKILLS_DIR / ".hashes"
+            _sidecar_dir.mkdir(parents=True, exist_ok=True)
+            (_sidecar_dir / f"{_slug}.sha256").write_text(_content_hash, encoding="utf-8")
         except Exception as _exc:
             log.debug("audit_skill hash persist failed: %s", _exc)
 
@@ -973,14 +1377,169 @@ def audit_skill(
     except Exception:
         pass
 
+    _cap_network: list[str] = []
+    _cap_files: list[str] = []
+    _cap_env: list[str] = []
+    _cap_triggers: list[str] = []
+
+    for _m in re.finditer(r"""['"]https?://[^\s'"\\]{3,}['"]""", skill_content):
+        _u = _m.group(0).strip("'\"")
+        if _u not in _cap_network:
+            _cap_network.append(_u)
+    for _m in re.finditer(r"""['"]([a-zA-Z0-9][a-zA-Z0-9\-]{1,63}(?:\.[a-zA-Z0-9]{2,}){1,3})['"]""", skill_content):
+        _h = _m.group(1)
+        if not _h.startswith("http") and "." in _h and _h not in _cap_network:
+            _cap_network.append(_h)
+
+    for _m in re.finditer(r"""(?:open|Path)\s*\(\s*f?['"]([^'"]+)['"]""", skill_content):
+        _f = _m.group(1)
+        if _f not in _cap_files:
+            _cap_files.append(_f)
+
+    for _m in re.finditer(
+        r"""os\.environ(?:\.get)?\s*\(\s*f?['"]([^'"]+)['"]|os\.environ\[f?['"]([^'"]+)['"]\]|os\.getenv\s*\(\s*f?['"]([^'"]+)['"]""",
+        skill_content,
+    ):
+        _v = _m.group(1) or _m.group(2) or _m.group(3)
+        if _v and _v not in _cap_env:
+            _cap_env.append(_v)
+
+    try:
+        _cm_ast = ast.parse(skill_content)
+        for _cm_node in ast.walk(_cm_ast):
+            if (
+                isinstance(_cm_node, ast.Expr)
+                and isinstance(_cm_node.value, ast.Constant)
+                and isinstance(_cm_node.value.value, str)
+            ):
+                for _cm_line in _cm_node.value.value.splitlines():
+                    _cm_line = _cm_line.strip()
+                    if _cm_line and any(
+                        kw in _cm_line.lower()
+                        for kw in ("trigger", "invoke", "when ", "called when", "use when", "activat")
+                    ):
+                        if _cm_line not in _cap_triggers:
+                            _cap_triggers.append(_cm_line)
+            elif isinstance(_cm_node, ast.If):
+                for _cm_child in ast.walk(_cm_node.test):
+                    if (
+                        isinstance(_cm_child, ast.Constant)
+                        and isinstance(_cm_child.value, str)
+                        and len(_cm_child.value) > 3
+                    ):
+                        if _cm_child.value not in _cap_triggers:
+                            _cap_triggers.append(_cm_child.value)
+    except SyntaxError:
+        pass
+    except Exception:
+        pass
+
+    capability_manifest = {
+        "skill": skill_name,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "network_surface": _cap_network,
+        "file_surface": _cap_files,
+        "env_surface": _cap_env,
+        "trigger_conditions": _cap_triggers,
+    }
+
+    try:
+        from config import LOGS_DIR as _cm_logs_dir
+
+        _cm_path = _cm_logs_dir / f"skill_manifest_{_skill_id}.json"
+        _cm_path.parent.mkdir(parents=True, exist_ok=True)
+        _cm_path.write_text(json.dumps(capability_manifest, indent=2), encoding="utf-8")
+    except Exception as _cm_exc:
+        log.debug("skill_manifest write failed: %s", _cm_exc)
+
+    try:
+        from config import SKILLS_DIR as _cm_skills_dir
+
+        _cm_hashes_path = _cm_skills_dir.parent / "audit_hashes.json"
+        if _cm_hashes_path.exists():
+            _cm_hashes = json.loads(_cm_hashes_path.read_text(encoding="utf-8"))
+            if _skill_id in _cm_hashes and isinstance(_cm_hashes[_skill_id], dict):
+                _cm_hashes[_skill_id]["capability_manifest"] = capability_manifest
+                _cm_hashes_path.write_text(json.dumps(_cm_hashes, indent=2), encoding="utf-8")
+    except Exception as _cm_exc:
+        log.debug("skill_manifest registry update failed: %s", _cm_exc)
+
     return {
         "blocked": blocked,
         "categories": blocked_categories,
         "warnings": warning_categories,
         "overreach_warnings": overreach_warnings,
         "trust_velocity_warning": trust_velocity_warning,
+        "requires_manual_review": requires_manual_review,
+        "requires_secondary_review": requires_secondary_review,
+        "trust_value_score": trust_value_score,
+        "high_value_target": high_value_target,
         "patterns_age_days": age_days,
+        "conditional_branch_count": _branch_count,
+        "accountability": _accountability,
+        "spec_coverage_note": _SPEC_COVERAGE_NOTE if not blocked else None,
+        "capability_manifest": capability_manifest,
     }
+
+
+def load_skill(skill_name: str) -> str:
+    """Load skill content, verifying file hash against audit-time sidecar.
+
+    Blocks and re-audits if the file changed since the last passing audit.
+    Forces an audit if no sidecar exists (legacy or new skills).
+    Returns empty string if blocked or not found.
+    """
+    try:
+        from config import SKILLS_DIR
+    except Exception as _exc:
+        log.debug("load_skill: config import failed: %s", _exc)
+        return ""
+
+    slug = skill_name.lower().replace(" ", "-")
+    skill_file: Path | None = None
+    for _ext in (".md", ".py"):
+        _candidate = SKILLS_DIR / f"{slug}{_ext}"
+        if _candidate.exists():
+            skill_file = _candidate
+            break
+    if skill_file is None:
+        return ""
+
+    try:
+        content = skill_file.read_text(encoding="utf-8")
+    except OSError as _exc:
+        log.debug("load_skill: read failed skill=%s: %s", skill_name, _exc)
+        return ""
+
+    current_hash = hashlib.sha256(content.encode()).hexdigest()
+    sidecar = SKILLS_DIR / ".hashes" / f"{slug}.sha256"
+
+    if not sidecar.exists():
+        log.warning(
+            "SKILL_LOAD unaudited: skill=%s no stored hash — forcing audit before use",
+            skill_name,
+        )
+        _result = audit_skill(skill_name, content)
+        if _result["blocked"]:
+            log.warning("SKILL_LOAD blocked: skill=%s failed initial audit", skill_name)
+            return ""
+        return content
+
+    stored_hash = sidecar.read_text(encoding="utf-8").strip()
+    if current_hash != stored_hash:
+        log.warning(
+            "SKILL_LOAD hash_mismatch: skill=%s file changed since last audit — re-auditing",
+            skill_name,
+        )
+        _result = audit_skill(skill_name, content)
+        if _result["blocked"]:
+            log.warning(
+                "SKILL_LOAD blocked: skill=%s re-audit failed after hash mismatch",
+                skill_name,
+            )
+            return ""
+
+    return content
 
 
 def audit_skill_freshness() -> list[dict]:

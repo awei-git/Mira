@@ -240,6 +240,23 @@ def update_worldview(new_content: str):
 
 
 # ---------------------------------------------------------------------------
+# Identity
+# ---------------------------------------------------------------------------
+
+
+def update_identity(new_content: str, reason: str = ""):
+    """Replace identity file. Integrity-protected.
+
+    All identity modifications MUST go through this function. Direct writes
+    (path.write_text, manual editor save, etc.) will break the hash check
+    and trigger CRITICAL alerts on the next soul-integrity cycle.
+    """
+    _protected_write(IDENTITY_FILE, new_content)
+    log.info("Identity updated (%d lines): %s", new_content.count("\n"), reason or "no reason given")
+    _log_change("UPDATE_IDENTITY", "identity.md", reason or f"{new_content.count(chr(10))} lines")
+
+
+# ---------------------------------------------------------------------------
 # Reading Notes
 # ---------------------------------------------------------------------------
 
@@ -405,12 +422,11 @@ def auto_flush(context_summary: str):
     path = CONVERSATIONS_DIR / f"flush_{ts}.md"
     _atomic_write(path, f"# Context Flush ({ts})\n\n{context_summary[:2000]}\n")
     log.info("Auto-flush saved to %s", path.name)
-
-    # Trigger async index rebuild (non-blocking)
-    try:
-        rebuild_memory_index()
-    except (ImportError, ModuleNotFoundError, ConnectionError, RuntimeError) as e:
-        log.warning("Auto-flush index rebuild failed: %s", e)
+    # The semantic index rebuild used to run here synchronously and was
+    # responsible for ~14 minutes of post-task latency per task. Rebuild
+    # is now driven from `agents/super/post_hooks.py:_maybe_rebuild_index`,
+    # which runs in a detached subprocess after the worker exits and is
+    # rate-limited globally so multiple finishing tasks don't dogpile.
 
 
 # ---------------------------------------------------------------------------

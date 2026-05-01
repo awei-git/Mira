@@ -452,6 +452,8 @@ def test_execute_plan_steps_falls_back_when_preflight_load_errors(tmp_path, monk
     called = {"general": False, "handler": False}
 
     class FakeRegistry(_RegistryPolicyMixin):
+        capability_class = "read-only"
+
         def load_preflight(self, name: str):
             assert name == "writer"
             raise ImportError("bad preflight import")
@@ -711,6 +713,8 @@ def test_execute_plan_steps_marks_fallback_exception_as_failed(tmp_path, monkeyp
     workspace.mkdir()
 
     class FakeRegistry(_RegistryPolicyMixin):
+        capability_class = "read-only"
+
         def load_preflight(self, name: str):
             raise ImportError("bad preflight import")
 
@@ -751,6 +755,71 @@ def test_execute_plan_steps_marks_fallback_exception_as_failed(tmp_path, monkeyp
     assert result["agent"] == "general"
     assert step_state["status"] == "failed"
     assert step_state["steps"][0]["status"] == "failed"
+
+
+def test_execute_plan_steps_does_not_fallback_for_local_write_handler_failure(tmp_path, monkeypatch):
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+
+    class FakeRegistry(_RegistryPolicyMixin):
+        capability_class = "local-write"
+        policy_allow_fallback_to_general = True
+
+        def load_preflight(self, name: str):
+            return None
+
+        def load_handler(self, name: str):
+            assert name == "coder"
+
+            def handler(*args, **kwargs):
+                raise TimeoutError("coder timed out")
+
+            return handler
+
+    def fake_general(*args, **kwargs):
+        raise AssertionError("local-write tasks must not fall back to general")
+
+    monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
+    monkeypatch.setattr("handlers_legacy._handle_general", fake_general)
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    task_worker._execute_plan_steps(
+        [
+            {
+                "agent": "coder",
+                "instruction": "convert local file",
+                "tier": "light",
+                "capability_class": "local-write",
+                "policy": {
+                    "capability_class": "local-write",
+                    "requires_preflight": False,
+                    "requires_approval": False,
+                    "requires_verification": True,
+                    "fail_closed": False,
+                    "allow_fallback_to_general": True,
+                    "auto_retry": True,
+                },
+                "prediction": {"difficulty": "medium", "failure_modes": [], "success_criteria": "file converted"},
+            }
+        ],
+        workspace,
+        "task129c",
+        "convert local file",
+        "ang",
+        "thread1",
+        None,
+        False,
+        1,
+    )
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    step_state = json.loads((workspace / "step_states.json").read_text(encoding="utf-8"))
+
+    assert result["status"] == "failed"
+    assert "coder handler failed to load: coder timed out" in result["summary"]
+    assert result["agent"] == "coder"
+    assert step_state["status"] == "failed"
+    assert step_state["steps"][0]["execution_agent"] == "coder"
 
 
 def test_execute_plan_steps_initializes_artifacts_once(tmp_path, monkeypatch):

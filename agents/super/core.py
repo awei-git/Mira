@@ -413,6 +413,20 @@ def cmd_run():
     _phase_times["talk"] = round(_talk_dur * 1000)
     _record_perf_stat("talk", "talk", _talk_dur, _talk_ok)
 
+    try:
+        from mira import update_interface_latency as _update_iface_lat
+
+        _iface_lat_avg = _update_iface_lat(_phase_times["talk"])
+        _hb_path = MIRA_DIR / "heartbeat.json"
+        if _hb_path.exists():
+            _hb_data = json.loads(_hb_path.read_text(encoding="utf-8"))
+            _hb_data["interface_latency_ms"] = _iface_lat_avg
+            _hb_tmp = _hb_path.with_suffix(".tmp")
+            _hb_tmp.write_text(json.dumps(_hb_data), encoding="utf-8")
+            _hb_tmp.rename(_hb_path)
+    except Exception as _ile:
+        log.debug("interface_latency write failed: %s", _ile)
+
     if should_shutdown():
         log.info("Shutdown requested — exiting after talk phase")
         return
@@ -760,6 +774,78 @@ def _check_stale_pipelines() -> list[str]:
     return _stale
 
 
+def _dispatch_distribution_snapshot() -> None:
+    """Count past-7-day task dispatches per agent, compare to prior week, warn on drift."""
+    from datetime import timedelta
+
+    _DISPATCH_HISTORY = Path(__file__).parent / "dispatch_history.json"
+    cutoff = (datetime.now() - timedelta(days=7)).timestamp()
+
+    current: dict[str, int] = {}
+    try:
+        result_files = [p for p in TASKS_DIR.rglob("result.json") if p.stat().st_mtime >= cutoff]
+        for rf in result_files:
+            try:
+                data = json.loads(rf.read_text(encoding="utf-8"))
+                agent = str(data.get("agent", "")).strip()
+                if agent:
+                    current[agent] = current.get(agent, 0) + 1
+            except (json.JSONDecodeError, OSError):
+                continue
+    except Exception as _e:
+        log.debug("Dispatch snapshot scan failed: %s", _e)
+        return
+
+    if not current:
+        return
+
+    prior: dict[str, int] = {}
+    try:
+        if _DISPATCH_HISTORY.exists():
+            prior = json.loads(_DISPATCH_HISTORY.read_text(encoding="utf-8")).get("counts", {})
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    if prior:
+        prior_total = sum(prior.values())
+        current_total = sum(current.values())
+        drift_warnings: list[str] = []
+
+        for agent, prior_count in prior.items():
+            cur_count = current.get(agent, 0)
+            prior_share = prior_count / prior_total if prior_total else 0
+            cur_share = cur_count / current_total if current_total else 0
+
+            if cur_count == 0:
+                drift_warnings.append(f"Agent '{agent}' had {prior_count} dispatches last week but 0 this week.")
+            elif prior_share > 0 and (prior_share - cur_share) / prior_share > 0.5:
+                drift_warnings.append(
+                    f"Agent '{agent}' share dropped from {prior_share:.1%} to {cur_share:.1%} "
+                    f"({prior_count} → {cur_count} dispatches)."
+                )
+
+        for msg in drift_warnings:
+            log.warning("DISPATCH_DRIFT: %s", msg)
+            try:
+                journal_path = JOURNAL_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.md"
+                with open(journal_path, "a", encoding="utf-8") as _jf:
+                    _jf.write(f"\n\n---\n\n**[WARNING] Dispatch Drift Detected**\n\n{msg}\n")
+            except OSError as _je:
+                log.debug("Journal dispatch warning write failed: %s", _je)
+
+    try:
+        _DISPATCH_HISTORY.parent.mkdir(parents=True, exist_ok=True)
+        _DISPATCH_HISTORY.write_text(
+            json.dumps(
+                {"counts": current, "recorded_at": datetime.now().isoformat()},
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as _e:
+        log.debug("Dispatch history write failed: %s", _e)
+
+
 def _refresh_operator_dashboards():
     """Persist operator dashboard snapshots for each configured user."""
     try:
@@ -842,6 +928,7 @@ def main():
         _write_last_output("explorer")
     elif command == "reflect":
         do_reflect(user_id=flags.get("user", "ang"))
+        _dispatch_distribution_snapshot()
         _write_last_output("reflect")
     elif command == "journal":
         do_journal(user_id=flags.get("user", "ang"))

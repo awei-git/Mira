@@ -105,6 +105,7 @@ def _plan_task(
     prior_context: str = "",
     allowed_agents: list[str] | None = None,
     content_filter: bool = False,
+    replan_hint: str = "",
 ) -> list[dict]:
     """Use LLM to decompose a request into an ordered list of steps.
 
@@ -172,13 +173,29 @@ If a previous round already produced content, reference it in your plan (e.g. us
         filtered = _all_agent_descs
     agent_lines = "\n".join(f"- {name}: {desc}" for name, desc in filtered.items())
 
+    # When a previous attempt was rejected by preflight (e.g. general agent
+    # got an effectful task it isn't allowed to do), pass the rejection back
+    # in here so the planner picks a different, capable agent on retry.
+    # Without this, fail-closed preflight + auto_retry results in silently
+    # blocked tasks that look "still pending" forever to the user.
+    replan_section = ""
+    if replan_hint:
+        replan_section = (
+            "\n\n## REPLAN — previous attempt rejected\n"
+            f"Reason: {replan_hint[:300]}\n"
+            "Pick a DIFFERENT agent that has the right capability for this task. "
+            "Do not return the same agent that was just rejected. If the task is effectful "
+            "(modifying files, deleting jobs, calling APIs), choose a specialized agent "
+            "(coder, socialmedia, podcast, etc.) — never `general`.\n"
+        )
+
     content_filter_rule = ""
     if content_filter:
         content_filter_rule = """
 - CONTENT FILTER ACTIVE: This is a child user. Only provide age-appropriate, safe, educational content.
   Never discuss violence, drugs, alcohol, sexual content, or anything dangerous. Redirect inappropriate requests to something positive."""
 
-    prompt = f"""You are a task planner and orchestrator. Decompose this user request into ordered execution steps.{skills_section}{cal_section}
+    prompt = f"""You are a task planner and orchestrator. Decompose this user request into ordered execution steps.{skills_section}{cal_section}{replan_section}
 
 ## Available Agents
 {agent_lines}
@@ -227,8 +244,15 @@ The "prediction" block is REQUIRED on every step. It captures your expectation b
 
 JSON:"""
 
+    # Planning timeout was 20s — too tight when the API is under load. The
+    # detailed pre-market replan task (2026-04-29) timed out twice here,
+    # both the initial plan AND the replan attempt, and each time the
+    # exception path below silently fell back to {"agent": "general"} —
+    # which then failed preflight as "effectful task should use a
+    # specialized agent", with no further recourse. 45s gives the model
+    # room without making the user wait minutes.
     try:
-        result = claude_think(prompt, timeout=20)
+        result = claude_think(prompt, timeout=45)
         if result:
             match = re.search(r"\[.*\]", result, re.DOTALL)
             if match:
@@ -247,9 +271,35 @@ JSON:"""
                 if validated:
                     return validated
     except Exception as e:
-        log.warning("Planning failed, falling back to general: %s", e)
+        log.warning("Planning failed, falling back: %s", e)
 
-    return [{"agent": "general", "instruction": content}]
+    # Heuristic fallback when planning truly failed. Previously this always
+    # returned `general`, but `general`'s preflight rejects effectful tasks
+    # (file edits, API calls, scheduling) — so the silent fallback would
+    # immediately fail at the next stage. Look at the request for a strong
+    # specialised-agent signal first; only fall back to `general` for
+    # plain Q&A / read-only requests.
+    lower = (content or "").lower()
+    fallback_agent = "general"
+    if any(k in lower for k in ("market", "stock", "fomc", "earnings", "盘前", "盘后", "市场", "财报")):
+        fallback_agent = "analyst"
+    elif any(k in lower for k in ("写", "文章", "essay", "draft", "blog post", "改稿")):
+        fallback_agent = "writer"
+    elif any(k in lower for k in ("substack", "twitter", "bluesky", "tweet", "post a note", "comment")):
+        fallback_agent = "socialmedia"
+    elif any(k in lower for k in ("podcast", "episode", "tts", "audio")):
+        fallback_agent = "podcast"
+    elif any(k in lower for k in ("photo", "edit photo", "lightroom", "拍")):
+        fallback_agent = "photo"
+    elif any(k in lower for k in ("research", "literature", "paper", "math", "证明", "论文")):
+        fallback_agent = "researcher"
+    elif any(
+        k in lower
+        for k in ("edit code", "fix bug", "refactor", "代码", "脚本", "delete the", "comment out the", "停掉", "关掉")
+    ):
+        fallback_agent = "coder"
+    log.info("planner_fallback agent=%s reason=heuristic_match content=%r", fallback_agent, content[:80])
+    return [{"agent": fallback_agent, "instruction": content, "tier": "light"}]
 
 
 def _synthesize_outputs(original_request: str, plan: list[dict], final_output: str) -> str:

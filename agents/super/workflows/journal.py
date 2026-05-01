@@ -326,6 +326,14 @@ def do_journal(user_id: str = "ang"):
         _ns_file = SOCIAL_STATE_DIR / "notes_state.json"
         _gs_file = SOCIAL_STATE_DIR / "growth_state.json"
 
+        # Targets — keep in one place so progress lines below stay in sync.
+        TARGETS = {"x": 15, "notes": 8, "comments": 5, "bluesky": 5}
+
+        def _bar(have: int, target: int) -> str:
+            """Compact progress: '7/15 ⚠' or '15/15 ✓' so the gap is obvious at a glance."""
+            mark = "✓" if have >= target else ("⚠" if have > 0 else "✗")
+            return f"{have}/{target} {mark}"
+
         report_lines = [f"# Social Media Report {today}\n"]
 
         # X/Twitter
@@ -335,22 +343,45 @@ def do_journal(user_id: str = "ang"):
             qt_today = _tw.get(f"quotes_{today}", 0)
             follows_today = _tw.get(f"follows_{today}", 0)
             report_lines.append(f"## X/Twitter")
-            report_lines.append(f"- Tweets: {tw_today}, Quotes: {qt_today}, Follows: {follows_today}")
+            report_lines.append(
+                f"- Today: tweets {_bar(tw_today, TARGETS['x'])}, quotes {qt_today}, follows {follows_today}"
+            )
             try:
                 sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
                 from twitter import get_performance_summary
 
                 perf = get_performance_summary(_tw)
+                # Drop the "Best: ..." segment when its metrics are 0/0 — a
+                # "best tweet" with 0 likes/0 replies is just noise that
+                # makes the report look broken.
                 if perf and "No tweet metrics" not in perf:
-                    report_lines.append(f"- Performance: {perf}")
+                    if "(0 likes, 0 replies)" in perf:
+                        perf = perf.split("Best:")[0].rstrip(" .,")
+                    if perf:
+                        report_lines.append(f"- Last 7 days: {perf}")
             except Exception:
                 pass
-            # Last 3 tweets
+            # Last 3 tweets — header makes it explicit this is across all
+            # time, not today's count.
             history = _tw.get("tweet_history", [])[-3:]
             if history:
-                report_lines.append("- Recent tweets:")
+                report_lines.append(f"- Recent posts (lifetime, last {len(history)}):")
                 for t in history:
                     report_lines.append(f"  - {t.get('text', '')[:100]}")
+
+        # Bluesky — was missing entirely; bg-substack-growth.log shows
+        # active posting and replies, so the report was literally hiding
+        # output that did happen.
+        try:
+            _bs_file = SOCIAL_STATE_DIR / "bluesky_state.json"
+            if _bs_file.exists():
+                _bs = _json.loads(_bs_file.read_text())
+                bs_today = _bs.get(f"posts_{today}", 0)
+                bs_replies_today = _bs.get(f"replies_{today}", 0)
+                report_lines.append(f"\n## Bluesky")
+                report_lines.append(f"- Today: posts {_bar(bs_today, TARGETS['bluesky'])}, replies {bs_replies_today}")
+        except Exception:
+            pass
 
         # Substack Notes
         if _ns_file.exists():
@@ -358,16 +389,14 @@ def do_journal(user_id: str = "ang"):
             notes_today = _ns.get(f"notes_{today}", 0)
             queue_left = len(_ns.get("queue", []))
             report_lines.append(f"\n## Substack Notes")
-            report_lines.append(f"- Posted: {notes_today}, Queue: {queue_left}")
+            report_lines.append(f"- Today: posted {_bar(notes_today, TARGETS['notes'])}, queue {queue_left}")
 
         # Substack Comments
         if _gs_file.exists():
             _gs = _json.loads(_gs_file.read_text())
             comments_today = _gs.get(f"comments_{today}", 0)
             report_lines.append(f"\n## Substack Comments")
-            report_lines.append(f"- Posted: {comments_today}")
-
-        report_lines.append(f"\n目标: X 15条, Notes 8条, Comments 5+条")
+            report_lines.append(f"- Today: posted {_bar(comments_today, TARGETS['comments'])}")
 
         report_content = "\n".join(report_lines)
 

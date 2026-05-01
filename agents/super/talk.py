@@ -7,16 +7,20 @@ handles meta-commands, and processes both command-based and legacy inbox flows.
 import json
 import logging
 import re
+import hashlib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from config import (
+    BRIDGE_COMPAT_EXPORT_ENABLED,
+    CONTROL_RUNTIME_DB_ENABLED,
     MIRA_DIR,
     CLEANUP_DAYS,
     WRITINGS_DIR,
     WRITINGS_OUTPUT_DIR,
     MAX_TASKS_PER_CYCLE,
+    get_user_config,
 )
 
 try:
@@ -41,8 +45,18 @@ def _talk_slug(content: str, msg_id: str) -> str:
     slug = re.sub(r"[\s_]+", "-", slug).strip("-")[:30]
     if not slug:
         slug = "talk"
-    # Append short id to avoid collisions
-    return f"{slug}_{msg_id[:6]}"
+    # Append a stable hash of the full message id. API-created ids often share
+    # prefixes (for example req_todo_*), so prefix slicing reuses workspaces.
+    suffix = hashlib.sha1(str(msg_id).encode("utf-8")).hexdigest()[:10]
+    return f"{slug}_{suffix}"
+
+
+def _is_human_review_draft_task(task_id: str, *, tags: list[str] | None = None) -> bool:
+    """Agent-created drafts should wait for human review, not consume workers."""
+    if str(task_id or "").startswith("x_reply_"):
+        return True
+    tag_set = set(tags or [])
+    return "x_reply" in tag_set or "needs-human" in tag_set
 
 
 def _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd=None):
@@ -51,6 +65,10 @@ def _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd=None):
     Returns: 'ok', 'busy', or 'failed'.
     Caller should break command loop on 'busy' — command stays in ledger for next cycle.
     """
+    if _is_human_review_draft_task(msg.id, tags=(cmd or {}).get("tags") or []):
+        bridge.update_status(msg.id, "needs-input")
+        log.info("STATE %s: dispatch skipped (human-review draft)", msg.id)
+        return "ok"
     if task_mgr.is_busy():
         log.info("STATE %s: dispatch deferred (all %d slots occupied)", msg.id, task_mgr.get_active_count())
         return "busy"
@@ -74,6 +92,82 @@ def _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd=None):
         )
         log.error("STATE %s: -> failed (dispatch error)", msg.id)
         return "failed"
+
+
+def _message_from_control_item(item: dict, user_id: str, user_cfg: dict):
+    messages = item.get("messages") if isinstance(item.get("messages"), list) else []
+    user_messages = [m for m in messages if (m.get("sender") or "").lower() not in {"agent", "mira"}]
+    msg_row = user_messages[-1] if user_messages else (messages[-1] if messages else {})
+    content = msg_row.get("content") or item.get("title") or item.get("id") or ""
+    sender = msg_row.get("sender") or user_id
+    msg = Message(
+        id=item["id"],
+        sender=sender,
+        timestamp=msg_row.get("timestamp") or item.get("created_at", ""),
+        content=content,
+        thread_id=item["id"],
+        user_id=user_id,
+        user_role=user_cfg["role"],
+        model_restriction=user_cfg.get("model_restriction"),
+        content_filter=user_cfg.get("content_filter", False),
+        allowed_agents=user_cfg.get("allowed_agents", ["general"]),
+    )
+    return msg
+
+
+def _dispatch_control_plane_tasks(task_mgr, bridges_by_user: dict, default_bridge) -> None:
+    """Dispatch queued Postgres control-plane tasks when DB runtime is enabled."""
+    if not CONTROL_RUNTIME_DB_ENABLED or BRIDGE_COMPAT_EXPORT_ENABLED or Message is None:
+        return
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository
+
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            items = repo.list_dispatchable_tasks(limit=MAX_TASKS_PER_CYCLE)
+    except Exception as exc:
+        log.warning("Control DB dispatch scan failed: %s", exc)
+        return
+
+    for item in items:
+        if task_mgr.is_busy():
+            log.info("Control DB dispatch deferred (all %d slots occupied)", task_mgr.get_active_count())
+            return
+        task_id = item.get("id") or ""
+        user_id = item.get("user_id") or "ang"
+        if not task_id or task_mgr.is_dispatched(task_id):
+            continue
+        user_cfg = get_user_config(user_id)
+        bridge = bridges_by_user.get(user_id, default_bridge)
+        content = ""
+        messages = item.get("messages") if isinstance(item.get("messages"), list) else []
+        if messages:
+            content = messages[-1].get("content", "")
+        if not _check_inbound_command_safety(bridge, {"sender": user_id}, task_id, item.get("title", ""), content):
+            continue
+        msg = _message_from_control_item(item, user_id, user_cfg)
+        workspace = TASKS_DIR / _talk_slug(msg.content, task_id)
+        dispatched = task_mgr.dispatch(msg, workspace)
+        if dispatched:
+            log.info("Control DB task %s dispatched from queued state", task_id)
+        else:
+            try:
+                from control.db import transaction
+                from control.repository import ControlRepository
+
+                with transaction() as conn:
+                    repo = ControlRepository(conn)
+                    repo.update_task_status(
+                        user_id,
+                        task_id,
+                        "failed",
+                        summary="Worker process failed to start",
+                        error_code="dispatch_failed",
+                        error_message="Worker process failed to start",
+                    )
+            except Exception as exc:
+                log.warning("Control DB dispatch failure update failed for %s: %s", task_id, exc)
 
 
 def _quarantine_inbound_command(bridge, cmd: dict, item_id: str, title: str, content: str, reason: str):
@@ -315,6 +409,95 @@ def _status_footer(task_mgr) -> str:
     return "\n\n---\nAgent: 空闲"
 
 
+_TASK_TERMINAL_STATUSES = {"done", "failed", "timeout", "needs-input", "blocked"}
+
+
+def _find_task_record(task_mgr, task_id: str):
+    for rec in getattr(task_mgr, "_records", []):
+        if getattr(rec, "task_id", "") == task_id:
+            return rec
+    return None
+
+
+def _project_record_to_control_db(rec, status: str, *, agent_message: str = "", error_message: str = "") -> None:
+    """Best-effort projection for API-only items that have no legacy file."""
+    if not CONTROL_RUNTIME_DB_ENABLED:
+        return
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository
+
+        user_id = getattr(rec, "user_id", "ang") or "ang"
+        message = agent_message or error_message
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            repo.update_task_status(
+                user_id,
+                rec.task_id,
+                status,
+                summary=getattr(rec, "summary", "") or "",
+                error_code=status if error_message else None,
+                error_message=error_message or None,
+                agent_message=message,
+                message_kind="error" if error_message else "text",
+            )
+    except Exception as exc:
+        log.warning("Control DB terminal projection failed for %s: %s", rec.task_id, exc)
+
+
+def _project_record_to_bridge(bridge, task_mgr, rec) -> None:
+    """Project a terminal TaskRecord into the app-visible bridge item.
+
+    This is deliberately fail-closed: any status not understood by the app is
+    surfaced as failed instead of leaving the item stuck in working.
+    """
+    rec.status = normalize_task_status(getattr(rec, "status", ""))
+    content = task_mgr.get_reply_content(rec)
+    footer = _status_footer(task_mgr)
+    is_comment = rec.task_id.startswith("comment_")
+
+    if rec.status == "needs-input":
+        msg_text = (content + footer) if not is_comment else ""
+        bridge.update_status(rec.task_id, "needs-input", agent_message=msg_text)
+        _project_record_to_control_db(rec, "needs-input", agent_message=msg_text)
+        if rec.tags:
+            bridge.set_tags(rec.task_id, rec.tags)
+        log.info("STATE %s: working -> needs-input", rec.task_id)
+        return
+
+    if rec.status == "done":
+        msg_text = (content + footer) if not is_comment else ""
+        bridge.update_status(rec.task_id, "done", agent_message=msg_text)
+        _project_record_to_control_db(rec, "done", agent_message=msg_text)
+        if rec.tags:
+            bridge.set_tags(rec.task_id, rec.tags)
+        ws = Path(rec.workspace) if rec.workspace else None
+        todo_marker = ws / ".todo_id" if ws else None
+        if todo_marker and todo_marker.exists():
+            _todo_id = todo_marker.read_text().strip()
+            if _todo_id and content:
+                bridge.add_followup(_todo_id, content, source="agent")
+                bridge.update_todo(_todo_id, status="done")
+                log.info("Todo %s: agent reply written to followups", _todo_id)
+        log.info("STATE %s: working -> done", rec.task_id)
+        return
+
+    retryable = task_mgr.can_retry(rec)
+    if rec.status == "blocked":
+        error_msg = f"处理被阻止: {rec.summary}" if rec.summary else "处理被阻止。"
+    elif rec.status in ("failed", "timeout"):
+        error_msg = f"处理失败: {rec.summary}" if rec.summary else "处理失败，请稍后重试。"
+    else:
+        error_msg = f"处理失败: 未识别的任务状态 '{rec.status}'。{rec.summary or ''}".strip()
+    bridge.update_status(
+        rec.task_id,
+        "failed",
+        error={"code": rec.status or "unknown_status", "message": error_msg, "retryable": retryable},
+    )
+    _project_record_to_control_db(rec, "failed", error_message=error_msg)
+    log.warning("STATE %s: working -> failed (%s: %s)", rec.task_id, rec.status, rec.summary)
+
+
 def _sweep_stuck_items(bridge, task_mgr):
     """Find items stuck in 'working' with no active task and mark them failed.
     Also auto-dismiss alert-type items (informational, not actionable).
@@ -346,7 +529,12 @@ def _sweep_stuck_items(bridge, task_mgr):
         if age < STUCK_THRESHOLD:
             continue
         item_id = item.get("id", path.stem)
-        if task_mgr.is_dispatched(item_id):
+        rec = _find_task_record(task_mgr, item_id)
+        if rec and normalize_task_status(getattr(rec, "status", "")) in _TASK_TERMINAL_STATUSES:
+            log.warning("STATE %s: repairing working item from terminal TaskRecord (%s)", item_id, rec.status)
+            _project_record_to_bridge(bridge, task_mgr, rec)
+            continue
+        if rec and normalize_task_status(getattr(rec, "status", "")) in ("dispatched", "running"):
             continue
         log.warning("STATE %s: working -> failed (stuck %ds, no active task)", item_id, int(age))
         bridge.update_status(
@@ -379,45 +567,8 @@ def do_talk():
     # --- Phase A: Collect results from previously dispatched tasks ---
     completed = task_mgr.check_tasks()
     for rec in completed:
-        rec.status = normalize_task_status(getattr(rec, "status", ""))
         bridge = bridges_by_user.get(getattr(rec, "user_id", "ang"), default_bridge)
-        content = task_mgr.get_reply_content(rec)
-        footer = _status_footer(task_mgr)
-        # Comment threads: reply is in .reply.json sidecar ONLY (written by task_worker).
-        # Do NOT write to outbox or task JSON — that creates duplicates.
-        is_comment = rec.task_id.startswith("comment_")
-
-        if rec.status == "needs-input":
-            msg_text = (content + footer) if not is_comment else ""
-            bridge.update_status(rec.task_id, "needs-input", agent_message=msg_text)
-            if rec.tags:
-                bridge.set_tags(rec.task_id, rec.tags)
-            log.info("STATE %s: working -> needs-input", rec.task_id)
-        elif rec.status == "done":
-            msg_text = (content + footer) if not is_comment else ""
-            bridge.update_status(rec.task_id, "done", agent_message=msg_text)
-            if rec.tags:
-                bridge.set_tags(rec.task_id, rec.tags)
-            # Write result back to todo followups if this task originated from a todo
-            ws = Path(rec.workspace) if rec.workspace else None
-            todo_marker = ws / ".todo_id" if ws else None
-            if todo_marker and todo_marker.exists():
-                _todo_id = todo_marker.read_text().strip()
-                if _todo_id and content:
-                    bridge.add_followup(_todo_id, content, source="agent")
-                    bridge.update_todo(_todo_id, status="done")
-                    log.info("Todo %s: agent reply written to followups", _todo_id)
-            log.info("STATE %s: working -> done", rec.task_id)
-        elif rec.status in ("failed", "timeout", "blocked"):
-            retryable = task_mgr.can_retry(rec)
-            if rec.status == "blocked":
-                error_msg = f"处理被阻止: {rec.summary}" if rec.summary else "处理被阻止。"
-            else:
-                error_msg = f"处理失败: {rec.summary}" if rec.summary else "处理失败，请稍后重试。"
-            bridge.update_status(
-                rec.task_id, "failed", error={"code": rec.status, "message": error_msg, "retryable": retryable}
-            )
-            log.warning("STATE %s: working -> failed (%s: %s)", rec.task_id, rec.status, rec.summary)
+        _project_record_to_bridge(bridge, task_mgr, rec)
 
     # --- Score completed tasks (grounded metrics only) ---
     for rec in completed:
@@ -619,6 +770,39 @@ def do_talk():
                         if result == "busy":
                             break
                     log.info("Todo followup for %s/%s dispatched", user_bridge.user_id, todo_id)
+            else:
+                # Unknown / mistyped cmd_type used to fall through silently —
+                # the command was marked processed in the ledger and then
+                # nothing happened, no task workspace, no error. Caught WA's
+                # 'request' (instead of 'new_request') dispatch on 2026-04-29
+                # which vanished without trace. Now: log loud + write a
+                # failed-item to the bridge so the user sees that the input
+                # was received but routed to nowhere.
+                log.warning(
+                    "Unknown cmd_type='%s' for user=%s id=%s title=%r — dropping with alert",
+                    cmd_type,
+                    user_bridge.user_id,
+                    cmd.get("id", "?"),
+                    title[:60],
+                )
+                try:
+                    alert_id = f"req_unknown_cmd_{cmd.get('id', uuid.uuid4().hex[:8])}"
+                    bridge.create_item(
+                        alert_id,
+                        "request",
+                        f"未识别的命令类型: {cmd_type}",
+                        f"收到命令但 cmd_type='{cmd_type}' 不在已知列表里，没有 dispatch。\n\n"
+                        f"原始 title: {title}\n"
+                        f"原始 content: {content[:300]}\n\n"
+                        f"已知 cmd_type: new_request, new_discussion, reply, comment, "
+                        f"cancel, recall, archive, pin, tag, share, add_todo, todo_followup",
+                        sender="agent",
+                        tags=["system", "unknown_cmd"],
+                        origin="agent",
+                    )
+                    bridge.update_status(alert_id, "failed")
+                except Exception as exc:
+                    log.warning("Failed to write unknown_cmd alert: %s", exc)
 
         # Process pending todos if agent is idle
         if task_mgr.get_active_count() == 0:
@@ -638,6 +822,9 @@ def do_talk():
                 (workspace / ".todo_id").write_text(todo_id)
                 msg = Message(id=req_id, sender="user", timestamp="", content=todo_title, thread_id=req_id)
                 _dispatch_or_requeue(task_mgr, user_bridge, msg, workspace)
+
+    # --- Phase B1.5: Process queued DB control-plane tasks ---
+    _dispatch_control_plane_tasks(task_mgr, bridges_by_user, default_bridge)
 
     # --- Phase B2: Dispatch legacy inbox messages to background workers ---
     legacy_messages_found = False

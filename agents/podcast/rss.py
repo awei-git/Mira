@@ -108,21 +108,38 @@ def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subproc
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
 
 
-def _ensure_repo(lang: str = "zh") -> bool:
-    """Clone or pull the repo for the given language."""
+from contextlib import contextmanager
+import shutil as _shutil
+import tempfile as _tempfile
+
+
+@contextmanager
+def _ephemeral_repo(lang: str = "zh"):
+    """Yield a fresh shallow clone of the podcast repo, deleted on exit.
+
+    Persistent local checkouts (the previous PODCAST_REPOS_DIR pattern) tied
+    pipeline correctness to disk state that nothing was guaranteed to keep:
+    one `rm -rf` and the next publish silently failed on missing dirs.
+    Ephemeral clones make each publish stateless — clone, write, push, drop.
+
+    The cost (~one shallow clone per publish) is negligible against the
+    weekly cadence; the saving is structural.
+    """
     cfg = _get_config(lang)
-    repo_dir = cfg["repo_dir"]
     repo = cfg["repo"]
-    if repo_dir.exists():
-        result = _run(["git", "pull", "--rebase"], cwd=repo_dir, check=False)
+    tmp_root = Path(_tempfile.mkdtemp(prefix=f"mira-podcast-{lang}-"))
+    repo_dir = tmp_root / "repo"
+    try:
+        result = _run(
+            ["git", "clone", "--depth", "1", f"https://github.com/{repo}.git", str(repo_dir)],
+            check=False,
+        )
         if result.returncode != 0:
-            log.warning("git pull failed: %s", result.stderr)
-    else:
-        result = _run(["git", "clone", f"https://github.com/{repo}.git", str(repo_dir)])
-        if result.returncode != 0:
-            log.error("git clone failed: %s", result.stderr)
-            return False
-    return True
+            log.error("git clone failed for %s: %s", repo, result.stderr)
+            raise RuntimeError(f"clone failed: {repo}")
+        yield repo_dir
+    finally:
+        _shutil.rmtree(tmp_root, ignore_errors=True)
 
 
 def _get_file_size(path: Path) -> int:
@@ -460,7 +477,6 @@ def publish_episode(
         RSS feed URL if successful, None on failure.
     """
     cfg = _get_config(lang)
-    repo_dir = cfg["repo_dir"]
     pages_url = cfg["pages_url"]
     feed_url = f"{pages_url}/feed.xml"
 
@@ -516,58 +532,60 @@ def publish_episode(
         log.error("Episode too small (%.1f MB < 2 MB) — refusing to publish.", size_mb)
         return None
 
-    # 1. Clone/pull repo
-    if not _ensure_repo(lang):
+    # 1. Ephemeral shallow clone — write, push, drop. No persistent local state.
+    try:
+        with _ephemeral_repo(lang) as repo_dir:
+            feed_path = repo_dir / "feed.xml"
+            rss = _load_or_create_feed(feed_path, lang=lang)
+
+            # Remove existing entry if present (allows title/description updates)
+            if _remove_episode_from_feed(rss, slug):
+                log.info("Replacing existing episode in feed: %s", slug)
+
+            # 2. Copy MP3 + transcript into the clone (slug-named files)
+            mp3_filename = f"{slug}.mp3"
+            mp3_url = _copy_mp3_to_repo(mp3_path, repo_dir=repo_dir, pages_url=pages_url, slug=slug)
+            log.info("MP3 URL: %s", mp3_url)
+            transcript_url, transcript_type = _copy_transcript_to_repo(
+                mp3_path, repo_dir=repo_dir, pages_url=pages_url, slug=slug
+            )
+            if transcript_url:
+                log.info("Transcript URL: %s (%s)", transcript_url, transcript_type)
+
+            # 3. Add episode to feed
+            _add_episode_to_feed(
+                rss,
+                title,
+                slug,
+                mp3_url,
+                file_size,
+                duration_sec,
+                description,
+                pub_date,
+                transcript_url=transcript_url,
+                transcript_type=transcript_type,
+                lang=lang,
+            )
+            _save_feed(rss, feed_path)
+
+            # 4. Commit + push
+            log.info("Committing MP3 + transcript + feed update...")
+            _run(["git", "config", "http.postBuffer", "524288000"], cwd=repo_dir)
+            _run(["git", "add", f"audios/{mp3_filename}", "feed.xml"], cwd=repo_dir)
+            if transcript_url:
+                ext = ".srt" if transcript_type == "application/srt" else ".txt"
+                _run(["git", "add", f"transcripts/{slug}{ext}"], cwd=repo_dir)
+            _run(["git", "commit", "-m", f"add episode: {slug}"], cwd=repo_dir)
+            result = _run(["git", "push"], cwd=repo_dir, check=False)
+            if result.returncode != 0:
+                log.error("git push failed: %s", result.stderr)
+                return None
+
+            # 5. Update README episode table (still inside the ephemeral checkout)
+            _update_readme(repo_dir, title, description, lang)
+    except RuntimeError as exc:
+        log.error("Could not obtain ephemeral repo for %s: %s", lang, exc)
         return None
-
-    feed_path = repo_dir / "feed.xml"
-    rss = _load_or_create_feed(feed_path, lang=lang)
-
-    # Remove existing entry if present (allows title/description updates)
-    if _remove_episode_from_feed(rss, slug):
-        log.info("Replacing existing episode in feed: %s", slug)
-
-    # 2. Copy MP3 + transcript into repo (use slug as filename)
-    mp3_filename = f"{slug}.mp3"
-    mp3_url = _copy_mp3_to_repo(mp3_path, repo_dir=repo_dir, pages_url=pages_url, slug=slug)
-    log.info("MP3 URL: %s", mp3_url)
-    transcript_url, transcript_type = _copy_transcript_to_repo(
-        mp3_path, repo_dir=repo_dir, pages_url=pages_url, slug=slug
-    )
-    if transcript_url:
-        log.info("Transcript URL: %s (%s)", transcript_url, transcript_type)
-
-    # 3. Add episode to feed
-    _add_episode_to_feed(
-        rss,
-        title,
-        slug,
-        mp3_url,
-        file_size,
-        duration_sec,
-        description,
-        pub_date,
-        transcript_url=transcript_url,
-        transcript_type=transcript_type,
-        lang=lang,
-    )
-    _save_feed(rss, feed_path)
-
-    # 4. Commit + push
-    log.info("Committing MP3 + transcript + feed update...")
-    _run(["git", "config", "http.postBuffer", "524288000"], cwd=repo_dir)
-    _run(["git", "add", f"audios/{mp3_filename}", "feed.xml"], cwd=repo_dir)
-    if transcript_url:
-        ext = ".srt" if transcript_type == "application/srt" else ".txt"
-        _run(["git", "add", f"transcripts/{slug}{ext}"], cwd=repo_dir)
-    _run(["git", "commit", "-m", f"add episode: {slug}"], cwd=repo_dir)
-    result = _run(["git", "push"], cwd=repo_dir, check=False)
-    if result.returncode != 0:
-        log.error("git push failed: %s", result.stderr)
-        return None
-
-    # 5. Update README episode table
-    _update_readme(repo_dir, title, description, lang)
 
     log.info("Published to %s feed: %s", lang.upper(), feed_url)
 

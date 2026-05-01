@@ -1377,10 +1377,15 @@ def _twitter_promotion(soul_context: str = ""):
 
     try:
         import re
-        from pathlib import Path
 
-        journal_dir = Path(__file__).resolve().parent.parent / "shared" / "soul" / "journal"
-        spark_files = sorted(journal_dir.glob(f"{today}_idle_question_*.md"), reverse=True)
+        # Use config.JOURNAL_DIR (data/soul/journal). The previous hard-coded
+        # path agents/shared/soul/journal pointed at a deprecated empty
+        # directory, silently producing zero spark tweets despite the
+        # generator faithfully writing idle_question files every cycle.
+        # Fixed 2026-05-01.
+        from config import JOURNAL_DIR
+
+        spark_files = sorted(JOURNAL_DIR.glob(f"{today}_idle_question_*.md"), reverse=True)
 
         # Collect recent [SHARE] sparks — post up to 2 per cycle
         already_tweeted = set(state.get("tweeted_spark_files", []))

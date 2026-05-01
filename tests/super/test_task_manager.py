@@ -3,9 +3,95 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 _AGENTS = Path(__file__).resolve().parent.parent.parent / "agents"
+
+
+def test_talk_slug_uses_full_message_id_hash():
+    import talk
+
+    first = talk._talk_slug("今天发的哈贝马斯的读书笔记", "req_todo_1cacf0e3")
+    second = talk._talk_slug("今天发的哈贝马斯的读书笔记", "req_todo_0ffe291c")
+
+    assert first != second
+    assert not first.endswith("_req_to")
+    assert not second.endswith("_req_to")
+
+
+def test_x_reply_drafts_are_not_dispatched_as_tasks(tmp_path):
+    import talk
+
+    class FakeTaskManager:
+        def __init__(self):
+            self.dispatched = False
+
+        def is_busy(self):
+            return False
+
+        def get_active_count(self):
+            return 0
+
+        def dispatch(self, *args, **kwargs):
+            self.dispatched = True
+            return "x_reply_123"
+
+    class FakeBridge:
+        def __init__(self):
+            self.statuses = []
+
+        def update_status(self, item_id, status, **kwargs):
+            self.statuses.append((item_id, status))
+
+    mgr = FakeTaskManager()
+    bridge = FakeBridge()
+    msg = SimpleNamespace(id="x_reply_123", sender="user", content="回复草稿", thread_id="x_reply_123")
+
+    result = talk._dispatch_or_requeue(mgr, bridge, msg, tmp_path / "workspace")
+
+    assert result == "ok"
+    assert mgr.dispatched is False
+    assert bridge.statuses == [("x_reply_123", "needs-input")]
+
+
+def test_terminal_projection_writes_agent_message_to_control_db(monkeypatch):
+    import talk
+    import control.db
+    import control.repository
+
+    calls = []
+
+    @contextmanager
+    def fake_transaction():
+        yield object()
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def update_task_status(self, *args, **kwargs):
+            calls.append((args, kwargs))
+
+    monkeypatch.setattr(talk, "CONTROL_RUNTIME_DB_ENABLED", True)
+    monkeypatch.setattr(control.db, "transaction", fake_transaction)
+    monkeypatch.setattr(control.repository, "ControlRepository", FakeRepo)
+
+    rec = SimpleNamespace(task_id="disc_123", user_id="ang", summary="done")
+    talk._project_record_to_control_db(rec, "done", agent_message="final answer")
+
+    assert calls == [
+        (
+            ("ang", "disc_123", "done"),
+            {
+                "summary": "done",
+                "error_code": None,
+                "error_message": None,
+                "agent_message": "final answer",
+                "message_kind": "text",
+            },
+        )
+    ]
 
 
 def test_dispatch_records_message_user_id(monkeypatch, tmp_path):
@@ -44,6 +130,7 @@ def test_dispatch_records_message_user_id(monkeypatch, tmp_path):
     assert mgr._records[0].workflow_id == "req_123"
     assert mgr._records[0].attempt_count == 1
     assert mgr._records[0].max_attempts >= 1
+    assert (Path(mgr._records[0].workspace) / ".task_id").read_text(encoding="utf-8").strip() == "req_123"
 
 
 def test_load_status_backfills_missing_user_id(monkeypatch, tmp_path):
@@ -120,6 +207,47 @@ def test_dispatch_allows_explicit_retry_attempts(monkeypatch, tmp_path):
     assert mgr._records[0].attempt_count == 2
     assert mgr._records[0].max_attempts == 3
     assert mgr._records[0].workflow_id == "req_retry"
+
+
+def test_dispatch_avoids_unowned_stale_workspace(monkeypatch, tmp_path):
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+    monkeypatch.setattr(task_manager, "WORKER_SCRIPT", tmp_path / "task_worker.py")
+
+    class FakeProcess:
+        pid = 2468
+
+    monkeypatch.setattr(task_manager.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+    stale_workspace = tmp_path / "same-human-slug_req_to"
+    stale_workspace.mkdir()
+    (stale_workspace / "progress.md").write_text("# Progress — req_old\n\nstale", encoding="utf-8")
+
+    mgr = task_manager.TaskManager()
+    msg = SimpleNamespace(
+        id="req_todo_1cacf0e3",
+        thread_id="req_todo_1cacf0e3",
+        sender="user",
+        content="new task",
+        user_id="ang",
+        to_dict=lambda: {
+            "id": "req_todo_1cacf0e3",
+            "thread_id": "req_todo_1cacf0e3",
+            "sender": "user",
+            "content": "new task",
+            "user_id": "ang",
+        },
+    )
+
+    mgr.dispatch(msg, stale_workspace)
+
+    actual_workspace = Path(mgr._records[0].workspace)
+    assert actual_workspace != stale_workspace
+    assert actual_workspace.name.startswith(stale_workspace.name + "_")
+    assert (actual_workspace / ".task_id").read_text(encoding="utf-8").strip() == "req_todo_1cacf0e3"
 
 
 def test_can_retry_and_reset_for_retry_return_removed_record(monkeypatch, tmp_path):

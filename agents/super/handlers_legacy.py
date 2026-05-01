@@ -1077,21 +1077,23 @@ def _handle_surfer(workspace: Path, task_id: str, content: str, sender: str, thr
 
 def _handle_general(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, tier: str = "light"):
     """Handle non-writing requests via the general agent."""
-    from handler import handle as general_handle
-
-    thread_history = load_thread_history(thread_id)
-    thread_memory = load_thread_memory(thread_id)
+    # Route the actual handler call through the same introspection-based
+    # dispatcher every other agent goes through. This fixes two footguns at
+    # once: (1) sys.path-resolved `from handler import` no longer picks up
+    # whichever sibling agent was loaded last, and (2) kwargs are filtered
+    # by the handler's signature so a contract change can't crash fallback.
+    general_handle = get_registry().load_handler("general")
 
     try:
-        summary = general_handle(
+        summary = _invoke_registry_handler(
+            general_handle,
             workspace,
             task_id,
             content,
             sender,
             thread_id,
-            thread_history=thread_history,
-            thread_memory=thread_memory,
-            tier=tier,
+            tier,
+            agent_id="general",
         )
     except ClaudeTimeoutError:
         _write_result(

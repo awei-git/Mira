@@ -85,6 +85,7 @@ def handle(
     thread_memory: str = "",
     tier: str = "light",
     agent_id: str = "general",
+    **kwargs,
 ) -> str | None:
     """Handle a general request. Returns output text or None on failure."""
     bundle = build_runtime_context(

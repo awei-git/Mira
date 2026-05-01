@@ -90,6 +90,20 @@ def do_check_comments():
     except Exception as e:
         log.error("Outbound reply follow-up failed: %s", e)
 
+    # Activity-feed inbox: catches every inbound reply at any depth, including
+    # threads not tracked by the proactive growth pipeline. Added 2026-04-29
+    # after audit found three live conversations sitting unanswered for hours
+    # despite the cron loop running. See activity_inbox.py docstring.
+    try:
+        from activity_inbox import process_activity_inbox
+
+        actions = process_activity_inbox()
+        posted = sum(1 for a in actions if a.get("action") == "posted")
+        if posted:
+            log.info("Activity inbox: posted %d replies", posted)
+    except Exception as e:
+        log.error("Activity inbox failed: %s", e)
+
 
 def do_growth_cycle():
     """Run the Substack growth cycle: likes + proactive comments."""

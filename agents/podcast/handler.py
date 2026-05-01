@@ -21,9 +21,21 @@ import json
 import logging
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
+
+# Ensure lib/ is on sys.path before any first-party imports below. This module
+# is also dispatched as a background subprocess (`bg-podcast-*`) where the
+# parent's path setup is not inherited — without this, `from config import ...`
+# at line 35 raises ModuleNotFoundError and the whole podcast pipeline silently
+# dies. (Caught WA's complaint on 2026-04-29: 5 articles published, 0 podcasts
+# generated, every dispatch crashed with the same import error.)
+_PODCAST_DIR = Path(__file__).resolve().parent
+_LIB_DIR = _PODCAST_DIR.parent.parent / "lib"
+if str(_LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(_LIB_DIR))
 
 log = logging.getLogger("podcast")
 
@@ -1619,6 +1631,7 @@ def handle(
     thread_id: str,
     thread_history: str = "",
     thread_memory: str = "",
+    **kwargs,
 ) -> str | None:
     """Handle a podcast/audio generation request.
 

@@ -148,6 +148,7 @@ def preflight_check(action_type: str, context: dict) -> PreflightResult:
             },
             "checks": [{"name": c.name, "passed": c.passed, "message": c.message} for c in checks],
             "blocking_reasons": blockers,
+            "verification_trace": verification_trace,
         }
         _pf_log = _logs_dir / "publish_preflight_log.jsonl"
         with open(_pf_log, "a", encoding="utf-8") as _f:

@@ -146,20 +146,24 @@ BACKGROUND_JOBS: list[JobSpec] = [
         blocking_group="heavy",
         description="Daily journal entry",
     ),
-    JobSpec(
-        name="research-log",
-        command=["research-log"],
-        trigger="time_window",
-        trigger_name="should_research_log",
-        # Open window from 21:00 to end of day. Trigger has catch-up semantics
-        # so a late deploy or restart still produces today's log.
-        window_start=21,
-        window_end=24,
-        state_key_pattern="research_log_{date}",
-        priority=25,
-        blocking_group="heavy",
-        description="Daily research progress report (research-build loop contract with WA)",
-    ),
+    # research-log job disabled 2026-04-29 by WA: "你都没有继续research了，
+    # 这个 job 也停掉吧". The job kept generating empty/skeletal daily reports
+    # because there was no real research happening for it to summarize. The
+    # research-cycle job below is left running — that's the engine; if it
+    # starts producing output again, re-enable this report. To re-enable,
+    # uncomment the JobSpec; nothing else needs to change.
+    # JobSpec(
+    #     name="research-log",
+    #     command=["research-log"],
+    #     trigger="time_window",
+    #     trigger_name="should_research_log",
+    #     window_start=21,
+    #     window_end=24,
+    #     state_key_pattern="research_log_{date}",
+    #     priority=25,
+    #     blocking_group="heavy",
+    #     description="Daily research progress report (research-build loop contract with WA)",
+    # ),
     JobSpec(
         name="research-cycle",
         command=["research-cycle"],
@@ -313,17 +317,21 @@ BACKGROUND_JOBS: list[JobSpec] = [
         description="Study and extract skills from feed content",
     ),
     # === Media (heavy — uses vision API) ===
-    JobSpec(
-        name="daily-photo",
-        command=["daily-photo"],
-        trigger="time_window",
-        trigger_name="should_daily_photo",
-        window_start=7,
-        window_end=9,
-        state_key_pattern="daily_photo_{date}",
-        blocking_group="heavy",
-        description="Daily photo editing",
-    ),
+    # daily-photo disabled 2026-04-29 by WA via iPhone reply on photo_daily
+    # item: "照片这个job就删掉吧 没什么用 你也没有任何进步". The reply was
+    # filed as a comment, not a kill task, so the job kept running silently
+    # — fixed manually here. To re-enable, uncomment.
+    # JobSpec(
+    #     name="daily-photo",
+    #     command=["daily-photo"],
+    #     trigger="time_window",
+    #     trigger_name="should_daily_photo",
+    #     window_start=7,
+    #     window_end=9,
+    #     state_key_pattern="daily_photo_{date}",
+    #     blocking_group="heavy",
+    #     description="Daily photo editing",
+    # ),
     # === Health (inline — no background process) ===
     JobSpec(
         name="health-check",

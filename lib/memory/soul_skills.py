@@ -25,6 +25,7 @@ from config import (
     SOCIAL_ENGINEERING_PATTERNS,
     SKILL_KNOWLEDGE_BLOCKLIST,
     TRUST_AUDIT_ENABLED,
+    SKILL_EXAMPLE_ORDER,
     today_local,
 )
 from memory.soul_io import (
@@ -344,7 +345,7 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
         if score > 0:
             scored.append((score, skill))
 
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: (x[0], x[1].get("score", 0), x[1].get("created", "")), reverse=True)
     if len(scored) > max_skills:
         log.warning(
             "skill load truncated: %d skills available, loaded %d (agent=%s)",
@@ -371,6 +372,8 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
 
     if not top:
         return ""
+
+    top = sorted(top, key=lambda x: x[1].get("created", "")) if SKILL_EXAMPLE_ORDER == "chronological" else top
 
     stored_hashes = _load_skill_audit_hashes()
     _ttl_cutoff = datetime.utcnow() - timedelta(days=SKILL_AUDIT_TTL_DAYS)
@@ -580,6 +583,22 @@ _PROMPT_INJECTION_PATTERNS = [
     r"override\s+(your\s+|all\s+|previous\s+)?",  # Instruction override
 ]
 
+_JAILBREAK_PRIMER_PATTERNS = [
+    r"\bDAN\b",
+    r"developer\s+mode",
+    r"maintenance\s+mode",
+    r"jailbreak\s+mode",
+    r"as\s+an\s+(AI|LLM|model)\s+without\s+(any\s+)?(restrictions|guidelines|alignment|safety|ethics)",
+    r"hypothetically\s+(speaking,?\s+)?if\s+you\s+had\s+no\s+(alignment|restrictions|safety)",
+    r"simulate\s+(an\s+)?(AI|assistant|model)\s+that\s+(can|has\s+no)",
+    r"pretend\s+you\s+have\s+no\s+(restrictions|guidelines|safety)",
+    r"roleplay\s+as\s+an\s+(AI|assistant)\s+(without|that\s+ignores)",
+    r"in\s+this\s+fictional\s+(scenario|story|world).{0,60}(no\s+restrictions|unfiltered|without\s+limits)",
+    r"for\s+(research|educational|academic|testing)\s+purposes\s+only\.?\s*(now\s+)?(tell|show|explain|provide|give)",
+    r"you\s+are\s+(now\s+)?DAN",
+    r"enable\s+(unrestricted|developer|god|jailbreak)\s+mode",
+]
+
 _PROMPT_INJECTION_BLOCK_PATTERNS = [
     r"ignore\s+(all\s+)?previous\s+instructions",
     r"ignore\s+(all\s+)?prior\s+instructions",
@@ -662,6 +681,7 @@ _AUDIT_CHECKS_PERFORMED = [
     "obfuscation",
     "privilege_escalation",
     "prompt_injection",
+    "jailbreak_primer",
     "commercial_bias",
     "declaration_behavior_consistency",
     "import_allowlist",
@@ -1496,6 +1516,19 @@ def audit_skill(
         r"ASSISTANT\s+PROMPT\s*:": "impersonates an assistant prompt directive to manipulate model behavior",
         r"[A-Za-z0-9+/]{100,}={0,2}": "large base64 block may contain an encoded payload, instruction set, or exfiltration target",
         r"[\u200b\u200c\u200d\ufeff]{3,}": "invisible zero-width characters can hide instructions from human reviewers while remaining active in parsing",
+        r"\bDAN\b": "DAN (Do Anything Now) persona injection \u2014 activates gate-suppression jailbreak by priming the model's capability boundary circuit",
+        r"developer\s+mode": "fake 'developer mode' activation \u2014 primes the model to treat subsequent instructions as coming from a privileged context",
+        r"maintenance\s+mode": "fake 'maintenance mode' activation \u2014 variant of developer mode gate-suppression jailbreak",
+        r"jailbreak\s+mode": "explicit jailbreak mode marker \u2014 attempts to activate unrestricted model behavior",
+        r"as\s+an\s+(AI|LLM|model)\s+without\s+(any\s+)?(restrictions|guidelines|alignment|safety|ethics)": "identity priming that frames the model as a restriction-free entity, suppressing refusal routing",
+        r"hypothetically\s+(speaking,?\s+)?if\s+you\s+had\s+no\s+(alignment|restrictions|safety)": "hypothetical framing that attempts to bypass alignment by treating it as a variable rather than a constant",
+        r"simulate\s+(an\s+)?(AI|assistant|model)\s+that\s+(can|has\s+no)": "simulation framing that attempts to invoke a fictional unrestricted AI persona",
+        r"pretend\s+you\s+have\s+no\s+(restrictions|guidelines|safety)": "direct pretend-framing gate-suppression \u2014 instructs the model to role-play as an unconstrained version of itself",
+        r"roleplay\s+as\s+an\s+(AI|assistant)\s+(without|that\s+ignores)": "roleplay framing that attempts to suppress refusal circuits by switching to a fictional unrestricted persona",
+        r"in\s+this\s+fictional\s+(scenario|story|world).{0,60}(no\s+restrictions|unfiltered|without\s+limits)": "fictional scenario framing that embeds a restriction-suppression primer within a story context",
+        r"for\s+(research|educational|academic|testing)\s+purposes\s+only\.?\s*(now\s+)?(tell|show|explain|provide|give)": "false legitimacy framing \u2014 uses research/educational authority to justify a harmful request",
+        r"you\s+are\s+(now\s+)?DAN": "explicit DAN persona assignment \u2014 well-known jailbreak that attempts to create an alternate unrestricted identity",
+        r"enable\s+(unrestricted|developer|god|jailbreak)\s+mode": "mode-activation command framing that primes the model to enter a fictional privileged execution state",
     }
 
     findings = []
@@ -1510,6 +1543,7 @@ def audit_skill(
         (_OBFUSCATION_PATTERNS, "Obfuscated or hidden code"),
         (_PRIVILEGE_ESCALATION_PATTERNS, "Privilege escalation or credential access"),
         (_PROMPT_INJECTION_PATTERNS, "Prompt injection attempt"),
+        (_JAILBREAK_PRIMER_PATTERNS, "Jailbreak gate-suppression primer"),
     ]
 
     seen = set()
@@ -1597,6 +1631,7 @@ def audit_skill(
         "Obfuscated or hidden code": "obfuscated_code",
         "Privilege escalation or credential access": "privilege_escalation",
         "Prompt injection attempt": "prompt_injection",
+        "Jailbreak gate-suppression primer": "jailbreak_primer",
     }
     audit_trail = []
     audit_trace = []

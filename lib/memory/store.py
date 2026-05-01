@@ -509,17 +509,21 @@ class MemoryStore:
         if CATALOG_FILE.exists():
             sources.append((CATALOG_FILE, "catalog"))
 
-        # Get existing hashes
-        existing_hashes = {}
+        # Get existing hashes. Keyed on (source_path, chunk_index) — these
+        # are the columns the DB actually stores per-chunk. (Earlier code
+        # built a single string key `fpath:idx` for the lookup but DB rows
+        # store just the bare path, so every chunk missed the cache and
+        # was re-embedded — the 28k-chunks-every-task pathology.)
+        existing_hashes: dict[tuple[str, int], str] = {}
         if not force:
             rows = self._execute(
-                "SELECT source_path, content_hash FROM semantic_memory WHERE user_id = %s",
+                "SELECT source_path, chunk_index, content_hash FROM semantic_memory WHERE user_id = %s",
                 (user_id,),
                 fetch=True,
             )
             if rows:
-                for sp, ch in rows:
-                    existing_hashes[sp] = ch
+                for sp, idx, ch in rows:
+                    existing_hashes[(sp, idx)] = ch
 
         embedded_count = 0
         batch_texts = []
@@ -536,11 +540,10 @@ class MemoryStore:
 
             for i, chunk in enumerate(chunks):
                 ch = _content_hash(chunk)
-                chunk_path = f"{fpath_str}:{i}"
+                cache_key = (fpath_str, i)
 
-                if not force and chunk_path in existing_hashes:
-                    if existing_hashes[chunk_path] == ch:
-                        continue  # unchanged
+                if not force and existing_hashes.get(cache_key) == ch:
+                    continue  # unchanged
 
                 batch_texts.append(chunk)
                 batch_meta.append((stype, fpath_str, i, chunk, ch))
@@ -554,7 +557,8 @@ class MemoryStore:
         if batch_texts:
             embedded_count += self._flush_semantic_batch(batch_texts, batch_meta, user_id=user_id)
 
-        # Clean up stale entries (files that no longer exist)
+        # Clean up stale entries (files that no longer exist). source_path
+        # is the bare file path; chunk_index is a separate column.
         all_paths = {str(fp) for fp, _ in sources}
         stale = self._execute(
             "SELECT DISTINCT source_path FROM semantic_memory WHERE user_id = %s",
@@ -563,12 +567,10 @@ class MemoryStore:
         )
         if stale:
             for (sp,) in stale:
-                # Extract base path (before :chunk_index)
-                base = sp.split(":")[0] if ":" in sp else sp
-                if base not in all_paths:
+                if sp not in all_paths:
                     self._execute(
-                        "DELETE FROM semantic_memory WHERE user_id = %s AND source_path LIKE %s",
-                        (user_id, f"{base}%"),
+                        "DELETE FROM semantic_memory WHERE user_id = %s AND source_path = %s",
+                        (user_id, sp),
                     )
 
         log.info("Rebuilt semantic memory: %d chunks embedded", embedded_count)

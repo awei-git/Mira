@@ -2,7 +2,7 @@
   "schema_version": 1,
   "current_focus": null,
   "in_flight_experiments": [],
-  "last_research_log_date": "2026-04-28",
+  "last_research_log_date": "2026-04-29",
   "pending_needs": [
     {
       "type": "strategic_decision",
@@ -410,6 +410,17 @@
       "status": "open",
       "opened": "2026-04-28",
       "id": "2026-04-28_3"
+    },
+    {
+      "type": "fix_infra",
+      "what": "Restore OpenAI API quota access.",
+      "why": "Any experiment requiring cross-model comparison is blocked without it.",
+      "urgency": "urgent",
+      "estimated_cost": "none",
+      "link": "none",
+      "status": "open",
+      "opened": "2026-04-29",
+      "id": "2026-04-29_3"
     }
   ],
   "completed_questions": [],

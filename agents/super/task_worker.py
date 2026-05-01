@@ -8,6 +8,7 @@ Usage:
     python task_worker.py --msg-file <path> --workspace <path> --task-id <id> [--thread-id <id>]
 """
 import argparse
+import atexit
 import json
 import logging
 import re
@@ -198,6 +199,16 @@ _PRIVATE_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# Word-boundary match for the explicit-override keywords. The previous plain
+# `"private" in lower` triggered on path literals like `/private/tmp/...`
+# (macOS standard) and routed market-analysis tasks to the secret/oMLX agent.
+# `(?<![\w/])` before the keyword excludes word-prefix matches AND path-prefix
+# matches; `\b` after stops `private_key` from also matching.
+_PRIVACY_OVERRIDE_EN = re.compile(
+    r"(?<![\w/])(?:private|secret)\b",
+    re.IGNORECASE,
+)
+
 
 def _is_private_task(content: str, task_id: str = "", tags: list[str] | None = None) -> bool:
     """Detect privacy-sensitive content using LOCAL keyword matching only.
@@ -214,9 +225,16 @@ def _is_private_task(content: str, task_id: str = "", tags: list[str] | None = N
 
     "private 但记住" / "private but remember" → still private, but thread memory kept.
     """
-    # Explicit user override — user said "private" in the message
-    lower = content[:500].lower()
-    if any(kw in lower for kw in ("private", "secret", "隐私", "私密", "保密")):
+    # Explicit user override — user said "private" / "secret" / privacy
+    # words AS A STANDALONE WORD in the message. Plain substring match
+    # was too eager: paths like `/private/tmp/` (macOS standard) and any
+    # file path containing the literal "private" misrouted to oMLX. Use
+    # word-boundary regex on English keywords. Chinese keywords don't
+    # have a word-boundary concept so they keep substring match.
+    head = content[:500]
+    if _PRIVACY_OVERRIDE_EN.search(head):
+        return True
+    if any(kw in head for kw in ("隐私", "私密", "保密")):
         return True
 
     # Task metadata
@@ -252,6 +270,40 @@ def emit_progress(text: str, icon: str = "arrow.right.circle"):
         _emit_status(task_id, text[:200], icon)
 
 
+def _load_matching_progress(workspace: Path, task_id: str) -> str:
+    """Load progress.md only when it belongs to this exact task.
+
+    Workspace names are human-readable and can collide. Progress from a
+    different task is worse than no progress because it makes the worker and
+    UI report stale state as if it were current.
+    """
+    progress_file = workspace / "progress.md"
+    if not progress_file.exists():
+        return ""
+    try:
+        progress = progress_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.warning("Could not read progress.md for %s: %s", task_id, exc)
+        return ""
+
+    first_line = progress.splitlines()[0] if progress.splitlines() else ""
+    match = re.search(r"^#\s*Progress\s+[—-]\s+(\S+)", first_line)
+    if not match:
+        log.warning("Ignoring progress.md for %s: missing task id header", task_id)
+        return ""
+    progress_task_id = match.group(1).strip()
+    if progress_task_id != task_id:
+        log.warning(
+            "Ignoring stale progress.md in %s: belongs to %s, current task is %s",
+            workspace,
+            progress_task_id,
+            task_id,
+        )
+        return ""
+    log.info("Loaded progress.md (%d chars) for current task", len(progress))
+    return progress
+
+
 # ---------------------------------------------------------------------------
 # Plan step schema validation
 # ---------------------------------------------------------------------------
@@ -283,15 +335,18 @@ from execution.calibration import (
 class _Heartbeat:
     """Background heartbeat for long-running tasks — emits status every 60s."""
 
-    def __init__(self, task_id: str, interval: int = 60):
+    def __init__(self, task_id: str, interval: int = 60, workspace: Path | None = None):
         self._task_id = task_id
         self._interval = interval
         self._start = time.time()
         self._timer = None
         self._running = False
+        self._workspace = workspace
+        self._count = 0
 
     def start(self):
         self._running = True
+        self._write_heartbeat("running")
         self._schedule()
 
     def stop(self):
@@ -311,8 +366,30 @@ class _Heartbeat:
             return
         elapsed = int(time.time() - self._start)
         mins = elapsed // 60
+        self._count += 1
+        self._write_heartbeat("running")
+        log.info("Heartbeat task=%s elapsed=%ds count=%d", self._task_id, elapsed, self._count)
         _emit_status(self._task_id, f"Still working... ({mins}m elapsed)", "hourglass")
         self._schedule()
+
+    def _write_heartbeat(self, status: str):
+        if not self._workspace:
+            return
+        payload = {
+            "task_id": self._task_id,
+            "status": status,
+            "started_at": datetime.fromtimestamp(self._start, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "updated_at": _utc_iso(),
+            "elapsed_seconds": int(time.time() - self._start),
+            "heartbeat_count": self._count,
+        }
+        try:
+            path = self._workspace / "heartbeat.json"
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(path)
+        except OSError as exc:
+            log.debug("Failed to write heartbeat for %s: %s", self._task_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +493,9 @@ def main():
     )
 
     log.info("Worker started: task=%s thread=%s", args.task_id, args.thread_id)
+    heartbeat = _Heartbeat(args.task_id, workspace=workspace)
+    heartbeat.start()
+    atexit.register(heartbeat.stop)
     task_start = time.time()
     _perf_start = time.perf_counter()
 
@@ -575,12 +655,8 @@ def main():
         log.info("Worker exiting (discussion fast-path)")
         return
 
-    # --- Fixed startup: read progress from prior runs ---
-    progress = ""
-    progress_file = workspace / "progress.md"
-    if progress_file.exists():
-        progress = progress_file.read_text(encoding="utf-8")
-        log.info("Loaded progress.md (%d chars) from prior run", len(progress))
+    # --- Fixed startup: read progress from prior runs for this exact task ---
+    progress = _load_matching_progress(workspace, args.task_id)
 
     # --- Privacy pre-routing: detect secret tasks LOCALLY before any cloud call ---
     task_tags = msg_data.get("tags", [])

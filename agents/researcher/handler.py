@@ -124,6 +124,7 @@ def handle(
     thread_history: str = "",
     thread_memory: str = "",
     agent_id: str = "researcher",
+    **kwargs,
 ) -> str | None:
     """Handle a research task with iterative deep-dive."""
     import sys

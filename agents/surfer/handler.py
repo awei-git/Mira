@@ -78,7 +78,14 @@ Available actions (output ONE as JSON):
 """
 
 
-def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: str) -> str | None:
+def handle(
+    workspace: Path,
+    task_id: str,
+    content: str,
+    sender: str,
+    thread_id: str,
+    **kwargs,
+) -> str | None:
     """Handle a browser automation request. Returns output text or None."""
     from browser import BrowserSession
 

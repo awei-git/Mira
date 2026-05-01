@@ -27,6 +27,7 @@ def handle(
     thread_history: str = "",
     thread_memory: str = "",
     tier: str = "light",
+    **kwargs,
 ) -> str | None:
     """Main entry point for the health agent."""
     # Force local LLM for all health data processing (privacy boundary)

@@ -95,12 +95,17 @@ _DAILY_TASK_CONTRACTS = {
         "verify": _verify_state_key("soul_question"),
         "label": "灵魂提问",
     },
-    "daily_photo": {
-        "dispatch": ("daily-photo", ["daily-photo"]),
-        "window": (7, 20),
-        "verify": _verify_state_key("daily_photo"),
-        "label": "每日修图",
-    },
+    # daily-photo disabled 2026-04-29 by WA ("照片这个job就删掉吧 没什么用
+    # 你也没有任何进步"). runtime/jobs.py disabled the trigger, but this
+    # contract path was missed — _self_repair_daily_tasks kept re-dispatching
+    # it inside the 7-20 window. Confirmed re-fired 2026-04-30 morning.
+    # To re-enable: restore this entry AND uncomment JobSpec in runtime/jobs.py.
+    # "daily_photo": {
+    #     "dispatch": ("daily-photo", ["daily-photo"]),
+    #     "window": (7, 20),
+    #     "verify": _verify_state_key("daily_photo"),
+    #     "label": "每日修图",
+    # },
     "journal": {
         "dispatch": ("journal", ["journal"]),
         "window": (21, 23),

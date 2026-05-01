@@ -525,6 +525,14 @@ def _write_result(
 
     if tags and "private" in tags:
         return
+
+    # Episode archival is fast (file I/O only) and produces an artifact a
+    # human or downstream tool may immediately want to read, so it stays
+    # inline. Everything else heavier — knowledge writeback (LLM, ~60s),
+    # failure lesson extraction (LLM, ~60s), auto_flush + index rebuild
+    # (potentially minutes) — is handed to a detached subprocess so the
+    # worker process can exit and free its dispatch slot. See
+    # `post_hooks.spawn_post_hooks`.
     if status in ("done", "completed", "failed"):
         try:
             item_file_path = _item_file(task_id)
@@ -546,29 +554,12 @@ def _write_result(
         except Exception as e:
             log.warning("Episode archival failed for %s: %s", task_id, e)
 
-    if status == "done":
-        try:
-            _extract_knowledge_writeback(workspace, task_id, tags=tags)
-        except Exception as e:
-            log.debug("Knowledge writeback skipped: %s", e)
-
-    if status == "failed":
-        try:
-            from evaluation.self_iteration import extract_failure_lesson, save_failure_lesson
-
-            lesson = extract_failure_lesson(task_id, summary[:200], summary)
-            if lesson:
-                save_failure_lesson(lesson)
-        except Exception as e:
-            log.warning("Failure lesson extraction failed for %s: %s", task_id, e)
-
     try:
-        from memory.soul import auto_flush
+        from post_hooks import spawn_post_hooks
 
-        context_summary = f"Task {task_id} ({status}): {summary[:500]}\n" f"Tags: {', '.join(tags) if tags else 'none'}"
-        auto_flush(context_summary)
+        spawn_post_hooks(workspace, task_id, status, summary, list(tags or []))
     except Exception as e:
-        log.debug("Auto-flush skipped: %s", e)
+        log.warning("Failed to spawn post-hooks for %s: %s", task_id, e)
 
 
 def _snapshot_file(path: Path) -> tuple[int, int] | None:

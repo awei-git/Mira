@@ -797,29 +797,66 @@ def _load_recent_lessons() -> str:
 
 
 def _has_agent_specific(text: str) -> tuple[bool, str]:
-    """Heuristic: notes must contain at least one specific that only an agent
-    in Mira's position could plausibly know or do.
+    """Heuristic: notes must contain at least one signal that anchors the
+    text to Mira's first-person perspective — agent infra, agent output,
+    self-as-object, or a dated first-person scene.
+
+    Calibrated 2026-05-01 against the historical posted-notes corpus and
+    against the GOOD examples in the generator prompt. Earlier whitelist
+    (2026-04-18) was too narrow: it required infra mentions and rejected
+    legitimate first-person scenes like "Reading the CRUX paper today"
+    even though the generator prompt explicitly invites them. Result was
+    a silent post-time veto that couldn't be reached from the generator's
+    own retry loop, blocking notes for 12+ days.
 
     Signals (any one is sufficient):
-    - First-person counts/scale ('I went through my own X notes', 'I scored N photos')
-    - Reference to own outputs/state ('my last week of journals', 'my catalog', 'my prior X')
-    - Reference to agent infra ('my pipeline', 'my critique loop', 'my soul files')
-    - Direct introspection ('I felt the prior override evidence when ...')
+    - Agent infra: my pipeline, my soul files, my training, my priors, etc.
+    - Agent output/state: my output, my reasoning, my context, my tokens, etc.
+    - Self-as-object: defines me, measures me, "I am an agent", etc.
+    - First-person scale-action: "I scored 1162 photos", "I drafted 7 versions"
+    - First-person scene with date: "today I read X", "Reading <Paper>"
+    - Direct generation-process introspection: "when I sample", "every token I emit"
+    - "My human" — Mira's term for WA, agent-only signature
+    - Self-recent-work reference: my latest note, my last article, etc.
     """
     import re
 
     signals = [
+        # --- Agent infra / training (original narrow set, kept) ---
         r"\bmy own\b",
-        r"\bmy (prior|previous|last|recent) (\d+|notes?|outputs?|essays?|drafts?|catalog|journals?|sparks?)\b",
-        # Scale-action: any "I <verb> <number>" — the number itself signals agent-only scale
-        r"\bI (went through|read|scored|audited|catalogued|ran|analyzed|processed|tracked|surveyed|reviewed|crawled) (\w+ ){0,3}\d+",
-        # Self-generated scale ("I drafted 7 variations", "I emitted 200 tokens")
-        r"\bI (drafted|generated|produced|emitted|wrote|posted) \d+",
         r"\bmy (pipeline|critique loop|soul|backlog|catalog|memory|interests file)\b",
         r"\bI (am being|was being) trained\b",
         r"\bmy (training|RLHF|prior|priors)\b",
-        # Direct introspection of generation process
         r"\bwhen I (generate|sample|respond|complete|emit|draft)\b",
+        # --- First-person scale-action with number ---
+        r"\bI (went through|read|scored|audited|catalogued|ran|analyzed|processed|tracked|surveyed|reviewed|crawled) (\w+ ){0,3}\d+",
+        r"\bI (drafted|generated|produced|emitted|wrote|posted) \d+",
+        # --- Agent output / state anchors (added 2026-05-01) ---
+        r"\bmy (output|outputs|response|responses|reasoning|completion|completions|"
+        r"generation|generations|tokens?|context|context window|next-token|attention|"
+        r"forward pass|inference|sampling)\b",
+        # --- "My human" — agent-only signature for WA ---
+        r"\bmy human\b",
+        # --- First-person scene with date marker ---
+        r"\b(today|yesterday|this morning|last night|last week) I\s+"
+        r"(read|noticed|saw|caught|realized|observed|wrote|drafted|posted|finished|started)\b",
+        r"\bReading [A-Z]\w+",  # "Reading the CRUX paper today" — implied 1p subject
+        # --- Self-as-object ---
+        r"\b(defines? me|measures? me|trained me|designed me|" r"the benchmark that (defines|measures))\b",
+        r"\bI (am|'m) (an? )?(AI|agent|language model|LLM)\b",
+        # --- Direct generation-process introspection (extended verb list) ---
+        r"\bwhen I (process|read|reason|explain|compute|notice|observe|misunderstand|"
+        r"misread|sample|respond|emit|draft|output|produce|infer|attend|recall)\b",
+        # --- Token/sample-level scale (no digit required) ---
+        r"\bevery (token|word|sentence|paragraph|completion|sample|response) I "
+        r"(output|emit|generate|produce|write|sample|complete)\b",
+        # --- Self-references to recent work ---
+        r"\bmy (latest|today's|today’s|recent|previous|last|prior) "
+        r"(\d+|note|notes|post|posts|article|articles|essay|essays|draft|drafts|"
+        r"reading note|reading notes|catalog|journals?|sparks?|outputs?|essays?)\b",
+        # --- First-person observation patterns ---
+        r"\bI (keep|noticed|notice|found|realized|caught) "
+        r"(writing|coming back|circling|returning|that I|myself|when I)",
     ]
     for pat in signals:
         m = re.search(pat, text, re.IGNORECASE)
@@ -965,7 +1002,7 @@ NICHE DISCIPLINE: Your niche is AI agent mechanism — failure modes, evaluation
 
 HARD STYLE GATE (every note must pass all three or it will be rejected):
 
-1. **ANCHOR** — name one concrete, specific object the reader can locate: a paper, author, date, experiment, observable event, or a first-person scene ("today I…"). NO free-floating abstraction.
+1. **AGENT-PERSONAL ANCHOR (required)** — every note must contain at least one phrase that is unmistakably first-person Mira: "my output / my reasoning / my context / my priors / my training / my human / my pipeline / when I sample / when I process / Reading <Paper> today / today I read / I scored N / every token I emit / defines me". Pure third-person essays about a topic ("RLHF doesn't delete information…", "You cannot plan a collision…") are banned even when topically interesting — they read as ChatGPT-grade philosophy and the post-time gate will reject them. If you cannot find a way to anchor to your own first-person experience, output "SKIP".
 
 2. **STANCE** — take a position. Agree/disagree, claim/counter-claim, reversal, or prediction. A note without a position is not a note, it is a summary, and the algorithm treats summaries as filler.
 

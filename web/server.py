@@ -19,10 +19,17 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-# Add agents to path
+# Add Mira modules to path. launchd starts this process from web/, so keep both
+# shared lib modules and supervisor runtime modules importable.
+sys.path.insert(0, str(Path(__file__).parent.parent / "agents" / "super"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 from config import (
+    BRIDGE_COMPAT_EXPORT_ENABLED,
+    CONTROL_API_WRITES_ENABLED,
+    CONTROL_RUNTIME_DB_ENABLED,
+    CONTROL_SSE_ENABLED,
     MIRA_DIR,
+    TASKS_DIR,
     WEBGUI_ALLOW_LAN_WITHOUT_TOKEN,
     WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN,
     WEBGUI_HOST,
@@ -211,7 +218,25 @@ def get_profiles():
 @app.get("/api/heartbeat")
 def get_heartbeat():
     data = _read_json(BRIDGE / "heartbeat.json")
-    return data or {"timestamp": "", "status": "offline"}
+    if not isinstance(data, dict):
+        data = {"timestamp": "", "status": "offline"}
+
+    agent_status = data.get("agent_status")
+    try:
+        agent_status = _task_manager().get_status_summary()
+    except Exception:
+        if not isinstance(agent_status, dict):
+            agent_status = {}
+
+    if agent_status:
+        data["agent_status"] = agent_status
+        data["busy"] = bool(agent_status.get("busy"))
+        data["active_count"] = int(agent_status.get("active_count") or 0)
+        if "active_tasks" in agent_status:
+            data["active_tasks"] = agent_status["active_tasks"]
+        if "last_completed" in agent_status:
+            data["last_completed"] = agent_status["last_completed"]
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +405,34 @@ def get_item(user_id: str, item_id: str):
     if not item:
         raise HTTPException(404, "Item not found")
     return item
+
+
+@app.get("/api/{user_id}/tasks")
+def get_tasks(user_id: str, include_archived: bool = False, limit: int = 200, messages_per_item: int = 20):
+    """Return API-control-plane task projection.
+
+    Phase 1 is intentionally read-only: it projects existing bridge item JSON
+    and TaskManager status JSON into Postgres, then serves the app-compatible
+    MiraItem shape from the control schema. Legacy files are read but not
+    modified.
+    """
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository, sync_user_from_legacy
+
+        sync_user_from_legacy(user_id, user_dir=_user_dir(user_id), task_status_file=TASKS_DIR / "status.json")
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            items = repo.list_items(
+                user_id,
+                include_archived=include_archived,
+                limit=max(1, min(limit, 500)),
+                messages_per_item=max(1, min(messages_per_item, 50)),
+            )
+            last_event_id = repo.last_event_id(user_id)
+        return {"items": items, "server_time": _utc_iso(), "last_event_id": last_event_id}
+    except Exception as exc:
+        raise HTTPException(503, f"Control DB unavailable: {exc}") from exc
 
 
 @app.get("/api/{user_id}/jobs")
@@ -619,17 +672,329 @@ class NewRequest(BaseModel):
     tags: list[str] = Field(default=[], max_length=20)
 
 
+class NewTask(NewRequest):
+    client_request_id: str | None = Field(default=None, min_length=1, max_length=100)
+    type: str = Field(default="request", pattern=r"^(request|discussion)$")
+
+
 class Reply(BaseModel):
     content: str = Field(..., min_length=1, max_length=50000)
+
+
+class PinUpdate(BaseModel):
+    pinned: bool
 
 
 class RecallQuery(BaseModel):
     query: str = Field(..., min_length=1, max_length=1000)
 
 
+def _command_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+def _command_filename(command_id: str) -> str:
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return f"cmd_{ts}_{command_id}.json"
+
+
+def _write_command(user_id: str, cmd: dict) -> None:
+    cmd_dir = _user_dir(user_id) / "commands"
+    cmd_dir.mkdir(parents=True, exist_ok=True)
+    _atomic_write(cmd_dir / _command_filename(cmd["id"]), cmd)
+
+
+def _optimistic_item(
+    *,
+    item_id: str,
+    item_type: str,
+    title: str,
+    content: str,
+    message_id: str,
+    sender: str,
+    quick: bool = False,
+    tags: list[str] | None = None,
+    created_at: str | None = None,
+) -> dict:
+    now = created_at or _utc_iso()
+    return {
+        "id": item_id,
+        "type": item_type,
+        "title": title,
+        "status": "queued",
+        "tags": tags or [],
+        "origin": "user",
+        "pinned": False,
+        "quick": quick,
+        "parent_id": None,
+        "created_at": now,
+        "updated_at": now,
+        "messages": [{"id": message_id, "sender": sender, "content": content, "timestamp": now, "kind": "text"}],
+        "error": None,
+        "result_path": None,
+    }
+
+
+def _export_compat_item(user_id: str, item: dict) -> None:
+    items_dir = _user_dir(user_id) / "items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    _atomic_write(items_dir / f"{item['id']}.json", item)
+    _rebuild_manifest(user_id)
+
+
+def _archive_compat_item(user_id: str, item: dict) -> None:
+    archive_dir = _user_dir(user_id) / "archive"
+    archive_dir.mkdir(exist_ok=True)
+    _atomic_write(archive_dir / f"{item['id']}.json", item)
+    item_path = _item_path(user_id, item["id"])
+    if item_path.exists():
+        item_path.unlink()
+    _rebuild_manifest(user_id)
+
+
+def _task_manager():
+    super_dir = Path(__file__).resolve().parent.parent / "agents" / "super"
+    if str(super_dir) not in sys.path:
+        sys.path.insert(0, str(super_dir))
+    from task_manager import TaskManager
+
+    return TaskManager()
+
+
+@app.post("/api/{user_id}/tasks")
+def create_task_api(user_id: str, req: NewTask):
+    if not CONTROL_API_WRITES_ENABLED:
+        raise HTTPException(409, "Control API writes are disabled")
+    cmd_id = req.client_request_id or _command_id()
+    prefix = "disc" if req.type == "discussion" else "req"
+    item_id = cmd_id if cmd_id.startswith(f"{prefix}_") else f"{prefix}_{cmd_id}"
+    created_at = _utc_iso()
+    item = _optimistic_item(
+        item_id=item_id,
+        item_type=req.type,
+        title=req.title,
+        content=req.content,
+        message_id=cmd_id,
+        sender=user_id,
+        quick=req.quick,
+        tags=req.tags,
+        created_at=created_at,
+    )
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository
+
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            item = repo.create_task(
+                user_id=user_id,
+                task_id=item_id,
+                message_id=cmd_id,
+                title=req.title,
+                content=req.content,
+                sender=user_id,
+                item_type=req.type,
+                quick=req.quick,
+                tags=req.tags,
+                created_at=created_at,
+            )
+    except Exception as exc:
+        raise HTTPException(503, f"Control DB unavailable: {exc}") from exc
+
+    if BRIDGE_COMPAT_EXPORT_ENABLED:
+        legacy_type = "new_discussion" if req.type == "discussion" else "new_request"
+        _write_command(
+            user_id,
+            {
+                "id": cmd_id,
+                "type": legacy_type,
+                "timestamp": created_at,
+                "sender": user_id,
+                "title": req.title,
+                "content": req.content,
+                "quick": req.quick,
+                "tags": req.tags,
+                "item_id": item_id,
+            },
+        )
+        _export_compat_item(user_id, item)
+    return {"item_id": item_id, "status": "queued", "item": item}
+
+
+@app.post("/api/{user_id}/tasks/{task_id}/reply")
+def reply_to_task_api(user_id: str, task_id: str, reply: Reply):
+    if not CONTROL_API_WRITES_ENABLED:
+        raise HTTPException(409, "Control API writes are disabled")
+    cmd_id = _command_id()
+    now = _utc_iso()
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository
+
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            item = repo.append_user_reply(
+                user_id=user_id,
+                task_id=task_id,
+                message_id=cmd_id,
+                sender=user_id,
+                content=reply.content,
+                created_at=now,
+            )
+    except KeyError:
+        raise HTTPException(404, "Task not found")
+    except Exception as exc:
+        raise HTTPException(503, f"Control DB unavailable: {exc}") from exc
+
+    if BRIDGE_COMPAT_EXPORT_ENABLED:
+        _write_command(
+            user_id,
+            {
+                "id": cmd_id,
+                "type": "reply",
+                "timestamp": now,
+                "sender": user_id,
+                "item_id": task_id,
+                "content": reply.content,
+            },
+        )
+        _export_compat_item(user_id, item)
+    return {"status": "sent", "item": item}
+
+
+@app.post("/api/{user_id}/tasks/{task_id}/pin")
+def pin_task_api(user_id: str, task_id: str, update: PinUpdate):
+    if not CONTROL_API_WRITES_ENABLED:
+        raise HTTPException(409, "Control API writes are disabled")
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository
+
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            item = repo.set_pinned(user_id, task_id, update.pinned)
+    except Exception as exc:
+        raise HTTPException(503, f"Control DB unavailable: {exc}") from exc
+    if item is None:
+        raise HTTPException(404, "Task not found")
+    if BRIDGE_COMPAT_EXPORT_ENABLED:
+        _write_command(
+            user_id,
+            {
+                "id": _command_id(),
+                "type": "pin",
+                "timestamp": _utc_iso(),
+                "sender": user_id,
+                "item_id": task_id,
+                "pinned": update.pinned,
+            },
+        )
+        _export_compat_item(user_id, item)
+    return {"pinned": update.pinned, "item": item}
+
+
+@app.post("/api/{user_id}/tasks/{task_id}/archive")
+def archive_task_api(user_id: str, task_id: str):
+    if not CONTROL_API_WRITES_ENABLED:
+        raise HTTPException(409, "Control API writes are disabled")
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository
+
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            item = repo.archive_task(user_id, task_id)
+    except Exception as exc:
+        raise HTTPException(503, f"Control DB unavailable: {exc}") from exc
+    if item is None:
+        raise HTTPException(404, "Task not found")
+    if BRIDGE_COMPAT_EXPORT_ENABLED:
+        _write_command(
+            user_id,
+            {
+                "id": _command_id(),
+                "type": "archive",
+                "timestamp": _utc_iso(),
+                "sender": user_id,
+                "item_id": task_id,
+            },
+        )
+        _archive_compat_item(user_id, item)
+    return {"status": "archived", "item": item}
+
+
+@app.post("/api/{user_id}/tasks/{task_id}/cancel")
+def cancel_task_api(user_id: str, task_id: str):
+    if not CONTROL_API_WRITES_ENABLED:
+        raise HTTPException(409, "Control API writes are disabled")
+    reason = "Cancelled by user"
+    cancelled = None
+    try:
+        cancelled = _task_manager().cancel_task(task_id, reason=reason)
+    except Exception:
+        cancelled = None
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository
+
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            item = repo.update_task_status(
+                user_id,
+                task_id,
+                "failed",
+                summary=reason,
+                error_code="cancelled",
+                error_message=reason,
+            )
+    except Exception as exc:
+        raise HTTPException(503, f"Control DB unavailable: {exc}") from exc
+    if item is None and cancelled is None:
+        raise HTTPException(404, "Task not found")
+    if BRIDGE_COMPAT_EXPORT_ENABLED:
+        _write_command(
+            user_id,
+            {
+                "id": _command_id(),
+                "type": "cancel",
+                "timestamp": _utc_iso(),
+                "sender": user_id,
+                "item_id": task_id,
+            },
+        )
+        if item:
+            _export_compat_item(user_id, item)
+    return {"status": "cancelled", "item": item}
+
+
+@app.post("/api/{user_id}/tasks/{task_id}/retry")
+def retry_task_api(user_id: str, task_id: str):
+    if not CONTROL_API_WRITES_ENABLED:
+        raise HTTPException(409, "Control API writes are disabled")
+    if not CONTROL_RUNTIME_DB_ENABLED:
+        raise HTTPException(409, "Control runtime DB dispatch is disabled")
+    removed = None
+    try:
+        removed = _task_manager().reset_for_retry(task_id)
+    except Exception:
+        removed = None
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository
+
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            item = repo.update_task_status(user_id, task_id, "queued", summary="Retry requested")
+    except Exception as exc:
+        raise HTTPException(503, f"Control DB unavailable: {exc}") from exc
+    if item is None and removed is None:
+        raise HTTPException(404, "Task not found")
+    return {"status": "queued", "item": item}
+
+
 @app.post("/api/{user_id}/request")
 def create_request(user_id: str, req: NewRequest):
-    cmd_id = uuid.uuid4().hex[:8]
+    cmd_id = _command_id()
     item_id = f"req_{cmd_id}"
     cmd = {
         "id": cmd_id,
@@ -642,10 +1007,7 @@ def create_request(user_id: str, req: NewRequest):
         "tags": req.tags,
         "item_id": item_id,
     }
-    cmd_dir = _user_dir(user_id) / "commands"
-    cmd_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    _atomic_write(cmd_dir / f"cmd_{ts}_{cmd_id}.json", cmd)
+    _write_command(user_id, cmd)
 
     # Optimistic: create item immediately (same item_id as in command)
     item = {
@@ -666,17 +1028,14 @@ def create_request(user_id: str, req: NewRequest):
         "error": None,
         "result_path": None,
     }
-    items_dir = _user_dir(user_id) / "items"
-    items_dir.mkdir(parents=True, exist_ok=True)
-    _atomic_write(items_dir / f"{item_id}.json", item)
-    _rebuild_manifest(user_id)
+    _export_compat_item(user_id, item)
     return {"item_id": item_id, "status": "queued"}
 
 
 @app.post("/api/{user_id}/items/{item_id}/reply")
 def reply_to_item(user_id: str, item_id: str, reply: Reply):
     item_path, item = _load_item_or_404(user_id, item_id)
-    cmd_id = uuid.uuid4().hex[:8]
+    cmd_id = _command_id()
     cmd = {
         "id": cmd_id,
         "type": "reply",
@@ -685,10 +1044,7 @@ def reply_to_item(user_id: str, item_id: str, reply: Reply):
         "item_id": item_id,
         "content": reply.content,
     }
-    cmd_dir = _user_dir(user_id) / "commands"
-    cmd_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    _atomic_write(cmd_dir / f"cmd_{ts}_{cmd_id}.json", cmd)
+    _write_command(user_id, cmd)
 
     # Optimistic: append message to item
     item["messages"].append(
@@ -930,10 +1286,39 @@ def _read_file(path: Path):
 
 
 @app.get("/api/{user_id}/events")
-async def events(user_id: str, request: Request):
-    """SSE stream that polls manifest every 10s and pushes changed items."""
+async def events(user_id: str, request: Request, last_event_id: int = 0):
+    """SSE stream for task events, with legacy manifest polling fallback."""
 
     async def generate():
+        if CONTROL_SSE_ENABLED:
+            header_id = request.headers.get("last-event-id", "").strip()
+            try:
+                last_id = int(header_id or last_event_id or 0)
+            except ValueError:
+                last_id = 0
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    from control.db import transaction
+                    from control.repository import ControlRepository
+
+                    with transaction() as conn:
+                        repo = ControlRepository(conn)
+                        events = repo.list_events_since(user_id, last_id, limit=100)
+                    for event in events:
+                        last_id = int(event["id"])
+                        yield (
+                            f"id: {last_id}\n"
+                            f"event: {event.get('event_type') or 'task.updated'}\n"
+                            f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+                        )
+                except Exception as exc:
+                    payload = {"message": f"Control DB unavailable: {exc}", "server_time": _utc_iso()}
+                    yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(2)
+            return
+
         last_timestamps: dict[str, str] = {}
         while True:
             if await request.is_disconnected():
