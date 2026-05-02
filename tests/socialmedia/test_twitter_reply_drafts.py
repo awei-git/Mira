@@ -10,6 +10,7 @@ def test_reply_candidates_stay_out_of_bridge_when_disabled(monkeypatch):
     state = {}
     saved = {}
 
+    monkeypatch.setattr(twitter, "TWITTER_REPLY_DRAFTS_ENABLED", True)
     monkeypatch.setattr(twitter, "TWITTER_BRIDGE_REPLY_DRAFTS", False)
     monkeypatch.setattr(twitter, "_load_state", lambda: state)
     monkeypatch.setattr(twitter, "_save_state", lambda value: saved.update(value))
@@ -38,3 +39,16 @@ def test_reply_candidates_stay_out_of_bridge_when_disabled(monkeypatch):
 
     assert saved["reply_queue"][0]["tweet_id"] == "tweet_1"
     assert saved["reply_queue"][0]["draft_reply"] == "useful draft"
+
+
+def test_reply_candidates_do_not_queue_when_disabled(monkeypatch):
+    import twitter
+
+    saved = {}
+
+    monkeypatch.setattr(twitter, "TWITTER_REPLY_DRAFTS_ENABLED", False)
+    monkeypatch.setattr(twitter, "_save_state", lambda value: saved.update(value))
+
+    twitter._find_reply_candidates()
+
+    assert saved == {}

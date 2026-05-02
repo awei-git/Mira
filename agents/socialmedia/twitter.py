@@ -22,6 +22,7 @@ from config import (
     TWITTER_BRIDGE_REPLY_DRAFTS,
     TWITTER_COOLDOWN_HOURS,
     TWITTER_MAX_TWEETS_PER_DAY,
+    TWITTER_REPLY_DRAFTS_ENABLED,
 )
 
 log = logging.getLogger("socialmedia.twitter")
@@ -831,6 +832,10 @@ def _find_reply_candidates(soul_context: str = ""):
     API restricts bot replies to unsolicited tweets, so we draft the reply
     and notify WA via Mira bridge to post it manually.
     """
+    if not TWITTER_REPLY_DRAFTS_ENABLED:
+        log.info("Reply draft generation disabled")
+        return
+
     state = _load_state()
     today = datetime.now().strftime("%Y-%m-%d")
 
