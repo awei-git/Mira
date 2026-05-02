@@ -231,6 +231,58 @@ def test_upsert_agent_feed_defaults_to_done():
     assert params["status"] == "done"
 
 
+def test_upsert_agent_feed_replaces_stale_generated_messages():
+    from control.repository import ControlRepository
+
+    conn = FakeConn()
+    conn.cursor_obj = FakeUpsertCursor()
+    repo = ControlRepository(conn)
+
+    repo.upsert_bridge_item(
+        "ang",
+        {
+            "id": "feed_zhesi_20260502",
+            "type": "feed",
+            "title": "Daily Zhesi",
+            "origin": "agent",
+            "status": "done",
+            "messages": [
+                {"id": "latest_a", "sender": "agent", "content": "current"},
+                {"id": "latest_b", "sender": "agent", "content": "current follow-up"},
+            ],
+        },
+    )
+
+    delete_query, delete_params = next(
+        (query, params) for query, params in conn.cursor_obj.queries if "DELETE FROM mira_control.messages" in query
+    )
+    assert "sender <> %s" in delete_query
+    assert "id = ANY(%s)" in delete_query
+    assert delete_params == ("feed_zhesi_20260502", "ang", "ang", ["latest_a", "latest_b"])
+
+
+def test_upsert_discussion_preserves_message_history():
+    from control.repository import ControlRepository
+
+    conn = FakeConn()
+    conn.cursor_obj = FakeUpsertCursor()
+    repo = ControlRepository(conn)
+
+    repo.upsert_bridge_item(
+        "ang",
+        {
+            "id": "discussion_1",
+            "type": "discussion",
+            "title": "Discussion",
+            "origin": "agent",
+            "status": "needs-input",
+            "messages": [{"id": "reply_1", "sender": "agent", "content": "draft"}],
+        },
+    )
+
+    assert not any("DELETE FROM mira_control.messages" in query for query, _params in conn.cursor_obj.queries)
+
+
 def test_upsert_legacy_item_does_not_stomp_newer_control_row():
     from control.repository import ControlRepository
 

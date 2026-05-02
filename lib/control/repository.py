@@ -642,6 +642,20 @@ class ControlRepository:
                         "result_path": item.get("result_path"),
                     },
                 )
+            incoming_message_ids = [
+                str(msg.get("id") or f"{item_id}_{idx}") for idx, msg in enumerate(messages) if isinstance(msg, dict)
+            ]
+            if should_update_task and item_type == "feed" and origin == "agent" and incoming_message_ids:
+                cur.execute(
+                    f"""
+                    DELETE FROM {self.schema}.messages
+                    WHERE task_id = %s
+                      AND user_id = %s
+                      AND sender <> %s
+                      AND NOT (id = ANY(%s))
+                    """,
+                    (item_id, user_id, user_id, incoming_message_ids),
+                )
             for idx, msg in enumerate(messages):
                 if not isinstance(msg, dict):
                     continue
