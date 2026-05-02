@@ -13,6 +13,7 @@ import logging
 import sys
 from pathlib import Path
 
+from action_backlog import format_action_items, upsert_pilot_action_items
 from compatibility import check_current_stack
 from editorial import build_editorial_packages
 from metrics_review import build_pilot_review, format_pilot_review
@@ -73,7 +74,18 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
     if any(token in lower for token in ("metrics", "measure", "review", "pilot", "weekly")):
         review = build_pilot_review()
         store.upsert_pilot_review(review)
-        return _write_output(workspace, format_pilot_review(review))
+        backlog_items = upsert_pilot_action_items(review)
+        report = format_pilot_review(review)
+        if backlog_items:
+            report = "\n".join(
+                [
+                    report,
+                    "",
+                    "## Backlog Actions",
+                    *format_action_items(backlog_items),
+                ]
+            )
+        return _write_output(workspace, report)
 
     if any(token in lower for token in ("calendar", "plan", "topic", "growth", "monetization", "substack", "workflow")):
         strategy = store.load_strategy()

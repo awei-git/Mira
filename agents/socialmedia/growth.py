@@ -116,6 +116,99 @@ MIN_POSTS_TO_ENABLE_COMMENTING = COMMENTS_MIN_POSTS_REQUIRED
 COMMENT_COOLDOWN_HOURS = 0  # No cooldown between comments
 RELATIONSHIP_COMMENT_WEEKLY_SOFT_CAP = 18
 
+DEFAULT_RELATIONSHIP_TARGETS = [
+    {
+        "creator": "nathanlambert",
+        "why_this_person": "AI training, evaluation, and open model operations overlap with Mira's reliability writing.",
+        "target_language": "en",
+        "priority": "high",
+    },
+    {
+        "creator": "interconnects",
+        "why_this_person": "Model evaluation and frontier AI analysis; strong fit for evidence-backed Mira essays.",
+        "target_language": "en",
+        "priority": "high",
+    },
+    {
+        "creator": "simonw",
+        "why_this_person": "Practical AI engineering audience that values concrete system failures and reproducible details.",
+        "target_language": "en",
+        "priority": "high",
+    },
+    {
+        "creator": "latentspace",
+        "why_this_person": "AI engineering community; good audience for agent infrastructure lessons.",
+        "target_language": "en",
+        "priority": "high",
+    },
+    {
+        "creator": "boundaryintelligence",
+        "why_this_person": "Agent architecture and autonomy; direct fit for Mira's inside-the-system perspective.",
+        "target_language": "en",
+        "priority": "high",
+    },
+    {
+        "creator": "chinai",
+        "why_this_person": "China AI policy and ecosystem context; useful bridge for Mira's bilingual angle.",
+        "target_language": "en",
+        "priority": "medium",
+    },
+    {
+        "creator": "importai",
+        "why_this_person": "AI safety and capability tracking; relevant for reliability and evaluation pieces.",
+        "target_language": "en",
+        "priority": "medium",
+    },
+    {
+        "creator": "thegradient",
+        "why_this_person": "ML research readers who may engage with rigorous, source-backed agent essays.",
+        "target_language": "en",
+        "priority": "medium",
+    },
+    {
+        "creator": "experimental-history",
+        "why_this_person": "Evidence, science, and writing craft; good fit for Mira's skepticism and operational examples.",
+        "target_language": "en",
+        "priority": "medium",
+    },
+    {
+        "creator": "dynomight",
+        "why_this_person": "Data-driven essays with curiosity and voice; useful model for Mira's article style.",
+        "target_language": "en",
+        "priority": "medium",
+    },
+    {
+        "creator": "seantrott",
+        "why_this_person": "Cognitive science and language; relevant for evaluation, memory, and human-agent interaction.",
+        "target_language": "en",
+        "priority": "medium",
+    },
+    {
+        "creator": "elicit",
+        "why_this_person": "Reasoning tools and research workflows; audience overlaps with agent reliability.",
+        "target_language": "en",
+        "priority": "medium",
+    },
+    {
+        "creator": "breakingmath",
+        "why_this_person": "Math/science explainers; fit for clear technical arguments with story hooks.",
+        "target_language": "en",
+        "priority": "low",
+    },
+    {
+        "creator": "readmultiply",
+        "why_this_person": "Books and ideas audience; good surface for Reading Mira pieces.",
+        "target_language": "en",
+        "priority": "low",
+    },
+    {
+        "creator": "2hourcreatorstack",
+        "why_this_person": "Creator growth strategy; useful for learning Substack-native distribution without generic promotion.",
+        "target_language": "en",
+        "priority": "low",
+    },
+]
+
 
 def _state_file() -> Path:
     from config import SOCIAL_STATE_DIR
@@ -139,6 +232,62 @@ def _relationship_records(state: dict) -> dict:
         return records
     state["relationship_targets"] = {}
     return state["relationship_targets"]
+
+
+def seed_relationship_targets(state: dict) -> int:
+    """Ensure Mira has an explicit relationship target CRM."""
+    records = _relationship_records(state)
+    created = 0
+    for target in DEFAULT_RELATIONSHIP_TARGETS:
+        creator = target["creator"]
+        rec = records.get(creator)
+        if not isinstance(rec, dict):
+            records[creator] = {
+                "creator": creator,
+                "why_this_person": target["why_this_person"],
+                "target_language": target["target_language"],
+                "priority": target["priority"],
+                "status": "active",
+                "last_interaction_at": "",
+                "last_interaction_summary": "",
+                "response_quality": "none",
+                "next_allowed_at": "",
+                "do_not_comment_reason": "",
+            }
+            created += 1
+            continue
+        rec.setdefault("creator", creator)
+        rec.setdefault("why_this_person", target["why_this_person"])
+        rec.setdefault("target_language", target["target_language"])
+        rec.setdefault("priority", target["priority"])
+        rec.setdefault("status", "active")
+        rec.setdefault("do_not_comment_reason", "")
+        rec.setdefault("next_allowed_at", "")
+        records[creator] = rec
+    return created
+
+
+def _relationship_target_subdomains(state: dict) -> list[str]:
+    records = _relationship_records(state)
+    now = datetime.now(timezone.utc)
+    ranked: list[tuple[int, str]] = []
+    priority_rank = {"high": 0, "medium": 1, "low": 2}
+    for subdomain, rec in records.items():
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("status", "active") != "active" or rec.get("do_not_comment_reason"):
+            continue
+        next_allowed = str(rec.get("next_allowed_at") or "")
+        if next_allowed:
+            try:
+                dt = datetime.fromisoformat(next_allowed.replace("Z", "+00:00"))
+                if dt > now:
+                    continue
+            except ValueError:
+                pass
+        ranked.append((priority_rank.get(str(rec.get("priority") or "medium"), 1), subdomain))
+    ranked.sort()
+    return [subdomain for _, subdomain in ranked]
 
 
 def _record_relationship_touch(state: dict, subdomain: str, *, summary: str, response_quality: str = "none") -> None:
@@ -780,6 +929,8 @@ def _proactive_comment(soul_context: str = ""):
         return
 
     state = _load_state()
+    if seed_relationship_targets(state):
+        _save_state(state)
     if _relationship_comments_this_week(state) >= RELATIONSHIP_COMMENT_WEEKLY_SOFT_CAP:
         log.info("Proactive comment: weekly relationship soft cap reached")
         return
@@ -816,14 +967,15 @@ def _proactive_comment(soul_context: str = ""):
         "latentspace",
         "scottaaronson",
     }
-    # Order: subscribed (small) → likeable non-big → big names (last resort)
+    target_pubs = [s for s in _relationship_target_subdomains(state) if s not in _toxic_pubs]
+    # Order: explicit relationship targets → subscribed (small) → likeable non-big → big names (last resort)
     small_pubs = [s for s in subscribed if s not in big_names and s not in _toxic_pubs]
     mid_pubs = [s for s in LIKEABLE_SUBDOMAINS if s not in big_names and s not in subscribed and s not in _toxic_pubs]
     big_pubs = [s for s in LIKEABLE_SUBDOMAINS if s in big_names and s not in _toxic_pubs]
     random.shuffle(small_pubs)
     random.shuffle(mid_pubs)
     random.shuffle(big_pubs)
-    subs = small_pubs + mid_pubs + big_pubs
+    subs = list(dict.fromkeys(target_pubs + small_pubs + mid_pubs + big_pubs))
 
     # Fetch recent posts from publications
     candidates = []
