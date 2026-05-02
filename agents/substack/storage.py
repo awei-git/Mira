@@ -10,7 +10,7 @@ from typing import Any
 
 from config import SOCIAL_STATE_DIR
 
-from models import ArticleRecord, EditorialPackage, PublicationStrategy, TopicCandidate, utc_now
+from models import ArticleRecord, EditorialPackage, PilotReview, PublicationStrategy, TopicCandidate, utc_now
 
 
 def _atomic_write_json(path: Path, data: Any) -> None:
@@ -39,6 +39,7 @@ class SubstackStore:
         self.articles_path = self.root / "articles.json"
         self.editorial_packages_path = self.root / "editorial_packages.json"
         self.calendar_path = self.root / "editorial_calendar.json"
+        self.pilot_reviews_path = self.root / "pilot_reviews.json"
 
     def load_strategy(self) -> PublicationStrategy:
         if not self.strategy_path.exists():
@@ -94,6 +95,24 @@ class SubstackStore:
     def save_articles(self, articles: list[ArticleRecord]) -> None:
         _atomic_write_json(self.articles_path, [article.to_dict() for article in articles])
 
+    def upsert_articles(self, articles: list[ArticleRecord]) -> tuple[int, int]:
+        existing = {article.id: article for article in self.load_articles()}
+        created = 0
+        updated = 0
+        for article in articles:
+            if article.id in existing:
+                old = existing[article.id]
+                article.created_at = old.created_at
+                if old.state != "idea":
+                    article.state = old.state
+                article.updated_at = utc_now()
+                updated += 1
+            else:
+                created += 1
+            existing[article.id] = article
+        self.save_articles(list(existing.values()))
+        return created, updated
+
     def load_editorial_packages(self) -> list[EditorialPackage]:
         return [
             EditorialPackage.from_dict(item)
@@ -126,6 +145,31 @@ class SubstackStore:
     def load_calendar(self) -> dict[str, Any]:
         if not self.calendar_path.exists():
             return {"weeks": [], "updated_at": ""}
+
+    def load_pilot_reviews(self) -> list[PilotReview]:
+        return [
+            PilotReview.from_dict(item)
+            for item in self._load_list(self.pilot_reviews_path)
+            if isinstance(item, dict) and item.get("id")
+        ]
+
+    def save_pilot_reviews(self, reviews: list[PilotReview]) -> None:
+        reviews = sorted(reviews, key=lambda item: item.period_end, reverse=True)
+        _atomic_write_json(self.pilot_reviews_path, [review.to_dict() for review in reviews])
+
+    def upsert_pilot_review(self, review: PilotReview) -> tuple[int, int]:
+        existing = {item.id: item for item in self.load_pilot_reviews()}
+        created = 0
+        updated = 0
+        if review.id in existing:
+            review.created_at = existing[review.id].created_at
+            review.updated_at = utc_now()
+            updated = 1
+        else:
+            created = 1
+        existing[review.id] = review
+        self.save_pilot_reviews(list(existing.values()))
+        return created, updated
         try:
             data = json.loads(self.calendar_path.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {"weeks": [], "updated_at": ""}

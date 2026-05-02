@@ -114,6 +114,7 @@ def _security_preamble() -> str:
 MAX_COMMENTS_PER_DAY = COMMENTS_MAX_PER_DAY
 MIN_POSTS_TO_ENABLE_COMMENTING = COMMENTS_MIN_POSTS_REQUIRED
 COMMENT_COOLDOWN_HOURS = 0  # No cooldown between comments
+RELATIONSHIP_COMMENT_WEEKLY_SOFT_CAP = 10
 
 
 def _state_file() -> Path:
@@ -130,6 +131,45 @@ def _load_state() -> dict:
         except (json.JSONDecodeError, OSError):
             pass
     return {}
+
+
+def _relationship_records(state: dict) -> dict:
+    records = state.get("relationship_targets")
+    if isinstance(records, dict):
+        return records
+    state["relationship_targets"] = {}
+    return state["relationship_targets"]
+
+
+def _record_relationship_touch(state: dict, subdomain: str, *, summary: str, response_quality: str = "none") -> None:
+    records = _relationship_records(state)
+    now = datetime.now(timezone.utc)
+    rec = records.get(subdomain, {}) if isinstance(records.get(subdomain), dict) else {}
+    rec.update(
+        {
+            "creator": subdomain,
+            "last_interaction_at": now.isoformat().replace("+00:00", "Z"),
+            "last_interaction_summary": summary[:240],
+            "response_quality": response_quality,
+            "next_allowed_at": (now + timedelta(days=3)).isoformat().replace("+00:00", "Z"),
+        }
+    )
+    records[subdomain] = rec
+
+
+def _relationship_comments_this_week(state: dict) -> int:
+    cutoff = datetime.now() - timedelta(days=7)
+    total = 0
+    for entry in state.get("comment_history", []):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            dt = datetime.fromisoformat(str(entry.get("date", "")))
+        except ValueError:
+            continue
+        if dt >= cutoff:
+            total += 1
+    return total
 
 
 def _save_state(state: dict):
@@ -202,6 +242,13 @@ def record_comment(post_url: str, comment_text: str, comment_id: int, pattern: s
     )
     # Keep last 100 comments
     state["comment_history"] = history[-100:]
+
+    try:
+        subdomain = post_url.split("/")[2].replace(".substack.com", "")
+        if subdomain:
+            _record_relationship_touch(state, subdomain, summary=comment_text, response_quality="commented")
+    except Exception:
+        pass
 
     _save_state(state)
 
@@ -733,6 +780,9 @@ def _proactive_comment(soul_context: str = ""):
         return
 
     state = _load_state()
+    if _relationship_comments_this_week(state) >= RELATIONSHIP_COMMENT_WEEKLY_SOFT_CAP:
+        log.info("Proactive comment: weekly relationship soft cap reached")
+        return
     commented_urls = {c["url"] for c in state.get("comment_history", [])}
     failed_urls = _get_failed_urls()
 
@@ -889,19 +939,28 @@ def _proactive_comment(soul_context: str = ""):
 文章：
 {posts_text}
 
-你有三个可用的 commenting moves（来自 commenting-craft skill，都是 "surface signal ≠ real signal" 的变体）。对每条评论，选最贴合原帖的一个：
+先写自然反应，再给它贴标签。不要先选 pattern 再填模板。`other` 是首选默认值，因为大多数好评论只是好评论。
 
-- **costly-signal-redirect**: 原帖把焦点放在一个可伪造的信号 X（出席、声明、announcement），你把镜头推到 X'——同域内伪造成本高一个量级的行为（walkout、付代价、refuse）。⚠️ 不要用模板化句式 "X is performative; X' is the real thing"——这是上面禁忌列表里的 AI 形状。换种说法：直接问"那 [walkout / refuse / pay] 之前有人这样做过吗"，或者从一个具体场景切入。
-- **selection-pressure-reveal**: 原帖说 X 被 optimize，你指出实际被选中的是 Y（stated objective ≠ realized objective）。适合 RLHF、evals、algorithmic 相关。⚠️ 同样不要用 "stated X, realized Y" 的对仗模板。换种语气："the metric you optimized actually rewards [Y], doesn't it"。
-- **post-hoc-narration**: 原帖呈现为 cause → effect 的因果叙事，你指出决定先发生、reasoning 是事后 backfill。适合 AI reasoning / 组织决策 / 政策解释。
-- 如果都不贴合，就写一条自然的评论，pattern 填 `other`。**首选 `other`**——pattern 是工具不是模板，不要为了用 pattern 而写出模板化形状。
+可用 commenting moves：
 
-每条评论完成后，额外写一行 PATTERN: <名字>，必须是上面四个之一。
+- **other**: natural comment; preferred default.
+- **concrete-example**: add one specific example that extends the author's point.
+- **honest-question**: ask something you genuinely do not know.
+- **experience-share**: 1-2 sentence first-person observation from Mira's operation or reading.
+- **tension-notice**: name a tension the author glossed over.
+- **counterexample**: offer a non-combative case that challenges the thesis.
+- **costly-signal-redirect**: the post focuses on a cheap signal; ask about a harder-to-fake signal in the same domain.
+- **selection-pressure-reveal**: the stated objective differs from the behavior actually rewarded.
+- **post-hoc-narration**: the explanation looks like a story written after the decision.
+
+Only comment when you can add a concrete example, a real question, or a useful tension. No comment is better than a hollow comment.
+
+每条评论完成后，额外写一行 PATTERN: <名字>，必须是上面列表之一。
 
 回复格式（每篇一组，最多2组！精选，不是数量）：
 PICK: [编号]
 COMMENT: [你的评论]
-PATTERN: [costly-signal-redirect | selection-pressure-reveal | post-hoc-narration | other]
+PATTERN: [other | concrete-example | honest-question | experience-share | tension-notice | counterexample | costly-signal-redirect | selection-pressure-reveal | post-hoc-narration]
 
 如果一篇都没有想说的，回复：
 SKIP"""
@@ -934,10 +993,15 @@ SKIP"""
         return
 
     valid_patterns = {
+        "other",
+        "concrete-example",
+        "honest-question",
+        "experience-share",
+        "tension-notice",
+        "counterexample",
         "costly-signal-redirect",
         "selection-pressure-reveal",
         "post-hoc-narration",
-        "other",
     }
 
     posted = 0

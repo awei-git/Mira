@@ -83,7 +83,7 @@ def _pillar_for(title: str, thesis: str) -> str:
 
 def _score_topic(
     title: str, thesis: str, strategy: PublicationStrategy, stats: dict[str, Any]
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, float]:
     text = f"{title} {thesis}".lower()
     originality = 5.0
     if any(token in text for token in ("i ", "my ", "mira", "agent", "self-improvement", "failure", "debug")):
@@ -96,16 +96,27 @@ def _score_topic(
         audience_fit += 1.0
     if any(token in text for token in ("agent", "ai", "market", "system", "operator")):
         audience_fit += 2.0
+    if any(token in text for token in ("debug log", "reading mira", "honest machine")):
+        audience_fit += 1.5
 
     monetization = 3.0
     if any(token in text for token in ("framework", "playbook", "architecture", "market", "operator", "reliability")):
         monetization += 2.0
 
+    story = 3.0
+    source_backed = any(token in text for token in ("mira", "my ", "i ", "pipeline", "failure", "debug", "task"))
+    if source_backed:
+        story += 3.0
+    if any(token in text for token in ("experiment", "metric", "score", "published", "reply", "thread", "app")):
+        story += 1.5
+    if any(series in text for series in ("debug log", "reading mira", "honest machine")):
+        story += 1.0
+
     articles = stats.get("articles", []) if isinstance(stats.get("articles"), list) else []
     if articles and any((a.get("title") or "").lower()[:20] in text for a in articles if isinstance(a, dict)):
         originality -= 1.0
 
-    return min(originality, 10.0), min(audience_fit, 10.0), min(monetization, 10.0)
+    return min(originality, 10.0), min(audience_fit, 10.0), min(story, 10.0), min(monetization, 10.0)
 
 
 def discover_topics_from_writer_ideas(
@@ -133,11 +144,11 @@ def discover_topics_from_writer_ideas(
         thesis = _thesis_from_idea(text)
         if not title or not thesis:
             continue
-        originality, audience_fit, monetization = _score_topic(title, thesis, strategy, stats)
+        originality, audience_fit, story, monetization = _score_topic(title, thesis, strategy, stats)
         mira_edge = "Ground this in Mira's own operating evidence before drafting; avoid generic AI commentary."
         if "mira" in f"{title} {thesis}".lower():
             mira_edge = "Use Mira's own failures, metrics, and corrections as the article's primary evidence."
-        priority = round(originality * 0.4 + audience_fit * 0.4 + monetization * 0.2, 2)
+        priority = round(originality * 0.3 + audience_fit * 0.3 + story * 0.25 + monetization * 0.15, 2)
         candidates.append(
             TopicCandidate(
                 id=_slug(str(path.relative_to(ideas_dir))),
@@ -150,6 +161,7 @@ def discover_topics_from_writer_ideas(
                 mira_edge=mira_edge,
                 originality_score=round(originality, 2),
                 audience_fit_score=round(audience_fit, 2),
+                story_score=round(story, 2),
                 monetization_score=round(monetization, 2),
                 priority_score=priority,
                 metadata={"source_kind": "writer_idea", "bytes": path.stat().st_size},

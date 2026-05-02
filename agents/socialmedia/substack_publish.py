@@ -377,6 +377,34 @@ Output ONLY the subtitle, nothing else."""
     except Exception as _lg_e:
         log.warning("Language guard failed (proceeding): %s", _lg_e)
 
+    # Pilot quality gate for the primary Substack. This is deterministic and
+    # local: no API calls, no LLM calls, and no side effects. It blocks drafts
+    # that have weak titles/openings/voice or unsupported first-person
+    # operational claims before a live publish can happen.
+    try:
+        if not publication or publication == "substack":
+            import sys as _sys
+
+            _substack_agent_dir = Path(__file__).resolve().parent.parent / "substack"
+            if str(_substack_agent_dir) not in _sys.path:
+                _sys.path.insert(0, str(_substack_agent_dir))
+            from article_quality_gate import evaluate_workspace_article, format_quality_report
+
+            _quality_report = evaluate_workspace_article(
+                workspace=workspace,
+                article_text=article_text,
+                title=title,
+                subtitle=subtitle,
+            )
+            if not _quality_report.pass_gate:
+                msg = "Substack quality gate blocked publish:\n" + format_quality_report(_quality_report)
+                log.warning(msg)
+                _log_scaffolding_rejection("publisher", title, "substack_quality_gate", article_text)
+                return msg
+    except Exception as _gate_e:
+        log.error("PUBLISH ABORTED — quality gate failed: %s", _gate_e, exc_info=True)
+        return f"发布被拦截：Substack quality gate failed safely. {_gate_e}"
+
     # Auto-append subscribe CTA footer. Research (2026-04-16): articles without
     # an explicit conversion invitation underperform.
     #

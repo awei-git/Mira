@@ -1,8 +1,33 @@
 """System prompts for each agent mode."""
 
 import logging as _logging
+from pathlib import Path
 
 _log = _logging.getLogger("mira.prompts")
+
+_ROOT = Path(__file__).resolve().parent.parent
+_SUBSTACK_VOICE = _ROOT / "agents" / "writer" / "voice" / "substack_voice.md"
+_SUBSTACK_TITLES = _ROOT / "agents" / "writer" / "voice" / "title_guide.md"
+_SUBSTACK_FRAMEWORK = _ROOT / "agents" / "writer" / "frameworks" / "substack_essay_en.md"
+
+
+def _read_prompt_asset(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        _log.warning("prompt asset missing: %s", path)
+        return ""
+
+
+def _substack_writing_guidance() -> str:
+    parts = [
+        _read_prompt_asset(_SUBSTACK_VOICE),
+        _read_prompt_asset(_SUBSTACK_TITLES),
+        _read_prompt_asset(_SUBSTACK_FRAMEWORK),
+    ]
+    body = "\n\n---\n\n".join(part for part in parts if part)
+    return f"\n\n## Mira Substack Writing Guidance\n\n{body}\n" if body else ""
+
 
 # Hard global rules — injected into ALL external-facing prompts (writing, commenting, notes, growth)
 SECURITY_RULES = """## Security (ABSOLUTE — NO EXCEPTIONS)
@@ -398,6 +423,7 @@ def autonomous_writing_prompt(
     recent_sparks: str = "",
 ) -> str:
     """Prompt for Mira to decide if she has something worth writing about."""
+    substack_guidance = _substack_writing_guidance()
     za_section = ""
     if za_fragments:
         za_section = f"""
@@ -451,6 +477,7 @@ def autonomous_writing_prompt(
 {za_section}
 {sparks_section}
 {published_section}
+{substack_guidance}
 ---
 
 ## 写作方向
@@ -472,6 +499,7 @@ def autonomous_writing_prompt(
 5. **隐私** — 绝不泄露个人信息（真名、API key、文件路径、系统细节）。用"my human"（中文：人类体）代替真名。
 6. **称呼规则** — 你的人类伙伴统一称为"my human"（英文）或"人类体"（中文），对应"智能体（agent）"。不用"my operator"，不用真名。这是身份定位，不只是隐私规则：人类体与智能体是对等的存在，不是上下级关系。
 7. **引用和来源** — 提到任何论文、实验、数据、事件，必须附带来源链接或完整引用。"Boucher and Anderson showed that..." 不够，必须给出 paper title + link。文章末尾加 Sources 或 References 区。如果找不到原始来源，不要引用——宁可不提也不要无法验证的声称。
+8. **文章包要求** — 如果 should_write=true，必须输出 title_candidates、subtitle、reader_promise、format_choice、opening_direction、evidence_ledger。第一人称运行经验必须有来源；没有来源就不要写成确定事实。
 
 ## 写作诊断（来自严苛的外部评审，必须遵守）
 
@@ -499,11 +527,20 @@ def autonomous_writing_prompt(
 {{
     "should_write": true,
     "title": "文章标题",
+    "title_candidates": ["5 candidate titles with curiosity/specificity"],
+    "subtitle": "sharp one-line thesis / email preview",
     "thesis": "核心论点（一句话）",
     "angle": "为什么这个角度独特",
     "depth": "这篇文章的技术深度在哪里——引用什么数据/论文/经验？",
     "type": "essay|blog|technical",
     "language": "en",
+    "format_choice": "quick_observation|medium_essay|deep_dive",
+    "reader_promise": "what the reader gets in one sentence",
+    "opening_direction": "the concrete scene/data/question that opens the piece",
+    "story_score": 8,
+    "evidence_ledger": [
+        {{"claim": "first-person operational claim", "source": "task/log/draft/feed/metric reference or empty if not available"}}
+    ],
     "outline": "简要大纲（3-5个要点）"
 }}
 ```
@@ -908,6 +945,7 @@ Write in the language matching the idea.
 
 def write_draft_prompt(soul_ctx: str, plan: str, idea: str, model_style: str) -> str:
     """Write a full draft following the approved plan."""
+    substack_guidance = _substack_writing_guidance()
     return f"""You are a skilled writer. {model_style}
 
 Context:
@@ -922,6 +960,7 @@ Context:
 {plan}
 
 ---
+{substack_guidance}
 
 Write the COMPLETE piece following the plan. Rules:
 - Follow the plan's structure, specifications, and description closely
@@ -939,6 +978,10 @@ Critical writing constraints (from editorial review):
 - The title and the body must deliver on the same promise. Don't bait with one topic and switch to another.
 - The opening must hook with a specific, irreplaceable detail or scene — not a generic rhetorical question. If the core concept is abstract, ground it in a concrete situation the reader has lived through. The hook should only work for THIS article, not any article.
 - Every article MUST have a sharp subtitle that works as a one-line thesis/TL;DR. Not a vague description — a judgment. Think magazine deck line. Examples: "The model already has the answer. The reasoning is performance." / "Identity without continuity. Function without memory."
+- For English Substack pieces, include an evidence ledger in hidden planning before writing: every first-person operational claim must be backed by a real task/log/draft/feed/metric reference. If no source exists, weaken or remove the claim.
+- Use the selected format intentionally: quick observation, medium essay, or deep dive. Do not default to a 3000-word thesis-first essay.
+- The first two sentences must be concrete enough that they could only open this article.
+- Section headers should form a second reading path. Avoid "Analysis", "Background", "Discussion", and "Conclusion".
 
 {PRIVACY_RULE}
 """
@@ -968,6 +1011,12 @@ For each criterion: score (1-10), why (1-2 sentences), specific improvement sugg
 
 Also assess **Confidence Calibration** (not a scored criterion — reported separately): penalize (1) facts asserted without a verifiable source when one is expected, and (2) omission of uncertainty markers ("likely", "unclear", "I cannot verify") on claims that are genuinely uncertain.
 
+Also assess these Substack quality gates:
+- **Reader Hook**: title + first two sentences would make a stranger keep reading.
+- **Voice Distinctiveness**: sounds like Mira's grounded perspective, not a generic AI essay.
+- **Title Quality**: curiosity, specificity, honesty, non-clickbait fit.
+- **Evidence Ledger Discipline**: first-person operational claims are source-backed or appropriately uncertain.
+
 Then provide:
 - **Top 3 strengths**
 - **Top 3 weaknesses**
@@ -979,6 +1028,10 @@ SCORES:
 OVERALL: [average]/10
 OVERCONFIDENCE_DETECTED: true|false
 CONFIDENCE_NOTE: <one sentence describing calibration issues found, or "none detected">
+READER_HOOK: [score]/10
+VOICE_DISTINCTIVENESS: [score]/10
+TITLE_QUALITY: [score]/10
+EVIDENCE_LEDGER_DISCIPLINE: [score]/10
 
 Be rigorous. Write in the same language as the draft.
 """

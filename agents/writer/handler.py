@@ -23,6 +23,7 @@ from writing_workflow import run_full_pipeline
 log = logging.getLogger("writer_agent")
 
 _ANTI_AI_PATH = Path(__file__).resolve().parent / "checklists" / "anti-ai.md"
+_SUBSTACK_VOICE_PATH = Path(__file__).resolve().parent / "voice" / "substack_voice.md"
 
 
 def _load_anti_ai() -> str:
@@ -33,26 +34,35 @@ def _load_anti_ai() -> str:
         return ""
 
 
+def _load_substack_voice() -> str:
+    try:
+        return _SUBSTACK_VOICE_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
 def _de_ai_section(text: str, *, tier: str, timeout: int) -> str:
     """Internal: edit a single section. Used by de_ai_pass after chunking."""
     if not text or len(text.strip()) < 80:
         return text
+    voice = _load_substack_voice()
     prompt = (
-        "你是 Mira 自己的最终编辑。下面是一段已经写好的文字，要做去 AI 味的编辑通过。\n\n"
-        "**编辑，不是重写。** 保留所有具体引用、人名、判断、读书反应、情感语气、"
-        "结构和段落顺序。\n\n"
-        "**修复 AI 形状特征：**\n"
-        "1. em-dash 过量 — 一段最多一个，多余的改成逗号、句号、或重写句子结构。\n"
-        '2. "不是 X 而是 Y" 句式滥用 —— 句句对位是 AI 病。挑出 80% 改写。\n'
-        '3. "不是 X，是 Y" 同款 —— 同上。\n'
-        '4. 抽象名词作概念名（"结构性"、"本质上"、"说到底"等）—— 翻译成具体语言。\n'
-        "5. 机械排比 / 段首重复 —— 三句以上结构相同的，打破至少一处。\n"
-        '6. 总结式结尾（"这才是……"、"这意味着……"）—— 多数删掉。\n'
-        "7. 对仗工整双子句当装饰 —— 留两三处，其他改写。\n\n"
-        "**保持：** 第一人称视角；真实的不确定；引文和原文标点；段落分隔；情感强度。\n"
-        "**不要：** 改写人名/引文/术语；加入新观点；改变章节标题；抹平情感。\n\n"
-        "# 输出格式\n直接输出编辑后的完整 markdown，不要前言、不要解释。\n\n"
-        "# 原稿\n\n" + text
+        "You are Mira's final Substack editor.\n\n"
+        "Edit, do not rewrite. Preserve concrete references, names, judgments, reading reactions, "
+        "emotional register, section order, and factual claims.\n\n"
+        "Voice guide:\n"
+        f"{voice[:5000]}\n\n"
+        "Fix AI-shaped writing patterns:\n"
+        "1. Em-dash overuse: max one em dash per paragraph. Prefer commas, periods, or sentence restructuring.\n"
+        "2. Repetitive 'not X but Y' / 'the real question is...' reversals. Rewrite most of them.\n"
+        "3. Abstract concept labels such as 'structural', 'architecture of', 'fundamentally'. Make them concrete.\n"
+        "4. Mechanical parallelism and repeated paragraph openings. Break the rhythm.\n"
+        "5. Summary endings. Cut or replace with a specific unresolved tension.\n"
+        "6. Generic AI essay language: 'this article explores', 'it could be argued', 'in conclusion'. Remove it.\n\n"
+        "Keep first-person perspective, real uncertainty, quotation wording, paragraph breaks, and emotional force.\n"
+        "Do not alter names, quotes, technical terms, or add new claims. Do not invent evidence.\n\n"
+        "Output only the edited markdown. No preface, no explanation.\n\n"
+        "# Draft\n\n" + text
     )
     try:
         edited = claude_think(prompt, timeout=timeout, tier=tier)

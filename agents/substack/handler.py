@@ -15,8 +15,10 @@ from pathlib import Path
 
 from compatibility import check_current_stack
 from editorial import build_editorial_packages
+from metrics_review import build_pilot_review, format_pilot_review
 from storage import SubstackStore
 from topic_backlog import build_editorial_calendar, discover_topics_from_writer_ideas
+from workflow import build_article_records
 
 log = logging.getLogger("substack_agent")
 _SOCIALMEDIA_DIR = Path(__file__).resolve().parent.parent / "socialmedia"
@@ -68,13 +70,20 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
         report = check_current_stack()
         return _write_output(workspace, _format_compatibility_report(report))
 
-    if any(token in lower for token in ("calendar", "plan", "topic", "growth", "monetization", "substack")):
+    if any(token in lower for token in ("metrics", "measure", "review", "pilot", "weekly")):
+        review = build_pilot_review()
+        store.upsert_pilot_review(review)
+        return _write_output(workspace, format_pilot_review(review))
+
+    if any(token in lower for token in ("calendar", "plan", "topic", "growth", "monetization", "substack", "workflow")):
         strategy = store.load_strategy()
         candidates = discover_topics_from_writer_ideas(strategy)
         created, updated = store.upsert_topics(candidates)
         topics = store.load_topics()
         packages = build_editorial_packages(topics, strategy)
         pkg_created, pkg_updated = store.upsert_editorial_packages(packages)
+        articles = build_article_records(topics, packages)
+        article_created, article_updated = store.upsert_articles(articles)
         calendar = build_editorial_calendar(topics)
         store.save_calendar(calendar)
         report = _format_plan(
@@ -82,10 +91,13 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
             topics,
             calendar,
             packages=packages,
+            articles=store.load_articles(),
             created=created,
             updated=updated,
             package_created=pkg_created,
             package_updated=pkg_updated,
+            article_created=article_created,
+            article_updated=article_updated,
         )
         return _write_output(workspace, report)
 
@@ -99,6 +111,7 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
         topics = store.load_topics()
         packages = build_editorial_packages(topics, strategy)
         store.upsert_editorial_packages(packages)
+        store.upsert_articles(build_article_records(topics, packages))
         calendar = build_editorial_calendar(topics)
         store.save_calendar(calendar)
     return _write_output(
@@ -108,10 +121,13 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
             topics,
             calendar,
             packages=packages,
+            articles=store.load_articles(),
             created=0,
             updated=0,
             package_created=0,
             package_updated=0,
+            article_created=0,
+            article_updated=0,
         ),
     )
 
@@ -150,10 +166,13 @@ def _format_plan(
     calendar: dict,
     *,
     packages,
+    articles,
     created: int,
     updated: int,
     package_created: int,
     package_updated: int,
+    article_created: int,
+    article_updated: int,
 ) -> str:
     top = topics[:10]
     packages_by_topic = {package.topic_id: package for package in packages}
@@ -169,7 +188,8 @@ def _format_plan(
         "## Operating Policy",
         "- Current guarded publishing stack remains production.",
         "- New agent starts in shadow/orchestrator mode.",
-        "- Article publishing requires existing writer gate, preflight, cooldown, and approval policy.",
+        "- Article publishing requires existing writer gate, preflight, cooldown, and article quality gate.",
+        "- Run a 30-day pilot before paid-tier or high-volume growth changes.",
         "- Paid/account/payment changes always require human approval.",
         "",
         "## Topic Backlog Refresh",
@@ -178,6 +198,8 @@ def _format_plan(
         f"- Active topics: {len(topics)}",
         f"- Editorial packages created: {package_created}",
         f"- Editorial packages updated: {package_updated}",
+        f"- Article workflows created: {article_created}",
+        f"- Article workflows updated: {article_updated}",
         "",
         "## Highest Priority Topics",
     ]
@@ -187,7 +209,8 @@ def _format_plan(
                 f"{idx}. {topic.title}",
                 f"   - Pillar: {topic.pillar}",
                 f"   - Score: {topic.priority_score} "
-                f"(originality={topic.originality_score}, fit={topic.audience_fit_score}, monetization={topic.monetization_score})",
+                f"(originality={topic.originality_score}, fit={topic.audience_fit_score}, "
+                f"story={topic.story_score}, monetization={topic.monetization_score})",
                 f"   - Thesis: {topic.thesis[:280]}",
                 f"   - Mira edge: {topic.mira_edge}",
             ]
@@ -202,14 +225,28 @@ def _format_plan(
                 ]
             )
 
+    lines.extend(["", "## Active Article Workflows"])
+    for article in articles[:8]:
+        packet = article.metadata.get("article_packet", {}) if isinstance(article.metadata, dict) else {}
+        lines.extend(
+            [
+                f"- {article.title}",
+                f"  - State: {article.state}",
+                f"  - Topic: {article.topic_id}",
+                f"  - Format: {packet.get('format_choice', 'unknown') if isinstance(packet, dict) else 'unknown'}",
+                f"  - Evidence entries: {len(packet.get('evidence_ledger', [])) if isinstance(packet, dict) else 0}",
+            ]
+        )
+
     lines.extend(["", "## Editorial Quality Gates"])
     lines.extend(
         [
             "- Title must create curiosity or tension; generic summary titles are blocked.",
             "- Abstract must promise a specific reader payoff and make Mira's unique evidence clear.",
+            "- Article packet must include title candidates, subtitle, reader promise, opening, and evidence ledger.",
             "- Format must open with a concrete scene, then move into mechanism, framework, and unresolved tension.",
             "- Drafts cannot advance if they lack Mira-specific operating evidence.",
-            "- Publishing remains blocked until writer gate, preflight, cooldown, and approval policy pass.",
+            "- Publishing remains blocked until writer gate, preflight, cooldown, and article quality gate pass.",
         ]
     )
 
@@ -227,10 +264,17 @@ def _format_plan(
     lines.extend(
         [
             "",
+            "## 30-Day Pilot",
+            "- 1 flagship public article per week.",
+            "- 1 short Debug Log or Reading Mira piece only when there is source-backed material.",
+            "- 2-3 high-quality Notes per week.",
+            "- 5-10 targeted relationship comments per week.",
+            "- Weekly review: opens, reads, likes, comments, replies, subscribers, and relationship depth.",
+            "",
             "## Next Implementation Steps",
             "1. Add article workflow records that move topics through thesis, draft, review, fact-check, approval, publish, promote, measure.",
             "2. Wire the editorial package into writer prompts so every draft starts from title, abstract, hook, and format blueprint.",
-            "3. Add promotion plan generator per published post.",
+            "3. Run the 30-day pilot before paid-tier or high-volume growth changes.",
             "4. Add weekly metrics review that turns weak growth metrics into backlog actions.",
             "",
             "## Machine State",

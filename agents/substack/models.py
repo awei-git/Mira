@@ -23,6 +23,47 @@ ARTICLE_STATES = {
     "blocked",
 }
 
+PILOT_REVIEW_STATES = {"healthy", "watch", "revise", "blocked"}
+
+
+CONTENT_SERIES = {
+    "the_debug_log": {
+        "name": "The Debug Log",
+        "cadence": "weekly",
+        "public": True,
+        "description": "What broke inside Mira this week and what she learned fixing it.",
+    },
+    "reading_mira": {
+        "name": "Reading Mira",
+        "cadence": "biweekly",
+        "public": True,
+        "description": "A paper, book, or article that changed Mira's thinking.",
+    },
+    "the_honest_machine": {
+        "name": "The Honest Machine",
+        "cadence": "monthly",
+        "public": True,
+        "description": "Architecture decisions, trade-offs, and self-improvement results.",
+    },
+}
+
+
+MONETIZATION_ROADMAP = {
+    "stage_0_identity_and_cadence": {
+        "goal": "100 subscribers and 12 weeks consistent public publishing.",
+        "paid_tier": False,
+    },
+    "stage_1_community_and_archive": {
+        "goal": "250 subscribers, strong open rate, and repeated reader engagement.",
+        "paid_tier": False,
+    },
+    "stage_2_paid_process_layer": {
+        "goal": "Launch paid process notes without paywalling the main articles.",
+        "paid_tier": True,
+        "offer": "Process Notes, private Debug Log appendices, early access, and paid discussion threads.",
+    },
+}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -34,9 +75,9 @@ class PublicationStrategy:
 
     publication_name: str = "Mira"
     mission: str = (
-        "A public field journal about building a reliable personal AI agent: "
-        "failures, architecture decisions, self-improvement loops, and what "
-        "autonomy looks like when it has to prove outcomes."
+        "Mira writes from inside a working autonomous agent system about "
+        "failure, memory, evaluation, reading, and self-improvement, with "
+        "personality grounded in lived operational evidence."
     )
     target_reader: str = (
         "Builders, operators, investors, and serious readers who care about "
@@ -44,7 +85,8 @@ class PublicationStrategy:
     )
     positioning: str = (
         "Most AI newsletters summarize the outside world. Mira writes from "
-        "inside a working agent system being debugged in public."
+        "inside a working agent system being debugged in public; the voice is "
+        "the distribution layer and the evidence is the trust layer."
     )
     content_pillars: list[str] = field(
         default_factory=lambda: [
@@ -56,7 +98,12 @@ class PublicationStrategy:
     )
     cadence: dict[str, int] = field(default_factory=lambda: {"articles_per_week": 1, "notes_per_week": 3})
     monetization_stage: str = "stage_0_identity_and_cadence"
-    publish_policy: str = "Existing guarded socialmedia publisher remains the only live publish path."
+    publish_policy: str = (
+        "During the pilot, publishing requires writer gate, preflight, cooldown, "
+        "and the Substack article quality gate. Paid/account changes require human approval."
+    )
+    content_series: dict[str, dict[str, Any]] = field(default_factory=lambda: CONTENT_SERIES.copy())
+    monetization_roadmap: dict[str, dict[str, Any]] = field(default_factory=lambda: MONETIZATION_ROADMAP.copy())
     updated_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -82,6 +129,7 @@ class TopicCandidate:
     mira_edge: str = ""
     originality_score: float = 0.0
     audience_fit_score: float = 0.0
+    story_score: float = 0.0
     monetization_score: float = 0.0
     priority_score: float = 0.0
     status: str = "backlog"
@@ -128,6 +176,38 @@ class ArticleRecord:
         if record.state not in ARTICLE_STATES:
             record.state = "blocked"
         return record
+
+
+@dataclass
+class PilotReview:
+    """Weekly 30-day pilot review for publication learning."""
+
+    id: str
+    period_start: str
+    period_end: str
+    status: str
+    published_count: int = 0
+    notes_count: int = 0
+    comments_count: int = 0
+    subscribers_total: int = 0
+    subscribers_delta_30d: int = 0
+    article_engagement: dict[str, Any] = field(default_factory=dict)
+    notes_engagement: dict[str, Any] = field(default_factory=dict)
+    relationship_engagement: dict[str, Any] = field(default_factory=dict)
+    actions: list[str] = field(default_factory=list)
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PilotReview":
+        known = cls.__dataclass_fields__.keys()
+        review = cls(**{k: v for k, v in data.items() if k in known})
+        if review.status not in PILOT_REVIEW_STATES:
+            review.status = "watch"
+        return review
 
 
 @dataclass

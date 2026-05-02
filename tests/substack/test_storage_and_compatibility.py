@@ -77,6 +77,30 @@ def test_store_upserts_editorial_packages(tmp_path: Path):
     assert packages[0].recommended_title == "The Agent Has To Prove It Happened"
 
 
+def test_store_upserts_article_records_and_pilot_reviews(tmp_path: Path):
+    from models import ArticleRecord, PilotReview
+    from storage import SubstackStore
+
+    store = SubstackStore(root=tmp_path / "substack_agent")
+    article = ArticleRecord(id="article-1", topic_id="topic-1", title="My Agent Said Done", state="approval_required")
+    review = PilotReview(
+        id="pilot-1",
+        period_start="2026-05-01",
+        period_end="2026-05-08",
+        status="watch",
+        actions=["Publish one article."],
+    )
+
+    assert store.upsert_articles([article]) == (1, 0)
+    assert store.upsert_articles([article]) == (0, 1)
+    assert store.load_articles()[0].title == "My Agent Said Done"
+
+    assert store.upsert_pilot_review(review) == (1, 0)
+    review.status = "healthy"
+    assert store.upsert_pilot_review(review) == (0, 1)
+    assert store.load_pilot_reviews()[0].status == "healthy"
+
+
 def test_current_socialmedia_stack_capabilities_are_visible():
     from compatibility import check_current_stack
 

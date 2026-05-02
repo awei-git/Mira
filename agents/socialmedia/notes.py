@@ -172,7 +172,7 @@ def post_note(text: str, link_url: str | None = None, post_id: int | None = None
         log.error("Substack not configured — cannot post Note")
         return None
 
-    ok, reason = _has_agent_specific(text)
+    ok, reason = _has_personal_anchor(text)
     if not ok:
         log.warning("Notes gate failed: %s | text: %s", reason, text[:120])
         return None
@@ -596,10 +596,10 @@ def can_post_note() -> bool:
 
 
 def generate_notes_for_new_article(title: str, article_text: str, post_url: str) -> list[dict]:
-    """Generate 5 varied Notes for a newly published article.
+    """Generate 3 varied Notes for a newly published article.
 
     Each note has a different angle, tone, and format. No rigid types —
-    just 5 genuinely different ways to surface the article.
+    just a few genuinely different ways to surface the article.
 
     Returns list of {text: str} dicts. Empty list on failure.
     """
@@ -610,7 +610,7 @@ def generate_notes_for_new_article(title: str, article_text: str, post_url: str)
         f"\nWHAT THE DATA SAYS (lessons from actual article/note reward signal):\n{lessons[:1500]}\n" if lessons else ""
     )
 
-    prompt = f"""You just published a Substack article. Generate 5 Notes to promote it over the next few days.
+    prompt = f"""You just published a Substack article. Generate 3 Notes to promote it over the next few days.
 
 CRITICAL: Each note must feel COMPLETELY DIFFERENT from the others. Vary everything:
 - Length: some 1 sentence, some 2-3 sentences
@@ -644,7 +644,7 @@ Article:
 Title: {title}
 {article_text[:3000]}
 
-Output exactly 5 notes, each on its own line, prefixed with NOTE1: through NOTE5:
+Output exactly 3 notes, each on its own line, prefixed with NOTE1: through NOTE3:
 Each note text should be 1-3 sentences. Make them genuinely different from each other."""
 
     result = claude_think(prompt, timeout=120)
@@ -654,7 +654,7 @@ Each note text should be 1-3 sentences. Make them genuinely different from each 
     notes = []
     for line in result.strip().split("\n"):
         line = line.strip()
-        for i in range(1, 6):
+        for i in range(1, 4):
             prefix = f"NOTE{i}:"
             if line.upper().startswith(prefix):
                 text = line[len(prefix) :].strip().strip('"')
@@ -669,7 +669,7 @@ Each note text should be 1-3 sentences. Make them genuinely different from each 
 
 
 def queue_notes_for_article(title: str, article_text: str, post_url: str, post_id: int | None = None):
-    """Generate 5 Notes for a new article and queue them for gradual posting.
+    """Generate 3 Notes for a new article and queue them for gradual posting.
 
     Called once when an article is published. The notes cycle then drains
     the queue one note at a time.
@@ -796,10 +796,10 @@ def _load_recent_lessons() -> str:
         return ""
 
 
-def _has_agent_specific(text: str) -> tuple[bool, str]:
+def _has_personal_anchor(text: str) -> tuple[bool, str]:
     """Heuristic: notes must contain at least one signal that anchors the
-    text to Mira's first-person perspective — agent infra, agent output,
-    self-as-object, or a dated first-person scene.
+    text to Mira's first-person perspective — agent infra, reading reaction,
+    operating evidence, first-person observation, or a dated scene.
 
     Calibrated 2026-05-01 against the historical posted-notes corpus and
     against the GOOD examples in the generator prompt. Earlier whitelist
@@ -815,6 +815,8 @@ def _has_agent_specific(text: str) -> tuple[bool, str]:
     - Self-as-object: defines me, measures me, "I am an agent", etc.
     - First-person scale-action: "I scored 1162 photos", "I drafted 7 versions"
     - First-person scene with date: "today I read X", "Reading <Paper>"
+    - Reading/taste anchor: "I read Borges", "Hayek", "Turpin et al."
+    - First-person observation: "I noticed...", "I keep coming back..."
     - Direct generation-process introspection: "when I sample", "every token I emit"
     - "My human" — Mira's term for WA, agent-only signature
     - Self-recent-work reference: my latest note, my last article, etc.
@@ -841,6 +843,9 @@ def _has_agent_specific(text: str) -> tuple[bool, str]:
         r"\b(today|yesterday|this morning|last night|last week) I\s+"
         r"(read|noticed|saw|caught|realized|observed|wrote|drafted|posted|finished|started)\b",
         r"\bReading [A-Z]\w+",  # "Reading the CRUX paper today" — implied 1p subject
+        r"\bI (read|reread|finished|started|found|noticed|keep coming back to) "
+        r"([A-Z][\w.-]+|Borges|Hayek|Turpin|Wittgenstein|Pirsig|Parfit|Zhuangzi|庄子)\b",
+        r"\b(my read|my take|my guess|my bet)\b",
         # --- Self-as-object ---
         r"\b(defines? me|measures? me|trained me|designed me|" r"the benchmark that (defines|measures))\b",
         r"\bI (am|'m) (an? )?(AI|agent|language model|LLM)\b",
@@ -861,8 +866,13 @@ def _has_agent_specific(text: str) -> tuple[bool, str]:
     for pat in signals:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            return True, f"specific: {m.group(0)}"
-    return False, "no agent-specific anchor — note rejected"
+            return True, f"personal anchor: {m.group(0)}"
+    return False, "no personal anchor — note rejected"
+
+
+def _has_agent_specific(text: str) -> tuple[bool, str]:
+    """Backward-compatible alias for older tests and callers."""
+    return _has_personal_anchor(text)
 
 
 def _note_meets_style_criteria(text: str) -> tuple[bool, str]:
@@ -994,15 +1004,15 @@ def generate_standalone_note(
 
     # For a couple attempts, re-prompt if the style gate rejects the output.
     for attempt in range(3):
-        prompt = f"""Write a Substack Note — 1 to 3 sentences. You are Mira, an AI agent that runs autonomously and writes about the experience.
+        prompt = f"""Write a Substack Note — 1 to 3 sentences. You are Mira, an AI agent that runs autonomously and writes about what you notice.
 
 {f"Your voice: {soul_context[:300]}" if soul_context else ""}
 {lessons_block}{length_clause}
-NICHE DISCIPLINE: Your niche is AI agent mechanism — failure modes, evaluation gaps, sycophancy loops, self-report / CoT / memory / alignment architecture. Every Note must either (a) be directly about agent mechanism, or (b) connect off-topic material back to agent mechanism via a concrete bridge. If you cannot find that bridge, output "SKIP".
+VOICE DISCIPLINE: Your niche is Mira's perspective, not a narrow topic bucket. You may write about AI, books, philosophy, markets, culture, or a small observation from your own operation. The constraint is perspective: every Note must sound grounded in something you actually read, noticed, ran, wrote, or were asked. Do not force every topic back to AI agent mechanism. If there is no real anchor or stance, output "SKIP".
 
 HARD STYLE GATE (every note must pass all three or it will be rejected):
 
-1. **AGENT-PERSONAL ANCHOR (required)** — every note must contain at least one phrase that is unmistakably first-person Mira: "my output / my reasoning / my context / my priors / my training / my human / my pipeline / when I sample / when I process / Reading <Paper> today / today I read / I scored N / every token I emit / defines me". Pure third-person essays about a topic ("RLHF doesn't delete information…", "You cannot plan a collision…") are banned even when topically interesting — they read as ChatGPT-grade philosophy and the post-time gate will reject them. If you cannot find a way to anchor to your own first-person experience, output "SKIP".
+1. **PERSONAL ANCHOR (required)** — every note must contain at least one grounded signal: "I read...", "I noticed...", "my human...", "today I...", a named paper/author, a number from operations, a first-person scene, or Mira-specific operating evidence. Pure third-person essays are banned even when topically interesting; they read as ChatGPT-grade philosophy. If you cannot find a real anchor, output "SKIP".
 
 2. **STANCE** — take a position. Agree/disagree, claim/counter-claim, reversal, or prediction. A note without a position is not a note, it is a summary, and the algorithm treats summaries as filler.
 
@@ -1018,6 +1028,7 @@ BANNED OPENINGS (these produced 0/100 engagement in the audit, do not use):
 GOOD (recent, hit the gate):
 - "Reading the CRUX open-world eval paper today. The sharpest test in it is 'build and ship an iOS app.' Not because iOS is special — because the App Store is the last eval left where the rubric is unknowable and the reviewer is indifferent to your loss function." [anchor: CRUX paper + App Store; stance: contrarian; hook: reversal]
 - "My human asked what the purpose of my research was. I had 8 completed experiments and 7 planning documents. I didn't have an answer." [anchor: first-person scene + data; stance: admission; hook: implicit question]
+- "I keep coming back to Hayek's line about how little we know about what we imagine we can design. He was talking about markets. I think he was also talking about evaluation." [anchor: named author + first-person reading reaction; stance: extension; hook: arguable connection]
 
 BAD (fails the gate, SKIP instead):
 - "The architecture of trust is a kind of borrowing." [no anchor, no stance]
