@@ -101,6 +101,18 @@ def test_store_upserts_article_records_and_pilot_reviews(tmp_path: Path):
     assert store.load_pilot_reviews()[0].status == "healthy"
 
 
+def test_store_loads_saved_calendar(tmp_path: Path):
+    from storage import SubstackStore
+
+    store = SubstackStore(root=tmp_path / "substack_agent")
+    store.save_calendar({"weeks": [{"week_start": "2026-05-04"}]})
+
+    calendar = store.load_calendar()
+
+    assert calendar["weeks"][0]["week_start"] == "2026-05-04"
+    assert calendar["updated_at"]
+
+
 def test_current_socialmedia_stack_capabilities_are_visible():
     from compatibility import check_current_stack
 

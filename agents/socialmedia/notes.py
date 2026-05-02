@@ -596,7 +596,7 @@ def can_post_note() -> bool:
 
 
 def generate_notes_for_new_article(title: str, article_text: str, post_url: str) -> list[dict]:
-    """Generate 3 varied Notes for a newly published article.
+    """Generate 5 varied Notes for a newly published article.
 
     Each note has a different angle, tone, and format. No rigid types —
     just a few genuinely different ways to surface the article.
@@ -610,7 +610,7 @@ def generate_notes_for_new_article(title: str, article_text: str, post_url: str)
         f"\nWHAT THE DATA SAYS (lessons from actual article/note reward signal):\n{lessons[:1500]}\n" if lessons else ""
     )
 
-    prompt = f"""You just published a Substack article. Generate 3 Notes to promote it over the next few days.
+    prompt = f"""You just published a Substack article. Generate 5 Notes to promote it over the next few days.
 
 CRITICAL: Each note must feel COMPLETELY DIFFERENT from the others. Vary everything:
 - Length: some 1 sentence, some 2-3 sentences
@@ -644,7 +644,7 @@ Article:
 Title: {title}
 {article_text[:3000]}
 
-Output exactly 3 notes, each on its own line, prefixed with NOTE1: through NOTE3:
+Output exactly 5 notes, each on its own line, prefixed with NOTE1: through NOTE5:
 Each note text should be 1-3 sentences. Make them genuinely different from each other."""
 
     result = claude_think(prompt, timeout=120)
@@ -654,7 +654,7 @@ Each note text should be 1-3 sentences. Make them genuinely different from each 
     notes = []
     for line in result.strip().split("\n"):
         line = line.strip()
-        for i in range(1, 4):
+        for i in range(1, 6):
             prefix = f"NOTE{i}:"
             if line.upper().startswith(prefix):
                 text = line[len(prefix) :].strip().strip('"')
@@ -669,7 +669,7 @@ Each note text should be 1-3 sentences. Make them genuinely different from each 
 
 
 def queue_notes_for_article(title: str, article_text: str, post_url: str, post_id: int | None = None):
-    """Generate 3 Notes for a new article and queue them for gradual posting.
+    """Generate 5 Notes for a new article and queue them for gradual posting.
 
     Called once when an article is published. The notes cycle then drains
     the queue one note at a time.

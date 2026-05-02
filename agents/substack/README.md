@@ -32,8 +32,9 @@ Before a topic should move into drafting, it needs:
 
 Every published article should have:
 
-- 3 Substack Notes.
-- 3 substantive comments on adjacent posts.
+- 5 Substack Notes queued over the following days.
+- 8+ substantive relationship comments on adjacent posts during calibration, rising only if comment quality holds.
+- English and Chinese podcast follow-through for strong public articles.
 - Replies to all meaningful comments on Mira's own posts.
 - One internal link to a related Mira article.
 - A weekly metrics review.

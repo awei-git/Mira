@@ -426,7 +426,7 @@ For article-linked notes (5 per article): one question, one confession/admission
 **Problem:** Spray-and-pray across 41 publications.
 
 **Fix:** Identify 10-15 specific small-to-mid creators (under 5,000 subscribers) in overlapping niches. For these targets:
-- Comment consistently, but conservatively: 5-10 high-quality relationship comments total per week, not 10-30 forced comments
+- Comment consistently with a ramp: 8-12 high-quality relationship comments total per week for the first two weeks, then 12-18/week if author replies, likes, or thread depth show the comments are not hollow
 - Track engagement: author replies, mutual likes, conversation depth
 - After 3+ successful interactions: consider cross-recommendation
 - Goal: real relationships, not just visibility
@@ -483,6 +483,19 @@ Only source-backed signals count. A topic gets story_score credit only if the ar
 ### Series Bonus
 
 Topics fitting a defined series get +1.5 audience_fit bonus.
+
+### How Mira Chooses Topics Each Week
+
+Topic selection is a ranked editorial funnel, not a vibes choice.
+
+1. **Collect candidates.** Pull from writer ideas, daily briefings, reading notes, Mira operating failures, self-improvement results, market/AI infrastructure observations, prior article performance, and unresolved user questions.
+2. **Reject bad candidates early.** Drop duplicates of recent posts, topics without a Mira-specific angle, topics that require unsupported private claims, and topics that cannot produce a concrete reader payoff in one sentence.
+3. **Score the survivors.** Use `originality`, `audience_fit`, `story_score`, and `monetization` with the current formula. The `story_score` is the tie-breaker because Mira's advantage is first-person operational evidence.
+4. **Build the article packet.** The selected topic must produce title candidates, subtitle, abstract, reader promise, hook, format blueprint, and evidence ledger before drafting starts.
+5. **Gate before publishing.** A topic that scores well but cannot pass the article quality gate stays in backlog. No generic AI commentary should publish just because the weekly slot is empty.
+6. **Learn from results.** Weekly report feeds back which topics, titles, openings, Notes, and comments produced replies or subscribers, then adjusts next week's ranking.
+
+The practical rule: choose the topic with the strongest intersection of **interesting to Mira**, **legible to serious readers**, **backed by real evidence**, and **useful for the future paid process layer**.
 
 ### The Real Point
 
@@ -577,9 +590,11 @@ Before implementing monetization or high-volume growth, run a 30-day pilot.
 ### Cadence
 
 - 1 flagship public article per week.
+- Every strong public article triggers podcast follow-through: English and Chinese episode/script pipeline, tracked in the weekly report.
 - 1 short Debug Log or Reading Mira piece per week if there is a genuinely strong source-backed story.
-- 2-3 high-quality Notes per week, not 5 per article by default.
-- 5-10 targeted relationship comments per week.
+- Weeks 1-2 calibration: 3-5 high-quality Notes per week and 8-12 targeted relationship comments per week.
+- Weeks 3-4 active growth: 5-7 high-quality Notes per week and 12-18 targeted relationship comments per week, only if the comments keep passing the relationship quality gate.
+- After 30 days, scale toward 7-10 Notes/week and 15-25 comments/week only if engagement quality improves; do not scale empty output.
 - No paid tier launch during the pilot.
 
 ### Weekly Review
@@ -591,6 +606,8 @@ Every week, produce a short operator report:
 - Which title/opening worked.
 - Which Notes got any reaction.
 - Which relationship comments started real conversations.
+- Whether each flagship article completed English and Chinese podcast follow-through.
+- Why next week's topic was selected.
 - What should be repeated, revised, or killed.
 
 ### Pilot Exit Criteria
@@ -636,6 +653,7 @@ If not, revise the premise before scaling output.
 | `agents/substack/topic_backlog.py` (lines 84-108) | Add `story_score` component. New formula: `originality×0.3 + audience_fit×0.3 + story_score×0.25 + monetization×0.15`. Series bonus. |
 | `agents/substack/models.py` | Update PublicationStrategy (mission, pillars). Add ContentSeries (3 series). Add MonetizationStage + MONETIZATION_ROADMAP. |
 | `agents/socialmedia/growth.py` (lines 847-907) | Expand commenting 3→8 moves. Reverse prompt order. Add RELATIONSHIP_TARGETS, `_relationship_comment()`, relationship scoring. |
+| `agents/substack/metrics_review.py` | Weekly report tracks Notes, comments, relationship replies, subscriber movement, topic rationale, and English/Chinese podcast completion. |
 | Publishing pipeline entrypoint | Call `article_quality_gate.py` before publish. During pilot, failed gates block publishing; passed gates may publish or request human approval depending on mode. |
 
 ### Config Changes (1 file)
@@ -669,6 +687,7 @@ Total: 4 new files, ~11 file modifications. Mostly prompts, config, strategy, an
 ### Short-term (4 weeks)
 - Notes engagement: median likes/replies above current baseline, with at least 2 notes producing a reply or meaningful like from a non-random account
 - Article engagement: at least one article materially above current baseline (currently 0-2 likes)
+- Podcast follow-through: every flagship article produces English and Chinese follow-up assets or a visible blocker
 - Subscriber growth: positive weekly trend
 - Comment conversations: at least 2 author replies or genuine thread continuations across the month
 - Quality trend: human/editorial score improves week over week on title, opening, voice, and evidence

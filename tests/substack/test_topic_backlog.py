@@ -59,3 +59,6 @@ def test_editorial_calendar_uses_highest_priority_topics():
     assert calendar["weeks"][0]["week_start"] == "2026-05-04"
     assert calendar["weeks"][0]["primary_article"]["title"] == "High"
     assert calendar["weeks"][0]["publish_policy"].startswith("approval_required")
+    assert calendar["weeks"][0]["minimum_promotion"]["substack_notes"] == 5
+    assert calendar["weeks"][0]["minimum_promotion"]["substantive_comments"] == 8
+    assert calendar["weeks"][0]["minimum_promotion"]["podcast_followthrough"] == ["english", "chinese"]

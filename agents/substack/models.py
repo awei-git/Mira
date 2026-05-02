@@ -96,7 +96,15 @@ class PublicationStrategy:
             "Markets and AI infrastructure",
         ]
     )
-    cadence: dict[str, int] = field(default_factory=lambda: {"articles_per_week": 1, "notes_per_week": 3})
+    cadence: dict[str, int] = field(
+        default_factory=lambda: {
+            "articles_per_week": 1,
+            "notes_per_week_calibration": 5,
+            "notes_per_week_active": 7,
+            "relationship_comments_per_week_calibration": 12,
+            "relationship_comments_per_week_active": 18,
+        }
+    )
     monetization_stage: str = "stage_0_identity_and_cadence"
     publish_policy: str = (
         "During the pilot, publishing requires writer gate, preflight, cooldown, "
@@ -194,6 +202,7 @@ class PilotReview:
     article_engagement: dict[str, Any] = field(default_factory=dict)
     notes_engagement: dict[str, Any] = field(default_factory=dict)
     relationship_engagement: dict[str, Any] = field(default_factory=dict)
+    podcast_followthrough: dict[str, Any] = field(default_factory=dict)
     actions: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)

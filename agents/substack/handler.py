@@ -257,7 +257,7 @@ def _format_plan(
         lines.extend(
             [
                 f"- {week.get('week_start')}: {title}",
-                "  - Promotion: 3 Notes, 3 substantive comments, reply to meaningful comments.",
+                "  - Promotion: 5 Notes, 8+ substantive comments, English/Chinese podcast follow-through, reply to meaningful comments.",
             ]
         )
 
@@ -266,10 +266,11 @@ def _format_plan(
             "",
             "## 30-Day Pilot",
             "- 1 flagship public article per week.",
+            "- Every strong public article gets English and Chinese podcast follow-through.",
             "- 1 short Debug Log or Reading Mira piece only when there is source-backed material.",
-            "- 2-3 high-quality Notes per week.",
-            "- 5-10 targeted relationship comments per week.",
-            "- Weekly review: opens, reads, likes, comments, replies, subscribers, and relationship depth.",
+            "- Weeks 1-2: 3-5 high-quality Notes and 8-12 targeted relationship comments per week.",
+            "- Weeks 3-4: 5-7 high-quality Notes and 12-18 targeted relationship comments per week if quality holds.",
+            "- Weekly review: opens, reads, likes, comments, replies, subscribers, podcast completion, and relationship depth.",
             "",
             "## Next Implementation Steps",
             "1. Add article workflow records that move topics through thesis, draft, review, fact-check, approval, publish, promote, measure.",

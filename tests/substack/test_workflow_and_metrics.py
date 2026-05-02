@@ -55,6 +55,7 @@ def test_pilot_review_builds_actions_from_local_state(tmp_path: Path):
     growth_path = tmp_path / "growth_state.json"
     notes_path = tmp_path / "notes_state.json"
     metrics_path = tmp_path / "comment_metrics.json"
+    manifest_path = tmp_path / "publish_manifest.json"
 
     stats_path.write_text(
         json.dumps(
@@ -88,12 +89,29 @@ def test_pilot_review_builds_actions_from_local_state(tmp_path: Path):
     )
     notes_path.write_text(json.dumps({"history": []}), encoding="utf-8")
     metrics_path.write_text(json.dumps({}), encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "articles": {
+                    "my-agent-said-done": {
+                        "slug": "my-agent-said-done",
+                        "title": "My Agent Said Done",
+                        "status": "published",
+                        "auto_podcast": True,
+                        "timestamps": {"published": "2026-05-07T10:00:00Z"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     review = build_pilot_review(
         stats_path=stats_path,
         growth_state_path=growth_path,
         notes_state_path=notes_path,
         comment_metrics_path=metrics_path,
+        publish_manifest_path=manifest_path,
         now=now,
     )
 
@@ -101,3 +119,5 @@ def test_pilot_review_builds_actions_from_local_state(tmp_path: Path):
     assert review.subscribers_total == 12
     assert review.status in {"watch", "revise"}
     assert any("Notes" in action for action in review.actions)
+    assert review.podcast_followthrough["required_articles"] == 1
+    assert any("podcast" in action for action in review.actions)

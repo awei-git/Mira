@@ -188,9 +188,10 @@ def build_editorial_calendar(topics: list[TopicCandidate], *, weeks: int = 4, st
                 "week_start": week_start.isoformat(),
                 "primary_article": topic.to_dict() if topic else None,
                 "minimum_promotion": {
-                    "substack_notes": 3,
-                    "substantive_comments": 3,
+                    "substack_notes": 5,
+                    "substantive_comments": 8,
                     "community_replies": "reply to all meaningful comments",
+                    "podcast_followthrough": ["english", "chinese"],
                 },
                 "publish_policy": "approval_required until the new agent has a measured quality track record",
             }

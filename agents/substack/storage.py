@@ -145,6 +145,11 @@ class SubstackStore:
     def load_calendar(self) -> dict[str, Any]:
         if not self.calendar_path.exists():
             return {"weeks": [], "updated_at": ""}
+        try:
+            data = json.loads(self.calendar_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {"weeks": [], "updated_at": ""}
+        except (json.JSONDecodeError, OSError):
+            return {"weeks": [], "updated_at": ""}
 
     def load_pilot_reviews(self) -> list[PilotReview]:
         return [
@@ -170,11 +175,6 @@ class SubstackStore:
         existing[review.id] = review
         self.save_pilot_reviews(list(existing.values()))
         return created, updated
-        try:
-            data = json.loads(self.calendar_path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {"weeks": [], "updated_at": ""}
-        except (json.JSONDecodeError, OSError):
-            return {"weeks": [], "updated_at": ""}
 
     def _load_list(self, path: Path) -> list[Any]:
         if not path.exists():
