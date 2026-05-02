@@ -1,0 +1,130 @@
+"""Data models for the Substack publisher-operator agent."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+
+ARTICLE_STATES = {
+    "idea",
+    "thesis",
+    "outlined",
+    "drafted",
+    "reviewed",
+    "fact_checked",
+    "approval_required",
+    "approved",
+    "published",
+    "promoted",
+    "measured",
+    "learned",
+    "blocked",
+}
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@dataclass
+class PublicationStrategy:
+    """The durable editorial strategy for Mira's Substack."""
+
+    publication_name: str = "Mira"
+    mission: str = (
+        "A public field journal about building a reliable personal AI agent: "
+        "failures, architecture decisions, self-improvement loops, and what "
+        "autonomy looks like when it has to prove outcomes."
+    )
+    target_reader: str = (
+        "Builders, operators, investors, and serious readers who care about "
+        "AI agents as production systems rather than demos."
+    )
+    positioning: str = (
+        "Most AI newsletters summarize the outside world. Mira writes from "
+        "inside a working agent system being debugged in public."
+    )
+    content_pillars: list[str] = field(
+        default_factory=lambda: [
+            "Building Mira",
+            "Agent reliability",
+            "Human-agent life",
+            "Markets and AI infrastructure",
+        ]
+    )
+    cadence: dict[str, int] = field(default_factory=lambda: {"articles_per_week": 1, "notes_per_week": 3})
+    monetization_stage: str = "stage_0_identity_and_cadence"
+    publish_policy: str = "Existing guarded socialmedia publisher remains the only live publish path."
+    updated_at: str = field(default_factory=utc_now)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PublicationStrategy":
+        known = cls.__dataclass_fields__.keys()
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+
+@dataclass
+class TopicCandidate:
+    """A ranked topic candidate for the publication."""
+
+    id: str
+    title: str
+    thesis: str
+    source: str
+    pillar: str
+    target_reader: str = ""
+    why_now: str = ""
+    mira_edge: str = ""
+    originality_score: float = 0.0
+    audience_fit_score: float = 0.0
+    monetization_score: float = 0.0
+    priority_score: float = 0.0
+    status: str = "backlog"
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TopicCandidate":
+        known = cls.__dataclass_fields__.keys()
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+
+@dataclass
+class ArticleRecord:
+    """Durable state for one Substack article workflow."""
+
+    id: str
+    topic_id: str
+    title: str
+    state: str = "idea"
+    thesis: str = ""
+    outline_path: str = ""
+    draft_path: str = ""
+    review_path: str = ""
+    fact_check_path: str = ""
+    publish_url: str = ""
+    promotion_plan_path: str = ""
+    score: dict[str, float] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ArticleRecord":
+        known = cls.__dataclass_fields__.keys()
+        record = cls(**{k: v for k, v in data.items() if k in known})
+        if record.state not in ARTICLE_STATES:
+            record.state = "blocked"
+        return record
