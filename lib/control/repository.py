@@ -614,13 +614,13 @@ class ControlRepository:
                 (item_id, user_id),
             )
             existing = cur.fetchone()
-            if (
-                existing
-                and existing[2] == "user"
-                and origin == "agent"
-                and status in {"queued", "dispatched", "running", "working"}
-            ):
-                origin = "user"
+            if existing and existing[2] == "user" and origin == "agent":
+                if item_type == "feed":
+                    origin = "user"
+                    if existing[1] in {"queued", "dispatched", "running", "working"}:
+                        status = existing[1]
+                elif status in {"queued", "dispatched", "running", "working"}:
+                    origin = "user"
             should_update_task = not (existing and _is_newer_iso(existing[0], incoming_updated_at))
             if should_update_task:
                 cur.execute(

@@ -160,34 +160,85 @@ def _run_health_check():
     store.close()
 
 
-def _write_health_feed(bridge, item_id: str, title: str, content: str, tags: list[str]):
-    """Write a health feed item to bridge, overwriting any previous version.
+def _message_ts(message: dict) -> str:
+    return str(message.get("timestamp") or message.get("created_at") or "")
 
-    Uses a stable item_id so there's always exactly one file per type per user.
-    Directly uses bridge._write_item + _update_manifest for atomic consistency.
+
+def _is_user_message(message: dict, user_id: str) -> bool:
+    sender = str(message.get("sender") or "")
+    return sender not in {"agent", "health_agent"} or sender == user_id
+
+
+def _has_unanswered_user_reply(messages: list[dict], digest_id: str, user_id: str) -> bool:
+    latest_agent_ts = ""
+    latest_user_ts = ""
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("id") == digest_id:
+            continue
+        ts = _message_ts(msg)
+        if _is_user_message(msg, user_id):
+            latest_user_ts = max(latest_user_ts, ts)
+        elif str(msg.get("sender") or "") in {"agent", "health_agent"} and msg.get("kind", "text") == "text":
+            latest_agent_ts = max(latest_agent_ts, ts)
+    return bool(latest_user_ts and latest_user_ts > latest_agent_ts)
+
+
+def _write_health_feed(bridge, item_id: str, title: str, content: str, tags: list[str]):
+    """Write a stable health feed item without discarding conversation history.
+
+    Scheduled health refreshes own the digest message only. User replies and
+    follow-up agent answers stay in the thread, and an unanswered user reply
+    keeps the item queued/user-owned so the dispatcher can handle it.
     """
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    digest_id = f"{item_id}_digest"
+    existing = None
+    try:
+        existing = bridge._read_item(item_id) if bridge.item_exists(item_id) else None
+    except Exception:
+        existing = None
+
+    previous_messages = existing.get("messages", []) if isinstance(existing, dict) else []
+    existing_digest = next(
+        (msg for msg in previous_messages if isinstance(msg, dict) and msg.get("id") == digest_id),
+        {},
+    )
+    digest_timestamp = existing_digest.get("timestamp") or existing_digest.get("created_at") or now
+    messages = [
+        msg
+        for msg in previous_messages
+        if isinstance(msg, dict)
+        and msg.get("id") != digest_id
+        and msg.get("sender") != "health_agent"
+        and msg.get("kind") != "status_card"
+    ]
+    messages.append(
+        {
+            "id": digest_id,
+            "sender": "health_agent",
+            "content": content,
+            "timestamp": digest_timestamp,
+            "kind": "text",
+        }
+    )
+    messages.sort(key=_message_ts)
+
+    has_unanswered_reply = _has_unanswered_user_reply(messages, digest_id, getattr(bridge, "user_id", ""))
     item = {
         "id": item_id,
         "type": "feed",
         "title": title,
-        "status": "done",
+        "status": "queued" if has_unanswered_reply else "done",
         "tags": tags,
-        "origin": "agent",
+        "origin": "user" if has_unanswered_reply else "agent",
         "pinned": True,
         "quick": False,
         "parent_id": "",
-        "created_at": now,
+        "created_at": (existing or {}).get("created_at") or now,
         "updated_at": now,
-        "messages": [
-            {
-                "id": f"{abs(hash(now + item_id)) % 0xFFFFFFFF:08x}",
-                "sender": "health_agent",
-                "content": content,
-                "timestamp": now,
-                "kind": "text",
-            }
-        ],
+        "messages": messages,
         "error": None,
         "result_path": None,
     }

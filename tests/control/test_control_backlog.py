@@ -330,6 +330,31 @@ def test_upsert_status_card_keeps_user_origin_for_reopened_thread():
     assert params["origin"] == "user"
 
 
+def test_upsert_agent_feed_done_does_not_close_reopened_user_thread():
+    from control.repository import ControlRepository
+
+    conn = FakeConn()
+    conn.cursor_obj = FakeUpsertCursor(existing_updated_at="2026-05-02T14:21:12Z")
+    repo = ControlRepository(conn)
+
+    repo.upsert_bridge_item(
+        "ang",
+        {
+            "id": "health_today_ang",
+            "type": "feed",
+            "title": "今日健康",
+            "origin": "agent",
+            "status": "done",
+            "updated_at": "2026-05-02T14:23:52Z",
+            "messages": [{"id": "health_today_ang_digest", "sender": "health_agent", "content": "latest"}],
+        },
+    )
+
+    params = next(params for query, params in conn.cursor_obj.queries if "INSERT INTO" in query)
+    assert params["origin"] == "user"
+    assert params["status"] == "queued"
+
+
 def test_overlay_running_task_projects_status_card(tmp_path):
     import json
 
