@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import importlib.util
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -38,3 +39,37 @@ def test_check_weight_uses_date_field_for_day_comparison():
     )
 
     assert any(alert["title"] == "体重突变" for alert in alerts)
+
+
+def test_health_query_formats_datetime_records(tmp_path, monkeypatch):
+    health_handler_path = Path(__file__).resolve().parent.parent.parent / "agents" / "health" / "handler.py"
+    spec = importlib.util.spec_from_file_location("health_handler_under_test", health_handler_path)
+    handler = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(handler)
+
+    captured = {}
+
+    class StubStore:
+        def get_recent_metrics(self, person_id: str, metric_type: str, days: int = 30):
+            if metric_type == "sleep_hours":
+                return [{"value": 7.2, "unit": "h", "date": datetime(2026, 5, 2, tzinfo=timezone.utc)}]
+            return []
+
+        def get_recent_notes(self, person_id: str, days: int = 30):
+            return [{"category": "sleep", "date": datetime(2026, 5, 2, tzinfo=timezone.utc), "content": "slept ok"}]
+
+        def get_recent_reports(self, person_id: str, limit: int = 3):
+            return []
+
+    def fake_omlx(model, prompt, timeout=60):
+        captured["prompt"] = prompt
+        return "昨晚睡眠 7.2 小时。"
+
+    monkeypatch.setattr(handler, "_omlx_call", fake_omlx)
+
+    result = handler._handle_query(StubStore(), tmp_path, "task_sleep", "昨晚睡眠", "ang")
+
+    assert result == "昨晚睡眠 7.2 小时。"
+    assert "2026-05-02" in captured["prompt"]
+    assert (tmp_path / "output.md").read_text(encoding="utf-8") == "昨晚睡眠 7.2 小时。"

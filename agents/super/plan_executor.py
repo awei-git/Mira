@@ -17,7 +17,6 @@ if str(_AGENTS_DIR / "writer") not in sys.path:
 if str(_AGENTS_DIR / "general") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "general"))
 
-from config import DEFAULT_MODEL
 from execution.runtime_contract import normalize_task_status
 from execution.calibration import _record_premortem, _record_postmortem
 from execution.plan_state import initialize_plan_artifacts, mark_step_finished, mark_step_running
@@ -257,13 +256,14 @@ def _execute_plan_steps(
             instruction = f"{CHILD_SAFETY_PROMPT}\n\n---\n\n{instruction}"
 
         if declared_agent in LOCAL_ONLY_AGENTS:
-            resolved_model = model_restriction or DEFAULT_MODEL
+            resolved_model = model_restriction or "omlx"
             if not any(p in resolved_model.lower() for p in LOCAL_MODEL_PATTERNS):
                 err = f"Refused to route task to {declared_agent}: cloud model detected, local-only policy violated."
                 log.error(
                     "LOCAL_ONLY_POLICY: %s (model_restriction=%r, resolved=%r)", err, model_restriction, resolved_model
                 )
                 raise RuntimeError(err)
+            model_restriction = resolved_model
 
         from llm import set_usage_agent, set_model_policy
 

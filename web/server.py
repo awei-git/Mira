@@ -7,6 +7,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -53,6 +54,7 @@ USERS_DIR = BRIDGE / "users"
 
 app = FastAPI(title="Mira", docs_url=None, redoc_url=None)
 _mdns_process: subprocess.Popen | None = None
+_JSON_FILE_LOCKS: collections.defaultdict[str, threading.RLock] = collections.defaultdict(threading.RLock)
 
 # ---------------------------------------------------------------------------
 # CORS — allow the web GUI and local dev origins
@@ -172,10 +174,15 @@ def _read_json(path: Path) -> dict | list | None:
         return None
 
 
+def _json_file_lock(path: Path) -> threading.RLock:
+    return _JSON_FILE_LOCKS[str(path.resolve())]
+
+
 def _atomic_write(path: Path, data):
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.rename(path)
+    with _json_file_lock(path):
+        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
 
 
 def _user_dir(user_id: str) -> Path:
@@ -381,89 +388,94 @@ def get_todos(user_id: str):
 @app.post("/api/{user_id}/todos")
 def add_todo(user_id: str, todo: NewTodo):
     path = _user_dir(user_id) / "todos.json"
-    todos = _read_json(path) or []
-    new = {
-        "id": f"todo_{uuid.uuid4().hex[:8]}",
-        "title": todo.title,
-        "priority": todo.priority.value,
-        "status": "pending",
-        "tags": todo.tags,
-        "created_at": _utc_iso(),
-        "updated_at": _utc_iso(),
-        "followups": [],
-    }
-    todos.append(new)
-    _atomic_write(path, todos)
-    return new
+    with _json_file_lock(path):
+        todos = _read_json(path) or []
+        new = {
+            "id": f"todo_{uuid.uuid4().hex[:8]}",
+            "title": todo.title,
+            "priority": todo.priority.value,
+            "status": "pending",
+            "tags": todo.tags,
+            "created_at": _utc_iso(),
+            "updated_at": _utc_iso(),
+            "followups": [],
+        }
+        todos.append(new)
+        _atomic_write(path, todos)
+        return new
 
 
 @app.patch("/api/{user_id}/todos/{todo_id}")
 def update_todo(user_id: str, todo_id: str, update: UpdateTodo):
     path = _user_dir(user_id) / "todos.json"
-    todos = _read_json(path) or []
-    for t in todos:
-        if t["id"] == todo_id:
-            if update.status is not None:
-                t["status"] = update.status.value
-            if update.priority is not None:
-                t["priority"] = update.priority.value
-            if update.title is not None:
-                t["title"] = update.title
-            t["updated_at"] = _utc_iso()
-            _atomic_write(path, todos)
-            return t
+    with _json_file_lock(path):
+        todos = _read_json(path) or []
+        for t in todos:
+            if t["id"] == todo_id:
+                if update.status is not None:
+                    t["status"] = update.status.value
+                if update.priority is not None:
+                    t["priority"] = update.priority.value
+                if update.title is not None:
+                    t["title"] = update.title
+                t["updated_at"] = _utc_iso()
+                _atomic_write(path, todos)
+                return t
     raise HTTPException(404)
 
 
 @app.post("/api/{user_id}/todos/{todo_id}/followup")
 def add_followup(user_id: str, todo_id: str, fu: Followup):
     path = _user_dir(user_id) / "todos.json"
-    todos = _read_json(path) or []
-    for t in todos:
-        if t["id"] == todo_id:
-            if "followups" not in t:
-                t["followups"] = []
-            t["followups"].append({"content": fu.content, "source": fu.source, "timestamp": _utc_iso()})
-            t["updated_at"] = _utc_iso()
-            _atomic_write(path, todos)
-            # Send command so Mira processes the followup
-            if fu.source == "user":
-                cmd_id = uuid.uuid4().hex[:8]
-                cmd = {
-                    "id": cmd_id,
-                    "type": "todo_followup",
-                    "timestamp": _utc_iso(),
-                    "sender": user_id,
-                    "todo_id": todo_id,
-                    "content": fu.content,
-                }
-                cmd_dir = _user_dir(user_id) / "commands"
-                cmd_dir.mkdir(parents=True, exist_ok=True)
-                ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-                _atomic_write(cmd_dir / f"cmd_{ts}_{cmd_id}.json", cmd)
-            return t
+    with _json_file_lock(path):
+        todos = _read_json(path) or []
+        for t in todos:
+            if t["id"] == todo_id:
+                if "followups" not in t:
+                    t["followups"] = []
+                t["followups"].append({"content": fu.content, "source": fu.source, "timestamp": _utc_iso()})
+                t["updated_at"] = _utc_iso()
+                _atomic_write(path, todos)
+                # Send command so Mira processes the followup
+                if fu.source == "user":
+                    cmd_id = uuid.uuid4().hex[:8]
+                    cmd = {
+                        "id": cmd_id,
+                        "type": "todo_followup",
+                        "timestamp": _utc_iso(),
+                        "sender": user_id,
+                        "todo_id": todo_id,
+                        "content": fu.content,
+                    }
+                    cmd_dir = _user_dir(user_id) / "commands"
+                    cmd_dir.mkdir(parents=True, exist_ok=True)
+                    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                    _atomic_write(cmd_dir / f"cmd_{ts}_{cmd_id}.json", cmd)
+                return t
     raise HTTPException(404)
 
 
 @app.post("/api/{user_id}/todos/{todo_id}/done")
 def complete_todo(user_id: str, todo_id: str):
     path = _user_dir(user_id) / "todos.json"
-    todos = _read_json(path) or []
-    for t in todos:
-        if t["id"] == todo_id:
-            t["status"] = "done"
-            t["updated_at"] = _utc_iso()
-            _atomic_write(path, todos)
-            return t
+    with _json_file_lock(path):
+        todos = _read_json(path) or []
+        for t in todos:
+            if t["id"] == todo_id:
+                t["status"] = "done"
+                t["updated_at"] = _utc_iso()
+                _atomic_write(path, todos)
+                return t
     raise HTTPException(404)
 
 
 @app.delete("/api/{user_id}/todos/{todo_id}")
 def delete_todo(user_id: str, todo_id: str):
     path = _user_dir(user_id) / "todos.json"
-    todos = [t for t in (_read_json(path) or []) if t["id"] != todo_id]
-    _atomic_write(path, todos)
-    return {"status": "deleted"}
+    with _json_file_lock(path):
+        todos = [t for t in (_read_json(path) or []) if t["id"] != todo_id]
+        _atomic_write(path, todos)
+        return {"status": "deleted"}
 
 
 @app.get("/api/{user_id}/manifest")

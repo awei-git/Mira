@@ -254,13 +254,13 @@ def _handle_query(store, workspace: Path, task_id: str, content: str, person: st
     # Format data context
     data_context = f"## {person} 的健康数据 (近30天)\n\n"
     for mtype, records in metrics_30d.items():
-        values = [f"{r['value']}{r.get('unit','')} ({r['date'][:10]})" for r in records[:10]]
+        values = [f"{r['value']}{r.get('unit','')} ({str(r['date'])[:10]})" for r in records[:10]]
         data_context += f"### {mtype}\n" + ", ".join(values) + "\n\n"
 
     if notes_30d:
         data_context += "### 健康笔记\n"
         for note in notes_30d[:10]:
-            data_context += f"- [{note['category']}] {note['date'][:10]}: {note['content']}\n"
+            data_context += f"- [{note['category']}] {str(note['date'])[:10]}: {note['content']}\n"
 
     if reports:
         data_context += "\n### 体检报告摘要\n"

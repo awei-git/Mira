@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -57,6 +58,27 @@ def test_web_api_allows_loopback_without_token(monkeypatch, tmp_path: Path):
     resp = client.get("/api/ang/items")
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+def test_concurrent_todo_deletes_keep_json_valid(monkeypatch, tmp_path: Path):
+    _make_client(monkeypatch, tmp_path)
+    path = tmp_path / "bridge" / "users" / "ang" / "todos.json"
+    path.write_text(
+        json.dumps(
+            [
+                {"id": "todo_a", "title": "A", "status": "working"},
+                {"id": "todo_b", "title": "B", "status": "working"},
+                {"id": "todo_c", "title": "C", "status": "done"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda todo_id: server.delete_todo("ang", todo_id), ["todo_a", "todo_b"]))
+
+    todos = json.loads(path.read_text(encoding="utf-8"))
+    assert [t["id"] for t in todos] == ["todo_c"]
 
 
 def test_web_api_requires_token_when_configured(monkeypatch, tmp_path: Path):

@@ -845,6 +845,40 @@ def test_execute_plan_steps_initializes_artifacts_once(tmp_path, monkeypatch):
     assert calls == ["task129c"]
 
 
+def test_local_only_agent_without_user_model_restriction_uses_omlx(tmp_path, monkeypatch):
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    policies = []
+
+    class FakeRegistry(_RegistryPolicyMixin):
+        def load_handler(self, name: str):
+            assert name == "health"
+
+            def handler(ws, task_id, instruction, sender, thread_id, **kwargs):
+                (ws / "output.md").write_text("sleep: 7h", encoding="utf-8")
+                return "sleep: 7h"
+
+            return handler
+
+    monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
+    monkeypatch.setattr("llm.set_model_policy", lambda policy: policies.append(policy))
+    _patch_task_worker_test_side_effects(monkeypatch)
+
+    plan = [
+        {
+            "agent": "health",
+            "instruction": "give me my sleep data from last night",
+            "tier": "light",
+            "prediction": {"difficulty": "easy", "failure_modes": [], "success_criteria": "sleep data returned"},
+        }
+    ]
+    task_worker._execute_plan(plan, workspace, "task129d", "sleep data", "ang", "thread1", model_restriction=None)
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert result["status"] in {"done", "verified"}
+    assert "omlx" in policies
+
+
 def test_mark_step_finished_preserves_terminal_plan_status(tmp_path):
     workspace = tmp_path / "task"
     workspace.mkdir()

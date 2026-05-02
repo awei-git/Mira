@@ -17,7 +17,12 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from config import TWITTER_MAX_TWEETS_PER_DAY, TWITTER_COOLDOWN_HOURS, TWITTER_API_ENDPOINT
+from config import (
+    TWITTER_API_ENDPOINT,
+    TWITTER_BRIDGE_REPLY_DRAFTS,
+    TWITTER_COOLDOWN_HOURS,
+    TWITTER_MAX_TWEETS_PER_DAY,
+)
 
 log = logging.getLogger("socialmedia.twitter")
 
@@ -944,7 +949,11 @@ REPLY: [your reply]"""
 
     log.info("Reply queued for human: @%s → %s", author, reply_text[:60])
 
-    # Notify via Mira bridge — all replies go to one thread ("x_replies")
+    if not TWITTER_BRIDGE_REPLY_DRAFTS:
+        log.info("Reply kept in socialmedia queue; bridge draft notification disabled")
+        return
+
+    # Notify via Mira bridge when explicitly enabled.
     try:
         import sys
 
