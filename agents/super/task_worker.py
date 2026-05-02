@@ -51,6 +51,7 @@ from config import (
     WORLDVIEW_FILE,
     CLAUDE_TIMEOUT_THINK,
     CLAUDE_TIMEOUT_ACT,
+    TASK_TIMEOUT,
     TOKEN_BUDGET_WARN_LIGHT,
     TOKEN_BUDGET_WARN_HEAVY,
     MAX_TASK_HORIZON_STEPS,
@@ -159,6 +160,9 @@ def _emit_status(task_id: str, text: str, icon: str = "gear"):
     if item_file.exists():
         try:
             item = json.loads(item_file.read_text(encoding="utf-8"))
+            messages = item.setdefault("messages", [])
+            while messages and messages[-1].get("kind") == "status_card" and messages[-1].get("sender") == "agent":
+                messages.pop()
             item["messages"].append(msg)
             item["updated_at"] = _utc_iso()
             tmp = item_file.with_suffix(".tmp")
@@ -172,6 +176,9 @@ def _emit_status(task_id: str, text: str, icon: str = "gear"):
     if task_file.exists():
         try:
             task = json.loads(task_file.read_text(encoding="utf-8"))
+            messages = task.setdefault("messages", [])
+            while messages and messages[-1].get("kind") == "status_card" and messages[-1].get("sender") == "agent":
+                messages.pop()
             task["messages"].append(msg)
             task["updated_at"] = _utc_iso()
             task_file.write_text(
@@ -365,23 +372,26 @@ class _Heartbeat:
         if not self._running:
             return
         elapsed = int(time.time() - self._start)
-        mins = elapsed // 60
         self._count += 1
-        self._write_heartbeat("running")
+        activity = self._activity_snapshot(elapsed)
+        self._write_heartbeat("running", activity)
         log.info("Heartbeat task=%s elapsed=%ds count=%d", self._task_id, elapsed, self._count)
-        _emit_status(self._task_id, f"Still working... ({mins}m elapsed)", "hourglass")
+        _emit_status(self._task_id, activity["status_text"], activity["status_icon"])
         self._schedule()
 
-    def _write_heartbeat(self, status: str):
+    def _write_heartbeat(self, status: str, activity: dict | None = None):
         if not self._workspace:
             return
+        elapsed = int(time.time() - self._start)
+        activity = activity or self._activity_snapshot(elapsed)
         payload = {
             "task_id": self._task_id,
             "status": status,
             "started_at": datetime.fromtimestamp(self._start, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "updated_at": _utc_iso(),
-            "elapsed_seconds": int(time.time() - self._start),
+            "elapsed_seconds": elapsed,
             "heartbeat_count": self._count,
+            **{k: v for k, v in activity.items() if k != "status_icon"},
         }
         try:
             path = self._workspace / "heartbeat.json"
@@ -390,6 +400,91 @@ class _Heartbeat:
             tmp.replace(path)
         except OSError as exc:
             log.debug("Failed to write heartbeat for %s: %s", self._task_id, exc)
+
+    def _activity_snapshot(self, elapsed: int) -> dict:
+        current = self._current_step()
+        elapsed_text = _format_elapsed(elapsed)
+        remaining = max(0, int(TASK_TIMEOUT) - elapsed)
+        if remaining:
+            eta_text = f"timeout guard in {_format_elapsed(remaining)}"
+        else:
+            eta_text = "past timeout guard; supervisor should reap if still active"
+
+        if current:
+            prefix = f"Step {current['current_step']}/{current['total_steps']} · {current['agent']}"
+            action = current.get("action") or "working"
+            text = f"{prefix}: {_clip(action, 82)}. Elapsed {elapsed_text}; {eta_text}."
+            return {
+                **current,
+                "elapsed_text": elapsed_text,
+                "eta_text": eta_text,
+                "status_text": text,
+                "status_icon": "hourglass",
+            }
+
+        text = f"Working on request. Elapsed {elapsed_text}; {eta_text}."
+        return {
+            "current_phase": "running",
+            "elapsed_text": elapsed_text,
+            "eta_text": eta_text,
+            "status_text": text,
+            "status_icon": "hourglass",
+        }
+
+    def _current_step(self) -> dict | None:
+        if not self._workspace:
+            return None
+        for filename in ("step_states.json", "plan.json"):
+            path = self._workspace / filename
+            if not path.exists():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            steps = data.get("steps") if isinstance(data, dict) else None
+            if not isinstance(steps, list) or not steps:
+                continue
+            active = next((s for s in steps if isinstance(s, dict) and s.get("status") == "running"), None)
+            if active is None:
+                active = next((s for s in steps if isinstance(s, dict) and s.get("status") == "pending"), None)
+            if active is None:
+                active = next((s for s in reversed(steps) if isinstance(s, dict)), None)
+            if not isinstance(active, dict):
+                continue
+            index = int(active.get("step_index") or 0) + 1
+            agent = active.get("execution_agent") or active.get("declared_agent") or active.get("agent") or "agent"
+            action = (
+                active.get("input_summary")
+                or active.get("instruction_preview")
+                or active.get("success_criteria")
+                or active.get("status")
+                or ""
+            )
+            return {
+                "current_phase": active.get("status") or "running",
+                "current_step": index,
+                "total_steps": len(steps),
+                "current_agent": str(agent),
+                "agent": str(agent),
+                "action": str(action),
+            }
+        return None
+
+
+def _format_elapsed(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    minutes = seconds // 60
+    if minutes:
+        return f"{minutes}m"
+    return f"{seconds}s"
+
+
+def _clip(text: str, limit: int) -> str:
+    compact = " ".join(str(text).split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(0, limit - 1)].rstrip() + "…"
 
 
 # ---------------------------------------------------------------------------

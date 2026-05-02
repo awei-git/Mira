@@ -825,6 +825,12 @@ class TaskManager:
                 "last_heartbeat_at": data.get("updated_at", ""),
                 "elapsed_seconds": data.get("elapsed_seconds", 0),
                 "heartbeat_count": data.get("heartbeat_count", 0),
+                "current_step": data.get("current_step"),
+                "total_steps": data.get("total_steps"),
+                "current_agent": data.get("current_agent"),
+                "current_phase": data.get("current_phase"),
+                "status_text": data.get("status_text"),
+                "eta_text": data.get("eta_text"),
             }
 
         return {

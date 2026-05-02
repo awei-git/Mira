@@ -328,3 +328,41 @@ def test_upsert_status_card_keeps_user_origin_for_reopened_thread():
 
     params = next(params for query, params in conn.cursor_obj.queries if "INSERT INTO" in query)
     assert params["origin"] == "user"
+
+
+def test_overlay_running_task_projects_status_card(tmp_path):
+    import json
+
+    from control.repository import ControlRepository
+
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    (workspace / "heartbeat.json").write_text(
+        json.dumps(
+            {
+                "status_text": "Step 1/2 · general: locating Tetra synthesis. Elapsed 5m; timeout guard in 10m.",
+                "status_icon": "hourglass",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = FakeConn()
+    repo = ControlRepository(conn)
+
+    repo.overlay_task_record(
+        {
+            "task_id": "req_progress",
+            "user_id": "ang",
+            "content_preview": "tetra synthesis",
+            "status": "running",
+            "started_at": "2026-05-02T14:23:52Z",
+            "workspace": str(workspace),
+        }
+    )
+
+    message_query, message_params = next(
+        (query, params) for query, params in conn.cursor_obj.queries if "INSERT INTO mira_control.messages" in query
+    )
+    assert "status_card" in message_query
+    assert message_params[:3] == ("req_progress_status", "req_progress", "ang")
+    assert "locating Tetra synthesis" in message_params[3]

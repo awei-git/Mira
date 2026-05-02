@@ -53,6 +53,34 @@ def _is_human_review_draft(item_id: str, item: dict | None = None) -> bool:
     return "x_reply" in tags or "needs-human" in tags
 
 
+def _clip_status_text(text: str, limit: int = 240) -> str:
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _worker_status_card(rec: dict, status: str) -> dict | None:
+    if status not in {"dispatched", "running", "working"}:
+        return None
+    workspace = rec.get("workspace")
+    heartbeat: dict = {}
+    if workspace:
+        data = _read_json(Path(workspace) / "heartbeat.json")
+        if isinstance(data, dict):
+            heartbeat = data
+    text = heartbeat.get("status_text")
+    if not text:
+        preview = rec.get("content_preview") or rec.get("task_id") or "request"
+        elapsed = heartbeat.get("elapsed_text")
+        eta = heartbeat.get("eta_text")
+        suffix = ""
+        if elapsed or eta:
+            suffix = f" Elapsed {elapsed or '?'}; {eta or 'ETA unknown'}."
+        text = f"Working on: {_clip_status_text(preview, 120)}.{suffix}"
+    return {"type": "status", "text": _clip_status_text(text), "icon": heartbeat.get("status_icon") or "hourglass"}
+
+
 _BACKLOG_PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
@@ -765,6 +793,50 @@ class ControlRepository:
                     "verification_method": rec.get("verification_method") or None,
                 },
             )
+            status_card = _worker_status_card(rec, status)
+            if status_card:
+                cur.execute(
+                    f"""
+                    INSERT INTO {self.schema}.messages (
+                        id, task_id, user_id, sender, kind, content, image_path, created_at
+                    )
+                    VALUES (%s, %s, %s, 'agent', 'status_card', %s, NULL, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        task_id = EXCLUDED.task_id,
+                        user_id = EXCLUDED.user_id,
+                        sender = EXCLUDED.sender,
+                        kind = EXCLUDED.kind,
+                        content = EXCLUDED.content,
+                        image_path = EXCLUDED.image_path,
+                        created_at = EXCLUDED.created_at
+                    """,
+                    (
+                        f"{task_id}_status",
+                        task_id,
+                        rec.get("user_id") or "ang",
+                        json.dumps(status_card, ensure_ascii=False),
+                        now,
+                    ),
+                )
+            elif status in {
+                "done",
+                "verified",
+                "completed_unverified",
+                "failed",
+                "timeout",
+                "blocked",
+                "needs-input",
+            }:
+                cur.execute(
+                    f"""
+                    DELETE FROM {self.schema}.messages
+                    WHERE task_id = %s
+                      AND user_id = %s
+                      AND sender = 'agent'
+                      AND kind = 'status_card'
+                    """,
+                    (task_id, rec.get("user_id") or "ang"),
+                )
 
     def list_items(
         self,
