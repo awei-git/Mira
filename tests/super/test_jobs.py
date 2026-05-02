@@ -175,3 +175,37 @@ def test_backlog_and_restore_triggers_do_not_write_state(monkeypatch):
     assert triggers._should_restore_dry_run() is True
 
     assert saves == []
+
+
+def test_health_and_self_improvement_triggers_do_not_prewrite_state(monkeypatch):
+    from datetime import datetime as real_datetime
+    from runtime import triggers
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 5, 2, 9, 0, 0)
+
+        @classmethod
+        def combine(cls, date, time):
+            return real_datetime.combine(date, time)
+
+    monkeypatch.setattr(triggers, "datetime", FakeDateTime)
+    monkeypatch.setattr(triggers, "_load_state", lambda user_id=None: {})
+    saves = []
+    monkeypatch.setattr(triggers, "_save_state", lambda state, user_id=None: saves.append((state, user_id)))
+    monkeypatch.setattr(triggers, "_has_unreported_health_metrics", lambda: False)
+
+    assert triggers._should_health_check() is True
+    assert triggers._should_self_audit() is True
+    assert saves == []
+
+
+def test_health_weekly_job_registered():
+    from runtime.jobs import get_job
+
+    job = get_job("health-weekly")
+
+    assert job is not None
+    assert job.inline is True
+    assert job.inline_runner == "health-weekly"

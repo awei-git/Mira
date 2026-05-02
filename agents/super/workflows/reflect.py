@@ -465,19 +465,26 @@ def do_reflect(user_id: str = "ang"):
         report = generate_weekly_report()
         if report:
             bridge = Mira(MIRA_DIR, user_id=user_id)
+            try:
+                from evaluation.improvement import get_active_improvements
+
+                plan_text = get_active_improvements()
+            except Exception:
+                plan_text = ""
+            weekly_body = report
+            if plan_text:
+                weekly_body = f"{report}\n\n---\n\n## Action plan\n\n{plan_text}"
             bridge.create_feed(
                 f"feed_reflect_{datetime.now().strftime('%Y%m%d')}",
                 "Weekly Reflection",
-                report[:2000],
+                weekly_body[:4000],
                 tags=["reflection"],
             )
-            bridge.create_task(
-                task_id=f"weekly_eval_{datetime.now().strftime('%Y%m%d')}",
-                title="Weekly self-evaluation",
-                first_message=report,
-                sender="agent",
-                origin="auto",
-                tags=["evaluation"],
+            bridge.create_feed(
+                f"weekly_eval_{datetime.now().strftime('%Y%m%d')}",
+                "Weekly self-evaluation",
+                weekly_body,
+                tags=["evaluation", "reflection"],
             )
             log.info("Weekly self-evaluation report sent")
     except Exception as e:

@@ -39,6 +39,12 @@ def _read_json(path: Path) -> dict | list | None:
         return None
 
 
+def _is_newer_iso(left: str | None, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    return str(left) > str(right)
+
+
 def _is_human_review_draft(item_id: str, item: dict | None = None) -> bool:
     """Return True for agent-created drafts that need human action, not workers."""
     if item_id.startswith("x_reply_"):
@@ -295,7 +301,21 @@ class ControlRepository:
                 f"""
                 UPDATE {self.schema}.tasks
                 SET updated_at = %s,
-                    status = CASE WHEN status = 'needs-input' THEN 'queued' ELSE status END
+                    status = CASE
+                        WHEN status IN (
+                            'queued',
+                            'dispatched',
+                            'running',
+                            'working'
+                        ) THEN status
+                        ELSE 'queued'
+                    END,
+                    origin = 'user',
+                    completed_at = NULL,
+                    archived_at = NULL,
+                    error_code = NULL,
+                    error_message = NULL,
+                    retryable = FALSE
                 WHERE id = %s AND user_id = %s
                 """,
                 (now, task_id, user_id),
@@ -548,6 +568,8 @@ class ControlRepository:
         now = _utc_iso()
         messages = item.get("messages") if isinstance(item.get("messages"), list) else []
         error = item.get("error") if isinstance(item.get("error"), dict) else {}
+        incoming_created_at = item.get("created_at") or item.get("updated_at") or now
+        incoming_updated_at = item.get("updated_at") or item.get("created_at") or now
         status = normalize_task_status(item.get("status")) or "queued"
         item_type = item.get("type") or "request"
         origin = item.get("origin") or "agent"
@@ -556,54 +578,70 @@ class ControlRepository:
             origin = "agent"
             if status in {"queued", "dispatched", "running", "working"}:
                 status = "needs-input"
+        elif item_type == "feed" and origin == "agent" and status == "queued":
+            status = "done"
         with self.conn.cursor() as cur:
             cur.execute(
-                f"""
-                INSERT INTO {self.schema}.tasks (
-                    id, user_id, type, title, status, origin, quick, pinned, parent_id,
-                    tags, created_at, updated_at, error_code, error_message, retryable, result_path
-                )
-                VALUES (
-                    %(id)s, %(user_id)s, %(type)s, %(title)s, %(status)s, %(origin)s, %(quick)s,
-                    %(pinned)s, %(parent_id)s, %(tags)s::jsonb, %(created_at)s, %(updated_at)s,
-                    %(error_code)s, %(error_message)s, %(retryable)s, %(result_path)s
-                )
-                ON CONFLICT (id) DO UPDATE SET
-                    user_id = EXCLUDED.user_id,
-                    type = EXCLUDED.type,
-                    title = EXCLUDED.title,
-                    status = EXCLUDED.status,
-                    origin = EXCLUDED.origin,
-                    quick = EXCLUDED.quick,
-                    pinned = EXCLUDED.pinned,
-                    parent_id = EXCLUDED.parent_id,
-                    tags = EXCLUDED.tags,
-                    created_at = EXCLUDED.created_at,
-                    updated_at = EXCLUDED.updated_at,
-                    error_code = EXCLUDED.error_code,
-                    error_message = EXCLUDED.error_message,
-                    retryable = EXCLUDED.retryable,
-                    result_path = EXCLUDED.result_path
-                """,
-                {
-                    "id": item_id,
-                    "user_id": user_id,
-                    "type": item_type,
-                    "title": item.get("title") or item_id,
-                    "status": status,
-                    "origin": origin,
-                    "quick": bool(item.get("quick")),
-                    "pinned": bool(item.get("pinned")),
-                    "parent_id": item.get("parent_id"),
-                    "tags": json.dumps(_as_json_list(item.get("tags"))),
-                    "created_at": item.get("created_at") or item.get("updated_at") or now,
-                    "updated_at": item.get("updated_at") or item.get("created_at") or now,
-                    "error_code": error.get("code"),
-                    "error_message": error.get("message"),
-                    "retryable": bool(error.get("retryable")),
-                    "result_path": item.get("result_path"),
-                },
+                f"SELECT updated_at, status, origin FROM {self.schema}.tasks WHERE id = %s AND user_id = %s",
+                (item_id, user_id),
             )
+            existing = cur.fetchone()
+            if (
+                existing
+                and existing[2] == "user"
+                and origin == "agent"
+                and status in {"queued", "dispatched", "running", "working"}
+            ):
+                origin = "user"
+            should_update_task = not (existing and _is_newer_iso(existing[0], incoming_updated_at))
+            if should_update_task:
+                cur.execute(
+                    f"""
+                    INSERT INTO {self.schema}.tasks (
+                        id, user_id, type, title, status, origin, quick, pinned, parent_id,
+                        tags, created_at, updated_at, error_code, error_message, retryable, result_path
+                    )
+                    VALUES (
+                        %(id)s, %(user_id)s, %(type)s, %(title)s, %(status)s, %(origin)s, %(quick)s,
+                        %(pinned)s, %(parent_id)s, %(tags)s::jsonb, %(created_at)s, %(updated_at)s,
+                        %(error_code)s, %(error_message)s, %(retryable)s, %(result_path)s
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
+                        user_id = EXCLUDED.user_id,
+                        type = EXCLUDED.type,
+                        title = EXCLUDED.title,
+                        status = EXCLUDED.status,
+                        origin = EXCLUDED.origin,
+                        quick = EXCLUDED.quick,
+                        pinned = EXCLUDED.pinned,
+                        parent_id = EXCLUDED.parent_id,
+                        tags = EXCLUDED.tags,
+                        created_at = EXCLUDED.created_at,
+                        updated_at = EXCLUDED.updated_at,
+                        error_code = EXCLUDED.error_code,
+                        error_message = EXCLUDED.error_message,
+                        retryable = EXCLUDED.retryable,
+                        result_path = EXCLUDED.result_path
+                    """,
+                    {
+                        "id": item_id,
+                        "user_id": user_id,
+                        "type": item_type,
+                        "title": item.get("title") or item_id,
+                        "status": status,
+                        "origin": origin,
+                        "quick": bool(item.get("quick")),
+                        "pinned": bool(item.get("pinned")),
+                        "parent_id": item.get("parent_id"),
+                        "tags": json.dumps(_as_json_list(item.get("tags"))),
+                        "created_at": incoming_created_at,
+                        "updated_at": incoming_updated_at,
+                        "error_code": error.get("code"),
+                        "error_message": error.get("message"),
+                        "retryable": bool(error.get("retryable")),
+                        "result_path": item.get("result_path"),
+                    },
+                )
             for idx, msg in enumerate(messages):
                 if not isinstance(msg, dict):
                     continue

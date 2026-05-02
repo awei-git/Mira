@@ -29,6 +29,11 @@ def _run_inline_scheduled_job(job, payload):
 
         _run_health_check()
         return
+    if job.inline_runner == "health-weekly":
+        from health import _run_health_weekly_report
+
+        _run_health_weekly_report()
+        return
     if job.inline_runner == "log-cleanup":
         from workflows.daily import log_cleanup
 
@@ -77,6 +82,7 @@ def _dispatch_scheduled_jobs(session_new: list[dict]):
             if job.inline:
                 try:
                     _run_inline_scheduled_job(job, payload)
+                    _record_scheduled_job_dispatch(job, payload, user_id=target_user_id)
                 except Exception as e:
                     log.error("%s failed: %s", job.name, e)
                 continue
@@ -103,7 +109,12 @@ def _dispatch_scheduled_jobs(session_new: list[dict]):
 
 def _record_scheduled_job_dispatch(job, payload, user_id: str | None = None):
     """Persist dispatch state for jobs whose triggers are pure checks."""
-    if job.name not in {"backlog-executor", "restore-dry-run"}:
+    if job.name not in {
+        "backlog-executor",
+        "restore-dry-run",
+        "health-check",
+        "health-weekly",
+    }:
         return
 
     now = datetime.now()

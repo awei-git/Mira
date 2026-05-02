@@ -584,22 +584,57 @@ def _should_health_check() -> bool:
     daily insight reflects last night's sleep and this morning's readiness.
     """
     now = datetime.now()
-    if not (7 <= now.hour <= 9):
+    if not (7 <= now.hour < 12):
         return False
     state = _load_state()
     today = now.strftime("%Y-%m-%d")
     if state.get(f"health_check_{today}"):
         return False
-    state[f"health_check_{today}"] = now.isoformat()
-    _save_state(state)
     return True
+
+
+def _has_unreported_health_metrics() -> bool:
+    """Return True when fresh health data arrived after the latest daily insight."""
+    try:
+        import psycopg2
+        import psycopg2.extras
+        from config import DATABASE_URL
+    except Exception:
+        return False
+
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT max(recorded_at)::date AS latest_metric_date
+                    FROM health_metrics
+                    WHERE recorded_at >= current_date - interval '2 days'
+                    """
+                )
+                metric_row = cur.fetchone() or {}
+                latest_metric_date = metric_row.get("latest_metric_date")
+                if not latest_metric_date:
+                    return False
+                cur.execute(
+                    """
+                    SELECT max(insight_date) AS latest_insight_date
+                    FROM health_insights
+                    WHERE insight_type = 'daily'
+                    """
+                )
+                insight_row = cur.fetchone() or {}
+                latest_insight_date = insight_row.get("latest_insight_date")
+                return latest_insight_date is None or latest_metric_date > latest_insight_date
+    except Exception:
+        return False
 
 
 def should_health_check_or_pending_exports() -> bool:
     """Run health check when its daily window opens or pending exports exist."""
     from core import _has_pending_health_exports
 
-    return _should_health_check() or _has_pending_health_exports()
+    return _should_health_check() or _has_pending_health_exports() or _has_unreported_health_metrics()
 
 
 def _should_health_weekly_report() -> bool:
@@ -610,11 +645,9 @@ def _should_health_weekly_report() -> bool:
     if not (9 <= now.hour <= 11):
         return False
     state = _load_state()
-    week_key = f"health_weekly_{now.strftime('%Y-W%W')}"
+    week_key = f"health_weekly_{now.strftime('%Y-%m-%d')}"
     if state.get(week_key):
         return False
-    state[week_key] = now.isoformat()
-    _save_state(state)
     return True
 
 
@@ -627,8 +660,6 @@ def _should_self_audit() -> bool:
     today = now.strftime("%Y-%m-%d")
     if state.get(f"self_audit_{today}"):
         return False
-    state[f"self_audit_{today}"] = now.isoformat()
-    _save_state(state)
     return True
 
 
@@ -641,9 +672,6 @@ def _should_self_evolve() -> bool:
     today = now.strftime("%Y-%m-%d")
     if state.get(f"self_evolve_{today}"):
         return False
-    state[f"self_evolve_{today}"] = now.isoformat()
-    state[f"self_evolve_{today}_actor"] = "self-evolve/claude-think"
-    _save_state(state)
     return True
 
 

@@ -799,7 +799,7 @@ def notify_user(report: str):
         bridge = Mira(MIRA_BRIDGE_DIR)
         today = datetime.now().strftime("%Y-%m-%d")
         bridge.create_item(
-            f"self-audit-{today}",
+            f"self_audit_{today.replace('-', '')}",
             "feed",
             f"自检报告 {today}",
             report,
@@ -807,6 +807,16 @@ def notify_user(report: str):
             tags=["self-audit", "system"],
             origin="agent",
         )
+        try:
+            from control.db import transaction
+            from control.repository import ControlRepository
+
+            item = bridge._read_item(f"self_audit_{today.replace('-', '')}")
+            if item:
+                with transaction() as conn:
+                    ControlRepository(conn).upsert_bridge_item(bridge.user_id, item)
+        except Exception as exc:
+            log.warning("Self-audit report DB projection failed: %s", exc)
         log.info("Report sent to user via bridge")
     except Exception as e:
         log.error("Failed to notify user: %s", e)
@@ -874,6 +884,16 @@ def run_audit(logs_only: bool = False, tests_only: bool = False) -> list[dict]:
     critical_count = sum(1 for f in all_findings if f.get("severity") == "critical")
     if critical_count > 0:
         notify_user(report)
+
+    try:
+        from core import load_state, save_state
+
+        state = load_state()
+        today_key = datetime.now().strftime("%Y-%m-%d")
+        state[f"self_audit_{today_key}"] = datetime.now().isoformat()
+        save_state(state)
+    except Exception as exc:
+        log.warning("Self-audit state update failed: %s", exc)
 
     log.info("=== Audit complete: %d findings ===", len(all_findings))
     return all_findings

@@ -13,6 +13,12 @@ import psycopg2.extras
 log = logging.getLogger("health_store")
 
 
+def _source_filter(metric_type: str) -> tuple[str, tuple]:
+    if metric_type == "sleep_hours":
+        return " AND source <> %s", ("apple_health_api",)
+    return "", ()
+
+
 class HealthStore:
     def __init__(self, db_url: str):
         self._db_url = db_url
@@ -55,8 +61,13 @@ class HealthStore:
         """Batch insert metrics. Each dict: {type, value, unit, date}."""
         if not metrics:
             return
+        seen: set[tuple[str, str, str]] = set()
         with self.conn.cursor() as cur:
             for m in metrics:
+                key = (person_id, str(m["type"]), str(m["date"]))
+                if key in seen:
+                    continue
+                seen.add(key)
                 # Deduplicate: skip if exact same person+type+date exists
                 cur.execute(
                     "SELECT 1 FROM health_metrics WHERE person_id=%s AND metric_type=%s " "AND recorded_at=%s LIMIT 1",
@@ -74,24 +85,28 @@ class HealthStore:
     def get_recent_metrics(self, person_id: str, metric_type: str, days: int = 30) -> list[dict]:
         """Get recent metrics for a person, sorted by date descending."""
         since = datetime.now(timezone.utc) - timedelta(days=days)
+        source_clause, source_params = _source_filter(metric_type)
         with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT value, unit, recorded_at as date, source FROM health_metrics "
                 "WHERE person_id=%s AND metric_type=%s AND recorded_at >= %s "
+                f"{source_clause} "
                 "ORDER BY recorded_at DESC",
-                (person_id, metric_type, since),
+                (person_id, metric_type, since, *source_params),
             )
             rows = cur.fetchall()
         return [dict(r) for r in rows]
 
     def get_latest_metric(self, person_id: str, metric_type: str) -> dict | None:
         """Get the most recent value for a metric."""
+        source_clause, source_params = _source_filter(metric_type)
         with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT value, unit, recorded_at as date FROM health_metrics "
                 "WHERE person_id=%s AND metric_type=%s "
+                f"{source_clause} "
                 "ORDER BY recorded_at DESC LIMIT 1",
-                (person_id, metric_type),
+                (person_id, metric_type, *source_params),
             )
             row = cur.fetchone()
         return dict(row) if row else None
@@ -212,13 +227,15 @@ class HealthStore:
     def get_metric_stats(self, person_id: str, metric_type: str, days: int = 7) -> dict | None:
         """Get statistics for a metric over recent days."""
         since = datetime.now(timezone.utc) - timedelta(days=days)
+        source_clause, source_params = _source_filter(metric_type)
         with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT COUNT(*) as count, AVG(value) as avg, "
                 "MIN(value) as min, MAX(value) as max, STDDEV(value) as stddev "
                 "FROM health_metrics WHERE person_id=%s AND metric_type=%s "
-                "AND recorded_at >= %s",
-                (person_id, metric_type, since),
+                "AND recorded_at >= %s "
+                f"{source_clause}",
+                (person_id, metric_type, since, *source_params),
             )
             row = cur.fetchone()
         if row and row["count"] > 0:

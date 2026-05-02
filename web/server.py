@@ -821,6 +821,22 @@ class Reply(BaseModel):
     content: str = Field(..., min_length=1, max_length=50000)
 
 
+class HealthMetricIn(BaseModel):
+    type: str = Field(..., min_length=1, max_length=100)
+    value: float
+    unit: str = Field(default="", max_length=50)
+    date: str = Field(..., min_length=1, max_length=100)
+    activity: str | None = Field(default=None, max_length=100)
+    calories: float | None = None
+    distance: float | None = None
+
+
+class HealthExportIn(BaseModel):
+    export_date: str | None = None
+    person_id: str | None = None
+    metrics: list[HealthMetricIn] = Field(default=[], max_length=1000)
+
+
 class PinUpdate(BaseModel):
     pinned: bool
 
@@ -1090,6 +1106,42 @@ def reply_to_task_api(user_id: str, task_id: str, reply: Reply):
         )
         _export_compat_item(user_id, item)
     return {"status": "sent", "item": item}
+
+
+@app.post("/api/{user_id}/health/export")
+def ingest_health_export_api(user_id: str, export: HealthExportIn):
+    """Ingest HealthKit export directly through the control API.
+
+    The old path wrote `apple_health_export.json` through iCloud and waited for a
+    later agent sweep. This endpoint makes the phone-to-Mac health path explicit
+    and durable while keeping the file fallback available in the app.
+    """
+    if not CONTROL_API_WRITES_ENABLED:
+        raise HTTPException(409, "Control API writes are disabled")
+    if not export.metrics:
+        return {"status": "empty", "inserted": 0}
+    person_id = export.person_id or user_id
+    try:
+        health_dir = Path(__file__).resolve().parent.parent / "agents" / "health"
+        if str(health_dir) not in sys.path:
+            sys.path.insert(0, str(health_dir))
+        from config import DATABASE_URL
+        from health_store import HealthStore
+        from ingest import expand_health_metrics
+        from summary import write_summary_to_bridge
+
+        metric_rows = [
+            (m.model_dump(exclude_none=True) if hasattr(m, "model_dump") else m.dict(exclude_none=True))
+            for m in export.metrics
+        ]
+        metrics = expand_health_metrics(metric_rows)
+        store = HealthStore(DATABASE_URL)
+        store.insert_metrics_batch(person_id, metrics, source="apple_health_api")
+        write_summary_to_bridge(store, MIRA_DIR, person_id)
+        store.close()
+    except Exception as exc:
+        raise HTTPException(503, f"Health export failed: {exc}") from exc
+    return {"status": "ingested", "inserted": len(metrics), "person_id": person_id}
 
 
 @app.post("/api/{user_id}/tasks/{task_id}/pin")

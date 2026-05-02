@@ -9,6 +9,54 @@ from pathlib import Path
 log = logging.getLogger("health_ingest")
 
 
+def expand_health_metrics(metrics: list[dict]) -> list[dict]:
+    """Normalize exported HealthKit metrics into DB metric rows.
+
+    HealthKit workout samples can carry duration, calories, and distance in one
+    object. The health DB stores scalar metric rows, so split the useful fields
+    before inserting while preserving the original workout duration row.
+    """
+    expanded: list[dict] = []
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        expanded.append(metric)
+        if metric.get("type") != "workout":
+            continue
+        date_value = metric.get("date")
+        calories = metric.get("calories")
+        if calories is not None:
+            try:
+                calories_value = float(calories)
+            except (TypeError, ValueError):
+                calories_value = 0.0
+            if calories_value > 0:
+                expanded.append(
+                    {
+                        "type": "workout_calories",
+                        "value": calories_value,
+                        "unit": "kcal",
+                        "date": date_value,
+                    }
+                )
+        distance = metric.get("distance")
+        if distance is not None:
+            try:
+                distance_value = float(distance)
+            except (TypeError, ValueError):
+                distance_value = 0.0
+            if distance_value > 0:
+                expanded.append(
+                    {
+                        "type": "workout_distance",
+                        "value": distance_value,
+                        "unit": "m",
+                        "date": date_value,
+                    }
+                )
+    return expanded
+
+
 def ingest_apple_health(bridge_dir: Path, person_id: str, store) -> int:
     """Read apple_health_export.json from bridge, insert new metrics, return count.
 
@@ -46,7 +94,7 @@ def ingest_apple_health(bridge_dir: Path, person_id: str, store) -> int:
         log.error("Failed to parse health export for %s: %s", person_id, e)
         return 0
 
-    metrics = data.get("metrics", [])
+    metrics = expand_health_metrics(data.get("metrics", []))
     if not metrics:
         export_file.unlink(missing_ok=True)
         return 0

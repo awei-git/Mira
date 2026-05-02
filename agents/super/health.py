@@ -120,17 +120,14 @@ def _run_health_check():
         alert_block = format_alerts(uid, alerts) if alerts else ""
 
         existing_insight = store.get_latest_insight(uid, "daily")
-        insight_text = ""
-        if existing_insight and existing_insight["insight_date"] == today:
-            insight_text = existing_insight.get("content", "")
-        else:
-            try:
-                generated = generate_daily_insight(store, uid, model=HEALTH_REPORT_MODEL)
-                if generated:
-                    insight_text = generated
-                    store.upsert_insight(uid, today, "daily", generated, model=HEALTH_REPORT_MODEL)
-            except Exception as e:
-                log.warning("Daily insight for %s failed: %s", uid, e)
+        insight_text = existing_insight.get("content", "") if existing_insight else ""
+        try:
+            generated = generate_daily_insight(store, uid, model=HEALTH_REPORT_MODEL)
+            if generated:
+                insight_text = generated
+                store.upsert_insight(uid, today, "daily", generated, model=HEALTH_REPORT_MODEL)
+        except Exception as e:
+            log.warning("Daily insight for %s failed: %s", uid, e)
 
         if not alert_block and not insight_text:
             continue
@@ -196,6 +193,15 @@ def _write_health_feed(bridge, item_id: str, title: str, content: str, tags: lis
     }
     bridge._write_item(item)
     bridge._update_manifest(item)
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
+        from control.db import transaction
+        from control.repository import ControlRepository
+
+        with transaction() as conn:
+            ControlRepository(conn).upsert_bridge_item(bridge.user_id, item)
+    except Exception as exc:
+        log.debug("Health feed DB projection skipped for %s: %s", item_id, exc)
 
 
 def _run_health_weekly_report():

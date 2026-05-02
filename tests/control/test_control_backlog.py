@@ -18,6 +18,17 @@ class FakeAuditCursor:
         return False
 
 
+class FakeUpsertCursor(FakeAuditCursor):
+    def __init__(self, existing_updated_at=None):
+        super().__init__()
+        self.existing_updated_at = existing_updated_at
+
+    def fetchone(self):
+        if self.existing_updated_at is None:
+            return None
+        return (self.existing_updated_at, "queued", "user")
+
+
 class FakeConn:
     def __init__(self):
         self.cursor_obj = FakeAuditCursor()
@@ -170,3 +181,98 @@ def test_release_dispatch_claim_only_requeues_unstarted_claim(monkeypatch):
     assert params[-2:] == ("req_1", "ang")
     assert events[0][0][:3] == ("req_1", "ang", "task.dispatch_claim_released")
     assert events[0][1]["payload"] == {"reason": "spawn failed"}
+
+
+def test_append_user_reply_requeues_completed_or_feed_item(monkeypatch):
+    from control.repository import ControlRepository
+
+    events = []
+    conn = FakeConn()
+    repo = ControlRepository(conn)
+    monkeypatch.setattr(repo, "_record_event", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(repo, "get_item", lambda user_id, task_id: {"id": task_id, "status": "queued"})
+
+    item = repo.append_user_reply(
+        user_id="ang",
+        task_id="feed_market_1",
+        message_id="msg_1",
+        sender="ang",
+        content="answer this",
+        created_at="2026-05-02T13:21:06Z",
+    )
+
+    update_query = conn.cursor_obj.queries[2][0]
+    assert "ELSE 'queued'" in update_query
+    assert "origin = 'user'" in update_query
+    assert item == {"id": "feed_market_1", "status": "queued"}
+    assert events[0][0][:3] == ("feed_market_1", "ang", "message.created")
+
+
+def test_upsert_agent_feed_defaults_to_done():
+    from control.repository import ControlRepository
+
+    conn = FakeConn()
+    conn.cursor_obj = FakeUpsertCursor()
+    repo = ControlRepository(conn)
+
+    repo.upsert_bridge_item(
+        "ang",
+        {
+            "id": "feed_report_1",
+            "type": "feed",
+            "title": "Report",
+            "origin": "agent",
+            "status": "queued",
+            "messages": [],
+        },
+    )
+
+    params = next(params for query, params in conn.cursor_obj.queries if "INSERT INTO" in query)
+    assert params["status"] == "done"
+
+
+def test_upsert_legacy_item_does_not_stomp_newer_control_row():
+    from control.repository import ControlRepository
+
+    conn = FakeConn()
+    conn.cursor_obj = FakeUpsertCursor(existing_updated_at="2026-05-02T14:21:12Z")
+    repo = ControlRepository(conn)
+
+    repo.upsert_bridge_item(
+        "ang",
+        {
+            "id": "feed_market_1",
+            "type": "feed",
+            "title": "Market",
+            "origin": "agent",
+            "status": "done",
+            "updated_at": "2026-05-02T11:08:28Z",
+            "messages": [],
+        },
+    )
+
+    assert not any("INSERT INTO" in query for query, _params in conn.cursor_obj.queries)
+
+
+def test_upsert_status_card_keeps_user_origin_for_reopened_thread():
+    from control.repository import ControlRepository
+
+    conn = FakeConn()
+    conn.cursor_obj = FakeUpsertCursor(existing_updated_at="2026-05-02T14:21:12Z")
+    repo = ControlRepository(conn)
+
+    repo.upsert_bridge_item(
+        "ang",
+        {
+            "id": "feed_market_1",
+            "type": "feed",
+            "title": "Market",
+            "origin": "agent",
+            "status": "dispatched",
+            "updated_at": "2026-05-02T14:23:52Z",
+            "messages": [],
+        },
+    )
+
+    params = next(params for query, params in conn.cursor_obj.queries if "INSERT INTO" in query)
+    assert params["origin"] == "user"

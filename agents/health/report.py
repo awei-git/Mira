@@ -137,6 +137,8 @@ def _signal_summary(store, person_id: str) -> list[str]:
         ("blood_oxygen", "血氧", "%", 1),
         ("steps", "步数", "", 0),
         ("active_minutes", "活动", "min", 0),
+        ("exercise_minutes", "Apple运动", "min", 0),
+        ("workout", "锻炼", "min", 0),
     ]
 
     scored: list[tuple[float, str, dict]] = []
@@ -189,6 +191,7 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
         ("active_calories", "活动消耗(kcal)"),
         ("total_calories", "总消耗(kcal)"),
         ("active_minutes", "活动时间(min)"),
+        ("exercise_minutes", "Apple运动时间(min)"),
         ("sedentary_hours", "久坐时间(h)"),
         ("inactivity_alerts", "久坐提醒次数"),
         ("stress_high", "高压力时间(min)"),
@@ -200,6 +203,7 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
         ("temperature_deviation", "体温偏差"),
         ("workout", "锻炼时长(min)"),
         ("workout_calories", "锻炼消耗(kcal)"),
+        ("workout_distance", "锻炼距离(m)"),
     ]:
         latest = store.get_latest_metric(person_id, metric_name)
         if latest:
@@ -207,6 +211,10 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
 
     if not data_parts:
         return None
+
+    deterministic = _fallback_daily_insight(store, person_id)
+    if deterministic and "高负荷运动" in deterministic:
+        return deterministic
 
     # 7-day trends
     trend_parts = []
@@ -321,4 +329,43 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
             return result.strip()
     except Exception as e:
         log.warning("Daily health insight failed: %s", e)
-    return None
+    return _fallback_daily_insight(store, person_id)
+
+
+def _fallback_daily_insight(store, person_id: str) -> str | None:
+    """Deterministic daily note used when the LLM path is unavailable."""
+    workout = store.get_latest_metric(person_id, "workout")
+    workout_calories = store.get_latest_metric(person_id, "workout_calories")
+    workout_distance = store.get_latest_metric(person_id, "workout_distance")
+    spo2 = store.get_latest_metric(person_id, "blood_oxygen")
+    readiness = store.get_latest_metric(person_id, "readiness_score")
+    hrv = store.get_latest_metric(person_id, "hrv")
+    sleep = store.get_latest_metric(person_id, "sleep_hours")
+
+    parts = []
+    if workout and float(workout["value"]) >= 60:
+        line = f"昨天有一段{float(workout['value']):.0f}分钟的高负荷运动"
+        details = []
+        if workout_calories:
+            details.append(f"{float(workout_calories['value']):.0f}kcal")
+        if workout_distance:
+            details.append(f"{float(workout_distance['value']) / 1000:.1f}km")
+        if details:
+            line += f"（{', '.join(details)}）"
+        parts.append(line + "，这足够解释今天恢复指标需要保守处理。")
+    elif workout:
+        parts.append(f"最近一次运动{float(workout['value']):.0f}分钟，负荷不算大，今天重点看恢复端是否一致。")
+
+    if readiness:
+        parts.append(f"准备度{float(readiness['value']):.0f}。")
+    if hrv:
+        parts.append(f"HRV {float(hrv['value']):.0f}ms。")
+    if spo2:
+        parts.append(f"血氧{float(spo2['value']):.1f}%，如果明天仍低于95%，再把它当作独立信号看。")
+    if sleep:
+        parts.append(f"睡眠{float(sleep['value']):.1f}小时。")
+
+    if not parts:
+        return None
+    parts.append("今天的动作很简单：不加高强度，只做15-20分钟轻松走动，把恢复窗口留出来。")
+    return "".join(parts)
