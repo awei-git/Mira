@@ -105,7 +105,8 @@ def test_no_llm_self_eval_in_scoring():
 def test_full_assessment_report():
     """Run full assessment and verify report structure."""
     import tempfile, uuid
-    from handler import handle
+
+    handle = _load_evaluator_handler().handle
 
     ws = Path(tempfile.mkdtemp(prefix="mira_eval_test_"))
     result = handle(

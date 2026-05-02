@@ -355,6 +355,7 @@ def test_check_tasks_records_timeout_alert_once(monkeypatch, tmp_path):
     )
     mgr._records = [rec]
     monkeypatch.setattr(task_manager.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(task_manager, "_pid_matches_worker", lambda pid, task_id: True)
 
     mgr.check_tasks()
     assert len(created) == 1
@@ -527,6 +528,7 @@ def test_check_tasks_wait_reply_keeps_running_status(monkeypatch, tmp_path):
     )
     mgr._records = [rec]
     monkeypatch.setattr(task_manager.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(task_manager, "_pid_matches_worker", lambda pid, task_id: True)
 
     completed = mgr.check_tasks()
 
