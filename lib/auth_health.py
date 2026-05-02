@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import ssl
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -237,12 +236,6 @@ def check_anthropic_oauth() -> AuthHealthResult:
     return AuthHealthResult("anthropic_oauth", "ok", "info", f"Claude CLI present: {path}")
 
 
-def check_anthropic_api() -> AuthHealthResult:
-    if os.environ.get("ANTHROPIC_API_KEY", "").strip():
-        return AuthHealthResult("anthropic_api", "ok", "info", "ANTHROPIC_API_KEY configured")
-    return AuthHealthResult("anthropic_api", "missing", "warning", "ANTHROPIC_API_KEY is not configured")
-
-
 def check_bridge_tls_cert(cert_path: Path | None = None) -> AuthHealthResult:
     from config import WEBGUI_TLS_CERT_FILE
 
@@ -271,7 +264,7 @@ def check_bridge_tls_cert(cert_path: Path | None = None) -> AuthHealthResult:
 
 
 def run_auth_health_checks() -> list[AuthHealthResult]:
-    results = [check_anthropic_oauth(), check_anthropic_api(), check_bridge_tls_cert()]
+    results = [check_anthropic_oauth(), check_bridge_tls_cert()]
     for result in results:
         status = "ok" if result.status == "ok" else result.status
         _write_provider_state(

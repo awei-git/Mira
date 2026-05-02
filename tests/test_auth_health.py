@@ -13,11 +13,11 @@ def test_record_auth_event_writes_provider_state(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "MIRA_DIR", tmp_path / "bridge")
     monkeypatch.setattr(config, "get_known_user_ids", lambda: ["ang"])
 
-    auth_health.record_auth_event("anthropic_oauth", "oauth_throttle_fallback", status="degraded", detail="rate limit")
+    auth_health.record_auth_event("anthropic_oauth", "oauth_auth_failure", status="failed", detail="rate limit")
 
     state = json.loads((tmp_path / "auth_state" / "anthropic_oauth.json").read_text(encoding="utf-8"))
-    assert state["status"] == "degraded"
-    assert state["event"] == "oauth_throttle_fallback"
+    assert state["status"] == "failed"
+    assert state["event"] == "oauth_auth_failure"
     assert (tmp_path / "auth_state" / "events.jsonl").exists()
     item = json.loads(
         (tmp_path / "bridge" / "users" / "ang" / "items" / "auth_alert_anthropic_oauth.json").read_text(
@@ -42,15 +42,12 @@ def test_run_auth_health_resolves_existing_alert(monkeypatch, tmp_path):
         lambda: auth_health.AuthHealthResult("anthropic_oauth", "ok", "info", "ok"),
     )
     monkeypatch.setattr(
-        auth_health, "check_anthropic_api", lambda: auth_health.AuthHealthResult("anthropic_api", "ok", "info", "ok")
-    )
-    monkeypatch.setattr(
         auth_health,
         "check_bridge_tls_cert",
         lambda: auth_health.AuthHealthResult("bridge_tls_cert", "ok", "info", "ok"),
     )
 
-    auth_health.record_auth_event("anthropic_oauth", "oauth_throttle_fallback", status="degraded", detail="rate limit")
+    auth_health.record_auth_event("anthropic_oauth", "oauth_auth_failure", status="failed", detail="rate limit")
     auth_health.run_auth_health_checks()
 
     item = json.loads(
@@ -60,6 +57,30 @@ def test_run_auth_health_resolves_existing_alert(monkeypatch, tmp_path):
     )
     assert item["status"] == "done"
     assert item["auth_status"] == "ok"
+
+
+def test_run_auth_health_checks_does_not_check_anthropic_api(monkeypatch, tmp_path):
+    import auth_health
+    import config
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "MIRA_DIR", tmp_path / "bridge")
+    monkeypatch.setattr(config, "get_known_user_ids", lambda: [])
+    monkeypatch.setattr(
+        auth_health,
+        "check_anthropic_oauth",
+        lambda: auth_health.AuthHealthResult("anthropic_oauth", "ok", "info", "ok"),
+    )
+    monkeypatch.setattr(
+        auth_health,
+        "check_bridge_tls_cert",
+        lambda: auth_health.AuthHealthResult("bridge_tls_cert", "ok", "info", "ok"),
+    )
+
+    results = auth_health.run_auth_health_checks()
+
+    assert [result.provider for result in results] == ["anthropic_oauth", "bridge_tls_cert"]
+    assert not (tmp_path / "data" / "auth_state" / "anthropic_api.json").exists()
 
 
 def test_bridge_tls_cert_warns_when_expiring(monkeypatch, tmp_path):

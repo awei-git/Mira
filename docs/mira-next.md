@@ -30,7 +30,7 @@ v2.7 vs v2.6 的差别（reviewer 第三轮反馈，全 stale ref 清理）：
 - Bridge TLS 证书 expiry 加入 §3.5.3 daily auth_health check（< 30 天 warning，< 7 天 critical）
 
 v2.6 vs v2.5 的差别（reviewer 第二轮反馈）：
-- Block fix 7 条：calendar 残留 / dedupe V3 App Store / Memory degraded mode 仅覆盖 adapter 不覆盖 core Postgres / self-evolution V2 仅 4-file 不要求 5-file（7-day outcome 推 V3）/ Memory consolidation cron acceptance 改为 ≥2 次（Memory Week 4 才上）/ external_learn 1 round（4 rounds 推 V3）/ Tier 0 wording 统一（V2 Week 1 起 2 adapter，Week 5 补齐 6 adapter + oMLX 1-2 task type 试点）
+- Block fix 7 条：calendar 残留 / dedupe V3 App Store / Memory degraded mode 仅覆盖 adapter 不覆盖 core Postgres / self-evolution V2 仅 4-file 不要求 5-file（7-day outcome 推 V3）/ Memory consolidation cron acceptance 改为 ≥2 次（Memory Week 4 才上）/ external_learn 1 round（4 rounds 推 V3）/ Tier 0 wording 统一（V2 Week 1 起 2 adapter，Week 5 补齐 5 adapter + oMLX 1-2 task type 试点）
 - Design fix 6 条：HTTPS 自签证书 + iOS pinned cert / iCloud 旧 command path 改为 "一次性 recovery importer"（手动 CLI，永不入 dispatch loop）/ embedding V2 OpenAI text-embedding-3-small + V3 oMLX local / Week 6 article cutover 必须 Day 1-2 否则 "not evaluated" / self_audit 改 "≥80% 真 finding verified + ≥5 representative" 防造假 / cost criterion 从 Tier A 移到 Tier B（reliability > cost）
 
 v2.5 vs v2.4 的差别（基于第三方 reviewer 第一轮反馈）：
@@ -180,13 +180,13 @@ Ollama is legacy. Mira runtime、routing、recovery、docs 都不允许再把 Ol
 |------|------|------|--------|
 | **Tier 0 — Local** | oMLX + `gemma-4-31b-it-4bit`（cache on `/Volumes/aw_swap`）+ pgvector + 简单规则 | $0 增量 | routine 分类 / 格式 / 重复检测 / 简单生成 / similarity 排序 / log triage |
 | **Tier 1 — Cheap API** | OpenAI gpt-5-mini / haiku 4.5 / Gemini Flash | $0.10–0.30 / M token | Tier 0 不够时的 fallback；轻量 reasoning；schema-strict JSON 输出 |
-| **Tier 2 — Premium** | claude-code OAuth（主）→ Anthropic API key（fallback）→ OpenAI o-series | flat $20/月 + 按需 API | 公开输出（substack）/ 长综合 / 复杂 routing decision / self-evolve |
+| **Tier 2 — Premium** | claude-code OAuth（主）→ explicit non-Anthropic fallback when allowed（OpenAI o-series 等） | flat $20/月 + 按需 API | 公开输出（substack）/ 长综合 / 复杂 routing decision / self-evolve |
 
 #### V2 vs V3 范围（reviewer 调整）
 
 **V2 范围：**
-- LLMProvider port + 6 adapter 最终全列：anthropic_oauth + anthropic_api + openai + gemini + minimax + omlx
-- **adapter 上线分两阶段：** Week 1 上 anthropic_oauth + anthropic_api 2 个；Week 5 补齐 openai + gemini + minimax + omlx 4 个
+- LLMProvider port + 5 adapter 最终全列：anthropic_oauth + openai + gemini + minimax + omlx
+- **adapter 上线分两阶段：** Week 1 上 anthropic_oauth + omlx 2 个；Week 5 补齐 openai + gemini + minimax 3 个
 - routing.yaml schema + Tier 1/2 routing 落地
 - **oMLX adapter Week 5 试点：仅接 1-2 个低风险 task type**（如 substack inbox dedup classify + anti-AI guard scan），验证 quality fallback 机制可用
 - V2 cost target：**持平 V1 baseline**（不退步即合格），**不强求降 30%**
@@ -298,7 +298,7 @@ tasks:
 
   external_learn_deep_compare:
     primary: { tier: 2, adapter: anthropic_oauth, model: claude-sonnet-4.6 }
-    fallback: [{ tier: 2, adapter: anthropic_api }, { tier: 2, adapter: openai, model: gpt-5 }]
+    fallback: [{ tier: 2, adapter: openai, model: gpt-5 }]
 
   llm_router_decision:
     primary: { tier: 2, adapter: anthropic_oauth, model: claude-sonnet-4.6 }
@@ -307,16 +307,16 @@ tasks:
 
   substack_article_write:
     primary: { tier: 2, adapter: anthropic_oauth, model: claude-opus-4.7 }
-    fallback: [{ tier: 2, adapter: anthropic_api, model: claude-opus-4.7 }]
+    fallback: []
     # 不允许降到 Tier 1，public output
 
   substack_note_write:
     primary: { tier: 2, adapter: anthropic_oauth, model: claude-sonnet-4.6 }
-    fallback: [{ tier: 2, adapter: anthropic_api }]
+    fallback: []
 
   inbox_reply_write:
     primary: { tier: 2, adapter: anthropic_oauth, model: claude-sonnet-4.6 }
-    fallback: [{ tier: 2, adapter: anthropic_api }]
+    fallback: []
 
   idle_think:
     primary: { tier: 0, adapter: omlx_gemma, model: gemma-4-31b-it-4bit }
@@ -475,14 +475,13 @@ V2 的全部架构动作 = 在 §3.0 内核之上解决 R1–R6。
 
 3. **Port: LLMProvider**
    - schema：`complete(messages, model_class, max_tokens, ...) → Response`。
-   - 实现：6 个 adapter
+   - 实现：5 个 adapter
      - `lib/llm/anthropic_oauth_adapter.py`（spawn `claude-code --print`，复用 WA Pro/Max 订阅；主路径）
-     - `lib/llm/anthropic_api_adapter.py`（API key fallback）
      - `lib/llm/openai_adapter.py`（embedding + reasoning fallback）
      - `lib/llm/gemini_adapter.py`（EN TTS + 长 context fallback）
      - `lib/llm/minimax_adapter.py`（ZH TTS）
      - `lib/llm/omlx_adapter.py`（local，routine + idle-think）
-   - auth：OAuth（claude-code subprocess）OR API key（macOS Keychain / `.env`）。Routing 策略详见 §0.5.7 + `runtime/registry/llm_routing.yaml`。
+   - auth：Claude 只走 OAuth（claude-code subprocess），不支持 `ANTHROPIC_API_KEY` fallback；其他 provider 使用各自 API key。Routing 策略详见 §0.5.7 + `runtime/registry/llm_routing.yaml`。
    - 契约：handler 业务代码 **不允许**：
      - 直接 `import anthropic` / `openai` / `google.genai` / `minimax`（必须经端口）
      - 直接 `subprocess.run(["claude-code", ...])`（必须经 anthropic_oauth_adapter，否则 routing 不能统一）
@@ -536,8 +535,8 @@ Breaking either requires:
   1. Task: {task_id, workflow_id, agent, payload, schema_version, ...}
   2. Handler: handler(payload, ctx) -> Result{status, artifacts, verification, failure_class?}
   3. LLMProvider.complete(messages, model_class, ...) -> Response
-     [implementation: 6 adapters (anthropic_oauth via claude-code CLI as primary,
-      anthropic_api / openai / gemini / minimax / omlx as fallbacks);
+     [implementation: 5 adapters (anthropic_oauth via claude-code CLI as primary,
+      openai / gemini / minimax / omlx as fallbacks);
       routed via runtime/registry/llm_routing.yaml;
       NO third-party OAuth wrapper / claude.ai session scrape;
       see docs/mira-next.md §0.5.7]
@@ -555,7 +554,7 @@ See docs/mira-next.md §3.0.4 for the full table. Fixed components:
   - Python 3.12+
   - PostgreSQL 17 — mandatory, no SQLite
   - DBOS Transact + Postgres backend
-  - LLMProvider port: 6 adapters (anthropic_oauth primary, anthropic_api/openai/gemini/minimax/omlx fallbacks)
+  - LLMProvider port: 5 adapters (anthropic_oauth primary, openai/gemini/minimax/omlx fallbacks)
   - SwiftUI + SwiftData (iOS message thread reliability)
   - mDNS/Bonjour + HTTPS API for app-Mac bridge
   - FastAPI (existing web server)
@@ -2094,8 +2093,8 @@ week_3:
       check: "ls docs/runbooks/*.md | wc -l"
       pass_if: "result >= 8"  # 4 base + 4 new
       owner: WA
-    - id: w3_oauth_fallback
-      check: "select count(*) from auth_state_log where provider='anthropic' and event='oauth_throttle_fallback' and ts >= now() - interval '14 days'"
+    - id: w3_oauth_failure_surface
+      check: "select count(*) from auth_state_log where provider='anthropic_oauth' and event='oauth_auth_failure' and ts >= now() - interval '14 days'"
       pass_if: "result >= 1"
       owner: Mira
 ```
@@ -2390,7 +2389,7 @@ Week 0 闸门（启动 Week 1 前必须全过）：
    - CONTROL_RUNTIME_DB_ENABLED 默认 on + hard fail（DB 不可达 = startup 拒启）
    - **HTTPS TLS：本地自签证书 + iOS app pinned cert（SHA256 fingerprint 进 MiraApp bundle）**；URLSession delegate 验证；不开 ATS plain-HTTP exception；不依赖外部 CA
    - **API/Postgres canonical for tasks/threads；iCloud 仅 read-only backup + 一次性 recovery importer**
-6. **§3.0.1 #3 LLMProvider port skeleton（最小）：** wrap 现状 path（spawn `claude-code --print` 主路径），不接所有 6 adapter。**只做 anthropic_oauth + anthropic_api 2 个 adapter**，其余 V2 Week 5 再加。这样 Mira 当前用法不破，CI 强制经端口。
+6. **§3.0.1 #3 LLMProvider port skeleton（最小）：** wrap 现状 path（spawn `claude-code --print` 主路径），不接所有 5 adapter。**只做 anthropic_oauth + omlx 2 个 adapter**，其余 V2 Week 5 再加。Claude 不允许 API-key fallback；CI 强制经端口。
 7. 写 `Mira/STABILITY.md`（§3.0.2，Part A interfaces + Part B tech stack）。WA review。
 8. **§3.12 identity_core.md** 起草 + WA review + hash-lock。identity_check 实现 V2 Week 4（与 Memory port 同步）。
 9. CI rules：grep hardcode IP / `subprocess.*claude-code` 在业务代码 / `playwright.*claude\.ai|openclaw|claude-cli-mod` → block。
@@ -2400,7 +2399,7 @@ Week 1 闸门（**Tier A 优先**）：
 - ✅ **iPhone 连续 24h 发 5 条 task 全部成功**（problem #1 解 = Tier A 第一条 acceptance）
 - ✅ Postgres + pgvector + DBOS task_worker crash-resume 跑通
 - ✅ STABILITY.md merged；identity_core.md hash-locked
-- ✅ LLMProvider port 2 adapter 跑通 + CI grep block 上线
+- ✅ LLMProvider port 2 adapter（anthropic_oauth + omlx）跑通 + CI grep block 上线
 - ✅ substack daily 未中断
 
 ### Week 2 — Verifier State Machine + Retry/Cancel + iOS SwiftData
@@ -2431,7 +2430,7 @@ Week 2 闸门：
 
 1. **§3.3.3 publish_registry** 上线，所有 publish 路径 wrap 老实现进 `legacy_adapter`。
 2. **§3.5.1 writer gate** 强制 —— 所有 substack（article / note / comment / reply）+ bluesky + x post 必经 writer agent，无 user 审核（[feedback_full_autonomy.md](../../.claude/projects/-Users-angwei-Sandbox/memory/feedback_full_autonomy.md)）。
-3. **§3.5.3 auth health layer**：6 外部账户 health check（含 Anthropic OAuth throttle 自动 fallback 到 API key adapter）。
+3. **§3.5.3 auth health layer**：6 外部账户 health check（Anthropic OAuth throttle 必须显式失败并告警；不允许 API key adapter）。
 4. **§3.5.2 preflight 统一** 到 safety/preflight.py。
 5. **§3.15 sensitivity 字段** 加到 `tasks` / `audit_events` / `Memory schema`（Memory 实装 Week 4，schema 先就位）；**publish_registry.dispatch 第一步 sensitivity_scan**（PII regex + Tier 0 主题 check 由 OpenAI gpt-5-mini 兜底）；模拟泄漏测试通过。Tetra 数据结构性隔离（`data/tetra/` 不被 `agents/socialmedia/` import）。
 6. **substack reply pipeline cutover**（Week 2 shadow 7 天后）。
@@ -2441,7 +2440,7 @@ Week 2 闸门：
 Week 3 闸门：
 - ✅ 1 周内 0 条 publish 绕过 writer
 - ✅ 0 条 auth fail 静默 > 5min（Tier A acceptance #3）
-- ✅ Anthropic OAuth fallback 到 API 路径至少触发过 1 次（验证 fallback 链）
+- ✅ Anthropic OAuth failure path 至少触发过 1 次，并在 5min 内 surfaced 到 auth alert
 - ✅ 模拟 confidential 泄漏被 block（Tier A acceptance #23）
 - ✅ reply pipeline cutover 后 1 天无 incident
 - ✅ substack metrics 在 daily report
@@ -2483,7 +2482,7 @@ Week 4 闸门：
 
 目标：LLM router shadow vs keyword router；skill retrieval 作 Memory 子集；oMLX adapter 试点 1-2 个 task type 验证 quality fallback 机制。
 
-1. **§3.0.1 #3 LLMProvider 补齐其余 adapter**：openai / gemini / minimax 完整化（Week 1 已有 anthropic_oauth + anthropic_api）。
+1. **§3.0.1 #3 LLMProvider 补齐其余 adapter**：openai / gemini / minimax 完整化（Week 1 已有 anthropic_oauth + omlx）。
 2. **§3.0.1 #3 omlx_adapter 试点版**：能跑 Gemma 4 31B local；只接 1-2 个低风险 task type（建议 substack inbox dedup classify + anti-AI guard scan）；带 quality fallback（schema check / confidence threshold；fail 自动 fallback 到 openai gpt-5-mini）。**全面铺 V3**。
 3. **§3.6 skill retrieval = `Memory.read(kinds=['fact'], tags=['skill'])`**；writer / researcher / analyst / discussion 全 wire；注入 user-message 段（KV-cache 友好，§3.10.4 格式）。
 4. **§3.6.4 external_learn workflow** 上线，跑第一个 round（Tier 1 OpenAI gpt-5-mini 做 first-pass，只有 yes 上 Tier 2 深读）。

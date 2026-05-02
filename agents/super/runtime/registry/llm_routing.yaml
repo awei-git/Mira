@@ -22,15 +22,12 @@ tasks:
 
   default:
     primary: {tier: 2, adapter: anthropic_oauth, model: claude-sonnet-4-6}
-    fallback:
-      - {tier: 2, adapter: anthropic_api, model: claude-sonnet-4-6}
+    fallback: []
 
   premium:
     primary: {tier: 2, adapter: anthropic_oauth, model: claude-opus-4-6}
-    fallback:
-      - {tier: 2, adapter: anthropic_api, model: claude-opus-4-6}
+    fallback: []
 
   tool:
     primary: {tier: 2, adapter: anthropic_oauth, model: claude-sonnet-4-6}
-    fallback:
-      - {tier: 2, adapter: anthropic_api, model: claude-sonnet-4-6}
+    fallback: []

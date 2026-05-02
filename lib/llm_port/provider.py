@@ -62,35 +62,21 @@ def complete(
 
         if not is_auth_or_quota_failure(exc):
             raise
-        _ensure_default_adapters()
-        fallback = _ADAPTERS.get("anthropic_api")
-        if fallback is None:
-            raise
         record_auth_event(
             "anthropic_oauth",
-            "oauth_throttle_fallback",
-            status="degraded",
+            "oauth_auth_failure",
+            status="failed",
             detail=str(exc)[:500],
-            payload={"fallback": "anthropic_api", "model_class": model_class},
+            payload={"model_class": model_class},
         )
-        response = fallback.complete(request)
-        return LLMResponse(
-            text=response.text,
-            provider=response.provider,
-            model=response.model,
-            input_tokens=response.input_tokens,
-            output_tokens=response.output_tokens,
-            raw={**response.raw, "fallback_from": "anthropic_oauth"},
-        )
+        raise
 
 
 def _ensure_default_adapters() -> None:
     if _ADAPTERS:
         return
-    from .adapters.anthropic_api_adapter import AnthropicAPIAdapter
     from .adapters.anthropic_oauth_adapter import AnthropicOAuthAdapter
     from .adapters.omlx_adapter import OMLXAdapter
 
     register_adapter(AnthropicOAuthAdapter(), model_classes=["routine", "premium", "tool"])
-    register_adapter(AnthropicAPIAdapter())
     register_adapter(OMLXAdapter(), model_classes=["local"])

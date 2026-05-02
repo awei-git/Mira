@@ -23,7 +23,8 @@ Breaking either requires:
 
    Fixed adapter shape:
    - `anthropic_oauth` via `claude-code` CLI as primary
-   - `anthropic_api`, `openai`, `gemini`, `minimax`, and `omlx` as fallbacks or specialized adapters
+   - `openai`, `gemini`, `minimax`, and `omlx` as fallbacks or specialized adapters
+   - no Anthropic API-key adapter or `ANTHROPIC_API_KEY` requirement
    - routed through `runtime/registry/llm_routing.yaml`
    - no third-party OAuth wrapper or `claude.ai` session scraping
    - local inference is oMLX only; primary local chat model is `gemma-4-31b-it-4bit`
@@ -55,7 +56,7 @@ Fixed components:
 - LaunchAgent + local FastAPI server
 - PostgreSQL 17
 - DBOS Transact + Postgres backend for durable workflows
-- LLMProvider port with six adapters: `anthropic_oauth`, `anthropic_api`, `openai`, `gemini`, `minimax`, `omlx`
+- LLMProvider port with five adapters: `anthropic_oauth`, `openai`, `gemini`, `minimax`, `omlx`
 - SwiftUI + SwiftData for iOS message/thread reliability
 - mDNS/Bonjour + HTTPS API for app-to-Mac bridge
 - local self-signed certificate with iOS pinned certificate fingerprint
