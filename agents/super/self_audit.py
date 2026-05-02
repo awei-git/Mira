@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import hashlib
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -270,6 +271,179 @@ _LOW_RISK_PATTERNS = {"hardcoded_path", "missing_manifest"}
 
 # High-risk: always needs user approval
 _HIGH_RISK_TYPES = {"test_failure", "recurring_error", "anti_pattern"}
+
+
+def _finding_description(finding: dict) -> str:
+    return str(finding.get("description") or finding.get("pattern") or finding.get("match") or "").strip()
+
+
+def _finding_subject(finding: dict) -> str:
+    parts = [
+        str(finding.get("type") or "unknown"),
+        str(finding.get("pattern_name") or ""),
+        _finding_description(finding),
+        str(finding.get("file") or ""),
+        str(finding.get("line") or ""),
+    ]
+    subject = "|".join(parts).lower()
+    subject = re.sub(r"\d{4}-\d{2}-\d{2}[ t]\d{2}:\d{2}:\d{2}(?:\.\d+)?", "timestamp", subject)
+    subject = re.sub(r"\b[0-9a-f]{8,}\b", "id", subject)
+    subject = re.sub(r"\b\d+\b", "n", subject)
+    subject = re.sub(r"\s+", " ", subject).strip()
+    return subject
+
+
+def _finding_backlog_id(finding: dict) -> str:
+    digest = hashlib.sha1(_finding_subject(finding).encode("utf-8")).hexdigest()[:16]
+    kind = re.sub(r"[^a-z0-9_]+", "_", str(finding.get("type") or "finding").lower()).strip("_")
+    return f"self_audit:{kind}:{digest}"
+
+
+def _finding_priority(finding: dict) -> str:
+    severity = finding.get("severity")
+    if severity == "critical":
+        return "high"
+    if severity == "warning":
+        return "medium"
+    return "low"
+
+
+def _finding_owner(finding: dict) -> str:
+    ftype = str(finding.get("type") or "")
+    pattern = str(finding.get("pattern_name") or "")
+    if ftype in {"pipeline_error", "stuck_pipeline", "missing_podcast", "incomplete_podcast"}:
+        return "publishing"
+    if ftype.startswith("test_"):
+        return "test-infra"
+    if ftype in {"missing_manifest", "incomplete_manifest", "invalid_manifest"}:
+        return "agent-registry"
+    if ftype == "anti_pattern" or pattern:
+        return "mira-core"
+    if ftype == "audit_error":
+        return "self-audit"
+    return "ops"
+
+
+def _finding_executor(finding: dict) -> tuple[str, bool]:
+    risk_type = finding.get("pattern_name", finding.get("type", ""))
+    if risk_type in _LOW_RISK_PATTERNS:
+        return "self_audit.apply_low_risk", True
+    return "manual_review.required", False
+
+
+def _finding_verification_criteria(finding: dict) -> list[str]:
+    ftype = str(finding.get("type") or "")
+    if ftype == "recurring_error":
+        return ["The normalized error pattern is absent or below warning threshold for two consecutive audits."]
+    if ftype.startswith("test_"):
+        return ["The relevant test command exits 0 within its configured timeout."]
+    if ftype == "anti_pattern":
+        return ["The finding pattern is no longer detected at the reported location.", "Focused tests still pass."]
+    if ftype in {"missing_manifest", "incomplete_manifest", "invalid_manifest"}:
+        return ["The agent manifest exists, parses as JSON, and includes required fields."]
+    if ftype == "stuck_pipeline":
+        return [
+            "The publish manifest no longer reports this article as stuck.",
+            "The article has a valid terminal state.",
+        ]
+    if ftype == "pipeline_error":
+        return ["The publish manifest error is cleared or replaced by an intentional reviewed resolution."]
+    if ftype in {"missing_podcast", "incomplete_podcast"}:
+        return ["The expected podcast artifact exists, or the article is explicitly marked auto_podcast=false."]
+    if ftype == "audit_error":
+        return ["The next self-audit completes this check without raising the same audit error."]
+    return ["The next self-audit no longer reports this finding."]
+
+
+def build_backlog_record(
+    finding: dict,
+    *,
+    user_id: str = "ang",
+    audit_date: str | None = None,
+    resolved: bool = False,
+    verification_summary: str | None = None,
+) -> dict:
+    """Build a deterministic control-plane backlog record for one audit finding."""
+    audit_date = audit_date or datetime.now().strftime("%Y-%m-%d")
+    description = _finding_description(finding)
+    executor, executor_eligible = _finding_executor(finding)
+    severity = str(finding.get("severity") or "info")
+    ftype = str(finding.get("type") or "finding")
+    title_bits = [severity.upper(), ftype.replace("_", " ")]
+    if finding.get("file"):
+        title_bits.append(str(finding["file"]))
+    title = ": ".join(title_bits)
+    if description:
+        title = f"{title} — {description[:90]}"
+
+    payload = {
+        "source": "self_audit",
+        "audit_date": audit_date,
+        "severity": severity,
+        "owner": _finding_owner(finding),
+        "executor_eligible": executor_eligible,
+        "verification_criteria": _finding_verification_criteria(finding),
+        "fingerprint": _finding_subject(finding),
+        "finding": finding,
+    }
+    return {
+        "item_id": _finding_backlog_id(finding),
+        "user_id": user_id,
+        "kind": "self_audit_finding",
+        "executor": executor,
+        "status": "verified" if resolved else "proposed",
+        "priority": _finding_priority(finding),
+        "title": title[:220],
+        "description": description or f"Self-audit finding: {ftype}",
+        "payload": payload,
+        "verification_summary": verification_summary if resolved else None,
+        "last_error": None if resolved else description if severity in {"critical", "warning"} else None,
+    }
+
+
+def upsert_self_audit_backlog(
+    findings: list[dict], *, user_id: str = "ang", auto_fixed: list[dict] | None = None
+) -> list[dict]:
+    """Mirror audit findings into the control-plane backlog.
+
+    This is intentionally best-effort. Self-audit must still produce a report if
+    Postgres is offline or migrations lag behind.
+    """
+    if not findings:
+        return []
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository
+    except Exception as exc:
+        log.warning("Self-audit backlog unavailable: %s", exc)
+        return []
+
+    audit_date = datetime.now().strftime("%Y-%m-%d")
+    fixed_by_id = {
+        str(fix.get("backlog_id")): str(fix.get("action") or "auto-fixed")
+        for fix in (auto_fixed or [])
+        if fix.get("backlog_id")
+    }
+    records = [
+        build_backlog_record(
+            f,
+            user_id=user_id,
+            audit_date=audit_date,
+            resolved=_finding_backlog_id(f) in fixed_by_id,
+            verification_summary=fixed_by_id.get(_finding_backlog_id(f)),
+        )
+        for f in findings
+    ]
+    upserted = []
+    try:
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            for record in records:
+                upserted.append(repo.upsert_backlog_item(**record))
+    except Exception as exc:
+        log.warning("Self-audit backlog update failed: %s", exc)
+        return []
+    return upserted
 
 
 def _attempt_auto_fix(finding: dict) -> dict | None:
@@ -527,9 +701,11 @@ def attempt_fixes(findings: list[dict]) -> tuple[list[dict], list[dict]]:
         if risk_type in _LOW_RISK_PATTERNS:
             fix = _attempt_auto_fix(f)
             if fix and fix.get("applied"):
+                fix["backlog_id"] = _finding_backlog_id(f)
                 applied.append(fix)
                 log.info("Auto-fixed: %s — %s", fix["file"], fix["action"])
             elif fix:
+                fix["backlog_id"] = _finding_backlog_id(f)
                 pending.append(fix)
         elif f.get("severity") in ("critical", "warning"):
             pending.append(
@@ -679,6 +855,10 @@ def run_audit(logs_only: bool = False, tests_only: bool = False) -> list[dict]:
         log.info("Step 4b: Attempting auto-fixes...")
         auto_fixed, pending_fixes = attempt_fixes(all_findings)
         log.info("  Auto-fixed: %d, Pending approval: %d", len(auto_fixed), len(pending_fixes))
+
+    log.info("Step 4c: Updating structured backlog...")
+    backlog_records = upsert_self_audit_backlog(all_findings, auto_fixed=auto_fixed)
+    log.info("  Backlog records updated: %d", len(backlog_records))
 
     log.info("Step 5: Generating report...")
     report = generate_report(all_findings, auto_fixed, pending_fixes)

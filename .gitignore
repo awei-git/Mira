@@ -17,6 +17,7 @@ data/soul/*
 # Legacy locations
 agents/super/notes_inbox/
 agents/super/notes_outbox/
+agents/super/dispatch_history.json
 agents/.bg_pids/
 agents/writer/ideas/
 agents/health/alert_history.json

@@ -12,7 +12,7 @@ from ops.backlog import ActionBacklog
 log = logging.getLogger("mira.backlog_executor")
 
 SUPPORTED_EXECUTORS = {"self_evolve_proposal"}
-CONTROL_EXECUTORS = {"request_verify.apply"}
+CONTROL_EXECUTORS = {"request_verify.apply", "self_audit.apply_low_risk"}
 
 
 def run_once(*, dry_run: bool = False, backlog_path: Path | None = None) -> dict:
@@ -122,7 +122,37 @@ def _execute_control_item(repo, item: dict) -> dict:
     executor = item.get("executor")
     if executor == "request_verify.apply":
         return _execute_request_verify(repo, item)
+    if executor == "self_audit.apply_low_risk":
+        return _execute_self_audit_low_risk(item)
     return {"success": False, "reason": f"unsupported control executor: {executor}"}
+
+
+def _execute_self_audit_low_risk(item: dict) -> dict:
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    finding = payload.get("finding") if isinstance(payload.get("finding"), dict) else {}
+    if not finding:
+        return {"success": False, "reason": "self-audit finding payload missing"}
+
+    risk_type = finding.get("pattern_name", finding.get("type", ""))
+    if risk_type not in {"hardcoded_path", "missing_manifest"}:
+        return {"success": False, "reason": f"finding is not low-risk mechanical: {risk_type}"}
+
+    import self_audit
+
+    fix = self_audit._attempt_auto_fix(finding)  # noqa: SLF001 - governed internal executor
+    if fix and fix.get("applied"):
+        return {
+            "success": True,
+            "reason": str(fix.get("action") or "self-audit low-risk fix applied")[:500],
+            "verification_summary": "low-risk self-audit fix applied; quick tests passed when required",
+        }
+    if fix:
+        return {
+            "success": False,
+            "reason": str(fix.get("action") or "self-audit low-risk fix failed")[:500],
+            "verification_summary": "low-risk self-audit fix attempted but not applied",
+        }
+    return {"success": False, "reason": "no automatic fix available for finding"}
 
 
 def _execute_request_verify(repo, item: dict) -> dict:

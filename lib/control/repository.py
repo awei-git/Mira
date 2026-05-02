@@ -373,7 +373,7 @@ class ControlRepository:
                     kind = EXCLUDED.kind,
                     executor = EXCLUDED.executor,
                     status = CASE
-                        WHEN {self.schema}.backlog_items.status IN ('verified', 'rejected')
+                        WHEN {self.schema}.backlog_items.status IN ('verified', 'rejected', 'in_progress')
                             THEN {self.schema}.backlog_items.status
                         ELSE EXCLUDED.status
                     END,
