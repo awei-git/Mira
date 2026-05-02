@@ -16,11 +16,13 @@ try:
 except (ImportError, ModuleNotFoundError):
     Mira = None
 
-from config import MIRA_DIR, ARTIFACTS_DIR
+from config import MIRA_DIR, ARTIFACTS_DIR, DATA_DIR, JOURNAL_DIR
 from state import load_state, save_state
 from runtime.dispatcher import _dispatch_background, _is_bg_running
 
 log = logging.getLogger("mira")
+
+DEFAULT_DAILY_USER_ID = "ang"
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +46,34 @@ def _verify_state_key(prefix):
     return check
 
 
+def _merged_daily_state(user_id: str = DEFAULT_DAILY_USER_ID) -> dict:
+    """Daily workflows currently write a mix of global and per-user markers."""
+    state = load_state()
+    if not user_id:
+        return state
+    return {**state, **load_state(user_id=user_id)}
+
+
+def _bridge_item_exists(item_id: str, user_id: str = DEFAULT_DAILY_USER_ID) -> bool:
+    return (MIRA_DIR / "users" / user_id / "items" / f"{item_id}.json").exists()
+
+
+def _verify_zhesi(state, today):
+    """Zhesi verifier: state key or actual journal/feed output exists."""
+    today_compact = today.replace("-", "")
+    return bool(
+        state.get(f"zhesi_{today}")
+        or (JOURNAL_DIR / f"{today}_zhesi.md").exists()
+        or _bridge_item_exists(f"feed_zhesi_{today_compact}")
+    )
+
+
+def _verify_soul_question(state, today):
+    """Soul question verifier: state key or canonical discussion item exists."""
+    today_compact = today.replace("-", "")
+    return bool(state.get(f"soul_question_{today}") or _bridge_item_exists(f"soul_question_{today_compact}"))
+
+
 def _verify_analyst(slot):
     """Analyst verifier: state key + briefing file exists."""
 
@@ -61,12 +91,11 @@ def _verify_analyst(slot):
 
 def _verify_journal(state, today):
     """Journal verifier: journal file exists in soul/journal/."""
-    if not state.get(f"journal_{today}"):
-        return False
-    from config import SOUL_DIR
-
-    journal_dir = SOUL_DIR / "journal"
-    return any(journal_dir.glob(f"{today}*.md"))
+    return bool(
+        state.get(f"journal_{today}")
+        or (JOURNAL_DIR / f"{today}.md").exists()
+        or _bridge_item_exists(f"feed_journal_{today.replace('-', '')}")
+    )
 
 
 def _verify_reflect(state, today):
@@ -78,7 +107,7 @@ def _verify_self_evolve(state, today):
     """Self-evolve verifier: state key set + at least one proposal file exists."""
     if not state.get(f"self_evolve_{today}"):
         return False
-    proposals_dir = Path(__file__).resolve().parent / "proposals"
+    proposals_dir = DATA_DIR / "proposals"
     return any(proposals_dir.glob(f"{today}_*.json"))
 
 
@@ -86,13 +115,13 @@ _DAILY_TASK_CONTRACTS = {
     "zhesi": {
         "dispatch": ("zhesi", ["zhesi"]),
         "window": (9, 22),
-        "verify": _verify_state_key("zhesi"),
+        "verify": _verify_zhesi,
         "label": "每日哲思",
     },
     "soul_question": {
         "dispatch": ("soul-question", ["soul-question"]),
         "window": (10, 22),
-        "verify": _verify_state_key("soul_question"),
+        "verify": _verify_soul_question,
         "label": "灵魂提问",
     },
     # daily-photo disabled 2026-04-29 by WA ("照片这个job就删掉吧 没什么用
@@ -144,7 +173,7 @@ def _self_repair_daily_tasks():
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
     hour = now.hour
-    state = load_state()
+    state = _merged_daily_state()
 
     for task_id, contract in _DAILY_TASK_CONTRACTS.items():
         earliest, latest = contract["window"]
@@ -191,7 +220,7 @@ def _daily_task_status_report():
         return
     today = now.strftime("%Y-%m-%d")
     today_compact = today.replace("-", "")
-    state = load_state()
+    state = _merged_daily_state()
 
     report_key = f"task_status_report_{today}"
     if state.get(report_key):
@@ -217,14 +246,11 @@ def _daily_task_status_report():
 
     try:
         bridge = Mira(MIRA_DIR)
-        bridge.create_item(
-            item_id=f"task_report_{today_compact}",
-            item_type="feed",
-            title=f"Daily Status: {today}",
-            first_message=summary,
-            sender="agent",
+        bridge.create_feed(
+            f"task_report_{today_compact}",
+            f"Daily Status: {today}",
+            summary,
             tags=["status", "daily"],
-            origin="agent",
         )
     except Exception as e:
         log.warning("Failed to create task status report: %s", e)
