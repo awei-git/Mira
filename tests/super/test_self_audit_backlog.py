@@ -43,6 +43,41 @@ def test_low_risk_backlog_record_is_executor_eligible():
     assert record["priority"] == "low"
 
 
+def test_backlog_id_keeps_distinct_line_findings_separate():
+    import self_audit
+
+    base = {
+        "type": "anti_pattern",
+        "severity": "info",
+        "pattern_name": "hardcoded_path",
+        "description": "Hardcoded path",
+        "file": "photo/handler.py",
+    }
+
+    first = self_audit.build_backlog_record({**base, "line": 10}, audit_date="2026-05-02")
+    second = self_audit.build_backlog_record({**base, "line": 20}, audit_date="2026-05-02")
+
+    assert first["item_id"] != second["item_id"]
+
+
+def test_backlog_id_keeps_distinct_same_line_matches_separate():
+    import self_audit
+
+    base = {
+        "type": "anti_pattern",
+        "severity": "info",
+        "pattern_name": "hardcoded_path",
+        "description": "Hardcoded path",
+        "file": "super/self_audit.py",
+        "line": 157,
+    }
+
+    first = self_audit.build_backlog_record({**base, "match": '"/Users/'}, audit_date="2026-05-02")
+    second = self_audit.build_backlog_record({**base, "match": "~/Sandbox"}, audit_date="2026-05-02")
+
+    assert first["item_id"] != second["item_id"]
+
+
 def test_upsert_self_audit_backlog_uses_control_repository(monkeypatch):
     import self_audit
 

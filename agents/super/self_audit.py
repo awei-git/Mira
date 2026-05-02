@@ -282,13 +282,13 @@ def _finding_subject(finding: dict) -> str:
         str(finding.get("type") or "unknown"),
         str(finding.get("pattern_name") or ""),
         _finding_description(finding),
+        str(finding.get("match") or ""),
         str(finding.get("file") or ""),
         str(finding.get("line") or ""),
     ]
     subject = "|".join(parts).lower()
     subject = re.sub(r"\d{4}-\d{2}-\d{2}[ t]\d{2}:\d{2}:\d{2}(?:\.\d+)?", "timestamp", subject)
     subject = re.sub(r"\b[0-9a-f]{8,}\b", "id", subject)
-    subject = re.sub(r"\b\d+\b", "n", subject)
     subject = re.sub(r"\s+", " ", subject).strip()
     return subject
 
