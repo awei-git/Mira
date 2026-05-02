@@ -168,3 +168,43 @@ def test_update_item_rejects_invalid_status():
     finally:
         tmp.unlink(missing_ok=True)
         tmp.with_suffix(".lock").unlink(missing_ok=True)
+
+
+def test_upsert_active_updates_active_but_keeps_history():
+    from ops.backlog import ActionItem
+
+    bl, tmp = _make_backlog()
+    try:
+        bl.add(ActionItem(title="Score improvement: reading", description="old", source="reflect", status="verified"))
+
+        created, _ = bl.upsert_active(
+            ActionItem(
+                title="Score improvement: reading",
+                description="current",
+                source="reflect",
+                priority="high",
+                target_dimension="reading",
+                payload={"baseline_score": 1.0},
+            )
+        )
+        updated, saved = bl.upsert_active(
+            ActionItem(
+                title="Score improvement: reading",
+                description="new evidence",
+                source="reflect",
+                priority="medium",
+                target_dimension="reading",
+                payload={"baseline_score": 2.0},
+            )
+        )
+
+        assert created == "created"
+        assert updated == "updated"
+        assert saved.description == "new evidence"
+        assert len(bl.get_by_status("verified")) == 1
+        active = bl.get_active()
+        assert len(active) == 1
+        assert active[0].payload["baseline_score"] == 2.0
+    finally:
+        tmp.unlink(missing_ok=True)
+        tmp.with_suffix(".lock").unlink(missing_ok=True)

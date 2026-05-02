@@ -204,6 +204,51 @@ class ActionBacklog:
             log.info("BACKLOG_PATCH: %s (%s)", title, ", ".join(sorted(fields)))
         return updated
 
+    def upsert_active(self, item: ActionItem) -> tuple[str, ActionItem]:
+        """Create or refresh an active item with the same title.
+
+        Historical verified/rejected/expired items are left untouched. If an
+        active item already exists, preserve its workflow status but refresh
+        the current evidence, priority, target, executor, and payload.
+        """
+        outcome = "created"
+        saved_item = item
+
+        def _upsert():
+            nonlocal outcome, saved_item
+            items = self._read_items_unlocked()
+            for existing in items:
+                if existing.title != item.title or existing.status not in ("proposed", "approved", "in_progress"):
+                    continue
+                existing.description = item.description
+                existing.source = item.source
+                existing.priority = item.priority
+                existing.target_dimension = item.target_dimension
+                existing.expires_at = item.expires_at
+                existing.executor = item.executor
+                existing.payload = item.payload
+                existing.updated_at = _utc_now()
+                existing.last_error = ""
+                saved_item = existing
+                outcome = "updated"
+                self._write_items_unlocked(items)
+                self._items = items
+                return
+            items.append(item)
+            saved_item = item
+            self._write_items_unlocked(items)
+            self._items = items
+
+        self._with_lock(fcntl.LOCK_EX, _upsert)
+        log.info(
+            "BACKLOG_%s: %s (source=%s, priority=%s)",
+            outcome.upper(),
+            saved_item.title,
+            saved_item.source,
+            saved_item.priority,
+        )
+        return outcome, saved_item
+
     def claim_next_approved(self, executors: set[str] | None = None) -> ActionItem | None:
         """Atomically move the next approved item into in_progress."""
         claimed: ActionItem | None = None

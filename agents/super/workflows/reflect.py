@@ -46,6 +46,33 @@ from workflows.helpers import (
 log = logging.getLogger("mira")
 
 
+def _trim_weekly_section(text: str, limit: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n\n[truncated in feed; source data remains in Mira files]"
+
+
+def _build_weekly_review_body(
+    *,
+    reflection_text: str,
+    score_report: str,
+    plan_text: str,
+    backlog_summary: str,
+) -> str:
+    """Build the single weekly review feed shown in Mira App."""
+    parts = ["# Weekly Review"]
+    if reflection_text:
+        parts.extend(["## Reflection", _trim_weekly_section(reflection_text, 5000)])
+    if score_report:
+        parts.extend(["## Scorecard", _trim_weekly_section(score_report, 5000)])
+    if plan_text:
+        parts.extend(["## Action Plan", _trim_weekly_section(plan_text, 2500)])
+    if backlog_summary:
+        parts.extend(["## Active Improvement Backlog", backlog_summary])
+    return "\n\n".join(part for part in parts if part)
+
+
 def _prune_worldview_by_decay():
     """Ebbinghaus-style pruning: remove worldview sections not accessed in 60+ days.
 
@@ -359,6 +386,7 @@ def do_reflect(user_id: str = "ang"):
     # --- Score → Action: diagnose weak areas and generate improvement plan ---
     try:
         from evaluation.scorer import diagnose_scores, generate_improvement_plan
+        from evaluation.actions import upsert_score_action_items
 
         diagnosis = diagnose_scores()
         if diagnosis["needs_action"]:
@@ -371,33 +399,13 @@ def do_reflect(user_id: str = "ang"):
                 )
                 log.info("Improvement plan saved to soul/improvement_plan.json")
 
-            # Feed low scores into action backlog
             try:
-                from ops.backlog import ActionBacklog, ActionItem
+                from ops.backlog import ActionBacklog
 
                 backlog = ActionBacklog()
-                for ls in diagnosis.get("low_scores", [])[:5]:
-                    backlog.add(
-                        ActionItem(
-                            title=f"Improve {ls['dim']}",
-                            description=f"Score {ls['score']:.1f} — below threshold",
-                            source="reflect",
-                            priority="high" if ls["score"] < 2.0 else "medium",
-                            target_dimension=ls["dim"],
-                        )
-                    )
-                for dl in diagnosis.get("declining", [])[:3]:
-                    backlog.add(
-                        ActionItem(
-                            title=f"Stop decline in {dl['dim']}",
-                            description=f"Trend: {dl['scores']} (delta={dl['delta']:.2f})",
-                            source="reflect",
-                            priority="medium",
-                            target_dimension=dl["dim"],
-                        )
-                    )
-                backlog.expire_stale()
+                actions = upsert_score_action_items(diagnosis, plan_text=plan or "", backlog=backlog)
                 log.info("Reflect → backlog: %s", backlog.summary())
+                log.info("Reflect score actions refreshed: %d", len(actions))
             except (ImportError, OSError) as e:
                 log.warning("Action backlog update failed: %s", e)
         else:
@@ -458,12 +466,12 @@ def do_reflect(user_id: str = "ang"):
     except Exception as e:
         log.warning("Skill re-audit pass failed: %s", e)
 
-    # --- Weekly self-evaluation report to WA ---
+    # --- Weekly review feed: reflection + self-evaluation + action plan ---
     try:
         from evaluation.scorer import generate_weekly_report
 
         report = generate_weekly_report()
-        if report:
+        if report or result:
             bridge = Mira(MIRA_DIR, user_id=user_id)
             try:
                 from evaluation.improvement import get_active_improvements
@@ -471,24 +479,29 @@ def do_reflect(user_id: str = "ang"):
                 plan_text = get_active_improvements()
             except Exception:
                 plan_text = ""
-            weekly_body = report
-            if plan_text:
-                weekly_body = f"{report}\n\n---\n\n## Action plan\n\n{plan_text}"
+
+            try:
+                from ops.backlog import ActionBacklog
+
+                backlog_summary = ActionBacklog().summary()
+            except Exception:
+                backlog_summary = ""
+
+            weekly_body = _build_weekly_review_body(
+                reflection_text=result,
+                score_report=report or "",
+                plan_text=plan_text,
+                backlog_summary=backlog_summary,
+            )
             bridge.create_feed(
                 f"feed_reflect_{datetime.now().strftime('%Y%m%d')}",
-                "Weekly Reflection",
-                weekly_body[:4000],
-                tags=["reflection"],
-            )
-            bridge.create_feed(
-                f"weekly_eval_{datetime.now().strftime('%Y%m%d')}",
-                "Weekly self-evaluation",
+                "Weekly Review",
                 weekly_body,
-                tags=["evaluation", "reflection"],
+                tags=["reflection", "evaluation", "self-improvement"],
             )
-            log.info("Weekly self-evaluation report sent")
+            log.info("Weekly review report sent")
     except Exception as e:
-        log.warning("Weekly report generation failed: %s", e)
+        log.warning("Weekly review generation failed: %s", e)
 
     # --- Proactive self-improvement: reading notes → architecture proposals ---
     try:
