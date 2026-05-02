@@ -44,6 +44,39 @@ def test_store_upserts_topics_without_duplicate_spam(tmp_path: Path):
     assert topics[0].priority_score == 8
 
 
+def test_store_upserts_editorial_packages(tmp_path: Path):
+    from models import EditorialPackage
+    from storage import SubstackStore
+
+    store = SubstackStore(root=tmp_path / "substack_agent")
+    package_v1 = EditorialPackage(
+        topic_id="topic-1",
+        recommended_title="Done Is Not A Status",
+        subject_line_candidates=["Done Is Not A Status"],
+        abstract="Mira proves why done must mean verified.",
+        hook_candidates=["The most dangerous agent status is not failed."],
+        format_blueprint=[{"section": "Hook", "job": "open", "target": "1 sentence"}],
+        quality_scores={"title_intrigue": 8},
+        pass_gate=True,
+    )
+    package_v2 = EditorialPackage(
+        topic_id="topic-1",
+        recommended_title="The Agent Has To Prove It Happened",
+        subject_line_candidates=["The Agent Has To Prove It Happened"],
+        abstract="Mira proves why reliable agents need outcome verification.",
+        hook_candidates=["Mira looked busy for hours, and that was the bug."],
+        format_blueprint=[{"section": "Hook", "job": "open", "target": "1 sentence"}],
+        quality_scores={"title_intrigue": 9},
+        pass_gate=True,
+    )
+
+    assert store.upsert_editorial_packages([package_v1]) == (1, 0)
+    assert store.upsert_editorial_packages([package_v2]) == (0, 1)
+    packages = store.load_editorial_packages()
+    assert len(packages) == 1
+    assert packages[0].recommended_title == "The Agent Has To Prove It Happened"
+
+
 def test_current_socialmedia_stack_capabilities_are_visible():
     from compatibility import check_current_stack
 

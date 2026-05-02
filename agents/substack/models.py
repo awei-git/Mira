@@ -128,3 +128,28 @@ class ArticleRecord:
         if record.state not in ARTICLE_STATES:
             record.state = "blocked"
         return record
+
+
+@dataclass
+class EditorialPackage:
+    """Pre-draft quality package for one Substack topic."""
+
+    topic_id: str
+    recommended_title: str
+    subject_line_candidates: list[str]
+    abstract: str
+    hook_candidates: list[str]
+    format_blueprint: list[dict[str, str]]
+    quality_scores: dict[str, float]
+    pass_gate: bool
+    blocking_reasons: list[str] = field(default_factory=list)
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EditorialPackage":
+        known = cls.__dataclass_fields__.keys()
+        return cls(**{k: v for k, v in data.items() if k in known})

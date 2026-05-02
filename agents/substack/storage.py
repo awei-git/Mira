@@ -10,7 +10,7 @@ from typing import Any
 
 from config import SOCIAL_STATE_DIR
 
-from models import ArticleRecord, PublicationStrategy, TopicCandidate, utc_now
+from models import ArticleRecord, EditorialPackage, PublicationStrategy, TopicCandidate, utc_now
 
 
 def _atomic_write_json(path: Path, data: Any) -> None:
@@ -37,6 +37,7 @@ class SubstackStore:
         self.strategy_path = self.root / "strategy.json"
         self.topics_path = self.root / "topic_backlog.json"
         self.articles_path = self.root / "articles.json"
+        self.editorial_packages_path = self.root / "editorial_packages.json"
         self.calendar_path = self.root / "editorial_calendar.json"
 
     def load_strategy(self) -> PublicationStrategy:
@@ -92,6 +93,31 @@ class SubstackStore:
 
     def save_articles(self, articles: list[ArticleRecord]) -> None:
         _atomic_write_json(self.articles_path, [article.to_dict() for article in articles])
+
+    def load_editorial_packages(self) -> list[EditorialPackage]:
+        return [
+            EditorialPackage.from_dict(item)
+            for item in self._load_list(self.editorial_packages_path)
+            if isinstance(item, dict) and item.get("topic_id")
+        ]
+
+    def save_editorial_packages(self, packages: list[EditorialPackage]) -> None:
+        _atomic_write_json(self.editorial_packages_path, [package.to_dict() for package in packages])
+
+    def upsert_editorial_packages(self, packages: list[EditorialPackage]) -> tuple[int, int]:
+        existing = {package.topic_id: package for package in self.load_editorial_packages()}
+        created = 0
+        updated = 0
+        for package in packages:
+            if package.topic_id in existing:
+                package.created_at = existing[package.topic_id].created_at
+                package.updated_at = utc_now()
+                updated += 1
+            else:
+                created += 1
+            existing[package.topic_id] = package
+        self.save_editorial_packages(list(existing.values()))
+        return created, updated
 
     def save_calendar(self, calendar: dict[str, Any]) -> None:
         calendar["updated_at"] = utc_now()

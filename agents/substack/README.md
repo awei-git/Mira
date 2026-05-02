@@ -12,9 +12,21 @@ The agent starts in shadow/orchestrator mode:
 
 1. Build and maintain a ranked topic backlog.
 2. Produce a four-week editorial calendar.
-3. Keep the publication strategy explicit.
-4. Verify that the current production Substack stack remains available.
-5. Delegate live platform side effects to the existing guarded socialmedia path.
+3. Create an editorial package for high-priority topics: recommended title,
+   subject line candidates, abstract, hook candidates, and article format.
+4. Keep the publication strategy explicit.
+5. Verify that the current production Substack stack remains available.
+6. Delegate live platform side effects to the existing guarded socialmedia path.
+
+## Editorial Gates
+
+Before a topic should move into drafting, it needs:
+
+- An intriguing title, not a generic summary.
+- A clear abstract that promises a specific reader payoff.
+- A first-line hook that starts with tension, surprise, or a concrete Mira failure.
+- A format blueprint: scene, general claim, mechanism, reader framework, close.
+- Mira-specific operating evidence. Generic AI commentary is blocked.
 
 ## Promotion Baseline
 

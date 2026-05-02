@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from compatibility import check_current_stack
+from editorial import build_editorial_packages
 from storage import SubstackStore
 from topic_backlog import build_editorial_calendar, discover_topics_from_writer_ideas
 
@@ -72,21 +73,47 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
         candidates = discover_topics_from_writer_ideas(strategy)
         created, updated = store.upsert_topics(candidates)
         topics = store.load_topics()
+        packages = build_editorial_packages(topics, strategy)
+        pkg_created, pkg_updated = store.upsert_editorial_packages(packages)
         calendar = build_editorial_calendar(topics)
         store.save_calendar(calendar)
-        report = _format_plan(strategy, topics, calendar, created=created, updated=updated)
+        report = _format_plan(
+            strategy,
+            topics,
+            calendar,
+            packages=packages,
+            created=created,
+            updated=updated,
+            package_created=pkg_created,
+            package_updated=pkg_updated,
+        )
         return _write_output(workspace, report)
 
     strategy = store.load_strategy()
     topics = store.load_topics()
+    packages = store.load_editorial_packages()
     calendar = store.load_calendar()
     if not topics:
         candidates = discover_topics_from_writer_ideas(strategy)
         store.upsert_topics(candidates)
         topics = store.load_topics()
+        packages = build_editorial_packages(topics, strategy)
+        store.upsert_editorial_packages(packages)
         calendar = build_editorial_calendar(topics)
         store.save_calendar(calendar)
-    return _write_output(workspace, _format_plan(strategy, topics, calendar, created=0, updated=0))
+    return _write_output(
+        workspace,
+        _format_plan(
+            strategy,
+            topics,
+            calendar,
+            packages=packages,
+            created=0,
+            updated=0,
+            package_created=0,
+            package_updated=0,
+        ),
+    )
 
 
 def _write_output(workspace: Path, text: str) -> str:
@@ -117,8 +144,19 @@ def _format_compatibility_report(report: dict) -> str:
     return "\n".join(lines)
 
 
-def _format_plan(strategy, topics, calendar: dict, *, created: int, updated: int) -> str:
+def _format_plan(
+    strategy,
+    topics,
+    calendar: dict,
+    *,
+    packages,
+    created: int,
+    updated: int,
+    package_created: int,
+    package_updated: int,
+) -> str:
     top = topics[:10]
+    packages_by_topic = {package.topic_id: package for package in packages}
     lines = [
         "# Substack Publisher Plan",
         "",
@@ -138,6 +176,8 @@ def _format_plan(strategy, topics, calendar: dict, *, created: int, updated: int
         f"- Created: {created}",
         f"- Updated: {updated}",
         f"- Active topics: {len(topics)}",
+        f"- Editorial packages created: {package_created}",
+        f"- Editorial packages updated: {package_updated}",
         "",
         "## Highest Priority Topics",
     ]
@@ -152,6 +192,26 @@ def _format_plan(strategy, topics, calendar: dict, *, created: int, updated: int
                 f"   - Mira edge: {topic.mira_edge}",
             ]
         )
+        package = packages_by_topic.get(topic.id)
+        if package:
+            lines.extend(
+                [
+                    f"   - Recommended title: {package.recommended_title}",
+                    f"   - Abstract: {package.abstract[:360]}",
+                    f"   - Editorial gate: {'pass' if package.pass_gate else 'blocked'} {package.quality_scores}",
+                ]
+            )
+
+    lines.extend(["", "## Editorial Quality Gates"])
+    lines.extend(
+        [
+            "- Title must create curiosity or tension; generic summary titles are blocked.",
+            "- Abstract must promise a specific reader payoff and make Mira's unique evidence clear.",
+            "- Format must open with a concrete scene, then move into mechanism, framework, and unresolved tension.",
+            "- Drafts cannot advance if they lack Mira-specific operating evidence.",
+            "- Publishing remains blocked until writer gate, preflight, cooldown, and approval policy pass.",
+        ]
+    )
 
     lines.extend(["", "## Four Week Calendar"])
     for week in calendar.get("weeks", []):
@@ -169,7 +229,7 @@ def _format_plan(strategy, topics, calendar: dict, *, created: int, updated: int
             "",
             "## Next Implementation Steps",
             "1. Add article workflow records that move topics through thesis, draft, review, fact-check, approval, publish, promote, measure.",
-            "2. Add editorial verifier that blocks generic summaries and requires Mira-specific evidence.",
+            "2. Wire the editorial package into writer prompts so every draft starts from title, abstract, hook, and format blueprint.",
             "3. Add promotion plan generator per published post.",
             "4. Add weekly metrics review that turns weak growth metrics into backlog actions.",
             "",
