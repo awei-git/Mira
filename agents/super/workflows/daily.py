@@ -31,6 +31,8 @@ from config import (
     SKILL_STUDY_SOURCE_GROUPS,
     EPISODES_DIR,
     LOG_RETENTION_DAYS,
+    LOGS_DIR,
+    TASKS_DIR,
 )
 from user_paths import artifact_name_for_user, user_journal_dir
 
@@ -67,6 +69,164 @@ from workflows.helpers import (
 )
 
 log = logging.getLogger("mira")
+
+
+def _load_usage_records(date_str: str) -> list[dict]:
+    usage_file = LOGS_DIR / f"usage_{date_str}.jsonl"
+    if not usage_file.exists():
+        return []
+    records = []
+    for line in usage_file.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return records
+
+
+def _load_recent_task_records(days: int = 7) -> list[dict]:
+    history_file = TASKS_DIR / "history.jsonl"
+    if not history_file.exists():
+        return []
+    cutoff = datetime.now() - timedelta(days=days)
+    records = []
+    for line in history_file.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+            ts = record.get("completed_at") or record.get("updated_at") or record.get("dispatched_at") or ""
+            if not ts:
+                continue
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00")).replace(tzinfo=None)
+            if dt >= cutoff:
+                records.append(record)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+    return records
+
+
+def _summarize_usage(records: list[dict]) -> dict:
+    from collections import defaultdict
+
+    by_model = defaultdict(lambda: {"calls": 0, "prompt": 0, "completion": 0, "cost": 0.0})
+    by_agent = defaultdict(lambda: {"calls": 0, "tokens": 0, "cost": 0.0})
+    total = {"calls": 0, "tokens": 0, "cost": 0.0}
+    for record in records:
+        prompt = int(record.get("prompt_tokens") or 0)
+        completion = int(record.get("completion_tokens") or 0)
+        tokens = int(record.get("total_tokens") or prompt + completion)
+        cost = float(record.get("cost_usd") or 0.0)
+        model_key = f"{record.get('provider', 'unknown')}/{record.get('model', 'unknown')}"
+        agent = str(record.get("agent") or "unknown")
+
+        by_model[model_key]["calls"] += 1
+        by_model[model_key]["prompt"] += prompt
+        by_model[model_key]["completion"] += completion
+        by_model[model_key]["cost"] += cost
+        by_agent[agent]["calls"] += 1
+        by_agent[agent]["tokens"] += tokens
+        by_agent[agent]["cost"] += cost
+        total["calls"] += 1
+        total["tokens"] += tokens
+        total["cost"] += cost
+    return {"total": total, "by_model": dict(by_model), "by_agent": dict(by_agent)}
+
+
+def _format_performance_assessment_summary(
+    assessment: dict, plan, usage_records: list[dict], task_records: list[dict]
+) -> str:
+    """Build the detailed app-facing performance assessment."""
+    from collections import Counter, defaultdict
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    agg = assessment.get("aggregate", {})
+    usage = _summarize_usage(usage_records)
+    usage_total = usage["total"]
+    done_tasks = [t for t in task_records if t.get("status") == "done"]
+    failed_tasks = [t for t in task_records if t.get("status") not in {"done", "verified"}]
+    today_tasks = [
+        t
+        for t in task_records
+        if str(t.get("completed_at") or t.get("updated_at") or t.get("dispatched_at") or "").startswith(today)
+    ]
+    completed_count = len(done_tasks)
+    cost_per_completed = usage_total["cost"] / completed_count if completed_count else 0.0
+
+    lines = [
+        f"# Performance Assessment {today}",
+        "",
+        "## Executive Summary",
+        f"- 7d task outcome: {len(done_tasks)}/{len(task_records)} completed; evaluator success {agg.get('overall_success_rate', 0):.0%}.",
+        f"- Today usage: {usage_total['calls']} model calls, {usage_total['tokens']:,} tokens, estimated ${usage_total['cost']:.2f}.",
+        f"- ROI proxy: ${cost_per_completed:.2f} per completed 7d task using today's model spend as the cost baseline.",
+        f"- System health: crash rate {agg.get('crash_rate', 0):.1%}; heartbeat {'ok' if agg.get('heartbeat_ok', True) else 'stale'}.",
+        "",
+        "## Model Usage And Cost",
+    ]
+
+    if usage["by_model"]:
+        for model, data in sorted(usage["by_model"].items(), key=lambda item: -item[1]["cost"])[:12]:
+            tokens = data["prompt"] + data["completion"]
+            lines.append(
+                f"- {model}: {data['calls']} calls, {tokens:,} tokens "
+                f"(in {data['prompt']:,}, out {data['completion']:,}), ${data['cost']:.2f}"
+            )
+    else:
+        lines.append("- No usage log found for today.")
+
+    lines.extend(["", "## Agent Spend"])
+    if usage["by_agent"]:
+        for agent, data in sorted(usage["by_agent"].items(), key=lambda item: -item[1]["cost"])[:12]:
+            lines.append(f"- {agent}: {data['calls']} calls, {data['tokens']:,} tokens, ${data['cost']:.2f}")
+    else:
+        lines.append("- No agent-level spend available.")
+
+    lines.extend(["", "## Completed Work"])
+    if today_tasks:
+        status_counts = Counter(str(t.get("status") or "unknown") for t in today_tasks)
+        lines.append("- Today status mix: " + ", ".join(f"{k}={v}" for k, v in sorted(status_counts.items())))
+    if done_tasks:
+        by_agent = defaultdict(lambda: {"done": 0, "total": 0})
+        for task in task_records:
+            agent = str(task.get("agent") or "unknown")
+            by_agent[agent]["total"] += 1
+            if task.get("status") == "done":
+                by_agent[agent]["done"] += 1
+        for agent, stats in sorted(by_agent.items(), key=lambda item: (-item[1]["total"], item[0]))[:10]:
+            lines.append(f"- {agent}: {stats['done']}/{stats['total']} completed")
+    else:
+        lines.append("- No completed tasks found in the 7d history window.")
+
+    lines.extend(["", "## Failures And Risk"])
+    if failed_tasks:
+        for task in failed_tasks[:8]:
+            preview = str(task.get("content_preview") or task.get("summary") or task.get("id") or "")[:120]
+            lines.append(f"- {task.get('agent', 'unknown')}: {task.get('status', 'unknown')} — {preview}")
+    else:
+        lines.append("- No failed non-terminal tasks found in the 7d history window.")
+
+    lines.extend(["", "## Actionable Takeaways"])
+    if usage_total["cost"] > 10 and completed_count < 5:
+        lines.append(
+            "- Cost is high relative to completed user-visible work. Gate idle/background work before spending cloud calls."
+        )
+    if failed_tasks:
+        lines.append(
+            "- Failed tasks need stable IDs plus explicit verification criteria before they can be considered done."
+        )
+    if agg.get("crash_rate", 0) > 0.05:
+        lines.append("- Crash rate is above target; prioritize worker lifecycle and retry hardening.")
+    if not usage["by_model"]:
+        lines.append("- Usage logging is missing; cost/ROI cannot be trusted until model calls emit usage records.")
+    if not any(line.startswith("- ") for line in lines[-4:]):
+        lines.append("- No immediate cost or reliability trigger fired today; continue monitoring completion quality.")
+    if plan:
+        lines.append("- Improvement plan was generated and should be reflected in the structured backlog.")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -977,37 +1137,20 @@ def do_assess():
     # Generate improvement plan if needed
     plan = mod.diagnose_and_improve(assessment)
 
-    # Format short summary for user
-    agg = assessment["aggregate"]
-    active_agents = []
-    for name, card in assessment["agents"].items():
-        if card["task_count"] > 0:
-            emoji = "✅" if card["success_rate"] >= 0.8 else "⚠️" if card["success_rate"] >= 0.5 else "❌"
-            active_agents.append(f"{emoji} {name}: {card['success_rate']:.0%} ({card['task_count']})")
-
-    summary_parts = [
-        f"📊 Weekly: {agg.get('total_tasks', 0)} tasks, {agg.get('overall_success_rate', 0):.0%} success",
-        f"💰 Today: ${agg.get('daily_cost_usd', 0):.2f} ({agg.get('daily_calls', 0)} calls)",
-        f"🫀 Crash rate: {agg.get('crash_rate', 0):.1%}",
-    ]
-    if active_agents:
-        summary_parts.append("\nPer agent:")
-        summary_parts.extend(active_agents)
-    if plan:
-        summary_parts.append(
-            f"\n⚠️ Improvement plan generated — see scorecards/{datetime.now().strftime('%Y-%m-%d')}.json"
-        )
-
-    summary = "\n".join(summary_parts)
+    today = datetime.now().strftime("%Y-%m-%d")
+    summary = _format_performance_assessment_summary(
+        assessment,
+        plan,
+        _load_usage_records(today),
+        _load_recent_task_records(days=7),
+    )
 
     # Push to iPhone as feed item
     bridge = Mira()
-    today = datetime.now().strftime("%Y-%m-%d")
     item_id = f"feed_assessment_{today.replace('-', '')}"
-    if not bridge.item_exists(item_id):
-        bridge.create_item(item_id, "feed", f"Performance Assessment {today}", summary, tags=["assessment", "system"])
-        bridge.update_status(item_id, "done")
+    bridge.create_feed(item_id, f"Performance Assessment {today}", summary, tags=["assessment", "system"])
 
+    agg = assessment.get("aggregate", {})
     log.info(
         "Daily assessment complete: %d tasks, %.0f%% success",
         agg.get("total_tasks", 0),

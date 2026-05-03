@@ -1,9 +1,26 @@
 """Health report generator — weekly/monthly summaries."""
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 log = logging.getLogger("health_report")
+
+
+def _metric_age_label(metric: dict, now: datetime | None = None) -> str:
+    """Return a concise freshness label for a metric row."""
+    metric_date = metric.get("date")
+    if not hasattr(metric_date, "astimezone"):
+        return ""
+    now = now or datetime.now(timezone.utc)
+    metric_dt = metric_date
+    if metric_dt.tzinfo is None:
+        metric_dt = metric_dt.replace(tzinfo=timezone.utc)
+    age_hours = (now - metric_dt.astimezone(timezone.utc)).total_seconds() / 3600
+    if age_hours <= 36:
+        return "fresh"
+    if age_hours <= 72:
+        return f"stale {age_hours:.0f}h"
+    return f"stale {age_hours / 24:.1f}d"
 
 
 def generate_weekly_report(store, person_id: str) -> str:
@@ -207,7 +224,9 @@ def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | 
     ]:
         latest = store.get_latest_metric(person_id, metric_name)
         if latest:
-            data_parts.append(f"- {label}: {latest['value']:.1f} (日期: {latest.get('date', today)})")
+            freshness = _metric_age_label(latest)
+            freshness_text = f", {freshness}" if freshness else ""
+            data_parts.append(f"- {label}: {latest['value']:.1f} (日期: {latest.get('date', today)}{freshness_text})")
 
     if not data_parts:
         return None

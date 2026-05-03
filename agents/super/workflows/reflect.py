@@ -73,6 +73,24 @@ def _build_weekly_review_body(
     return "\n\n".join(part for part in parts if part)
 
 
+def _archive_legacy_weekly_items(bridge, current_item_id: str) -> None:
+    """Hide pre-merge weekly self-evaluation/reflection cards.
+
+    The app should show one weekly review. Older generators created both
+    `weekly_eval_*` and `feed_reflect_*`; keep the data on disk but mark the
+    legacy card archived when the merged review is published.
+    """
+    today = datetime.now().strftime("%Y%m%d")
+    for legacy_id in (f"weekly_eval_{today}", "weekly_eval"):
+        if legacy_id == current_item_id:
+            continue
+        try:
+            if bridge.item_exists(legacy_id):
+                bridge.update_status(legacy_id, "archived")
+        except Exception:
+            pass
+
+
 def _prune_worldview_by_decay():
     """Ebbinghaus-style pruning: remove worldview sections not accessed in 60+ days.
 
@@ -493,12 +511,14 @@ def do_reflect(user_id: str = "ang"):
                 plan_text=plan_text,
                 backlog_summary=backlog_summary,
             )
+            item_id = f"feed_reflect_{datetime.now().strftime('%Y%m%d')}"
             bridge.create_feed(
-                f"feed_reflect_{datetime.now().strftime('%Y%m%d')}",
+                item_id,
                 "Weekly Review",
                 weekly_body,
                 tags=["reflection", "evaluation", "self-improvement"],
             )
+            _archive_legacy_weekly_items(bridge, item_id)
             log.info("Weekly review report sent")
     except Exception as e:
         log.warning("Weekly review generation failed: %s", e)

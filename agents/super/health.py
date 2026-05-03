@@ -49,7 +49,7 @@ def _run_health_check():
     from monitor import check_all_users, format_alerts
     from summary import write_summary_to_bridge
     from report import generate_daily_insight
-    from config import DATABASE_URL, SECRETS_FILE, HEALTH_REPORT_MODEL
+    from config import DATABASE_URL, SECRETS_FILE, HEALTH_REPORT_MODEL, OURA_SYNC_DAYS_BACK
 
     store = HealthStore(DATABASE_URL)
     bridge_path = Path(MIRA_DIR)
@@ -67,8 +67,8 @@ def _run_health_check():
 
         for uid, token in oura_users.items():
             try:
-                count = oura_fetch(store, token, uid, days_back=1)
-                log.info("Oura: fetched %d metrics for %s", count, uid)
+                count = oura_fetch(store, token, uid, days_back=OURA_SYNC_DAYS_BACK)
+                log.info("Oura: processed %d metrics for %s over %d days", count, uid, OURA_SYNC_DAYS_BACK)
             except Exception as e:
                 log.warning("Oura fetch failed for %s: %s", uid, e)
     except Exception as e:

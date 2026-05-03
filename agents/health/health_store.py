@@ -45,17 +45,31 @@ class HealthStore:
         unit: str = "",
         source: str = "manual",
         recorded_at: datetime | None = None,
-    ):
-        """Insert a single health metric."""
+    ) -> bool:
+        """Insert a single health metric.
+
+        Returns True when a row was inserted. Exact duplicates are skipped so
+        scheduled Oura backfills can run often without inflating charts and
+        stats with thousands of repeated rows.
+        """
         if recorded_at is None:
             recorded_at = datetime.now(timezone.utc)
         with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM health_metrics WHERE person_id=%s AND metric_type=%s "
+                "AND source=%s AND recorded_at=%s LIMIT 1",
+                (person_id, metric_type, source, recorded_at),
+            )
+            if cur.fetchone():
+                log.debug("Metric duplicate skipped: %s %s %s (%s)", person_id, metric_type, recorded_at, source)
+                return False
             cur.execute(
                 "INSERT INTO health_metrics (person_id, metric_type, value, unit, source, recorded_at) "
                 "VALUES (%s, %s, %s, %s, %s, %s)",
                 (person_id, metric_type, value, unit, source, recorded_at),
             )
         log.info("Metric: %s %s=%s%s (%s)", person_id, metric_type, value, unit, source)
+        return True
 
     def insert_metrics_batch(self, person_id: str, metrics: list[dict], source: str = "apple_health"):
         """Batch insert metrics. Each dict: {type, value, unit, date}."""
@@ -88,10 +102,14 @@ class HealthStore:
         source_clause, source_params = _source_filter(metric_type)
         with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT value, unit, recorded_at as date, source FROM health_metrics "
-                "WHERE person_id=%s AND metric_type=%s AND recorded_at >= %s "
+                "SELECT value, unit, date, source FROM ("
+                "  SELECT DISTINCT ON (recorded_at, source) "
+                "    value, unit, recorded_at as date, source, id "
+                "  FROM health_metrics "
+                "  WHERE person_id=%s AND metric_type=%s AND recorded_at >= %s "
                 f"{source_clause} "
-                "ORDER BY recorded_at DESC",
+                "  ORDER BY recorded_at DESC, source, id DESC"
+                ") deduped ORDER BY date DESC",
                 (person_id, metric_type, since, *source_params),
             )
             rows = cur.fetchall()
@@ -102,7 +120,7 @@ class HealthStore:
         source_clause, source_params = _source_filter(metric_type)
         with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT value, unit, recorded_at as date FROM health_metrics "
+                "SELECT value, unit, recorded_at as date, source FROM health_metrics "
                 "WHERE person_id=%s AND metric_type=%s "
                 f"{source_clause} "
                 "ORDER BY recorded_at DESC LIMIT 1",
@@ -232,9 +250,13 @@ class HealthStore:
             cur.execute(
                 "SELECT COUNT(*) as count, AVG(value) as avg, "
                 "MIN(value) as min, MAX(value) as max, STDDEV(value) as stddev "
-                "FROM health_metrics WHERE person_id=%s AND metric_type=%s "
-                "AND recorded_at >= %s "
-                f"{source_clause}",
+                "FROM ("
+                "  SELECT DISTINCT ON (recorded_at, source) value, recorded_at, source, id "
+                "  FROM health_metrics WHERE person_id=%s AND metric_type=%s "
+                "  AND recorded_at >= %s "
+                f"{source_clause} "
+                "  ORDER BY recorded_at DESC, source, id DESC"
+                ") deduped",
                 (person_id, metric_type, since, *source_params),
             )
             row = cur.fetchone()

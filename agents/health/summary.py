@@ -52,10 +52,20 @@ def build_summary(store, person_id: str) -> dict:
     for mtype in metric_types:
         val = store.get_latest_metric(person_id, mtype)
         if val:
+            metric_date = val["date"]
+            age_hours = None
+            if hasattr(metric_date, "astimezone"):
+                metric_dt = metric_date
+                if metric_dt.tzinfo is None:
+                    metric_dt = metric_dt.replace(tzinfo=timezone.utc)
+                age_hours = round((now - metric_dt.astimezone(timezone.utc)).total_seconds() / 3600, 1)
             latest[mtype] = {
                 "value": val["value"],
                 "unit": val.get("unit", ""),
-                "date": val["date"].isoformat() if hasattr(val["date"], "isoformat") else str(val["date"]),
+                "date": metric_date.isoformat() if hasattr(metric_date, "isoformat") else str(metric_date),
+                "source": val.get("source", ""),
+                "age_hours": age_hours,
+                "stale": age_hours is not None and age_hours > 36,
             }
 
     # Trends: last 30 days for key metrics

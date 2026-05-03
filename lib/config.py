@@ -516,6 +516,7 @@ REVIEW_MODELS = _models_cfg.get("review", ["claude", "gpt5", "gemini"])
 DEFAULT_MODEL = _models_cfg.get("default", "claude")
 CLAUDE_FALLBACK_MODEL = _models_cfg.get("claude_fallback", "codex")
 HEALTH_REPORT_MODEL = _models_cfg.get("health_report", "gpt5")
+OURA_SYNC_DAYS_BACK = int(os.environ.get("MIRA_OURA_SYNC_DAYS_BACK", _limits.get("oura_sync_days_back", 14)))
 
 # Publishing controls
 _publishing_cfg = _cfg.get("publishing", {})
