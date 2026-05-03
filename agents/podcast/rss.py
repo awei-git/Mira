@@ -169,6 +169,25 @@ def _format_duration(seconds: int) -> str:
     return f"{m}:{s:02d}"
 
 
+def _has_cjk(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
+def _localized_title_for_feed(title: str, lang: str, episode_dir: Path) -> str:
+    """Return a title appropriate for the target podcast feed language."""
+    if lang != "zh" or _has_cjk(title):
+        return title
+    title_file = episode_dir / "title_zh.txt"
+    if title_file.exists():
+        candidate = title_file.read_text(encoding="utf-8").strip().strip('"')
+        if candidate and _has_cjk(candidate):
+            return candidate
+    raise ValueError(
+        "ZH podcast publish requires a Chinese episode title. "
+        f"Write {title_file.name} next to episode.mp3 or pass a Chinese title."
+    )
+
+
 def _copy_mp3_to_repo(mp3_path: Path, repo_dir: Path = None, pages_url: str = "", slug: str = "") -> str:
     """Copy MP3 into repo/audios/ using slug as filename (not episode.mp3)."""
     import shutil
@@ -479,6 +498,7 @@ def publish_episode(
     cfg = _get_config(lang)
     pages_url = cfg["pages_url"]
     feed_url = f"{pages_url}/feed.xml"
+    title = _localized_title_for_feed(title, lang, mp3_path.parent)
 
     # Derive slug from parent directory (episode dirs are named by slug, files are all episode.mp3)
     raw_slug = mp3_path.parent.name if mp3_path.stem == "episode" else mp3_path.stem

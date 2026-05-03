@@ -313,7 +313,6 @@ def test_full_publish_trace():
         assert slug == "the-socratic-probe"
 
         # Step 2: Copy MP3
-        mp3_filename = f"{slug}.mp3"
         mp3_url = _copy_mp3_to_repo(mp3, repo_dir=repo_dir, pages_url=pages_url, slug=slug)
         assert mp3_url == f"{pages_url}/audios/the-socratic-probe.mp3"
         assert (repo_dir / "audios" / "the-socratic-probe.mp3").exists()
@@ -369,6 +368,30 @@ def test_full_publish_trace():
         ]
         for path in expected_git_adds:
             assert (repo_dir / path).exists(), f"git add target missing: {path}"
+
+
+def test_zh_feed_title_requires_chinese_title(tmp_path: Path):
+    from rss import _localized_title_for_feed
+
+    episode_dir = tmp_path / "episode"
+    episode_dir.mkdir()
+
+    assert _localized_title_for_feed("为什么备份模型会同意你", "zh", episode_dir) == "为什么备份模型会同意你"
+
+    title_file = episode_dir / "title_zh.txt"
+    title_file.write_text("为什么备份模型会同意你", encoding="utf-8")
+    assert (
+        _localized_title_for_feed("Why Your Backup Model Agrees With You", "zh", episode_dir)
+        == "为什么备份模型会同意你"
+    )
+
+    title_file.unlink()
+    try:
+        _localized_title_for_feed("Why Your Backup Model Agrees With You", "zh", episode_dir)
+    except ValueError as exc:
+        assert "requires a Chinese episode title" in str(exc)
+    else:
+        raise AssertionError("English title should not be accepted for ZH feed")
 
 
 # ---------------------------------------------------------------------------

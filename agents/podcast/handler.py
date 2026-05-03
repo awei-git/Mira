@@ -1410,6 +1410,41 @@ Article text:
         return None
 
 
+def _has_cjk(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
+def _ensure_localized_feed_title(title: str, script: str, episode_dir: Path, lang: str) -> None:
+    """Create title_zh.txt so the ZH feed never publishes English item titles."""
+    if lang != "zh" or _has_cjk(title):
+        return
+    title_path = episode_dir / "title_zh.txt"
+    if title_path.exists() and _has_cjk(title_path.read_text(encoding="utf-8")):
+        return
+    try:
+        from llm import claude_think
+
+        prompt = f"""把这个英文文章标题改写成中文播客单集标题。
+
+要求：
+- 8-18个汉字左右
+- 像播客标题，不像论文标题
+- 可以意译，但必须保留核心悬念
+- 只输出标题，不要解释，不要引号
+
+英文标题：{title}
+
+节目稿开头：
+{script[:1200]}"""
+        candidate = (claude_think(prompt, timeout=45, tier="light") or "").strip().strip('"')
+    except Exception as e:
+        log.warning("ZH title generation failed: %s", e)
+        candidate = ""
+    if candidate and _has_cjk(candidate):
+        title_path.write_text(candidate[:80], encoding="utf-8")
+        log.info("ZH feed title saved: %s", candidate[:80])
+
+
 def generate_conversation_for_article(
     article_text: str, title: str, output_dir: Path | None = None, lang: str = "en"
 ) -> Path | None:
@@ -1489,6 +1524,7 @@ def generate_conversation_for_article(
     turns = _parse_turns(script)
     word_count = sum(len(t.split()) for _, t in turns)
     log.info("Script: %s (%d turns, ~%d words)", script_path.name, len(turns), word_count)
+    _ensure_localized_feed_title(title, script, episode_dir, lang)
 
     # Step 1b: Generate episode description (resume if already saved)
     desc_path = episode_dir / "description.txt"
