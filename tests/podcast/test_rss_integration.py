@@ -371,7 +371,7 @@ def test_full_publish_trace():
 
 
 def test_zh_feed_title_requires_chinese_title(tmp_path: Path):
-    from rss import _localized_title_for_feed
+    from rss import _localized_title_for_feed, _localized_description_for_feed
 
     episode_dir = tmp_path / "episode"
     episode_dir.mkdir()
@@ -392,6 +392,21 @@ def test_zh_feed_title_requires_chinese_title(tmp_path: Path):
         assert "requires a Chinese episode title" in str(exc)
     else:
         raise AssertionError("English title should not be accepted for ZH feed")
+
+    assert (
+        _localized_description_for_feed("Podcast episode for: Why Your Backup Model Agrees With You", "zh", episode_dir)
+        == ""
+    )
+    description_file = episode_dir / "description.txt"
+    description_file.write_text("这期聊的是AI互相验证为什么不等于真正的第二意见。", encoding="utf-8")
+    assert (
+        _localized_description_for_feed(
+            "Podcast episode for: Why Your Backup Model Agrees With You",
+            "zh",
+            episode_dir,
+        )
+        == "这期聊的是AI互相验证为什么不等于真正的第二意见。"
+    )
 
 
 # ---------------------------------------------------------------------------

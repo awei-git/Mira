@@ -188,6 +188,34 @@ def _localized_title_for_feed(title: str, lang: str, episode_dir: Path) -> str:
     )
 
 
+def _read_localized_description(episode_dir: Path, lang: str) -> str:
+    names = ("description_zh.txt", "description.txt") if lang == "zh" else ("description_en.txt", "description.txt")
+    for name in names:
+        path = episode_dir / name
+        if not path.exists():
+            continue
+        candidate = path.read_text(encoding="utf-8").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
+def _description_is_placeholder(description: str) -> bool:
+    return description.strip().lower().startswith("podcast episode for:")
+
+
+def _localized_description_for_feed(description: str, lang: str, episode_dir: Path) -> str:
+    """Return a description appropriate for the target podcast feed language."""
+    local_description = _read_localized_description(episode_dir, lang)
+    if lang != "zh":
+        return description if description and not _description_is_placeholder(description) else local_description
+    if local_description and _has_cjk(local_description):
+        return local_description
+    if description and _has_cjk(description) and not _description_is_placeholder(description):
+        return description
+    return ""
+
+
 def _copy_mp3_to_repo(mp3_path: Path, repo_dir: Path = None, pages_url: str = "", slug: str = "") -> str:
     """Copy MP3 into repo/audios/ using slug as filename (not episode.mp3)."""
     import shutil
@@ -499,6 +527,7 @@ def publish_episode(
     pages_url = cfg["pages_url"]
     feed_url = f"{pages_url}/feed.xml"
     title = _localized_title_for_feed(title, lang, mp3_path.parent)
+    description = _localized_description_for_feed(description, lang, mp3_path.parent)
 
     # Derive slug from parent directory (episode dirs are named by slug, files are all episode.mp3)
     raw_slug = mp3_path.parent.name if mp3_path.stem == "episode" else mp3_path.stem
@@ -533,6 +562,8 @@ def publish_episode(
                 log.warning("LLM description generation failed: %s", e)
         if not description:
             description = title
+    if lang == "zh" and not _has_cjk(description):
+        raise ValueError("ZH podcast publish requires a Chinese episode description.")
 
     # 0. Validate episode before publishing
     if not mp3_path.exists():

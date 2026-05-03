@@ -1758,10 +1758,12 @@ if __name__ == "__main__":
             from rss import publish_episode
 
             episode_mp3 = Path(str(result))
+            desc_path = episode_mp3.parent / "description.txt"
+            description = desc_path.read_text(encoding="utf-8").strip() if desc_path.exists() else ""
             rss_result = publish_episode(
                 mp3_path=episode_mp3,
                 title=title,
-                description=f"Podcast episode for: {title}",
+                description=description,
                 lang=lang,
             )
             if rss_result:
