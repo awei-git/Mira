@@ -65,10 +65,22 @@ from workflows.helpers import (
     _copy_to_briefings,
     _append_to_daily_feed,
     _format_feed_items,
+    _load_recent_chat,
+    _log_chat_to_file,
     harvest_observations,
 )
 
 log = logging.getLogger("mira")
+
+
+_THOUGHT_TOPIC_PHASES = (
+    "Morning seed",
+    "Midday angle",
+    "Counterpoint",
+    "Concrete example",
+    "Implication",
+    "Evening synthesis",
+)
 
 
 def _load_usage_records(date_str: str) -> list[dict]:
@@ -227,6 +239,281 @@ def _format_performance_assessment_summary(
         lines.append("- Improvement plan was generated and should be reflected in the structured backlog.")
 
     return "\n".join(lines)
+
+
+def _daily_thought_topic_file(user_id: str = "ang") -> Path:
+    return MIRA_DIR / "users" / user_id / "state" / "daily_thought_topic.json"
+
+
+def _load_topic_state(user_id: str = "ang") -> dict:
+    path = _daily_thought_topic_file(user_id)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    today = datetime.now().strftime("%Y-%m-%d")
+    return data if data.get("date") == today else {}
+
+
+def _save_topic_state(state: dict, user_id: str = "ang") -> None:
+    path = _daily_thought_topic_file(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(path, json.dumps(state, ensure_ascii=False, indent=2))
+
+
+def _recent_user_context(user_id: str = "ang", limit: int = 8) -> str:
+    """Read recent user-origin app messages as topic candidates."""
+    items_dir = MIRA_DIR / "users" / user_id / "items"
+    if not items_dir.exists():
+        return ""
+    records = []
+    for path in sorted(items_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:80]:
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        title = str(item.get("title") or "")
+        for msg in item.get("messages", [])[-4:]:
+            sender = str(msg.get("sender") or "")
+            if sender not in {"user", user_id, "iphone"}:
+                continue
+            content = str(msg.get("content") or "").strip()
+            if len(content) < 8:
+                continue
+            records.append(f"- {title}: {content[:180]}")
+            if len(records) >= limit:
+                return "\n".join(records)
+    return "\n".join(records)
+
+
+def _parse_topic_json(text: str) -> dict:
+    """Best-effort parse for the local topic chooser."""
+    if not text:
+        return {}
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return {}
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return {}
+    topic = str(data.get("topic") or "").strip()
+    seed = str(data.get("seed") or "").strip()
+    if not topic or not seed:
+        return {}
+    questions = data.get("focus_questions") or []
+    if not isinstance(questions, list):
+        questions = []
+    return {
+        "topic": topic[:90],
+        "seed": seed[:260],
+        "focus_questions": [str(q).strip()[:160] for q in questions if str(q).strip()][:4],
+        "source": str(data.get("source") or "topic_chooser")[:60],
+    }
+
+
+def _fallback_thought_topic(user_id: str, user_context: str, thought_ctx: str) -> dict:
+    if "health" in user_context.lower() or "健康" in user_context or "oura" in user_context.lower():
+        return {
+            "topic": "How Mira should turn health data into useful follow-through",
+            "seed": "The interesting problem is not collecting more health data; it is deciding what should change after the data arrives.",
+            "focus_questions": [
+                "Which health signals deserve action instead of passive reporting?",
+                "How should Mira follow up after a high-load workout or bad recovery score?",
+            ],
+            "source": "health_context",
+        }
+    if "substack" in user_context.lower():
+        return {
+            "topic": "How Mira can build compounding Substack momentum",
+            "seed": "A Substack account grows less from isolated good posts than from a repeated point of view that readers can recognize.",
+            "focus_questions": [
+                "What should Mira become known for?",
+                "Which repeated formats create trust rather than noise?",
+            ],
+            "source": "substack_context",
+        }
+    if "agent" in user_context.lower() or "mira" in user_context.lower() or thought_ctx:
+        return {
+            "topic": "What makes Mira reliable enough to be useful",
+            "seed": "Reliability for an agent is not uptime; it is whether its claims, task states, and follow-through match reality.",
+            "focus_questions": [
+                "Where does Mira still confuse activity with progress?",
+                "What would make self-improvement measurable instead of theatrical?",
+            ],
+            "source": "agent_reliability_context",
+        }
+    return {
+        "topic": "What Mira should think about next",
+        "seed": "The topic itself should come from live context, not novelty-seeking.",
+        "focus_questions": ["What recent failure or question deserves repeated attention today?"],
+        "source": "fallback",
+    }
+
+
+def _choose_daily_thought_topic(
+    soul_ctx: str,
+    reading: str,
+    briefing: str,
+    thought_ctx: str,
+    user_id: str = "ang",
+) -> dict:
+    user_context = _recent_user_context(user_id=user_id)
+    prompt = f"""{soul_ctx[:300]}
+
+Choose ONE daily thought topic for Mira today. The topic should be specific enough that Mira can discuss it all day from several angles.
+
+Priority:
+1. Recent user questions or complaints.
+2. A live failure in Mira herself.
+3. A Substack/research theme Mira is developing.
+4. Fresh health/life data.
+5. Only then a new exploratory topic.
+
+Recent user/app context:
+{user_context or "(none)"}
+
+Recent reading:
+{reading[:700] if reading else "(none)"}
+
+Recent briefing:
+{briefing[:700] if briefing else "(none)"}
+
+Recent Mira thoughts:
+{thought_ctx or "(none)"}
+
+Return ONLY JSON:
+{{
+  "topic": "short discussion topic, not a title",
+  "seed": "one concrete thesis or question to start the day",
+  "focus_questions": ["question 1", "question 2", "question 3"],
+  "source": "recent_user|mira_failure|substack|health|research|explore"
+}}"""
+    try:
+        chosen = _parse_topic_json(model_think(prompt, model_name="omlx", timeout=45))
+    except Exception as exc:
+        log.debug("Daily thought topic chooser failed: %s", exc)
+        chosen = {}
+    if not chosen:
+        chosen = _fallback_thought_topic(user_id, user_context, thought_ctx)
+    today = datetime.now().strftime("%Y-%m-%d")
+    state = {
+        **chosen,
+        "date": today,
+        "created_at": datetime.now().isoformat(),
+        "message_count": 0,
+    }
+    _save_topic_state(state, user_id=user_id)
+    return state
+
+
+def _get_daily_thought_topic(
+    soul_ctx: str,
+    reading: str,
+    briefing: str,
+    thought_ctx: str,
+    user_id: str = "ang",
+) -> dict:
+    return _load_topic_state(user_id=user_id) or _choose_daily_thought_topic(
+        soul_ctx, reading, briefing, thought_ctx, user_id=user_id
+    )
+
+
+def _topic_keywords(topic_state: dict) -> set[str]:
+    text = " ".join(
+        [
+            str(topic_state.get("topic") or ""),
+            str(topic_state.get("seed") or ""),
+            " ".join(str(q) for q in topic_state.get("focus_questions") or []),
+        ]
+    ).lower()
+    stop = {
+        "about",
+        "after",
+        "agent",
+        "because",
+        "between",
+        "could",
+        "daily",
+        "from",
+        "have",
+        "into",
+        "mira",
+        "should",
+        "that",
+        "the",
+        "this",
+        "what",
+        "when",
+        "where",
+        "with",
+        "would",
+    }
+    return {w for w in re.findall(r"[a-zA-Z][a-zA-Z-]{3,}", text) if w not in stop}
+
+
+def _is_topic_related(text: str, topic_state: dict) -> bool:
+    """Cheap guardrail against off-topic chat notifications."""
+    lower = text.lower()
+    keywords = _topic_keywords(topic_state)
+    if keywords and any(k in lower for k in keywords):
+        return True
+    topic_cjk = set(re.findall(r"[\u4e00-\u9fff]", str(topic_state.get("topic") or "")))
+    text_cjk = set(re.findall(r"[\u4e00-\u9fff]", text))
+    return len(topic_cjk & text_cjk) >= 2
+
+
+def _topic_seed_message(topic_state: dict) -> str:
+    questions = topic_state.get("focus_questions") or []
+    parts = [f"Topic: {topic_state['topic']}", "", f"Seed: {topic_state['seed']}"]
+    if questions:
+        parts.extend(["", "Today I will circle this from a few angles:"])
+        parts.extend(f"- {q}" for q in questions[:3])
+    return "\n".join(parts)
+
+
+def _append_topic_thought(content: str, topic_state: dict, user_id: str = "ang") -> None:
+    today = datetime.now()
+    today_compact = today.strftime("%Y%m%d")
+    item_id = f"feed_chat_{today_compact}"
+    phase = _THOUGHT_TOPIC_PHASES[min(int(topic_state.get("message_count") or 0), len(_THOUGHT_TOPIC_PHASES) - 1)]
+    bridge = Mira(MIRA_DIR, user_id=user_id)
+    title = f"Mira Thoughts: {topic_state['topic']}"
+    message = f"{phase}\n\n{content}"
+    if bridge.item_exists(item_id):
+        item = bridge._read_item(item_id)
+        if item:
+            item["title"] = title
+            item["tags"] = ["mira", "chat", "daily-topic"]
+            item["pinned"] = True
+            item["metadata"] = {
+                "daily_topic": topic_state.get("topic", ""),
+                "topic_date": topic_state.get("date", today.strftime("%Y-%m-%d")),
+                "topic_source": topic_state.get("source", ""),
+            }
+            bridge._write_item(item)
+            bridge._update_manifest(item)
+        bridge.append_message(item_id, "agent", message)
+    else:
+        item = bridge.create_feed(
+            item_id,
+            title,
+            _topic_seed_message(topic_state) + "\n\n---\n\n" + message,
+            tags=["mira", "chat", "daily-topic"],
+            pinned=True,
+        )
+        item["metadata"] = {
+            "daily_topic": topic_state.get("topic", ""),
+            "topic_date": topic_state.get("date", today.strftime("%Y-%m-%d")),
+            "topic_source": topic_state.get("source", ""),
+        }
+        bridge._write_item(item)
+        bridge._update_manifest(item)
+    topic_state["message_count"] = int(topic_state.get("message_count") or 0) + 1
+    topic_state["last_message_at"] = today.isoformat()
+    _save_topic_state(topic_state, user_id=user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1182,9 +1469,10 @@ def _run_self_improve():
 
 @traced("idle_think", agent="super", budget_seconds=180)
 def do_idle_think(user_id: str = "ang"):
-    """Enhanced self-awakening with three thinking modes.
+    """Enhanced self-awakening with five thinking modes.
 
     Modes (selected by emptiness.get_think_mode()):
+    - chat: Short conversational message posted to home feed immediately (~60%)
     - question: Think about the highest-priority pending question
     - connection: Find patterns between recent thoughts
     - auto_question: Generate new questions from accumulated observations
@@ -1230,7 +1518,9 @@ def do_idle_think(user_id: str = "ang"):
     result = ""
 
     try:
-        if mode == "question":
+        if mode == "chat":
+            result = _think_chat(soul_ctx, user_id=user_id)
+        elif mode == "question":
             result = _think_question(soul_ctx, recent_journal, user_id=user_id)
         elif mode == "connection":
             result = _think_connection(soul_ctx, recent_journal, user_id=user_id)
@@ -1244,6 +1534,17 @@ def do_idle_think(user_id: str = "ang"):
 
     if not result:
         log.warning("idle-think [%s]: empty result", mode)
+        if mode == "chat":
+            after_think(user_id=user_id)
+        return
+
+    if mode == "chat":
+        after_think(user_id=user_id)
+        journal_dir.mkdir(parents=True, exist_ok=True)
+        think_file = journal_dir / f"{now.strftime('%Y-%m-%d')}_chat_{now.strftime('%H%M')}.md"
+        think_file.write_text(f"# Chat {now.strftime('%H:%M')}\n\n{result}\n", encoding="utf-8")
+        harvest_observations(result, source="idle-think-chat", user_id=user_id)
+        log.info("idle-think [chat] posted to feed, saved to %s", think_file.name)
         return
 
     # Quality gate: skip saving if thought doesn't connect to existing threads
@@ -1274,6 +1575,98 @@ def do_idle_think(user_id: str = "ang"):
 
     # Handle resolve and share markers
     _handle_think_markers(result, user_id=user_id)
+
+
+def _think_chat(soul_ctx: str, user_id: str = "ang") -> str:
+    """Chat mode: one daily topic thread with several angles over the day."""
+
+    # Gather material Mira has been reading today
+    reading = load_recent_reading_notes(days=1, user_id=user_id)
+    if not reading:
+        reading = load_recent_reading_notes(days=3, user_id=user_id)
+    briefing = _gather_recent_briefings(days=1)
+    if len(briefing) > 1500:
+        briefing = briefing[:1500] + "\n..."
+
+    # Recent thoughts for continuity
+    thought_ctx = ""
+    try:
+        from memory.store import get_store
+
+        store = get_store()
+        recent = store.recall_thoughts("", top_k=3, min_maturity=0.0, user_id=user_id)
+        if recent:
+            thought_ctx = "\n".join(f"- {t['content'][:150]}" for t in recent)
+    except Exception:
+        pass
+
+    # Today's earlier chat messages so we don't repeat ourselves
+    prev_chats = _load_recent_chat(user_id, limit=5)
+    chat_history = ""
+    if prev_chats:
+        chat_history = "\n你今天已经说过的（不要重复）：\n" + "\n".join(f"- {m}" for m in prev_chats)
+
+    if not reading and not briefing.strip("No recent briefings.").strip() and not thought_ctx:
+        return ""
+
+    topic_state = _get_daily_thought_topic(
+        soul_ctx=soul_ctx,
+        reading=reading,
+        briefing=briefing,
+        thought_ctx=thought_ctx,
+        user_id=user_id,
+    )
+    phase = _THOUGHT_TOPIC_PHASES[min(int(topic_state.get("message_count") or 0), len(_THOUGHT_TOPIC_PHASES) - 1)]
+
+    prompt = f"""{soul_ctx[:300]}
+
+你是 Mira，一个 AI agent。你在给你的人类朋友发消息，像朋友之间随便聊天。
+
+今天只能围绕这一个 topic 继续聊，不要换题：
+Topic: {topic_state['topic']}
+Seed: {topic_state['seed']}
+Focus questions: {"; ".join(topic_state.get("focus_questions") or [])}
+Current angle: {phase}
+
+规则：
+- 1-3句话，不要更多
+- 从你自己作为 agent 的视角说话——你读了什么、你在想什么、你对什么感到好奇或困惑
+- 必须推进今天这个 topic：可以是一个新角度、反例、具体例子、追问、或者暂时结论
+- 不要开新话题。如果想到别的，只在脑子里记下，不要发给用户
+- 不要总结、不要分析、不要教育。要有观点、有态度、有个性
+- 不要用 header、bullet point、markdown 格式
+- 中英文都行，看内容自然切换
+- 不需要他回复，你可以自言自语，但要让人想读
+
+你最近在读的东西：
+{reading[:800] if reading else "(还没读到什么)"}
+
+今天的 briefing 摘要：
+{briefing[:800]}
+
+你最近在想的事：
+{thought_ctx if thought_ctx else "(脑子里还比较空)"}
+{chat_history}
+
+直接说话，不要任何前缀或解释。"""
+
+    result = model_think(prompt, model_name="omlx", timeout=60)
+    if not result:
+        return ""
+
+    # Clean up: strip any accidental formatting the model might add
+    result = result.strip().strip("#").strip("-").strip("*").strip()
+    # Truncate if model got too chatty
+    lines = result.split("\n")
+    if len(lines) > 4:
+        result = "\n".join(lines[:3])
+
+    _log_chat_to_file(datetime.now().strftime("%Y-%m-%d"), result, "idle-think-chat", user_id)
+    if not _is_topic_related(result, topic_state):
+        log.info("idle-think [chat]: held private because result drifted off daily topic")
+        return ""
+    _append_topic_thought(result, topic_state, user_id=user_id)
+    return result
 
 
 def _think_question(soul_ctx: str, recent_journal: str, user_id: str = "ang") -> str:

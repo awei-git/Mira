@@ -74,6 +74,22 @@ def _append_to_daily_feed(
         _log_spark_to_file(date_str, section_title, content, source, user_id)
         return
 
+    if feed_type == "chat":
+        _log_chat_to_file(date_str, content, source, user_id)
+        bridge = Mira(MIRA_DIR, user_id=user_id)
+        feed_id = f"feed_chat_{today}"
+        if bridge.item_exists(feed_id):
+            bridge.append_message(feed_id, "agent", content)
+        else:
+            bridge.create_feed(
+                feed_id,
+                "Mira's thoughts",
+                content,
+                tags=tags or ["mira", "chat"],
+                pinned=True,
+            )
+        return
+
     bridge = Mira(MIRA_DIR, user_id=user_id)
     feed_id = f"feed_explore_{today}"
     feed_title = f"Explore Digest {date_str}"
@@ -105,6 +121,41 @@ def _log_spark_to_file(date_str: str, title: str, content: str, source: str, use
     }
     with log_path.open("a", encoding="utf-8") as f:
         f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _log_chat_to_file(date_str: str, content: str, source: str, user_id: str):
+    """Append a chat message to today's chat log."""
+    import json as _json
+
+    chat_dir = MIRA_DIR / "users" / user_id / "chat"
+    chat_dir.mkdir(parents=True, exist_ok=True)
+    log_path = chat_dir / f"{date_str}.jsonl"
+    entry = {
+        "source": source,
+        "content": content,
+        "ts": datetime.now().isoformat(),
+    }
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _load_recent_chat(user_id: str = "ang", limit: int = 5) -> list[str]:
+    """Load the last N chat messages from today's chat log."""
+    import json as _json
+
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    log_path = MIRA_DIR / "users" / user_id / "chat" / f"{date_str}.jsonl"
+    if not log_path.exists():
+        return []
+    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    messages = []
+    for line in lines[-limit:]:
+        try:
+            entry = _json.loads(line)
+            messages.append(entry["content"])
+        except (json.JSONDecodeError, KeyError):
+            continue
+    return messages
 
 
 def _copy_to_briefings(filename: str, content: str):

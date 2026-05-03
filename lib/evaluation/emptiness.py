@@ -154,23 +154,27 @@ def check_threshold(user_id: str = "ang") -> bool:
 def get_think_mode(user_id: str = "ang") -> str | None:
     """Determine which thinking mode to use based on current state.
 
-    Returns: "question", "connection", "auto_question", or None.
+    Returns: "chat", "question", "connection", "auto_question",
+    "continuation", or None.
+
+    Chat mode fires ~60% of the time when any mode qualifies, and can also
+    fire at a lower emptiness threshold than the deep-thinking modes.
     """
+    import random
+
     state = load_emptiness(user_id=user_id)
     value = state.get("emptiness_value", 0.0)
     threshold = state.get("threshold", DEFAULT_THRESHOLD)
     has_questions = any(not q.get("resolved") for q in state.get("pending_questions", []))
 
-    # Check for active thought continuation
     continuation = state.get("thought_continuation")
     if continuation and continuation.get("continuation_count", 0) < MAX_CONTINUATION:
         return "continuation"
 
+    deep_mode = None
     if value >= threshold and has_questions:
-        return "question"
-
-    if value >= CONNECTION_THRESHOLD:
-        # Check if thought_stream has enough entries for connection/auto-question
+        deep_mode = "question"
+    elif value >= CONNECTION_THRESHOLD:
         try:
             from memory.store import get_store
 
@@ -180,9 +184,15 @@ def get_think_mode(user_id: str = "ang") -> str | None:
             thought_count = 0
 
         if thought_count >= 20 and not has_questions:
-            return "auto_question"
-        if thought_count >= 3:
-            return "connection"
+            deep_mode = "auto_question"
+        elif thought_count >= 3:
+            deep_mode = "connection"
+
+    if deep_mode:
+        return random.choices(["chat", deep_mode], weights=[60, 40], k=1)[0]
+
+    if value >= CONNECTION_THRESHOLD * 0.7:
+        return "chat"
 
     return None
 
