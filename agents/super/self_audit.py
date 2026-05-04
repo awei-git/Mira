@@ -273,6 +273,30 @@ _LOW_RISK_PATTERNS = {"hardcoded_path", "missing_manifest"}
 _HIGH_RISK_TYPES = {"test_failure", "recurring_error", "anti_pattern"}
 
 
+def _can_auto_fix_finding(finding: dict) -> bool:
+    """Return True only for findings with a concrete, implemented auto-fix path."""
+    pattern = finding.get("pattern_name", finding.get("type", ""))
+    if pattern == "hardcoded_path":
+        file_path = _AGENTS_DIR / str(finding.get("file") or "")
+        if file_path.exists():
+            try:
+                content = file_path.read_text(encoding="utf-8")
+            except OSError:
+                return False
+            return any(
+                re.search(supported, content)
+                for supported in (
+                    r'Path\.home\(\)\s*/\s*"Sandbox/Mira/artifacts/photos"',
+                    r'Path\.home\(\)\s*/\s*"Sandbox/Mira/artifacts"',
+                )
+            )
+        return "Sandbox/Mira/artifacts" in str(finding.get("match") or "")
+    if pattern == "missing_manifest":
+        desc = str(finding.get("description") or "")
+        return re.match(r"Agent '[A-Za-z0-9_]+' has no manifest\.json", desc) is not None
+    return False
+
+
 def _finding_description(finding: dict) -> str:
     return str(finding.get("description") or finding.get("pattern") or finding.get("match") or "").strip()
 
@@ -325,8 +349,7 @@ def _finding_owner(finding: dict) -> str:
 
 
 def _finding_executor(finding: dict) -> tuple[str, bool]:
-    risk_type = finding.get("pattern_name", finding.get("type", ""))
-    if risk_type in _LOW_RISK_PATTERNS:
+    if _can_auto_fix_finding(finding):
         return "self_audit.apply_low_risk", True
     return "manual_review.required", False
 
@@ -696,9 +719,7 @@ def attempt_fixes(findings: list[dict]) -> tuple[list[dict], list[dict]]:
     pending = []
 
     for f in findings:
-        risk_type = f.get("pattern_name", f.get("type", ""))
-
-        if risk_type in _LOW_RISK_PATTERNS:
+        if _can_auto_fix_finding(f):
             fix = _attempt_auto_fix(f)
             if fix and fix.get("applied"):
                 fix["backlog_id"] = _finding_backlog_id(f)
@@ -726,11 +747,15 @@ def attempt_fixes(findings: list[dict]) -> tuple[list[dict], list[dict]]:
 
 
 def generate_report(
-    all_findings: list[dict], auto_fixed: list[dict] | None = None, pending_fixes: list[dict] | None = None
+    all_findings: list[dict],
+    auto_fixed: list[dict] | None = None,
+    pending_fixes: list[dict] | None = None,
+    backlog_records: list[dict] | None = None,
 ) -> str:
     """Format findings + fix results into a readable report."""
     auto_fixed = auto_fixed or []
     pending_fixes = pending_fixes or []
+    backlog_records = backlog_records or []
 
     if not all_findings and not auto_fixed:
         return "自检完成，未发现问题。"
@@ -743,6 +768,25 @@ def generate_report(
     sections.append(f"自检报告 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     sections.append(f"发现 {len(all_findings)} 个问题：{len(critical)} 严重，{len(warnings)} 警告，{len(info)} 建议")
     sections.append("")
+
+    if backlog_records:
+        executor_ready = [
+            r
+            for r in backlog_records
+            if r.get("executor") == "self_audit.apply_low_risk" and r.get("status") == "proposed"
+        ]
+        manual = [
+            r
+            for r in backlog_records
+            if r.get("executor") == "manual_review.required" and r.get("status") == "proposed"
+        ]
+        verified = [r for r in backlog_records if r.get("status") == "verified"]
+        sections.append("== 行动闭环 ==")
+        sections.append(f"  - 已写入结构化 backlog: {len(backlog_records)} 项")
+        sections.append(f"  - 可自动执行: {len(executor_ready)} 项")
+        sections.append(f"  - 需要人工判断: {len(manual)} 项")
+        sections.append(f"  - 已验证/已修复: {len(verified)} 项")
+        sections.append("")
 
     if critical:
         sections.append("== 严重 ==")
@@ -798,20 +842,41 @@ def notify_user(report: str):
 
         bridge = Mira(MIRA_BRIDGE_DIR)
         today = datetime.now().strftime("%Y-%m-%d")
-        bridge.create_item(
-            f"self_audit_{today.replace('-', '')}",
-            "feed",
-            f"自检报告 {today}",
-            report,
-            sender="agent",
-            tags=["self-audit", "system"],
-            origin="agent",
-        )
+        item_id = f"self_audit_{today.replace('-', '')}"
+        title = f"自检报告 {today}"
+        if bridge.item_exists(item_id):
+            item = bridge._read_item(item_id) or {}
+            item["type"] = "discussion"
+            item["title"] = title
+            item["status"] = "done"
+            item["origin"] = "agent"
+            item["tags"] = list(dict.fromkeys(["self-audit", "system", *item.get("tags", [])]))
+            bridge._write_item(item)
+            bridge._update_manifest(item)
+            bridge.append_message(item_id, "agent", report)
+            item = bridge._read_item(item_id)
+            if item:
+                item["status"] = "done"
+                bridge._write_item(item)
+                bridge._update_manifest(item)
+        else:
+            item = bridge.create_item(
+                item_id,
+                "discussion",
+                title,
+                report,
+                sender="agent",
+                tags=["self-audit", "system"],
+                origin="agent",
+            )
+            item["status"] = "done"
+            bridge._write_item(item)
+            bridge._update_manifest(item)
         try:
             from control.db import transaction
             from control.repository import ControlRepository
 
-            item = bridge._read_item(f"self_audit_{today.replace('-', '')}")
+            item = bridge._read_item(item_id)
             if item:
                 with transaction() as conn:
                     ControlRepository(conn).upsert_bridge_item(bridge.user_id, item)
@@ -871,7 +936,7 @@ def run_audit(logs_only: bool = False, tests_only: bool = False) -> list[dict]:
     log.info("  Backlog records updated: %d", len(backlog_records))
 
     log.info("Step 5: Generating report...")
-    report = generate_report(all_findings, auto_fixed, pending_fixes)
+    report = generate_report(all_findings, auto_fixed, pending_fixes, backlog_records)
     print(report)
 
     # Save report locally

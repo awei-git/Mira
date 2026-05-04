@@ -177,6 +177,42 @@ def test_backlog_and_restore_triggers_do_not_write_state(monkeypatch):
     assert saves == []
 
 
+def test_backlog_trigger_checks_control_backlog(monkeypatch):
+    from datetime import datetime as real_datetime
+    from runtime import triggers
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 5, 4, 19, 0, 0)
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def list_backlog_items(self, user_id, *, status=None, limit=100):
+            return [{"id": "self_audit:demo", "executor": "self_audit.apply_low_risk", "status": "proposed"}]
+
+    class FakeTransaction:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(triggers, "datetime", FakeDateTime)
+    monkeypatch.setattr(triggers, "_load_state", lambda user_id=None: {})
+    monkeypatch.setitem(
+        sys.modules,
+        "backlog_executor",
+        SimpleNamespace(CONTROL_EXECUTORS={"request_verify.apply", "self_audit.apply_low_risk"}),
+    )
+    monkeypatch.setitem(sys.modules, "control.db", SimpleNamespace(transaction=lambda: FakeTransaction()))
+    monkeypatch.setitem(sys.modules, "control.repository", SimpleNamespace(ControlRepository=FakeRepo))
+
+    assert triggers._should_backlog_executor() is True
+
+
 def test_health_and_self_improvement_triggers_do_not_prewrite_state(monkeypatch):
     from datetime import datetime as real_datetime
     from runtime import triggers

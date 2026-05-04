@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 
 def test_build_backlog_record_has_stable_id_and_review_metadata():
     import self_audit
@@ -26,6 +28,36 @@ def test_build_backlog_record_has_stable_id_and_review_metadata():
 def test_low_risk_backlog_record_is_executor_eligible():
     import self_audit
 
+    original_agents_dir = self_audit._AGENTS_DIR
+    tmp_agents_dir = Path(__file__).parent
+    self_audit._AGENTS_DIR = tmp_agents_dir
+    target = tmp_agents_dir / "photo_handler_fixture.py"
+    target.write_text('from pathlib import Path\nROOT = Path.home() / "Sandbox/Mira/artifacts"\n')
+    try:
+        record = self_audit.build_backlog_record(
+            {
+                "type": "anti_pattern",
+                "severity": "info",
+                "pattern_name": "hardcoded_path",
+                "description": "Hardcoded path",
+                "file": target.name,
+                "line": 10,
+                "match": "Path.home()",
+            },
+            audit_date="2026-05-02",
+        )
+    finally:
+        target.unlink(missing_ok=True)
+        self_audit._AGENTS_DIR = original_agents_dir
+
+    assert record["executor"] == "self_audit.apply_low_risk"
+    assert record["payload"]["executor_eligible"] is True
+    assert record["priority"] == "low"
+
+
+def test_path_home_without_supported_replacement_requires_manual_review():
+    import self_audit
+
     record = self_audit.build_backlog_record(
         {
             "type": "anti_pattern",
@@ -34,13 +66,33 @@ def test_low_risk_backlog_record_is_executor_eligible():
             "description": "Hardcoded path",
             "file": "photo/handler.py",
             "line": 10,
+            "match": "Path.home()",
         },
         audit_date="2026-05-02",
     )
 
-    assert record["executor"] == "self_audit.apply_low_risk"
-    assert record["payload"]["executor_eligible"] is True
-    assert record["priority"] == "low"
+    assert record["executor"] == "manual_review.required"
+    assert record["payload"]["executor_eligible"] is False
+
+
+def test_unimplemented_low_risk_pattern_requires_manual_review():
+    import self_audit
+
+    record = self_audit.build_backlog_record(
+        {
+            "type": "anti_pattern",
+            "severity": "info",
+            "pattern_name": "hardcoded_path",
+            "description": "Hardcoded path",
+            "file": "photo/handler.py",
+            "line": 10,
+            "match": '"/Users/',
+        },
+        audit_date="2026-05-02",
+    )
+
+    assert record["executor"] == "manual_review.required"
+    assert record["payload"]["executor_eligible"] is False
 
 
 def test_backlog_id_keeps_distinct_line_findings_separate():
@@ -129,4 +181,4 @@ def test_execute_self_audit_low_risk_rejects_non_mechanical():
     )
 
     assert result["success"] is False
-    assert "not low-risk" in result["reason"]
+    assert "no implemented automatic fix" in result["reason"]

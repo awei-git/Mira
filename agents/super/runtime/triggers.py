@@ -676,9 +676,9 @@ def _should_self_evolve() -> bool:
 
 
 def _should_backlog_executor() -> bool:
-    """Run when there is at least one approved executable backlog item."""
+    """Run when there is at least one executable backlog item."""
     now = datetime.now()
-    if not (14 <= now.hour <= 18):
+    if not (8 <= now.hour <= 23):
         return False
     state = _load_state()
     stamp = state.get("last_backlog_executor", "")
@@ -688,6 +688,8 @@ def _should_backlog_executor() -> bool:
                 return False
         except ValueError:
             pass
+    if _has_control_backlog_work():
+        return True
     try:
         from ops.backlog import ActionBacklog
 
@@ -700,6 +702,23 @@ def _should_backlog_executor() -> bool:
     if not has_work:
         return False
     return True
+
+
+def _has_control_backlog_work() -> bool:
+    """Return whether the Postgres control backlog has executable proposed work."""
+    try:
+        from backlog_executor import CONTROL_EXECUTORS
+        from control.db import transaction
+        from control.repository import ControlRepository
+
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            return any(
+                item.get("executor") in CONTROL_EXECUTORS
+                for item in repo.list_backlog_items("ang", status="proposed", limit=200)
+            )
+    except Exception:
+        return False
 
 
 def _should_restore_dry_run() -> bool:

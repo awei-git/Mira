@@ -133,11 +133,11 @@ def _execute_self_audit_low_risk(item: dict) -> dict:
     if not finding:
         return {"success": False, "reason": "self-audit finding payload missing"}
 
-    risk_type = finding.get("pattern_name", finding.get("type", ""))
-    if risk_type not in {"hardcoded_path", "missing_manifest"}:
-        return {"success": False, "reason": f"finding is not low-risk mechanical: {risk_type}"}
-
     import self_audit
+
+    if not self_audit._can_auto_fix_finding(finding):  # noqa: SLF001 - governed internal executor
+        risk_type = finding.get("pattern_name", finding.get("type", ""))
+        return {"success": False, "reason": f"finding has no implemented automatic fix: {risk_type}"}
 
     fix = self_audit._attempt_auto_fix(finding)  # noqa: SLF001 - governed internal executor
     if fix and fix.get("applied"):
