@@ -38,6 +38,21 @@ class FakeBridge:
         self.items[feed_id] = item
         return item
 
+    def create_discussion(self, disc_id: str, title: str, content: str, sender="agent", tags=None, parent_id=""):
+        item = {
+            "id": disc_id,
+            "type": "discussion",
+            "title": title,
+            "status": "needs-input",
+            "tags": tags or [],
+            "origin": "agent" if sender == "agent" else "user",
+            "pinned": False,
+            "parent_id": parent_id,
+            "messages": [{"id": "first", "sender": sender, "content": content, "kind": "text"}],
+        }
+        self.items[disc_id] = item
+        return item
+
     def append_message(self, item_id: str, sender: str, content: str):
         self.items[item_id]["messages"].append({"id": "next", "sender": sender, "content": content, "kind": "text"})
 
@@ -71,6 +86,9 @@ def test_append_topic_thought_uses_one_stable_daily_thread(monkeypatch, tmp_path
 
     assert len(bridge.items) == 1
     item = next(iter(bridge.items.values()))
+    assert item["type"] == "discussion"
+    assert item["status"] == "done"
+    assert item["origin"] == "agent"
     assert item["title"] == "Mira Thoughts"
     assert item["tags"] == ["mira", "chat", "daily-topic"]
     assert item["pinned"] is True
@@ -81,6 +99,30 @@ def test_append_topic_thought_uses_one_stable_daily_thread(monkeypatch, tmp_path
     assert (
         item["messages"][1]["content"] == "A second angle is whether progress is visible while work is still running."
     )
+
+
+def test_append_topic_thought_migrates_existing_feed_to_replyable_discussion(monkeypatch, tmp_path):
+    bridge = FakeBridge()
+    monkeypatch.setattr(daily, "Mira", lambda *args, **kwargs: bridge)
+    monkeypatch.setattr(daily, "MIRA_DIR", tmp_path)
+    topic = {
+        "date": "2026-05-03",
+        "topic": "How should Mira talk with the user instead of broadcasting at them",
+        "seed": "A thought only becomes useful when it can be pushed back on.",
+        "source": "user_feedback",
+    }
+    item_id = f"feed_chat_{daily.datetime.now().strftime('%Y%m%d')}"
+    bridge.create_feed(item_id, "Mira Thoughts", "old one-way content", tags=["mira"], pinned=False)
+
+    daily._append_topic_thought("This should now be commentable.", topic)
+
+    item = bridge.items[item_id]
+    assert item["type"] == "discussion"
+    assert item["status"] == "done"
+    assert item["origin"] == "agent"
+    assert item["pinned"] is True
+    assert item["metadata"]["topic_source"] == "user_feedback"
+    assert item["messages"][-1]["content"] == "This should now be commentable."
 
 
 def test_trim_chat_result_keeps_two_short_sentences():

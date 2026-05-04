@@ -505,6 +505,23 @@ def _topic_seed_message(topic_state: dict) -> str:
     return f"今天我想抓住一个问题：{topic_state['topic']}\n\n我的直觉是：{topic_state['seed']}"
 
 
+def _normalize_topic_discussion_item(item: dict, title: str, topic_state: dict, today: datetime) -> dict:
+    tags = list(dict.fromkeys(["mira", "chat", "daily-topic", *item.get("tags", [])]))
+    item["type"] = "discussion"
+    item["title"] = title
+    item["tags"] = tags
+    item["origin"] = "agent"
+    item["pinned"] = True
+    if item.get("status") not in {"queued", "working", "verifying"}:
+        item["status"] = "done"
+    item["metadata"] = {
+        "daily_topic": topic_state.get("topic", ""),
+        "topic_date": topic_state.get("date", today.strftime("%Y-%m-%d")),
+        "topic_source": topic_state.get("source", ""),
+    }
+    return item
+
+
 def _append_topic_thought(content: str, topic_state: dict, user_id: str = "ang") -> None:
     today = datetime.now()
     today_compact = today.strftime("%Y%m%d")
@@ -514,30 +531,18 @@ def _append_topic_thought(content: str, topic_state: dict, user_id: str = "ang")
     if bridge.item_exists(item_id):
         item = bridge._read_item(item_id)
         if item:
-            item["title"] = title
-            item["tags"] = ["mira", "chat", "daily-topic"]
-            item["pinned"] = True
-            item["metadata"] = {
-                "daily_topic": topic_state.get("topic", ""),
-                "topic_date": topic_state.get("date", today.strftime("%Y-%m-%d")),
-                "topic_source": topic_state.get("source", ""),
-            }
+            item = _normalize_topic_discussion_item(item, title, topic_state, today)
             bridge._write_item(item)
             bridge._update_manifest(item)
         bridge.append_message(item_id, "agent", content)
     else:
-        item = bridge.create_feed(
+        item = bridge.create_discussion(
             item_id,
             title,
             _topic_seed_message(topic_state) + "\n\n" + content,
             tags=["mira", "chat", "daily-topic"],
-            pinned=True,
         )
-        item["metadata"] = {
-            "daily_topic": topic_state.get("topic", ""),
-            "topic_date": topic_state.get("date", today.strftime("%Y-%m-%d")),
-            "topic_source": topic_state.get("source", ""),
-        }
+        item = _normalize_topic_discussion_item(item, title, topic_state, today)
         bridge._write_item(item)
         bridge._update_manifest(item)
     topic_state["message_count"] = int(topic_state.get("message_count") or 0) + 1
