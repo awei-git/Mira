@@ -192,6 +192,22 @@ def _is_edit_request(content: str, task_data: dict) -> bool:
     Requires: (1) edit-like language AND (2) prior agent output in the thread.
     """
     lower = content.strip().lower()
+    compact = re.sub(r"\s+", "", lower)
+
+    # Short status questions often contain edit markers ("修改了吗") but are
+    # asking for follow-up, not requesting a rewrite of the prior answer.
+    status_question_markers = (
+        "修改了吗",
+        "改了吗",
+        "修了吗",
+        "改好了",
+        "修好了",
+        "done?",
+        "didyou",
+        "wasitchanged",
+    )
+    if len(compact) <= 40 and any(marker in compact for marker in status_question_markers):
+        return False
 
     # Must have edit-like language
     has_edit_marker = any(marker in lower for marker in _EDIT_MARKERS)

@@ -71,6 +71,21 @@ def test_writer_handler_matches_production_contract(tmp_path, monkeypatch):
     assert (workspace / "project_path.txt").read_text(encoding="utf-8") == str(project_dir)
 
 
+def test_edit_detection_does_not_swallow_status_question():
+    task_data = {
+        "messages": [
+            {
+                "sender": "agent",
+                "content": "这是一段足够长的旧回复，用来确认 thread 里确实存在可编辑内容。"
+                "它还需要再长一点，避免被当作短状态卡片或无效输出跳过。",
+            }
+        ]
+    }
+
+    assert handlers_legacy._is_edit_request("把第二段改短一点", task_data)
+    assert not handlers_legacy._is_edit_request("修改了吗", task_data)
+
+
 def test_execute_plan_steps_backfills_needs_input_result(tmp_path, monkeypatch):
     """Handler return prefixes like NEEDS_APPROVAL must become result.json."""
     workspace = tmp_path / "task"
