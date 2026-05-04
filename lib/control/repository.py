@@ -338,8 +338,23 @@ class ControlRepository:
                         ) THEN status
                         ELSE 'queued'
                     END,
+                    started_at = CASE
+                        WHEN status IN ('queued', 'dispatched', 'running', 'working') THEN started_at
+                        ELSE NULL
+                    END,
+                    heartbeat_at = CASE
+                        WHEN status IN ('queued', 'dispatched', 'running', 'working') THEN heartbeat_at
+                        ELSE NULL
+                    END,
+                    completed_at = CASE
+                        WHEN status IN ('queued', 'dispatched', 'running', 'working') THEN completed_at
+                        ELSE NULL
+                    END,
+                    worker_pid = CASE
+                        WHEN status IN ('queued', 'dispatched', 'running', 'working') THEN worker_pid
+                        ELSE NULL
+                    END,
                     origin = 'user',
-                    completed_at = NULL,
                     archived_at = NULL,
                     error_code = NULL,
                     error_message = NULL,
@@ -764,6 +779,11 @@ class ControlRepository:
                     verification = COALESCE(EXCLUDED.verification, {self.schema}.tasks.verification),
                     outcome_verified = EXCLUDED.outcome_verified,
                     verification_method = COALESCE(EXCLUDED.verification_method, {self.schema}.tasks.verification_method)
+                WHERE NOT (
+                    {self.schema}.tasks.origin = 'user'
+                    AND {self.schema}.tasks.status IN ('queued', 'dispatched', 'running', 'working')
+                    AND {self.schema}.tasks.updated_at > EXCLUDED.updated_at
+                )
                 """,
                 {
                     "id": task_id,

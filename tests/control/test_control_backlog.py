@@ -203,6 +203,8 @@ def test_append_user_reply_requeues_completed_or_feed_item(monkeypatch):
 
     update_query = conn.cursor_obj.queries[2][0]
     assert "ELSE 'queued'" in update_query
+    assert "started_at = CASE" in update_query
+    assert "worker_pid = CASE" in update_query
     assert "origin = 'user'" in update_query
     assert item == {"id": "feed_market_1", "status": "queued"}
     assert events[0][0][:3] == ("feed_market_1", "ang", "message.created")
@@ -391,3 +393,27 @@ def test_overlay_running_task_projects_status_card(tmp_path):
     assert "status_card" in message_query
     assert message_params[:3] == ("req_progress_status", "req_progress", "ang")
     assert "locating Tetra synthesis" in message_params[3]
+
+
+def test_overlay_task_record_does_not_overwrite_newer_user_reply():
+    from control.repository import ControlRepository
+
+    conn = FakeConn()
+    repo = ControlRepository(conn)
+
+    repo.overlay_task_record(
+        {
+            "task_id": "self_audit_20260503",
+            "user_id": "ang",
+            "content_preview": "自检报告",
+            "status": "completed_unverified",
+            "started_at": "2026-05-03T12:02:35Z",
+            "completed_at": "2026-05-03T12:03:08Z",
+        }
+    )
+
+    upsert_query = next(query for query, _ in conn.cursor_obj.queries if "ON CONFLICT (id) DO UPDATE SET" in query)
+    assert "WHERE NOT" in upsert_query
+    assert "tasks.origin = 'user'" in upsert_query
+    assert "tasks.status IN ('queued', 'dispatched', 'running', 'working')" in upsert_query
+    assert "tasks.updated_at > EXCLUDED.updated_at" in upsert_query
