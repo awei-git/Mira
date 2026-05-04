@@ -3,6 +3,7 @@
 from __future__ import annotations
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,6 +26,84 @@ def test_core_imports():
     import core
 
     assert hasattr(core, "cmd_run"), "core.py missing cmd_run"
+
+
+def test_control_plane_dispatch_resets_terminal_local_record(monkeypatch):
+    item = {
+        "id": "self_audit_20260503",
+        "user_id": "ang",
+        "title": "自检报告",
+        "messages": [{"sender": "ang", "content": "修改了吗", "timestamp": "2026-05-03T20:05:07Z"}],
+    }
+    calls = []
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def list_dispatchable_tasks(self, limit):
+            return [item]
+
+        def claim_task_for_dispatch(self, user_id, task_id):
+            calls.append(("claim", user_id, task_id))
+            return True
+
+        def release_dispatch_claim(self, user_id, task_id, *, reason):
+            calls.append(("release", user_id, task_id, reason))
+
+    @contextmanager
+    def fake_transaction():
+        yield object()
+
+    @contextmanager
+    def fake_advisory_lock(*args, **kwargs):
+        yield
+
+    class FakeTaskManager:
+        def is_busy(self):
+            return False
+
+        def get_active_count(self):
+            return 0
+
+        def is_dispatched(self, task_id):
+            return True
+
+        def find_failed_task(self, task_id):
+            return SimpleNamespace(task_id=task_id, status="completed_unverified")
+
+        def reset_for_retry(self, task_id):
+            calls.append(("reset", task_id))
+
+        def dispatch(self, msg, workspace):
+            calls.append(("dispatch", msg.id, msg.content))
+            return msg.id
+
+    import control.db
+    import control.repository
+
+    monkeypatch.setattr(control.db, "transaction", fake_transaction)
+    monkeypatch.setattr(control.repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(talk, "advisory_lock", fake_advisory_lock)
+    monkeypatch.setattr(talk, "_check_inbound_command_safety", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        talk,
+        "get_user_config",
+        lambda user_id: {
+            "role": "admin",
+            "model_restriction": None,
+            "content_filter": False,
+            "allowed_agents": ["general"],
+        },
+    )
+
+    talk._dispatch_control_plane_tasks(FakeTaskManager(), {"ang": object()}, object())
+
+    assert calls[:3] == [
+        ("reset", "self_audit_20260503"),
+        ("claim", "ang", "self_audit_20260503"),
+        ("dispatch", "self_audit_20260503", "修改了吗"),
+    ]
 
 
 def test_config_imports():
@@ -366,6 +445,7 @@ def test_do_talk_routes_completed_task_to_matching_user_bridge(monkeypatch):
     monkeypatch.setattr("talk.TaskManager", FakeTaskManager)
     monkeypatch.setattr("talk._status_footer", lambda task_mgr: "")
     monkeypatch.setattr("talk._sweep_stuck_items", lambda bridge, task_mgr: None)
+    monkeypatch.setattr("talk.CONTROL_RUNTIME_DB_ENABLED", False)
 
     core.do_talk()
 
@@ -472,6 +552,7 @@ def test_do_talk_stops_other_legacy_inboxes_when_busy(monkeypatch):
     monkeypatch.setattr(core.Mira, "for_all_users", classmethod(lambda cls: [ang, liquan]))
     monkeypatch.setattr("talk.TaskManager", FakeTaskManager)
     monkeypatch.setattr("talk._sweep_stuck_items", lambda bridge, task_mgr: None)
+    monkeypatch.setattr("talk.CONTROL_RUNTIME_DB_ENABLED", False)
     monkeypatch.setattr("core._is_meta_command", lambda content: False)
     monkeypatch.setattr("core._talk_slug", lambda content, task_id: task_id)
     external_inputs = []

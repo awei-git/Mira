@@ -142,8 +142,14 @@ def _dispatch_control_plane_tasks(task_mgr, bridges_by_user: dict, default_bridg
             return
         task_id = item.get("id") or ""
         user_id = item.get("user_id") or "ang"
-        if not task_id or task_mgr.is_dispatched(task_id):
+        if not task_id:
             continue
+        if task_mgr.is_dispatched(task_id):
+            terminal_rec = task_mgr.find_failed_task(task_id)
+            if terminal_rec:
+                task_mgr.reset_for_retry(task_id)
+            else:
+                continue
         user_cfg = get_user_config(user_id)
         bridge = bridges_by_user.get(user_id, default_bridge)
         content = ""
