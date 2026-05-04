@@ -71,10 +71,27 @@ def test_append_topic_thought_uses_one_stable_daily_thread(monkeypatch, tmp_path
 
     assert len(bridge.items) == 1
     item = next(iter(bridge.items.values()))
-    assert item["title"] == "Mira Thoughts: What makes Mira reliable enough to be useful"
+    assert item["title"] == "Mira Thoughts"
     assert item["tags"] == ["mira", "chat", "daily-topic"]
     assert item["pinned"] is True
     assert item["metadata"]["daily_topic"] == "What makes Mira reliable enough to be useful"
     assert len(item["messages"]) == 2
-    assert "Topic: What makes Mira reliable enough to be useful" in item["messages"][0]["content"]
-    assert "Midday angle" in item["messages"][1]["content"]
+    assert "今天我想抓住一个问题：What makes Mira reliable enough to be useful" in item["messages"][0]["content"]
+    assert "Midday angle" not in item["messages"][1]["content"]
+    assert (
+        item["messages"][1]["content"] == "A second angle is whether progress is visible while work is still running."
+    )
+
+
+def test_trim_chat_result_keeps_two_short_sentences():
+    text = "我突然觉得，可靠性不是能不能回答，而是敢不敢停下来承认没做完。这个区别比看起来大。后面这些都应该被截掉。"
+
+    result = daily._trim_chat_result(text)
+
+    assert result == "我突然觉得，可靠性不是能不能回答，而是敢不敢停下来承认没做完。这个区别比看起来大。"
+    assert len(result) <= 120
+
+
+def test_topic_too_dry_rejects_jargon_title():
+    assert daily._topic_too_dry("The structural failure of AI handoff protocol as authority laundering")
+    assert not daily._topic_too_dry("一个 agent 到底什么时候才算真的可靠？")

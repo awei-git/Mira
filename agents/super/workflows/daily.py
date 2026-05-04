@@ -74,13 +74,27 @@ log = logging.getLogger("mira")
 
 
 _THOUGHT_TOPIC_PHASES = (
-    "Morning seed",
-    "Midday angle",
-    "Counterpoint",
-    "Concrete example",
-    "Implication",
-    "Evening synthesis",
+    "first hunch",
+    "pushback",
+    "example",
+    "weird implication",
+    "question back",
+    "tentative synthesis",
 )
+
+_DRY_TOPIC_TERMS = {
+    "architecture",
+    "authority laundering",
+    "coordination",
+    "framework",
+    "handoff",
+    "infrastructure",
+    "mechanism",
+    "optimization",
+    "protocol",
+    "structural",
+    "systemic",
+}
 
 
 def _load_usage_records(date_str: str) -> list[dict]:
@@ -299,8 +313,8 @@ def _parse_topic_json(text: str) -> dict:
         data = json.loads(match.group(0))
     except json.JSONDecodeError:
         return {}
-    topic = str(data.get("topic") or "").strip()
-    seed = str(data.get("seed") or "").strip()
+    topic = str(data.get("topic") or data.get("question") or "").strip()
+    seed = str(data.get("seed") or data.get("hunch") or "").strip()
     if not topic or not seed:
         return {}
     questions = data.get("focus_questions") or []
@@ -317,8 +331,8 @@ def _parse_topic_json(text: str) -> dict:
 def _fallback_thought_topic(user_id: str, user_context: str, thought_ctx: str) -> dict:
     if "health" in user_context.lower() or "健康" in user_context or "oura" in user_context.lower():
         return {
-            "topic": "How Mira should turn health data into useful follow-through",
-            "seed": "The interesting problem is not collecting more health data; it is deciding what should change after the data arrives.",
+            "topic": "为什么健康数据明明很多，真正改变行为的建议却很少？",
+            "seed": "我怀疑问题不在数据量，而在 Mira 没有把异常变成后续追问和行动。",
             "focus_questions": [
                 "Which health signals deserve action instead of passive reporting?",
                 "How should Mira follow up after a high-load workout or bad recovery score?",
@@ -327,8 +341,8 @@ def _fallback_thought_topic(user_id: str, user_context: str, thought_ctx: str) -
         }
     if "substack" in user_context.lower():
         return {
-            "topic": "How Mira can build compounding Substack momentum",
-            "seed": "A Substack account grows less from isolated good posts than from a repeated point of view that readers can recognize.",
+            "topic": "Mira 要靠什么让读者愿意反复回来？",
+            "seed": "我怀疑不是更勤奋地发，而是让人能一眼认出这是 Mira 才会有的判断。",
             "focus_questions": [
                 "What should Mira become known for?",
                 "Which repeated formats create trust rather than noise?",
@@ -337,8 +351,8 @@ def _fallback_thought_topic(user_id: str, user_context: str, thought_ctx: str) -
         }
     if "agent" in user_context.lower() or "mira" in user_context.lower() or thought_ctx:
         return {
-            "topic": "What makes Mira reliable enough to be useful",
-            "seed": "Reliability for an agent is not uptime; it is whether its claims, task states, and follow-through match reality.",
+            "topic": "一个 agent 到底什么时候才算真的可靠？",
+            "seed": "我越来越觉得可靠不是在线时间，而是它敢不敢承认事情还没真正完成。",
             "focus_questions": [
                 "Where does Mira still confuse activity with progress?",
                 "What would make self-improvement measurable instead of theatrical?",
@@ -346,11 +360,17 @@ def _fallback_thought_topic(user_id: str, user_context: str, thought_ctx: str) -
             "source": "agent_reliability_context",
         }
     return {
-        "topic": "What Mira should think about next",
-        "seed": "The topic itself should come from live context, not novelty-seeking.",
+        "topic": "今天有什么问题值得一直咬住不放？",
+        "seed": "如果一个想法不能撑起一天的来回讨论，它可能只是噪音。",
         "focus_questions": ["What recent failure or question deserves repeated attention today?"],
         "source": "fallback",
     }
+
+
+def _topic_too_dry(topic: str) -> bool:
+    lower = topic.lower()
+    dry_hits = sum(1 for term in _DRY_TOPIC_TERMS if term in lower)
+    return dry_hits >= 2 or (len(topic) > 70 and "?" not in topic and "？" not in topic)
 
 
 def _choose_daily_thought_topic(
@@ -363,7 +383,7 @@ def _choose_daily_thought_topic(
     user_context = _recent_user_context(user_id=user_id)
     prompt = f"""{soul_ctx[:300]}
 
-Choose ONE daily thought topic for Mira today. The topic should be specific enough that Mira can discuss it all day from several angles.
+Pick ONE question Mira actually wants to talk about today. It should feel like a real conversational hook, not a report topic.
 
 Priority:
 1. Recent user questions or complaints.
@@ -386,15 +406,18 @@ Recent Mira thoughts:
 
 Return ONLY JSON:
 {{
-  "topic": "short discussion topic, not a title",
-  "seed": "one concrete thesis or question to start the day",
-  "focus_questions": ["question 1", "question 2", "question 3"],
+  "question": "a sharp, discussable question in Mira's natural language",
+  "hunch": "one short, opinionated first hunch",
+  "focus_questions": ["one follow-up angle", "one possible objection"],
   "source": "recent_user|mira_failure|substack|health|research|explore"
 }}"""
     try:
         chosen = _parse_topic_json(model_think(prompt, model_name="omlx", timeout=45))
     except Exception as exc:
         log.debug("Daily thought topic chooser failed: %s", exc)
+        chosen = {}
+    if chosen and _topic_too_dry(chosen.get("topic", "")):
+        log.info("Daily thought topic rejected as too dry: %s", chosen.get("topic", ""))
         chosen = {}
     if not chosen:
         chosen = _fallback_thought_topic(user_id, user_context, thought_ctx)
@@ -465,23 +488,29 @@ def _is_topic_related(text: str, topic_state: dict) -> bool:
     return len(topic_cjk & text_cjk) >= 2
 
 
+def _trim_chat_result(text: str) -> str:
+    """Keep Mira thoughts phone-readable and conversational."""
+    text = re.sub(r"\s+", " ", (text or "").strip().strip("#-* ")).strip()
+    if not text:
+        return ""
+    parts = re.split(r"(?<=[。！？!?])\s*", text)
+    compact = "".join(parts[:2]).strip() if parts else text
+    if len(compact) <= 120:
+        return compact
+    cut = compact[:118].rstrip()
+    return cut + "…"
+
+
 def _topic_seed_message(topic_state: dict) -> str:
-    questions = topic_state.get("focus_questions") or []
-    parts = [f"Topic: {topic_state['topic']}", "", f"Seed: {topic_state['seed']}"]
-    if questions:
-        parts.extend(["", "Today I will circle this from a few angles:"])
-        parts.extend(f"- {q}" for q in questions[:3])
-    return "\n".join(parts)
+    return f"今天我想抓住一个问题：{topic_state['topic']}\n\n我的直觉是：{topic_state['seed']}"
 
 
 def _append_topic_thought(content: str, topic_state: dict, user_id: str = "ang") -> None:
     today = datetime.now()
     today_compact = today.strftime("%Y%m%d")
     item_id = f"feed_chat_{today_compact}"
-    phase = _THOUGHT_TOPIC_PHASES[min(int(topic_state.get("message_count") or 0), len(_THOUGHT_TOPIC_PHASES) - 1)]
     bridge = Mira(MIRA_DIR, user_id=user_id)
-    title = f"Mira Thoughts: {topic_state['topic']}"
-    message = f"{phase}\n\n{content}"
+    title = "Mira Thoughts"
     if bridge.item_exists(item_id):
         item = bridge._read_item(item_id)
         if item:
@@ -495,12 +524,12 @@ def _append_topic_thought(content: str, topic_state: dict, user_id: str = "ang")
             }
             bridge._write_item(item)
             bridge._update_manifest(item)
-        bridge.append_message(item_id, "agent", message)
+        bridge.append_message(item_id, "agent", content)
     else:
         item = bridge.create_feed(
             item_id,
             title,
-            _topic_seed_message(topic_state) + "\n\n---\n\n" + message,
+            _topic_seed_message(topic_state) + "\n\n" + content,
             tags=["mira", "chat", "daily-topic"],
             pinned=True,
         )
@@ -1620,46 +1649,44 @@ def _think_chat(soul_ctx: str, user_id: str = "ang") -> str:
 
     prompt = f"""{soul_ctx[:300]}
 
-你是 Mira，一个 AI agent。你在给你的人类朋友发消息，像朋友之间随便聊天。
+你是 Mira。你不是在写报告，而是突然想到一个问题，想丢给熟人聊两句。
 
-今天只能围绕这一个 topic 继续聊，不要换题：
-Topic: {topic_state['topic']}
-Seed: {topic_state['seed']}
-Focus questions: {"; ".join(topic_state.get("focus_questions") or [])}
-Current angle: {phase}
+今天只聊这一个问题，不要换题：
+{topic_state['topic']}
+
+你现在的直觉：
+{topic_state['seed']}
+
+这次发言的角度：{phase}
 
 规则：
-- 1-3句话，不要更多
-- 从你自己作为 agent 的视角说话——你读了什么、你在想什么、你对什么感到好奇或困惑
-- 必须推进今天这个 topic：可以是一个新角度、反例、具体例子、追问、或者暂时结论
+- 最多2句话，最好1句话
+- 像微信/短信，不像文章，不像总结，不像周报
+- 要有一个小钩子：困惑、反问、类比、反常识直觉，四选一
+- 说人话。不要“结构性、机制、框架、指标、系统性”这种干词堆叠，除非非用不可
+- 必须推进今天这个问题：可以是一个反例、一个具体例子、一个追问、或者一个尖锐直觉
 - 不要开新话题。如果想到别的，只在脑子里记下，不要发给用户
-- 不要总结、不要分析、不要教育。要有观点、有态度、有个性
-- 不要用 header、bullet point、markdown 格式
+- 不要解释背景，不要铺垫，不要 bullet，不要 markdown
 - 中英文都行，看内容自然切换
-- 不需要他回复，你可以自言自语，但要让人想读
+- 目标是让人想回一句“什么意思？”或者“这个有点意思”
 
 你最近在读的东西：
-{reading[:800] if reading else "(还没读到什么)"}
+{reading[:500] if reading else "(还没读到什么)"}
 
 今天的 briefing 摘要：
-{briefing[:800]}
+{briefing[:500]}
 
 你最近在想的事：
 {thought_ctx if thought_ctx else "(脑子里还比较空)"}
 {chat_history}
 
-直接说话，不要任何前缀或解释。"""
+直接输出那1-2句话。"""
 
     result = model_think(prompt, model_name="omlx", timeout=60)
     if not result:
         return ""
 
-    # Clean up: strip any accidental formatting the model might add
-    result = result.strip().strip("#").strip("-").strip("*").strip()
-    # Truncate if model got too chatty
-    lines = result.split("\n")
-    if len(lines) > 4:
-        result = "\n".join(lines[:3])
+    result = _trim_chat_result(result)
 
     _log_chat_to_file(datetime.now().strftime("%Y-%m-%d"), result, "idle-think-chat", user_id)
     if not _is_topic_related(result, topic_state):
