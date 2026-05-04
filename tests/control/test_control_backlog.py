@@ -417,3 +417,5 @@ def test_overlay_task_record_does_not_overwrite_newer_user_reply():
     assert "tasks.origin = 'user'" in upsert_query
     assert "tasks.status IN ('queued', 'dispatched', 'running', 'working')" in upsert_query
     assert "tasks.updated_at > EXCLUDED.updated_at" in upsert_query
+    assert "tasks.type IN ('discussion', 'feed')" in upsert_query
+    assert "tasks.origin = 'agent'" in upsert_query

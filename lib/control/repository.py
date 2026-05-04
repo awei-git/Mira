@@ -783,6 +783,10 @@ class ControlRepository:
                     {self.schema}.tasks.origin = 'user'
                     AND {self.schema}.tasks.status IN ('queued', 'dispatched', 'running', 'working')
                     AND {self.schema}.tasks.updated_at > EXCLUDED.updated_at
+                ) AND NOT (
+                    {self.schema}.tasks.type IN ('discussion', 'feed')
+                    AND {self.schema}.tasks.origin = 'agent'
+                    AND {self.schema}.tasks.updated_at > EXCLUDED.updated_at
                 )
                 """,
                 {
