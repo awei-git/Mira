@@ -39,6 +39,7 @@ def _make_client(
     monkeypatch.setattr(server, "get_known_user_ids", lambda: ["ang", "liquan"])
     monkeypatch.setattr(server, "is_known_user", lambda user_id: user_id in {"ang", "liquan"})
     monkeypatch.setattr(server, "get_user_config", lambda user_id: {"display_name": user_id.title()})
+    server._rate_buckets.clear()
     return TestClient(server.app)
 
 
@@ -87,6 +88,71 @@ def test_web_api_requires_token_when_configured(monkeypatch, tmp_path: Path):
     allowed = client.get("/api/ang/items", headers={"X-Mira-Token": "secret-token"})
     assert blocked.status_code == 401
     assert allowed.status_code == 200
+
+
+def test_read_rate_limit_does_not_block_user_reply(monkeypatch, tmp_path: Path):
+    import control.db as control_db
+    import control.repository as control_repository
+
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "_READ_RATE_LIMIT", 1)
+    monkeypatch.setattr(server, "_WRITE_RATE_LIMIT", 10)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
+    monkeypatch.setattr(server, "ICLOUD_COMMAND_FALLBACK_ENABLED", False)
+    calls = {}
+
+    class FakeTx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def append_user_reply(self, **kwargs):
+            calls["append_user_reply"] = kwargs
+            return {
+                "id": kwargs["task_id"],
+                "type": "discussion",
+                "title": "Thread",
+                "status": "queued",
+                "tags": [],
+                "origin": "user",
+                "pinned": False,
+                "quick": False,
+                "parent_id": None,
+                "created_at": kwargs["created_at"],
+                "updated_at": kwargs["created_at"],
+                "messages": [{"id": kwargs["message_id"], "sender": kwargs["sender"], "content": kwargs["content"]}],
+                "error": None,
+                "result_path": None,
+            }
+
+    monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
+
+    assert client.get("/api/ang/items").status_code == 200
+    assert client.get("/api/ang/items").status_code == 429
+
+    resp = client.post("/api/ang/tasks/feed_chat_20260504/reply", json={"content": "还在吗"})
+
+    assert resp.status_code == 200
+    assert calls["append_user_reply"]["task_id"] == "feed_chat_20260504"
+    assert calls["append_user_reply"]["content"] == "还在吗"
+
+
+def test_liveness_endpoints_bypass_read_rate_limit(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "_READ_RATE_LIMIT", 1)
+
+    assert client.get("/api/ang/items").status_code == 200
+    assert client.get("/api/ang/items").status_code == 429
+
+    assert client.get("/api/heartbeat").status_code == 200
+    assert client.get("/api/ang/manifest").status_code == 200
 
 
 def test_profiles_are_filtered_to_known_users(monkeypatch, tmp_path: Path):

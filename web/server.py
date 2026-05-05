@@ -132,24 +132,43 @@ def _stop_mdns_advertisement() -> None:
 atexit.register(_stop_mdns_advertisement)
 
 # ---------------------------------------------------------------------------
-# Rate limiting — simple in-memory per-IP limiter
+# Rate limiting — simple in-memory per-IP limiter.
+#
+# The app legitimately does bursty list/detail polling when it reconnects.
+# Keep read flooding from consuming the write lane; otherwise a detail refresh
+# can make a user reply disappear behind 429s.
 # ---------------------------------------------------------------------------
-_RATE_LIMIT = 60  # requests per window
+_READ_RATE_LIMIT = 600  # requests per window
+_WRITE_RATE_LIMIT = 120  # requests per window
 _RATE_WINDOW = 60  # window in seconds
 _rate_buckets: dict[str, collections.deque] = {}
 
 
-def _check_rate_limit(client_ip: str) -> bool:
+def _check_rate_limit(bucket_key: str, *, limit: int, window: int = _RATE_WINDOW) -> bool:
     """Return True if request is allowed, False if rate-limited."""
     now = time.monotonic()
-    bucket = _rate_buckets.setdefault(client_ip, collections.deque())
+    bucket = _rate_buckets.setdefault(bucket_key, collections.deque())
     # Purge old entries
-    while bucket and bucket[0] < now - _RATE_WINDOW:
+    while bucket and bucket[0] < now - window:
         bucket.popleft()
-    if len(bucket) >= _RATE_LIMIT:
+    if len(bucket) >= limit:
         return False
     bucket.append(now)
     return True
+
+
+def _is_rate_limit_exempt(path: str) -> bool:
+    """Keep app liveness/event polling available during a read storm."""
+    if path == "/api/heartbeat":
+        return True
+    parts = [part for part in path.split("/") if part]
+    return len(parts) == 3 and parts[0] == "api" and parts[2] in {"events", "manifest"}
+
+
+def _rate_limit_lane(method: str) -> tuple[str, int]:
+    if method.upper() in {"POST", "PATCH", "DELETE"}:
+        return "write", _WRITE_RATE_LIMIT
+    return "read", _READ_RATE_LIMIT
 
 
 # ---------------------------------------------------------------------------
@@ -257,8 +276,14 @@ async def _api_auth_middleware(request: Request, call_next):
         return await call_next(request)
     # Rate limiting
     client_ip = _client_host(request) or "unknown"
-    if not _check_rate_limit(client_ip):
-        return JSONResponse(status_code=429, content={"detail": "Too many requests"})
+    if not _is_rate_limit_exempt(path):
+        lane, limit = _rate_limit_lane(request.method)
+        if not _check_rate_limit(f"{client_ip}:{lane}", limit=limit):
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests", "lane": lane},
+                headers={"Retry-After": str(_RATE_WINDOW)},
+            )
     parts = [part for part in path.split("/") if part]
     try:
         if len(parts) >= 3:
