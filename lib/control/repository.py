@@ -205,18 +205,31 @@ class ControlRepository:
             if agent_message:
                 cur.execute(
                     f"""
-                    INSERT INTO {self.schema}.messages (
-                        id, task_id, user_id, sender, kind, content, image_path, created_at
-                    )
-                    VALUES (%s, %s, %s, 'agent', %s, %s, NULL, %s)
-                    ON CONFLICT (id) DO UPDATE SET
-                        sender = EXCLUDED.sender,
-                        kind = EXCLUDED.kind,
-                        content = EXCLUDED.content,
-                        created_at = EXCLUDED.created_at
+                    SELECT 1
+                    FROM {self.schema}.messages
+                    WHERE task_id = %s
+                      AND sender = 'agent'
+                      AND kind = %s
+                      AND content = %s
+                    LIMIT 1
                     """,
-                    (f"{task_id}_agent_terminal", task_id, user_id, message_kind, agent_message, now),
+                    (task_id, message_kind, agent_message),
                 )
+                if cur.fetchone() is None:
+                    cur.execute(
+                        f"""
+                        INSERT INTO {self.schema}.messages (
+                            id, task_id, user_id, sender, kind, content, image_path, created_at
+                        )
+                        VALUES (%s, %s, %s, 'agent', %s, %s, NULL, %s)
+                        ON CONFLICT (id) DO UPDATE SET
+                            sender = EXCLUDED.sender,
+                            kind = EXCLUDED.kind,
+                            content = EXCLUDED.content,
+                            created_at = EXCLUDED.created_at
+                        """,
+                        (f"{task_id}_agent_terminal", task_id, user_id, message_kind, agent_message, now),
+                    )
         self._record_event(task_id, user_id, "task.status", status=normalized, payload={"summary": summary or ""})
         return self.get_item(user_id, task_id)
 
