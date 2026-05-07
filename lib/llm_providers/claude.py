@@ -60,7 +60,13 @@ _OPENAI_EFFORT = {
 
 
 def _fallback_think(prompt: str, timeout: int, tier: str = "light") -> str:
-    """Call the configured fallback model (default: gpt-5.4) with the same prompt."""
+    """Call the configured fallback model with the same prompt."""
+    from llm_providers.local import _omlx_call
+
+    if CLAUDE_FALLBACK_MODEL in {"omlx", "ollama"}:
+        log.warning("Claude unavailable — using local oMLX fallback (%s)", OMLX_DEFAULT_MODEL)
+        return _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=timeout)
+
     from llm_providers.openai_compat import _api_call
 
     fallback = CLAUDE_FALLBACK_MODEL
@@ -90,7 +96,7 @@ def claude_think(
     from llm import _force_local, _estimate_tokens, _log_usage
     from llm_providers.local import _omlx_call
 
-    # Model restriction: force local oMLX if set (e.g. for child users)
+    # Model restriction / privacy policy: force local oMLX when requested.
     if _force_local():
         return _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=timeout)
     model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])
@@ -205,7 +211,7 @@ def claude_act(
     from llm import _force_local, _estimate_tokens, _log_usage
     from llm_providers.local import _omlx_call
 
-    # Model restriction: force local oMLX if set (e.g. for child users)
+    # Model restriction / privacy policy: force local oMLX when requested.
     if _force_local():
         return _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=timeout)
     model_id = _CLAUDE_MODELS.get(tier, _CLAUDE_MODELS["light"])

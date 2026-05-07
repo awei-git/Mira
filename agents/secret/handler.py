@@ -1,7 +1,7 @@
 """Secret agent — handles privacy-sensitive tasks using LOCAL LLM only.
 
 Nothing leaves localhost. No cloud API calls. No web requests.
-Uses oMLX (qwen3.5-27b) for reasoning.
+Uses the configured local oMLX model for reasoning.
 
 Capabilities:
 - Text Q&A (fully private)

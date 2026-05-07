@@ -407,16 +407,13 @@ def _generate_on_demand_advice(store, person: str, input_text: str, category: st
 """
 
     try:
-        # Temporarily allow cloud LLM for advice generation.
-        # Raw health data was already stored locally; the prompt contains
-        # only aggregated summaries, no PII beyond person_id.
         from llm import set_model_policy
 
-        set_model_policy(None)  # lift local-model restriction for this call
+        set_model_policy("omlx")
         try:
-            result = model_think(prompt, model_name="gpt5", timeout=60)
+            result = model_think(prompt, model_name="omlx", timeout=60)
         finally:
-            set_model_policy("omlx")  # restore
+            set_model_policy(None)
         if result and len(result.strip()) > 30:
             return result.strip()
     except Exception as e:

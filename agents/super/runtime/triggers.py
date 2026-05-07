@@ -491,13 +491,13 @@ def _idle_think_cost_today() -> float:
     return total
 
 
-_IDLE_THINK_MIN_INTERVAL_MINUTES = 30  # hard floor: at most once per 30 minutes per user
+_IDLE_THINK_MIN_INTERVAL_MINUTES = 120  # hard floor: at most once per 2 hours per user
 
 
 def should_idle_think(user_id: str = "ang") -> bool:
     """Returns True if emptiness has crossed the threshold and agent is idle.
 
-    Hard constraint: at most once per 30 minutes per user, regardless of
+    Hard constraint: at most once per 2 hours per user, regardless of
     emptiness value. This prevents oMLX from running non-stop.
     """
     try:
@@ -506,7 +506,7 @@ def should_idle_think(user_id: str = "ang") -> bool:
     except ImportError:
         return False
 
-    # --- Hard 30-minute minimum interval (per user) ---
+    # --- Hard 2-hour minimum interval (per user) ---
     state = load_emptiness(user_id=user_id)
     last_think = state.get("last_think_at")
     if last_think:

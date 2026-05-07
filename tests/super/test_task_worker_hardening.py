@@ -86,3 +86,46 @@ def test_heartbeat_activity_reports_current_step(tmp_path):
     assert snapshot["total_steps"] == 2
     assert snapshot["current_agent"] == "general"
     assert "Elapsed 5m" in snapshot["status_text"]
+
+
+def test_daily_zhesi_feed_reply_uses_conversation_fast_path():
+    import task_worker
+
+    task = {
+        "id": "feed_zhesi_20260505",
+        "type": "feed",
+        "title": "每日哲思 05/05",
+        "tags": ["zhesi"],
+    }
+
+    assert task_worker._looks_like_conversation_feed("feed_zhesi_20260505", task)
+
+
+def test_market_feed_reply_uses_market_fast_path():
+    import task_worker
+
+    task = {
+        "id": "feed_market_20260505_pre",
+        "type": "feed",
+        "title": "开市前市场分析 2026-05-05",
+        "tags": ["market", "analyst", "pre-market"],
+    }
+
+    assert task_worker._looks_like_market_thread("feed_market_20260505_pre", task)
+
+
+def test_current_message_overrides_later_agent_thought():
+    import task_worker
+
+    task = {
+        "messages": [
+            {"sender": "agent", "content": "今天只聊游牧和农耕。"},
+            {"sender": "ang", "content": "这个应该是conversation的形式"},
+            {"sender": "agent", "content": "另一个自发想法"},
+        ]
+    }
+
+    updated = task_worker._task_with_current_message(task, "这个应该是conversation的形式", "ang")
+
+    assert updated["current_message"]["content"] == "这个应该是conversation的形式"
+    assert updated["messages"][-1]["content"] == "另一个自发想法"

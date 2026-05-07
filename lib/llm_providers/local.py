@@ -2,16 +2,40 @@
 
 import json
 import logging
+import time
 import urllib.request
 import urllib.error
+from pathlib import Path
 
 log = logging.getLogger("mira")
+
+_OMLX_CIRCUIT_FILE = Path("/tmp/mira-omlx-circuit.json")
+
+
+def _omlx_circuit_open() -> bool:
+    try:
+        data = json.loads(_OMLX_CIRCUIT_FILE.read_text(encoding="utf-8"))
+        return float(data.get("open_until", 0)) > time.time()
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _trip_omlx_circuit(reason: str, cooldown_seconds: int = 180) -> None:
+    payload = {"open_until": time.time() + cooldown_seconds, "reason": reason}
+    try:
+        _OMLX_CIRCUIT_FILE.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _omlx_call(model_id: str, prompt: str, system: str = "", timeout: int = 300) -> str:
     """Call local oMLX (OpenAI-compatible) for privacy-sensitive tasks. Never leaves localhost."""
     from config import OMLX_HOST, OMLX_PORT
     from llm import _estimate_tokens, _log_usage
+
+    if _omlx_circuit_open():
+        log.warning("oMLX circuit open; skipping local generation")
+        return ""
 
     endpoint = f"http://{OMLX_HOST}:{OMLX_PORT}/v1/chat/completions"
 
@@ -23,7 +47,9 @@ def _omlx_call(model_id: str, prompt: str, system: str = "", timeout: int = 300)
     payload = {
         "model": model_id,
         "messages": messages,
-        "max_tokens": 32768,
+        # Keep the default local generation budget modest. A 32k default made
+        # short app replies sit in "working" for minutes on local models.
+        "max_tokens": 2048,
         "temperature": 0.7,
     }
     body = json.dumps(payload).encode("utf-8")
@@ -50,7 +76,10 @@ def _omlx_call(model_id: str, prompt: str, system: str = "", timeout: int = 300)
             )
             return content.strip()
     except Exception as e:
-        log.error("oMLX %s failed: %s", model_id, str(e))
+        reason = str(e)
+        log.error("oMLX %s failed: %s", model_id, reason)
+        if "timed out" in reason.lower() or "HTTP Error 507" in reason:
+            _trip_omlx_circuit(reason)
         # Fallback to secondary local model
         from config import OMLX_FALLBACK_MODEL
 

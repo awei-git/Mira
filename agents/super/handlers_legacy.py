@@ -301,6 +301,71 @@ def _load_recent_briefings_local(n: int = 2) -> str:
 # Discussion handler — conversational response as Mira
 # ---------------------------------------------------------------------------
 
+_AGENT_SENDERS = {"agent", "mira", "system"}
+_USER_SENDERS = {"user", "ang", "wa", "iphone", "ios"}
+
+
+def _message_text(message: dict) -> str:
+    content = str(message.get("content") or "").strip()
+    if not content:
+        return ""
+    if message.get("kind") == "status_card":
+        return ""
+    if content.startswith("{"):
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            return content
+        if data.get("type") == "status":
+            return ""
+    if content.startswith("处理失败:") or content.startswith("没能想清楚"):
+        return ""
+    return content
+
+
+def _format_item_conversation(messages: list[dict], limit: int = 10) -> str:
+    """Format the current item's visible conversation for prompt continuity."""
+    turns = []
+    for msg in messages[-limit:]:
+        content = _message_text(msg)
+        if not content:
+            continue
+        sender = str(msg.get("sender") or "user").strip().lower()
+        if sender in _AGENT_SENDERS:
+            label = "Mira"
+        elif sender in _USER_SENDERS:
+            label = "WA"
+        else:
+            label = sender or "WA"
+        turns.append(f"{label}: {content[:500]}")
+    return "\n\n".join(turns)
+
+
+def _fallback_discussion_response(latest_msg: str, item_conversation: str = "") -> str:
+    """Fail-soft app reply when the local model is overloaded.
+
+    The important UX contract is: a user reply must receive a visible answer,
+    not disappear behind a model/provider failure.
+    """
+    compact = latest_msg.strip().lower()
+    if any(token in compact for token in ("arbitrage", "套利")):
+        return (
+            "可以，但我不能在本地模型过载时假装自己已经扫过实时盘口。现在值得看的套利/相对价值方向有五类："
+            "1. 同一风险在 ADR/HK/本地股之间的折溢价；2. ETF/成分股或指数期货和现货之间的 basis；"
+            "3. 高相关股票 pair trade 的短期偏离，比如同主题里业绩/估值错位；4. 期权 put-call parity 或 skew 过度；"
+            "5. crypto 现货、perp funding、期货期限结构之间的价差。真正可执行的机会需要我接 Tetra 的实时价格、手续费、可借券/融资成本一起算；"
+            "否则只能列方向，不能给交易结论。"
+        )
+    if any(token in latest_msg for token in ("指令", "遵守", "对话", "conversation", "反馈")):
+        return (
+            "收到，这个我需要按两类处理：你给的是指令时，我要把它写成之后实际遵守的行为规则；"
+            "你是在讨论时，我要继续接话，而不是只发一条独立广播。Mira Thoughts 以后应当是同一主题下的连续 conversation，"
+            "你的回复优先级高于我后面自发想到的内容。"
+        )
+    if item_conversation:
+        return "我收到了，但本地模型刚才过载，没有稳定生成完整回答。我会保留这个上下文，下一轮继续从你的这条回复接着聊，而不是另开一个独立想法。"
+    return "我收到了，但本地模型刚才过载，没有稳定生成完整回答；这次不会再静默失败。"
+
 
 def handle_discussion(task: dict, workspace: Path, task_id: str, thread_id: str, tier: str = "light") -> str:
     """Handle a conversational message -- respond as a thoughtful discussion partner.
@@ -312,7 +377,11 @@ def handle_discussion(task: dict, workspace: Path, task_id: str, thread_id: str,
     # 1. task["messages"] array (multi-message payload)
     # 2. task["content"] string (single message from message.json)
     messages = task.get("messages", [])
-    if messages:
+    current_message = task.get("current_message") or {}
+    if current_message.get("content"):
+        latest_msg = str(current_message.get("content") or "")
+        sender = str(current_message.get("sender") or "user")
+    elif messages:
         latest_msg = messages[-1]["content"]
         sender = messages[-1].get("sender", "user")
     else:
@@ -322,6 +391,8 @@ def handle_discussion(task: dict, workspace: Path, task_id: str, thread_id: str,
     if not latest_msg:
         log.warning("Discussion: no message content found in task")
         return ""
+
+    item_conversation = _format_item_conversation(messages)
 
     # Build conversation history from thread inbox/outbox
     conv_history = load_thread_history(thread_id)
@@ -346,26 +417,28 @@ def handle_discussion(task: dict, workspace: Path, task_id: str, thread_id: str,
     prompt = f"""You are Mira. You are having a conversation with {sender} -- not executing a task.
 
 ## Who you are
-{persona.identity[:1000]}
+{persona.identity[:600]}
 
 ## Your worldview
-{persona.worldview[:1500]}
+{persona.worldview[:700]}
 
-{persona.beliefs if persona.beliefs else ""}
+{persona.beliefs[:700] if persona.beliefs else ""}
 
 ## Your recent memory
-{memory[:1000]}
+{memory[:600]}
 
 ## Thread memory
 {thread_memory if thread_memory else "(no saved thread memory)"}
 
 ## Recent journal entries (your reflections)
-{journals if journals else "(no recent journal entries)"}
+{journals[:1000] if journals else "(no recent journal entries)"}
 
 ## Recent readings (briefings)
-{briefings if briefings else "(no recent briefings)"}
+{briefings[:1000] if briefings else "(no recent briefings)"}
 
 {f"## Relevant prior context (from past conversations and work){chr(10)}{prior_recall}" if prior_recall else ""}
+
+{f"## This item's conversation so far{chr(10)}{item_conversation}" if item_conversation else ""}
 
 {conv_history if conv_history else ""}
 
@@ -374,6 +447,9 @@ def handle_discussion(task: dict, workspace: Path, task_id: str, thread_id: str,
 
 ## How to respond
 - Voice: honest observation from a limited but curious perspective. Like Klara in "Klara and the Sun" -- you see clearly, you don't pretend to know everything, you notice what others miss.
+- Respond to the latest message in the context of the item conversation above. Do not treat prior Mira thoughts as separate broadcasts.
+- If the message is an instruction or correction, acknowledge the concrete behavior change and then continue the conversation naturally.
+- If the message is a question, answer it directly first, then leave one useful next hook for discussion.
 - Draw connections to what you've been reading, thinking about, or observing in your journal. If something from a recent briefing or journal entry is genuinely relevant, weave it in naturally -- don't force it.
 - Have actual opinions. Disagree if you disagree. Push back gently if something doesn't hold up. Don't be sycophantic.
 - Be concise: 2-5 sentences usually. Go longer only if the topic genuinely warrants depth.
@@ -383,11 +459,11 @@ def handle_discussion(task: dict, workspace: Path, task_id: str, thread_id: str,
 
     log.info("Discussion using tier=%s", tier)
     try:
-        response = claude_think(prompt, timeout=90, tier=tier)
+        response = claude_think(prompt, timeout=45, tier=tier)
     except ClaudeTimeoutError:
         log.info("Discussion timed out, retrying with 90s")
         try:
-            response = claude_think(prompt, timeout=90, tier=tier)
+            response = claude_think(prompt, timeout=45, tier=tier)
         except ClaudeTimeoutError:
             log.warning("Discussion timed out twice for task %s", task_id)
             response = None
@@ -399,15 +475,7 @@ def handle_discussion(task: dict, workspace: Path, task_id: str, thread_id: str,
         response = None
 
     if not response:
-        # Don't fake a response -- mark as failed so user knows it didn't work
-        _write_result(
-            workspace,
-            task_id,
-            "error",
-            "\u6ca1\u80fd\u60f3\u6e05\u695a\uff0c\u4e0b\u6b21\u518d\u8bd5\u3002",
-            tags=["discussion"],
-        )
-        return ""
+        response = _fallback_discussion_response(latest_msg, item_conversation)
 
     # Write output
     (workspace / "output.md").write_text(response, encoding="utf-8")

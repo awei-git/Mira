@@ -30,9 +30,10 @@ from config import (
 # ---------------------------------------------------------------------------
 from llm_providers.claude import (  # noqa: F401
     ClaudeTimeoutError,
-    claude_think,
-    claude_act,
+    claude_think as _claude_cli_think,
+    claude_act as _claude_cli_act,
 )
+from llm_providers.codex import codex_think, codex_act
 from llm_providers.openai_compat import (  # noqa: F401
     _api_call,
     _probe_endpoint,
@@ -130,6 +131,15 @@ def _force_local() -> bool:
     return getattr(_model_policy, "value", None) in ("omlx",)
 
 
+def _cloud_disabled() -> bool:
+    """Deprecated compatibility shim.
+
+    Routing is now handled by explicit model policy and fallback chains:
+    Codex subscription -> Claude Code subscription -> DeepSeek -> local.
+    """
+    return False
+
+
 def _force_ollama() -> bool:
     """Backward-compatible alias during the Ollama -> oMLX migration."""
     return _force_local()
@@ -143,7 +153,7 @@ _COST_PER_1M = {
     "anthropic/claude-haiku": (0.80, 4.00),
     "openai/gpt-5": (2.00, 8.00),
     "openai/gpt-4": (2.50, 10.00),
-    "deepseek/deepseek-chat": (0.27, 1.10),
+    "deepseek/deepseek-v4-pro": (0.44, 0.87),
     "deepseek/deepseek-reasoner": (0.55, 2.19),
     "gemini/gemini-3": (0.10, 0.40),
     "gemini/gemini-2": (0.075, 0.30),
@@ -471,28 +481,119 @@ def _get_api_key(provider: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+_WRITING_RE = re.compile(
+    r"写|改写|润色|文章|标题|摘要|开头|结尾|段落|草稿|文案|newsletter|substack|essay|draft|rewrite|polish",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_chinese_writing(prompt: str) -> bool:
+    sample = prompt[:4000]
+    return len(_CJK_RE.findall(sample)) >= 12 and bool(_WRITING_RE.search(sample))
+
+
+def _fallback_chain(model_name: str, prompt: str) -> list[str]:
+    requested = (model_name or DEFAULT_MODEL or "codex").lower()
+    if _force_local() or requested in {"omlx", "ollama", "local", "localllm"}:
+        return ["omlx"]
+    if requested in {"deepseek", "deepseek-r1"}:
+        return [requested, "codex", "claude", "omlx"]
+    if requested == "claude":
+        return ["claude", "deepseek", "omlx"]
+    if requested in {"codex", "gpt5", "gpt-5", "gpt-5.5", "default"} or requested not in MODELS:
+        if _looks_like_chinese_writing(prompt):
+            return ["deepseek", "codex", "claude", "omlx"]
+        return ["codex", "claude", "deepseek", "omlx"]
+    return [requested, "codex", "claude", "deepseek", "omlx"]
+
+
+def _call_think_model(model_name: str, prompt: str, system: str, timeout: int) -> str:
+    cfg = MODELS.get(model_name)
+    if not cfg:
+        log.warning("Unknown model '%s'", model_name)
+        return ""
+    provider = cfg["provider"]
+    full_prompt = f"{system}\n\n{prompt}" if system else prompt
+    if provider == "codex_cli":
+        return codex_think(prompt, model_id=cfg["model_id"], system=system, timeout=timeout)
+    if provider == "claude":
+        return _claude_cli_think(full_prompt, timeout=timeout)
+    if provider == "omlx":
+        return _omlx_call(cfg["model_id"], full_prompt, timeout=timeout)
+    return _api_call(provider, cfg["model_id"], prompt, system=system, timeout=timeout)
+
+
+def _think_with_fallbacks(
+    prompt: str, model_name: str = DEFAULT_MODEL, system: str = "", timeout: int = CLAUDE_TIMEOUT_THINK
+) -> str:
+    for candidate in _fallback_chain(model_name, prompt):
+        try:
+            result = _call_think_model(candidate, prompt, system, timeout)
+        except ClaudeTimeoutError as exc:
+            log.warning("Model %s timed out before fallback: %s", candidate, exc)
+            result = ""
+        except Exception as exc:
+            log.warning("Model %s failed before fallback: %s", candidate, exc)
+            result = ""
+        if result:
+            if candidate != model_name:
+                log.info("Model route %s satisfied by fallback %s", model_name, candidate)
+            return result
+        log.info("Model %s returned empty; trying fallback", candidate)
+    return ""
+
+
 def model_think(
     prompt: str, model_name: str = DEFAULT_MODEL, system: str = "", timeout: int = CLAUDE_TIMEOUT_THINK
 ) -> str:
-    """Call any model for thinking (no tools). Falls back to Claude on failure."""
-    # Model restriction: force local oMLX if policy is set (privacy boundary)
+    """Call a thinking model.
+
+    Default route: Codex subscription GPT-5.5 -> Claude Code subscription ->
+    DeepSeek V4 Pro -> local oMLX. Explicit local/privacy policy still wins.
+    """
+    return _think_with_fallbacks(prompt, model_name=model_name, system=system, timeout=timeout)
+
+
+def claude_think(
+    prompt: str, timeout: int = CLAUDE_TIMEOUT_THINK, tier: str = "light", max_tokens: int | None = None
+) -> str:
+    """Legacy name for the default thinking route.
+
+    Most existing callers say claude_think, but Mira's desired default is now
+    Codex subscription first, then Claude Code, DeepSeek, and local oMLX.
+    """
+    _ = (tier, max_tokens)
+    return _think_with_fallbacks(prompt, model_name=DEFAULT_MODEL, timeout=timeout)
+
+
+def claude_act(
+    prompt: str,
+    cwd: Path = None,
+    timeout: int = 600,
+    tier: str = "light",
+    agent_id: str = None,
+    max_tokens: int | None = None,
+) -> str:
+    """Legacy action route: Codex CLI with workspace tools, then Claude Code.
+
+    If local/privacy policy is active, action degrades to local text output
+    because local LLMs do not have a safe tool-execution adapter.
+    """
+    _ = (tier, agent_id, max_tokens)
     if _force_local():
         return _omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=timeout)
-    cfg = MODELS.get(model_name)
-    if not cfg:
-        log.warning("Unknown model '%s', falling back to claude", model_name)
-        return claude_think(prompt, timeout=timeout)
-
-    if cfg["provider"] == "claude":
-        full_prompt = f"{system}\n\n{prompt}" if system else prompt
-        return claude_think(full_prompt, timeout=timeout)
-    else:
-        result = _api_call(cfg["provider"], cfg["model_id"], prompt, system=system, timeout=timeout)
-        if not result:
-            log.info("Falling back to claude after %s failure", model_name)
-            full_prompt = f"{system}\n\n{prompt}" if system else prompt
-            return claude_think(full_prompt, timeout=timeout)
+    result = codex_act(prompt, cwd=cwd, timeout=timeout)
+    if result:
         return result
+    try:
+        result = _claude_cli_act(prompt, cwd=cwd, timeout=timeout, tier=tier, agent_id=agent_id, max_tokens=max_tokens)
+    except ClaudeTimeoutError as exc:
+        log.warning("Claude Code action timed out before fallback: %s", exc)
+        result = ""
+    if result:
+        return result
+    return model_think(prompt, model_name="deepseek", timeout=timeout)
 
 
 def pick_writing_model() -> str:

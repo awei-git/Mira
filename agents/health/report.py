@@ -180,7 +180,7 @@ def _signal_summary(store, person_id: str) -> list[str]:
     return [line for _, line, _ in scored[:3]]
 
 
-def generate_daily_insight(store, person_id: str, model: str = "gpt5") -> str | None:
+def generate_daily_insight(store, person_id: str, model: str = "omlx") -> str | None:
     """Generate daily health insight with GPT — comprehensive analysis and advice.
 
     Collects today's data + 7-day trends, sends everything to LLM,

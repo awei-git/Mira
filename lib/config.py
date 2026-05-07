@@ -263,6 +263,32 @@ SKILL_AUDIT_LOCKOUT_DURATION_MINUTES = _limits.get("skill_audit_lockout_duration
 # Secrets file (API keys — always gitignored)
 SECRETS_FILE = _PROJECT_ROOT / "secrets.yml"
 
+
+def _load_secrets_config() -> dict:
+    """Load non-secret runtime settings from secrets.yml without logging values."""
+    if not SECRETS_FILE.exists():
+        return {}
+    try:
+        import yaml
+
+        return yaml.safe_load(SECRETS_FILE.read_text(encoding="utf-8")) or {}
+    except ImportError:
+        try:
+            return _parse_simple_yaml(SECRETS_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+    except Exception as e:
+        _log.warning("Failed to load secrets.yml config sections: %s", e)
+        return {}
+
+
+_secrets_cfg = _load_secrets_config()
+_MODEL_VERSION_CFG = {
+    **(_cfg.get("api_models", {}) or {}),
+    **(_secrets_cfg.get("model_versions", {}) or {}),
+    **(_secrets_cfg.get("api_models", {}) or {}),
+}
+
 # ---------------------------------------------------------------------------
 # oMLX (local LLM — privacy-safe, no network, Apple Silicon optimized)
 # ---------------------------------------------------------------------------
@@ -270,7 +296,7 @@ _omlx_cfg = _cfg.get("omlx", {})
 OMLX_HOST = _omlx_cfg.get("host", "127.0.0.1")
 OMLX_PORT = _omlx_cfg.get("port", 8800)
 OMLX_DEFAULT_MODEL = _omlx_cfg.get("default_model", "gemma-4-31b-it-4bit")
-OMLX_FALLBACK_MODEL = _omlx_cfg.get("fallback_model", "Qwen3.5-27B-4bit")
+OMLX_FALLBACK_MODEL = _omlx_cfg.get("fallback_model", "gemma-4-31b-it-4bit")
 OMLX_EMBED_MODEL = _omlx_cfg.get("embed_model", "nomicai-modernbert-embed-base-4bit")
 
 # Legacy aliases — kept only for external callers; prefer OMLX_* names.
@@ -468,34 +494,34 @@ MODELS = {
         "style": "Precise, structured, follows instructions well",
     },
     "gpt5": {
-        "provider": "openai",
-        "model_id": "gpt-5.4",
-        "style": "Creative, fluent, good at natural-sounding prose",
+        "provider": "codex_cli",
+        "model_id": _MODEL_VERSION_CFG.get("gpt5", "gpt-5.5"),
+        "style": "GPT-5.5 through the Codex subscription CLI",
     },
     "deepseek": {
         "provider": "deepseek",
-        "model_id": "deepseek-chat",
+        "model_id": _MODEL_VERSION_CFG.get("deepseek_chat", "deepseek-v4-pro"),
         "style": "Strong reasoning, good at Chinese writing, cost-efficient",
     },
     "deepseek-r1": {
         "provider": "deepseek",
-        "model_id": "deepseek-reasoner",
+        "model_id": _MODEL_VERSION_CFG.get("deepseek_reasoner", "deepseek-reasoner"),
         "style": "Deep chain-of-thought reasoning, best for complex analysis",
     },
     "gemini": {
         "provider": "gemini",
-        "model_id": "gemini-3.1-flash-lite-preview",
+        "model_id": _MODEL_VERSION_CFG.get("gemini_flash", "gemini-3.1-flash-lite-preview"),
         "style": "Fast, multimodal, good at long-context and structured output",
     },
     "gemini-pro": {
         "provider": "gemini",
-        "model_id": "gemini-3.1-pro-preview",
+        "model_id": _MODEL_VERSION_CFG.get("gemini_pro", "gemini-3.1-pro-preview"),
         "style": "Most capable Gemini, strong reasoning and code generation",
     },
     "codex": {
-        "provider": "openai",
-        "model_id": "gpt-5.4",
-        "style": "OpenAI GPT-5.4 — used as Claude fallback when quota is hit",
+        "provider": "codex_cli",
+        "model_id": _MODEL_VERSION_CFG.get("codex", _MODEL_VERSION_CFG.get("gpt5", "gpt-5.5")),
+        "style": "GPT-5.5 through the Codex subscription CLI",
     },
     "omlx": {
         "provider": "omlx",
@@ -511,6 +537,7 @@ MODELS = {
 
 # Which models to use for writing tasks (from config.yml)
 _models_cfg = _cfg.get("models", {})
+CLOUD_LLM_ENABLED = _env_bool("MIRA_CLOUD_LLM_ENABLED", bool(_models_cfg.get("cloud_enabled", True)))
 WRITING_MODELS = _models_cfg.get("writing", ["claude", "gpt5", "deepseek", "gemini"])
 REVIEW_MODELS = _models_cfg.get("review", ["claude", "gpt5", "gemini"])
 DEFAULT_MODEL = _models_cfg.get("default", "claude")
@@ -743,18 +770,19 @@ BROWSER_SCROLL_WAIT_MS = _timeouts.get("browser_scroll_wait_ms", 500)
 BROWSER_TYPING_DELAY_MS = _timeouts.get("browser_typing_delay_ms", 50)
 
 # ---------------------------------------------------------------------------
-# API model IDs (from config.yml api_models: section)
+# API model IDs (from secrets.yml api_models: section; config.yml is legacy fallback)
 # ---------------------------------------------------------------------------
-_api_models = _cfg.get("api_models", {})
+_api_models = _MODEL_VERSION_CFG
 CLAUDE_SONNET_MODEL = _api_models.get("claude_sonnet", "claude-sonnet-4-6")
 CLAUDE_OPUS_MODEL = _api_models.get("claude_opus", "claude-opus-4-6")
 
 TIER_MODEL_MAP = {
-    "light": os.getenv("MODEL_LIGHT", "claude-sonnet-4-6"),
-    "heavy": os.getenv("MODEL_HEAVY", "claude-sonnet-4-6"),
+    "light": os.getenv("MODEL_LIGHT", CLAUDE_SONNET_MODEL),
+    "heavy": os.getenv("MODEL_HEAVY", CLAUDE_SONNET_MODEL),
 }
-GPT5_MODEL = _api_models.get("gpt5", "gpt-5.4")
-DEEPSEEK_CHAT_MODEL = _api_models.get("deepseek_chat", "deepseek-chat")
+GPT5_MODEL = _api_models.get("gpt5", "gpt-5.5")
+CODEX_MODEL = _api_models.get("codex", GPT5_MODEL)
+DEEPSEEK_CHAT_MODEL = _api_models.get("deepseek_chat", "deepseek-v4-pro")
 DEEPSEEK_REASONER_MODEL = _api_models.get("deepseek_reasoner", "deepseek-reasoner")
 GEMINI_FLASH_MODEL = _api_models.get("gemini_flash", "gemini-3.1-flash-lite-preview")
 GEMINI_PRO_MODEL = _api_models.get("gemini_pro", "gemini-3.1-pro-preview")

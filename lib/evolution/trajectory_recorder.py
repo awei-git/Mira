@@ -2,7 +2,7 @@
 
 Usage pattern in task_worker (once Phase 1 wiring lands):
 
-    rec = TrajectoryRecorder(task_id, agent, model="claude-opus-4-7")
+    rec = TrajectoryRecorder(task_id, agent, model=current_model_id)
     rec.add_user(prompt)
     # ... each LLM response / tool call / tool result:
     rec.add_assistant(response_text, tool_name=..., tool_args=...)

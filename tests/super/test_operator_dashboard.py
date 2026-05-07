@@ -173,3 +173,128 @@ def test_operator_dashboard_filters_ephemeral_restore_and_stale_processes(monkey
 
     assert summary["latest_restore_drill"]["backup_dir"] == str(backup_dir)
     assert summary["health"]["processes"][0]["name"] == "analyst-1800"
+
+
+def test_operator_alert_lines_surface_actionable_runtime_failures():
+    import operator_dashboard as od
+
+    summary = {
+        "tasks": {
+            "stuck": [
+                {
+                    "task_id": "task-1",
+                    "preview": "Draft a reply that has been running too long",
+                }
+            ]
+        },
+        "publish": {
+            "stuck": [{"slug": "essay-stuck"}],
+            "counts": {"blocked_writer_gate": 2, "blocked_security_claim": 1, "blocked_publish_error": 3},
+        },
+        "health": {
+            "failing_processes": 1,
+            "processes": [{"name": "daily-health", "consecutive_failures": 2, "last_exit": "2999-05-07T01:00:00Z"}],
+        },
+        "provider_circuits": [
+            {
+                "provider": "deepseek",
+                "reason": "HTTP 402",
+                "disabled_until": "2026-05-07T07:09:53Z",
+            }
+        ],
+        "recent_incidents": [
+            {
+                "pipeline": "old",
+                "step": "substack_publish",
+                "error_type": "old_timeout",
+                "count": 4,
+                "timestamp": "2000-01-01T00:00:00Z",
+            },
+            {
+                "pipeline": "publish",
+                "step": "substack_publish",
+                "error_type": "timeout",
+                "count": 3,
+                "timestamp": "2999-01-01T00:00:00Z",
+            },
+        ],
+    }
+
+    lines = od._operator_alert_lines(summary)
+
+    assert any("task(s) appear stuck" in line for line in lines)
+    assert any("scheduled process(es) are failing" in line for line in lines)
+    assert any("publish item(s) are stuck" in line for line in lines)
+    assert any("writer-quality gate" in line for line in lines)
+    assert any("security-claim review" in line for line in lines)
+    assert any("returned no Substack URL" in line for line in lines)
+    assert any("deepseek provider circuit is open" in line for line in lines)
+    assert any("Repeated incident" in line for line in lines)
+    assert not any("old_timeout" in line for line in lines)
+
+
+def test_api_provider_circuits_only_reports_open_entries(monkeypatch, tmp_path: Path):
+    import operator_dashboard as od
+
+    circuit_file = tmp_path / "api_provider_circuit.json"
+    circuit_file.write_text(
+        json.dumps(
+            {
+                "deepseek": {
+                    "reason": "HTTP 402",
+                    "disabled_until": "2999-05-07T07:09:53Z",
+                    "updated_at": "2026-05-07T01:09:53Z",
+                },
+                "openai": {
+                    "reason": "old",
+                    "disabled_until": "2000-01-01T00:00:00Z",
+                    "updated_at": "1999-12-31T00:00:00Z",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(od, "_PROVIDER_CIRCUIT_FILE", circuit_file)
+
+    circuits = od._api_provider_circuits()
+
+    assert circuits == [
+        {
+            "provider": "deepseek",
+            "reason": "HTTP 402",
+            "disabled_until": "2999-05-07T07:09:53Z",
+            "updated_at": "2026-05-07T01:09:53Z",
+        }
+    ]
+
+
+def test_process_active_failure_ignores_success_after_old_failure():
+    import operator_dashboard as od
+
+    assert not od._process_has_active_failure(
+        {
+            "consecutive_failures": 12,
+            "last_exit": "2026-03-19T23:16:17.578991",
+            "last_success": "2026-03-19T23:16:17.607328",
+        }
+    )
+    assert od._process_has_active_failure(
+        {
+            "consecutive_failures": 2,
+            "last_exit": "2999-05-06T21:16:17.607328",
+            "last_success": "2026-05-06T20:16:17.607328",
+        }
+    )
+
+
+def test_one_shot_process_failures_expire_from_operator_alerts():
+    import operator_dashboard as od
+
+    assert not od._process_has_active_failure(
+        {
+            "name": "autowrite-2026-05-05",
+            "consecutive_failures": 2,
+            "last_exit": "2026-05-05T19:16:17.607328",
+            "last_success": "",
+        }
+    )

@@ -58,14 +58,21 @@ def _dispatch_pipeline_followups(completed: list[str], session_new: list[dict]):
             job = get_job(job_name)
             if not job or not job.enabled:
                 continue
+            payload = True
+            if job.trigger != "conditional":
+                payload = evaluate_job_payload(job)
+                if not payload:
+                    log.info("Pipeline chain: %s -> %s skipped by trigger/cooldown", bg_name, job_name)
+                    continue
             next_bg_name, cmd = build_job_dispatch(
                 job,
-                payload=True,
+                payload=payload,
                 python_executable=sys.executable,
                 core_path=str(Path(__file__).resolve().parent / "core.py"),
             )
             dispatched = _dispatch_background(next_bg_name, cmd, group=job.blocking_group)
             if dispatched:
+                _record_scheduled_job_dispatch(job, payload)
                 log.info("Pipeline chain: %s -> %s dispatched", bg_name, job_name)
                 session_new.append(session_record("pipeline_chain", f"{bg_name}->{job_name}"))
 
@@ -109,12 +116,9 @@ def _dispatch_scheduled_jobs(session_new: list[dict]):
 
 def _record_scheduled_job_dispatch(job, payload, user_id: str | None = None):
     """Persist dispatch state for jobs whose triggers are pure checks."""
-    if job.name not in {
-        "backlog-executor",
-        "restore-dry-run",
-        "health-check",
-        "health-weekly",
-    }:
+    if job.name not in {"backlog-executor", "restore-dry-run", "health-check", "health-weekly"} and not (
+        job.trigger == "cooldown" and job.state_key_pattern
+    ):
         return
 
     now = datetime.now()

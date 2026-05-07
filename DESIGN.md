@@ -338,12 +338,13 @@ workspace/
 
 ```python
 MODELS = {
-    "claude":       {"provider": "claude",   "model_id": "claude-sonnet-4-6"},
-    "gpt5":         {"provider": "openai",   "model_id": "gpt-5.4"},
-    "deepseek":     {"provider": "deepseek", "model_id": "deepseek-chat"},
-    "gemini":       {"provider": "gemini",   "model_id": "gemini-3.1-flash-lite-preview"},
-    "gemini-pro":   {"provider": "gemini",   "model_id": "gemini-3.1-pro-preview"},
-    "omlx":         {"provider": "omlx",     "model_id": "qwen3.5-27b"},
+    "codex":        {"provider": "codex_cli", "model_ref": "codex"},
+    "gpt5":         {"provider": "codex_cli", "model_ref": "gpt5"},
+    "claude":       {"provider": "claude",    "model_ref": "claude_sonnet"},
+    "deepseek":     {"provider": "deepseek",  "model_ref": "deepseek_chat"},
+    "gemini":       {"provider": "gemini",    "model_ref": "gemini_flash"},
+    "gemini-pro":   {"provider": "gemini",    "model_ref": "gemini_pro"},
+    "omlx":         {"provider": "omlx",      "model_ref": "omlx.default_model"},
 }
 ```
 

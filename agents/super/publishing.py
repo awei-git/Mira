@@ -69,7 +69,11 @@ def _check_pending_publish():
         if not entry.get("writer_gate_passed"):
             gate_ok, gate_msg, _gate = require_writer_gate(workspace, channel="substack")
             if not gate_ok:
-                update_manifest(entry["slug"], error=f"writer gate blocked publish: {gate_msg}")
+                update_manifest(
+                    entry["slug"],
+                    status="blocked_writer_gate",
+                    error=f"writer gate blocked publish: {gate_msg}",
+                )
                 return
         content = final.read_text(encoding="utf-8")
         result = publish_to_substack(
@@ -98,12 +102,15 @@ def _check_pending_publish():
             log.info("Publish cooldown active for '%s': %s", entry["slug"], result[:80])
             return  # still in cooldown, try next cycle
 
-        # Published successfully
-        post_url = ""
-        for part in result.split():
-            if "substack.com" in part:
-                post_url = part
-                break
+        post_url = _extract_substack_url(result)
+        if not post_url:
+            status = _blocked_publish_status(result)
+            if status:
+                update_manifest(entry["slug"], status=status, error=result[:500])
+            else:
+                update_manifest(entry["slug"], error=f"publish returned no URL: {result[:500]}")
+            log.warning("Pending publish did not return URL for '%s': %s", entry["slug"], result[:160])
+            return
 
         # Post-condition: verify the published URL is reachable
         passed, verify_err = validate_step(entry["slug"], "published", url=post_url, title=entry["title"])
@@ -152,8 +159,29 @@ def _check_pending_publish():
             log.warning("Twitter promotion failed for '%s': %s", entry["slug"], tw_e)
 
     except Exception as e:
-        update_manifest(entry["slug"], error=str(e))
+        err = str(e)
+        if "Security claim detected without" in err:
+            update_manifest(entry["slug"], status="blocked_security_claim", error=err)
+        else:
+            update_manifest(entry["slug"], error=err)
         log.warning("Pending publish failed for '%s': %s", entry["slug"], e)
+
+
+def _extract_substack_url(result: str) -> str:
+    for part in (result or "").split():
+        cleaned = part.strip().strip(".,)>]\"'")
+        if "substack.com" in cleaned:
+            return cleaned
+    return ""
+
+
+def _blocked_publish_status(result: str) -> str:
+    text = result or ""
+    if "Substack quality gate blocked publish" in text or "writer gate" in text.lower():
+        return "blocked_writer_gate"
+    if "Substack 未配置" in text or "Substack 认证失败" in text or "cookie 已过期" in text:
+        return "blocked_manual_review"
+    return ""
 
 
 def _check_pending_podcast():

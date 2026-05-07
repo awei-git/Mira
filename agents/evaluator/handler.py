@@ -1510,6 +1510,27 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
     except Exception as _e:
         log.debug("Could not load blocked skills log: %s", _e)
 
+    # Skill learning silence check
+    try:
+        from config import SOUL_DIR
+
+        ts_file = SOUL_DIR / "last_skill_extracted_at.txt"
+        if ts_file.exists():
+            last_ts = datetime.fromisoformat(ts_file.read_text(encoding="utf-8").strip())
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.replace(tzinfo=timezone.utc)
+            hours_silent = (datetime.now(timezone.utc) - last_ts).total_seconds() / 3600
+            if hours_silent > 48:
+                lines.extend(
+                    [
+                        "",
+                        "## Skill Learning Warning",
+                        f"Skill learning silent for {hours_silent:.0f}h — check explorer pipeline and feed sources.",
+                    ]
+                )
+    except Exception as _e:
+        log.debug("Could not check skill learning silence: %s", _e)
+
     # Check outcomes of previous improvement plans
     outcomes = check_improvement_outcomes(assessment)
     if outcomes:

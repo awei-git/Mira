@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 from config import (
     CONTROL_RUNTIME_DB_ENABLED,
+    LOGS_DIR,
     MIRA_DIR,
     TASK_TIMEOUT,
     TASK_TIMEOUT_LONG,
@@ -89,6 +90,7 @@ from config import TASKS_DIR
 STATUS_FILE = TASKS_DIR / "status.json"
 HISTORY_FILE = TASKS_DIR / "history.jsonl"
 TIMING_STATS_FILE = TASKS_DIR / "timing_stats.jsonl"
+ROUTING_AUDIT_FILE = LOGS_DIR / "routing_audit.jsonl"
 
 # Path to the worker script (same directory as this file)
 WORKER_SCRIPT = Path(__file__).resolve().parent / "task_worker.py"
@@ -109,6 +111,23 @@ _WORKSPACE_STATE_ARTIFACTS = {
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _append_routing_audit(task_type: str, agent: str, reason: str | None) -> None:
+    entry = json.dumps(
+        {"ts": datetime.now(timezone.utc).timestamp(), "task_type": task_type, "agent": agent, "reason": reason},
+        ensure_ascii=False,
+    )
+    try:
+        ROUTING_AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if ROUTING_AUDIT_FILE.exists():
+            lines = ROUTING_AUDIT_FILE.read_text(encoding="utf-8").splitlines()
+            if len(lines) >= 10000:
+                ROUTING_AUDIT_FILE.write_text("\n".join(lines[-9000:]) + "\n", encoding="utf-8")
+        with open(ROUTING_AUDIT_FILE, "a", encoding="utf-8") as _f:
+            _f.write(entry + "\n")
+    except OSError:
+        pass
 
 
 def _task_hash(task_id: str) -> str:
@@ -419,6 +438,11 @@ class TaskManager:
             tags=classify_task(msg.content),
             attempt_count=attempt_count,
             max_attempts=max_attempts or TASK_MAX_RETRIES,
+        )
+        _append_routing_audit(
+            task_type=record.tags[0] if record.tags else "general",
+            agent=record.tags[0] if record.tags else "general",
+            reason=None,
         )
         self._records.append(record)
         self._save_status()

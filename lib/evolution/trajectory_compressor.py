@@ -45,6 +45,7 @@ def _default_summarizer() -> SummarizeFn | None:
     """
     try:
         from llm_providers.gemini import gemini_think  # type: ignore
+        from config import GEMINI_FLASH_MODEL
     except Exception as e:  # pragma: no cover - depends on provider setup
         log.debug("Gemini unavailable for compressor: %s", e)
         return None
@@ -60,7 +61,7 @@ def _default_summarizer() -> SummarizeFn | None:
             f"{text}"
         )
         try:
-            return gemini_think(prompt, model="gemini-2.5-flash", timeout=45) or ""
+            return gemini_think(prompt, model=GEMINI_FLASH_MODEL, timeout=45) or ""
         except Exception as e:
             log.warning("Gemini summarize failed: %s", e)
             return ""

@@ -400,6 +400,9 @@ def do_autowrite_check():
         return
 
     log.info("Starting autonomous writing check")
+    state = load_state()
+    state["last_autowrite_check"] = datetime.now().isoformat()
+    save_state(state)
 
     soul = load_soul()
     soul_ctx = format_soul(soul)
@@ -456,22 +459,24 @@ def do_autowrite_check():
     result = claude_think(prompt, timeout=120)
     if not result:
         log.info("Autonomous writing check: empty response")
-        state = load_state()
-        state["last_autowrite_check"] = datetime.now().isoformat()
-        save_state(state)
         return
 
     # Parse decision
     try:
         match = re.search(r"\{.*\}", result, re.DOTALL)
         if not match:
+            ctx = load_session_context()
+            ctx.append(session_record("autowrite_skip", "model returned no JSON decision"))
+            save_session_context(ctx)
+            log.info("Autonomous writing check: no JSON decision")
             return
         decision = json.loads(match.group())
     except (json.JSONDecodeError, AttributeError):
+        ctx = load_session_context()
+        ctx.append(session_record("autowrite_skip", "model returned invalid JSON decision"))
+        save_session_context(ctx)
+        log.info("Autonomous writing check: invalid JSON decision")
         return
-
-    state = load_state()
-    state["last_autowrite_check"] = datetime.now().isoformat()
 
     if not decision.get("should_write"):
         log.info("Autonomous writing: Mira chose not to write (%s)", decision.get("reason", "")[:80])
@@ -479,7 +484,6 @@ def do_autowrite_check():
         ctx = load_session_context()
         ctx.append(session_record("autowrite_skip", decision.get("reason", "")[:100]))
         save_session_context(ctx)
-        save_state(state)
         return
 
     # Mira wants to write!
@@ -494,7 +498,6 @@ def do_autowrite_check():
         ctx = load_session_context()
         ctx.append(session_record("autowrite_skip", f"duplicate: {title}"))
         save_session_context(ctx)
-        save_state(state)
         return
 
     log.info("Autonomous writing triggered: '%s' [%s]", title, writing_type)
@@ -537,4 +540,3 @@ def do_autowrite_check():
     )
 
     log.info("Self-initiated writing: '%s' (%s)", title, writing_type)
-    save_state(state)

@@ -2,10 +2,12 @@
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 import urllib.request
 import urllib.error
 
 from config import (
+    STATE_DIR,
     OPENAI_API_ENDPOINT,
     DEEPSEEK_API_ENDPOINT,
     GPT5_MODEL,
@@ -24,6 +26,47 @@ _API_ENDPOINTS = {
 
 # Endpoint drift detection — probe once per session
 _probed_providers: dict[str, bool] = {}  # provider -> True if healthy
+_PROVIDER_CIRCUIT_FILE = STATE_DIR / "api_provider_circuit.json"
+
+
+def _load_provider_circuit() -> dict:
+    try:
+        return json.loads(_PROVIDER_CIRCUIT_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_provider_circuit(data: dict) -> None:
+    try:
+        _PROVIDER_CIRCUIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _PROVIDER_CIRCUIT_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(_PROVIDER_CIRCUIT_FILE)
+    except OSError as exc:
+        log.debug("provider circuit save failed: %s", exc)
+
+
+def _provider_circuit_open(provider: str) -> bool:
+    entry = _load_provider_circuit().get(provider, {})
+    until = entry.get("disabled_until", "")
+    if not until:
+        return False
+    try:
+        until_dt = datetime.fromisoformat(until.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) < until_dt
+
+
+def _open_provider_circuit(provider: str, *, reason: str, hours: int = 6) -> None:
+    data = _load_provider_circuit()
+    until = datetime.now(timezone.utc) + timedelta(hours=hours)
+    data[provider] = {
+        "reason": reason,
+        "disabled_until": until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    _save_provider_circuit(data)
 
 
 def _probe_endpoint(provider: str) -> bool:
@@ -33,6 +76,10 @@ def _probe_endpoint(provider: str) -> bool:
     Cost: ~$0.001 per probe.
     """
     from llm import _get_api_key
+
+    if _provider_circuit_open(provider):
+        _probed_providers[provider] = False
+        return False
 
     if provider in _probed_providers:
         return _probed_providers[provider]
@@ -76,10 +123,15 @@ def _probe_endpoint(provider: str) -> bool:
                 _probed_providers[provider] = False
                 return False
     except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace")[:500]
         if e.code == 429:
             # Rate limited = endpoint is alive, schema OK
             _probed_providers[provider] = True
             return True
+        if provider == "deepseek" and e.code == 402:
+            _open_provider_circuit(
+                provider, reason=_http_error_reason(error_body, default="Insufficient Balance"), hours=6
+            )
         log.warning("Endpoint probe failed: %s HTTP %d", provider, e.code)
         _probed_providers[provider] = False
         return False
@@ -102,7 +154,10 @@ def _api_call(
 
     # Probe endpoint on first use (detect drift before wasting a real call)
     if provider in _API_ENDPOINTS and not _probe_endpoint(provider):
-        log.error("API endpoint probe failed for %s — skipping call", provider)
+        if _provider_circuit_open(provider):
+            log.debug("API provider %s circuit open — skipping call", provider)
+        else:
+            log.warning("API endpoint probe failed for %s — skipping call", provider)
         return ""
     if provider == "omlx":
         from llm_providers.local import _omlx_call
@@ -164,3 +219,16 @@ def _api_call(
     except Exception as e:
         log.error("API %s/%s failed: %s", provider, model_id, redact_secrets(str(e)))
         return ""
+
+
+def _http_error_reason(body: str, *, default: str) -> str:
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return default
+    error = data.get("error", {})
+    if isinstance(error, dict):
+        message = str(error.get("message", "")).strip()
+        if message:
+            return message[:120]
+    return default

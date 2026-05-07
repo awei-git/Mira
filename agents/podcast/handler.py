@@ -46,6 +46,7 @@ log = logging.getLogger("podcast")
 
 from config import (
     GEMINI_TTS_MODEL,
+    GEMINI_PRO_MODEL,
     GEMINI_TTS_TIMEOUT,
     GEMINI_TTS_MAX_RETRIES,
     GEMINI_TTS_BACKOFF_MULTIPLIER,
@@ -59,7 +60,7 @@ from publish.preflight import preflight_check
 
 GEMINI_MODEL_TTS = GEMINI_TTS_MODEL  # Flash: free tier available
 GEMINI_MODEL_TTS_FALL = GEMINI_TTS_MODEL  # same (Pro has no free tier)
-GEMINI_MODEL_THINK = "gemini-2.5-pro"  # for script generation
+GEMINI_MODEL_THINK = GEMINI_PRO_MODEL  # for script generation
 
 # ---------------------------------------------------------------------------
 # MiniMax TTS config (primary TTS backend)

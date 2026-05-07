@@ -26,7 +26,7 @@ from memory.soul import (
     load_recent_reading_notes,
     get_memory_size,
 )
-from llm import claude_think
+from llm import model_think
 from prompts import spark_check_prompt
 
 from workflows.helpers import _append_to_daily_feed
@@ -238,7 +238,7 @@ def do_spark_check(user_id: str = "ang"):
         log.debug("Spark-check conversation retrieval failed: %s", e)
 
     prompt = spark_check_prompt(soul_ctx, recent_reading, recent_journal, recent_conversations)
-    result = claude_think(prompt, timeout=120)
+    result = model_think(prompt, model_name="deepseek", timeout=120)
 
     # Update state regardless of result
     state["last_spark_check"] = datetime.now().isoformat()

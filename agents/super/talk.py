@@ -489,6 +489,15 @@ def _project_record_to_bridge(bridge, task_mgr, rec) -> None:
         log.info("STATE %s: working -> needs-input", rec.task_id)
         return
 
+    if rec.status == "completed_unverified" and "discussion" in (getattr(rec, "tags", []) or []):
+        msg_text = (content + footer) if not is_comment else ""
+        bridge.update_status(rec.task_id, "done", agent_message=msg_text)
+        _project_record_to_control_db(rec, "verified", agent_message=msg_text)
+        if rec.tags:
+            bridge.set_tags(rec.task_id, rec.tags)
+        log.info("STATE %s: working -> done (discussion)", rec.task_id)
+        return
+
     if rec.status == "completed_unverified":
         msg_text = (content + footer) if not is_comment else ""
         bridge.update_status(rec.task_id, "verifying", agent_message=msg_text)

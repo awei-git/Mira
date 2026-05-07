@@ -201,6 +201,10 @@ def harvest_all() -> list[str]:
             ok = record_outcome(name)
             if ok:
                 completed.append(name)
+            try:
+                pid_file.unlink()
+            except OSError:
+                pass
     return completed
 
 
@@ -249,15 +253,7 @@ def _maybe_alert(name: str, health: dict | None = None):
     msg = f"⚠️ {name} 连续失败 {consecutive} 次\n" f"错误: {reason}\n" f"日志: logs/bg-{name}.log"
 
     try:
-        import sys
-
-        shared_dir = str(_AGENTS_DIR.parent / "lib")
-        if shared_dir not in sys.path:
-            sys.path.insert(0, shared_dir)
-        from bridge import Mira
-
-        bridge = Mira()
-        bridge.post(msg)
+        _publish_health_alert(msg)
         log.warning("Health alert sent for '%s': %d consecutive failures", name, consecutive)
     except Exception as e:
         log.error("Failed to send health alert: %s", e)
@@ -360,15 +356,7 @@ def _maybe_anomaly_alert(message: str, health: dict):
         return
 
     try:
-        import sys
-
-        shared_dir = str(_AGENTS_DIR.parent / "lib")
-        if shared_dir not in sys.path:
-            sys.path.insert(0, shared_dir)
-        from bridge import Mira
-
-        bridge = Mira()
-        bridge.post(f"⚠️ 异常检测: {message}")
+        _publish_health_alert(f"⚠️ 异常检测: {message}")
         log.warning("Anomaly alert: %s", message)
     except Exception as e:
         log.error("Failed to send anomaly alert: %s", e)
@@ -378,6 +366,51 @@ def _maybe_anomaly_alert(message: str, health: dict):
     health.setdefault("daily_stats", {}).setdefault(today, {})
     health["daily_stats"][today]["alerts_sent"] = daily.get("alerts_sent", 0) + 1
     _save_health(health)
+
+
+def _get_bridge():
+    import sys
+
+    shared_dir = str(_AGENTS_DIR.parent / "lib")
+    if shared_dir not in sys.path:
+        sys.path.insert(0, shared_dir)
+    from bridge import Mira
+
+    return Mira()
+
+
+def _publish_health_alert(message: str):
+    """Publish health alerts through the current item API, not legacy post()."""
+    bridge = _get_bridge()
+    item_id = "mira_health_alerts"
+    title = "Mira Health Alerts"
+    if bridge.item_exists(item_id):
+        bridge.append_message(item_id, "agent", message)
+        item = bridge._read_item(item_id)
+        if item:
+            item["type"] = "discussion"
+            item["title"] = title
+            item["status"] = "done"
+            item["origin"] = "agent"
+            item["tags"] = list(dict.fromkeys(["health", "ops", "system", *item.get("tags", [])]))
+            item["pinned"] = True
+            bridge._write_item(item)
+            bridge._update_manifest(item)
+        return
+
+    item = bridge.create_item(
+        item_id,
+        "discussion",
+        title,
+        message,
+        sender="agent",
+        tags=["health", "ops", "system"],
+        origin="agent",
+    )
+    item["status"] = "done"
+    item["pinned"] = True
+    bridge._write_item(item)
+    bridge._update_manifest(item)
 
 
 # ---------------------------------------------------------------------------

@@ -245,3 +245,29 @@ def test_health_weekly_job_registered():
     assert job is not None
     assert job.inline is True
     assert job.inline_runner == "health-weekly"
+
+
+def test_pipeline_followups_respect_autowrite_cooldown(monkeypatch):
+    import jobs
+
+    dispatched = []
+    monkeypatch.setattr(jobs, "evaluate_job_payload", lambda job: None if job.name == "autowrite-check" else True)
+    monkeypatch.setattr(jobs, "_dispatch_background", lambda *args, **kwargs: dispatched.append(args) or True)
+
+    jobs._dispatch_pipeline_followups(["explore-test"], [])
+
+    assert dispatched == []
+
+
+def test_record_dispatch_updates_cooldown_job_state(monkeypatch):
+    import jobs
+    from runtime.jobs import get_job
+
+    state = {}
+    monkeypatch.setattr(jobs, "load_state", lambda user_id=None: state)
+    monkeypatch.setattr(jobs, "save_state", lambda new_state, user_id=None: state.update(new_state))
+
+    job = get_job("autowrite-check")
+    jobs._record_scheduled_job_dispatch(job, True)
+
+    assert "last_autowrite_check" in state

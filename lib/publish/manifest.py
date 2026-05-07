@@ -158,7 +158,25 @@ def get_stuck_articles(timeout_minutes: int = 120) -> list[dict]:
         # Terminal or explicitly parked statuses are not "stuck".
         # blocked_language = semantic block (CJK body during English-only window);
         # get_next_pending won't pick these up, so they're not waiting on pipeline.
-        if status in ("complete", "blocked_language", ""):
+        if status in (
+            "complete",
+            "skip",
+            "skipped",
+            "deleted",
+            "published",
+            "podcast_en",
+            "blocked_language",
+            "blocked_writer_gate",
+            "blocked_security_claim",
+            "blocked_publish_error",
+            "blocked_manual_review",
+            "",
+        ):
+            continue
+        # Entries with an error are not silently "stuck"; they need either a
+        # retry window or an explicit blocked/manual-review status. Keep the
+        # stuck warning for genuinely waiting states with no recorded cause.
+        if entry.get("error"):
             continue
         ts_str = entry.get("timestamps", {}).get(status)
         if not ts_str:

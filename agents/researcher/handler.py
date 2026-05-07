@@ -31,6 +31,7 @@ from config import (
     RESEARCHER_QUERY_TIMEOUT,
     RESEARCHER_REFLECT_TIMEOUT,
 )
+from prompts import ROUTING_BOUNDARY
 
 log = logging.getLogger("researcher_agent")
 
@@ -96,6 +97,8 @@ Excerpt:
         )
 
     prompt = f"""You are Mira's researcher agent. Tool-mode browsing is unavailable, so another system has gathered source material for you.
+
+{ROUTING_BOUNDARY}
 
 ## Research Question
 {question}
@@ -230,6 +233,8 @@ JSON only, no other text."""
 
             research_prompt = f"""Research this question thoroughly using web search.
 
+{ROUTING_BOUNDARY}
+
 Question: {question}
 
 Instructions:
@@ -261,6 +266,8 @@ Write findings to output.md in the workspace."""
         if remaining_questions or iteration < MAX_ITERATIONS:
             kb_summary = "\n\n".join(f"Q: {item['question']}\nA: {item['findings'][:500]}" for item in knowledge_base)
             reflect_prompt = f"""You are reviewing research progress.
+
+{ROUTING_BOUNDARY}
 
 Original query: {content}
 
@@ -299,6 +306,8 @@ JSON or "DONE", nothing else."""
         synth_context += f"\n{recall_block}\n"
 
     synth_prompt = f"""{bundle.persona.as_prompt(max_length=2600)}
+
+{ROUTING_BOUNDARY}
 
 ## Research Skills
 {skills_ctx}

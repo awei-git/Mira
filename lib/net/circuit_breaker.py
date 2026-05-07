@@ -1,7 +1,7 @@
 """Circuit breaker — per-provider rolling-window trip + half-open probe.
 
 Design rationale: baseline showed 91% of Mira ERRORs come from oMLX
-endpoints (gemma-4 HTTP 507, Qwen3.5-27B timeout). A simple retry
+endpoints (local model HTTP 507 / timeout). A simple retry
 policy just amplifies the load. A circuit breaker drops requests
 fast when a provider is dying, lets other code take the `CircuitOpen`
 signal and fall back gracefully, and self-recovers.

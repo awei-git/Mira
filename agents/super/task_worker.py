@@ -68,7 +68,15 @@ from memory.soul import (
     recall_context,
     save_knowledge_note,
 )
-from llm import claude_act, claude_think, ClaudeTimeoutError, reset_session_tokens, get_session_tokens, _log_efficiency
+from llm import (
+    claude_act,
+    claude_think,
+    ClaudeTimeoutError,
+    reset_session_tokens,
+    get_session_tokens,
+    set_model_policy,
+    _log_efficiency,
+)
 
 # Handler functions extracted to handlers_legacy.py (imported after all helpers
 # are defined to avoid circular import — see bottom of file)
@@ -566,6 +574,65 @@ from execution.plan_state import (
 
 # handle_discussion -> handlers_legacy.py
 
+_USER_SENDERS = {"user", "ang", "wa", "iphone", "ios"}
+_CONVERSATIONAL_FEED_MARKERS = (
+    "zhesi",
+    "每日哲思",
+    "mira thoughts",
+    "daily-topic",
+    "daily_topic",
+    "thoughts",
+    "self-assessment",
+    "self assessment",
+    "自检",
+)
+_MARKET_FEED_MARKERS = (
+    "market",
+    "analyst",
+    "开市",
+    "收市",
+    "市场分析",
+    "premarket",
+    "postmarket",
+)
+
+
+def _is_user_sender(sender: str) -> bool:
+    return str(sender or "").strip().lower() in _USER_SENDERS
+
+
+def _metadata_text(task_id: str, task_data: dict) -> str:
+    parts = [
+        task_id,
+        str(task_data.get("id") or ""),
+        str(task_data.get("title") or ""),
+        " ".join(str(t) for t in task_data.get("tags", []) if t),
+    ]
+    metadata = task_data.get("metadata") or {}
+    if isinstance(metadata, dict):
+        parts.extend(str(v) for v in metadata.values() if isinstance(v, (str, int, float)))
+    return " ".join(parts).lower()
+
+
+def _looks_like_market_thread(task_id: str, task_data: dict) -> bool:
+    text = _metadata_text(task_id, task_data)
+    return any(marker.lower() in text for marker in _MARKET_FEED_MARKERS)
+
+
+def _looks_like_conversation_feed(task_id: str, task_data: dict) -> bool:
+    if task_data.get("type") == "discussion":
+        return True
+    if task_data.get("type") != "feed":
+        return False
+    text = _metadata_text(task_id, task_data)
+    return any(marker.lower() in text for marker in _CONVERSATIONAL_FEED_MARKERS)
+
+
+def _task_with_current_message(task_data: dict, content: str, sender: str) -> dict:
+    task = dict(task_data)
+    task["current_message"] = {"sender": sender or "user", "content": content or ""}
+    return task
+
 
 def main():
     parser = argparse.ArgumentParser(description="TalkBridge task worker")
@@ -617,6 +684,7 @@ def main():
     _set_active_user(_user_id)
     _user_role = msg_data.get("user_role", "admin")
     _model_restriction = msg_data.get("model_restriction")
+    set_model_policy(_model_restriction)
     _content_filter = msg_data.get("content_filter", False)
     _allowed_agents = msg_data.get("allowed_agents", [])
     log.info(
@@ -739,14 +807,30 @@ def main():
             return
         log.warning("Edit handler returned empty, falling through to task planning")
 
-    # --- Fast-path for conversational discussions (no planner, no agent
-    # routing — just a direct reply via handle_discussion). Soul questions,
-    # threads, comment-replies all hit this. Avoids 2+ minutes of planning
-    # overhead for what should be a 30s response.
-    if task_data.get("type") == "discussion":
+    # --- Fast-path for market feed follow-ups. These are user questions in an
+    # existing market thread, so planner keyword routing adds latency and often
+    # loses the thread context.
+    if _is_user_sender(msg_sender) and _looks_like_market_thread(args.task_id, task_data):
+        log.info("Market feed reply fast-path for task %s", args.task_id)
+        _emit_status(args.task_id, "Reading market context...", "chart.line.uptrend.xyaxis")
+        _handle_analyst(workspace, args.task_id, msg_content, msg_sender, thread_id, tier="heavy")
+        log.info("Worker exiting (market feed reply fast-path)")
+        return
+
+    # --- Fast-path for conversational discussions and conversational feeds
+    # (no planner, no agent routing). The current message is injected
+    # explicitly because daily topic threads may have autonomous agent messages
+    # after the user's reply by the time the worker reads the item file.
+    if _is_user_sender(msg_sender) and _looks_like_conversation_feed(args.task_id, task_data):
         log.info("Discussion fast-path for task %s", args.task_id)
         _emit_status(args.task_id, "Thinking...", "bubble.left.and.text.bubble.right")
-        handle_discussion(task_data, workspace, args.task_id, thread_id, tier="light")
+        handle_discussion(
+            _task_with_current_message(task_data, msg_content, msg_sender),
+            workspace,
+            args.task_id,
+            thread_id,
+            tier="light",
+        )
         log.info("Worker exiting (discussion fast-path)")
         return
 
