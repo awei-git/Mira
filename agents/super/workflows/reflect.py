@@ -305,6 +305,33 @@ def do_reflect(user_id: str = "ang"):
     if pruning_section:
         _prune_episodes_from_reflect(pruning_section)
 
+    # --- Joint Garden: update co-observation log ---
+    try:
+        _garden_path = Path(__file__).resolve().parent.parent.parent / "shared" / "soul" / "joint_garden.md"
+        _existing_garden = _garden_path.read_text(encoding="utf-8") if _garden_path.exists() else ""
+        _today = datetime.now().strftime("%Y-%m-%d")
+        _garden_prompt = (
+            f"You are maintaining a joint observation garden — a living document of topics "
+            f"Mira and the human are looking at together.\n\n"
+            f"Current garden:\n{_existing_garden}\n\n"
+            f"Recent briefings (last 7 days):\n{recent_briefings[:2000]}\n\n"
+            f"Recent work:\n{recent_work[:1500]}\n\n"
+            f"---\n\n"
+            f"Today: {_today}\n\n"
+            f"1. Identify topics showing sustained mutual attention across multiple recent sessions.\n"
+            f"2. For each: write a dated Garden Log entry (format: `### {_today} — <topic>\\n<observation>`)\n"
+            f"3. For any existing Garden Log topics absent from recent data, append a note: `[dormant as of {_today}]`\n\n"
+            f"Output ONLY the new dated entries to append to the Garden Log. "
+            f"If nothing warrants an entry, output the empty string."
+        )
+        _garden_entries = claude_think(_garden_prompt, timeout=60, tier="light")
+        if _garden_entries and _garden_entries.strip():
+            _updated = _existing_garden.rstrip() + "\n\n" + _garden_entries.strip() + "\n"
+            atomic_write(_garden_path, _updated)
+            log.info("Joint garden updated from reflect cycle")
+    except Exception as e:
+        log.warning("Joint garden update failed: %s", e)
+
     # --- Evolve worldview ---
     try:
         recent_reading = load_recent_reading_notes(days=14, user_id=user_id)

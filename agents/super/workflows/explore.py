@@ -41,6 +41,8 @@ from memory.soul import (
 )
 from llm import claude_think, claude_act
 from fetcher import fetch_all
+from briefing_writer import apply_source_diversity_note, annotate_epistemic_metadata, detect_survivorship_bias
+from yield_monitor import record_skill_yield, warn_on_zero_skill_yield
 from prompts import explore_prompt, deep_dive_prompt, internalize_prompt
 
 from workflows.helpers import (
@@ -73,6 +75,8 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
 
+    run_id = f"explore-{datetime.utcnow().strftime('%Y%m%dT%H%M%S%fZ')}-{slot_name or 'default'}"
+    warn_on_zero_skill_yield()
     log.info("Starting explore cycle (sources=%s, slot=%s)", source_names or "all", slot_name or "default")
 
     # 1. Fetch sources
@@ -97,6 +101,7 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
                     state["explore_recent_groups"] = recent[-len(EXPLORE_SOURCE_GROUPS) :]
                     break
         save_state(state)
+        record_skill_yield(run_id, skills_extracted=0, briefing_produced=False)
         return
 
     soul = load_soul()
@@ -151,7 +156,9 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
 
     if not briefing:
         log.error("Explore: Claude returned empty briefing")
+        record_skill_yield(run_id, skills_extracted=0, briefing_produced=False)
         return
+    briefing = apply_source_diversity_note(briefing, items)
 
     # 4. Save briefing (slot-specific so multiple explores don't overwrite)
     today = datetime.now().strftime("%Y-%m-%d")
@@ -188,11 +195,14 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
         log.debug("Proactive reading message check failed (non-fatal): %s", e)
 
     # 6. Check for deep-dive candidate
+    skills_extracted = 0
     dive = _extract_deep_dive(briefing)
     if dive and MAX_DEEP_DIVES > 0:
         log.info("Deep diving into: %s", dive["title"])
         url_to_item = {item["url"]: item for item in items if item.get("url")}
-        _do_deep_dive(soul_ctx, dive, url_to_item=url_to_item)
+        skills_extracted = _do_deep_dive(soul_ctx, dive, url_to_item=url_to_item)
+    record_skill_yield(run_id, skills_extracted=skills_extracted, briefing_produced=True)
+    log.info("Explore yield recorded (skills_extracted: %d, briefing_produced: true)", skills_extracted)
 
     # 7. Extract comment suggestions and run growth cycle
     comment_suggestions = _extract_comment_suggestions(briefing)
@@ -249,7 +259,7 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     save_state(state)
 
 
-def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None):
+def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None) -> int:
     """Deep-dive into one item from the briefing."""
     import time as _time
 
@@ -258,7 +268,7 @@ def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None):
 
     if not result:
         log.error("Deep dive returned empty")
-        return
+        return 0
 
     # Save analysis
     today = datetime.now().strftime("%Y-%m-%d")
@@ -282,6 +292,7 @@ def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None):
         result,
         re.DOTALL,
     )
+    skills_written = 0
     if skill_match:
         name = skill_match.group(1).strip()
         desc = skill_match.group(2).strip()
@@ -327,8 +338,20 @@ def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None):
                 content = content[:end] + "\n" + provenance_yaml + content[end:]
         else:
             content = f"---\n{provenance_yaml}\n---\n\n{content}"
-        save_skill(name, desc, content)
-        log.info("Learned new skill from deep dive: %s", name)
+        source_context = " ".join(
+            str(source_item.get(field, "")) for field in ("source", "title", "summary", "description", "url")
+        )
+        epistemic_audit = detect_survivorship_bias(f"{desc}\n\n{content}\n\n{source_context}")
+        content = annotate_epistemic_metadata(content, epistemic_audit)
+        if epistemic_audit["confidence"] == "low":
+            log.warning(
+                "Epistemic filter tagged low-confidence extracted skill: %s flags=%s",
+                name,
+                ",".join(epistemic_audit["flags"]),
+            )
+        if save_skill(name, desc, content):
+            skills_written += 1
+            log.info("Learned new skill from deep dive: %s", name)
 
     # --- Internalization: write a personal reading reflection ---
     try:
@@ -341,6 +364,8 @@ def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None):
             log.info("Internalization note saved for: %s", dive["title"])
     except Exception as e:
         log.warning("Internalization failed: %s", e)
+
+    return skills_written
 
 
 def _extract_briefing_insights(soul_ctx: str, briefing: str, today: str, slot_name: str = ""):

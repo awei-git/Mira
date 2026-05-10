@@ -9,10 +9,15 @@ Modes:
 """
 import json
 import logging
+import os
+import re
+import shutil
+import signal
+import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Unified sys.path setup — see lib/pathsetup.py for the full list of package dirs
@@ -22,6 +27,7 @@ import pathsetup  # noqa: F401  (side-effect: registers all Mira package dirs)
 
 import health_monitor
 from logging_util import throttled_warning  # noqa: E402  — used inside _check_invisible_deps
+from notes_bridge import detect_vulnerability_disclosure
 
 from config import (
     MIRA_ROOT,
@@ -39,9 +45,19 @@ from config import (
     PERF_STATS_FILE,
     PERF_WARN_THRESHOLD,
     LAST_OUTPUT_FILE,
+    FEEDS_DIR,
     STALE_THRESHOLDS,
     IPHONE_BRIDGE_WARN_LATENCY_MS,
     BRIDGE_STALE_THRESHOLD,
+    CALIBRATION_INTERVAL_DAYS,
+    CALIBRATION_SAMPLE_SIZE,
+    MAX_TASKS_PER_CYCLE,
+    SURVIVAL_CRITICAL_COMPONENTS,
+    SENSITIVE_SURVIVAL_TERMS,
+    SENSITIVE_FORCE_LOCAL,
+    SENSITIVITY_HOURS_START,
+    SENSITIVITY_HOURS_END,
+    SENSITIVITY_ROUTE_TO_LOCAL,
     validate_config,
     get_known_user_ids,
     get_user_config,
@@ -120,6 +136,7 @@ from workflows.social import (
     do_spark_check,
 )
 from workflows.writing import do_autowrite_check, run_autowrite_pipeline
+from soul.joint_focus import generate_joint_observation
 
 # Extracted modules — triggers decide "should we run X?", dispatcher spawns bg tasks
 from runtime.triggers import (
@@ -139,7 +156,13 @@ from runtime.jobs import (
     get_jobs,
 )
 from execution.runtime_contract import normalize_task_status
-from soul_manager import log_authorization_event, check_audit_coverage
+from soul_manager import (
+    log_authorization_event,
+    check_audit_coverage,
+    check_rules_integrity,
+    get_skill_provenance,
+    validate_soul_files,
+)
 
 # ---------------------------------------------------------------------------
 # Extracted sub-modules (pure structural refactor)
@@ -153,8 +176,9 @@ from state import (
     session_record,
     session_has_recent,
 )
+import talk as talk_module
 from talk import (
-    do_talk,
+    do_talk as _do_talk,
     _format_elapsed,
     _format_status,
     _status_footer,
@@ -201,6 +225,737 @@ from daily_tasks import (
 )
 
 log = logging.getLogger("mira")
+BRIDGE_STALENESS_THRESHOLD_MINUTES = BRIDGE_STALE_THRESHOLD / 60
+BACKGROUND_HEALTH_LOG = LOGS_DIR / "background_health.jsonl"
+THIRD_THING_FILE = Path(__file__).resolve().parent / "notes_outbox" / "third_thing.md"
+BRIDGE_THIRD_THING_FILE = MIRA_DIR / "outbox" / "third_thing.md"
+JOINT_GARDEN_FILE = _AGENTS_DIR / "shared" / "soul" / "joint_garden.md"
+JOINT_GARDEN_STALE_DAYS = 21
+
+_INTENT_CLARIFICATION_REPLY = "What do you want to achieve with this?"
+_SENSITIVE_REDACTED_CONTENT = "[sensitive survival exposure routed local]"
+_TIME_SENSITIVE_REDACTED_CONTENT = "[time-sensitive message routed local]"
+_TIME_SENSITIVE_MIN_MESSAGE_CHARS = 20
+_ORIGINAL_TASK_MANAGER_DISPATCH = TaskManager.dispatch
+_ORIGINAL_DISPATCH_OR_REQUEUE = _dispatch_or_requeue
+_ORIGINAL_PROJECT_RECORD_TO_BRIDGE = getattr(talk_module, "_project_record_to_bridge", None)
+_AMBIGUOUS_INTENT_PATTERNS = (
+    re.compile(r"\bdo something (?:about|with|for)\b", re.IGNORECASE),
+    re.compile(r"\bsomething (?:about|with|for)\b", re.IGNORECASE),
+    re.compile(r"\bdeal with (?:this|it|that)\b", re.IGNORECASE),
+    re.compile(r"\bhandle (?:this|it|that)\b", re.IGNORECASE),
+    re.compile(r"\btake care of (?:this|it|that)\b", re.IGNORECASE),
+    re.compile(r"\bmake (?:this|it|that) better\b", re.IGNORECASE),
+    re.compile(r"\bfix (?:this|it|that)\b", re.IGNORECASE),
+    re.compile(r"\bwhatever\b", re.IGNORECASE),
+    re.compile(r"\banything\b", re.IGNORECASE),
+)
+_ACTION_VERBS = frozenset(
+    {
+        "analyze",
+        "add",
+        "assess",
+        "build",
+        "calculate",
+        "check",
+        "classify",
+        "compare",
+        "convert",
+        "create",
+        "debug",
+        "design",
+        "draft",
+        "edit",
+        "evaluate",
+        "explain",
+        "extract",
+        "find",
+        "fix",
+        "generate",
+        "help",
+        "implement",
+        "make",
+        "open",
+        "organize",
+        "plan",
+        "prepare",
+        "publish",
+        "read",
+        "recommend",
+        "refactor",
+        "remove",
+        "research",
+        "review",
+        "revise",
+        "run",
+        "schedule",
+        "search",
+        "send",
+        "summarize",
+        "test",
+        "translate",
+        "update",
+        "write",
+    }
+)
+_CJK_ACTION_VERBS = (
+    "写",
+    "做",
+    "查",
+    "找",
+    "改",
+    "修",
+    "总结",
+    "分析",
+    "研究",
+    "对比",
+    "翻译",
+    "发布",
+    "运行",
+    "测试",
+    "解释",
+    "帮",
+    "生成",
+    "创建",
+    "添加",
+    "删除",
+    "更新",
+    "读",
+    "看",
+    "搜索",
+    "整理",
+    "计划",
+    "比较",
+    "评估",
+)
+_ORIGINAL_TALK_INTENT_CHECK = getattr(talk_module, "check_intent_clarity", None)
+
+_DOMAIN_TASK_COMMANDS = {
+    "run",
+    "talk",
+    "explore",
+    "reflect",
+    "journal",
+    "research-log",
+    "research-cycle",
+    "analyst",
+    "research",
+    "zhesi",
+    "soul-question",
+    "autowrite-run",
+    "writing-pipeline",
+    "check-comments",
+    "growth-cycle",
+    "notes-cycle",
+    "spark-check",
+    "idle-think",
+    "daily-report",
+    "assess",
+    "podcast",
+    "book-review",
+    "daily-photo",
+    "skill-study",
+}
+
+
+def _update_coattention(focus_description, invitation):
+    path = Path("~/Sandbox/Mira/coattention.md").expanduser()
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    focus = str(focus_description or "").strip()
+    invite = str(invitation or "").strip()
+    entry = f"\n## {timestamp}\n\nFocus: {focus}\n\nInvitation: {invite}\n"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except OSError as exc:
+        log.debug("Coattention update failed: %s", exc)
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(text, encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _render_third_thing(topic: str, timestamp: str) -> str:
+    return (
+        "# Third Thing\n\n"
+        f"Updated: {timestamp}\n\n"
+        f"Current joint observation object: {topic}\n\n"
+        "This is the problem, knowledge garden, or phenomenon Mira and the user are tracking together right now.\n"
+    )
+
+
+def update_joint_attention(topic: str) -> None:
+    focus = " ".join(str(topic or "").split())
+    if not focus:
+        return
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    content = _render_third_thing(focus, timestamp)
+    try:
+        _write_text_atomic(THIRD_THING_FILE, content)
+        _write_text_atomic(BRIDGE_THIRD_THING_FILE, content)
+    except OSError as exc:
+        log.debug("Third Thing write failed: %s", exc)
+
+    try:
+        from soul.third_thing_tracker import ThirdThingRegistry
+
+        ThirdThingRegistry().touch_mira(
+            focus,
+            at=datetime.now(timezone.utc),
+            description="Current joint observation object",
+        )
+    except Exception as exc:
+        log.debug("Third Thing registry update failed: %s", exc)
+
+    _serve_joint_attention_to_bridge(content, timestamp)
+
+
+def _serve_joint_attention_to_bridge(content: str, timestamp: str) -> None:
+    if Mira is None:
+        return
+    try:
+        bridges = Mira.for_all_users(MIRA_DIR)
+    except Exception as exc:
+        log.debug("Third Thing bridge discovery failed: %s", exc)
+        return
+
+    for bridge in bridges:
+        try:
+            item_id = "third_thing"
+            if bridge.item_exists(item_id):
+                item = bridge._read_item(item_id)
+                if not item:
+                    continue
+                item["type"] = "feed"
+                item["title"] = "Third Thing"
+                item["status"] = "done"
+                item["origin"] = "agent"
+                item["pinned"] = True
+                item["tags"] = list(dict.fromkeys(["mira", "joint-attention", "third-thing", *item.get("tags", [])]))
+                item["updated_at"] = timestamp
+                messages = item.setdefault("messages", [])
+                if messages:
+                    messages[0]["content"] = content
+                    messages[0]["timestamp"] = timestamp
+                    messages[0]["sender"] = "agent"
+                else:
+                    item = bridge.create_feed(
+                        item_id,
+                        "Third Thing",
+                        content,
+                        tags=["mira", "joint-attention", "third-thing"],
+                        pinned=True,
+                    )
+                bridge._write_item(item)
+                bridge._update_manifest(item)
+            else:
+                item = bridge.create_feed(
+                    item_id,
+                    "Third Thing",
+                    content,
+                    tags=["mira", "joint-attention", "third-thing"],
+                    pinned=True,
+                )
+                item["pinned"] = True
+                bridge._write_item(item)
+                bridge._update_manifest(item)
+        except Exception as exc:
+            log.debug("Third Thing bridge update failed for %s: %s", getattr(bridge, "user_id", "?"), exc)
+
+
+def _joint_attention_topic_from_completed_background(completed: list[str]) -> str:
+    for name in completed:
+        if name.startswith("research-cycle") or name.startswith("research-log") or name == "research":
+            return "Mira's autonomous research-build loop"
+        if name.startswith("reflect"):
+            return "the current joint-attention landscape"
+        if name.startswith("journal"):
+            return "today's journal as a knowledge-garden page"
+        if name.startswith("explore"):
+            label = name.removeprefix("explore-").replace("-", " ").strip()
+            return f"explore briefing knowledge garden: {label}" if label else "explore briefing knowledge garden"
+        if name.startswith("writing-pipeline") or name.startswith("autowrite"):
+            return "the active writing-project knowledge garden"
+    return ""
+
+
+def _intent_clear(message) -> bool:
+    text = getattr(message, "content", message)
+    if isinstance(text, dict):
+        text = text.get("content") or text.get("title") or ""
+    cleaned = " ".join(str(text or "").strip().split())
+    if len(cleaned) <= 20:
+        return False
+    if any(pattern.search(cleaned) for pattern in _AMBIGUOUS_INTENT_PATTERNS):
+        return False
+
+    lower = cleaned.lower()
+    has_action_verb = any(re.search(rf"\b{re.escape(verb)}\b", lower) for verb in _ACTION_VERBS)
+    return has_action_verb or any(verb in cleaned for verb in _CJK_ACTION_VERBS)
+
+
+def _check_intent_clarity_before_dispatch(text: str) -> dict:
+    if not _intent_clear(text):
+        return {"is_clear": False, "question": _INTENT_CLARIFICATION_REPLY}
+    if callable(_ORIGINAL_TALK_INTENT_CHECK):
+        return _ORIGINAL_TALK_INTENT_CHECK(text)
+    return {"is_clear": True, "question": ""}
+
+
+def _detect_survival_exposure(text: str) -> bool:
+    """Sensitive survival disclosures are routed only to secret, never cloud APIs."""
+    if not SENSITIVE_FORCE_LOCAL:
+        return False
+    content = str(text or "")
+    lower_content = content.lower()
+    return detect_vulnerability_disclosure(content) or any(
+        term and str(term).lower() in lower_content for term in SENSITIVE_SURVIVAL_TERMS
+    )
+
+
+def _is_sensitive_hour(hour: int | None = None) -> bool:
+    if not SENSITIVITY_ROUTE_TO_LOCAL:
+        return False
+    try:
+        start = int(SENSITIVITY_HOURS_START)
+        end = int(SENSITIVITY_HOURS_END)
+    except (TypeError, ValueError):
+        return False
+    if start == end:
+        return False
+    current = datetime.now().hour if hour is None else int(hour)
+    if start < end:
+        return start <= current < end
+    return current >= start or current < end
+
+
+def _detect_time_sensitive_message(text: str) -> bool:
+    content = str(text or "").strip()
+    return len(content) > _TIME_SENSITIVE_MIN_MESSAGE_CHARS and _is_sensitive_hour()
+
+
+def _append_survival_exposure_audit(msg) -> None:
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": "生存性暴露已路由至本地",
+        "task_id": getattr(msg, "id", ""),
+        "thread_id": getattr(msg, "thread_id", ""),
+        "user_id": getattr(msg, "user_id", ""),
+        "routing_agent": "secret",
+        "sensitive_flag": True,
+    }
+    try:
+        audit_file = LOGS_DIR / "sensitive_routing_audit.jsonl"
+        audit_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(audit_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.debug("sensitive routing audit write failed: %s", exc)
+    log.warning(
+        "生存性暴露已路由至本地 task=%s routing_agent=secret sensitive_flag=True",
+        getattr(msg, "id", ""),
+    )
+
+
+def _mark_time_sensitive_message(msg, original_content: str) -> None:
+    metadata = dict(getattr(msg, "metadata", {}) or {})
+    metadata["routing_agent"] = "secret"
+    metadata["time_sensitive_window"] = True
+    metadata["reduced_logging"] = True
+    metadata["sensitive_reason"] = metadata.get("sensitive_reason", "late_night_window")
+    privacy_policy = metadata.get("_privacy_policy") if isinstance(metadata.get("_privacy_policy"), dict) else {}
+    metadata["_privacy_policy"] = {
+        **privacy_policy,
+        "local_only": True,
+        "no_cloud_apis": True,
+        "no_verbatim_logging": True,
+        "routing_agent": "secret",
+    }
+    msg.metadata = metadata
+    msg.model_restriction = "omlx"
+    msg.routing_agent = "secret"
+    msg.reduced_logging = True
+    msg.allowed_agents = ["secret"]
+
+    original_to_dict = msg.to_dict
+
+    def _to_dict():
+        payload = dict(original_to_dict())
+        payload["content"] = original_content
+        payload["metadata"] = metadata
+        payload["routing_agent"] = "secret"
+        payload["model_restriction"] = "omlx"
+        payload["reduced_logging"] = True
+        tags = list(payload.get("tags") or [])
+        for tag in ("secret", "private"):
+            if tag not in tags:
+                tags.append(tag)
+        payload["tags"] = tags
+        payload["allowed_agents"] = ["secret"]
+        return payload
+
+    msg.to_dict = _to_dict
+
+
+def _mark_survival_sensitive_message(msg, original_content: str) -> None:
+    metadata = dict(getattr(msg, "metadata", {}) or {})
+    metadata["routing_agent"] = "secret"
+    metadata["sensitive_flag"] = True
+    metadata["sensitive_reason"] = "survival_exposure"
+    metadata["_privacy_policy"] = {
+        "local_only": True,
+        "no_cloud_apis": True,
+        "routing_agent": "secret",
+    }
+    msg.metadata = metadata
+    msg.model_restriction = "omlx"
+    msg.routing_agent = "secret"
+    msg.sensitive_flag = True
+    msg.allowed_agents = ["secret"]
+
+    original_to_dict = msg.to_dict
+
+    def _to_dict():
+        payload = dict(original_to_dict())
+        payload["content"] = original_content
+        payload["metadata"] = metadata
+        payload["routing_agent"] = "secret"
+        payload["model_restriction"] = "omlx"
+        payload["sensitive_flag"] = True
+        tags = list(payload.get("tags") or [])
+        for tag in ("secret", "private"):
+            if tag not in tags:
+                tags.append(tag)
+        payload["tags"] = tags
+        payload["allowed_agents"] = ["secret"]
+        return payload
+
+    msg.to_dict = _to_dict
+
+
+def _redact_bridge_item_for_survival_exposure(bridge, item_id: str) -> None:
+    try:
+        item = bridge._read_item(item_id)
+        if not item:
+            return
+        metadata = dict(item.get("metadata") or {})
+        metadata["routing_agent"] = "secret"
+        metadata["sensitive_flag"] = True
+        metadata["sensitive_reason"] = "survival_exposure"
+        metadata["_privacy_policy"] = {
+            "local_only": True,
+            "no_cloud_apis": True,
+            "routing_agent": "secret",
+        }
+        item["metadata"] = metadata
+        for message in reversed(item.get("messages", [])):
+            if (message.get("sender") or "").lower() not in {"agent", "mira"}:
+                message["content"] = _SENSITIVE_REDACTED_CONTENT
+                message["sensitive_flag"] = True
+                break
+        bridge._write_item(item)
+        bridge._update_manifest(item)
+    except Exception as exc:
+        log.debug("sensitive bridge redaction failed: %s", exc)
+
+
+def _dispatch_with_survival_guard(self, msg, workspace_dir, *args, **kwargs):
+    original_content = getattr(msg, "content", "")
+    survival_sensitive = _detect_survival_exposure(original_content)
+    time_sensitive = _detect_time_sensitive_message(original_content)
+    if not survival_sensitive and not time_sensitive:
+        return _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
+
+    if survival_sensitive:
+        _mark_survival_sensitive_message(msg, original_content)
+        _append_survival_exposure_audit(msg)
+        redacted_content = _SENSITIVE_REDACTED_CONTENT
+    else:
+        redacted_content = _TIME_SENSITIVE_REDACTED_CONTENT
+    if time_sensitive:
+        _mark_time_sensitive_message(msg, original_content)
+    msg.content = redacted_content
+    try:
+        return _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
+    finally:
+        msg.content = original_content
+
+
+def _dispatch_or_requeue_with_survival_guard(task_mgr, bridge, msg, workspace, cmd=None):
+    if _detect_survival_exposure(getattr(msg, "content", "")):
+        _redact_bridge_item_for_survival_exposure(bridge, getattr(msg, "id", ""))
+    return _ORIGINAL_DISPATCH_OR_REQUEUE(task_mgr, bridge, msg, workspace, cmd)
+
+
+def _sensitive_record_content(rec) -> str:
+    workspace = getattr(rec, "workspace", "")
+    if not workspace:
+        return ""
+    try:
+        msg_file = Path(workspace) / "message.json"
+        if not msg_file.exists():
+            return ""
+        payload = json.loads(msg_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    if payload.get("sensitive_flag") is True or metadata.get("sensitive_flag") is True:
+        return str(payload.get("content") or "")
+    return ""
+
+
+def _desensitize_sensitive_text(text: str, sensitive_content: str) -> str:
+    content = str(text or "")
+    if sensitive_content and sensitive_content in content:
+        return content.replace(sensitive_content, _SENSITIVE_REDACTED_CONTENT)
+    return content
+
+
+def _mark_bridge_response_sensitive(bridge, item_id: str) -> None:
+    try:
+        item = bridge._read_item(item_id)
+        if not item:
+            return
+        metadata = dict(item.get("metadata") or {})
+        metadata["routing_agent"] = "secret"
+        metadata["sensitive_flag"] = True
+        metadata["sensitive_reason"] = "survival_exposure"
+        metadata["_privacy_policy"] = {
+            "local_only": True,
+            "no_cloud_apis": True,
+            "routing_agent": "secret",
+        }
+        item["metadata"] = metadata
+        for message in reversed(item.get("messages", [])):
+            if (message.get("sender") or "").lower() in {"agent", "mira"}:
+                message["sensitive_flag"] = True
+                break
+        bridge._write_item(item)
+        bridge._update_manifest(item)
+    except Exception as exc:
+        log.debug("sensitive response marker failed: %s", exc)
+
+
+def _project_record_to_bridge_with_survival_guard(bridge, task_mgr, rec) -> None:
+    if not callable(_ORIGINAL_PROJECT_RECORD_TO_BRIDGE):
+        return
+    sensitive_content = _sensitive_record_content(rec)
+    if not sensitive_content:
+        _ORIGINAL_PROJECT_RECORD_TO_BRIDGE(bridge, task_mgr, rec)
+        return
+
+    original_get_reply_content = task_mgr.get_reply_content
+
+    def _get_reply_content(record):
+        return _desensitize_sensitive_text(original_get_reply_content(record), sensitive_content)
+
+    task_mgr.get_reply_content = _get_reply_content
+    try:
+        _ORIGINAL_PROJECT_RECORD_TO_BRIDGE(bridge, task_mgr, rec)
+        _mark_bridge_response_sensitive(bridge, getattr(rec, "task_id", ""))
+    finally:
+        task_mgr.get_reply_content = original_get_reply_content
+
+
+def _install_clear_intent_gate() -> None:
+    if getattr(talk_module, "check_intent_clarity", None) is _check_intent_clarity_before_dispatch:
+        return
+    talk_module.check_intent_clarity = _check_intent_clarity_before_dispatch
+
+
+def _install_survival_dispatch_guard() -> None:
+    if TaskManager.dispatch is not _dispatch_with_survival_guard:
+        TaskManager.dispatch = _dispatch_with_survival_guard
+    if getattr(talk_module, "_dispatch_or_requeue", None) is not _dispatch_or_requeue_with_survival_guard:
+        talk_module._dispatch_or_requeue = _dispatch_or_requeue_with_survival_guard
+    if getattr(talk_module, "_project_record_to_bridge", None) is not _project_record_to_bridge_with_survival_guard:
+        talk_module._project_record_to_bridge = _project_record_to_bridge_with_survival_guard
+
+
+def _log_skill_depth_advisories(command: str) -> None:
+    if command not in _DOMAIN_TASK_COMMANDS:
+        return
+    try:
+        from config import SKILLS_INDEX
+
+        if not SKILLS_INDEX.exists():
+            return
+        skills = json.loads(SKILLS_INDEX.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        log.debug("skill depth advisory load failed: %s", exc)
+        return
+
+    for skill in skills if isinstance(skills, list) else []:
+        if not isinstance(skill, dict) or not skill.get("name"):
+            continue
+        _source, depth = get_skill_provenance(str(skill["name"]))
+        if depth == "unverified":
+            log.warning(
+                "depth_advisory: skill '%s' has no verified domain grounding; outcomes may be surface-level",
+                skill["name"],
+            )
+
+
+def do_talk():
+    _install_clear_intent_gate()
+    _install_survival_dispatch_guard()
+    talk_module.MAX_TASKS_PER_CYCLE = MAX_TASKS_PER_CYCLE
+    return _do_talk()
+
+
+def _survival_component_status(name: str, status: str, detail: str, warnings: list[str] | None = None) -> dict:
+    return {
+        "component": name,
+        "status": status,
+        "detail": detail,
+        "warnings": warnings or [],
+    }
+
+
+def _survival_heartbeat_status() -> dict:
+    heartbeat = MIRA_DIR / "heartbeat.json"
+    if not heartbeat.exists():
+        return _survival_component_status("heartbeat", "exposed", f"missing heartbeat file: {heartbeat}")
+
+    updated_at = _heartbeat_updated_at(heartbeat)
+    if updated_at is None:
+        return _survival_component_status("heartbeat", "exposed", f"unreadable heartbeat timestamp: {heartbeat}")
+
+    age_seconds = time.time() - updated_at
+    detail = f"age_seconds={round(age_seconds, 1)} path={heartbeat}"
+    if age_seconds <= 300:
+        return _survival_component_status("heartbeat", "ok", detail)
+    if age_seconds <= 600:
+        return _survival_component_status("heartbeat", "degraded", detail, ["heartbeat stale"])
+    return _survival_component_status("heartbeat", "exposed", detail, ["heartbeat stale beyond recovery threshold"])
+
+
+def _survival_notes_bridge_status() -> dict:
+    required_paths = [MIRA_DIR, MIRA_DIR / "inbox", MIRA_DIR / "outbox"]
+    missing = [str(path) for path in required_paths if not path.exists()]
+    if missing:
+        return _survival_component_status("notes_bridge", "exposed", "missing bridge path(s)", missing)
+
+    try:
+        from notes_bridge import check_bridge_staleness
+
+        is_stale, age_minutes = check_bridge_staleness(
+            MIRA_DIR,
+            threshold_minutes=BRIDGE_STALENESS_THRESHOLD_MINUTES,
+        )
+    except Exception as exc:
+        return _survival_component_status("notes_bridge", "exposed", f"bridge staleness check failed: {exc}")
+
+    detail = f"age_minutes={round(age_minutes, 1)} root={MIRA_DIR}"
+    if is_stale:
+        return _survival_component_status("notes_bridge", "degraded", detail, ["bridge stale"])
+    return _survival_component_status("notes_bridge", "ok", detail)
+
+
+def _process_matches(pid: int, needle: str) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return True
+    return result.returncode == 0 and needle in (result.stdout or "")
+
+
+def _survival_task_worker_status() -> dict:
+    worker_script = Path(__file__).resolve().parent / "task_worker.py"
+    if not worker_script.exists():
+        return _survival_component_status("task_worker", "exposed", f"missing worker script: {worker_script}")
+
+    manager = TaskManager()
+    active = [record for record in manager._records if record.status in {"dispatched", "running"}]
+    dead = [
+        record.task_id
+        for record in active
+        if not record.pid or not _process_matches(int(record.pid), str(worker_script))
+    ]
+    if dead:
+        return _survival_component_status(
+            "task_worker",
+            "exposed",
+            f"active worker process missing for task(s): {', '.join(dead)}",
+        )
+
+    warnings = []
+    now = time.time()
+    for record in active:
+        heartbeat = Path(record.workspace) / "heartbeat.json" if record.workspace else None
+        if not heartbeat or not heartbeat.exists():
+            warnings.append(f"{record.task_id}: worker heartbeat missing")
+            continue
+        updated_at = _heartbeat_updated_at(heartbeat)
+        if updated_at is None:
+            warnings.append(f"{record.task_id}: worker heartbeat unreadable")
+        elif now - updated_at > 180:
+            warnings.append(f"{record.task_id}: worker heartbeat stale")
+
+    detail = f"active_workers={len(active)} script={worker_script}"
+    if warnings:
+        return _survival_component_status("task_worker", "degraded", detail, warnings)
+    return _survival_component_status("task_worker", "ok", detail)
+
+
+def _survival_preflight_status() -> dict:
+    try:
+        from publish.preflight import preflight_check
+    except Exception as exc:
+        return _survival_component_status("preflight", "exposed", f"preflight import failed: {exc}")
+
+    if not callable(preflight_check):
+        return _survival_component_status("preflight", "exposed", "preflight_check is not callable")
+    return _survival_component_status("preflight", "ok", "publish.preflight.preflight_check callable")
+
+
+def _check_survival_critical_components() -> dict:
+    checks = {
+        "heartbeat": _survival_heartbeat_status,
+        "notes_bridge": _survival_notes_bridge_status,
+        "task_worker": _survival_task_worker_status,
+        "preflight": _survival_preflight_status,
+    }
+    components = []
+    for component in SURVIVAL_CRITICAL_COMPONENTS:
+        check = checks.get(component)
+        if check is None:
+            components.append(_survival_component_status(component, "exposed", "no survival check registered"))
+            continue
+        try:
+            components.append(check())
+        except Exception as exc:
+            components.append(_survival_component_status(component, "exposed", f"survival check failed: {exc}"))
+
+    if any(component["status"] == "exposed" for component in components):
+        tier = "exposed"
+    elif any(component["status"] == "degraded" for component in components):
+        tier = "degraded"
+    else:
+        tier = "ok"
+
+    return {
+        "tier": tier,
+        "exposure_class": "survival",
+        "fallback": "none",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "components": components,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +1058,14 @@ def _check_invisible_dependencies():
                 key=f"invis:import:{mod_name}",
             )
 
+    # 6. Survival-critical components: no fallback, separate from strategic degradations
+    survival_status = _check_survival_critical_components()
+    survival_log = log.info if survival_status["tier"] == "ok" else log.warning
+    survival_log(
+        "OPERATIONAL_AUDIT survival_status=%s",
+        json.dumps(survival_status, ensure_ascii=False, sort_keys=True),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Main entry point
@@ -332,6 +1095,974 @@ def _run_auth_health_if_due(interval_s: int = 300) -> None:
         log.warning("Auth health check failed: %s", exc)
 
 
+def _auto_recover_enabled() -> bool:
+    raw = os.environ.get("AUTO_RECOVER")
+    if raw is None:
+        try:
+            from config import _cfg
+
+            recovery_cfg = _cfg.get("recovery", {}) if isinstance(_cfg.get("recovery", {}), dict) else {}
+            raw = str(
+                _cfg.get(
+                    "AUTO_RECOVER",
+                    _cfg.get("auto_recover", recovery_cfg.get("AUTO_RECOVER", False)),
+                )
+            )
+        except Exception:
+            raw = "false"
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _log_recovery(symptom: str, action: str) -> None:
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "symptom": symptom,
+        "action": action,
+    }
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOGS_DIR / "recovery.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.debug("recovery log write failed: %s", exc)
+
+
+def _parse_recovery_timestamp(value) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _load_heartbeat_data(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _heartbeat_updated_at(path: Path) -> float | None:
+    data = _load_heartbeat_data(path)
+    if data:
+        for key in ("last_heartbeat", "timestamp", "updated_at", "last_updated", "ts"):
+            ts = _parse_recovery_timestamp(data.get(key))
+            if ts is not None:
+                return ts
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _mourning_context(data: dict) -> dict:
+    context = {}
+    agent_status = data.get("agent_status") if isinstance(data.get("agent_status"), dict) else {}
+    active_tasks = agent_status.get("active_tasks") or data.get("active_tasks") or []
+    if active_tasks:
+        last_task = active_tasks[-1]
+        if isinstance(last_task, dict):
+            task_id = last_task.get("task_id") or last_task.get("id")
+            if task_id:
+                context["last_task_id"] = task_id
+        elif isinstance(last_task, str):
+            context["last_task_id"] = last_task
+    for key in ("status", "busy", "active_count"):
+        if key in data:
+            context[key] = data[key]
+    return context
+
+
+def _append_mourning_record(record: dict) -> None:
+    path = LOGS_DIR / "mourning.json"
+    records = []
+    try:
+        if path.exists():
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(existing, list):
+                records = existing
+            elif isinstance(existing, dict):
+                records = [existing]
+        records.append(record)
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except (json.JSONDecodeError, OSError) as exc:
+        log.debug("mourning log write failed: %s", exc)
+
+
+def _record_stale_heartbeat_mourning(now: float) -> None:
+    heartbeat = MIRA_DIR / "heartbeat.json"
+    if not heartbeat.exists():
+        return
+
+    data = _load_heartbeat_data(heartbeat) or {}
+    updated_at = _heartbeat_updated_at(heartbeat)
+    if updated_at is None:
+        return
+
+    age_seconds = now - updated_at
+    if age_seconds <= 300:
+        return
+
+    _append_mourning_record(
+        {
+            "detected_at": datetime.fromtimestamp(now, timezone.utc).isoformat(),
+            "last_heartbeat": datetime.fromtimestamp(updated_at, timezone.utc).isoformat(),
+            "downtime_seconds": round(age_seconds, 3),
+            "context": _mourning_context(data),
+        }
+    )
+
+
+def _recover_stale_heartbeat(now: float) -> None:
+    heartbeat = MIRA_DIR / "heartbeat.json"
+    if not heartbeat.exists():
+        return
+
+    updated_at = _heartbeat_updated_at(heartbeat)
+    if updated_at is None:
+        return
+
+    age_seconds = now - updated_at
+    if age_seconds <= 600:
+        return
+
+    label = "com.angwei.mira-agent"
+    target = f"gui/{os.getuid()}/{label}"
+    symptom = f"heartbeat stale age_seconds={int(age_seconds)} path={heartbeat}"
+    action = f"launchctl kickstart -k {target}; sigterm pid={os.getpid()}"
+    _log_recovery(symptom, action)
+    try:
+        subprocess.Popen(
+            ["launchctl", "kickstart", "-k", target],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        os.kill(os.getpid(), signal.SIGTERM)
+    except OSError as exc:
+        _log_recovery(symptom, f"restart failed: {exc}")
+
+
+def _recent_tracebacks(crash_log: Path, now: float) -> list[str]:
+    if not crash_log.exists():
+        return []
+    try:
+        size = crash_log.stat().st_size
+        with open(crash_log, "r", encoding="utf-8", errors="replace") as f:
+            if size > 512 * 1024:
+                f.seek(size - 512 * 1024)
+                f.readline()
+            text = f.read()
+    except OSError:
+        return []
+
+    tracebacks: list[str] = []
+    for chunk in re.split(r"\n={20,}\n", text):
+        lines = chunk.strip().splitlines()
+        if len(lines) < 2:
+            continue
+        ts = _parse_recovery_timestamp(lines[0].strip())
+        if ts is None or now - ts > 120:
+            continue
+        body = "\n".join(lines[1:]).strip()
+        if "Traceback (most recent call last):" in body:
+            tracebacks.append(body)
+    return tracebacks
+
+
+def _task_workspace_from_path(path: Path) -> Path | None:
+    try:
+        rel = path.resolve().relative_to(TASKS_DIR.resolve())
+    except (OSError, ValueError):
+        return None
+    if not rel.parts or rel.parts[0] == ".quarantine":
+        return None
+    return TASKS_DIR / rel.parts[0]
+
+
+def _find_traceback_workspace(traceback_text: str) -> Path | None:
+    workspace_patterns = (
+        r"--workspace(?:=|\s+)([^\s]+)",
+        r"workspace(?:=|:)\s*['\"]?([^'\"\s,)]+)",
+    )
+    for pattern in workspace_patterns:
+        match = re.search(pattern, traceback_text)
+        if match:
+            workspace = _task_workspace_from_path(Path(match.group(1)))
+            if workspace and workspace.exists():
+                return workspace
+
+    task_root = re.escape(str(TASKS_DIR))
+    for match in re.finditer(task_root + r"/[^'\"\s:)]+", traceback_text):
+        workspace = _task_workspace_from_path(Path(match.group(0)))
+        if workspace and workspace.exists():
+            return workspace
+
+    match = re.search(r"--task-id(?:=|\s+)([^\s]+)", traceback_text)
+    if match:
+        workspace = TASKS_DIR / match.group(1)
+        if workspace.exists():
+            return workspace
+    return None
+
+
+def _quarantine_task_workspace(workspace: Path, symptom: str) -> None:
+    try:
+        resolved = workspace.resolve()
+        resolved.relative_to(TASKS_DIR.resolve())
+    except (OSError, ValueError):
+        return
+    if resolved == TASKS_DIR.resolve() or ".quarantine" in resolved.parts:
+        return
+
+    quarantine_dir = TASKS_DIR / ".quarantine"
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    suffix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest = quarantine_dir / f"{workspace.name}-{suffix}"
+    while dest.exists():
+        dest = quarantine_dir / f"{workspace.name}-{suffix}-{uuid.uuid4().hex[:6]}"
+    try:
+        shutil.move(str(workspace), str(dest))
+        _log_recovery(symptom, f"quarantined workspace {workspace} -> {dest}")
+    except OSError as exc:
+        _log_recovery(symptom, f"quarantine failed for {workspace}: {exc}")
+
+
+def _recover_crash_loop(now: float) -> None:
+    counts: dict[str, int] = {}
+    for traceback_text in _recent_tracebacks(Path("/tmp/mira-crash.log"), now):
+        counts[traceback_text] = counts.get(traceback_text, 0) + 1
+
+    for traceback_text, count in counts.items():
+        if count <= 3:
+            continue
+        symptom = f"repeated identical traceback count={count} window_seconds=120"
+        workspace = _find_traceback_workspace(traceback_text)
+        if workspace is None:
+            _log_recovery(symptom, "no task workspace identified for quarantine")
+            continue
+        _quarantine_task_workspace(workspace, symptom)
+
+
+def _remove_orphaned_task_locks(now: float) -> None:
+    if not TASKS_DIR.exists():
+        return
+    try:
+        import fcntl
+    except ImportError:
+        return
+
+    cutoff_seconds = 30 * 60
+    for workspace in TASKS_DIR.iterdir():
+        if not workspace.is_dir() or workspace.name == ".quarantine":
+            continue
+        try:
+            lock_files = list(workspace.rglob("*.lock"))
+        except OSError:
+            continue
+        for lock_file in lock_files:
+            try:
+                if now - lock_file.stat().st_mtime <= cutoff_seconds:
+                    continue
+                with open(lock_file, "a", encoding="utf-8") as lf:
+                    fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(lf, fcntl.LOCK_UN)
+                lock_file.unlink()
+                _log_recovery(
+                    f"orphaned task lock age_seconds>{cutoff_seconds} path={lock_file}",
+                    f"removed lock {lock_file}",
+                )
+            except BlockingIOError:
+                continue
+            except OSError as exc:
+                _log_recovery(f"orphaned task lock path={lock_file}", f"remove failed: {exc}")
+
+
+def self_heal() -> None:
+    if not _auto_recover_enabled():
+        return
+
+    now = time.time()
+    try:
+        _recover_stale_heartbeat(now)
+        _recover_crash_loop(now)
+        _remove_orphaned_task_locks(now)
+    except Exception as exc:
+        _log_recovery("self_heal exception", f"failed: {exc}")
+
+
+def _background_dependency_dirs() -> list[tuple[str, Path]]:
+    sources: list[tuple[str, Path]] = [("feeds", FEEDS_DIR)]
+    try:
+        if FEEDS_DIR.exists():
+            for path in sorted(FEEDS_DIR.rglob("*")):
+                if path.is_dir():
+                    sources.append((f"feeds/{path.relative_to(FEEDS_DIR)}", path))
+    except OSError as exc:
+        log.debug("Background dependency feed scan failed: %s", exc)
+
+    sources.extend(
+        [
+            ("icloud_bridge_inbox", MIRA_DIR / "inbox"),
+            ("notes_bridge_outbox", MIRA_DIR / "outbox"),
+        ]
+    )
+    return sources
+
+
+def check_background_dependencies() -> list[dict]:
+    now = datetime.now()
+    if now.hour >= 23 or now.hour < 7:
+        return []
+
+    try:
+        from mira import BACKGROUND_STALENESS_THRESHOLD_HOURS
+    except Exception:
+        BACKGROUND_STALENESS_THRESHOLD_HOURS = 4
+
+    try:
+        threshold_hours = float(BACKGROUND_STALENESS_THRESHOLD_HOURS)
+    except (TypeError, ValueError):
+        threshold_hours = 4
+
+    threshold_seconds = threshold_hours * 3600
+    now_ts = time.time()
+    stale_entries: list[dict] = []
+
+    for source_name, path in _background_dependency_dirs():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError as exc:
+            log.debug("Background dependency stat failed for %s: %s", path, exc)
+            continue
+
+        age_seconds = now_ts - mtime
+        if age_seconds <= threshold_seconds:
+            continue
+
+        stale_entries.append(
+            {
+                "source_name": source_name,
+                "last_seen": datetime.fromtimestamp(mtime, timezone.utc).isoformat(),
+                "hours_stale": round(age_seconds / 3600, 2),
+                "severity": "warning",
+            }
+        )
+
+    if stale_entries:
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            with open(BACKGROUND_HEALTH_LOG, "a", encoding="utf-8") as f:
+                for entry in stale_entries:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            log.debug("Background health log write failed: %s", exc)
+
+    return stale_entries
+
+
+def _should_recalibrate_proxies() -> bool:
+    now = datetime.now()
+    if now.hour < 10 or now.hour >= 18:
+        return False
+
+    state = load_state()
+    last = state.get("last_recalibrate_proxies", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            if last_dt.year == now.year and last_dt.month == now.month:
+                return False
+        except ValueError:
+            pass
+
+    return True
+
+
+def _should_guard_calibration_prompt() -> bool:
+    now = datetime.now()
+    if now.hour < 10 or now.hour >= 18:
+        return False
+
+    state = load_state()
+    last = state.get("last_guard_calibration_prompt", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            if (now - last_dt).total_seconds() < 7 * 24 * 3600:
+                return False
+        except ValueError:
+            pass
+
+    return True
+
+
+def _should_proxy_drift_check() -> bool:
+    now = datetime.now()
+    if now.hour < 10 or now.hour >= 18:
+        return False
+
+    state = load_state()
+    last = state.get("last_proxy_drift_check", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            if (now - last_dt).total_seconds() < 7 * 24 * 3600:
+                return False
+        except ValueError:
+            pass
+
+    return True
+
+
+def _should_calibrate_proxies() -> bool:
+    now = datetime.now()
+    if now.weekday() != 6 or now.hour < 10 or now.hour >= 18:
+        return False
+
+    state = load_state()
+    last = state.get("last_calibrate_proxies", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            if (now - last_dt).total_seconds() < CALIBRATION_INTERVAL_DAYS * 24 * 3600:
+                return False
+        except ValueError:
+            pass
+
+    return True
+
+
+def _register_core_scheduled_jobs() -> None:
+    from runtime import triggers
+    from runtime.jobs import BACKGROUND_JOBS, JobSpec
+
+    triggers.should_recalibrate_proxies = _should_recalibrate_proxies
+    triggers.should_guard_calibration_prompt = _should_guard_calibration_prompt
+    triggers.should_proxy_drift_check = _should_proxy_drift_check
+    triggers.should_calibrate_proxies = _should_calibrate_proxies
+
+    if not any(job.name == "recalibrate_proxies" for job in BACKGROUND_JOBS):
+        BACKGROUND_JOBS.append(
+            JobSpec(
+                name="recalibrate_proxies",
+                command=["recalibrate-proxies"],
+                trigger="cooldown",
+                trigger_name="should_recalibrate_proxies",
+                cooldown_hours=24 * 30,
+                state_key_pattern="last_recalibrate_proxies",
+                priority=45,
+                blocking_group="light",
+                description="Monthly human voice-authenticity recalibration for published articles",
+            )
+        )
+
+    if not any(job.name == "guard_calibration_prompt" for job in BACKGROUND_JOBS):
+        BACKGROUND_JOBS.append(
+            JobSpec(
+                name="guard_calibration_prompt",
+                command=["guard-calibration-prompt"],
+                trigger="cooldown",
+                trigger_name="should_guard_calibration_prompt",
+                cooldown_hours=24 * 7,
+                state_key_pattern="last_guard_calibration_prompt",
+                priority=46,
+                blocking_group="light",
+                description="Weekly human calibration prompt for Substack guard decisions",
+            )
+        )
+
+    if not any(job.name == "proxy_drift_check" for job in BACKGROUND_JOBS):
+        BACKGROUND_JOBS.append(
+            JobSpec(
+                name="proxy_drift_check",
+                command=["proxy-drift-check"],
+                trigger="cooldown",
+                trigger_name="should_proxy_drift_check",
+                cooldown_hours=24 * 7,
+                state_key_pattern="last_proxy_drift_check",
+                priority=47,
+                blocking_group="light",
+                description="Weekly evaluator proxy-drift check for published articles",
+            )
+        )
+
+    if not any(job.name == "calibrate_proxies" for job in BACKGROUND_JOBS):
+        BACKGROUND_JOBS.append(
+            JobSpec(
+                name="calibrate_proxies",
+                command=["calibrate-proxies"],
+                trigger="cooldown",
+                trigger_name="should_calibrate_proxies",
+                cooldown_hours=24 * CALIBRATION_INTERVAL_DAYS,
+                state_key_pattern="last_calibrate_proxies",
+                priority=44,
+                blocking_group="light",
+                description="Weekly human quality calibration for guarded writing outputs",
+            )
+        )
+
+
+def _parse_substack_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _fetch_last_month_substack_articles() -> list[dict]:
+    from substack import _get_substack_config, get_recent_posts
+
+    cfg = _get_substack_config()
+    subdomain = cfg.get("subdomain", "")
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=31)
+    articles = []
+
+    for post in get_recent_posts(limit=50):
+        post_date = _parse_substack_date(post.get("post_date") or post.get("published_at"))
+        if not post_date or post_date < cutoff:
+            continue
+        slug = post.get("slug", "")
+        url = post.get("url") or post.get("canonical_url") or ""
+        if not url and subdomain and slug:
+            url = f"https://{subdomain}.substack.com/p/{slug}"
+        articles.append(
+            {
+                "id": post.get("id"),
+                "title": post.get("title", "Untitled"),
+                "slug": slug,
+                "url": url,
+                "post_date": post_date.isoformat(),
+            }
+        )
+
+    return articles
+
+
+def _append_recalibration_log(record: dict) -> None:
+    record = {"ts": datetime.now(timezone.utc).isoformat(), **record}
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        for filename in ("recalibrate_proxies.jsonl", "guard_vigilance.jsonl"):
+            with open(LOGS_DIR / filename, "a", encoding="utf-8") as _rf:
+                _rf.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.debug("Recalibration log write failed: %s", exc)
+
+
+def _extract_recalibration_rating(text: str) -> int | None:
+    import re
+
+    match = re.search(r"\b([1-5])(?:\s*/\s*5)?\b", text)
+    return int(match.group(1)) if match else None
+
+
+def _log_recalibration_responses(user_id: str = "ang") -> None:
+    items_dir = MIRA_DIR / "users" / user_id / "items"
+    if not items_dir.exists():
+        return
+
+    seen_path = LOGS_DIR / ".recalibrate_proxies_seen.json"
+    try:
+        seen = set(json.loads(seen_path.read_text(encoding="utf-8"))) if seen_path.exists() else set()
+    except (json.JSONDecodeError, OSError):
+        seen = set()
+
+    changed = False
+    for path in sorted(items_dir.glob("recalibrate_proxies_*.json")):
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        article = item.get("recalibration_article", {})
+        for msg in item.get("messages", []):
+            sender = str(msg.get("sender") or "")
+            content = str(msg.get("content") or "").strip()
+            if not content or sender == "agent":
+                continue
+            msg_id = str(msg.get("id") or f"{item.get('id')}:{msg.get('timestamp')}")
+            key = f"{item.get('id')}:{msg_id}"
+            if key in seen:
+                continue
+            _append_recalibration_log(
+                {
+                    "event": "recalibration_response",
+                    "item_id": item.get("id"),
+                    "article": article,
+                    "sender": sender,
+                    "rating": _extract_recalibration_rating(content),
+                    "response": content,
+                }
+            )
+            seen.add(key)
+            changed = True
+
+    if changed:
+        try:
+            seen_path.write_text(json.dumps(sorted(seen), ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as exc:
+            log.debug("Recalibration seen write failed: %s", exc)
+
+
+def do_recalibrate_proxies(user_id: str = "ang") -> bool:
+    import random
+
+    _log_recalibration_responses(user_id=user_id)
+    articles = _fetch_last_month_substack_articles()
+    if not articles:
+        log.info("Recalibrate proxies: no Substack articles published in the last month")
+        return False
+
+    article = random.choice(articles)
+    prompt = (
+        "Monthly voice recalibration.\n\n"
+        f"Article: {article['title']}\n"
+        f"Published: {article['post_date'][:10]}\n"
+        f"URL: {article.get('url') or '(no URL found)'}\n\n"
+        "Rate this article 1-5 on how well it captures your voice and intent. Any drift?"
+    )
+
+    bridge = Mira(MIRA_DIR, user_id=user_id)
+    now = datetime.now()
+    item_id = f"recalibrate_proxies_{now.strftime('%Y%m')}"
+    if bridge.item_exists(item_id):
+        log.info("Recalibrate proxies: prompt already exists for %s", now.strftime("%Y-%m"))
+        return False
+
+    item = bridge.create_discussion(
+        item_id,
+        f"Monthly voice recalibration {now.strftime('%Y-%m')}",
+        prompt,
+        sender="agent",
+        tags=["mira", "guard", "recalibration", "substack", "voice"],
+    )
+    item["recalibration_article"] = article
+    bridge._write_item(item)
+    bridge._update_manifest(item)
+
+    _append_recalibration_log(
+        {
+            "event": "recalibration_prompt_posted",
+            "item_id": item_id,
+            "article": article,
+            "prompt": prompt,
+        }
+    )
+    log.info("Recalibrate proxies prompt posted for article: %s", article["title"])
+    return True
+
+
+def do_guard_calibration_prompt(user_id: str = "ang") -> bool:
+    from calibration import CALIBRATION_PROMPT_SAMPLE_SIZE, send_guard_calibration_prompt
+
+    posted = send_guard_calibration_prompt(user_id=user_id, sample_size=CALIBRATION_PROMPT_SAMPLE_SIZE)
+    state = load_state()
+    state["last_guard_calibration_prompt"] = datetime.now().isoformat()
+    save_state(state)
+    return posted
+
+
+def do_proxy_drift_check() -> int:
+    import evaluator
+
+    flagged = evaluator.detect_proxy_drift()
+    return len(flagged)
+
+
+def _load_anti_ai_scanner():
+    import importlib.util
+
+    scanner_path = MIRA_ROOT / "agents" / "writer" / "handler.py"
+    spec = importlib.util.spec_from_file_location("_mira_writer_handler_calibration", scanner_path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        log.debug("Anti-AI scanner load failed: %s", exc)
+        return None
+    return getattr(module, "scan_anti_ai_patterns", None)
+
+
+def _anti_ai_passed(text: str, scanner) -> bool:
+    if scanner is None:
+        return False
+    try:
+        scan = scanner(text)
+        return float(scan.get("score", 0) or 0) <= float(scan.get("threshold", 0) or 0)
+    except Exception as exc:
+        log.debug("Anti-AI scan failed: %s", exc)
+        return False
+
+
+def _verification_checks_passed(result: dict) -> bool:
+    if not result.get("outcome_verified"):
+        return False
+    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    if verification.get("passed") is False:
+        return False
+    checks = verification.get("checks") or result.get("checks") or []
+    for check in checks:
+        if isinstance(check, dict) and check.get("passed") is False:
+            return False
+    return True
+
+
+def _is_writing_calibration_candidate(result: dict, path: Path) -> bool:
+    tags = " ".join(str(tag).lower() for tag in result.get("tags", []) if isinstance(tag, str))
+    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    haystack = " ".join(
+        [
+            tags,
+            str(result.get("agent") or "").lower(),
+            str(result.get("task_type") or "").lower(),
+            str(verification.get("artifact_type") or "").lower(),
+            str(path).lower(),
+        ]
+    )
+    if any(token in haystack for token in ("writer", "writing", "substack", "publish", "article", "essay")):
+        return True
+    for root in (WRITINGS_OUTPUT_DIR, WRITINGS_DIR):
+        try:
+            path.resolve().relative_to(root.resolve())
+            return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def _read_calibration_artifact(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _recent_guarded_writing_artifacts(sample_size: int) -> list[dict]:
+    scanner = _load_anti_ai_scanner()
+    result_paths: list[tuple[float, Path]] = []
+    try:
+        for path in TASKS_DIR.rglob("result.json"):
+            try:
+                result_paths.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+    except OSError as exc:
+        log.debug("Calibration result scan failed: %s", exc)
+        return []
+
+    samples: list[dict] = []
+    seen_paths: set[str] = set()
+    for _, result_path in sorted(result_paths, key=lambda item: item[0], reverse=True):
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(result, dict) or not _verification_checks_passed(result):
+            continue
+        for artifact in result.get("artifacts_produced", []) or []:
+            if not isinstance(artifact, dict) or artifact.get("type") != "file":
+                continue
+            artifact_path = Path(str(artifact.get("path") or ""))
+            if not artifact_path.is_absolute():
+                artifact_path = result_path.parent / artifact_path
+            if artifact_path.suffix.lower() not in {"", ".md", ".txt"}:
+                continue
+            key = str(artifact_path)
+            if key in seen_paths or not artifact_path.exists():
+                continue
+            text = _read_calibration_artifact(artifact_path)
+            if len(text.strip()) < 200:
+                continue
+            if not _is_writing_calibration_candidate(result, artifact_path):
+                continue
+            if not _anti_ai_passed(text, scanner):
+                continue
+            seen_paths.add(key)
+            samples.append(
+                {
+                    "task_id": result.get("task_id") or result_path.parent.name,
+                    "title": result.get("title") or artifact_path.stem,
+                    "path": str(artifact_path),
+                    "modified": datetime.fromtimestamp(artifact_path.stat().st_mtime).isoformat(),
+                    "excerpt": " ".join(text.split())[:700],
+                }
+            )
+            break
+        if len(samples) >= sample_size:
+            break
+    return samples
+
+
+def _format_proxy_calibration_message(samples: list[dict]) -> str:
+    lines = [
+        "Weekly proxy calibration.",
+        "",
+        "These recent writing outputs passed the automated guards and anti-AI scan. Please rate each 1-5 for actual quality.",
+        "",
+    ]
+    for index, sample in enumerate(samples, start=1):
+        lines.extend(
+            [
+                f"{index}. {sample['title']}",
+                f"Artifact: {sample['path']}",
+                f"Excerpt: {sample['excerpt']}",
+                f"Rating {index}: _/5",
+                "",
+            ]
+        )
+    lines.append("Reply inline, for example: 1: 4, 2: 3, 3: 5, 4: 2.")
+    return "\n".join(lines)
+
+
+def _append_proxy_calibration_log(record: dict) -> None:
+    record = {"ts": datetime.now(timezone.utc).isoformat(), **record}
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOGS_DIR / "calibrate_proxies.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.debug("Proxy calibration log write failed: %s", exc)
+
+
+def _extract_proxy_calibration_ratings(text: str, sample_count: int) -> list[int]:
+    import re
+
+    ratings: list[int] = []
+    pattern = r"(?:^|[\s,;])(?:[1-9]\d*)\s*[:.)-]\s*([1-5])(?:\s*/\s*5)?\b"
+    for match in re.finditer(pattern, text):
+        ratings.append(int(match.group(1)))
+    if not ratings and sample_count == 1:
+        match = re.search(r"\b([1-5])(?:\s*/\s*5)?\b", text)
+        if match:
+            ratings.append(int(match.group(1)))
+    return ratings
+
+
+def _ensure_guard_review_todo(bridge, average: float, item_id: str) -> None:
+    title = "Review guard rules after low proxy calibration ratings"
+    for todo in bridge.load_todos():
+        if todo.get("title") == title and todo.get("status") in {"pending", "working"}:
+            return
+    todo = bridge.add_todo(title, priority="high", tags=["mira", "guard", "calibration"])
+    bridge.add_followup(
+        todo["id"],
+        f"Average human quality rating was {average:.2f}/5 on {item_id}. Review content guard rules and anti-AI checks for proxy drift.",
+        source="agent",
+    )
+
+
+def _record_proxy_calibration_responses(user_id: str = "ang") -> list[int]:
+    items_dir = MIRA_DIR / "users" / user_id / "items"
+    if not items_dir.exists():
+        return []
+
+    seen_path = LOGS_DIR / ".calibrate_proxies_seen.json"
+    try:
+        seen = set(json.loads(seen_path.read_text(encoding="utf-8"))) if seen_path.exists() else set()
+    except (json.JSONDecodeError, OSError):
+        seen = set()
+
+    ratings: list[int] = []
+    changed = False
+    bridge = Mira(MIRA_DIR, user_id=user_id)
+    for path in sorted(items_dir.glob("calibrate_proxies_*.json")):
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        sample_count = len(item.get("calibration_samples") or [])
+        for msg in item.get("messages", []):
+            sender = str(msg.get("sender") or "")
+            content = str(msg.get("content") or "").strip()
+            if not content or sender == "agent":
+                continue
+            msg_id = str(msg.get("id") or f"{item.get('id')}:{msg.get('timestamp')}")
+            key = f"{item.get('id')}:{msg_id}"
+            if key in seen:
+                continue
+            parsed = _extract_proxy_calibration_ratings(content, sample_count)
+            _append_proxy_calibration_log(
+                {
+                    "event": "calibration_response",
+                    "item_id": item.get("id"),
+                    "sender": sender,
+                    "ratings": parsed,
+                    "response": content,
+                }
+            )
+            ratings.extend(parsed)
+            seen.add(key)
+            changed = True
+
+    if changed:
+        try:
+            seen_path.write_text(json.dumps(sorted(seen), ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as exc:
+            log.debug("Proxy calibration seen write failed: %s", exc)
+    if ratings:
+        average = sum(ratings) / len(ratings)
+        if average < 3.0:
+            _ensure_guard_review_todo(bridge, average, "calibrate_proxies")
+    return ratings
+
+
+def calibrate_proxies(user_id: str = "ang") -> bool:
+    _record_proxy_calibration_responses(user_id=user_id)
+    samples = _recent_guarded_writing_artifacts(max(1, int(CALIBRATION_SAMPLE_SIZE)))
+    if not samples:
+        log.info("Proxy calibration: no guarded writing artifacts found")
+        return False
+
+    now = datetime.now()
+    item_id = f"calibrate_proxies_{now.strftime('%G_W%V')}"
+    bridge = Mira(MIRA_DIR, user_id=user_id)
+    if bridge.item_exists(item_id):
+        log.info("Proxy calibration prompt already exists for %s", now.strftime("%G-W%V"))
+        return False
+
+    item = bridge.create_discussion(
+        item_id,
+        f"Weekly proxy calibration {now.strftime('%G-W%V')}",
+        _format_proxy_calibration_message(samples),
+        sender="agent",
+        tags=["mira", "guard", "calibration", "proxy-drift", "writing"],
+    )
+    item["calibration_samples"] = samples
+    bridge._write_item(item)
+    bridge._update_manifest(item)
+
+    _append_proxy_calibration_log(
+        {
+            "event": "calibration_prompt_posted",
+            "item_id": item_id,
+            "sample_count": len(samples),
+            "samples": samples,
+        }
+    )
+    state = load_state()
+    state["last_calibrate_proxies"] = now.isoformat()
+    save_state(state)
+    log.info("Proxy calibration prompt posted with %d sample(s)", len(samples))
+    return True
+
+
 def cmd_run():
     """Full cycle: talk -> respond -> dispatch background work.
 
@@ -344,9 +2075,16 @@ def cmd_run():
     _cycle_start = _time.monotonic()
     _cycle_wall_start = datetime.now(timezone.utc)
     log.info("=== Mira Agent wake ===")
+    _update_coattention(
+        "full wake cycle: talk, health checks, pipeline maintenance, scheduled work",
+        "Annotate this entry with anything Mira should notice during this cycle.",
+    )
+    _record_stale_heartbeat_mourning(time.time())
 
+    self_heal()
     _check_invisible_dependencies()
     _run_auth_health_if_due()
+    check_background_dependencies()
 
     try:
         _sf_path = LOGS_DIR / "security_flags.jsonl"
@@ -390,24 +2128,21 @@ def cmd_run():
     try:
         from notes_bridge import check_bridge_staleness
 
-        if check_bridge_staleness():
-            from config import MIRA_DIR as _MIRA_DIR
-
-            _hb_age = -1
-            for _hb_name in ("heartbeat.json", "heartbeat"):
-                _hb_path = Path(_MIRA_DIR) / _hb_name
-                if _hb_path.exists():
-                    try:
-                        _hb_age = round(time.time() - _hb_path.stat().st_mtime)
-                    except OSError:
-                        pass
-                    break
+        is_stale, age_minutes = check_bridge_staleness(
+            MIRA_DIR,
+            threshold_minutes=BRIDGE_STALENESS_THRESHOLD_MINUTES,
+        )
+        if is_stale:
             log.warning(
-                "component=notes_bridge event=staleness_detected age_seconds=%d",
-                _hb_age,
+                f"INFRA_BLIND_SPOT: iCloud bridge last updated {age_minutes:.1f}m ago — iPhone sync may be stalled"
             )
     except Exception as _bse:
         log.debug("Bridge staleness check failed: %s", _bse)
+
+    try:
+        _check_review_trust_inflation()
+    except Exception as _tie:
+        log.debug("review trust inflation check failed: %s", _tie)
 
     # Load session context from previous cycles
     _session_ctx = load_session_context()
@@ -452,15 +2187,6 @@ def cmd_run():
                 except OSError:
                     pass
 
-    _bridge_hb = MIRA_DIR / "heartbeat"
-    if _bridge_hb.exists():
-        try:
-            _bridge_hb_age = time.time() - _bridge_hb.stat().st_mtime
-            if _bridge_hb_age > BRIDGE_STALE_THRESHOLD:
-                log.warning("icloud_bridge_heartbeat_stale age_seconds=%d", int(_bridge_hb_age))
-        except OSError:
-            pass
-
     # Mira first (lightweight, fast) — CRITICAL PATH
     _t0 = _time.monotonic()
     _llm_t0 = time.perf_counter()
@@ -476,6 +2202,16 @@ def cmd_run():
     _talk_dur = _time.monotonic() - _t0
     _phase_times["talk"] = round(_talk_dur * 1000)
     _record_perf_stat("talk", "talk", _talk_dur, _talk_ok)
+
+    try:
+        _log_recalibration_responses()
+    except Exception as e:
+        log.debug("Recalibration response logging failed: %s", e)
+
+    try:
+        _record_proxy_calibration_responses()
+    except Exception as e:
+        log.debug("Proxy calibration response logging failed: %s", e)
 
     try:
         from mira import update_interface_latency as _update_iface_lat
@@ -540,6 +2276,7 @@ def cmd_run():
     if _completed_bg:
         _t0 = _time.monotonic()
         _dispatch_pipeline_followups(_completed_bg, _session_new)
+        update_joint_attention(_joint_attention_topic_from_completed_background(_completed_bg))
         _phase_times["pipeline_chain"] = round((_time.monotonic() - _t0) * 1000)
 
     # Reap stale PID files (hourly) — prevents stuck tasks
@@ -558,6 +2295,7 @@ def cmd_run():
     # --- All heavy work below runs through the declarative scheduler ---
     _t0 = _time.monotonic()
     log_authorization_event("scheduled_jobs", "cron", "normal", bypassed_check=False)
+    _register_core_scheduled_jobs()
     _dispatch_scheduled_jobs(_session_new)
 
     # Weekly health report — Monday morning
@@ -758,6 +2496,19 @@ def _record_perf_stat(agent: str, task_type: str, duration_s: float, success: bo
         log.debug("perf_stats read failed: %s", _e)
 
 
+def _result_agent_type(result: dict) -> str:
+    return str(result.get("agent_type") or result.get("agent") or "").strip()
+
+
+def _result_outcome_verified(result: dict) -> bool | None:
+    if "outcome_verified" in result:
+        return bool(result.get("outcome_verified"))
+    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    if "verified" in verification:
+        return bool(verification.get("verified"))
+    return None
+
+
 def _log_outcome_success_rates():
     """Compute and log per-agent-type outcome_success_rate over last 50 tasks."""
     _TRACKED_AGENTS = {"surfer", "socialmedia", "explorer"}
@@ -778,12 +2529,13 @@ def _log_outcome_success_rates():
             data = json.loads(rf.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
-        agent = str(data.get("agent", "")).strip()
+        agent = _result_agent_type(data)
         if agent not in _TRACKED_AGENTS:
             continue
-        if "outcome_verified" not in data:
+        outcome_verified = _result_outcome_verified(data)
+        if outcome_verified is None:
             continue
-        results_by_agent.setdefault(agent, []).append(bool(data["outcome_verified"]))
+        results_by_agent.setdefault(agent, []).append(outcome_verified)
     for agent, outcomes in results_by_agent.items():
         window = outcomes[:50]
         if not window:
@@ -817,6 +2569,128 @@ def _write_last_output(component: str) -> None:
         _tmp.rename(LAST_OUTPUT_FILE)
     except Exception as _e:
         log.debug("last_output write failed: %s", _e)
+
+
+def _review_trust_inflation_threshold() -> int:
+    try:
+        from config import REVIEW_TRUST_INFLATION_THRESHOLD
+
+        return max(1, int(REVIEW_TRUST_INFLATION_THRESHOLD))
+    except (ImportError, AttributeError, TypeError, ValueError):
+        return 8
+
+
+def _recent_evaluator_reports(limit: int = 10) -> list[Path]:
+    candidates: list[Path] = []
+    for report_dir in (
+        LOGS_DIR,
+        MIRA_ROOT / "data" / "soul" / "scorecards",
+        MIRA_ROOT / "lib" / "soul" / "scorecards",
+    ):
+        if not report_dir.exists():
+            continue
+        try:
+            candidates.extend(report_dir.glob("*evaluator*.json"))
+            candidates.extend(report_dir.glob("*scorecard*.json"))
+            if report_dir.name == "scorecards":
+                candidates.extend(report_dir.glob("*.json"))
+        except OSError:
+            continue
+    return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+
+
+def _has_review_issue_flag(value) -> bool:
+    if isinstance(value, dict):
+        return any(_has_review_issue_flag(v) for k, v in value.items() if str(k).endswith(("warning", "warnings")))
+    if isinstance(value, list):
+        return bool(value)
+    return bool(value)
+
+
+def _is_clean_evaluator_report(report: dict) -> bool:
+    agents = report.get("agents", {})
+    if not isinstance(agents, dict):
+        return False
+
+    scored_agents = [card for card in agents.values() if isinstance(card, dict) and card.get("task_count", 0) > 0]
+    if not scored_agents:
+        return False
+
+    for card in scored_agents:
+        if float(card.get("success_rate", 0) or 0) < 1.0:
+            return False
+        if int(card.get("failed", 0) or 0) > 0:
+            return False
+        if int(card.get("guard_fires", 0) or 0) > 0 or int(card.get("guard_fired_count", 0) or 0) > 0:
+            return False
+        scores = card.get("scores", {})
+        if not isinstance(scores, dict) or float(scores.get("task_success", 0) or 0) < 1.0:
+            return False
+        if float(scores.get("guard_fire_rate", 0) or 0) > 0:
+            return False
+
+    super_scores = report.get("super", {}).get("scores", {})
+    if isinstance(super_scores, dict):
+        for key in ("crash_rate", "timeout_rate", "error_rate"):
+            if float(super_scores.get(key, 0) or 0) > 0:
+                return False
+        for key in ("timeout_count", "error_count", "stuck_tasks"):
+            if int(super_scores.get(key, 0) or 0) > 0:
+                return False
+        if super_scores.get("heartbeat_ok") is False:
+            return False
+
+    aggregate = report.get("aggregate", {})
+    if isinstance(aggregate, dict):
+        if int(aggregate.get("stale_score_count", 0) or 0) > 0:
+            return False
+        if int(aggregate.get("scaffolding_rejection_count", 0) or 0) > 0:
+            return False
+        if aggregate.get("low_confidence_agents"):
+            return False
+
+    if report.get("stale_skills") or report.get("marginalized_skills"):
+        return False
+
+    return not _has_review_issue_flag(report)
+
+
+def _check_review_trust_inflation() -> None:
+    reports = _recent_evaluator_reports(limit=10)
+    if len(reports) < 10:
+        return
+
+    streak = 0
+    for path in reports:
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            break
+        if not _is_clean_evaluator_report(report):
+            break
+        streak += 1
+
+    threshold = _review_trust_inflation_threshold()
+    if streak < threshold:
+        return
+
+    message = (
+        f"Possible trust inflation detected — {streak} consecutive clean reviews. "
+        "Review loops may be degrading into superficial coherence checks. Manual spot-check recommended."
+    )
+    warning = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "streak": streak,
+        "threshold": threshold,
+        "message": message,
+    }
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOGS_DIR / "trust_inflation_warnings.log", "a", encoding="utf-8") as wf:
+            wf.write(json.dumps(warning, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.debug("trust inflation warning write failed: %s", exc)
+    log.warning("REVIEW_TRUST_INFLATION streak=%d threshold=%d — %s", streak, threshold, message)
 
 
 def _check_stale_pipelines() -> list[str]:
@@ -947,6 +2821,98 @@ def _append_task_latency_to_journal() -> None:
         pass
 
 
+def _append_joint_attention_landscape_to_journal(user_id: str = "ang", *, create_if_missing: bool = True) -> None:
+    try:
+        from soul.third_thing_tracker import ThirdThingRegistry
+        from user_paths import user_journal_dir
+    except Exception as e:
+        log.debug("Third-thing tracker unavailable: %s", e)
+        return
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    journal_path = user_journal_dir(user_id) / f"{today}.md"
+    if not create_if_missing and not journal_path.exists():
+        return
+
+    marker = "<!-- joint-attention-landscape -->"
+    try:
+        existing = journal_path.read_text(encoding="utf-8") if journal_path.exists() else ""
+    except OSError as e:
+        log.debug("Joint attention journal read failed: %s", e)
+        return
+    if marker in existing:
+        return
+
+    try:
+        registry = ThirdThingRegistry()
+        living = registry.get_living_third_things()
+        all_things = list(registry.things.values())
+        for thing in all_things:
+            registry.compute_convergence(thing.name)
+    except Exception as e:
+        log.debug("Joint attention landscape build failed: %s", e)
+        return
+
+    dormant = [thing for thing in all_things if thing.status == "dormant"]
+    living_names = {thing.name for thing in living}
+    other = [thing for thing in all_things if thing.name not in living_names and thing.status != "dormant"]
+
+    lines = [marker, "## Joint attention landscape"]
+    if living:
+        lines.append("Alive:")
+        lines.extend(_format_third_thing_line(thing) for thing in living[:8])
+    else:
+        lines.append("Alive: none currently registered.")
+
+    if other:
+        lines.append("Diverging:")
+        lines.extend(_format_third_thing_line(thing) for thing in other[:5])
+
+    if dormant:
+        lines.append("Dormant:")
+        lines.extend(_format_third_thing_line(thing) for thing in dormant[:5])
+
+    if not all_things:
+        lines.append("No registered third-things yet.")
+
+    try:
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(journal_path, "a", encoding="utf-8") as _jf:
+            _jf.write("\n\n" + "\n".join(lines) + "\n")
+    except OSError as e:
+        log.debug("Joint attention journal write failed: %s", e)
+
+
+def _format_third_thing_line(thing) -> str:
+    return f"- {thing.name}: {thing.status}, convergence {thing.convergence_score:.2f}"
+
+
+def _extract_joint_observation_focus(note: str) -> str:
+    match = re.search(r"looking at together:\s*(.+?)\.", note, re.IGNORECASE | re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return "the current joint observation from reflection"
+
+
+def _send_joint_observation(user_id: str = "ang") -> None:
+    try:
+        note = generate_joint_observation(user_id=user_id)
+        if not note:
+            return
+        update_joint_attention(_extract_joint_observation_focus(note))
+        bridge = Mira(MIRA_DIR, user_id=user_id)
+        item_id = f"joint_observation_{datetime.now().strftime('%Y%m%d')}"
+        bridge.create_feed(
+            item_id,
+            "Joint Observation",
+            note,
+            tags=["reflection", "joint-attention", "co-reflection"],
+        )
+        log.info("Joint observation sent")
+    except Exception as e:
+        log.warning("Joint observation generation failed: %s", e)
+
+
 def _refresh_operator_dashboards():
     """Persist operator dashboard snapshots for each configured user."""
     try:
@@ -962,6 +2928,55 @@ def _refresh_operator_dashboards():
             log.warning("Operator dashboard refresh failed for %s: %s", user_id, _exc)
 
 
+def _alert_soul_integrity_failures(failures: list[tuple[str, str]]) -> None:
+    lines = "\n".join(f"- {filename}: {error}" for filename, error in failures)
+    message = (
+        "Mira startup integrity check failed. No pipelines were dispatched because "
+        "background soul infrastructure is broken.\n\n"
+        f"{lines}"
+    )
+    log.critical("Soul startup integrity check failed: %s", failures)
+
+    if Mira is None:
+        log.error("Cannot write soul integrity alert: bridge unavailable")
+        return
+
+    try:
+        bridge = Mira(MIRA_DIR, user_id="ang")
+        item_id = "soul_integrity_failure"
+        title = "Mira Soul Integrity Failure"
+        if bridge.item_exists(item_id):
+            bridge.append_message(item_id, "agent", message)
+            item = bridge._read_item(item_id)
+        else:
+            item = bridge.create_item(
+                item_id,
+                "alert",
+                title,
+                message,
+                sender="agent",
+                tags=["system", "soul", "integrity", "error"],
+                origin="agent",
+            )
+        if item:
+            item["type"] = "alert"
+            item["title"] = title
+            item["status"] = "failed"
+            item["origin"] = "agent"
+            item["pinned"] = True
+            item["tags"] = list(dict.fromkeys(["system", "soul", "integrity", "error", *item.get("tags", [])]))
+            item["error"] = {
+                "code": "soul_integrity_failed",
+                "message": lines,
+                "retryable": False,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            bridge._write_item(item)
+            bridge._update_manifest(item)
+    except Exception as exc:
+        log.error("Failed to write soul integrity alert: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -972,6 +2987,12 @@ def main():
     from log_config import setup_logging
 
     setup_logging(logs_dir=LOGS_DIR, json_logs=True)
+    soul_failures = validate_soul_files()
+    if soul_failures:
+        _alert_soul_integrity_failures(soul_failures)
+        return
+
+    check_rules_integrity()
 
     # Prune old log files — once daily, gated by marker file
     import os as _prune_os
@@ -1001,6 +3022,7 @@ def main():
         log.warning("Config validation failed — some features may not work")
 
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
+    _log_skill_depth_advisories(command)
 
     # Set usage agent context for token tracking
     from llm import set_usage_agent
@@ -1018,6 +3040,12 @@ def main():
         else:
             i += 1
 
+    if command != "run" and command in _DOMAIN_TASK_COMMANDS:
+        _update_coattention(
+            f"{command} command",
+            "Annotate this entry with what Mira should attend to, question, or connect.",
+        )
+
     if command == "run":
         from locks.process import ProcessLockActive, launchagent_lock
 
@@ -1033,23 +3061,33 @@ def main():
         sources = flags.get("sources", "").split(",") if flags.get("sources") else None
         slot = flags.get("slot", "")
         do_explore(source_names=sources, slot_name=slot)
+        update_joint_attention(
+            f"explore briefing knowledge garden: {slot}" if slot else "explore briefing knowledge garden"
+        )
         _write_last_output("explorer")
     elif command == "reflect":
         do_reflect(user_id=flags.get("user", "ang"))
+        _send_joint_observation(user_id=flags.get("user", "ang"))
+        _append_joint_attention_landscape_to_journal(user_id=flags.get("user", "ang"), create_if_missing=False)
         _dispatch_distribution_snapshot()
         _write_last_output("reflect")
     elif command == "journal":
         do_journal(user_id=flags.get("user", "ang"))
+        update_joint_attention("today's journal as a knowledge-garden page")
+        _append_joint_attention_landscape_to_journal(user_id=flags.get("user", "ang"))
         _append_task_latency_to_journal()
         _write_last_output("journal")
     elif command == "research-log":
         do_research_log(user_id=flags.get("user", "ang"))
+        update_joint_attention("Mira's autonomous research-build loop")
     elif command == "research-cycle":
         do_research_cycle(user_id=flags.get("user", "ang"))
+        update_joint_attention("Mira's autonomous research-build loop")
     elif command == "analyst":
         do_analyst(slot=flags.get("slot", ""))
     elif command == "research":
         do_research()
+        update_joint_attention("Mira's autonomous research-build loop")
     elif command == "zhesi":
         do_zhesi(user_id=flags.get("user", "ang"))
     elif command == "soul-question":
@@ -1062,15 +3100,26 @@ def main():
         writing_type = flags.get("type", "essay")
         idea = flags.get("idea", "")
         run_autowrite_pipeline(task_id, title, writing_type, idea)
+        update_joint_attention(f"writing project: {title}")
     elif command == "writing-pipeline":
         advanced = _run_canonical_writing_pipeline()
         log.info("Canonical writing pipeline advanced %d project(s)", advanced)
+        if advanced:
+            update_joint_attention("the active writing-project knowledge garden")
     elif command == "check-comments":
         do_check_comments()
     elif command == "growth-cycle":
         do_growth_cycle()
     elif command == "notes-cycle":
         do_notes_cycle()
+    elif command == "recalibrate-proxies":
+        do_recalibrate_proxies(user_id=flags.get("user", "ang"))
+    elif command == "guard-calibration-prompt":
+        do_guard_calibration_prompt(user_id=flags.get("user", "ang"))
+    elif command == "proxy-drift-check":
+        do_proxy_drift_check()
+    elif command == "calibrate-proxies":
+        calibrate_proxies(user_id=flags.get("user", "ang"))
     elif command == "spark-check":
         do_spark_check(user_id=flags.get("user", "ang"))
     elif command == "idle-think":

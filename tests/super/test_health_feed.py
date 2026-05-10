@@ -126,3 +126,26 @@ def test_write_health_feed_replaces_digest_without_duplication(monkeypatch):
     assert bridge.item["origin"] == "agent"
     assert [m["id"] for m in bridge.item["messages"]] == ["health_today_ang_digest"]
     assert bridge.item["messages"][0]["content"] == "new digest"
+
+
+def test_write_health_feed_can_skip_manifest_for_compatibility_alias(monkeypatch):
+    from agents.super import health
+
+    _stub_control_db(monkeypatch)
+    bridge = FakeBridge(user_id="ang")
+
+    health._write_health_feed(
+        bridge,
+        "health_insight_ang",
+        "今日健康洞察",
+        "new digest",
+        ["health", "insight"],
+        update_manifest=False,
+        pinned=False,
+    )
+
+    assert bridge.item["id"] == "health_insight_ang"
+    assert bridge.item["status"] == "done"
+    assert bridge.item["pinned"] is False
+    assert bridge.manifest_updates == []
+    assert FakeRepo.projected[-1][1]["id"] == "health_insight_ang"

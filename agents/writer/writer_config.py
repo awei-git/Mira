@@ -34,6 +34,9 @@ CLAUDE_MAX_RETRIES = WRITER_MAX_RETRIES
 # 3 = scaffold + draft + critique in one run
 MAX_STEPS_PER_RUN = WRITER_MAX_STEPS_PER_RUN
 
+# Anti-AI checklist strictness: "strict" or "relaxed"
+ANTI_AI_STRICTNESS = "strict"
+
 # Type-to-framework mapping
 TYPE_FRAMEWORK = {
     "essay": "essay.md",

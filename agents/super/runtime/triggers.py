@@ -327,6 +327,19 @@ def should_book_review() -> bool:
     return not state.get(f"book_review_{now.strftime('%Y-%m-%d')}")
 
 
+def should_comparative_book_project() -> bool:
+    """Check if it's time for the 30-day comparative book project."""
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), time(10, 0))
+    delta = (now - scheduled).total_seconds() / 60
+
+    if delta < 0 or delta > 180:
+        return False
+
+    state = _load_state()
+    return not state.get(f"comparative_book_project_{now.strftime('%Y-%m-%d')}")
+
+
 def should_check_writing() -> bool:
     """Check if it's time for a proactive autonomous writing check.
 

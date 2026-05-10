@@ -12,10 +12,29 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import SOURCES_FILE, FEEDS_DIR, MAX_FEED_ITEMS
+from trust_guard import is_suspicious_content
 
 log = logging.getLogger("mira")
 
 USER_AGENT = "MiraAgent/1.0 (research bot)"
+
+
+def _item_text(item: dict) -> str:
+    return "\n".join(str(item.get(key, "") or "") for key in ("title", "summary", "url"))
+
+
+def _filter_suspicious_items(items: list[dict]) -> list[dict]:
+    filtered = []
+    for item in items:
+        if is_suspicious_content(_item_text(item)):
+            log.warning(
+                "Skipping suspicious feed item from %s: %s",
+                item.get("source", "?"),
+                str(item.get("title", "?"))[:120],
+            )
+            continue
+        filtered.append(item)
+    return filtered
 
 
 def _parse_ts_to_unix(text: str) -> float | None:
@@ -513,6 +532,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
             log.info("RSS (matched %d feeds): %d items", len(matched), len(items))
 
     log.info("Selective fetch (%s): %d items total", ",".join(source_names), len(all_items))
+    all_items = _filter_suspicious_items(all_items)
 
     # Save raw
     raw_path = FEEDS_DIR / "raw" / f"{datetime.now().strftime('%Y-%m-%d_%H%M')}.json"

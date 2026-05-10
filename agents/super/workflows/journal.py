@@ -34,7 +34,7 @@ from memory.soul import (
     load_recent_reading_notes,
     _atomic_write as atomic_write,
 )
-from llm import claude_think
+from llm import model_think
 from prompts import journal_prompt
 
 from workflows.helpers import (
@@ -50,6 +50,51 @@ log = logging.getLogger("mira")
 
 
 from evolution import traced  # noqa: E402
+
+
+def _format_joint_garden_section() -> str:
+    try:
+        garden_path = Path(__file__).resolve().parent.parent.parent / "shared" / "soul" / "joint_garden.md"
+        if not garden_path.exists():
+            return ""
+        garden_text = garden_path.read_text(encoding="utf-8")
+        if "## Garden Log" not in garden_text:
+            return ""
+        log_start = garden_text.index("## Garden Log") + len("## Garden Log")
+        log_content = garden_text[log_start:].strip()
+        if not log_content:
+            return ""
+        recent = log_content[-1000:] if len(log_content) > 1000 else log_content
+        return "## From the Joint Garden\n\n" + recent.strip() + "\n\n*What do you notice? Add observations via Notes.*"
+    except Exception:
+        return ""
+
+
+def _format_daily_shared_memory(user_id: str) -> str:
+    try:
+        from memory.store import top_joint_attention_memory
+
+        memory = top_joint_attention_memory(user_id=user_id)
+    except Exception as e:
+        log.debug("Daily shared memory lookup failed: %s", e)
+        return ""
+
+    if not memory:
+        return ""
+
+    content = re.sub(r"\s+", " ", memory.get("content", "")).strip()
+    if not content:
+        return ""
+    if len(content) > 700:
+        content = content[:697].rstrip() + "..."
+
+    source = memory.get("source_type") or "memory"
+    score = memory.get("joint_attention_score") or 0.0
+    return (
+        "## Daily shared memory\n\n"
+        f"> [{source}, joint attention {score:.2f}] {content}\n\n"
+        "What do you think about this now?"
+    )
 
 
 @traced("journal", agent="super", budget_seconds=180)
@@ -251,7 +296,7 @@ def do_journal(user_id: str = "ang"):
         log.warning("Failed to read security incidents for journal: %s", e)
 
     prompt = journal_prompt(soul_ctx, tasks_summary, skills_summary, briefing_summary, za_fragment=za_fragment)
-    journal_text = claude_think(prompt, timeout=120)
+    journal_text = model_think(prompt, model_name="claude", timeout=120)
 
     if not journal_text:
         log.error("Journal: Claude returned empty")
@@ -260,6 +305,12 @@ def do_journal(user_id: str = "ang"):
     # Save journal
     security_prefix = f"{security_alerts}\n\n" if security_alerts else ""
     journal_content = f"# Journal {today}\n\n{security_prefix}{journal_text}"
+    daily_shared_memory = _format_daily_shared_memory(user_id)
+    if daily_shared_memory:
+        journal_content = f"{journal_content}\n\n{daily_shared_memory}"
+    garden_section = _format_joint_garden_section()
+    if garden_section:
+        journal_content = f"{journal_content}\n\n{garden_section}"
     atomic_write(journal_path, journal_content)
     log.info("Journal saved: %s", journal_path.name)
 
@@ -272,7 +323,7 @@ def do_journal(user_id: str = "ang"):
     try:
         state = load_state(user_id=user_id)
         state[f"journal_{today}"] = datetime.now().isoformat()
-        state[f"journal_{today}_actor"] = "journal/claude-think"
+        state[f"journal_{today}_actor"] = "journal/sonnet"
         save_state(state, user_id=user_id)
     except Exception as e:
         log.warning("Failed to mark journal_%s in state: %s", today, e)

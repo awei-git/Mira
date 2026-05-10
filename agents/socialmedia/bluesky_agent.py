@@ -436,6 +436,16 @@ SKIP"""
 def run_bluesky_cycle(soul_context: str = "") -> dict:
     """One growth cycle: post one standalone note + proactive replies + metric poll."""
     out = {"posted": False, "post_uri": None, "replies_posted": 0, "reason": ""}
+    try:
+        from bluesky.client import is_configured
+    except ImportError as e:
+        out["reason"] = f"cannot import bluesky client: {e}"
+        return out
+
+    if not is_configured():
+        out["reason"] = "bluesky not configured: missing api_keys.bluesky.handle/app_password or session cache"
+        log.warning("Bluesky cycle skipped: %s", out["reason"])
+        return out
 
     # --- 1. Standalone post ---
     ok, reason = _can_post()

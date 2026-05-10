@@ -242,6 +242,7 @@ CLEANUP_DAYS = _limits.get("cleanup_days", 3)
 LOG_RETENTION_DAYS = int(os.environ.get("MIRA_LOG_RETENTION_DAYS", _limits.get("log_retention_days", 30)))
 MAX_SUBTASK_DEPTH = int(os.environ.get("MIRA_MAX_SUBTASK_DEPTH", _limits.get("max_subtask_depth", 3)))
 MAX_EXTERNAL_SKILLS_PER_DAY = _limits.get("max_external_skills_per_day", 5)
+MAX_SKILL_IMPORTS_PER_DAY = _limits.get("max_skill_imports_per_day", 20)
 MAX_SKILLS_PER_AGENT = _limits.get("max_skills_per_agent", 12)
 SKILL_REAUDIT_DAYS = _limits.get("skill_reaudit_days", 30)
 SKILL_AUDIT_PATTERN_REVIEWED_DATE = _limits.get("skill_audit_pattern_reviewed_date", "2026-04-13")
@@ -252,6 +253,7 @@ SKILL_IMPORT_MAX_PER_DAY = _limits.get("skill_import_max_per_day", 8)
 SKILL_AUDIT_LAG_ALERT_HOURS = _limits.get("skill_audit_lag_alert_hours", 72)
 SKILL_STALENESS_DAYS = _limits.get("skill_staleness_days", 30)
 SKILL_REVERIFICATION_DAYS = _limits.get("skill_reverification_days", 30)
+SKILL_EFFICACY_WARNING = _limits.get("skill_efficacy_warning", True)
 TRUST_AUDIT_ENABLED = _limits.get("trust_audit_enabled", True)
 SKILL_MIN_AGE_HOURS = _limits.get("skill_min_age_hours", 48)
 SKILL_AUDIT_BRANCH_THRESHOLD = _limits.get("skill_audit_branch_threshold", 15)
@@ -548,6 +550,8 @@ OURA_SYNC_DAYS_BACK = int(os.environ.get("MIRA_OURA_SYNC_DAYS_BACK", _limits.get
 # Publishing controls
 _publishing_cfg = _cfg.get("publishing", {})
 SUBSTACK_PUBLISHING_DISABLED = _publishing_cfg.get("substack_disabled", False)
+STRICT_HALLUCINATION_GUARD = _publishing_cfg.get("strict_hallucination_guard", False)
+CONTENT_GUARD_SURVIVAL_MODE = _publishing_cfg.get("content_guard_survival_mode", True)
 
 # Writing workflow
 MIN_REVIEW_ROUNDS = 5

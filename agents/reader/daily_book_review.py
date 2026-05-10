@@ -20,8 +20,10 @@ import tempfile
 import urllib.request
 import urllib.error
 import defusedxml.ElementTree as ET  # B314/B405: defused for untrusted XML
+import html
+import uuid
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -53,6 +55,7 @@ HISTORY_FILE = SOUL_DIR / "book_review_history.json"
 BOOKS_CACHE_DIR = SOUL_DIR / "book_cache"
 BOOKS_ARTIFACTS_DIR = ARTIFACTS_DIR / "books"
 ICLOUD_BOOKS = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "MtJoy" / "Books"
+ICLOUD_MIRA_BOOKS = ICLOUD_BOOKS / "Mira"
 USER_AGENT = "MiraAgent/1.0 (daily-reader)"
 MAX_HISTORY = 200
 MAX_TEXT_CHARS = 300_000
@@ -666,6 +669,242 @@ def _write_series_index(series_dir: Path, book: dict, state: dict):
     log.info("Series index updated: %s", index_path)
 
 
+def _safe_epub_filename(text: str, max_len: int = 90) -> str:
+    """Return a filesystem-safe EPUB stem while preserving CJK titles."""
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff.-]+", "-", text.strip(), flags=re.UNICODE)
+    cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-.")
+    return (cleaned or "mira-book-review")[:max_len]
+
+
+_LATIN_RE = re.compile(r"[A-Za-z]")
+
+_EPUB_CHINESE_REPLACEMENTS = {
+    "Mira": "米拉",
+    "marginalmira": "边缘米拉",
+    "Published as a marginalmira book review": "本文由米拉书评周更合集导出",
+    "Source series": "来源系列",
+    "The order of time": "时间的秩序",
+    "The Order of Time": "时间的秩序",
+    "Riverhead Books": "河源出版社",
+    "Carlo Rovelli": "卡洛·罗韦利",
+    "Rovelli": "罗韦利",
+    "Day": "第",
+    "Test Book": "测试之书",
+    "A. Writer": "某位作者",
+}
+
+
+def _replace_known_english_terms(text: str) -> str:
+    out = text
+    for source, target in sorted(_EPUB_CHINESE_REPLACEMENTS.items(), key=lambda item: -len(item[0])):
+        out = out.replace(source, target)
+    return out
+
+
+def _contains_latin(text: str) -> bool:
+    return bool(_LATIN_RE.search(text or ""))
+
+
+def _translate_markdown_block_to_chinese(block: str) -> str:
+    """Translate one markdown block that still contains English into Chinese."""
+    prompt = f"""把下面这段 Markdown 改成纯中文。
+
+要求：
+- 所有英文都翻译成中文，包括人名、出版社名、书名、章节名、注释。
+- 保留 Markdown 结构。
+- 不要扩写，不要改观点，不要解释。
+- 直接输出改好的段落。
+
+段落：
+{block}
+"""
+    translated = model_think(prompt, model_name="deepseek", timeout=180)
+    return translated.strip() if translated else block
+
+
+def _force_epub_markdown_chinese(markdown_text: str) -> str:
+    """Ensure EPUB body markdown contains no English before packaging."""
+    text = _replace_known_english_terms(markdown_text)
+    if not _contains_latin(text):
+        return text
+
+    blocks = re.split(r"(\n{2,})", text)
+    chunks: list[str] = []
+    current = ""
+    for block in blocks:
+        if len(current) + len(block) > 7000 and current:
+            chunks.append(current)
+            current = block
+        else:
+            current += block
+    if current:
+        chunks.append(current)
+
+    out: list[str] = []
+    for chunk in chunks:
+        if not _contains_latin(chunk):
+            out.append(chunk)
+            continue
+        translated = _translate_markdown_block_to_chinese(chunk)
+        out.append(_replace_known_english_terms(translated))
+    return "".join(out)
+
+
+def _markdown_to_xhtml(markdown_text: str) -> str:
+    """Convert markdown to XHTML suitable for a small self-contained EPUB."""
+    try:
+        import markdown
+
+        body_html = markdown.markdown(
+            markdown_text,
+            extensions=["extra", "sane_lists"],
+            output_format="xhtml",
+        )
+    except Exception as e:
+        log.warning("Markdown package failed for EPUB export, falling back to escaped preformatted text: %s", e)
+        body_html = f"<pre>{html.escape(markdown_text)}</pre>"
+    return body_html
+
+
+def _write_epub(
+    *,
+    output_path: Path,
+    title: str,
+    subtitle: str,
+    author: str,
+    language: str,
+    markdown_text: str,
+) -> Path:
+    """Write a minimal EPUB 3 file with EPUB 2 NCX compatibility."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    identifier = f"urn:uuid:{uuid.uuid5(uuid.NAMESPACE_URL, str(output_path) + title)}"
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    body_html = _markdown_to_xhtml(markdown_text)
+    escaped_title = html.escape(title)
+    escaped_subtitle = html.escape(subtitle)
+    escaped_author = html.escape(author)
+    escaped_lang = html.escape(language)
+
+    chapter = f"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:epub="http://www.idpf.org/2007/ops"
+      lang="{escaped_lang}" xml:lang="{escaped_lang}">
+<head>
+  <title>{escaped_title}</title>
+  <meta charset="utf-8" />
+  <style type="text/css">
+    body {{ font-family: serif; line-height: 1.55; margin: 5%; }}
+    h1, h2, h3 {{ line-height: 1.25; }}
+    blockquote {{ border-left: 0.2em solid #999; margin-left: 0; padding-left: 1em; }}
+    pre {{ white-space: pre-wrap; }}
+  </style>
+</head>
+<body>
+  <h1>{escaped_title}</h1>
+  {f"<p><em>{escaped_subtitle}</em></p>" if subtitle else ""}
+  {body_html}
+</body>
+</html>
+"""
+
+    nav = f"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="{escaped_lang}" xml:lang="{escaped_lang}">
+<head><title>目录</title><meta charset="utf-8" /></head>
+<body>
+  <nav epub:type="toc" id="toc">
+    <h1>目录</h1>
+    <ol><li><a href="chapter.xhtml">{escaped_title}</a></li></ol>
+  </nav>
+</body>
+</html>
+"""
+
+    container = """<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+"""
+
+    opf = f"""<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">{identifier}</dc:identifier>
+    <dc:title>{escaped_title}</dc:title>
+    <dc:creator>{escaped_author}</dc:creator>
+    <dc:language>{escaped_lang}</dc:language>
+    <meta property="dcterms:modified">{now}</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="chapter"/>
+  </spine>
+</package>
+"""
+
+    ncx = f"""<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head><meta name="dtb:uid" content="{identifier}"/></head>
+  <docTitle><text>{escaped_title}</text></docTitle>
+  <navMap>
+    <navPoint id="navPoint-1" playOrder="1">
+      <navLabel><text>{escaped_title}</text></navLabel>
+      <content src="chapter.xhtml"/>
+    </navPoint>
+  </navMap>
+</ncx>
+"""
+
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    with zipfile.ZipFile(tmp_path, "w") as zf:
+        zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", container, compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("OEBPS/content.opf", opf, compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("OEBPS/nav.xhtml", nav, compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("OEBPS/toc.ncx", ncx, compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("OEBPS/chapter.xhtml", chapter, compress_type=zipfile.ZIP_DEFLATED)
+    tmp_path.replace(output_path)
+    return output_path
+
+
+def export_week_epub(
+    *,
+    title: str,
+    subtitle: str,
+    body: str,
+    book: dict,
+    state: dict,
+    series_dir: Path,
+) -> Path:
+    """Export the compiled weekly book review as an EPUB under iCloud Books/Mira."""
+    week_id = state.get("week_id") or datetime.now().strftime("%Y-W%W")
+    author = _force_epub_markdown_chinese(book.get("author") or "米拉")
+    epub_title = _force_epub_markdown_chinese(title)
+    epub_subtitle = _force_epub_markdown_chinese(subtitle)
+    filename = _safe_epub_filename(f"{week_id}-{epub_title}") + ".epub"
+    output_path = ICLOUD_MIRA_BOOKS / filename
+
+    source_note = "\n\n---\n\n*本文由米拉书评周更合集导出。*\n"
+    epub_body = _force_epub_markdown_chinese(body + source_note)
+    _write_epub(
+        output_path=output_path,
+        title=epub_title,
+        subtitle=epub_subtitle,
+        author=f"米拉，读{author}之后" if author and author != "米拉" else "米拉",
+        language="zh",
+        markdown_text=epub_body,
+    )
+    log.info("Book-review EPUB exported: %s", output_path)
+    return output_path
+
+
 def _deliver_to_bridge(book: dict, report: str, day: int, angle_name: str):
     """Push today's report to the Mira bridge so it shows up in the iOS app."""
     try:
@@ -813,6 +1052,21 @@ def compile_and_publish_week(state: dict, *, force: bool = False) -> str | None:
             break
 
     if url:
+        try:
+            epub_path = export_week_epub(
+                title=title,
+                subtitle=subtitle,
+                body=body,
+                book=book,
+                state=state,
+                series_dir=series_dir,
+            )
+            state["epub_path"] = str(epub_path)
+            state["epub_generated_at"] = datetime.now().isoformat()
+        except Exception as e:
+            state["epub_error"] = str(e)[:300]
+            log.warning("Book-review EPUB export failed after publish: %s", e, exc_info=True)
+
         state["published"] = True
         state["published_url"] = url
         state["published_at"] = datetime.now().isoformat()

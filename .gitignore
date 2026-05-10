@@ -2,6 +2,8 @@
 secrets.yml
 config.yml
 sources.json
+.secrets.baseline
+.secrets.baseline.*
 
 # Data directory — runtime data is ignored by default. The V2 immutable
 # identity anchor is intentionally versioned because startup verifies it.
@@ -43,6 +45,11 @@ comparison/
 *.sync.json
 .notes_sync.json
 lib/soul/scorecards/*.json
+
+# Local user runtime state
+users/*/manifest.json
+users/*/items/daily_report_*.json
+coattention.md
 
 # Python
 __pycache__/

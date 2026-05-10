@@ -146,9 +146,20 @@ def _run_health_check():
             item_tags.append("alert")
         title = "今日健康" if alerts else "今日健康洞察"
         _write_health_feed(bridge, f"health_today_{uid}", title, combined, item_tags)
+        # Compatibility alias for existing clients that still request the old
+        # health_insight_<user> item directly. Keep it unpinned so migrated
+        # clients can prefer health_today_<user> without hiding the legacy card.
+        _write_health_feed(
+            bridge,
+            f"health_insight_{uid}",
+            title,
+            combined,
+            item_tags,
+            pinned=False,
+        )
 
-        # Best-effort cleanup: archive legacy split items so they don't linger.
-        for legacy_id in (f"health_alert_{uid}", f"health_insight_{uid}"):
+        # Best-effort cleanup: archive the legacy split alert item so it doesn't linger.
+        for legacy_id in (f"health_alert_{uid}",):
             try:
                 if bridge.item_exists(legacy_id):
                     bridge.update_status(legacy_id, "archived")
@@ -185,7 +196,16 @@ def _has_unanswered_user_reply(messages: list[dict], digest_id: str, user_id: st
     return bool(latest_user_ts and latest_user_ts > latest_agent_ts)
 
 
-def _write_health_feed(bridge, item_id: str, title: str, content: str, tags: list[str]):
+def _write_health_feed(
+    bridge,
+    item_id: str,
+    title: str,
+    content: str,
+    tags: list[str],
+    *,
+    update_manifest: bool = True,
+    pinned: bool = True,
+):
     """Write a stable health feed item without discarding conversation history.
 
     Scheduled health refreshes own the digest message only. User replies and
@@ -233,7 +253,7 @@ def _write_health_feed(bridge, item_id: str, title: str, content: str, tags: lis
         "status": "queued" if has_unanswered_reply else "done",
         "tags": tags,
         "origin": "user" if has_unanswered_reply else "agent",
-        "pinned": True,
+        "pinned": pinned,
         "quick": False,
         "parent_id": "",
         "created_at": (existing or {}).get("created_at") or now,
@@ -243,7 +263,8 @@ def _write_health_feed(bridge, item_id: str, title: str, content: str, tags: lis
         "result_path": None,
     }
     bridge._write_item(item)
-    bridge._update_manifest(item)
+    if update_manifest:
+        bridge._update_manifest(item)
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
         from control.db import transaction

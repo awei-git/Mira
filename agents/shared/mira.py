@@ -10,6 +10,7 @@ import config
 _SCAFFOLDING_AUDIT_LOG = Path(config.MIRA_ROOT) / "logs" / "scaffolding_audit.jsonl"
 _SCAFFOLD_REJECTIONS_DIR = Path(config.MIRA_ROOT) / "logs" / "scaffold_rejections"
 _INTERFACE_LATENCY_FILE = Path(config.MIRA_ROOT) / "logs" / "interface_latency.json"
+BACKGROUND_STALENESS_THRESHOLD_HOURS = 4
 _log = logging.getLogger("scaffolding_audit")
 
 

@@ -963,10 +963,10 @@ def do_zhesi(user_id: str = "ang"):
         log.warning("哲思 RAG recall failed: %s", e)
 
     prompt = zhesi_prompt(soul_ctx, fragment, recent_reading, related_context=related)
-    result = model_think(prompt, model_name="deepseek", timeout=120)
+    result = model_think(prompt, model_name="claude", timeout=120)
 
     if not result:
-        log.error("哲思: DeepSeek returned empty")
+        log.error("哲思: Sonnet route returned empty")
         return
 
     # Save
@@ -994,7 +994,7 @@ def do_zhesi(user_id: str = "ang"):
         log.warning("Failed to create 哲思 feed: %s", e)
 
     state[f"zhesi_{today}"] = datetime.now().isoformat()
-    state[f"zhesi_{today}_actor"] = "zhesi/claude-think"
+    state[f"zhesi_{today}_actor"] = "zhesi/sonnet"
     save_state(state, user_id=user_id)
 
 

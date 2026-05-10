@@ -19,12 +19,15 @@ if str(_AGENTS_DIR / "writer") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 if str(_AGENTS_DIR / "general") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "general"))
+if str(_AGENTS_DIR / "shared") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
 from config import MIRA_DIR, TASKS_DIR
 from execution.calibration import _track_output_quality
 from execution.context import load_thread_history, load_thread_memory
 from llm import claude_think
 from memory.soul import append_memory, save_skill
+from sub_agent import assert_local_only_agent_model
 
 log = logging.getLogger("task_worker")
 
@@ -502,6 +505,7 @@ def _invoke_registry_handler(
     agent_id: str = None,
 ):
     """Invoke a registry-loaded handler with optional runtime context kwargs."""
+    assert_local_only_agent_model(agent_id, logger=log)
     kwargs = {}
     params = inspect.signature(handler_fn).parameters
     accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())

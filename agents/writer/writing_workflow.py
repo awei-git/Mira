@@ -349,6 +349,9 @@ def _on_feedback(ws: Path, p: dict, feedback: str) -> str:
     last_word_count = p.get("last_word_count", 0)
     if p["reflection_count"] >= MAX_REFLECTION_PASSES and current_word_count <= last_word_count:
         p["phase"] = "FORCED_DECISION"
+        p["forced_decision_prompt"] = (
+            f"Project {title} has exceeded reflection ceiling with no progress — publish or archive."
+        )
         _save_project(ws, p)
         log.warning(
             "Project '%s' has exceeded reflection ceiling (%d passes) with no word-count growth "
@@ -612,7 +615,7 @@ def _save_review(reviews_dir: Path, rnd: int, scores: dict, reviews: dict):
 def check_writing_responses() -> list[dict]:
     """Check for writing projects awaiting feedback.
 
-    Returns list of {workspace, project} for projects in draft_ready phase.
+    Returns list of {workspace, project} for projects awaiting user input.
     Feedback is now handled via Mira app thread, not Apple Notes.
     """
     active = find_active_projects()
@@ -1000,7 +1003,7 @@ def find_active_projects() -> list[tuple[Path, dict]]:
             continue
         try:
             p = json.loads(pf.read_text(encoding="utf-8"))
-            if p.get("phase") in ("plan_ready", "draft_ready"):
+            if p.get("phase") in ("plan_ready", "draft_ready", "FORCED_DECISION"):
                 active.append((d, p))
         except Exception:
             continue

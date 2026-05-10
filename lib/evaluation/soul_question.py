@@ -24,7 +24,7 @@ from config import (
     WORLDVIEW_FILE,
     MEMORY_FILE,
 )
-from llm import claude_think
+from llm import model_think
 from bridge import Mira
 from user_paths import (
     user_reading_notes_dir,
@@ -148,10 +148,10 @@ def generate_soul_question(history: list[str], user_id: str = "ang") -> str:
 **背景：** [1-2句说明为什么这个问题值得今天思考，可留空]
 """
 
-    log.info("Generating soul question via claude_think...")
-    result = claude_think(prompt, timeout=90, tier="light")
+    log.info("Generating soul question via Sonnet route...")
+    result = model_think(prompt, model_name="claude", timeout=90)
     if not result:
-        log.error("claude_think returned empty result")
+        log.error("Sonnet route returned empty result")
         return ""
     return result.strip()
 

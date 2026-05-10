@@ -173,6 +173,70 @@ def test_upsert_self_audit_backlog_uses_control_repository(monkeypatch):
     assert calls[0]["payload"]["source"] == "self_audit"
 
 
+def test_runtime_health_scan_turns_active_failures_into_findings(monkeypatch):
+    import operator_dashboard as od
+    import self_audit
+
+    monkeypatch.setattr(
+        od,
+        "_load_bg_health",
+        lambda: {
+            "processes": [
+                {
+                    "name": "book-review",
+                    "consecutive_failures": 4,
+                    "last_failure_reason": "short output",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(od, "_process_has_active_failure", lambda proc: True)
+    monkeypatch.setattr(
+        od,
+        "_recent_incidents",
+        lambda: [
+            {
+                "pipeline": "publish",
+                "step": "substack_publish",
+                "error_type": "timeout",
+                "error_message": "timed out",
+                "count": 3,
+                "timestamp": "recent",
+            }
+        ],
+    )
+    monkeypatch.setattr(od, "_is_recent_iso", lambda value, hours: value == "recent")
+
+    findings = self_audit.scan_runtime_health()
+
+    assert {finding["type"] for finding in findings} == {
+        "scheduled_process_failure",
+        "repeated_pipeline_incident",
+    }
+    assert all(finding["severity"] == "critical" for finding in findings)
+
+
+def test_integration_config_scan_reports_missing_bluesky(monkeypatch):
+    import bluesky.client as bluesky_client
+    import self_audit
+
+    monkeypatch.setattr(bluesky_client, "is_configured", lambda: False)
+
+    findings = self_audit.scan_integration_config()
+
+    assert findings == [
+        {
+            "type": "integration_config_missing",
+            "severity": "warning",
+            "description": (
+                "Bluesky integration is enabled in social workflows but cannot authenticate: "
+                "missing api_keys.bluesky.handle/app_password or reusable session cache"
+            ),
+            "integration": "bluesky",
+        }
+    ]
+
+
 def test_execute_self_audit_low_risk_rejects_non_mechanical():
     import backlog_executor
 

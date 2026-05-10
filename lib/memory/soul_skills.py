@@ -21,6 +21,7 @@ from config import (
     SKILL_AUDIT_TTL_DAYS,
     SKILL_AUDIT_STRICT_MODE,
     SKILL_AUDIT_LAG_ALERT_HOURS,
+    SKILL_EFFICACY_WARNING,
     SKILL_IMPORT_MAX_PER_DAY,
     SOCIAL_ENGINEERING_PATTERNS,
     SKILL_KNOWLEDGE_BLOCKLIST,
@@ -34,12 +35,21 @@ from memory.soul_io import (
     _locked_read_modify_write,
     _log_change,
 )
+from soul_manager import filter_superseded_skill_candidates, warn_if_deprecated_skill_loaded
 
 log = logging.getLogger("mira")
 
 
 class SkillAuditFailedError(Exception):
     pass
+
+
+def _warn_unverified_skill_efficacy(skill_name: str, metadata: dict | None = None) -> None:
+    if SKILL_EFFICACY_WARNING and not (metadata or {}).get("efficacy_verified", False):
+        log.warning(
+            "Skill %s loaded but efficacy unverified — interpretability does not guarantee controllability.",
+            skill_name,
+        )
 
 
 _SKILL_AUDIT_HASHES = SKILLS_DIR.parent / "audit_hashes.json"
@@ -345,6 +355,7 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
         if score > 0:
             scored.append((score, skill))
 
+    scored = filter_superseded_skill_candidates(scored, SKILLS_DIR)
     scored.sort(key=lambda x: (x[0], x[1].get("score", 0), x[1].get("created", "")), reverse=True)
     if len(scored) > max_skills:
         log.warning(
@@ -403,6 +414,7 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
         if path.exists():
             try:
                 text = path.read_text(encoding="utf-8").strip()
+                original_text = text
                 current_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
                 if _audit_stale:
                     text = f"[PENDING RE-AUDIT]\n\n{text}"
@@ -426,6 +438,7 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
                         skill["scrutiny"] = True
                     _save_skill_audit_hash(slug, current_hash)
                     stored_hashes[slug] = current_hash
+                warn_if_deprecated_skill_loaded(skill.get("name", ""), original_text, skill, SKILLS_DIR)
                 # Truncate very long skills to save tokens
                 if len(text) > 2000:
                     text = text[:2000] + "\n... (truncated)"
@@ -434,6 +447,7 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
                     sections.append(f"TRIGGER: {trigger} → {skill.get('name', '')}\n\n{text}")
                 else:
                     sections.append(text)
+                _warn_unverified_skill_efficacy(skill.get("name", ""), skill)
                 _update_provenance_loaded(skill.get("name", ""))
                 _update_skill_invocation(skill.get("name", ""))
             except OSError:
@@ -447,6 +461,7 @@ def load_skill(name: str) -> str:
     path = SKILLS_DIR / f"{slug}.md"
     if path.exists():
         _audit_stale = False
+        _entry = None
         try:
             _index = json.loads(SKILLS_INDEX.read_text(encoding="utf-8")) if SKILLS_INDEX.exists() else []
             _entry = next((s for s in _index if s.get("name") == name), None)
@@ -487,8 +502,10 @@ def load_skill(name: str) -> str:
                     _audit.get("proxy_chain", _audit.get("findings", [])),
                 )
             _save_skill_audit_hash(slug, current_hash)
+        warn_if_deprecated_skill_loaded(name, text, _entry, SKILLS_DIR)
         _update_provenance_loaded(name)
         _update_skill_invocation(name)
+        _warn_unverified_skill_efficacy(name, _entry)
         return text
     return ""
 
@@ -3937,6 +3954,8 @@ def save_skill(
             "created": datetime.now().isoformat(),
             "audited_at": datetime.utcnow().isoformat() + "Z",
             "source": source,
+            "efficacy_verified": False,
+            "efficacy_last_checked": None,
         }
         if _audit_has_concerns:
             entry["scrutiny"] = True

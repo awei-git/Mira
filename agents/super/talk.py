@@ -29,10 +29,15 @@ try:
 except (ImportError, ModuleNotFoundError):
     Mira = None
     Message = None
+try:
+    from notes_bridge import detect_sensitive_content
+except (ImportError, ModuleNotFoundError):
+    detect_sensitive_content = None
 from task_manager import TaskManager, TASKS_DIR
 from memory.soul import check_prompt_injection
 from execution.runtime_contract import normalize_task_status
 from locks.advisory import AdvisoryLockTimeout, LOCK_DISPATCH_LOOP, advisory_lock
+from soul_manager import check_intent_clarity
 
 from state import load_state, save_state
 
@@ -74,6 +79,7 @@ def _dispatch_or_requeue(task_mgr, bridge, msg, workspace, cmd=None):
     if task_mgr.is_busy():
         log.info("STATE %s: dispatch deferred (all %d slots occupied)", msg.id, task_mgr.get_active_count())
         return "busy"
+    _apply_sensitivity_guard(msg, cmd)
     # Inject user access control context into message for the worker
     if cmd:
         msg.user_id = cmd.get("_user_id", "ang")
@@ -114,7 +120,57 @@ def _message_from_control_item(item: dict, user_id: str, user_cfg: dict):
         content_filter=user_cfg.get("content_filter", False),
         allowed_agents=user_cfg.get("allowed_agents", ["general"]),
     )
+    _apply_sensitivity_guard(msg)
     return msg
+
+
+def _sensitivity_payload(result) -> dict:
+    if hasattr(result, "to_dict"):
+        return result.to_dict()
+    return {
+        "sensitive": bool(getattr(result, "sensitive", False)),
+        "score": float(getattr(result, "score", 0.0) or 0.0),
+        "recommended_route": str(getattr(result, "recommended_route", "default") or "default"),
+        "categories": list(getattr(result, "categories", []) or []),
+    }
+
+
+def _apply_sensitivity_guard(msg, cmd: dict | None = None):
+    if detect_sensitive_content is None:
+        return None
+    result = detect_sensitive_content(getattr(msg, "content", "") or "")
+    if not getattr(result, "sensitive", False):
+        return result
+
+    payload = _sensitivity_payload(result)
+    metadata = dict(getattr(msg, "metadata", {}) or {})
+    metadata["sensitive_flag"] = True
+    metadata["sensitive_reason"] = "survival_exposure"
+    metadata["cloud_log_suppression"] = "SENSITIVE"
+    metadata["_sensitivity"] = payload
+    metadata["_privacy_policy"] = {
+        "local_only": True,
+        "no_verbatim_logging": True,
+        "recommended_route": payload.get("recommended_route", "secret"),
+    }
+    msg.metadata = metadata
+    msg.model_restriction = "omlx"
+    msg.allowed_agents = ["secret"]
+
+    if cmd is not None:
+        cmd["_sensitivity"] = payload
+        cmd["_model_restriction"] = "omlx"
+        cmd["_allowed_agents"] = ["secret"]
+        cmd["_cloud_log_suppression"] = "SENSITIVE"
+        cmd["tags"] = sorted({*(cmd.get("tags") or []), "sensitive", "secret"})
+
+    log.info(
+        "Sensitivity guard: routed %s to secret score=%.2f categories=%s",
+        getattr(msg, "id", "-"),
+        float(payload.get("score", 0.0) or 0.0),
+        ",".join(payload.get("categories", [])),
+    )
+    return result
 
 
 def _dispatch_control_plane_tasks(task_mgr, bridges_by_user: dict, default_bridge) -> None:
@@ -157,6 +213,8 @@ def _dispatch_control_plane_tasks(task_mgr, bridges_by_user: dict, default_bridg
         if messages:
             content = messages[-1].get("content", "")
         if not _check_inbound_command_safety(bridge, {"sender": user_id}, task_id, item.get("title", ""), content):
+            continue
+        if not _intent_gate_allows(bridge, task_id, content):
             continue
         try:
             with transaction() as conn:
@@ -211,6 +269,36 @@ def _check_inbound_command_safety(bridge, cmd: dict, item_id: str, title: str, c
     if not flagged:
         return True
     _quarantine_inbound_command(bridge, cmd, item_id, title, content, reason)
+    return False
+
+
+def _write_intent_clarification_outbox(bridge, item_id: str, question: str) -> None:
+    outbox = MIRA_DIR / "outbox"
+    outbox.mkdir(parents=True, exist_ok=True)
+    message_id = f"intent_clarify_{uuid.uuid4().hex[:8]}"
+    payload = {
+        "id": message_id,
+        "sender": "agent",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "content": question,
+        "type": "clarification",
+        "thread_id": item_id or message_id,
+        "priority": "normal",
+        "metadata": {"user_id": getattr(bridge, "user_id", "ang")},
+    }
+    (outbox / f"{message_id}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _intent_gate_allows(bridge, item_id: str, task_description: str) -> bool:
+    result = check_intent_clarity(task_description)
+    if result.get("is_clear", True):
+        return True
+    question = result.get("question") or "What specific outcome do you want Mira to produce?"
+    if item_id and bridge.item_exists(item_id):
+        bridge.update_status(item_id, "needs-input", agent_message=question)
+    else:
+        _write_intent_clarification_outbox(bridge, item_id, question)
+    log.info("Intent gate paused task %s: %s", item_id or "-", question)
     return False
 
 
@@ -658,7 +746,17 @@ def do_talk():
             title = cmd.get("title", content[:50] if content else "Untitled")
             item_id = cmd.get("item_id", "")
             tags = cmd.get("tags") or []
-            log.info("Mira command [%s]: type=%s title=%s", user_bridge.user_id, cmd_type, title[:60])
+            sensitivity_result = detect_sensitive_content(content) if detect_sensitive_content else None
+            if getattr(sensitivity_result, "sensitive", False):
+                cmd["_sensitivity"] = _sensitivity_payload(sensitivity_result)
+                cmd["_model_restriction"] = "omlx"
+                cmd["_allowed_agents"] = ["secret"]
+                cmd["_cloud_log_suppression"] = "SENSITIVE"
+                tags = sorted({*tags, "sensitive", "secret"})
+                cmd["tags"] = tags
+                log.info("Mira command [%s]: type=%s title=[SENSITIVE]", user_bridge.user_id, cmd_type)
+            else:
+                log.info("Mira command [%s]: type=%s title=%s", user_bridge.user_id, cmd_type, title[:60])
 
             # --- Access control: check user permissions ---
             user_cfg = get_user_config(user_bridge.user_id)
@@ -676,6 +774,8 @@ def do_talk():
                 quick = cmd.get("quick", False)
                 if not _check_inbound_command_safety(bridge, cmd, task_id, title, content):
                     continue
+                if not _intent_gate_allows(bridge, task_id, content):
+                    continue
                 if not bridge.item_exists(task_id):
                     bridge.create_task(task_id, title, content, sender=sender, tags=tags, origin="user")
                 workspace = TASKS_DIR / _talk_slug(content, task_id)
@@ -688,6 +788,8 @@ def do_talk():
             elif cmd_type == "new_discussion":
                 disc_id = cmd.get("item_id") or f"disc_{uuid.uuid4().hex[:8]}"
                 if not _check_inbound_command_safety(bridge, cmd, disc_id, title, content):
+                    continue
+                if not _intent_gate_allows(bridge, disc_id, content):
                     continue
                 if not bridge.item_exists(disc_id):
                     bridge.create_discussion(disc_id, title, content, sender=sender, tags=tags)
@@ -721,6 +823,8 @@ def do_talk():
                 disc_id = f"disc_{uuid.uuid4().hex[:8]}"
                 if not _check_inbound_command_safety(bridge, cmd, disc_id, f"Re: {title}", content):
                     continue
+                if not _intent_gate_allows(bridge, disc_id, content):
+                    continue
                 bridge.create_discussion(
                     disc_id, f"Re: {title}", content, sender=sender, tags=["feed-comment"], parent_id=parent_id
                 )
@@ -746,6 +850,8 @@ def do_talk():
                 query = cmd.get("query", content or "")
                 recall_id = f"req_recall_{uuid.uuid4().hex[:8]}"
                 if not _check_inbound_command_safety(bridge, cmd, recall_id, f"Recall: {query[:40]}", query):
+                    continue
+                if not _intent_gate_allows(bridge, recall_id, query):
                     continue
                 bridge.create_task(
                     recall_id, f"Recall: {query[:40]}", query, sender=sender, tags=["recall"], origin="user"
@@ -779,16 +885,17 @@ def do_talk():
                     req_id = f"req_{todo_id}"
                     if not _check_inbound_command_safety(bridge, cmd, req_id, f"Todo: {title}", content):
                         continue
-                    # Save user followup to todo
-                    bridge.add_followup(todo_id, content, source="user")
-                    bridge.update_todo(todo_id, status="working")
                     # Dispatch to worker — build context from all previous followups
                     todo = next((t for t in bridge.load_todos() if t["id"] == todo_id), None)
                     if todo:
-                        history = "\n".join(
-                            f"[{fu.get('source','?')}] {fu.get('content','')}" for fu in todo.get("followups", [])
-                        )
+                        followups = list(todo.get("followups", [])) + [{"source": "user", "content": content}]
+                        history = "\n".join(f"[{fu.get('source','?')}] {fu.get('content','')}" for fu in followups)
                         full_content = f"Todo: {todo['title']}\n\nConversation so far:\n{history}\n\nUser's latest message:\n{content}"
+                        if not _intent_gate_allows(bridge, req_id, full_content):
+                            continue
+                        # Save user followup to todo
+                        bridge.add_followup(todo_id, content, source="user")
+                        bridge.update_todo(todo_id, status="working")
                         if not bridge.item_exists(req_id):
                             bridge.create_task(
                                 req_id,
@@ -856,9 +963,11 @@ def do_talk():
                 todo_id = todo["id"]
                 todo_title = todo["title"]
                 log.info("Picking up todo %s: %s", todo_id, todo_title)
-                user_bridge.update_todo(todo_id, status="working")
                 # Create a request item for the todo
                 req_id = f"req_{todo_id}"
+                if not _intent_gate_allows(user_bridge, req_id, todo_title):
+                    continue
+                user_bridge.update_todo(todo_id, status="working")
                 user_bridge.create_task(
                     req_id, f"Todo: {todo_title}", todo_title, sender="user", tags=["todo"], origin="user"
                 )
@@ -900,7 +1009,11 @@ def do_talk():
                 bridge.mark_processed(msg_path)
                 continue
 
-            log.info("Mira [%s] from %s: %s", msg.id, msg.sender, msg.content[:80])
+            sensitivity_result = detect_sensitive_content(msg.content) if detect_sensitive_content else None
+            if getattr(sensitivity_result, "sensitive", False):
+                log.info("Mira [%s] from %s: [SENSITIVE]", msg.id, msg.sender)
+            else:
+                log.info("Mira [%s] from %s: %s", msg.id, msg.sender, msg.content[:80])
 
             # Handle meta-commands (archive, status, etc.)
             if _is_meta_command(msg.content):
@@ -939,6 +1052,7 @@ def do_talk():
                     bridge.update_task_status(msg.thread_id, "working")
                     # Use original task_id for dispatch (overwrite msg.id)
                     msg.id = msg.thread_id
+                    _apply_sensitivity_guard(msg)
                     task_id = task_mgr.dispatch(
                         msg,
                         msg_workspace,
@@ -973,6 +1087,9 @@ def do_talk():
             if effective_task_id == msg.id:
                 # No iOS task file — create one
                 task_title = msg.content[:50].strip()
+                if not _intent_gate_allows(bridge, msg.id, msg.content):
+                    bridge.mark_processed(msg_path)
+                    continue
                 bridge.create_task(
                     task_id=msg.id,
                     title=task_title,
@@ -986,6 +1103,7 @@ def do_talk():
 
             # Use the effective task_id for dispatch
             msg.id = effective_task_id
+            _apply_sensitivity_guard(msg)
 
             # Dispatch to background worker (returns immediately)
             # Only one Claude Code instance at a time — if busy, leave message for next cycle

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from config import LOGS_DIR, MIRA_DIR, STATE_DIR
 from ops.failure_log import load_recent_failures
-from ops.backlog import ActionBacklog
+from ops.backlog import ActionBacklog, ActionItem
 from execution.runtime_contract import normalize_task_status
 from publish.manifest import get_stuck_articles, load_manifest
 from task_manager import HISTORY_FILE, STATUS_FILE
@@ -111,6 +111,8 @@ def write_operator_summary(user_id: str = "ang", bridge_dir: Path | None = None)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "dashboard.json"
     data = build_operator_summary(user_id=user_id)
+    _sync_operator_action_backlog(data)
+    data["backlog"] = _build_backlog_summary()
     tmp = out_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(out_path)
@@ -269,6 +271,101 @@ def _build_backlog_summary() -> dict:
             }
         )
     return {"counts": counts, "next_actions": next_actions}
+
+
+def _sync_operator_action_backlog(summary: dict) -> dict:
+    """Persist current operator alerts as backlog items until explicitly closed."""
+    items = _operator_action_items(summary)
+    if not items:
+        return {"upserted": 0, "items": []}
+    backlog = ActionBacklog()
+    saved = []
+    for item in items:
+        outcome, stored = backlog.upsert_active(item)
+        saved.append({"outcome": outcome, "title": stored.title, "status": stored.status})
+    return {"upserted": len(saved), "items": saved}
+
+
+def _operator_action_items(summary: dict) -> list[ActionItem]:
+    items: list[ActionItem] = []
+
+    for task in summary.get("tasks", {}).get("stuck", []) or []:
+        task_id = str(task.get("workflow_id") or task.get("task_id") or "unknown")
+        preview = str(task.get("preview") or "").strip()
+        items.append(
+            ActionItem(
+                title=f"Resolve stuck task: {task_id}"[:180],
+                description=preview or f"Task {task_id} is still running past the operator timeout window.",
+                source="operator_dashboard",
+                priority="high",
+                target_dimension="operational_reliability",
+                executor="manual_review.required",
+                payload={
+                    "kind": "stuck_task",
+                    "task": task,
+                    "verification_criteria": [
+                        "The task reaches a terminal status, or the stale runtime record is intentionally cleared.",
+                    ],
+                },
+            )
+        )
+
+    for proc in summary.get("health", {}).get("processes", []) or []:
+        if not _process_has_active_failure(proc):
+            continue
+        name = str(proc.get("name") or "unknown")
+        failures = int(proc.get("consecutive_failures", 0) or 0)
+        reason = str(proc.get("last_failure_reason") or "").strip()
+        items.append(
+            ActionItem(
+                title=f"Resolve scheduled process failure: {name}"[:180],
+                description=(
+                    f"{name} has {failures} consecutive failure(s)." + (f" Last failure: {reason}" if reason else "")
+                ),
+                source="operator_dashboard",
+                priority="high" if failures >= 3 else "medium",
+                target_dimension="operational_reliability",
+                executor="manual_review.required",
+                payload={
+                    "kind": "scheduled_process_failure",
+                    "process": proc,
+                    "verification_criteria": [
+                        "The process records a successful run after the failure.",
+                        "If obsolete, the process is disabled in every scheduler that can launch it.",
+                    ],
+                },
+            )
+        )
+
+    for inc in summary.get("recent_incidents", []) or []:
+        count = int(inc.get("count", 0) or 0)
+        if count < 3 or not _is_recent_iso(inc.get("timestamp", ""), hours=_ALERT_REPEAT_HOURS):
+            continue
+        pipeline = str(inc.get("pipeline") or "unknown")
+        step = str(inc.get("step") or "unknown")
+        error_type = str(inc.get("error_type") or "unknown_error")
+        items.append(
+            ActionItem(
+                title=f"Resolve repeated pipeline incident: {pipeline}/{step}/{error_type}"[:180],
+                description=(
+                    f"{pipeline}/{step} reported {count} recent {error_type} incident(s). "
+                    f"{str(inc.get('error_message') or '').strip()[:240]}"
+                ).strip(),
+                source="operator_dashboard",
+                priority="high",
+                target_dimension="operational_reliability",
+                executor="manual_review.required",
+                payload={
+                    "kind": "repeated_pipeline_incident",
+                    "incident": inc,
+                    "verification_criteria": [
+                        "The incident has a concrete resolution recorded, or recurrence drops below threshold.",
+                    ],
+                },
+            )
+        )
+
+    return items
 
 
 def _latest_restore_drill() -> dict:

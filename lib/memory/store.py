@@ -32,8 +32,31 @@ _CHUNK_CHARS = 1600  # ~400 tokens
 _CHUNK_OVERLAP = 320  # ~80 tokens
 _EMBED_BATCH = 50
 _DECAY_HALF_LIFE = 30  # days
+_JOINT_ATTENTION_HALF_LIFE = 45  # days
+_HUMAN_ATTENTION_INCREMENT = 0.25
+_MIRA_ATTENTION_INCREMENT = 0.15
 _VECTOR_WEIGHT = 0.7
 _KEYWORD_WEIGHT = 0.3
+
+_HUMAN_ATTENTION_SOURCE_TYPES = {
+    "conversation",
+    "episode",
+    "memory_entry",
+    "reply",
+    "mention",
+    "reading_note",
+    "user_conversation",
+}
+_MIRA_ATTENTION_SOURCE_TYPES = {
+    "briefing",
+    "distill",
+    "journal",
+    "reflection",
+    "research",
+    "thought",
+    "writeback",
+    "writing",
+}
 
 
 def _content_hash(text: str) -> str:
@@ -98,6 +121,29 @@ def _keyword_score(query: str, content: str) -> float:
     return matches / len(terms)
 
 
+def _joint_attention_increment(source_type: str, table: str = "") -> float:
+    score = 0.0
+    if source_type in _HUMAN_ATTENTION_SOURCE_TYPES:
+        score += _HUMAN_ATTENTION_INCREMENT
+    if source_type in _MIRA_ATTENTION_SOURCE_TYPES or table == "thought":
+        score += _MIRA_ATTENTION_INCREMENT
+    return score
+
+
+def _decayed_joint_attention(score: float | None, last_attention, created_at=None) -> float:
+    if not score:
+        return 0.0
+    anchor = last_attention or created_at
+    if not anchor:
+        return float(score)
+    try:
+        age_days = (datetime.now() - anchor.replace(tzinfo=None)).total_seconds() / 86400
+    except AttributeError:
+        return float(score)
+    decay = math.exp(-0.693 * max(age_days, 0.0) / _JOINT_ATTENTION_HALF_LIFE)
+    return float(score) * decay
+
+
 class MemoryStore:
     """Unified memory interface backed by PostgreSQL + pgvector.
 
@@ -135,10 +181,17 @@ class MemoryStore:
             from migrations.run import run_migrations
 
             run_migrations()
+            self._ensure_joint_attention_columns()
             self._migrated = True
         except Exception as e:
             log.warning("Auto-migration failed (non-fatal): %s", e)
             self._migrated = True  # Don't retry every call
+
+    def _ensure_joint_attention_columns(self):
+        """Add joint-attention columns to existing memory tables."""
+        for tbl in ("episodic_memory", "semantic_memory"):
+            self._execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS joint_attention_score FLOAT DEFAULT 0.0")
+            self._execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS joint_attention_updated_at TIMESTAMPTZ")
 
     def _get_conn(self):
         """Get a connection from the pool with auto-reconnect."""
@@ -231,15 +284,30 @@ class MemoryStore:
                 log.warning("Empty embedding for remember(); storing without vector")
 
             emb_literal = f"[{','.join(str(x) for x in emb)}]" if emb else None
+            joint_attention_score = _joint_attention_increment(source_type, table)
+            joint_attention_updated_at = datetime.now() if joint_attention_score else None
 
             if table == "episodic":
                 row = self._execute(
                     """INSERT INTO episodic_memory
                        (user_id, source_type, source_id, title, content, summary,
-                        embedding, tags, importance)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s)
+                        embedding, tags, importance, joint_attention_score,
+                        joint_attention_updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s, %s, %s)
                        RETURNING id""",
-                    (user_id, source_type, source_id, title, content, summary, emb_literal, tags or [], importance),
+                    (
+                        user_id,
+                        source_type,
+                        source_id,
+                        title,
+                        content,
+                        summary,
+                        emb_literal,
+                        tags or [],
+                        importance,
+                        joint_attention_score,
+                        joint_attention_updated_at,
+                    ),
                     fetch=True,
                 )
             elif table == "thought":
@@ -328,7 +396,64 @@ class MemoryStore:
             if len(deduped) >= top_k:
                 break
 
+        for r in deduped:
+            self.reinforce_joint_attention(r["id"], r.get("table", ""), actor="mira")
+
         return deduped
+
+    def reinforce_joint_attention(self, memory_id: int, table: str, actor: str) -> None:
+        """Record human or Mira attention on an existing memory entry."""
+        if table not in {"episodic_memory", "semantic_memory"}:
+            return
+        increment = _HUMAN_ATTENTION_INCREMENT if actor == "human" else _MIRA_ATTENTION_INCREMENT
+        try:
+            self._execute(
+                f"""UPDATE {table}
+                   SET joint_attention_score = COALESCE(joint_attention_score, 0.0) + %s,
+                       joint_attention_updated_at = NOW()
+                   WHERE id = %s""",
+                (increment, memory_id),
+            )
+        except Exception as e:
+            log.debug("joint attention reinforcement failed: %s", e)
+
+    def top_joint_attention_memory(self, user_id: str = "ang") -> dict | None:
+        """Return the highest scoring co-attended memory across memory tables."""
+        candidates: list[dict] = []
+        for table in ("episodic_memory", "semantic_memory"):
+            try:
+                rows = self._execute(
+                    f"""SELECT id, source_type, content, joint_attention_score,
+                               joint_attention_updated_at, created_at
+                        FROM {table}
+                        WHERE user_id = %s AND COALESCE(joint_attention_score, 0.0) > 0
+                        ORDER BY joint_attention_score DESC, created_at DESC
+                        LIMIT 20""",
+                    (user_id,),
+                    fetch=True,
+                )
+            except Exception as e:
+                log.debug("top joint attention query failed for %s: %s", table, e)
+                continue
+            for row_id, source_type, content, score, updated_at, created_at in rows or []:
+                candidates.append(
+                    {
+                        "id": row_id,
+                        "table": table,
+                        "source_type": source_type,
+                        "content": content,
+                        "joint_attention_score": _decayed_joint_attention(score, updated_at, created_at),
+                        "created_at": created_at,
+                    }
+                )
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda r: r["joint_attention_score"], reverse=True)
+        top = candidates[0]
+        self.reinforce_joint_attention(top["id"], top["table"], actor="mira")
+        return top
 
     def _search_table(
         self,
@@ -353,12 +478,14 @@ class MemoryStore:
         # Fetch rows (we score in Python for hybrid + decay flexibility)
         if table == "episodic_memory":
             sql = f"""SELECT id, source_type, source_id, title, content,
-                             embedding, importance, created_at
+                             embedding, importance, joint_attention_score,
+                             joint_attention_updated_at, created_at
                       FROM episodic_memory {where_sql}
                       ORDER BY created_at DESC LIMIT %s"""
         elif table == "semantic_memory":
             sql = f"""SELECT id, source_type, source_path, '' as title, content,
-                             embedding, importance, created_at
+                             embedding, importance, joint_attention_score,
+                             joint_attention_updated_at, created_at
                       FROM semantic_memory {where_sql}
                       ORDER BY updated_at DESC LIMIT %s"""
         else:
@@ -373,7 +500,18 @@ class MemoryStore:
         scored = []
 
         for row in rows:
-            (row_id, src_type, src_id, title, content, emb_raw, importance, created_at) = row
+            (
+                row_id,
+                src_type,
+                src_id,
+                title,
+                content,
+                emb_raw,
+                importance,
+                joint_attention_score,
+                joint_attention_updated_at,
+                created_at,
+            ) = row
 
             # Vector score
             vec_score = 0.0
@@ -402,14 +540,21 @@ class MemoryStore:
             # Importance boost
             score *= 0.5 + importance
 
+            effective_joint_attention = _decayed_joint_attention(
+                joint_attention_score, joint_attention_updated_at, created_at
+            )
+            score *= 1 + effective_joint_attention
+
             scored.append(
                 {
                     "id": row_id,
+                    "table": table,
                     "content": content,
                     "source_type": src_type,
                     "source_id": src_id,
                     "title": title,
                     "score": score,
+                    "joint_attention_score": effective_joint_attention,
                     "created_at": created_at,
                 }
             )
@@ -584,6 +729,8 @@ class MemoryStore:
         for emb, (stype, fpath, idx, content, ch) in zip(embeddings, meta):
             emb_literal = f"[{','.join(str(x) for x in emb)}]" if emb else None
             chunk_path = f"{fpath}:{idx}"
+            joint_attention_score = _joint_attention_increment(stype)
+            joint_attention_updated_at = datetime.now() if joint_attention_score else None
 
             try:
                 # Upsert: delete old, insert new
@@ -594,9 +741,20 @@ class MemoryStore:
                 self._execute(
                     """INSERT INTO semantic_memory
                        (user_id, source_type, source_path, chunk_index, content,
-                        content_hash, embedding)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s::vector)""",
-                    (user_id, stype, fpath, idx, content, ch, emb_literal),
+                        content_hash, embedding, joint_attention_score,
+                        joint_attention_updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s)""",
+                    (
+                        user_id,
+                        stype,
+                        fpath,
+                        idx,
+                        content,
+                        ch,
+                        emb_literal,
+                        joint_attention_score,
+                        joint_attention_updated_at,
+                    ),
                 )
                 count += 1
             except Exception as e:
@@ -810,3 +968,12 @@ def rebuild_index(force: bool = False, user_id: str = "ang") -> int:
             return _sqlite_rebuild(force)
         except Exception:
             return 0
+
+
+def top_joint_attention_memory(user_id: str = "ang") -> dict | None:
+    """Return the highest scoring co-attended memory."""
+    try:
+        return get_store().top_joint_attention_memory(user_id=user_id)
+    except Exception as e:
+        log.warning("Top joint-attention memory lookup failed: %s", e)
+        return None

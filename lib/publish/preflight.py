@@ -71,6 +71,45 @@ _SENSITIVE_TOPIC_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+def _content_smells_like_hallucination(text: str) -> tuple[bool, list[str]]:
+    """Check for patterns that indicate plausible-but-unverified content.
+
+    Returns (is_suspicious, reasons).
+    These are heuristics, not certainties—they flag content for deeper review.
+    """
+    reasons = []
+
+    # 1. Unverifiable statistics without source attribution
+    stat_pattern = re.findall(r"\d{1,3}(\.\d+)?%\s+of", text)
+    has_citation = re.search(r"\([^)]*\d{4}[^)]*\)|according to|reported by|published in", text, re.IGNORECASE)
+    if len(stat_pattern) >= 2 and not has_citation:
+        reasons.append(f"Multiple statistics ({len(stat_pattern)}) without any source citation")
+
+    # 2. Vague authority appeals
+    vague_auth = re.findall(
+        r"(studies show|experts say|research indicates|many believe|it is widely|growing evidence)",
+        text,
+        re.IGNORECASE,
+    )
+    if len(vague_auth) >= 2:
+        reasons.append(f"Vague authority appeals without specific attribution: {vague_auth[:3]}")
+
+    # 3. Dense specific-but-unverifiable claims (named entities without context)
+    # Heuristic: ratio of proper nouns to citation-like patterns
+    proper_nouns = len(re.findall(r"\b[A-Z][a-z]+ (?:et al\.|and|[A-Z])", text))
+    if proper_nouns >= 5 and not has_citation:
+        reasons.append(f"Many named references ({proper_nouns}) without any verifiable source")
+
+    # 4. Overly neat structural parallelism (de-AI smell that also signals fabricated coherence)
+    parallelism = re.findall(r"(not\s+\w+\s+but\s+\w+|不是\w+而是\w+)", text, re.IGNORECASE)
+    if len(parallelism) >= 3:
+        reasons.append(
+            f"Excessive structural parallelism ({len(parallelism)} instances) — possible fabricated coherence"
+        )
+
+    return (len(reasons) > 0, reasons)
+
+
 def preflight_check(action_type: str, context: dict) -> PreflightResult:
     """Run preflight checks before a side-effect action.
 
@@ -116,12 +155,14 @@ def preflight_check(action_type: str, context: dict) -> PreflightResult:
     # Action-specific checks
     if action_type == "publish":
         _check_publish(context, checks, blockers)
+        _check_hallucination_smell(context, checks, blockers)
     elif action_type == "file_write":
         _check_file_write(context, checks, blockers)
     elif action_type == "delete":
         _check_delete(context, checks, blockers)
     elif action_type == "broadcast":
         _check_broadcast(context, checks, blockers)
+        _check_hallucination_smell(context, checks, blockers)
     elif action_type == "external_api":
         _check_external_api(context, checks, blockers)
 
@@ -260,6 +301,36 @@ def _check_publish(ctx: dict, checks: list, blockers: list):
         )
 
     _check_sensitivity(ctx, "publish", checks, blockers)
+
+
+def _check_hallucination_smell(ctx: dict, checks: list, blockers: list) -> None:
+    content = ctx.get("content", "")
+    is_suspicious, smell_reasons = _content_smells_like_hallucination(content)
+    if not is_suspicious:
+        checks.append(
+            CheckResult(
+                "hallucination_smell",
+                True,
+                "ok",
+                proves="content did not match heuristic plausible-but-unverified patterns",
+                assumes="regex heuristics catch only obvious review triggers",
+            )
+        )
+        return
+
+    message = f"Hallucination smell detected: {smell_reasons}"
+    log.warning("Content smells like hallucination: %s", smell_reasons)
+    checks.append(
+        CheckResult(
+            "hallucination_smell",
+            False,
+            message,
+            proves="content matched heuristic plausible-but-unverified patterns",
+            assumes="heuristic matches require deeper review, not automatic factual certainty",
+        )
+    )
+    if getattr(config, "STRICT_HALLUCINATION_GUARD", False):
+        blockers.append(message)
 
 
 def _iter_memory_sensitivities(ctx: dict) -> list[str]:

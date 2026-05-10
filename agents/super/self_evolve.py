@@ -530,31 +530,15 @@ def send_report(proposals: list[dict], implementations: list[dict], date: str):
             sections.append("")
 
         # ── Section 2: deferred proposals (the rest) ──────────────────────
-        # `successful` correspond to proposals whose status got set to
-        # "implemented"; everything else is deferred. Surface ALL of them so
-        # WA can manually review.
+        # The full proposal records already live in the structured backlog.
+        # Keep the app item compact so self-evolve does not become home-feed
+        # clutter when a day produces many non-actionable ideas.
         deferred = [p for p in (proposals or []) if p.get("status") != "implemented"]
         if deferred:
-            sections.append(f"## ⏸ Deferred ({len(deferred)})")
+            sections.append(f"## Deferred ({len(deferred)})")
             sections.append("")
-            sections.append(
-                "_Not auto-implemented because risk_level != low, or impl attempt failed. Manual review needed._"
-            )
+            sections.append("Deferred proposals were written to the structured backlog, not expanded here.")
             sections.append("")
-            for i, p in enumerate(deferred, 1):
-                title = p.get("title", "(untitled)")
-                risk = p.get("risk_level", "?")
-                sections.append(f"**{i}. [{risk}] {title}**")
-                if p.get("summary") or p.get("description"):
-                    desc = (p.get("summary") or p.get("description") or "").strip()
-                    sections.append(f"  - {desc[:500]}")
-                if p.get("source_note"):
-                    sections.append(f"  - from: `{p['source_note']}`")
-                if p.get("rationale"):
-                    sections.append(f"  - why: {p['rationale'].strip()[:300]}")
-                if p.get("expected_impact"):
-                    sections.append(f"  - impact: {p['expected_impact'].strip()[:200]}")
-                sections.append("")
 
         # ── Failed implementations (if any) ───────────────────────────────
         failures = [i for i in (implementations or []) if not i.get("success")]
@@ -567,14 +551,11 @@ def send_report(proposals: list[dict], implementations: list[dict], date: str):
                 sections.append("")
 
         content = "\n".join(sections).rstrip() + "\n"
-        bridge.create_item(
-            item_id=f"self-evolve-{date.replace('-', '')}",
-            item_type="feed",
-            title=f"Self-Evolution Landed: {date}",
-            first_message=content,
-            sender="agent",
+        bridge.create_feed(
+            f"self-evolve-{date.replace('-', '')}",
+            f"Self-Evolution Landed: {date}",
+            content,
             tags=["self-evolve", "code", "shipped"],
-            origin="agent",
         )
         log.info("Self-evolve report sent: %d landed, %d deferred", len(successful), len(deferred))
     except Exception as e:

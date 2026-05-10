@@ -44,12 +44,14 @@ class MemoryRecord:
     tags: list[str] = field(default_factory=list)
     conflicts_with: list[str] = field(default_factory=list)
     owner_scope: str = "global"  # "global", "thread:{id}", "agent:{name}"
+    joint_attention_score: float = 0.0
     record_id: str = field(default_factory=_new_id)
 
     def __post_init__(self):
         if self.memory_type not in VALID_MEMORY_TYPES:
             raise ValueError(f"Invalid memory_type: {self.memory_type}. " f"Must be one of {VALID_MEMORY_TYPES}")
         self.confidence = max(0.0, min(1.0, self.confidence))
+        self.joint_attention_score = max(0.0, float(self.joint_attention_score))
 
     def to_dict(self) -> dict:
         return asdict(self)

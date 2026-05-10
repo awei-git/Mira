@@ -217,7 +217,7 @@ def _check_pending_podcast():
             return candidates[0]
         # Multiple candidates: ask Claude to rank.
         try:
-            from llm import claude_think
+            from llm import model_think
 
             lines = [f"{i+1}. {c.get('title','')} [{c.get('slug','')}]" for i, c in enumerate(candidates)]
             prompt = (
@@ -227,7 +227,7 @@ def _check_pending_podcast():
                 "prefers articles that pair well with spoken delivery.\n\n"
                 "Candidates:\n" + "\n".join(lines) + "\n\nOutput ONLY the number of the pick."
             )
-            resp = (claude_think(prompt, timeout=30) or "").strip()
+            resp = (model_think(prompt, model_name="claude", timeout=30) or "").strip()
             m = re.search(r"\d+", resp)
             if m:
                 idx = int(m.group()) - 1

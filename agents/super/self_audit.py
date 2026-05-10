@@ -84,6 +84,110 @@ def scan_logs(days: int = 1) -> list[dict]:
     return findings
 
 
+def scan_runtime_health() -> list[dict]:
+    """Convert current operator/runtime failures into self-audit findings."""
+    findings: list[dict] = []
+    try:
+        from operator_dashboard import (
+            _ALERT_REPEAT_HOURS,
+            _is_recent_iso,
+            _load_bg_health,
+            _process_has_active_failure,
+            _recent_incidents,
+        )
+    except Exception as exc:
+        return [
+            {
+                "type": "audit_error",
+                "severity": "warning",
+                "description": f"Runtime health scan unavailable: {exc}",
+            }
+        ]
+
+    try:
+        health = _load_bg_health()
+        for proc in health.get("processes", []) or []:
+            if not _process_has_active_failure(proc):
+                continue
+            name = str(proc.get("name") or "unknown")
+            failures = int(proc.get("consecutive_failures", 0) or 0)
+            reason = str(proc.get("last_failure_reason") or "").strip()
+            findings.append(
+                {
+                    "type": "scheduled_process_failure",
+                    "severity": "critical" if failures >= 3 else "warning",
+                    "description": f"Scheduled process '{name}' is failing" + (f": {reason}" if reason else ""),
+                    "process": name,
+                    "count": failures,
+                    "last_exit": proc.get("last_exit", ""),
+                    "last_success": proc.get("last_success", ""),
+                    "last_failure_reason": reason,
+                }
+            )
+
+        for inc in _recent_incidents():
+            count = int(inc.get("count", 0) or 0)
+            if count < 3 or not _is_recent_iso(inc.get("timestamp", ""), hours=_ALERT_REPEAT_HOURS):
+                continue
+            pipeline = str(inc.get("pipeline") or "unknown")
+            step = str(inc.get("step") or "unknown")
+            error_type = str(inc.get("error_type") or "unknown_error")
+            message = str(inc.get("error_message") or "").strip()
+            findings.append(
+                {
+                    "type": "repeated_pipeline_incident",
+                    "severity": "critical",
+                    "description": f"Repeated pipeline incident {pipeline}/{step}: {error_type}"
+                    + (f" — {message[:180]}" if message else ""),
+                    "pipeline": pipeline,
+                    "step": step,
+                    "error_type": error_type,
+                    "count": count,
+                    "timestamp": inc.get("timestamp", ""),
+                }
+            )
+    except Exception as exc:
+        findings.append(
+            {
+                "type": "audit_error",
+                "severity": "warning",
+                "description": f"Runtime health scan failed: {exc}",
+            }
+        )
+    return findings
+
+
+def scan_integration_config() -> list[dict]:
+    """Report enabled integration codepaths that cannot actually authenticate."""
+    findings: list[dict] = []
+    try:
+        from bluesky.client import is_configured as bluesky_is_configured
+    except Exception as exc:
+        findings.append(
+            {
+                "type": "integration_config_missing",
+                "severity": "warning",
+                "description": f"Bluesky integration cannot be checked: {exc}",
+                "integration": "bluesky",
+            }
+        )
+        return findings
+
+    if not bluesky_is_configured():
+        findings.append(
+            {
+                "type": "integration_config_missing",
+                "severity": "warning",
+                "description": (
+                    "Bluesky integration is enabled in social workflows but cannot authenticate: "
+                    "missing api_keys.bluesky.handle/app_password or reusable session cache"
+                ),
+                "integration": "bluesky",
+            }
+        )
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Step 2: Run test suite
 # ---------------------------------------------------------------------------
@@ -343,6 +447,8 @@ def _finding_owner(finding: dict) -> str:
         return "agent-registry"
     if ftype == "anti_pattern" or pattern:
         return "mira-core"
+    if ftype == "integration_config_missing":
+        return "integrations"
     if ftype == "audit_error":
         return "self-audit"
     return "ops"
@@ -373,6 +479,15 @@ def _finding_verification_criteria(finding: dict) -> list[str]:
         return ["The publish manifest error is cleared or replaced by an intentional reviewed resolution."]
     if ftype in {"missing_podcast", "incomplete_podcast"}:
         return ["The expected podcast artifact exists, or the article is explicitly marked auto_podcast=false."]
+    if ftype == "scheduled_process_failure":
+        return [
+            "The scheduled process has a successful run after the reported failure.",
+            "If the process is obsolete, it is disabled in both launchd and Mira scheduler state.",
+        ]
+    if ftype == "repeated_pipeline_incident":
+        return ["The incident is resolved or drops below repeated-incident threshold for two consecutive audits."]
+    if ftype == "integration_config_missing":
+        return ["The integration either authenticates successfully or is explicitly disabled in the relevant workflow."]
     if ftype == "audit_error":
         return ["The next self-audit completes this check without raising the same audit error."]
     return ["The next self-audit no longer reports this finding."]
@@ -901,6 +1016,16 @@ def run_audit(logs_only: bool = False, tests_only: bool = False) -> list[dict]:
         log.info("Step 1: Scanning logs...")
         all_findings.extend(scan_logs(days=2))
         log.info("  Found %d log issues", len(all_findings))
+
+        log.info("Step 1a: Scanning runtime health...")
+        runtime_findings = scan_runtime_health()
+        all_findings.extend(runtime_findings)
+        log.info("  Found %d runtime health issues", len(runtime_findings))
+
+        log.info("Step 1b: Checking integration config...")
+        integration_findings = scan_integration_config()
+        all_findings.extend(integration_findings)
+        log.info("  Found %d integration config issues", len(integration_findings))
 
     if not logs_only:
         log.info("Step 2: Running tests...")

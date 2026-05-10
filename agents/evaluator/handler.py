@@ -12,11 +12,16 @@ Scoring philosophy:
   - Different eval model from the agent being evaluated (avoid self-preference)
 """
 
+import ast
 import json
 import logging
+import random
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib import error as url_error
+from urllib import request as url_request
 
 _SHARED = Path(__file__).resolve().parent.parent.parent / "lib"
 _SUPER = Path(__file__).resolve().parent.parent / "super"
@@ -35,8 +40,18 @@ _MISCALIBRATION_COUNTS_FILE = Path(__file__).parent / "miscalibration_counts.jso
 _VARIANCE_STATE_FILE = Path(__file__).parent / "variance_state.json"
 _VARIANCE_STD_THRESHOLD = 0.05
 _VARIANCE_CONSECUTIVE_K = 3
+DRIFT_WINDOW_SIZE = 10
+DRIFT_SLOPE_THRESHOLD = -0.01
+_SCORE_HISTORY_LIMIT = 30
 _STATE_FILE = Path(__file__).parent / "state.json"
 RUBRIC_STALENESS_THRESHOLD = 3
+_SPOT_CHECK_LOG = Path(__file__).resolve().parent.parent.parent / "logs" / "evaluator_spot_checks.jsonl"
+_EVALUATION_LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs" / "evaluations"
+_DRIFT_LOG_FILE = _EVALUATION_LOG_DIR / "drift_log.json"
+_CONTENT_GUARD_AUDIT_SCHEDULE = {
+    "name": "content_guard_completeness_audit",
+    "weekday": 0,
+}
 
 # ---------------------------------------------------------------------------
 # Per-agent criteria — each agent is scored on what MATTERS for its role
@@ -49,14 +64,17 @@ AGENT_CRITERIA = {
         "metrics": {
             "publish_rate": {
                 "description": "Articles that made it to Substack (published / attempted)",
+                "metric_type": "outcome",
                 "ground_truth_type": "outcome",
             },
             "review_convergence": {
                 "description": "Average review score across writing pipeline rounds",
+                "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
             },
             "word_count_avg": {
                 "description": "Average article length (proxy for depth)",
+                "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
             },
         },
@@ -64,12 +82,21 @@ AGENT_CRITERIA = {
     "coder": {
         "description": "Debug, code review, quick fixes",
         "metrics": {
-            "task_success": {"description": "Tasks completed without error / total", "ground_truth_type": "outcome"},
+            "task_success": {
+                "description": "Tasks completed without error / total",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
             "bug_found_rate": {
                 "description": "For review tasks: issues detected per review",
+                "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
             },
-            "syntax_valid": {"description": "Generated code passes syntax check", "ground_truth_type": "outcome"},
+            "syntax_valid": {
+                "description": "Generated code passes syntax check",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
         },
     },
     "explorer": {
@@ -77,11 +104,17 @@ AGENT_CRITERIA = {
         "metrics": {
             "briefing_produced": {
                 "description": "Briefings successfully generated / attempts",
+                "metric_type": "outcome",
                 "ground_truth_type": "outcome",
             },
-            "source_diversity": {"description": "Unique sources per briefing", "ground_truth_type": "consensus_proxy"},
+            "source_diversity": {
+                "description": "Unique sources per briefing",
+                "metric_type": "proxy",
+                "ground_truth_type": "consensus_proxy",
+            },
             "reading_notes_produced": {
                 "description": "Reading notes extracted per explore cycle",
+                "metric_type": "outcome",
                 "ground_truth_type": "outcome",
             },
         },
@@ -89,13 +122,19 @@ AGENT_CRITERIA = {
     "researcher": {
         "description": "Deep research, math proofs, iterative investigation",
         "metrics": {
-            "task_success": {"description": "Research tasks completed / attempted", "ground_truth_type": "outcome"},
+            "task_success": {
+                "description": "Research tasks completed / attempted",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
             "iteration_depth": {
                 "description": "Average iterations per research task (more = deeper)",
+                "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
             },
             "output_length": {
                 "description": "Average output length (proxy for thoroughness)",
+                "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
             },
         },
@@ -103,15 +142,31 @@ AGENT_CRITERIA = {
     "analyst": {
         "description": "Market analysis, competitive intelligence",
         "metrics": {
-            "task_success": {"description": "Analysis tasks completed / attempted", "ground_truth_type": "outcome"},
-            "output_length": {"description": "Average output length", "ground_truth_type": "consensus_proxy"},
+            "task_success": {
+                "description": "Analysis tasks completed / attempted",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
+            "output_length": {
+                "description": "Average output length",
+                "metric_type": "proxy",
+                "ground_truth_type": "consensus_proxy",
+            },
         },
     },
     "discussion": {
         "description": "Conversational responses as Mira",
         "metrics": {
-            "response_rate": {"description": "Messages that got a response / total", "ground_truth_type": "outcome"},
-            "response_time_avg": {"description": "Average seconds to respond", "ground_truth_type": "outcome"},
+            "response_rate": {
+                "description": "Messages that got a response / total",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
+            "response_time_avg": {
+                "description": "Average seconds to respond",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
         },
     },
     "podcast": {
@@ -119,10 +174,12 @@ AGENT_CRITERIA = {
         "metrics": {
             "episodes_published": {
                 "description": "Episodes successfully published to RSS",
+                "metric_type": "outcome",
                 "ground_truth_type": "outcome",
             },
             "audio_generated": {
                 "description": "Audio files successfully generated / attempted",
+                "metric_type": "outcome",
                 "ground_truth_type": "outcome",
             },
         },
@@ -130,9 +187,14 @@ AGENT_CRITERIA = {
     "secret": {
         "description": "Private tasks via local oMLX",
         "metrics": {
-            "task_success": {"description": "Tasks completed / attempted", "ground_truth_type": "outcome"},
+            "task_success": {
+                "description": "Tasks completed / attempted",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
             "stayed_local": {
                 "description": "No cloud API calls detected (always should be 100%)",
+                "metric_type": "outcome",
                 "ground_truth_type": "outcome",
             },
         },
@@ -140,9 +202,14 @@ AGENT_CRITERIA = {
     "general": {
         "description": "Catch-all — questions, search, analysis, misc tasks",
         "metrics": {
-            "task_success": {"description": "Tasks completed without error / total", "ground_truth_type": "outcome"},
+            "task_success": {
+                "description": "Tasks completed without error / total",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
             "output_length": {
                 "description": "Average output length (proxy for effort)",
+                "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
             },
         },
@@ -150,9 +217,14 @@ AGENT_CRITERIA = {
     "socialmedia": {
         "description": "Substack engagement — notes, comments, growth",
         "metrics": {
-            "notes_posted": {"description": "Substack notes successfully posted", "ground_truth_type": "outcome"},
+            "notes_posted": {
+                "description": "Substack notes successfully posted",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
             "comments_replied": {
                 "description": "Comments replied to / flagged for reply",
+                "metric_type": "outcome",
                 "ground_truth_type": "outcome",
             },
         },
@@ -162,23 +234,39 @@ AGENT_CRITERIA = {
         "metrics": {
             "routing_accuracy": {
                 "description": "Tasks routed to correct agent (no re-routes needed)",
+                "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
             },
             "plan_quality": {
                 "description": "Multi-step plans that executed without step failures",
+                "metric_type": "outcome",
                 "ground_truth_type": "outcome",
             },
-            "cycle_time": {"description": "Average main loop duration (target: < 5s)", "ground_truth_type": "outcome"},
-            "crash_rate": {"description": "Cycles that crashed / total cycles", "ground_truth_type": "outcome"},
+            "cycle_time": {
+                "description": "Average main loop duration (target: < 5s)",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
+            "crash_rate": {
+                "description": "Cycles that crashed / total cycles",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
             "heartbeat_uptime": {
                 "description": "Heartbeat updated within 3min window (%)",
+                "metric_type": "outcome",
                 "ground_truth_type": "outcome",
             },
             "stuck_tasks": {
                 "description": "Tasks stuck in dispatched/running state > 30min",
+                "metric_type": "outcome",
                 "ground_truth_type": "outcome",
             },
-            "timeout_rate": {"description": "Tasks that timed out / total dispatched", "ground_truth_type": "outcome"},
+            "timeout_rate": {
+                "description": "Tasks that timed out / total dispatched",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
         },
     },
 }
@@ -190,36 +278,158 @@ SUPER_CRITERIA = {
     "metrics": {
         "routing_accuracy": {
             "description": "Tasks routed to correct agent (no re-routes needed)",
+            "metric_type": "proxy",
             "ground_truth_type": "consensus_proxy",
         },
         "plan_quality": {
             "description": "Multi-step plans that executed without step failures",
+            "metric_type": "outcome",
             "ground_truth_type": "outcome",
         },
-        "cycle_time": {"description": "Average main loop duration (target: < 5s)", "ground_truth_type": "outcome"},
-        "crash_rate": {"description": "Cycles that crashed / total cycles", "ground_truth_type": "outcome"},
-        "heartbeat_uptime": {"description": "Heartbeat updated within 3min window (%)", "ground_truth_type": "outcome"},
+        "cycle_time": {
+            "description": "Average main loop duration (target: < 5s)",
+            "metric_type": "outcome",
+            "ground_truth_type": "outcome",
+        },
+        "crash_rate": {
+            "description": "Cycles that crashed / total cycles",
+            "metric_type": "outcome",
+            "ground_truth_type": "outcome",
+        },
+        "heartbeat_uptime": {
+            "description": "Heartbeat updated within 3min window (%)",
+            "metric_type": "outcome",
+            "ground_truth_type": "outcome",
+        },
         "stuck_tasks": {
             "description": "Tasks stuck in dispatched/running state > 30min",
+            "metric_type": "outcome",
             "ground_truth_type": "outcome",
         },
-        "timeout_rate": {"description": "Tasks that timed out / total dispatched", "ground_truth_type": "outcome"},
+        "timeout_rate": {
+            "description": "Tasks that timed out / total dispatched",
+            "metric_type": "outcome",
+            "ground_truth_type": "outcome",
+        },
     },
 }
 
 _UNIVERSAL_METRIC_TYPES: dict[str, str] = {
     "task_success": "outcome",
     "guard_fire_rate": "outcome",
-    "output_length_avg": "consensus_proxy",
+    "output_length_avg": "proxy",
 }
+_METRIC_AUDIT_WARNING = "METRIC_AUDIT: all criteria are proxy metrics — no outcome verification available."
 
 
 def _get_metric_type(agent_name: str, metric_key: str) -> str:
-    """Return the ground_truth_type for a metric, falling back to universal defaults."""
+    """Return the metric_type for a metric, falling back to universal defaults."""
     metric_def = AGENT_CRITERIA.get(agent_name, {}).get("metrics", {}).get(metric_key)
     if isinstance(metric_def, dict):
-        return metric_def.get("ground_truth_type", "consensus_proxy")
-    return _UNIVERSAL_METRIC_TYPES.get(metric_key, "consensus_proxy")
+        metric_type = metric_def.get("metric_type")
+        if metric_type in {"outcome", "proxy"}:
+            return metric_type
+        return "outcome" if metric_def.get("ground_truth_type") == "outcome" else "proxy"
+    return _UNIVERSAL_METRIC_TYPES.get(metric_key, "proxy")
+
+
+def _agent_criteria_metric_types(agent_name: str) -> list[str]:
+    metrics = AGENT_CRITERIA.get(agent_name, {}).get("metrics", {})
+    if not isinstance(metrics, dict):
+        return []
+    return [_get_metric_type(agent_name, key) for key in metrics]
+
+
+def _agent_has_outcome_metric(agent_name: str) -> bool:
+    return any(metric_type == "outcome" for metric_type in _agent_criteria_metric_types(agent_name))
+
+
+def _append_metric_audit_warning(card: dict, agent_name: str) -> dict:
+    metric_types = _agent_criteria_metric_types(agent_name)
+    if metric_types and all(metric_type == "proxy" for metric_type in metric_types):
+        card.setdefault("warnings", []).append(_METRIC_AUDIT_WARNING)
+    return card
+
+
+def _agent_score_file(agent_name: str) -> Path:
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", agent_name).strip("._") or "agent"
+    return _EVALUATION_LOG_DIR / f"{safe_name}_scores.jsonl"
+
+
+def _load_score_history(agent_name: str) -> list[dict]:
+    path = _agent_score_file(agent_name)
+    if not path.exists():
+        return []
+
+    records: list[dict] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+    except OSError as exc:
+        log.debug("Could not load score history for %s: %s", agent_name, exc)
+    return records
+
+
+def _record_score(agent_name, score, timestamp):
+    try:
+        score_value = float(score)
+    except (TypeError, ValueError):
+        return
+
+    history = _load_score_history(agent_name)
+    history.append({"timestamp": timestamp, "agent": agent_name, "score": score_value})
+    history = history[-_SCORE_HISTORY_LIMIT:]
+
+    try:
+        _EVALUATION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        path = _agent_score_file(agent_name)
+        payload = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in history)
+        path.write_text(payload, encoding="utf-8")
+    except OSError as exc:
+        log.debug("Could not record score history for %s: %s", agent_name, exc)
+
+
+def _detect_drift(agent_name):
+    from soul_manager import detect_agent_drift
+
+    drift = detect_agent_drift(
+        _load_score_history(agent_name),
+        window_size=DRIFT_WINDOW_SIZE,
+        slope_threshold=DRIFT_SLOPE_THRESHOLD,
+    )
+    drift["agent"] = agent_name
+    return drift
+
+
+def _log_drift_warning(drift: dict) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "agent": drift.get("agent"),
+        "slope": drift.get("slope"),
+        "trend_direction": drift.get("trend_direction"),
+        "sample_count": drift.get("sample_count"),
+    }
+    try:
+        _EVALUATION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            records = json.loads(_DRIFT_LOG_FILE.read_text(encoding="utf-8")) if _DRIFT_LOG_FILE.exists() else []
+        except (json.JSONDecodeError, OSError):
+            records = []
+        if not isinstance(records, list):
+            records = []
+        records.append(entry)
+        tmp_path = _DRIFT_LOG_FILE.with_suffix(_DRIFT_LOG_FILE.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp_path.replace(_DRIFT_LOG_FILE)
+    except OSError as exc:
+        log.debug("Could not write drift log for %s: %s", drift.get("agent"), exc)
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +529,172 @@ def _count_scaffolding_rejections(days: int) -> int:
         return 0
 
 
+def _extract_spot_check_claims(agent_output: str) -> list[dict]:
+    claims: list[dict] = []
+
+    for match in re.finditer(r"https?://[^\s<>\]\"')]+", agent_output):
+        claims.append({"type": "url", "value": match.group(0).rstrip(".,;:")})
+
+    path_patterns = [
+        r"`([^`\n]*(?:/|\\)[^`\n]+)`",
+        r"(?<![\w:/])(?:~|/|\./|\.\./)[^\s<>\]\"')]+",
+    ]
+    for pattern in path_patterns:
+        for match in re.finditer(pattern, agent_output):
+            value = (match.group(1) if match.lastindex else match.group(0)).rstrip(".,;:")
+            if value.startswith(("http://", "https://")):
+                continue
+            claims.append({"type": "file_path", "value": value})
+
+    arithmetic = r"(?P<expr>-?\d+(?:\.\d+)?(?:\s*[+\-*/]\s*-?\d+(?:\.\d+)?)+)\s*=\s*" r"(?P<result>-?\d+(?:\.\d+)?)"
+    for match in re.finditer(arithmetic, agent_output):
+        claims.append(
+            {
+                "type": "numeric_result",
+                "value": match.group(0),
+                "expr": match.group("expr"),
+                "result": match.group("result"),
+            }
+        )
+
+    quote_pattern = (
+        r"(?P<speaker>[A-Z][A-Za-z .'-]{1,80})\s+"
+        r"(?:said|wrote|stated|argued|claims?|according to)\s*[:\-]?\s*"
+        r"[\"“](?P<quote>[^\"”]{8,240})[\"”]"
+    )
+    for match in re.finditer(quote_pattern, agent_output):
+        start = max(0, match.start() - 300)
+        end = min(len(agent_output), match.end() + 300)
+        nearby_urls = re.findall(r"https?://[^\s<>\]\"')]+", agent_output[start:end])
+        claims.append(
+            {
+                "type": "attributed_quote",
+                "value": f"{match.group('speaker').strip()}: {match.group('quote').strip()}",
+                "quote": match.group("quote").strip(),
+                "source_url": nearby_urls[0].rstrip(".,;:") if nearby_urls else "",
+            }
+        )
+
+    seen = set()
+    unique_claims = []
+    for claim in claims:
+        key = (claim["type"], claim["value"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_claims.append(claim)
+    return unique_claims
+
+
+def _safe_eval_arithmetic(expr: str) -> float:
+    def _eval_node(node) -> float:
+        if isinstance(node, ast.Expression):
+            return _eval_node(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            return -_eval_node(node.operand)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd):
+            return _eval_node(node.operand)
+        if isinstance(node, ast.BinOp):
+            left = _eval_node(node.left)
+            right = _eval_node(node.right)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if isinstance(node.op, ast.Div):
+                return left / right
+        raise ValueError("unsupported numeric expression")
+
+    if not re.fullmatch(r"[-+*/().\d\s]+", expr):
+        raise ValueError("unsupported numeric expression")
+    return _eval_node(ast.parse(expr, mode="eval"))
+
+
+def _verify_spot_check_claim(claim: dict) -> tuple[bool, str]:
+    claim_type = claim.get("type", "")
+    value = claim.get("value", "")
+
+    if claim_type == "file_path":
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            try:
+                from config import MIRA_ROOT
+
+                path = MIRA_ROOT / path
+            except (ImportError, AttributeError):
+                path = Path.cwd() / path
+        exists = path.exists()
+        return exists, f"file_path {value!r} {'exists' if exists else 'does not exist'}"
+
+    if claim_type == "url":
+        req = url_request.Request(value, method="HEAD", headers={"User-Agent": "MiraEvaluator/1.0"})
+        try:
+            with url_request.urlopen(req, timeout=3) as response:
+                status = getattr(response, "status", 200)
+            passed = 200 <= status < 400
+            return passed, f"url {value!r} HEAD status={status}"
+        except url_error.HTTPError as e:
+            return 200 <= e.code < 400, f"url {value!r} HEAD status={e.code}"
+        except Exception as e:
+            return False, f"url {value!r} HEAD failed: {type(e).__name__}: {e}"
+
+    if claim_type == "numeric_result":
+        try:
+            expected = float(claim["result"])
+            actual = _safe_eval_arithmetic(claim["expr"])
+            passed = abs(actual - expected) <= max(1e-6, abs(expected) * 1e-6)
+            return passed, f"numeric_result {claim['expr']} recomputed={actual:g} claimed={expected:g}"
+        except Exception as e:
+            return False, f"numeric_result {value!r} recompute failed: {type(e).__name__}: {e}"
+
+    if claim_type == "attributed_quote":
+        source_url = claim.get("source_url", "")
+        if not source_url:
+            return False, f"attributed_quote {value!r} has no source URL to cross-check"
+        req = url_request.Request(source_url, headers={"User-Agent": "MiraEvaluator/1.0"})
+        try:
+            with url_request.urlopen(req, timeout=5) as response:
+                body = response.read(500_000).decode("utf-8", errors="ignore")
+            quote = claim.get("quote", "")
+            passed = quote in body
+            return (
+                passed,
+                f"attributed_quote source={source_url!r} {'contains' if passed else 'does not contain'} quoted text",
+            )
+        except Exception as e:
+            return False, f"attributed_quote source={source_url!r} fetch failed: {type(e).__name__}: {e}"
+
+    return False, f"unsupported claim type {claim_type!r}: {value!r}"
+
+
+def _spot_check_claim(agent_output: str) -> tuple[bool, str]:
+    claims = _extract_spot_check_claims(agent_output or "")
+    if not claims:
+        return True, "no verifiable claims found"
+    claim = random.choice(claims)
+    passed, detail = _verify_spot_check_claim(claim)
+    return passed, f"{claim['type']} sampled: {detail}"
+
+
+def _log_spot_check_result(agent_name: str, passed: bool, detail: str) -> None:
+    try:
+        _SPOT_CHECK_LOG.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "agent": agent_name,
+            "passed": passed,
+            "detail": detail,
+        }
+        with open(_SPOT_CHECK_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log.debug("Could not log evaluator spot check for %s: %s", agent_name, e)
+
+
 def score_agent(agent_name: str, days: int = 7) -> dict:
     """Score a specific agent based on its task history. Returns grounded metrics."""
     criteria = AGENT_CRITERIA.get(agent_name)
@@ -331,13 +707,16 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
 
     total = len(agent_tasks)
     if total == 0:
-        return {
-            "agent": agent_name,
-            "period_days": days,
-            "task_count": 0,
-            "scores": {},
-            "note": "no tasks in period",
-        }
+        return _append_metric_audit_warning(
+            {
+                "agent": agent_name,
+                "period_days": days,
+                "task_count": 0,
+                "scores": {},
+                "note": "no tasks in period",
+            },
+            agent_name,
+        )
 
     scores = {}
 
@@ -362,18 +741,22 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
     # Agent-specific metrics would go here
     # (each agent type can register custom scoring functions)
 
-    # Persist scores derived from task logs with log_verified evidence
-    try:
-        from evaluation.storage import update_weakness_score
-
-        update_weakness_score(f"{agent_name}.task_success", scores["task_success"], evidence_type="log_verified")
-        update_weakness_score(f"{agent_name}.guard_fire_rate", scores["guard_fire_rate"], evidence_type="log_verified")
-        if "output_length_avg" in scores:
-            update_weakness_score(
-                f"{agent_name}.output_length_avg", scores["output_length_avg"], evidence_type="log_verified"
-            )
-    except Exception as _e:
-        log.debug("update_weakness_score failed for %s: %s", agent_name, _e)
+    output_parts = []
+    for t in agent_tasks:
+        for key in ("output", "result", "summary", "content"):
+            value = t.get(key)
+            if isinstance(value, str) and value.strip():
+                output_parts.append(value)
+    spot_passed, spot_detail = _spot_check_claim("\n\n".join(output_parts))
+    _log_spot_check_result(agent_name, spot_passed, spot_detail)
+    spot_check = {
+        "passed": spot_passed,
+        "detail": spot_detail,
+    }
+    coherence_bias_warning = not spot_passed
+    if coherence_bias_warning and "task_success" in scores:
+        scores["task_success"] = round(scores["task_success"] * 0.7, 3)
+        spot_check["reliability_penalty_multiplier"] = 0.7
 
     audit_guard_fires = _count_audit_guard_fires(days)
     result = {
@@ -387,13 +770,29 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
         "guard_fire_rate": scores.get("guard_fire_rate", 0),
         "guard_fired_count": audit_guard_fires,
         "scores": scores,
+        "spot_check": spot_check,
     }
+    if coherence_bias_warning:
+        result["coherence_bias_warning"] = True
+
+    # Persist scores derived from task logs with log_verified evidence
+    try:
+        from evaluation.storage import update_weakness_score
+
+        update_weakness_score(f"{agent_name}.task_success", scores["task_success"], evidence_type="log_verified")
+        update_weakness_score(f"{agent_name}.guard_fire_rate", scores["guard_fire_rate"], evidence_type="log_verified")
+        if "output_length_avg" in scores:
+            update_weakness_score(
+                f"{agent_name}.output_length_avg", scores["output_length_avg"], evidence_type="log_verified"
+            )
+    except Exception as _e:
+        log.debug("update_weakness_score failed for %s: %s", agent_name, _e)
 
     # Update validated_at for this agent's skills when scoring positively
     if scores.get("task_success", 0) >= 0.8:
         _update_agent_skill_validation(agent_name)
 
-    return result
+    return _append_metric_audit_warning(result, agent_name)
 
 
 def score_super(days: int = 7) -> dict:
@@ -472,6 +871,151 @@ def score_super(days: int = 7) -> dict:
         "period_days": days,
         "scores": scores,
     }
+
+
+def _extract_function_source(path: Path, function_name: str) -> str:
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            return "\n".join(source.splitlines()[node.lineno - 1 : node.end_lineno])
+    raise ValueError(f"function not found: {function_name} in {path}")
+
+
+def audit_content_guard() -> list[dict]:
+    """Audit content guard decision templates for logical completeness."""
+    socialmedia_handler = Path(__file__).resolve().parent.parent / "socialmedia" / "handler.py"
+    preflight = _SHARED / "publish" / "preflight.py"
+
+    content_guard_source = _extract_function_source(socialmedia_handler, "_content_looks_like_error")
+    preflight_source = _extract_function_source(preflight, "preflight_check")
+
+    checklist = [
+        {
+            "target": "_content_looks_like_error",
+            "category": "edge_cases",
+            "complete": "isinstance" in content_guard_source and "str" in content_guard_source,
+            "gap": "non-string content can raise before the guard returns a verdict",
+        },
+        {
+            "target": "_content_looks_like_error",
+            "category": "edge_cases",
+            "complete": ".strip()" in content_guard_source and "_MIN_PUBLISH_CHARS" in content_guard_source,
+            "gap": "empty or whitespace-only content is not explicitly normalized before length gating",
+        },
+        {
+            "target": "_content_looks_like_error",
+            "category": "false_negatives",
+            "complete": "_ERROR_KEYWORDS" in content_guard_source and ".lower()" in content_guard_source,
+            "gap": "error-message detection lacks case-normalized keyword coverage",
+        },
+        {
+            "target": "_content_looks_like_error",
+            "category": "false_negatives",
+            "complete": "early_section" not in content_guard_source,
+            "gap": "keyword detection is limited to the early section, so late scaffolded errors can pass",
+        },
+        {
+            "target": "_content_looks_like_error",
+            "category": "semantic_blind_spots",
+            "complete": "title" in content_guard_source or "platform" in content_guard_source,
+            "gap": "guard judges body text alone and ignores title/platform/context mismatches",
+        },
+        {
+            "target": "preflight_check",
+            "category": "edge_cases",
+            "complete": "isinstance(context" in preflight_source,
+            "gap": "non-dict context can raise or bypass intended field checks",
+        },
+        {
+            "target": "preflight_check",
+            "category": "edge_cases",
+            "complete": "action_type =" in preflight_source and ".lower()" in preflight_source,
+            "gap": "action_type is not normalized before dispatch",
+        },
+        {
+            "target": "preflight_check",
+            "category": "false_negatives",
+            "complete": "unsupported" in preflight_source or "unknown action" in preflight_source,
+            "gap": "unknown action types can pass if the universal instruction check passes",
+        },
+        {
+            "target": "preflight_check",
+            "category": "semantic_blind_spots",
+            "complete": "_content_looks_like_error" in preflight_source,
+            "gap": "preflight_check does not directly apply the publish error-content guard",
+        },
+        {
+            "target": "preflight_check",
+            "category": "semantic_blind_spots",
+            "complete": "proves=" in preflight_source and "assumes=" in preflight_source,
+            "gap": "decision checks do not expose what each template proves versus assumes",
+        },
+    ]
+
+    gaps = [
+        {
+            "target": item["target"],
+            "category": item["category"],
+            "gap": item["gap"],
+        }
+        for item in checklist
+        if not item["complete"]
+    ]
+    if gaps:
+        for gap in gaps:
+            log.warning(
+                "CONTENT_GUARD_AUDIT_GAP target=%s category=%s gap=%s",
+                gap["target"],
+                gap["category"],
+                gap["gap"],
+            )
+    else:
+        log.info("CONTENT_GUARD_AUDIT_PASS checklist_items=%d", len(checklist))
+    return gaps
+
+
+def _should_run_content_guard_audit(now: datetime | None = None) -> bool:
+    now = now or datetime.now()
+    if now.weekday() != _CONTENT_GUARD_AUDIT_SCHEDULE["weekday"]:
+        return False
+
+    state: dict = {}
+    if _STATE_FILE.exists():
+        try:
+            state = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    year, week, _ = now.isocalendar()
+    return state.get("last_content_guard_audit_week") != f"{year}-W{week:02d}"
+
+
+def _mark_content_guard_audit_ran(now: datetime | None = None) -> None:
+    now = now or datetime.now()
+    state: dict = {}
+    if _STATE_FILE.exists():
+        try:
+            state = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    year, week, _ = now.isocalendar()
+    state["last_content_guard_audit_week"] = f"{year}-W{week:02d}"
+    state["last_content_guard_audit_at"] = now.isoformat()
+    try:
+        _STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        log.debug("Could not save content guard audit state: %s", e)
+
+
+def _run_scheduled_content_guard_audit() -> list[dict] | None:
+    now = datetime.now()
+    if not _should_run_content_guard_audit(now):
+        return None
+    gaps = audit_content_guard()
+    _mark_content_guard_audit_ran(now)
+    return gaps
 
 
 def _emit_variance_warning(std_dev: float, consecutive: int) -> None:
@@ -609,15 +1153,37 @@ def score_all(days: int = 7) -> dict:
         )
         result["rubric_unvalidated_warning"] = _rubric_warning
 
+    content_guard_audit = _run_scheduled_content_guard_audit()
+    if content_guard_audit is not None:
+        result["content_guard_audit"] = {
+            "schedule": _CONTENT_GUARD_AUDIT_SCHEDULE["name"],
+            "gap_count": len(content_guard_audit),
+            "gaps": content_guard_audit,
+        }
+
     # Score each agent
     all_success_rates = []
     all_task_counts = []
+    drift_flags = []
     for agent_name in AGENT_CRITERIA:
         card = score_agent(agent_name, days)
         result["agents"][agent_name] = card
         if card["task_count"] > 0:
             all_success_rates.append(card["success_rate"])
             all_task_counts.append(card["task_count"])
+            _record_score(agent_name, card["success_rate"], result["generated_at"])
+            drift = _detect_drift(agent_name)
+            if drift.get("drift_detected"):
+                log.warning(
+                    "AGENT_DRIFT_DETECTED agent=%s slope=%.6f trend_direction=%s",
+                    agent_name,
+                    drift["slope"],
+                    drift["trend_direction"],
+                )
+                _log_drift_warning(drift)
+                card["drift"] = drift
+                drift_flags.append(drift)
+    result["drift_flags"] = drift_flags
 
     # Score super
     result["super"] = score_super(days)
@@ -631,6 +1197,9 @@ def score_all(days: int = 7) -> dict:
         agg["overall_success_rate"] = round(weighted_success / total_tasks, 3)
     agg["total_tasks"] = sum(all_task_counts) if all_task_counts else 0
     agg["active_agents"] = sum(1 for c in result["agents"].values() if c["task_count"] > 0)
+    scored_agent_names = [name for name, card in result["agents"].items() if card["task_count"] > 0]
+    outcome_backed_count = sum(1 for name in scored_agent_names if _agent_has_outcome_metric(name))
+    agg["outcome_coverage"] = round(outcome_backed_count / len(scored_agent_names), 3) if scored_agent_names else 0.0
     agg["crash_rate"] = result["super"]["scores"].get("crash_rate", 0)
     agg["heartbeat_ok"] = result["super"]["scores"].get("heartbeat_ok", True)
 
@@ -689,6 +1258,35 @@ def score_all(days: int = 7) -> dict:
             _rejection_threshold,
         )
         agg["scaffolding_rejection_warning"] = True
+
+    _proxy_threshold = 0.20
+    try:
+        from config import PROXY_DRIFT_THRESHOLD
+
+        _proxy_threshold = float(PROXY_DRIFT_THRESHOLD)
+    except (ImportError, AttributeError, TypeError, ValueError):
+        pass
+    _proxy_drift = _compute_proxy_drift(days)
+    agg["proxy_false_positive_ratio"] = _proxy_drift["false_positive_ratio"]
+    agg["proxy_audit_sample_count"] = _proxy_drift["sample_count"]
+    if _proxy_drift["sample_count"] > 0 and _proxy_drift["false_positive_ratio"] > _proxy_threshold:
+        _proxy_alert = {
+            "message": "proxy calibration alert",
+            "false_positive_ratio": _proxy_drift["false_positive_ratio"],
+            "false_positive_count": _proxy_drift["false_positive_count"],
+            "sample_count": _proxy_drift["sample_count"],
+            "threshold": _proxy_threshold,
+            "window_days": days,
+        }
+        log.warning(
+            "PROXY_CALIBRATION_ALERT false_positive_ratio=%.3f false_positive_count=%d sample_count=%d threshold=%.2f",
+            _proxy_drift["false_positive_ratio"],
+            _proxy_drift["false_positive_count"],
+            _proxy_drift["sample_count"],
+            _proxy_threshold,
+        )
+        result["proxy_calibration_alert"] = _proxy_alert
+        agg["proxy_calibration_alert"] = _proxy_alert
 
     result["aggregate"] = agg
 
@@ -754,6 +1352,44 @@ def _compute_scaffolding_catch_rate(window_hours: int) -> float:
         return round(count / max(window_hours, 1), 3)
     except Exception:
         return 0.0
+
+
+def _compute_proxy_drift(days: int) -> dict:
+    """Return proxy false-positive stats from proxy_drift.jsonl over the scoring window."""
+    try:
+        from config import MIRA_ROOT
+
+        drift_log = MIRA_ROOT / "data" / "proxy_drift.jsonl"
+        if not drift_log.exists():
+            return {"sample_count": 0, "false_positive_count": 0, "false_positive_ratio": 0.0}
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        sample_count = 0
+        false_positive_count = 0
+        for line in drift_log.read_text(encoding="utf-8").strip().splitlines():
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                ts_str = entry.get("timestamp", "")
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else None
+                if ts and ts < cutoff:
+                    continue
+                if not entry.get("proxy_passed"):
+                    continue
+                sample_count += 1
+                secondary = str(entry.get("secondary_check_result", ""))
+                if secondary.startswith("proxy_false_positive"):
+                    false_positive_count += 1
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+        ratio = round(false_positive_count / max(sample_count, 1), 3)
+        return {
+            "sample_count": sample_count,
+            "false_positive_count": false_positive_count,
+            "false_positive_ratio": ratio,
+        }
+    except Exception:
+        return {"sample_count": 0, "false_positive_count": 0, "false_positive_ratio": 0.0}
 
 
 def _compute_score_staleness(ttl_days: int) -> tuple[int, dict[str, bool]]:
@@ -1102,6 +1738,21 @@ def confirm_rubric_audit() -> None:
 # ---------------------------------------------------------------------------
 
 
+_ACTIONABLE_IMPROVEMENT_VERB_RE = re.compile(
+    r"\b(?:add|modify|set|update|remove|create|change|tune)\b",
+    re.IGNORECASE,
+)
+_IMPROVEMENT_ITEM_RE = re.compile(r"^\s*(?:[-*]\s+|\d+[.)]\s+)")
+
+
+def _needs_actionable_improvement_correction(plan: str) -> bool:
+    items = [line.strip() for line in plan.splitlines() if _IMPROVEMENT_ITEM_RE.match(line)]
+    if not items:
+        return False
+    actionable = sum(1 for item in items if _ACTIONABLE_IMPROVEMENT_VERB_RE.search(item))
+    return actionable * 2 < len(items)
+
+
 def diagnose_and_improve(assessment: dict) -> str | None:
     """Analyze assessment, identify weak agents, generate targeted improvements.
 
@@ -1303,6 +1954,22 @@ INVERTED_SCORES: <comma-separated list of flagged agent/metric names, or "none">
         )
 
         if plan:
+            if _needs_actionable_improvement_correction(plan):
+                corrective_prompt = (
+                    prompt
+                    + "\n\n## Draft Improvement Plan\n"
+                    + plan
+                    + "\n\nPlease convert each remaining diagnostic insight into a concrete action item."
+                )
+                corrected_plan = model_think(
+                    corrective_prompt,
+                    model_name=CLAUDE_FALLBACK_MODEL,
+                    system="You are a senior engineering manager.",
+                    timeout=90,
+                )
+                if corrected_plan:
+                    plan = corrected_plan
+
             overconfidence_detected = False
             confidence_note = "none detected"
             inverted_scores: list[str] = []
@@ -1325,7 +1992,7 @@ INVERTED_SCORES: <comma-separated list of flagged agent/metric names, or "none">
                 scored_keys = [
                     k for k in card.get("scores", {}) if k not in SUSPENDED_METRICS and k not in DISABLED_RUBRICS
                 ]
-                if scored_keys and all(_get_metric_type(name, k) == "consensus_proxy" for k in scored_keys):
+                if scored_keys and all(_get_metric_type(name, k) == "proxy" for k in scored_keys):
                     consensus_only_agents.append(name)
 
             if consensus_only_agents:

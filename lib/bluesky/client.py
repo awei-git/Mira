@@ -412,6 +412,31 @@ def _auto_facets(text: str) -> list[dict]:
 _client_singleton: BlueskyClient | None = None
 
 
+def is_configured() -> bool:
+    """Return True when Bluesky has a configured handle or reusable session."""
+    try:
+        from config import SECRETS_FILE
+        from llm import _parse_secrets_simple
+    except ImportError:
+        return False
+
+    try:
+        secrets = _parse_secrets_simple(SECRETS_FILE)
+        cfg = secrets.get("api_keys", {}).get("bluesky", {}) or {}
+        cfg = cfg if isinstance(cfg, dict) else {}
+        if (cfg.get("handle") or "").lstrip("@"):
+            return True
+    except Exception:
+        pass
+
+    if not _SESSION_CACHE.exists():
+        return False
+    try:
+        return bool(json.loads(_SESSION_CACHE.read_text()).get("handle"))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
 def get_client() -> BlueskyClient:
     """Get configured client from secrets.yml (api_keys.bluesky).
 

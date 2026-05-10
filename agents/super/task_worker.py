@@ -8,9 +8,11 @@ Usage:
     python task_worker.py --msg-file <path> --workspace <path> --task-id <id> [--thread-id <id>]
 """
 import argparse
+import ast
 import atexit
 import json
 import logging
+import random
 import re
 import sys
 import threading
@@ -68,6 +70,7 @@ from memory.soul import (
     recall_context,
     save_knowledge_note,
 )
+from soul_manager import audit_skill_judgment
 from llm import (
     claude_act,
     claude_think,
@@ -76,6 +79,11 @@ from llm import (
     get_session_tokens,
     set_model_policy,
     _log_efficiency,
+)
+from sub_agent import (
+    REASONING_REWRITE_PROMPT,
+    extract_reasoning_payload,
+    require_reasoning_in_instruction,
 )
 
 # Handler functions extracted to handlers_legacy.py (imported after all helpers
@@ -137,7 +145,61 @@ from config import TASKS_DIR
 # ---------------------------------------------------------------------------
 # Planning functions extracted to planning/planner.py
 # ---------------------------------------------------------------------------
-from planning.planner import _load_super_skills, _plan_task, _synthesize_outputs
+from planning import planner as _planner_module
+from planning.planner import _plan_task, _synthesize_outputs
+
+
+def _load_super_skills(task_content: str = "") -> str:
+    skills_dir = Path(__file__).resolve().parent / "skills"
+    index_path = skills_dir / "index.json"
+    if not index_path.exists():
+        return ""
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ""
+    if task_content:
+        lower = task_content.lower()
+        selected = []
+        for entry in index:
+            fname = entry.get("file", "")
+            tags = entry.get("tags", [])
+            desc = entry.get("description", "").lower()
+            tag_match = any(str(tag).lower() in lower for tag in tags)
+            desc_words = set(desc.split())
+            content_words = set(lower.split())
+            desc_match = len(desc_words & content_words) >= 2
+            multi_match = "multi-step" in fname and "step" in lower
+            synth_match = "synthesis" in fname and "synthesize" in lower
+            if tag_match or desc_match or multi_match or synth_match:
+                selected.append(entry)
+        if not selected:
+            selected = index
+    else:
+        selected = index
+    sections = []
+    for entry in selected:
+        skill_file = skills_dir / entry.get("file", "")
+        if not skill_file.exists():
+            continue
+        try:
+            skill_text = skill_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        judgment_audit = audit_skill_judgment(skill_text, entry.get("tags", []))
+        if not judgment_audit["passed"]:
+            log.warning(
+                "SKILL_LOAD blocked: skill=%s reason='judgment template incomplete' missing=%s tags=%s",
+                entry.get("name") or entry.get("file", ""),
+                judgment_audit["missing"],
+                judgment_audit["tags"],
+            )
+            continue
+        sections.append(skill_text)
+    return "\n\n---\n\n".join(sections)
+
+
+_planner_module._load_super_skills = _load_super_skills
 
 
 def _utc_iso() -> str:
@@ -495,6 +557,334 @@ def _clip(text: str, limit: int) -> str:
     return compact[: max(0, limit - 1)].rstrip() + "…"
 
 
+_TASK_OUTPUT_ERROR_MARKERS = (
+    "traceback (most recent call last)",
+    "404 not found",
+    "access denied",
+    "permission denied",
+)
+_TASK_OUTPUT_GARBAGE_MARKERS = (
+    "lorem ipsum",
+    "[insert",
+    "<placeholder",
+    "todo: fill",
+    "coming soon",
+    "not implemented",
+)
+_CODE_TASK_TYPES = {"code", "coder", "coding", "software", "programming", "implementation", "bugfix", "refactor"}
+_WRITING_TASK_TYPES = {
+    "writing",
+    "writer",
+    "article",
+    "essay",
+    "blog",
+    "post",
+    "briefing",
+    "socialmedia",
+    "podcast",
+}
+
+
+def _verification_spot_check_rate() -> float:
+    try:
+        from config import VERIFICATION_SPOT_CHECK_RATE
+
+        rate = float(VERIFICATION_SPOT_CHECK_RATE)
+    except (ImportError, AttributeError, TypeError, ValueError):
+        rate = 0.15
+    return min(max(rate, 0.0), 1.0)
+
+
+def _default_verification_depth(task_type: str) -> int:
+    label = str(task_type or "").strip().lower()
+    if any(marker in label for marker in _CODE_TASK_TYPES):
+        return 2
+    if any(marker in label for marker in _WRITING_TASK_TYPES):
+        return 2
+    return 1
+
+
+def _artifact_exists(artifact: dict) -> bool:
+    path = Path(str(artifact.get("path", "")))
+    if not path:
+        return False
+    if artifact.get("exists") is False:
+        return False
+    return path.exists() and path.is_file()
+
+
+def _artifact_size(artifact: dict) -> int:
+    try:
+        return int(artifact.get("size_bytes", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _read_verification_artifact_text(artifacts: list[dict]) -> str:
+    chunks = []
+    for artifact in artifacts:
+        path = Path(str(artifact.get("path", "")))
+        if not _artifact_exists(artifact) or path.suffix.lower() not in {"", ".md", ".txt", ".py", ".json", ".html"}:
+            continue
+        try:
+            chunks.append(path.read_text(encoding="utf-8", errors="replace")[:12000])
+        except OSError:
+            continue
+    return "\n".join(chunks)
+
+
+def _verify_depth_one(claimed_output: str, actual_artifacts: list[dict]) -> tuple[bool, str]:
+    if not str(claimed_output or "").strip():
+        return False, "claimed output is empty"
+    if not actual_artifacts:
+        return False, "no output artifacts were recorded"
+    missing = [str(a.get("path", "")) for a in actual_artifacts if not _artifact_exists(a)]
+    if missing:
+        return False, f"missing artifact(s): {', '.join(missing[:3])}"
+    empty = [str(a.get("path", "")) for a in actual_artifacts if _artifact_size(a) <= 0]
+    if empty:
+        return False, f"empty artifact(s): {', '.join(empty[:3])}"
+    return True, "artifact existence and size checks passed"
+
+
+def _verify_depth_two(task_type: str, claimed_output: str, actual_artifacts: list[dict]) -> tuple[bool, str]:
+    passed, details = _verify_depth_one(claimed_output, actual_artifacts)
+    if not passed:
+        return False, details
+    text = "\n".join([str(claimed_output or ""), _read_verification_artifact_text(actual_artifacts)]).strip()
+    if len(text) < 80:
+        return False, f"output substance check failed: only {len(text)} text characters"
+    lower = text.lower()
+    marker_hits = [m for m in _TASK_OUTPUT_GARBAGE_MARKERS if m in lower]
+    if marker_hits:
+        return False, f"output contains placeholder marker(s): {', '.join(marker_hits[:3])}"
+    error_hits = [m for m in _TASK_OUTPUT_ERROR_MARKERS if m in lower]
+    if error_hits and not any(marker in str(task_type or "").lower() for marker in _CODE_TASK_TYPES):
+        return False, f"output contains error marker(s): {', '.join(error_hits[:3])}"
+    completion_error = _validate_completion(Path("."), "", str(claimed_output or ""))
+    if completion_error:
+        return False, completion_error
+    return True, "substance and content pattern checks passed"
+
+
+def _verify_depth_three(task_type: str, claimed_output: str, actual_artifacts: list[dict]) -> tuple[bool, str]:
+    passed, details = _verify_depth_two(task_type, claimed_output, actual_artifacts)
+    if not passed:
+        return False, details
+
+    label = str(task_type or "").lower()
+    code_like = any(marker in label for marker in _CODE_TASK_TYPES)
+    python_paths = [
+        Path(str(a.get("path", "")))
+        for a in actual_artifacts
+        if _artifact_exists(a) and Path(str(a.get("path", ""))).suffix.lower() == ".py"
+    ]
+    python_blocks = _extract_python_blocks(
+        "\n".join([str(claimed_output or ""), _read_verification_artifact_text(actual_artifacts)])
+    )
+    if not code_like and not python_paths and not python_blocks:
+        return False, "no executable artifact was available for depth-3 verification"
+
+    import py_compile
+
+    for path in python_paths:
+        try:
+            py_compile.compile(str(path), doraise=True)
+        except py_compile.PyCompileError as exc:
+            return False, f"python compile failed for {path.name}: {exc.msg.splitlines()[0][:200]}"
+    for block in python_blocks:
+        try:
+            ast.parse(block)
+        except SyntaxError as exc:
+            return False, f"python code block syntax failed at line {exc.lineno}: {exc.msg}"
+    if python_paths or python_blocks:
+        return True, "execution-level python compile/syntax checks passed"
+    return False, "no executable depth-3 verifier matched the output"
+
+
+def verify_task_output(task_type, claimed_output, actual_artifacts) -> dict:
+    default_depth = _default_verification_depth(str(task_type or ""))
+    depth = default_depth
+    if depth < 3 and random.random() < _verification_spot_check_rate():
+        depth = 3
+
+    artifacts = [a for a in (actual_artifacts or []) if isinstance(a, dict)]
+    if depth <= 0:
+        passed, details = True, "verification skipped"
+    elif depth == 1:
+        passed, details = _verify_depth_one(str(claimed_output or ""), artifacts)
+    elif depth == 2:
+        passed, details = _verify_depth_two(str(task_type or ""), str(claimed_output or ""), artifacts)
+    else:
+        passed, details = _verify_depth_three(str(task_type or ""), str(claimed_output or ""), artifacts)
+
+    return {"depth": int(depth), "passed": bool(passed), "details": str(details)[:500]}
+
+
+_PROXY_AUDIT_WRITING_MARKERS = (
+    "as an ai",
+    "in conclusion",
+    "delve into",
+    "tapestry",
+    "it's important to note",
+    "in today's fast-paced",
+)
+
+_PROXY_AUDIT_ERROR_MARKERS = (
+    "404 not found",
+    "page not found",
+    "access denied",
+    "forbidden",
+    "internal server error",
+    "traceback",
+    "exception:",
+)
+
+
+def _proxy_audit_sample_rate() -> float:
+    try:
+        from config import PROXY_AUDIT_SAMPLE_RATE
+
+        rate = float(PROXY_AUDIT_SAMPLE_RATE)
+    except (ImportError, AttributeError, TypeError, ValueError):
+        rate = 0.10
+    return min(max(rate, 0.0), 1.0)
+
+
+def _read_proxy_audit_text(workspace: Path, summary: str, artifacts: list[dict]) -> str:
+    chunks = [summary or ""]
+    for artifact in artifacts:
+        if artifact.get("type") != "file":
+            continue
+        path = Path(str(artifact.get("path", "")))
+        if not path.exists() or not path.is_file():
+            continue
+        if path.suffix.lower() not in {"", ".md", ".txt", ".py", ".json", ".html"}:
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")[:12000]
+        except OSError:
+            continue
+        if path.suffix.lower() == ".py":
+            chunks.append(f"```python\n{content}\n```")
+        else:
+            chunks.append(content)
+    for name in ("output.md", "summary.txt"):
+        path = workspace / name
+        if path.exists() and path.is_file():
+            try:
+                chunks.append(path.read_text(encoding="utf-8", errors="replace")[:12000])
+            except OSError:
+                pass
+    return "\n".join(chunks)
+
+
+def _extract_python_blocks(text: str) -> list[str]:
+    blocks = re.findall(r"```(?:python|py)\s*\n(.*?)```", text, re.IGNORECASE | re.DOTALL)
+    return [block.strip() for block in blocks if block.strip()]
+
+
+def _check_import_validity(text: str) -> str:
+    import importlib.util
+
+    modules: set[str] = set()
+    for block in _extract_python_blocks(text):
+        try:
+            tree = ast.parse(block)
+        except SyntaxError as exc:
+            return f"proxy_false_positive: python syntax error at line {exc.lineno}"
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules.update(alias.name.split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                modules.add(node.module.split(".", 1)[0])
+    missing = sorted(m for m in modules if importlib.util.find_spec(m) is None)
+    if missing:
+        return f"proxy_false_positive: missing imports {', '.join(missing[:5])}"
+    return "secondary_passed"
+
+
+def _check_publish_content(result: dict, text: str) -> str:
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
+
+    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    candidates = [str(verification.get("target", ""))]
+    candidates.extend(re.findall(r"https?://[^\s)>\]\"']+", text))
+    url = next((c.strip().rstrip(".,") for c in candidates if c.startswith(("http://", "https://"))), "")
+    if not url:
+        return "secondary_passed"
+    try:
+        req = Request(url, headers={"User-Agent": "MiraProxyAudit/1.0"})
+        with urlopen(req, timeout=8) as resp:
+            body = resp.read(20000).decode("utf-8", errors="replace").lower()
+            if getattr(resp, "status", 200) >= 400:
+                return f"proxy_false_positive: publish URL returned HTTP {resp.status}"
+    except HTTPError as exc:
+        return f"proxy_false_positive: publish URL returned HTTP {exc.code}"
+    except (URLError, TimeoutError, OSError) as exc:
+        return f"proxy_false_positive: publish URL fetch failed: {exc.__class__.__name__}"
+    for marker in _PROXY_AUDIT_ERROR_MARKERS:
+        if marker in body:
+            return f"proxy_false_positive: publish content contains '{marker}'"
+    return "secondary_passed"
+
+
+def _secondary_proxy_check(workspace: Path, result: dict, summary: str) -> str:
+    task_type = str(result.get("task_type") or "").lower()
+    agent = str(result.get("agent") or "").lower()
+    tags = {str(t).lower() for t in result.get("tags", []) if isinstance(t, str)}
+    artifact_type = str((result.get("verification") or {}).get("artifact_type", "")).lower()
+    text = _read_proxy_audit_text(workspace, summary, result.get("artifacts_produced", []))
+    lower = text.lower()
+
+    if artifact_type == "publish" or "publish" in tags or task_type == "publish":
+        return _check_publish_content(result, text)
+    if agent == "coder" or "code" in tags or "coding" in tags:
+        return _check_import_validity(text)
+    if agent == "writer" or "writing" in tags or "写作" in tags or task_type in {"writing", "article", "essay"}:
+        hits = [marker for marker in _PROXY_AUDIT_WRITING_MARKERS if marker in lower]
+        if len(hits) >= 2:
+            return f"proxy_false_positive: writing contains anti-AI markers {', '.join(hits[:3])}"
+    for marker in _PROXY_AUDIT_ERROR_MARKERS:
+        if marker in lower:
+            return f"proxy_false_positive: output contains '{marker}'"
+    return "secondary_passed"
+
+
+def _maybe_log_proxy_audit(workspace: Path, task_id: str, summary: str) -> None:
+    if random.random() >= _proxy_audit_sample_rate():
+        return
+    result_path = workspace / "result.json"
+    if not result_path.exists():
+        return
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    proxy_passed = bool(result.get("outcome_verified"))
+    if not proxy_passed:
+        return
+    proxy_type = str(
+        result.get("verification_method") or (result.get("verification") or {}).get("proxy_checked") or "unknown"
+    )
+    secondary = _secondary_proxy_check(workspace, result, summary)
+    entry = {
+        "task_id": task_id,
+        "proxy_type": proxy_type,
+        "proxy_passed": True,
+        "secondary_check_result": secondary,
+        "timestamp": _utc_iso(),
+    }
+    try:
+        log_path = MIRA_ROOT / "data" / "proxy_drift.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.debug("Proxy audit log write failed for %s: %s", task_id, exc)
+
+
 # ---------------------------------------------------------------------------
 # Imports from extracted modules (task_support, task_result, plan_executor)
 # ---------------------------------------------------------------------------
@@ -532,7 +922,7 @@ from task_result import (
     _infer_failure_class,
     _infer_next_action,
     _canonicalize_result_payload,
-    _write_result,
+    _write_result as _base_write_result,
     _snapshot_file,
     _verify_step_artifact,
     _ensure_step_result,
@@ -540,10 +930,316 @@ from task_result import (
     _update_thread_memory,
 )
 
+
+def _task_output_verification_type(
+    task_type: str,
+    tags: list[str] | None,
+    agent: str | None,
+    verification: dict | None,
+) -> str:
+    parts = [
+        str(task_type or ""),
+        str(agent or ""),
+        " ".join(str(t) for t in (tags or []) if t),
+    ]
+    if isinstance(verification, dict):
+        parts.append(str(verification.get("task_type") or ""))
+        parts.append(str(verification.get("artifact_type") or ""))
+    label = " ".join(p for p in parts if p).strip()
+    return label or "general"
+
+
+def _actual_artifacts_for_verification(workspace: Path, metadata: dict | None) -> list[dict]:
+    artifacts = _collect_result_artifacts(workspace, metadata=metadata)
+    seen = {str(a.get("path", "")) for a in artifacts}
+    output_path = workspace / "output.md"
+    if str(output_path) not in seen:
+        artifacts.append(
+            {
+                "type": "file",
+                "path": str(output_path),
+                "size_bytes": output_path.stat().st_size if output_path.exists() else 0,
+                "exists": output_path.exists() and output_path.is_file(),
+            }
+        )
+    for expected in _workspace_relative_artifact_paths(metadata):
+        path = expected if expected.is_absolute() else workspace / expected
+        key = str(path)
+        if key in seen:
+            continue
+        artifacts.append(
+            {
+                "type": "file",
+                "path": key,
+                "size_bytes": path.stat().st_size if path.exists() and path.is_file() else 0,
+                "exists": path.exists() and path.is_file(),
+            }
+        )
+        seen.add(key)
+    return artifacts
+
+
+def _merge_task_output_verification(
+    verification: dict | None,
+    task_type: str,
+    verification_result: dict,
+) -> dict:
+    existing = _normalize_verification_payload(verification)
+    depth = int(verification_result.get("depth", 0) or 0)
+    passed = bool(verification_result.get("passed", False))
+    details = str(verification_result.get("details", ""))[:500]
+    checks = list(existing.get("checks", []))
+    checks.append(
+        {
+            "name": f"task_output_depth_{depth}",
+            "passed": passed,
+            "message": details,
+        }
+    )
+    existing_status = str(existing.get("status", "not-run"))
+    existing_verified = bool(existing.get("verified", False))
+    existing_hard_failed = existing_status == "failed"
+    verified = passed and (existing_verified or existing_status in ("not-run", ""))
+    if existing_verified and not existing_hard_failed:
+        verified = passed
+    proxy_checked = str(existing.get("proxy_checked") or "").strip()
+    depth_proxy = f"depth-{depth}"
+    if proxy_checked and depth_proxy not in proxy_checked:
+        proxy_checked = f"{proxy_checked} + {depth_proxy}"
+    else:
+        proxy_checked = proxy_checked or depth_proxy
+    existing.update(
+        {
+            "status": "verified" if verified else "failed",
+            "verified": verified,
+            "artifact_type": existing.get("artifact_type") or "file",
+            "summary": details,
+            "checks": checks,
+            "proxy_checked": proxy_checked,
+            "property_assumed": existing.get("property_assumed") or "task output matches claimed completion",
+            "task_type": existing.get("task_type") or task_type,
+            "unverified_assumptions": ["full user intent fulfilled"] if depth < 3 else [],
+        }
+    )
+    return existing
+
+
+def _record_task_output_verification(
+    workspace: Path,
+    task_id: str,
+    task_type: str,
+    default_depth: int,
+    verification_result: dict,
+    *,
+    escalated: bool,
+    human_review: bool,
+) -> None:
+    depth = int(verification_result.get("depth", 0) or 0)
+    passed = bool(verification_result.get("passed", False))
+    details = str(verification_result.get("details", ""))[:500]
+    log.info(
+        "TASK_OUTPUT_VERIFICATION task_id=%s task_type=%s depth=%d default_depth=%d passed=%s escalated=%s human_review=%s details=%s",
+        task_id,
+        task_type,
+        depth,
+        default_depth,
+        passed,
+        escalated,
+        human_review,
+        details,
+    )
+    try:
+        result_path = workspace / "result.json"
+        if not result_path.exists():
+            return
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        result["verification_depth"] = depth
+        result["verification_passed"] = passed
+        result["verification_details"] = details
+        result["verification_spot_checked"] = escalated
+        result["unfaithfulness_metric"] = {
+            "verification_depth": depth,
+            "accepted_plausible_unverified": bool(passed and depth < 3),
+            "human_review_required": human_review,
+        }
+        tmp = result_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.rename(result_path)
+    except (json.JSONDecodeError, OSError) as exc:
+        log.debug("Task output verification result update skipped for %s: %s", task_id, exc)
+
+
+_REASONING_REQUIRED_STATUSES = {"done", "verified", "completed", "completed_unverified"}
+
+
+def _read_result_response_text(workspace: Path, summary: str) -> str:
+    output_path = workspace / "output.md"
+    parts = []
+    if output_path.exists():
+        try:
+            parts.append(output_path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            pass
+    if summary:
+        parts.append(str(summary))
+    return "\n\n".join(part for part in parts if part).strip()
+
+
+def _store_reasoning_result(workspace: Path, reasoning: str) -> None:
+    result_path = workspace / "result.json"
+    if not result_path.exists():
+        return
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        result["reasoning"] = reasoning
+        tmp = result_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.rename(result_path)
+    except (json.JSONDecodeError, OSError) as exc:
+        log.debug("Reasoning result update skipped for %s: %s", result_path, exc)
+
+
+def _ensure_result_reasoning(
+    workspace: Path,
+    task_id: str,
+    status: str,
+    summary: str,
+    agent: str | None,
+) -> tuple[str, str, str | None]:
+    if normalize_task_status(status) not in _REASONING_REQUIRED_STATUSES:
+        return status, summary, None
+
+    response_text = _read_result_response_text(workspace, summary)
+    payload = extract_reasoning_payload(response_text)
+    if payload is None and response_text:
+        try:
+            rewritten = claude_think(
+                REASONING_REWRITE_PROMPT.format(response=response_text[:6000]),
+                timeout=90,
+                tier="light",
+            )
+            payload = extract_reasoning_payload(rewritten or "")
+        except Exception as exc:
+            log.warning("Reasoning rewrite failed for %s: %s", task_id, exc)
+
+    if payload is None:
+        rejected = "Task result rejected: missing required reasoning field. Agent must rewrite response with reasoning."
+        log.warning("TASK_REASONING_MISSING task_id=%s agent=%s status=%s", task_id, agent or "", status)
+        return "needs-input", rejected, None
+
+    reasoning, output_text = payload
+    if output_text:
+        output_path = workspace / "output.md"
+        try:
+            output_path.write_text(output_text, encoding="utf-8")
+        except OSError as exc:
+            log.debug("Could not normalize output.md after reasoning extraction for %s: %s", task_id, exc)
+        summary = output_text[:1000]
+    log.info("TASK_REASONING task_id=%s agent=%s reasoning=%s", task_id, agent or "", reasoning[:500])
+    return status, summary, reasoning
+
+
+def _write_result(
+    workspace: Path,
+    task_id: str,
+    status: str,
+    summary: str,
+    tags: list[str] | None = None,
+    agent: str | None = None,
+    metadata: dict | None = None,
+    verification: dict | None = None,
+    failure_class: str | None = None,
+    next_action: str | None = None,
+):
+    status, summary, reasoning = _ensure_result_reasoning(workspace, task_id, status, summary, agent)
+    normalized_status = normalize_task_status(status)
+    verification_result = None
+    default_depth = 0
+    escalated = False
+    human_review = False
+    if normalized_status in ("done", "verified", "completed", "completed_unverified"):
+        task_type = _task_output_verification_type(
+            str((verification or {}).get("task_type") if isinstance(verification, dict) else ""),
+            tags,
+            agent,
+            verification,
+        )
+        actual_artifacts = _actual_artifacts_for_verification(workspace, metadata)
+        default_depth = _default_verification_depth(task_type)
+        verification_result = verify_task_output(task_type, summary, actual_artifacts)
+        escalated = default_depth < 3 and int(verification_result.get("depth", 0) or 0) == 3
+        human_review = escalated and not bool(verification_result.get("passed", False))
+        verification = _merge_task_output_verification(verification, task_type, verification_result)
+        if human_review:
+            status = "needs-input"
+            tags = sorted({*(tags or []), "needs-human", "verification-failed"})
+            failure_class = failure_class or "verification_failed"
+            next_action = next_action or "human-review"
+            summary = (
+                f"{summary}\n\nVerification failed at escalated depth "
+                f"{verification_result['depth']}: {verification_result['details']}"
+            ).strip()
+
+    _base_write_result(
+        workspace,
+        task_id,
+        status,
+        summary,
+        tags=tags,
+        agent=agent,
+        metadata=metadata,
+        verification=verification,
+        failure_class=failure_class,
+        next_action=next_action,
+    )
+    if reasoning:
+        _store_reasoning_result(workspace, reasoning)
+    if verification_result is not None:
+        _record_task_output_verification(
+            workspace,
+            task_id,
+            task_type,
+            default_depth,
+            verification_result,
+            escalated=escalated,
+            human_review=human_review,
+        )
+    try:
+        _maybe_log_proxy_audit(workspace, task_id, summary)
+    except Exception as exc:
+        log.debug("Proxy audit skipped for %s: %s", task_id, exc)
+
+
+import task_result as _task_result_module
+
+_task_result_module._write_result = _write_result
+
 from plan_executor import (
-    _execute_plan,
-    _execute_plan_steps,
+    _execute_plan as _base_execute_plan,
+    _execute_plan_steps as _base_execute_plan_steps,
 )
+
+
+def _require_reasoning_in_plan(plan: list[dict]) -> list[dict]:
+    updated = []
+    for step in plan:
+        if not isinstance(step, dict):
+            updated.append(step)
+            continue
+        next_step = dict(step)
+        if "instruction" in next_step:
+            next_step["instruction"] = require_reasoning_in_instruction(str(next_step.get("instruction", "")))
+        updated.append(next_step)
+    return updated
+
+
+def _execute_plan(plan: list[dict], *args, **kwargs):
+    return _base_execute_plan(_require_reasoning_in_plan(plan), *args, **kwargs)
+
+
+def _execute_plan_steps(plan, *args, **kwargs):
+    return _base_execute_plan_steps(_require_reasoning_in_plan(plan), *args, **kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Context helpers extracted to execution/context.py
@@ -595,6 +1291,92 @@ _MARKET_FEED_MARKERS = (
     "premarket",
     "postmarket",
 )
+_PROTECTED_APPROVAL_MARKER = "[protected-path-confirmation-approved]"
+_PROTECTED_PATH_RE = re.compile(r"(?:Mira/)?agents/(?:super|coder|shared/soul)(?:/[^\s\"'`),\]]+)?")
+_PROTECTED_PATH_PREFIXES = ("agents/super/", "agents/coder/", "agents/shared/soul/")
+_MODIFY_ACTIONS = {"modify", "edit", "update", "change", "fix", "write", "patch", "apply"}
+
+
+def _normalize_mira_path(path: str) -> str:
+    raw = str(path or "").strip().strip("\"'")
+    if raw.startswith(("a/", "b/")):
+        raw = raw[2:]
+    raw = raw.replace("\\", "/").lstrip("./")
+    if raw.startswith("Mira/"):
+        raw = raw[len("Mira/") :]
+    return raw
+
+
+def _is_protected_path(path: str) -> bool:
+    normalized = _normalize_mira_path(path)
+    return any(normalized == prefix.rstrip("/") or normalized.startswith(prefix) for prefix in _PROTECTED_PATH_PREFIXES)
+
+
+def _strings_from_step(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        strings = []
+        for child in value.values():
+            strings.extend(_strings_from_step(child))
+        return strings
+    if isinstance(value, list):
+        strings = []
+        for child in value:
+            strings.extend(_strings_from_step(child))
+        return strings
+    return []
+
+
+def _paths_from_step(step: dict) -> list[str]:
+    paths: set[str] = set()
+    for text in _strings_from_step(step):
+        for match in _PROTECTED_PATH_RE.findall(text):
+            normalized = _normalize_mira_path(match)
+            if normalized:
+                paths.add(normalized)
+    return sorted(paths)
+
+
+def _is_coder_modify_step(step: dict) -> bool:
+    if str(step.get("agent", "")).strip().lower() != "coder":
+        return False
+    action = str(step.get("action", "")).strip().lower()
+    if action:
+        return action in _MODIFY_ACTIONS
+    instruction = str(step.get("instruction", ""))
+    return bool(re.search(r"\b(modify|edit|update|change|fix|write|patch|apply)\b", instruction, re.IGNORECASE))
+
+
+def _protected_coder_modify_paths(plan: list[dict]) -> list[str]:
+    paths: set[str] = set()
+    for step in plan:
+        if not isinstance(step, dict) or not _is_coder_modify_step(step):
+            continue
+        paths.update(path for path in _paths_from_step(step) if _is_protected_path(path))
+    return sorted(paths)
+
+
+def _mark_protected_plan_approved(plan: list[dict]) -> list[dict]:
+    for step in plan:
+        if not isinstance(step, dict) or not _is_coder_modify_step(step):
+            continue
+        if not any(_is_protected_path(path) for path in _paths_from_step(step)):
+            continue
+        instruction = str(step.get("instruction", ""))
+        if _PROTECTED_APPROVAL_MARKER not in instruction:
+            step["instruction"] = f"{instruction}\n\n{_PROTECTED_APPROVAL_MARKER}"
+    return plan
+
+
+def send_confirmation(diff_summary: str, affected_paths: list[str]) -> str:
+    paths = "\n".join(f"- {path}" for path in affected_paths)
+    return (
+        "NEEDS_APPROVAL: This coder task would modify protected Mira system files. "
+        "Reply approve to continue.\n\n"
+        f"{diff_summary.strip()}\n\n"
+        f"Affected paths:\n{paths}"
+    )
 
 
 def _is_user_sender(sender: str) -> bool:

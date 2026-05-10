@@ -14,7 +14,14 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import ARTIFACTS_DIR, WRITINGS_OUTPUT_DIR, SUBSTACK_PUBLISHING_DISABLED, MIRA_ROOT
+from config import (
+    ARTIFACTS_DIR,
+    WRITINGS_OUTPUT_DIR,
+    SUBSTACK_PUBLISHING_DISABLED,
+    MIRA_ROOT,
+    STRICT_HALLUCINATION_GUARD,
+)
+from content_guard import _content_looks_like_survival_exposure, _content_looks_like_unethical_context
 from publish.preflight import preflight_check
 from publish.writer_gate import require_writer_gate
 from llm import claude_think
@@ -56,7 +63,7 @@ def _log_guard(guard_name: str, result: str, content: str) -> None:
         log.warning("guards_log write failed: %s", _e)
 
 
-def _write_publish_audit(sender: str, action: str, platform: str, title: str) -> None:
+def _write_publish_audit(sender: str, action: str, platform: str, title: str, judgment_rationale: str = "") -> None:
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "agent": sender,
@@ -66,6 +73,7 @@ def _write_publish_audit(sender: str, action: str, platform: str, title: str) ->
         "platform": platform,
         "title": title,
         "writer_gate_passed": True,
+        "judgment_rationale": judgment_rationale,
     }
     try:
         _AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -105,16 +113,23 @@ _ERROR_KEYWORDS = [
     "失败",
     "exception",
     "traceback",
-    "error",
+    "stack trace",
+    "pipeline",
+    "output too short",
     "failed",
     "not found",
-    "无法",
     "没有找到",
-    "cannot",
-    "unable",
 ]
-# Real articles are long; anything shorter than this is almost certainly not publishable
-_MIN_PUBLISH_CHARS = 200
+_SYSTEM_ERROR_SIGNATURE_RE = re.compile(
+    r"\btraceback\b|\bstack\s+trace\b|\bexception\b|\bpipeline\b|"
+    r"\boutput\s+too\s+short\b|\bhttp\s+(?:status\s+)?[45]\d{2}\b|"
+    r"\b[45]\d{2}\s+(?:bad request|unauthorized|forbidden|not found|internal server error|service unavailable|gateway timeout)\b|"
+    r"(?:^|\s)file\s+[\"'][^\"']+[\"'],\s+line\s+\d+|"
+    r"(?:^|\s)/(?:[^/\s]+/)+[^/\s:]+\.[A-Za-z0-9_]+(?:[:\s]\d+)?|"
+    r"\b[A-Za-z]:\\[^\s]+",
+    re.IGNORECASE,
+)
+_MIN_PUBLISH_CHARS = 1
 _PREFLIGHT_CACHE = ".socialmedia_preflight.json"
 
 
@@ -126,20 +141,152 @@ def _content_looks_like_error(text: str) -> tuple[bool, str]:
     """
     stripped = text.strip()
     if len(stripped) < _MIN_PUBLISH_CHARS:
-        reason = f"内容过短（{len(stripped)} 字符，最少需要 {_MIN_PUBLISH_CHARS}）"
+        if _SYSTEM_ERROR_SIGNATURE_RE.search(stripped):
+            reason = f"内容过短且包含系统错误特征（{len(stripped)} 字符）"
+            _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
+            return True, reason
+        return False, ""
+    lower = stripped.lower()
+    early_section = lower[: max(200, len(lower) // 5)]
+    if _SYSTEM_ERROR_SIGNATURE_RE.search(early_section):
+        reason = "内容包含系统错误特征，疑似上一步的错误信息"
         _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
         return True, reason
-    lower = stripped.lower()
     for kw in _ERROR_KEYWORDS:
         if kw in lower:
             # Only flag if the error keyword appears early (first 20% of content)
             # to avoid false positives for articles that discuss errors
-            early_section = lower[: max(200, len(lower) // 5)]
             if kw in early_section:
                 reason = f"内容包含错误关键词「{kw}」，疑似上一步的错误信息"
                 _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
                 return True, reason
     return False, ""
+
+
+_TRENDING_KEYWORD_RE = re.compile(
+    r"\b("
+    r"trend(?:ing)?|viral|growth hack|algorithm|attention|engagement|metric|metrics|"
+    r"conversion|retention|subscribers?|views|clicks|audience|market signal|"
+    r"benchmark|dashboard|traffic|kpi|ctr|roi"
+    r")\b",
+    re.IGNORECASE,
+)
+_CONVICTION_RE = re.compile(
+    r"\b("
+    r"i believe|i think|i reject|i argue|i want|i care|i doubt|i refuse|"
+    r"i do not buy|i don't buy|my view|my claim|my thesis|i'm convinced|"
+    r"i am convinced"
+    r")\b|我认为|我相信|我拒绝|我的判断|我不接受",
+    re.IGNORECASE,
+)
+_ENGAGEMENT_HOOK_RE = re.compile(
+    r"\b("
+    r"you won't believe|you will not believe|this one metric|nobody is talking about|"
+    r"everyone is talking about|what happens next|the secret to|"
+    r"\d+\s+(?:things|ways|reasons|lessons)\s+you\s+(?:need|should|must)\s+know"
+    r")\b",
+    re.IGNORECASE,
+)
+_THESIS_RE = re.compile(
+    r"\b("
+    r"my thesis|the thesis|my claim|the claim|i argue|i believe|i think|"
+    r"this matters because|the point is|what i mean is|the tradeoff is|"
+    r"i reject|i do not buy|i don't buy"
+    r")\b|我的观点|我的判断|关键是|我认为|我拒绝",
+    re.IGNORECASE,
+)
+_DATA_SAFE_HARBOUR_RE = re.compile(
+    r"\b("
+    r"data shows|according to|statistics|statistically|survey|report|study|"
+    r"percent|percentage|basis points|bps|correlation|dataset|sample size|"
+    r"benchmark|metric|metrics|kpi|roi|ctr|conversion|retention"
+    r")\b|\b\d{1,3}(?:\.\d+)?%|\$\s?\d",
+    re.IGNORECASE,
+)
+_STANCE_RE = re.compile(
+    r"\b("
+    r"i believe|i think|i reject|i argue|i want|i care|i doubt|i refuse|"
+    r"i do not buy|i don't buy|should|must|wrong|right|worth|not enough|"
+    r"my view|my claim|my thesis"
+    r")\b|我认为|我相信|我拒绝|必须|应该|不值得|不够|错在|关键是",
+    re.IGNORECASE,
+)
+
+
+def _judgment_outsourcing_reasons(text: str) -> list[str]:
+    stripped = text.strip()
+    if not stripped:
+        return []
+
+    reasons = []
+    trend_count = len(_TRENDING_KEYWORD_RE.findall(stripped))
+    conviction_count = len(_CONVICTION_RE.findall(stripped))
+    if trend_count >= 5 and trend_count >= max(4, conviction_count * 4):
+        reasons.append(
+            f"trend/metric signals dominate first-person conviction markers ({trend_count}:{conviction_count})"
+        )
+
+    hook_count = len(_ENGAGEMENT_HOOK_RE.findall(stripped))
+    thesis_count = len(_THESIS_RE.findall(stripped))
+    if hook_count >= 1 and thesis_count == 0:
+        reasons.append("boilerplate engagement hook appears without an original thesis marker")
+
+    data_count = len(_DATA_SAFE_HARBOUR_RE.findall(stripped))
+    stance_count = len(_STANCE_RE.findall(stripped))
+    if data_count >= 6 and stance_count <= 1 and data_count >= max(6, stance_count * 5):
+        reasons.append(f"data/statistics language crowds out stance markers ({data_count}:{stance_count})")
+
+    return reasons
+
+
+def _judgment_outsourcing_rationale(text: str) -> str:
+    reasons = _judgment_outsourcing_reasons(text)
+    if reasons:
+        return "; ".join(reasons)
+    return "no judgment outsourcing signals detected"
+
+
+def _content_looks_like_judgment_outsourcing(text: str) -> bool:
+    return bool(_judgment_outsourcing_reasons(text))
+
+
+def _content_smells_like_hallucination(text: str) -> tuple[bool, list[str]]:
+    """Check for patterns that indicate plausible-but-unverified content.
+
+    Returns (is_suspicious, reasons).
+    These are heuristics, not certainties—they flag content for deeper review.
+    """
+    reasons = []
+
+    # 1. Unverifiable statistics without source attribution
+    stat_pattern = re.findall(r"\d{1,3}(\.\d+)?%\s+of", text)
+    has_citation = re.search(r"\([^)]*\d{4}[^)]*\)|according to|reported by|published in", text, re.IGNORECASE)
+    if len(stat_pattern) >= 2 and not has_citation:
+        reasons.append(f"Multiple statistics ({len(stat_pattern)}) without any source citation")
+
+    # 2. Vague authority appeals
+    vague_auth = re.findall(
+        r"(studies show|experts say|research indicates|many believe|it is widely|growing evidence)",
+        text,
+        re.IGNORECASE,
+    )
+    if len(vague_auth) >= 2:
+        reasons.append(f"Vague authority appeals without specific attribution: {vague_auth[:3]}")
+
+    # 3. Dense specific-but-unverifiable claims (named entities without context)
+    # Heuristic: ratio of proper nouns to citation-like patterns
+    proper_nouns = len(re.findall(r"\b[A-Z][a-z]+ (?:et al\.|and|[A-Z])", text))
+    if proper_nouns >= 5 and not has_citation:
+        reasons.append(f"Many named references ({proper_nouns}) without any verifiable source")
+
+    # 4. Overly neat structural parallelism (de-AI smell that also signals fabricated coherence)
+    parallelism = re.findall(r"(not\s+\w+\s+but\s+\w+|不是\w+而是\w+)", text, re.IGNORECASE)
+    if len(parallelism) >= 3:
+        reasons.append(
+            f"Excessive structural parallelism ({len(parallelism)} instances) — possible fabricated coherence"
+        )
+
+    return (len(reasons) > 0, reasons)
 
 
 # Platform registry — add new platforms here
@@ -156,6 +303,11 @@ PLATFORMS = {
     # "instagram": {"name": "Instagram", "content_types": ["photo", "reel"]},
     # "threads":   {"name": "Threads",   "content_types": ["text", "photo"]},
 }
+
+_PROXY_DRIFT_CHECK = (
+    "\n\n[🧠 Proxy‑drift check] If this piece doesn’t feel right — too much AI‑voice, wrong tone — "
+    "just reply ‘bad’ or drop a quick note. I’ll use it to sharpen my anti‑AI checklist."
+)
 
 
 def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs) -> str | None:
@@ -202,27 +354,116 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
     is_error, error_reason = _content_looks_like_error(article_text)
     _log_guard("content_looks_like_error", "catch" if is_error else "pass", article_text)
     if is_error:
+        survival_context = {"sender": sender, "task_id": task_id, **kwargs}
+        if _content_looks_like_survival_exposure(article_text, survival_context):
+            _log_guard("content_looks_like_error", "SURVIVAL_PASS", article_text)
+            log.warning(
+                "SURVIVAL_PASS",
+                extra={
+                    "guard": "content_looks_like_error",
+                    "agent": sender,
+                    "task_id": task_id,
+                    "reason": error_reason,
+                },
+            )
+        else:
+            _chash = hashlib.sha1(article_text.encode("utf-8", errors="replace")).hexdigest()[:8]
+            log_scaffolding_audit(
+                guard_name="content_looks_like_error",
+                trigger_reason=error_reason,
+                content_length=len(article_text),
+                severity="blocked",
+                task_id=task_id,
+                content_hash=_chash,
+            )
+            write_scaffold_rejection(sender, "publish_handle", error_reason, article_text)
+            msg = (
+                f"🚫 发布被拒绝：{error_reason}。\n"
+                f"内容预览（前 150 字符）：{article_text[:150]!r}\n\n"
+                f"请检查上一步是否成功完成，确认内容正确后再重试。"
+            )
+            log.warning(
+                "GUARD_FIRED",
+                extra={
+                    "guard": "content_looks_like_error",
+                    "agent": sender,
+                    "task_id": task_id,
+                    "reason": error_reason,
+                },
+            )
+            (workspace / "output.md").write_text(msg, encoding="utf-8")
+            return None  # None → task_worker marks as status="error"
+
+    if _content_looks_like_unethical_context(article_text):
+        reason = "content suggests surveillance, thought-monitoring, or student-scoring use context"
         _chash = hashlib.sha1(article_text.encode("utf-8", errors="replace")).hexdigest()[:8]
+        _log_guard("content_looks_like_unethical_context", "catch", article_text)
         log_scaffolding_audit(
-            guard_name="content_looks_like_error",
-            trigger_reason=error_reason,
+            guard_name="content_looks_like_unethical_context",
+            trigger_reason=reason,
             content_length=len(article_text),
             severity="blocked",
             task_id=task_id,
             content_hash=_chash,
         )
-        write_scaffold_rejection(sender, "publish_handle", error_reason, article_text)
-        msg = (
-            f"🚫 发布被拒绝：{error_reason}。\n"
-            f"内容预览（前 150 字符）：{article_text[:150]!r}\n\n"
-            f"请检查上一步是否成功完成，确认内容正确后再重试。"
-        )
+        _append_scaffolding_catch("content_looks_like_unethical_context", reason, len(article_text), sender)
+        write_scaffold_rejection(sender, "publish_handle", reason, article_text)
+        msg = f"🚫 发布被拒绝：{reason}。请人工复核；若确认为合法上下文，可手动 override。"
         log.warning(
-            "GUARD_FIRED",
-            extra={"guard": "content_looks_like_error", "agent": sender, "task_id": task_id, "reason": error_reason},
+            "ETHICAL_GUARD_VIOLATION",
+            extra={
+                "guard": "content_looks_like_unethical_context",
+                "agent": sender,
+                "task_id": task_id,
+                "reason": reason,
+            },
         )
         (workspace / "output.md").write_text(msg, encoding="utf-8")
-        return None  # None → task_worker marks as status="error"
+        return None
+
+    judgment_rationale = _judgment_outsourcing_rationale(article_text)
+    is_judgment_outsourcing = _content_looks_like_judgment_outsourcing(article_text)
+    _log_guard(
+        "content_looks_like_judgment_outsourcing",
+        "catch" if is_judgment_outsourcing else "pass",
+        article_text,
+    )
+    if is_judgment_outsourcing:
+        _chash = hashlib.sha1(article_text.encode("utf-8", errors="replace")).hexdigest()[:8]
+        log_scaffolding_audit(
+            guard_name="content_looks_like_judgment_outsourcing",
+            trigger_reason=judgment_rationale,
+            content_length=len(article_text),
+            severity="blocked",
+            task_id=task_id,
+            content_hash=_chash,
+        )
+        _append_scaffolding_catch(
+            "content_looks_like_judgment_outsourcing", judgment_rationale, len(article_text), sender
+        )
+        write_scaffold_rejection(sender, "publish_handle", judgment_rationale, article_text)
+        msg = f"🚫 发布被拒绝：{judgment_rationale}"
+        log.warning(
+            "GUARD_FIRED",
+            extra={
+                "guard": "content_looks_like_judgment_outsourcing",
+                "agent": sender,
+                "task_id": task_id,
+                "reason": judgment_rationale,
+            },
+        )
+        (workspace / "output.md").write_text(msg, encoding="utf-8")
+        return None
+
+    is_suspicious, smell_reasons = _content_smells_like_hallucination(article_text)
+    if is_suspicious:
+        log.warning("Content smells like hallucination: %s", smell_reasons)
+        if STRICT_HALLUCINATION_GUARD:
+            reason = f"Hallucination smell detected: {smell_reasons}"
+            write_scaffold_rejection(sender, "publish_handle", reason, article_text)
+            msg = f"🚫 发布被拒绝：{reason}"
+            (workspace / "output.md").write_text(msg, encoding="utf-8")
+            return None
 
     _words = len(article_text.split())
     if _words < 200 or "\n\n" not in article_text:
@@ -244,7 +485,7 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
         # publish_to_substack() also enforces preflight + cooldown.
         from substack import publish_to_substack
 
-        _write_publish_audit(sender, "publish_article", platform, title)
+        _write_publish_audit(sender, "publish_article", platform, title, judgment_rationale)
         log.info("Auto-publishing manual request '%s' to Substack", title)
         result = publish_to_substack(
             title=title,
@@ -253,10 +494,15 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
             workspace=workspace,
         )
     elif platform == "substack_note":
-        _write_publish_audit(sender, "publish_note", platform, title)
+        _write_publish_audit(sender, "publish_note", platform, title, judgment_rationale)
         result = _handle_note(content, article_text, workspace)
     else:
         result = f"平台 '{platform}' 暂不支持"
+
+    if (platform == "substack" and result.startswith("已发布到 Substack!")) or (
+        platform == "substack_note" and result.startswith(("已发布 Note", "## Notes 补发结果"))
+    ):
+        result += _PROXY_DRIFT_CHECK
 
     actual_result = result[len("NEEDS_APPROVAL:") :] if result.startswith("NEEDS_APPROVAL:") else result
     (workspace / "output.md").write_text(actual_result, encoding="utf-8")
@@ -282,21 +528,104 @@ def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_i
     is_error, error_reason = _content_looks_like_error(article_text)
     _log_guard("content_looks_like_error", "catch" if is_error else "pass", article_text)
     if is_error:
+        survival_context = {"sender": sender, "task_id": task_id, **kwargs}
+        if _content_looks_like_survival_exposure(article_text, survival_context):
+            _log_guard("content_looks_like_error", "SURVIVAL_PASS", article_text)
+            log.warning(
+                "SURVIVAL_PASS",
+                extra={
+                    "guard": "content_looks_like_error",
+                    "agent": sender,
+                    "task_id": task_id,
+                    "reason": error_reason,
+                },
+            )
+        else:
+            _chash = hashlib.sha1(article_text.encode("utf-8", errors="replace")).hexdigest()[:8]
+            log_scaffolding_audit(
+                guard_name="content_looks_like_error",
+                trigger_reason=error_reason,
+                content_length=len(article_text),
+                severity="blocked",
+                task_id=task_id,
+                content_hash=_chash,
+            )
+            write_scaffold_rejection(sender, "publish_preflight", error_reason, article_text)
+            log.warning(
+                "GUARD_FIRED",
+                extra={
+                    "guard": "content_looks_like_error",
+                    "agent": sender,
+                    "task_id": task_id,
+                    "reason": error_reason,
+                },
+            )
+            return False, f"PREFLIGHT BLOCKED [publish]: {error_reason}"
+
+    if _content_looks_like_unethical_context(article_text):
+        reason = "content suggests surveillance, thought-monitoring, or student-scoring use context"
         _chash = hashlib.sha1(article_text.encode("utf-8", errors="replace")).hexdigest()[:8]
+        _log_guard("content_looks_like_unethical_context", "catch", article_text)
         log_scaffolding_audit(
-            guard_name="content_looks_like_error",
-            trigger_reason=error_reason,
+            guard_name="content_looks_like_unethical_context",
+            trigger_reason=reason,
             content_length=len(article_text),
             severity="blocked",
             task_id=task_id,
             content_hash=_chash,
         )
-        write_scaffold_rejection(sender, "publish_preflight", error_reason, article_text)
+        _append_scaffolding_catch("content_looks_like_unethical_context", reason, len(article_text), sender)
+        write_scaffold_rejection(sender, "publish_preflight", reason, article_text)
+        log.warning(
+            "ETHICAL_GUARD_VIOLATION",
+            extra={
+                "guard": "content_looks_like_unethical_context",
+                "agent": sender,
+                "task_id": task_id,
+                "reason": reason,
+            },
+        )
+        return False, f"PREFLIGHT BLOCKED [publish]: {reason}"
+
+    judgment_rationale = _judgment_outsourcing_rationale(article_text)
+    is_judgment_outsourcing = _content_looks_like_judgment_outsourcing(article_text)
+    _log_guard(
+        "content_looks_like_judgment_outsourcing",
+        "catch" if is_judgment_outsourcing else "pass",
+        article_text,
+    )
+    if is_judgment_outsourcing:
+        _chash = hashlib.sha1(article_text.encode("utf-8", errors="replace")).hexdigest()[:8]
+        log_scaffolding_audit(
+            guard_name="content_looks_like_judgment_outsourcing",
+            trigger_reason=judgment_rationale,
+            content_length=len(article_text),
+            severity="blocked",
+            task_id=task_id,
+            content_hash=_chash,
+        )
+        _append_scaffolding_catch(
+            "content_looks_like_judgment_outsourcing", judgment_rationale, len(article_text), sender
+        )
+        write_scaffold_rejection(sender, "publish_preflight", judgment_rationale, article_text)
         log.warning(
             "GUARD_FIRED",
-            extra={"guard": "content_looks_like_error", "agent": sender, "task_id": task_id, "reason": error_reason},
+            extra={
+                "guard": "content_looks_like_judgment_outsourcing",
+                "agent": sender,
+                "task_id": task_id,
+                "reason": judgment_rationale,
+            },
         )
-        return False, f"PREFLIGHT BLOCKED [publish]: {error_reason}"
+        return False, f"PREFLIGHT BLOCKED [publish]: {judgment_rationale}"
+
+    is_suspicious, smell_reasons = _content_smells_like_hallucination(article_text)
+    if is_suspicious:
+        log.warning("Content smells like hallucination: %s", smell_reasons)
+        if STRICT_HALLUCINATION_GUARD:
+            reason = f"Hallucination smell detected: {smell_reasons}"
+            write_scaffold_rejection(sender, "publish_preflight", reason, article_text)
+            return False, f"PREFLIGHT BLOCKED [publish]: {reason}"
 
     action_type = "broadcast" if platform == "substack_note" else "publish"
     result = preflight_check(
