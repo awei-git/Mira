@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -77,6 +78,7 @@ except (ImportError, ModuleNotFoundError):
 from task_manager import TaskManager, TASKS_DIR, classify_task, get_stuck_tasks
 from memory.soul import load_soul, format_soul, append_memory, check_prompt_injection
 from llm import claude_think
+from sub_agent import append_pipeline_context_to_system_prompt
 from writing_workflow import (
     check_writing_responses,
     advance_project,
@@ -374,6 +376,80 @@ _DOMAIN_TASK_COMMANDS = {
     "daily-photo",
     "skill-study",
 }
+
+_HEAVY_AGENT_PIPELINE_CONTEXTS = {
+    "writer": {
+        "upstream_output": "super selected or advanced a writing project from the user request, Mira idea state, project files, and publish cooldown context",
+        "downstream_expects": "a draft or final article artifact with writer-gate metadata that publishing, podcast, and social agents can consume",
+        "shared_goal": "move the writing project through review, approval, publishing, and follow-up without bypassing system constraints",
+    },
+    "analyst": {
+        "upstream_output": "super scheduled the market-analysis slot and gathered Tetra data, recent briefings, skills, and memory context",
+        "downstream_expects": "a dated market briefing saved to artifacts and pushed to the feed with concrete source numbers and portfolio limits respected",
+        "shared_goal": "give WA decision-useful market context while preserving the Tetra data contract and downstream feed reliability",
+    },
+    "researcher": {
+        "upstream_output": "super selected the research topic or queue item and supplied prior research state, source material, and memory context",
+        "downstream_expects": "a reusable research artifact or queue advancement that research-log, memory, writing, and future research steps can build on",
+        "shared_goal": "advance Mira's research-build loop coherently instead of optimizing for a standalone answer",
+    },
+}
+
+_PIPELINE_PROMPT_FUNCTIONS = ("claude_think", "model_think", "claude_act")
+
+
+def _pipeline_context_for_agent(agent: str, **overrides) -> dict:
+    context = dict(_HEAVY_AGENT_PIPELINE_CONTEXTS.get(str(agent or ""), {}))
+    for key in ("upstream_output", "downstream_expects", "shared_goal"):
+        value = overrides.get(key)
+        if value:
+            context[key] = str(value)
+    return context
+
+
+@contextmanager
+def _sub_agent_pipeline_context(agent: str, pipeline_context: dict | None = None):
+    context = pipeline_context or _pipeline_context_for_agent(agent)
+    if not context:
+        yield
+        return
+
+    modules = []
+    try:
+        import llm as _llm_module
+
+        modules.append(_llm_module)
+    except ImportError:
+        pass
+    for module_name in ("workflows.daily", "writing_workflow"):
+        module = sys.modules.get(module_name)
+        if module is not None:
+            modules.append(module)
+
+    originals = []
+
+    def _wrap_prompt_call(fn):
+        def _wrapped(prompt, *args, **kwargs):
+            if kwargs.get("system"):
+                next_kwargs = dict(kwargs)
+                next_kwargs["system"] = append_pipeline_context_to_system_prompt(next_kwargs["system"], context)
+                return fn(prompt, *args, **next_kwargs)
+            return fn(append_pipeline_context_to_system_prompt(prompt, context), *args, **kwargs)
+
+        return _wrapped
+
+    for module in modules:
+        for name in _PIPELINE_PROMPT_FUNCTIONS:
+            fn = getattr(module, name, None)
+            if callable(fn):
+                originals.append((module, name, fn))
+                setattr(module, name, _wrap_prompt_call(fn))
+
+    try:
+        yield
+    finally:
+        for module, name, fn in reversed(originals):
+            setattr(module, name, fn)
 
 
 def _update_coattention(focus_description, invitation):
@@ -2655,7 +2731,8 @@ def cmd_run():
         _t0 = _time.monotonic()
         _write_ok = True
         try:
-            _run_canonical_writing_pipeline()
+            with _sub_agent_pipeline_context("writer"):
+                _run_canonical_writing_pipeline()
         except Exception as e:
             log.error("Writing response check failed: %s", e)
             _write_ok = False
@@ -3675,12 +3752,15 @@ def main():
         do_research_log(user_id=flags.get("user", "ang"))
         update_joint_attention("Mira's autonomous research-build loop")
     elif command == "research-cycle":
-        do_research_cycle(user_id=flags.get("user", "ang"))
+        with _sub_agent_pipeline_context("researcher"):
+            do_research_cycle(user_id=flags.get("user", "ang"))
         update_joint_attention("Mira's autonomous research-build loop")
     elif command == "analyst":
-        do_analyst(slot=flags.get("slot", ""))
+        with _sub_agent_pipeline_context("analyst"):
+            do_analyst(slot=flags.get("slot", ""))
     elif command == "research":
-        do_research()
+        with _sub_agent_pipeline_context("researcher"):
+            do_research()
         update_joint_attention("Mira's autonomous research-build loop")
     elif command == "zhesi":
         do_zhesi(user_id=flags.get("user", "ang"))

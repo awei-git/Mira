@@ -38,6 +38,25 @@ Task result:
 """
 
 
+def append_pipeline_context_to_system_prompt(system_prompt: str, pipeline_context: dict | None = None) -> str:
+    text = str(system_prompt or "")
+    if not pipeline_context:
+        return text.strip()
+    if "You are operating as part of a pipeline." in text:
+        return text.strip()
+    upstream_output = str(pipeline_context.get("upstream_output") or "").strip()
+    downstream_expects = str(pipeline_context.get("downstream_expects") or "").strip()
+    shared_goal = str(pipeline_context.get("shared_goal") or "").strip()
+    pipeline_block = (
+        "You are operating as part of a pipeline. "
+        f"Upstream produced: {upstream_output}. "
+        f"Downstream expects: {downstream_expects}. "
+        f"Shared goal: {shared_goal}. "
+        "Optimize for the full pipeline outcome, not only this task."
+    )
+    return f"{text.rstrip()}\n\n{pipeline_block}".strip()
+
+
 def assert_local_only_agent_model(agent: str | None, model_name: str | None = None, logger=None) -> str:
     agent_name = str(agent or "")
     resolved_model = str(model_name or _current_model_policy() or "omlx")
@@ -50,11 +69,11 @@ def assert_local_only_agent_model(agent: str | None, model_name: str | None = No
     raise RuntimeError(err)
 
 
-def require_reasoning_in_instruction(instruction: str) -> str:
+def require_reasoning_in_instruction(instruction: str, pipeline_context: dict | None = None) -> str:
     text = str(instruction or "")
-    if '"reasoning"' in text and '"output"' in text and "Response Contract" in text:
-        return text
-    return f"{text.rstrip()}\n\n{REASONING_RESPONSE_REQUIREMENT}".strip()
+    if '"reasoning"' not in text or '"output"' not in text or "Response Contract" not in text:
+        text = f"{text.rstrip()}\n\n{REASONING_RESPONSE_REQUIREMENT}".strip()
+    return append_pipeline_context_to_system_prompt(text, pipeline_context)
 
 
 def extract_reasoning_payload(text: str) -> tuple[str, str] | None:

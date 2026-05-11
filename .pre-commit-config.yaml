@@ -32,8 +32,8 @@ repos:
     hooks:
       - id: check-imports
         name: Check internal imports resolve
-        entry: python3 scripts/check_imports.py
+        entry: python3 scripts/check_imports.py --files
         language: system
-        pass_filenames: false
+        pass_filenames: true
         files: \.py$
         stages: [pre-commit]
