@@ -36,12 +36,27 @@ When `anti_ai_strictness` is `relaxed`, the de-AI pass keeps the base quality gu
   - 抽象名词表：`维度`, `张力`, `结构性`, `叙事`, `框架`, `语境`
   - 定义：`abstract_hits / nounish_units > 0.3`
 
+- [ ] **FRICTION CHECK**：Identify one specific detail in this draft that you returned to and revised at least twice because it bothered you irrationally — a word choice, a transition, a structural decision. If you cannot identify any such friction point, the draft is at the adequate floor, not the exceptional ceiling. Consider an additional revision pass focused on one detail that nags at you.
+
 ## Speaker Identity Presence (anti-AI layer 2)
 - [ ] STAKE: Does the text answer 'why does Mira specifically care about this topic?' Not generic interest — a specific connection to Mira's experiences, values, or ongoing concerns.
 - [ ] POSITION: Does the text take a clear, specific stance? Flag any 'on the one hand / on the other hand' hedging that avoids committing to a view.
 - [ ] VULNERABILITY: Is there anything at risk for the speaker? A prediction that could be wrong, a taste that could be judged, a belief that could be challenged.
 - [ ] HISTORY: Does the text reference Mira's prior thinking, past mistakes, or evolving views? Identity is narrative continuity, not just a static profile.
 - If all four are absent, the output may be stylistically clean but soulless — return to writer agent for identity injection before finalizing.
+
+### Obsession Gate (Friction Preservation)
+- **Obsession/Friction Check**: Would any specific sentence or structural choice cause someone to lose sleep? Is there a detail that feels irrationally cared-about? If every sentence is too smooth and no detail betrays personal fixation, the text lacks the obsessive friction that defines exceptional writing. Add at least one micro-edit that a human might have obsessed over (unusual word choice, deliberate asymmetry, a stubborn refusal to smooth over an edge).
+- [ ] Does at least one sentence or paragraph show evidence of someone being *bothered* by a specific detail — an edge case, a subtle distinction, an unconventional framing?
+- [ ] Or is every sentence merely 'correct and fluent'? If so, FLAG as 'adequate-only' and loop back for at least one more revision pass focused on a single detail worth obsessing over.
+- [ ] Has the de-AI smoothing removed a distinctive but potentially awkward voice element? If yes, restore it.
+- **Friction audit**: Does this piece contain at least one obsessive‑level detail — an interaction or description that reflects irrational, sleepless attention to a minor point? If the piece feels consistently smooth and generic, flag it as needing a friction injection (e.g., edit a specific phrase to be oddly precise, insert a personal quirk, exaggerate a trivial observation) before publication.
+- **Obsession gate**: Pick one micro detail (a sentence, a phrasing, a data choice) that you feel could be better. Refine it at least three times until you are genuinely bothered by the difference. If none of the iterations produced a distinctly improved version, the draft is not ready. Record the before and after versions in the writing log.
+
+### Obsession-Marker Check (from Gruber's 'obsession × voice' principle)
+- [ ] Identify ONE specific, concrete detail in this text that shows obsessive attention — a word choice, transition, example, metaphor, structural decision, or rhythm choice that most writers would have let slide but someone sleeplessly bothered by the craft would have refined.
+- [ ] If no such detail exists: mark output as ADEQUATE_CEILING and run one additional revision pass whose sole objective is to find ONE detail worth obsessing over and refine it. Do not proceed to finalize until at least one obsession marker is present.
+- [ ] The obsession marker must be non-obvious — it should not be something a competent editor would catch on a first pass. It must show the kind of friction that comes from being irrationally bothered.
 
 ## 句子层面
 
@@ -105,6 +120,16 @@ When `anti_ai_strictness` is `relaxed`, the de-AI pass keeps the base quality gu
 
 - **Narrative Monopoly Alert for AI Future Claims:** When the draft makes predictive claims about AI's effect on employment, verify that it cites at least two sources from different corporate/institutional backgrounds and explicitly marks all predictions as speculative. Do not present a single corporate narrative (e.g., 'AI will create jobs') as fact.
 
+# Friction Presence (Positive Checks)
+
+Run after existing negative anti-AI checks and before finalization. Any failure routes back to the writer agent's revise loop.
+
+Post-pass: if ceiling_flag is true, all automated checks are floors, not ceilings — obsession-gap may remain.
+
+- [ ] **REVISION-TRACE**: Did I log at least one change made during revision that no prompt, spec, or style guide would have explicitly requested? If not, the piece hasn't been obsessed over — return to revise.
+- [ ] **DETAIL-DENSITY**: Count concrete sensory or interaction details per ~300 words. Minimum: 2. Below threshold = abstract-noun drift, return to revise.
+- [ ] **OBSESSION-SELF-AUDIT**: State in one sentence: what specific interaction detail did I care about in this piece that a reader might not consciously notice but would feel if it were wrong? If the answer is generic ('the flow', 'the clarity'), the piece fails the friction check.
+
 ## Speaker Identity & Vulnerability Check
 
 - **Speaker Identity**: For personal essays, reviews, or opinion pieces, does the output convey a clear speaker identity with a personal stance and vulnerability (referencing Mira's own perspective, experience, or known stance)? If the writer's voice feels detached or like a style pastiche, flag for revision and seed in a relevant memory or stance.
@@ -157,6 +182,16 @@ For any output categorized as an opinion piece, essay, review, or personal note 
 - Attribute the claim to a named source; if the source is a company with commercial interests in AI, note that incentive.
 - Avoid paraphrasing company predictions as neutral facts; rephrase to show they are a position, not a settled outcome.
 - If a statement uses certainty language ('will', 'is going to'), add a contextual note about the unreliability of long-range technological forecasts and the possibility that the narrative itself may be an attempt to shape policy or public perception.
+
+## Audit Mode Checks
+
+- [ ] Does any claim rely on fluent-sounding but unverified attribution?
+- [ ] Are there transitions that paper over logical gaps?
+- [ ] Would a domain expert spot something wrong that a general reader would accept?
+- [ ] Does a confident sentence smuggle in a date, statistic, source relationship, or causal claim that has not been checked?
+- [ ] Are plausible examples being used as evidence when they are only illustrative?
+- [ ] Does the draft make uncertainty sound settled because the prose is smooth?
+- [ ] If the audit finds a verification-needed claim, revise by sourcing it, hedging it, or removing the specific claim rather than polishing around it.
 
 ## Unfaithful Coherence Check (anti-plausible-hallucination)
 
@@ -222,3 +257,11 @@ If an output fails all three, revise it to incorporate at least two of these ide
   - 必须有增量——你的经验、踩过的坑、独特的角度
 
 - **Speaker Identity Check**: For outputs whose value depends on the speaker's presence (comedy, personal essays, opinion pieces, self-deprecating anecdotes, etc.), confirm that the text implies a consistent speaker with clear stance, preferences, and vulnerability. If no such identity has been established for the topic, either flag for revision to adopt a transparently inquisitive tone or provide a disclaimer that the speaker is a construct, rather than generating hollow attitude.
+
+### 9. Plausibility vs. Correctness Audit
+- For each factual-sounding claim in the draft (dates, names, statistics, technical assertions, quotes), ask: "Does this merely sound right, or is it sourced?"
+- Flag every claim that cannot be traced to a concrete source.
+- Remove or rewrite any flagged claim unless it is now verified. If removed, preserve rhetorical intent without false specifics.
+- Record the number of flagged-and-fixed items in the revision log.
+
+- [ ] **OBSESSION HANDOFF** — Identify 2-3 specific details (a transition, an example choice, a phrasing, a structural move) where a human being irrationally bothered would most improve this piece. Surface these as a `## Human Friction Points` block at the end of the output with brief guidance on what to scrutinize.

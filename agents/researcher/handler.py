@@ -31,7 +31,7 @@ from config import (
     RESEARCHER_QUERY_TIMEOUT,
     RESEARCHER_REFLECT_TIMEOUT,
 )
-from prompts import ROUTING_BOUNDARY
+from prompts import INCENTIVE_STRUCTURE_CHECK, ROUTING_BOUNDARY
 
 log = logging.getLogger("researcher_agent")
 
@@ -111,6 +111,7 @@ Write a research memo that:
 - summarizes the key findings with specific facts, dates, and names
 - includes inline source citations as markdown links using the supplied titles/URLs
 - explicitly notes contradictions or uncertainty
+- {INCENTIVE_STRUCTURE_CHECK}
 - is concise but information-dense
 
 Markdown only.
@@ -241,6 +242,7 @@ Instructions:
 - Search for recent, authoritative sources
 - Summarize key findings with source URLs
 - Note any contradictions between sources
+- {INCENTIVE_STRUCTURE_CHECK}
 - Be specific — include data, dates, names
 
 Write findings to output.md in the workspace."""
@@ -324,6 +326,7 @@ Synthesize the research findings into a comprehensive report:
 - Use the user's language (Chinese if query is Chinese)
 - Include inline source citations [title](url)
 - Mark confidence: strong (multiple sources agree), moderate (single source), uncertain
+- {INCENTIVE_STRUCTURE_CHECK}
 - Structure with clear headings
 - End with key takeaways and open questions
 - Markdown format

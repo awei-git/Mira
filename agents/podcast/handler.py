@@ -20,6 +20,7 @@ import base64
 import json
 import logging
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,9 @@ if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 
 log = logging.getLogger("podcast")
+
+PUBLISH_MP3_MAX_BYTES = 95 * 1024 * 1024
+PUBLISH_MP3_BITRATE = "96k"
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +65,54 @@ from publish.preflight import preflight_check
 GEMINI_MODEL_TTS = GEMINI_TTS_MODEL  # Flash: free tier available
 GEMINI_MODEL_TTS_FALL = GEMINI_TTS_MODEL  # same (Pro has no free tier)
 GEMINI_MODEL_THINK = GEMINI_PRO_MODEL  # for script generation
+
+
+def _prepare_episode_mp3_for_publish(episode_mp3: Path) -> Path:
+    """Keep RSS-hosted MP3s below GitHub's 100 MB file limit."""
+    if not episode_mp3.exists() or episode_mp3.stat().st_size <= PUBLISH_MP3_MAX_BYTES:
+        return episode_mp3
+
+    backup = episode_mp3.with_name(f"{episode_mp3.stem}-192k{episode_mp3.suffix}")
+    if not backup.exists():
+        shutil.copy2(episode_mp3, backup)
+
+    tmp = episode_mp3.with_name(f"{episode_mp3.stem}-{PUBLISH_MP3_BITRATE}.tmp{episode_mp3.suffix}")
+    log.warning(
+        "Episode MP3 is %.1f MB; transcoding to %s before RSS publish",
+        episode_mp3.stat().st_size / (1024 * 1024),
+        PUBLISH_MP3_BITRATE,
+    )
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(backup),
+            "-codec:a",
+            "libmp3lame",
+            "-b:a",
+            PUBLISH_MP3_BITRATE,
+            "-ar",
+            "44100",
+            str(tmp),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        if tmp.exists():
+            tmp.unlink()
+        raise RuntimeError(f"ffmpeg publish transcode failed: {result.stderr[-500:]}")
+    if tmp.stat().st_size > PUBLISH_MP3_MAX_BYTES:
+        size_mb = tmp.stat().st_size / (1024 * 1024)
+        tmp.unlink()
+        raise RuntimeError(f"transcoded MP3 still too large for GitHub Pages repo: {size_mb:.1f} MB")
+
+    tmp.replace(episode_mp3)
+    log.info("Publish MP3 ready: %.1f MB", episode_mp3.stat().st_size / (1024 * 1024))
+    return episode_mp3
+
 
 # ---------------------------------------------------------------------------
 # MiniMax TTS config (primary TTS backend)
@@ -1755,12 +1807,16 @@ if __name__ == "__main__":
 
     if result:
         _log.info("SUCCESS: %s", result)
+        slug = args.slug or _slug(title)
+        status = "podcast_en" if lang == "en" else "podcast_zh"
+        episode_mp3 = Path(str(result))
 
         # Auto-publish to RSS
+        rss_result = None
         try:
             from rss import publish_episode
 
-            episode_mp3 = Path(str(result))
+            episode_mp3 = _prepare_episode_mp3_for_publish(episode_mp3)
             desc_path = episode_mp3.parent / "description.txt"
             description = desc_path.read_text(encoding="utf-8").strip() if desc_path.exists() else ""
             rss_result = publish_episode(
@@ -1775,6 +1831,15 @@ if __name__ == "__main__":
                 _log.warning("RSS publish returned None for %s", title)
         except Exception as e:
             _log.error("RSS publish failed: %s", e)
+        if not rss_result:
+            _record_podcast_failure(
+                slug,
+                "rss_publish_failed",
+                "RSS publish failed or returned None",
+                lang=lang,
+                title=title,
+            )
+            _sys.exit(1)
 
         # Validate podcast before updating manifest
         try:
@@ -1783,10 +1848,7 @@ if __name__ == "__main__":
                 _sys.path.insert(0, shared)
             from publish.manifest import update_manifest, validate_step
 
-            slug = args.slug or _slug(title)
-            status = "podcast_en" if lang == "en" else "podcast_zh"
-
-            passed, verify_err = validate_step(slug, status, mp3_path=str(result))
+            passed, verify_err = validate_step(slug, status, mp3_path=str(episode_mp3))
             if not passed:
                 _record_podcast_failure(slug, "verification_failed", verify_err, lang=lang, title=title)
                 _log.warning("Podcast verification failed for '%s': %s", title, verify_err)

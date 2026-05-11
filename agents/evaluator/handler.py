@@ -52,6 +52,7 @@ _CONTENT_GUARD_AUDIT_SCHEDULE = {
     "name": "content_guard_completeness_audit",
     "weekday": 0,
 }
+VERIFICATION_INDEPENDENCE = True
 
 # ---------------------------------------------------------------------------
 # Per-agent criteria — each agent is scored on what MATTERS for its role
@@ -680,6 +681,183 @@ def _spot_check_claim(agent_output: str) -> tuple[bool, str]:
     return passed, f"{claim['type']} sampled: {detail}"
 
 
+def _task_self_report(task: dict) -> dict:
+    verification = task.get("verification") if isinstance(task.get("verification"), dict) else {}
+    summary = str(task.get("summary") or "")
+    return {
+        "status": str(task.get("status") or ""),
+        "outcome_verified": bool(task.get("outcome_verified", False)),
+        "summary_length": len(summary),
+        "verification_target": str(verification.get("target") or ""),
+    }
+
+
+def _candidate_observable_checks(task: dict) -> list[dict]:
+    checks: list[dict] = []
+    verification = task.get("verification") if isinstance(task.get("verification"), dict) else {}
+    target = str(verification.get("target") or "").strip()
+    artifact_type = str(verification.get("artifact_type") or "").strip().lower()
+
+    if target.startswith(("http://", "https://")):
+        checks.append({"type": "url_status", "value": target})
+    elif target and artifact_type in {"file", "artifact"}:
+        checks.append({"type": "file_exists", "value": target})
+
+    workspace = str(task.get("workspace") or "").strip()
+    if workspace:
+        ws = Path(workspace).expanduser()
+        if not ws.is_absolute():
+            try:
+                from config import MIRA_ROOT
+
+                ws = MIRA_ROOT / ws
+            except (ImportError, AttributeError):
+                ws = Path.cwd() / ws
+        checks.append({"type": "file_exists", "value": str(ws / "result.json")})
+        checks.append({"type": "output_length", "value": str(ws / "output.md")})
+
+    output_text = "\n\n".join(str(task.get(k) or "") for k in ("output", "result", "summary", "content"))
+    for claim in _extract_spot_check_claims(output_text):
+        if claim["type"] == "url":
+            checks.append({"type": "url_status", "value": claim["value"]})
+        elif claim["type"] == "file_path":
+            checks.append({"type": "file_exists", "value": claim["value"]})
+
+    seen = set()
+    unique = []
+    for check in checks:
+        key = (check["type"], check["value"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(check)
+    return unique
+
+
+def _resolve_observable_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    try:
+        from config import MIRA_ROOT
+
+        return MIRA_ROOT / path
+    except (ImportError, AttributeError):
+        return Path.cwd() / path
+
+
+def _run_observable_check(check: dict) -> dict:
+    check_type = check.get("type", "")
+    value = str(check.get("value") or "")
+    if check_type == "url_status":
+        req = url_request.Request(value, method="HEAD", headers={"User-Agent": "MiraEvaluator/1.0"})
+        try:
+            with url_request.urlopen(req, timeout=3) as response:
+                status = getattr(response, "status", 200)
+            return {
+                "checked": True,
+                "type": check_type,
+                "target": value,
+                "passed": 200 <= status < 400,
+                "observed": {"status_code": status},
+            }
+        except url_error.HTTPError as e:
+            return {
+                "checked": True,
+                "type": check_type,
+                "target": value,
+                "passed": 200 <= e.code < 400,
+                "observed": {"status_code": e.code},
+            }
+        except Exception as e:
+            return {
+                "checked": True,
+                "type": check_type,
+                "target": value,
+                "passed": False,
+                "observed": {"error": f"{type(e).__name__}: {e}"},
+            }
+
+    if check_type == "file_exists":
+        path = _resolve_observable_path(value)
+        exists = path.exists()
+        observed = {"exists": exists}
+        if exists:
+            try:
+                observed["size_bytes"] = path.stat().st_size
+            except OSError:
+                pass
+        return {
+            "checked": True,
+            "type": check_type,
+            "target": value,
+            "passed": exists,
+            "observed": observed,
+        }
+
+    if check_type == "output_length":
+        path = _resolve_observable_path(value)
+        if not path.exists():
+            return {
+                "checked": True,
+                "type": check_type,
+                "target": value,
+                "passed": False,
+                "observed": {"exists": False, "length": 0},
+            }
+        try:
+            length = len(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError as e:
+            return {
+                "checked": True,
+                "type": check_type,
+                "target": value,
+                "passed": False,
+                "observed": {"error": f"{type(e).__name__}: {e}"},
+            }
+        return {
+            "checked": True,
+            "type": check_type,
+            "target": value,
+            "passed": length > 0,
+            "observed": {"exists": True, "length": length},
+        }
+
+    return {"checked": False, "type": check_type, "target": value, "passed": False, "observed": {}}
+
+
+def _independent_output_verification(agent_tasks: list[dict]) -> dict:
+    if not VERIFICATION_INDEPENDENCE:
+        return {"checked": False, "passed": True, "reason": "verification independence disabled"}
+    for task in reversed(agent_tasks):
+        for candidate in _candidate_observable_checks(task):
+            check = _run_observable_check(candidate)
+            if not check.get("checked"):
+                continue
+            report = _task_self_report(task)
+            reported_success = report["status"] in {"done", "verified"} or report["outcome_verified"]
+            discrepancies = []
+            if reported_success and not check.get("passed"):
+                discrepancies.append("agent reported completion/verification but observable check failed")
+            if check.get("type") == "output_length" and check.get("passed"):
+                observed_length = int((check.get("observed") or {}).get("length") or 0)
+                if report["summary_length"] and observed_length != report["summary_length"]:
+                    discrepancies.append(
+                        f"observed output length {observed_length} differs from reported summary length "
+                        f"{report['summary_length']}"
+                    )
+            check["task_id"] = task.get("task_id", "")
+            check["self_report"] = report
+            check["discrepancies"] = discrepancies
+            return check
+    return {
+        "checked": False,
+        "passed": False,
+        "reason": "no observable file, output, or URL found for independent verification",
+        "discrepancies": ["evaluation data depended on agent self-report only"],
+    }
+
+
 def _log_spot_check_result(agent_name: str, passed: bool, detail: str) -> None:
     try:
         _SPOT_CHECK_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -753,6 +931,7 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
         "passed": spot_passed,
         "detail": spot_detail,
     }
+    independent_verification = _independent_output_verification(agent_tasks)
     coherence_bias_warning = not spot_passed
     if coherence_bias_warning and "task_success" in scores:
         scores["task_success"] = round(scores["task_success"] * 0.7, 3)
@@ -771,7 +950,10 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
         "guard_fired_count": audit_guard_fires,
         "scores": scores,
         "spot_check": spot_check,
+        "independent_verification": independent_verification,
     }
+    if independent_verification.get("discrepancies"):
+        result["self_report_discrepancies"] = independent_verification["discrepancies"]
     if coherence_bias_warning:
         result["coherence_bias_warning"] = True
 
@@ -788,9 +970,9 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
     except Exception as _e:
         log.debug("update_weakness_score failed for %s: %s", agent_name, _e)
 
-    # Update validated_at for this agent's skills when scoring positively
+    # Update validated_at for explicitly used skills when scoring positively.
     if scores.get("task_success", 0) >= 0.8:
-        _update_agent_skill_validation(agent_name)
+        _update_agent_skill_validation(agent_name, _extract_used_skill_names(agent_tasks))
 
     return _append_metric_audit_warning(result, agent_name)
 
@@ -1325,6 +1507,125 @@ def score_all(days: int = 7) -> dict:
 # ---------------------------------------------------------------------------
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
+_SKILLS_META_FILE = _AGENTS_DIR / "shared" / "soul" / "skills_meta.json"
+
+
+def _normalize_skill_ref(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+
+
+def _load_skill_validation_meta() -> dict[str, dict]:
+    if not _SKILLS_META_FILE.exists():
+        return {}
+    try:
+        payload = json.loads(_SKILLS_META_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    skills = payload.get("skills") if isinstance(payload, dict) else None
+    return skills if isinstance(skills, dict) else {}
+
+
+def _save_skill_validation_meta(skills: dict[str, dict]) -> None:
+    try:
+        _SKILLS_META_FILE.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"version": 1, "skills": skills}
+        tmp_path = _SKILLS_META_FILE.with_suffix(_SKILLS_META_FILE.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp_path.replace(_SKILLS_META_FILE)
+    except OSError as e:
+        log.debug("Could not save skill validation metadata: %s", e)
+
+
+def _parse_utc_datetime(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _load_skill_index(index_path: Path) -> list[dict]:
+    if not index_path.exists():
+        return []
+    try:
+        entries = json.loads(index_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
+
+
+def _skill_meta_key(source: str, entry: dict) -> str:
+    return f"{source}/{entry.get('file') or _normalize_skill_ref(entry.get('name'))}"
+
+
+def _iter_skill_entries() -> list[dict]:
+    from config import SKILLS_DIR
+
+    records: list[dict] = []
+    for entry in _load_skill_index(SKILLS_DIR / "index.json"):
+        records.append({"source": "learned", "entry": entry})
+
+    for agent_index in _AGENTS_DIR.glob("*/skills/index.json"):
+        agent_name = agent_index.parent.parent.name
+        for entry in _load_skill_index(agent_index):
+            records.append({"source": f"agent:{agent_name}", "entry": entry})
+    return records
+
+
+def _sync_skill_validation_meta() -> tuple[dict[str, dict], bool]:
+    skills_meta = _load_skill_validation_meta()
+    changed = False
+    for record in _iter_skill_entries():
+        entry = record["entry"]
+        source = record["source"]
+        key = _skill_meta_key(source, entry)
+        if key not in skills_meta:
+            skills_meta[key] = {
+                "name": entry.get("name", "unknown"),
+                "source": source,
+                "file": entry.get("file", ""),
+                "created_at": entry.get("created"),
+                "validated_at": entry.get("validated_at") if "validated_at" in entry else entry.get("created"),
+                "last_invoked": entry.get("last_invoked"),
+            }
+            changed = True
+            continue
+
+        metadata = skills_meta[key]
+        for field, value in (
+            ("name", entry.get("name", "unknown")),
+            ("source", source),
+            ("file", entry.get("file", "")),
+            ("created_at", entry.get("created")),
+            ("last_invoked", entry.get("last_invoked")),
+        ):
+            if metadata.get(field) != value:
+                metadata[field] = value
+                changed = True
+        if "validated_at" not in metadata:
+            metadata["validated_at"] = entry.get("validated_at") if "validated_at" in entry else entry.get("created")
+            changed = True
+    return skills_meta, changed
+
+
+def _extract_used_skill_names(tasks: list[dict]) -> set[str]:
+    used: set[str] = set()
+    for task in tasks:
+        for key in ("used_skills", "skills", "skill_names", "loaded_skills"):
+            raw = task.get(key)
+            if isinstance(raw, str):
+                used.add(_normalize_skill_ref(raw))
+            elif isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, dict):
+                        used.add(_normalize_skill_ref(item.get("name") or item.get("file")))
+                    else:
+                        used.add(_normalize_skill_ref(item))
+    return {name for name in used if name}
 
 
 def _compute_scaffolding_catch_rate(window_hours: int) -> float:
@@ -1430,96 +1731,104 @@ def _compute_score_staleness(ttl_days: int) -> tuple[int, dict[str, bool]]:
     return stale_count, low_confidence
 
 
-def _update_agent_skill_validation(agent_name: str) -> None:
-    """Set validated_at=now for skills in this agent's index that are stale or unset."""
-    from config import SKILL_STALENESS_DAYS
-
-    index_path = _AGENTS_DIR / agent_name / "skills" / "index.json"
-    if not index_path.exists():
+def _update_agent_skill_validation(agent_name: str, used_skill_names: set[str]) -> None:
+    """Set validated_at=now for explicitly used skills after a positive score."""
+    if not used_skill_names:
         return
-    try:
-        entries = json.loads(index_path.read_text(encoding="utf-8"))
-        now_str = datetime.now(timezone.utc).isoformat()
-        cutoff = datetime.now(timezone.utc) - timedelta(days=SKILL_STALENESS_DAYS)
-        changed = False
-        for entry in entries:
-            vat = entry.get("validated_at")
-            if not vat:
-                entry["validated_at"] = now_str
-                changed = True
-            else:
-                try:
-                    ts = datetime.fromisoformat(vat.replace("Z", "+00:00"))
-                    if ts < cutoff:
-                        entry["validated_at"] = now_str
-                        changed = True
-                except ValueError:
-                    entry["validated_at"] = now_str
-                    changed = True
-        if changed:
-            index_path.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
-    except (json.JSONDecodeError, OSError) as e:
-        log.debug("Could not update skill validation for %s: %s", agent_name, e)
+
+    skills_meta, changed = _sync_skill_validation_meta()
+    now_str = datetime.now(timezone.utc).isoformat()
+    allowed_sources = {f"agent:{agent_name}", "learned"}
+    for metadata in skills_meta.values():
+        if metadata.get("source") not in allowed_sources:
+            continue
+        refs = {
+            _normalize_skill_ref(metadata.get("name")),
+            _normalize_skill_ref(metadata.get("file")),
+        }
+        if refs & used_skill_names:
+            metadata["validated_at"] = now_str
+            changed = True
+    if changed:
+        _save_skill_validation_meta(skills_meta)
 
 
 def scan_stale_skills() -> list[dict]:
     """Scan all skill indices and return SKILL_STALE entries for stale or unvalidated skills."""
-    from config import SKILL_STALENESS_DAYS, SKILLS_DIR
+    from config import SKILL_STALENESS_DAYS
 
     threshold = timedelta(days=SKILL_STALENESS_DAYS)
     now = datetime.now(timezone.utc)
     cutoff = now - threshold
     warnings = []
 
-    def _check_index(index_path: Path, source: str) -> None:
-        if not index_path.exists():
-            return
-        try:
-            entries = json.loads(index_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return
-        for entry in entries:
-            name = entry.get("name", "unknown")
-            vat = entry.get("validated_at")
-            if not vat:
-                warnings.append(
-                    {
-                        "event": "SKILL_STALE",
-                        "skill": name,
-                        "source": source,
-                        "reason": "validated_at absent",
-                        "validated_at": None,
-                    }
-                )
-            else:
-                try:
-                    ts = datetime.fromisoformat(vat.replace("Z", "+00:00"))
-                    if ts < cutoff:
-                        age_days = (now - ts).days
-                        warnings.append(
-                            {
-                                "event": "SKILL_STALE",
-                                "skill": name,
-                                "source": source,
-                                "reason": f"not validated in {age_days}d (threshold: {SKILL_STALENESS_DAYS}d)",
-                                "validated_at": vat,
-                            }
-                        )
-                except ValueError:
-                    warnings.append(
-                        {
-                            "event": "SKILL_STALE",
-                            "skill": name,
-                            "source": source,
-                            "reason": "invalid validated_at format",
-                            "validated_at": vat,
-                        }
-                    )
+    skills_meta, changed = _sync_skill_validation_meta()
+    if changed:
+        _save_skill_validation_meta(skills_meta)
 
-    _check_index(SKILLS_DIR / "index.json", "learned")
-    for agent_index in _AGENTS_DIR.glob("*/skills/index.json"):
-        agent_name = agent_index.parent.parent.name
-        _check_index(agent_index, f"agent:{agent_name}")
+    for metadata in skills_meta.values():
+        name = metadata.get("name", "unknown")
+        source = metadata.get("source", "unknown")
+        vat = metadata.get("validated_at")
+        validated_at = _parse_utc_datetime(vat)
+        if not vat:
+            warnings.append(
+                {
+                    "event": "SKILL_STALE",
+                    "skill": name,
+                    "source": source,
+                    "reason": "validated_at absent",
+                    "validated_at": None,
+                }
+            )
+        elif validated_at is None:
+            warnings.append(
+                {
+                    "event": "SKILL_STALE",
+                    "skill": name,
+                    "source": source,
+                    "reason": "invalid validated_at format",
+                    "validated_at": vat,
+                }
+            )
+        elif validated_at < cutoff:
+            age_days = (now - validated_at).days
+            warnings.append(
+                {
+                    "event": "SKILL_STALE",
+                    "skill": name,
+                    "source": source,
+                    "reason": f"not validated in {age_days}d (threshold: {SKILL_STALENESS_DAYS}d)",
+                    "validated_at": vat,
+                }
+            )
+
+        last_invoked = _parse_utc_datetime(metadata.get("last_invoked"))
+        created_at = _parse_utc_datetime(metadata.get("created_at"))
+        if not metadata.get("last_invoked") and created_at and created_at < cutoff:
+            age_days = (now - created_at).days
+            warnings.append(
+                {
+                    "event": "SKILL_STALE",
+                    "skill": name,
+                    "source": source,
+                    "reason": f"never invoked in {age_days}d (threshold: {SKILL_STALENESS_DAYS}d)",
+                    "validated_at": vat,
+                    "last_invoked": None,
+                }
+            )
+        elif last_invoked and last_invoked < cutoff:
+            age_days = (now - last_invoked).days
+            warnings.append(
+                {
+                    "event": "SKILL_STALE",
+                    "skill": name,
+                    "source": source,
+                    "reason": f"not invoked in {age_days}d (threshold: {SKILL_STALENESS_DAYS}d)",
+                    "validated_at": vat,
+                    "last_invoked": metadata.get("last_invoked"),
+                }
+            )
 
     return warnings
 

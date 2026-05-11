@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -91,6 +91,7 @@ STATUS_FILE = TASKS_DIR / "status.json"
 HISTORY_FILE = TASKS_DIR / "history.jsonl"
 TIMING_STATS_FILE = TASKS_DIR / "timing_stats.jsonl"
 ROUTING_AUDIT_FILE = LOGS_DIR / "routing_audit.jsonl"
+_STUCK_TASK_STATES = {"accepted", "in-progress", "in_progress", "dispatched", "running", "working"}
 
 # Path to the worker script (same directory as this file)
 WORKER_SCRIPT = Path(__file__).resolve().parent / "task_worker.py"
@@ -111,6 +112,119 @@ _WORKSPACE_STATE_ARTIFACTS = {
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_task_timestamp(value) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _task_transition_time(rec: dict) -> datetime | None:
+    for key in (
+        "last_state_transition_at",
+        "state_transition_at",
+        "status_changed_at",
+        "status_updated_at",
+        "updated_at",
+        "dispatched_at",
+        "started_at",
+    ):
+        parsed = _parse_task_timestamp(rec.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _task_agent_type(rec: dict) -> str:
+    for key in ("agent_type", "agent", "task_type", "type"):
+        value = str(rec.get(key) or "").strip()
+        if value:
+            return value
+    tags = rec.get("tags") or []
+    if isinstance(tags, list) and tags:
+        return str(tags[0] or "unknown")
+    return "unknown"
+
+
+def get_stuck_tasks(threshold_minutes=60) -> dict:
+    """Return non-terminal tasks whose last state transition is older than threshold."""
+    try:
+        threshold = float(threshold_minutes)
+    except (TypeError, ValueError):
+        threshold = 60.0
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=threshold)
+    stuck: dict[str, dict] = {}
+
+    def _consider(rec: dict) -> None:
+        status = normalize_task_status(rec.get("status", ""))
+        if status not in _STUCK_TASK_STATES:
+            return
+        transitioned_at = _task_transition_time(rec)
+        if transitioned_at is None or transitioned_at >= cutoff:
+            return
+        task_id = str(rec.get("task_id") or rec.get("id") or "").strip()
+        if not task_id:
+            return
+        stuck[task_id] = {
+            "task_id": task_id,
+            "status": status,
+            "agent_type": _task_agent_type(rec),
+            "last_transition_at": transitioned_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+
+    try:
+        data = json.loads(STATUS_FILE.read_text(encoding="utf-8")) if STATUS_FILE.exists() else []
+        if isinstance(data, list):
+            for rec in data:
+                if isinstance(rec, dict):
+                    _consider(rec)
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    if CONTROL_RUNTIME_DB_ENABLED:
+        try:
+            from control.db import schema_name, transaction
+            from db.connection import dict_cursor
+
+            with transaction() as conn:
+                with dict_cursor(conn) as cur:
+                    cur.execute(
+                        f"""
+                        SELECT id, status, type, task_type, updated_at, started_at
+                        FROM {schema_name()}.tasks
+                        WHERE status = ANY(%s)
+                        """,
+                        (list(_STUCK_TASK_STATES),),
+                    )
+                    for row in cur.fetchall():
+                        rec = dict(row)
+                        rec["task_id"] = rec.get("id")
+                        _consider(rec)
+        except Exception as exc:
+            log.debug("Control DB stuck task scan failed: %s", exc)
+
+    agent_type_counts: dict[str, int] = {}
+    for rec in stuck.values():
+        agent_type = rec["agent_type"]
+        agent_type_counts[agent_type] = agent_type_counts.get(agent_type, 0) + 1
+
+    return {
+        "count": len(stuck),
+        "agent_types": sorted(agent_type_counts),
+        "agent_type_counts": agent_type_counts,
+        "task_ids": sorted(stuck),
+        "tasks": sorted(stuck.values(), key=lambda item: item["task_id"]),
+        "threshold_minutes": threshold,
+    }
 
 
 def _append_routing_audit(task_type: str, agent: str, reason: str | None) -> None:

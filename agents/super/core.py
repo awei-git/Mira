@@ -25,6 +25,7 @@ _AGENTS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 import pathsetup  # noqa: F401  (side-effect: registers all Mira package dirs)
 
+import config as mira_config
 import health_monitor
 from logging_util import throttled_warning  # noqa: E402  — used inside _check_invisible_deps
 from notes_bridge import detect_vulnerability_disclosure
@@ -51,6 +52,8 @@ from config import (
     BRIDGE_STALE_THRESHOLD,
     CALIBRATION_INTERVAL_DAYS,
     CALIBRATION_SAMPLE_SIZE,
+    BLIND_SPOT_LOOKBACK_DAYS,
+    BLIND_SPOT_SILENCE_THRESHOLD_DAYS,
     MAX_TASKS_PER_CYCLE,
     SURVIVAL_CRITICAL_COMPONENTS,
     SENSITIVE_SURVIVAL_TERMS,
@@ -71,7 +74,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     Mira = None
     Message = None
-from task_manager import TaskManager, TASKS_DIR
+from task_manager import TaskManager, TASKS_DIR, classify_task, get_stuck_tasks
 from memory.soul import load_soul, format_soul, append_memory, check_prompt_injection
 from llm import claude_think
 from writing_workflow import (
@@ -227,6 +230,7 @@ from daily_tasks import (
 log = logging.getLogger("mira")
 BRIDGE_STALENESS_THRESHOLD_MINUTES = BRIDGE_STALE_THRESHOLD / 60
 BACKGROUND_HEALTH_LOG = LOGS_DIR / "background_health.jsonl"
+TASK_DISTRIBUTION_FILE = LOGS_DIR / "task_distribution.json"
 THIRD_THING_FILE = Path(__file__).resolve().parent / "notes_outbox" / "third_thing.md"
 BRIDGE_THIRD_THING_FILE = MIRA_DIR / "outbox" / "third_thing.md"
 JOINT_GARDEN_FILE = _AGENTS_DIR / "shared" / "soul" / "joint_garden.md"
@@ -236,9 +240,23 @@ _INTENT_CLARIFICATION_REPLY = "What do you want to achieve with this?"
 _SENSITIVE_REDACTED_CONTENT = "[sensitive survival exposure routed local]"
 _TIME_SENSITIVE_REDACTED_CONTENT = "[time-sensitive message routed local]"
 _TIME_SENSITIVE_MIN_MESSAGE_CHARS = 20
+VERIFICATION_INDEPENDENCE = True
+MIN_COMPLETED_TASK_OUTPUT_BYTES = 50
+STUCK_TASK_THRESHOLD_MINUTES = int(getattr(mira_config, "STUCK_TASK_THRESHOLD_MINUTES", 60))
+MAX_STUCK_TASKS_BEFORE_ALERT = int(getattr(mira_config, "MAX_STUCK_TASKS_BEFORE_ALERT", 3))
 _ORIGINAL_TASK_MANAGER_DISPATCH = TaskManager.dispatch
+_ORIGINAL_TASK_MANAGER_COLLECT_RESULT = TaskManager._collect_result
 _ORIGINAL_DISPATCH_OR_REQUEUE = _dispatch_or_requeue
 _ORIGINAL_PROJECT_RECORD_TO_BRIDGE = getattr(talk_module, "_project_record_to_bridge", None)
+_EVALUATION_ACTION_RE = re.compile(
+    r"\b(evaluate|evaluation|assess|assessment|score|scoring|review|audit|verify|confirm)\b", re.IGNORECASE
+)
+_EVALUATOR_TARGET_RE = re.compile(
+    r"\b(?:evaluate|assess|score|review|audit|verify|confirm)\s+(?:the\s+)?(?:evaluator|evaluation agent|evaluator agent)\b"
+    r"|\b(?:evaluator|evaluation agent|evaluator agent)(?:'s)?\s+(?:output|outputs|performance|score|scores|assessment|evaluation)\b"
+    r"|\bscore\s+evaluator\.",
+    re.IGNORECASE,
+)
 _AMBIGUOUS_INTENT_PATTERNS = (
     re.compile(r"\bdo something (?:about|with|for)\b", re.IGNORECASE),
     re.compile(r"\bsomething (?:about|with|for)\b", re.IGNORECASE),
@@ -377,6 +395,171 @@ def _write_text_atomic(path: Path, text: str) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(text, encoding="utf-8")
     tmp_path.replace(path)
+
+
+def _read_task_distribution() -> dict:
+    try:
+        data = json.loads(TASK_DISTRIBUTION_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {"daily_counts": {}, "rolling_14_day": {}, "blind_spot_flag": 0}
+    return data if isinstance(data, dict) else {"daily_counts": {}, "rolling_14_day": {}, "blind_spot_flag": 0}
+
+
+def _write_task_distribution(data: dict) -> None:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path = TASK_DISTRIBUTION_FILE.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(TASK_DISTRIBUTION_FILE)
+
+
+def _normalize_task_distribution_category(value) -> str:
+    category = re.sub(r"[^a-z0-9_.:-]+", "-", str(value or "").strip().lower()).strip("-")
+    return category or "general"
+
+
+def _task_dispatch_category(msg) -> str:
+    metadata = getattr(msg, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    for key in ("routing_agent", "target_agent", "agent", "agent_type", "task_category", "category"):
+        value = getattr(msg, key, None) or metadata.get(key)
+        if value:
+            return _normalize_task_distribution_category(value)
+
+    allowed_agents = getattr(msg, "allowed_agents", None) or metadata.get("allowed_agents")
+    if isinstance(allowed_agents, str):
+        allowed_agents = [allowed_agents]
+    if isinstance(allowed_agents, list) and len(allowed_agents) == 1 and allowed_agents[0]:
+        return _normalize_task_distribution_category(allowed_agents[0])
+
+    tags = classify_task(str(getattr(msg, "content", "") or ""))
+    if tags:
+        return _normalize_task_distribution_category(tags[0])
+    return "general"
+
+
+def _task_distribution_cutoff_dates(today: datetime.date, days: int) -> set[str]:
+    return {(today - timedelta(days=offset)).isoformat() for offset in range(days)}
+
+
+def _refresh_task_distribution_rollups(data: dict, today: datetime.date) -> None:
+    daily_counts = data.setdefault("daily_counts", {})
+    keep_days = max(14, int(BLIND_SPOT_LOOKBACK_DAYS) + int(BLIND_SPOT_SILENCE_THRESHOLD_DAYS))
+    keep_dates = _task_distribution_cutoff_dates(today, keep_days)
+    for day in list(daily_counts):
+        if day not in keep_dates:
+            daily_counts.pop(day, None)
+
+    recent_dates = _task_distribution_cutoff_dates(today, 14)
+    rolling: dict[str, int] = {}
+    for day, counts in daily_counts.items():
+        if day not in recent_dates or not isinstance(counts, dict):
+            continue
+        for category, count in counts.items():
+            if category == "_total":
+                continue
+            rolling[category] = rolling.get(category, 0) + _blind_spot_int(count)
+    data["rolling_14_day"] = rolling
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _record_task_distribution_dispatch(msg) -> None:
+    try:
+        now = datetime.now(timezone.utc)
+        day = now.date().isoformat()
+        category = _task_dispatch_category(msg)
+        data = _read_task_distribution()
+        daily_counts = data.setdefault("daily_counts", {})
+        day_counts = daily_counts.setdefault(day, {})
+        day_counts[category] = _blind_spot_int(day_counts.get(category)) + 1
+        day_counts["_total"] = _blind_spot_int(day_counts.get("_total")) + 1
+        data["last_dispatch_at"] = now.isoformat()
+        _refresh_task_distribution_rollups(data, now.date())
+        _write_task_distribution(data)
+    except Exception as exc:
+        log.debug("task distribution record failed: %s", exc)
+
+
+def _task_distribution_recent_total(daily_counts: dict, dates: list[str]) -> int:
+    return sum(_blind_spot_int((daily_counts.get(day) or {}).get("_total")) for day in dates)
+
+
+def _task_distribution_blind_spot_warnings(data: dict, today: datetime.date) -> list[dict]:
+    daily_counts = data.get("daily_counts") if isinstance(data.get("daily_counts"), dict) else {}
+    lookback_days = max(1, int(BLIND_SPOT_LOOKBACK_DAYS))
+    silence_days = max(1, int(BLIND_SPOT_SILENCE_THRESHOLD_DAYS))
+    recent_dates = [(today - timedelta(days=offset)).isoformat() for offset in range(1, silence_days + 1)]
+    baseline_dates = [(today - timedelta(days=offset)).isoformat() for offset in range(1, lookback_days + 1)]
+    baseline_total = _task_distribution_recent_total(daily_counts, baseline_dates)
+    recent_total = _task_distribution_recent_total(daily_counts, recent_dates)
+    if baseline_total <= 0:
+        return []
+
+    expected_recent_total = (baseline_total / lookback_days) * silence_days
+    if recent_total < max(1, expected_recent_total * 0.5):
+        return []
+
+    categories: set[str] = set()
+    for day in baseline_dates:
+        counts = daily_counts.get(day) or {}
+        if not isinstance(counts, dict):
+            continue
+        categories.update(
+            category for category, count in counts.items() if category != "_total" and _blind_spot_int(count) > 0
+        )
+
+    warnings = []
+    warned = data.setdefault("last_warning_date_by_category", {})
+    today_key = today.isoformat()
+    for category in sorted(categories):
+        baseline_volume = sum(_blind_spot_int((daily_counts.get(day) or {}).get(category)) for day in baseline_dates)
+        recent_volume = sum(_blind_spot_int((daily_counts.get(day) or {}).get(category)) for day in recent_dates)
+        if baseline_volume > 0 and recent_volume == 0 and warned.get(category) != today_key:
+            warnings.append(
+                {
+                    "category": category,
+                    "silent_days": silence_days,
+                    "baseline_days": lookback_days,
+                    "baseline_volume": baseline_volume,
+                    "recent_total_volume": recent_total,
+                    "baseline_total_volume": baseline_total,
+                }
+            )
+            warned[category] = today_key
+    return warnings
+
+
+def _append_task_distribution_warning_to_journal(warning: dict) -> None:
+    journal_path = JOURNAL_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.md"
+    message = (
+        f"Task dispatch category '{warning['category']}' has been silent for "
+        f"{warning['silent_days']} completed day(s) after {warning['baseline_volume']} dispatch(es) "
+        f"in the trailing {warning['baseline_days']} day baseline, while total task volume remains active."
+    )
+    try:
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(journal_path, "a", encoding="utf-8") as jf:
+            jf.write(f"\n\n---\n\n**[WARNING] Blind Spot Variance Monitor**\n\n{message}\n")
+    except OSError as exc:
+        log.debug("task distribution journal warning failed: %s", exc)
+    _blind_spot_warn("task dispatch category went quiet", **warning)
+
+
+def _check_task_distribution_blind_spots(state: dict) -> None:
+    today = datetime.now(timezone.utc).date()
+    today_key = today.isoformat()
+    if state.get("last_task_distribution_check") == today_key:
+        return
+
+    data = _read_task_distribution()
+    _refresh_task_distribution_rollups(data, today)
+    warnings = _task_distribution_blind_spot_warnings(data, today)
+    if warnings:
+        data["blind_spot_flag"] = _blind_spot_int(data.get("blind_spot_flag")) + len(warnings)
+        state["blind_spot_flag"] = _blind_spot_int(state.get("blind_spot_flag")) + len(warnings)
+        for warning in warnings:
+            _append_task_distribution_warning_to_journal(warning)
+    state["last_task_distribution_check"] = today_key
+    _write_task_distribution(data)
 
 
 def _render_third_thing(topic: str, timestamp: str) -> str:
@@ -669,7 +852,10 @@ def _dispatch_with_survival_guard(self, msg, workspace_dir, *args, **kwargs):
     survival_sensitive = _detect_survival_exposure(original_content)
     time_sensitive = _detect_time_sensitive_message(original_content)
     if not survival_sensitive and not time_sensitive:
-        return _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
+        task_id = _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
+        if task_id:
+            _record_task_distribution_dispatch(msg)
+        return task_id
 
     if survival_sensitive:
         _mark_survival_sensitive_message(msg, original_content)
@@ -681,15 +867,169 @@ def _dispatch_with_survival_guard(self, msg, workspace_dir, *args, **kwargs):
         _mark_time_sensitive_message(msg, original_content)
     msg.content = redacted_content
     try:
-        return _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
+        task_id = _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
+        if task_id:
+            _record_task_distribution_dispatch(msg)
+        return task_id
     finally:
         msg.content = original_content
 
 
 def _dispatch_or_requeue_with_survival_guard(task_mgr, bridge, msg, workspace, cmd=None):
+    if _is_self_referential_evaluator_dispatch(msg, cmd):
+        _mark_self_referential_evaluation_exploratory(msg)
+        log.warning(
+            "SELF_VERIFICATION_DISPATCH_REJECTED task_id=%s target=evaluator status=exploratory",
+            getattr(msg, "id", ""),
+        )
+        return "exploratory"
     if _detect_survival_exposure(getattr(msg, "content", "")):
         _redact_bridge_item_for_survival_exposure(bridge, getattr(msg, "id", ""))
     return _ORIGINAL_DISPATCH_OR_REQUEUE(task_mgr, bridge, msg, workspace, cmd)
+
+
+def _evaluation_target_value(value) -> str:
+    if isinstance(value, str):
+        return value.strip().lower()
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_evaluation_target_value(item) for item in value)
+    if isinstance(value, dict):
+        return " ".join(_evaluation_target_value(item) for item in value.values())
+    return ""
+
+
+def _evaluation_targets_evaluator(container) -> bool:
+    if not isinstance(container, dict):
+        return False
+    target_keys = {
+        "agent",
+        "agent_name",
+        "evaluate_agent",
+        "evaluation_target",
+        "score_agent",
+        "subject",
+        "target",
+        "target_agent",
+    }
+    for key in target_keys:
+        value = _evaluation_target_value(container.get(key))
+        if value in {"evaluator", "evaluator agent", "evaluation agent"}:
+            return True
+    return False
+
+
+def _is_self_referential_evaluator_dispatch(msg, cmd=None) -> bool:
+    metadata = getattr(msg, "metadata", {}) or {}
+    text_parts = [
+        getattr(msg, "content", ""),
+        getattr(msg, "routing_agent", ""),
+    ]
+    if isinstance(metadata, dict):
+        text_parts.append(_evaluation_target_value(metadata))
+    if isinstance(cmd, dict):
+        text_parts.append(_evaluation_target_value(cmd))
+    combined = " ".join(part for part in text_parts if part)
+    if _EVALUATOR_TARGET_RE.search(combined):
+        return True
+    if not _EVALUATION_ACTION_RE.search(combined):
+        return False
+    return _evaluation_targets_evaluator(metadata) or _evaluation_targets_evaluator(cmd)
+
+
+def _mark_self_referential_evaluation_exploratory(msg) -> None:
+    metadata = dict(getattr(msg, "metadata", {}) or {})
+    metadata["verification_status"] = "exploratory"
+    metadata["verification_method"] = "self_verification_rejected"
+    metadata["outcome_verified"] = False
+    msg.metadata = metadata
+
+
+def _completion_party(value) -> str:
+    return str(value or "").strip().lower()
+
+
+def _independence_parties(result: dict) -> tuple[str, str]:
+    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    completed_by = _completion_party(
+        result.get("completed_by") or result.get("agent") or result.get("agent_type") or result.get("completed_agent")
+    )
+    verified_by = _completion_party(
+        result.get("verified_by")
+        or verification.get("verified_by")
+        or verification.get("verifier")
+        or verification.get("agent")
+        or verification.get("checked_by")
+    )
+    return completed_by, verified_by
+
+
+def _requires_independent_verification(result: dict, rec) -> bool:
+    if not VERIFICATION_INDEPENDENCE:
+        return False
+    completed_by, verified_by = _independence_parties(result)
+    if not completed_by or not verified_by or completed_by != verified_by:
+        return False
+    status = normalize_task_status(getattr(rec, "status", result.get("status", "")))
+    return status in {"done", "verified"} or bool(result.get("outcome_verified"))
+
+
+def _mark_independent_verification_required(rec, result: dict) -> None:
+    completed_by, verified_by = _independence_parties(result)
+    rec.status = "completed_unverified"
+    rec.outcome_verified = False
+    rec.verification_method = "independent_verification_required"
+    detail = (
+        "Completion rejected: completed_by and verified_by are the same agent "
+        f"({completed_by or verified_by}). Super or another agent must verify before done."
+    )
+    rec.summary = f"{rec.summary}\n\n{detail}".strip() if rec.summary else detail
+    verification = dict(rec.verification or {})
+    verification.update(
+        {
+            "status": "failed",
+            "verified": False,
+            "summary": detail,
+            "proxy_checked": "independent_verification_required",
+        }
+    )
+    checks = list(verification.get("checks") or [])
+    checks.append(
+        {
+            "name": "verification_independence",
+            "passed": False,
+            "message": detail,
+        }
+    )
+    verification["checks"] = checks
+    rec.verification = verification
+
+
+def _collect_result_with_verification_independence(self, rec):
+    collected = _ORIGINAL_TASK_MANAGER_COLLECT_RESULT(self, rec)
+    if not collected:
+        return collected
+    result_file = Path(rec.workspace) / "result.json" if getattr(rec, "workspace", "") else None
+    if not result_file or not result_file.exists():
+        return collected
+    try:
+        result = json.loads(result_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return collected
+    if not isinstance(result, dict) or not _requires_independent_verification(result, rec):
+        return collected
+    completed_by, _verified_by = _independence_parties(result)
+    _mark_independent_verification_required(rec, result)
+    result["status"] = rec.status
+    result["outcome_verified"] = False
+    result["verification_method"] = rec.verification_method
+    result["summary"] = rec.summary
+    result["verification"] = rec.verification
+    try:
+        result_file.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        log.debug("independent verification result rewrite failed for %s: %s", rec.task_id, exc)
+    log.warning("TASK_COMPLETION_REJECTED_SELF_VERIFIED task_id=%s agent=%s", rec.task_id, completed_by)
+    return collected
 
 
 def _sensitive_record_content(rec) -> str:
@@ -771,6 +1111,8 @@ def _install_clear_intent_gate() -> None:
 def _install_survival_dispatch_guard() -> None:
     if TaskManager.dispatch is not _dispatch_with_survival_guard:
         TaskManager.dispatch = _dispatch_with_survival_guard
+    if TaskManager._collect_result is not _collect_result_with_verification_independence:
+        TaskManager._collect_result = _collect_result_with_verification_independence
     if getattr(talk_module, "_dispatch_or_requeue", None) is not _dispatch_or_requeue_with_survival_guard:
         talk_module._dispatch_or_requeue = _dispatch_or_requeue_with_survival_guard
     if getattr(talk_module, "_project_record_to_bridge", None) is not _project_record_to_bridge_with_survival_guard:
@@ -958,6 +1300,75 @@ def _check_survival_critical_components() -> dict:
     }
 
 
+def _check_recent_completed_task_content_integrity() -> None:
+    try:
+        manager = TaskManager()
+    except Exception as exc:
+        log.warning("OPERATIONAL_AUDIT content_integrity suspect=task_status_unreadable error=%s", exc)
+        return
+
+    complete_statuses = {"done", "verified", "completed", "complete", "completed_unverified"}
+    completed = [
+        record
+        for record in manager._records
+        if record.completed_at and normalize_task_status(record.status) in complete_statuses
+    ]
+    if not completed:
+        return
+
+    completed.sort(key=lambda record: _parse_recovery_timestamp(record.completed_at) or 0, reverse=True)
+    record = completed[0]
+    if not record.workspace:
+        log.warning(
+            "OPERATIONAL_AUDIT content_integrity task_id=%s status=%s suspect=missing_workspace",
+            record.task_id,
+            record.status,
+        )
+        return
+
+    output_path = Path(record.workspace) / "output.md"
+    try:
+        output_size = os.path.getsize(output_path)
+    except OSError:
+        log.warning(
+            "OPERATIONAL_AUDIT content_integrity task_id=%s status=%s output_path=%s suspect=missing_output",
+            record.task_id,
+            record.status,
+            output_path,
+        )
+        return
+
+    if output_size <= MIN_COMPLETED_TASK_OUTPUT_BYTES:
+        log.warning(
+            "OPERATIONAL_AUDIT content_integrity task_id=%s status=%s output_path=%s output_bytes=%d "
+            "minimum_bytes=%d suspect=truncated_output",
+            record.task_id,
+            record.status,
+            output_path,
+            output_size,
+            MIN_COMPLETED_TASK_OUTPUT_BYTES,
+        )
+
+
+def _check_stuck_tasks_audit() -> None:
+    try:
+        stuck = get_stuck_tasks(threshold_minutes=STUCK_TASK_THRESHOLD_MINUTES)
+    except Exception as exc:
+        log.warning("OPERATIONAL_AUDIT stuck_tasks suspect=task_state_unreadable error=%s", exc)
+        return
+
+    count = int(stuck.get("count", 0) or 0)
+    if count > MAX_STUCK_TASKS_BEFORE_ALERT:
+        log.warning(
+            "OPERATIONAL_AUDIT stuck_tasks count=%d threshold=%d threshold_minutes=%d agent_types=%s task_ids=%s",
+            count,
+            MAX_STUCK_TASKS_BEFORE_ALERT,
+            STUCK_TASK_THRESHOLD_MINUTES,
+            ",".join(stuck.get("agent_types", [])),
+            ",".join(stuck.get("task_ids", [])),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Startup health check — make invisible dependencies visible
 # ---------------------------------------------------------------------------
@@ -1058,7 +1469,13 @@ def _check_invisible_dependencies():
                 key=f"invis:import:{mod_name}",
             )
 
-    # 6. Survival-critical components: no fallback, separate from strategic degradations
+    # 5. Content integrity: the newest completed task must have non-trivial output
+    _check_recent_completed_task_content_integrity()
+
+    # 6. Stuck task detection: active states past transition threshold
+    _check_stuck_tasks_audit()
+
+    # 7. Survival-critical components: no fallback, separate from strategic degradations
     survival_status = _check_survival_critical_components()
     survival_log = log.info if survival_status["tier"] == "ok" else log.warning
     survival_log(
@@ -2296,6 +2713,10 @@ def cmd_run():
     _t0 = _time.monotonic()
     log_authorization_event("scheduled_jobs", "cron", "normal", bypassed_check=False)
     _register_core_scheduled_jobs()
+    try:
+        periodic_blind_spot_check()
+    except Exception as e:
+        log.debug("blind spot check failed: %s", e)
     _dispatch_scheduled_jobs(_session_new)
 
     # Weekly health report — Monday morning
@@ -2569,6 +2990,179 @@ def _write_last_output(component: str) -> None:
         _tmp.rename(LAST_OUTPUT_FILE)
     except Exception as _e:
         log.debug("last_output write failed: %s", _e)
+
+
+def _count_task_workspaces() -> int:
+    if not TASKS_DIR.is_dir():
+        return 0
+    try:
+        return sum(1 for path in TASKS_DIR.iterdir() if path.is_dir())
+    except OSError:
+        return 0
+
+
+def _feed_fetch_snapshot() -> dict:
+    path = FEEDS_DIR / "feed_stats.json"
+    if not path.exists():
+        return {"total_items": 0, "sample_count": 0, "latest_fetch": None}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"total_items": 0, "sample_count": 0, "latest_fetch": None}
+
+    total_items = 0
+    sample_count = 0
+    latest_fetch = None
+    for entries in data.values() if isinstance(data, dict) else []:
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                total_items += max(0, int(entry.get("item_count", 0)))
+            except (TypeError, ValueError):
+                pass
+            sample_count += 1
+            ts = _parse_recovery_timestamp(entry.get("timestamp"))
+            if ts is not None:
+                latest_fetch = ts if latest_fetch is None else max(latest_fetch, ts)
+    return {"total_items": total_items, "sample_count": sample_count, "latest_fetch": latest_fetch}
+
+
+def _latest_briefing_mtime() -> float | None:
+    if not BRIEFINGS_DIR.is_dir():
+        return None
+    latest = None
+    try:
+        for path in BRIEFINGS_DIR.glob("*.md"):
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            latest = mtime if latest is None else max(latest, mtime)
+    except OSError:
+        return None
+    return latest
+
+
+def _blind_spot_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _blind_spot_warn(message: str, **details) -> None:
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "level": "WARNING",
+        "message": message,
+        **details,
+    }
+    try:
+        with open(Path("/tmp/mira-blindspot.log"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    except OSError as exc:
+        log.debug("blind spot warning write failed: %s", exc)
+    log.warning("BLIND_SPOT %s", json.dumps(record, ensure_ascii=False, sort_keys=True))
+
+
+def _scheduled_pipeline_blind_spots(now: float, outputs: dict) -> list[dict]:
+    job_outputs = {
+        "explore": "explorer",
+        "writing-pipeline": "writer",
+        "reflect": "reflect",
+        "journal": "journal",
+    }
+    anomalies = []
+    for job in get_jobs():
+        component = job_outputs.get(job.name)
+        if not component:
+            continue
+        user_ids = get_known_user_ids() if getattr(job, "per_user", False) else [None]
+        for user_id in user_ids:
+            try:
+                payload = evaluate_job_payload(job, user_id=user_id)
+            except Exception as exc:
+                log.debug("blind spot trigger evaluation failed for %s: %s", job.name, exc)
+                continue
+            if not payload:
+                continue
+            try:
+                last_output = float(outputs.get(component, 0) or 0)
+            except (TypeError, ValueError):
+                last_output = 0
+            output_gap = now - last_output if last_output > 0 else None
+            if output_gap is None or output_gap > 2 * 3600:
+                anomalies.append(
+                    {
+                        "job": job.name,
+                        "component": component,
+                        "user_id": user_id,
+                        "last_output": last_output or None,
+                        "output_gap_seconds": int(output_gap) if output_gap is not None else None,
+                    }
+                )
+    return anomalies
+
+
+def periodic_blind_spot_check() -> None:
+    state = load_state()
+    now = time.time()
+    last = _parse_recovery_timestamp(state.get("last_blind_spot_check")) or 0
+    if now - last < 30 * 60:
+        return
+
+    state["last_blind_spot_check"] = datetime.now(timezone.utc).isoformat()
+    task_workspace_count = _count_task_workspaces()
+    previous_task_workspace_count = state.get("blind_spot_task_workspace_count")
+    previous_task_count = _blind_spot_int(previous_task_workspace_count)
+    heartbeat = MIRA_DIR / "heartbeat.json"
+    heartbeat_updated_at = _heartbeat_updated_at(heartbeat) if heartbeat.exists() else None
+    heartbeat_age = now - heartbeat_updated_at if heartbeat_updated_at is not None else None
+    if (
+        previous_task_workspace_count is not None
+        and task_workspace_count > previous_task_count
+        and (heartbeat_age is None or heartbeat_age > 300)
+    ):
+        _blind_spot_warn(
+            "task workspaces increased while heartbeat was stale",
+            task_workspace_count=task_workspace_count,
+            previous_task_workspace_count=previous_task_count,
+            heartbeat_age_seconds=int(heartbeat_age) if heartbeat_age is not None else None,
+        )
+    state["blind_spot_task_workspace_count"] = task_workspace_count
+
+    fetch_snapshot = _feed_fetch_snapshot()
+    previous_fetch_total = state.get("blind_spot_feed_total_items")
+    previous_feed_total = _blind_spot_int(previous_fetch_total)
+    latest_briefing = _latest_briefing_mtime()
+    briefing_gap = now - latest_briefing if latest_briefing is not None else None
+    if (
+        previous_fetch_total is not None
+        and fetch_snapshot["total_items"] > previous_feed_total
+        and (briefing_gap is None or briefing_gap > 2 * 3600)
+    ):
+        _blind_spot_warn(
+            "explorer fetch counts increased without a recent briefing",
+            feed_total_items=fetch_snapshot["total_items"],
+            previous_feed_total_items=previous_feed_total,
+            feed_sample_count=fetch_snapshot["sample_count"],
+            latest_fetch=fetch_snapshot["latest_fetch"],
+            briefing_gap_seconds=int(briefing_gap) if briefing_gap is not None else None,
+        )
+    state["blind_spot_feed_total_items"] = fetch_snapshot["total_items"]
+
+    for anomaly in _scheduled_pipeline_blind_spots(now, _read_last_outputs()):
+        _blind_spot_warn(
+            "scheduled pipeline trigger is active but output is absent or stale",
+            **anomaly,
+        )
+
+    _check_task_distribution_blind_spots(state)
+
+    save_state(state)
 
 
 def _review_trust_inflation_threshold() -> int:

@@ -15,6 +15,8 @@ for p in [_SHARED, _EXPLORER]:
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
+from prompts import INCENTIVE_STRUCTURE_CHECK
+
 log = logging.getLogger("explorer_agent")
 
 
@@ -59,6 +61,7 @@ Excerpt:
 - Focus on what is recent, surprising, or actionable
 - Cite sources inline as markdown links using the provided titles/URLs
 - If sources conflict, say so explicitly
+- {INCENTIVE_STRUCTURE_CHECK}
 - Output clean markdown only
 """
 
@@ -86,6 +89,7 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
 - Summarize key findings with source links
 - Write in the user's language (Chinese if Chinese, English if English)
 - Focus on what's new, surprising, or actionable
+- {INCENTIVE_STRUCTURE_CHECK}
 - Save your briefing to {workspace}/output.md
 
 Work in: {workspace}

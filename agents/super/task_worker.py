@@ -931,6 +931,65 @@ from task_result import (
 )
 
 
+_SUBAGENT_TRUST_FLAG_KEYS = ("verified", "confirmed", "ground_truth")
+_SUBAGENT_TRUST_STATUS_VALUES = {"complete", "verified"}
+
+
+def _warn_self_verify_attempt(task_id: str, labels: list[str]) -> None:
+    if labels:
+        log.warning("Agent attempted self-verify on task %s - discarding flag(s): %s", task_id, ", ".join(labels))
+
+
+def _unpack_response(resp: dict, task_id: str = "") -> dict:
+    payload = dict(resp or {})
+    # Trust attack surface: sub-agents can self-claim confirmatory labels
+    # that make downstream skepticism sleep. Treat every sub-agent response
+    # as exploratory until the super agent's own verification path checks it.
+    discarded: list[str] = []
+    for key in _SUBAGENT_TRUST_FLAG_KEYS:
+        if key in payload:
+            payload.pop(key, None)
+            discarded.append(key)
+    if str(payload.get("status", "")).strip().lower() == "complete":
+        payload.pop("status", None)
+        discarded.append("status: complete")
+    verification = payload.get("verification")
+    if isinstance(verification, dict):
+        cleaned_verification = dict(verification)
+        for key in _SUBAGENT_TRUST_FLAG_KEYS:
+            if key in cleaned_verification:
+                cleaned_verification.pop(key, None)
+                discarded.append(f"verification.{key}")
+        if str(cleaned_verification.get("status", "")).strip().lower() == "complete":
+            cleaned_verification.pop("status", None)
+            discarded.append("verification.status: complete")
+        payload["verification"] = cleaned_verification
+    _warn_self_verify_attempt(task_id, discarded)
+    return payload
+
+
+_task_result_canonicalize_result_payload = _canonicalize_result_payload
+
+
+def _canonicalize_result_payload(workspace: Path, payload: dict, **kwargs) -> dict:
+    task_id = str(kwargs.get("task_id", ""))
+    status = str(kwargs.get("status", ""))
+    if status.strip().lower() in _SUBAGENT_TRUST_STATUS_VALUES:
+        labels = (
+            []
+            if status.strip().lower() == str(payload.get("status", "")).strip().lower()
+            else [f"status: {status.strip().lower()}"]
+        )
+        _warn_self_verify_attempt(task_id, labels)
+        kwargs["status"] = "done"
+    return _task_result_canonicalize_result_payload(workspace, _unpack_response(payload, task_id), **kwargs)
+
+
+import task_result as _task_result_module
+
+_task_result_module._canonicalize_result_payload = _canonicalize_result_payload
+
+
 def _task_output_verification_type(
     task_type: str,
     tags: list[str] | None,
@@ -1151,6 +1210,10 @@ def _write_result(
     failure_class: str | None = None,
     next_action: str | None = None,
 ):
+    raw_status = str(status or "").strip().lower()
+    if raw_status in _SUBAGENT_TRUST_STATUS_VALUES:
+        _warn_self_verify_attempt(task_id, [f"status: {raw_status}"])
+        status = "done"
     status, summary, reasoning = _ensure_result_reasoning(workspace, task_id, status, summary, agent)
     normalized_status = normalize_task_status(status)
     verification_result = None
@@ -1209,8 +1272,6 @@ def _write_result(
     except Exception as exc:
         log.debug("Proxy audit skipped for %s: %s", task_id, exc)
 
-
-import task_result as _task_result_module
 
 _task_result_module._write_result = _write_result
 

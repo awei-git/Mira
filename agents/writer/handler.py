@@ -9,6 +9,7 @@ writing_workflow.start_project(), whose signature did not match the runtime.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
@@ -24,9 +25,20 @@ from llm import claude_think
 from writing_workflow import run_full_pipeline
 from config import RAW_WRITING_MODE_ALLOWED
 
+try:
+    from llm_port.provider import get_provider
+    from llm_port.types import LLMMessage, LLMRequest
+except ImportError:
+    get_provider = None
+    LLMMessage = None
+    LLMRequest = None
+
 log = logging.getLogger("writer_agent")
 
 _ANTI_AI_PATH = Path(__file__).resolve().parent / "checklists" / "anti-ai.md"
+_OBSESSION_CONSTRAINTS_PATH = Path(__file__).resolve().parent / "checklists" / "obsession_constraints.md"
+_REFLECTIVE_SELF_CRITIQUE_PATH = Path(__file__).resolve().parent / "checklists" / "self-edit.md"
+_CEILING_CHECK_PATH = Path(__file__).resolve().parent / "checklists" / "ceiling-check.md"
 _EPISTEMIC_BIAS_PATH = Path(__file__).resolve().parent / "checklists" / "epistemic-bias.md"
 _SUBSTACK_VOICE_PATH = Path(__file__).resolve().parent / "voice" / "substack_voice.md"
 _SPEAKER_IDENTITY_PATH = Path(__file__).resolve().parents[1] / "shared" / "soul" / "identity.md"
@@ -92,7 +104,41 @@ _PARALLELISM_PATTERNS = (
     re.compile(r"不是[^。！？；\n]{1,40}而是[^。！？；\n]{1,40}"),
     re.compile(r"不仅[^。！？；\n]{1,40}而且[^。！？；\n]{1,40}"),
 )
+_ENGLISH_PARALLELISM_PATTERNS = (re.compile(r"\bnot\b[^.!?;\n]{1,80}\bbut\b[^.!?;\n]{1,80}", re.IGNORECASE),)
 _ABSTRACT_NOUNS = ("维度", "张力", "结构性", "叙事", "框架", "语境")
+_ABSTRACT_STRUCTURAL_TERMS = (
+    "structural",
+    "structure",
+    "architecture",
+    "framework",
+    "dimension",
+    "tension",
+    "narrative",
+    "context",
+)
+_GENERIC_AI_ESSAY_SHELLS = (
+    "the real question is",
+    "at its core",
+    "this article explores",
+    "it could be argued",
+    "in conclusion",
+)
+_FRICTION_FEEDBACK_RE = re.compile(
+    r"\b(?:bothered by|can't stand|cannot stand|this keeps happening|the quality is so bad)\b|"
+    r"受不了|看着难受|总是这样|一直这样|质量.*差",
+    re.IGNORECASE,
+)
+_AUDITOR_PERSONA = (
+    "You are a critical reviewer. Your job is to find errors that look correct at a glance. "
+    "Be suspicious of fluency. Flag factual claims that need verification. "
+    "Identify logical gaps disguised by smooth transitions."
+)
+_AUDIT_PASS_SYSTEM_PROMPT = (
+    "You are in audit mode only. Your sole task is to identify factual claims that could be false "
+    "even if they sound plausible. Do not rewrite, suggest alternatives, or generate new text. "
+    "For each flagged claim, classify as VERIFIED, UNVERIFIED, or FALSE and require a source."
+)
+_AUDIT_BLOCKING_STATUSES = {"UNVERIFIED", "FALSE"}
 _HIGH_IDENTITY_GENRES = (
     "comedy",
     "confessional",
@@ -109,7 +155,19 @@ _HIGH_IDENTITY_GENRES = (
     "humor",
     "humour",
 )
+_OBSESSION_GAP_NOTE = (
+    "This artifact has likely reached AI quality ceiling. Human obsessive review "
+    "(irrational attention to interaction details, micro-rhythm, implicit framing) "
+    "may yield improvements that automated passes cannot."
+)
+_OBSESSION_GAP_KEYWORDS = (
+    "first-person narrative",
+    "first person narrative",
+    "design critique",
+    "personal essay",
+)
 AntiAiMode = Literal["strict", "relaxed"]
+SourceType = Literal["ai", "human_raw"]
 
 
 def _should_run_de_ai_checklist() -> bool:
@@ -153,11 +211,132 @@ def _resolve_anti_ai_mode(
     return _normalize_anti_ai_mode(getattr(_writer_config, "ANTI_AI_STRICTNESS", "strict"))
 
 
+def _extract_source_type(source: object) -> object | None:
+    if not isinstance(source, dict):
+        return None
+    value = source.get("source_type")
+    if value:
+        return value
+    for key in ("payload", "metadata"):
+        value = _extract_source_type(source.get(key))
+        if value:
+            return value
+    return None
+
+
+def _resolve_source_type(source_type: object | None, metadata: object, kwargs: dict) -> SourceType:
+    for value in (
+        source_type,
+        _extract_source_type(kwargs.get("payload")),
+        _extract_source_type(kwargs.get("task")),
+        _extract_source_type(metadata),
+        _extract_source_type(kwargs),
+    ):
+        if str(value or "").strip().lower() == "human_raw":
+            return "human_raw"
+    return "ai"
+
+
+def _extract_audit_mode(source: object) -> object | None:
+    if not isinstance(source, dict):
+        return None
+    if "audit_mode" in source:
+        return source.get("audit_mode")
+    for key in ("payload", "metadata"):
+        value = _extract_audit_mode(source.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _coerce_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _resolve_audit_mode(audit_mode: object | None, metadata: object, kwargs: dict) -> bool:
+    if not bool(getattr(_writer_config, "ENABLE_AUDIT_MODE", True)):
+        return False
+    for value in (
+        audit_mode,
+        _extract_audit_mode(kwargs.get("payload")),
+        _extract_audit_mode(kwargs.get("task")),
+        _extract_audit_mode(metadata),
+        _extract_audit_mode(kwargs),
+    ):
+        if value is not None:
+            return _coerce_bool(value)
+    return False
+
+
+def _normalize_source_genre(value: object) -> str:
+    return re.sub(r"[\s-]+", "_", str(value or "").strip().lower())
+
+
+def _extract_source_genre(source: object) -> object | None:
+    if not isinstance(source, dict):
+        return None
+    value = source.get("source_genre")
+    if value:
+        return value
+    for key in ("payload", "metadata"):
+        value = _extract_source_genre(source.get(key))
+        if value:
+            return value
+    return None
+
+
+def _resolve_source_genre(metadata: object, kwargs: dict) -> str | None:
+    for value in (
+        _extract_source_genre(kwargs.get("payload")),
+        _extract_source_genre(kwargs.get("task")),
+        _extract_source_genre(metadata),
+        _extract_source_genre(kwargs),
+    ):
+        normalized = _normalize_source_genre(value)
+        if normalized:
+            return normalized
+    return None
+
+
+def _is_voice_preserving_genre(source_genre: str | None) -> bool:
+    genres = getattr(_writer_config, "VOICE_PRESERVING_GENRES", ())
+    normalized_genres = {_normalize_source_genre(genre) for genre in genres}
+    return bool(source_genre and source_genre in normalized_genres)
+
+
 def _load_anti_ai() -> str:
     try:
         return _ANTI_AI_PATH.read_text(encoding="utf-8")
     except OSError:
         log.warning("anti-ai.md not found at %s", _ANTI_AI_PATH)
+        return ""
+
+
+def _load_obsession_constraints() -> str:
+    try:
+        return _OBSESSION_CONSTRAINTS_PATH.read_text(encoding="utf-8")
+    except OSError:
+        log.warning("obsession_constraints.md not found at %s", _OBSESSION_CONSTRAINTS_PATH)
+        return ""
+
+
+def _load_obsession_checklist() -> str:
+    try:
+        return _REFLECTIVE_SELF_CRITIQUE_PATH.read_text(encoding="utf-8")
+    except OSError:
+        log.warning("reflective self-critique prompt not found at %s", _REFLECTIVE_SELF_CRITIQUE_PATH)
+        return ""
+
+
+def _load_ceiling_check() -> str:
+    try:
+        return _CEILING_CHECK_PATH.read_text(encoding="utf-8")
+    except OSError:
+        log.warning("ceiling-check.md not found at %s", _CEILING_CHECK_PATH)
         return ""
 
 
@@ -223,6 +402,75 @@ def _genre_metadata(content: str, metadata: dict | None) -> dict[str, object]:
 
 def _uses_first_person_voice(text: str) -> bool:
     return bool(re.search(r"(?<![A-Za-z])I(?:'m|'ve|'d|'ll)?(?![A-Za-z])|\bmy\b|\bme\b|我|我的", text, re.IGNORECASE))
+
+
+def _metadata_signal_text(metadata: dict | None) -> str:
+    if not isinstance(metadata, dict):
+        return ""
+    values: list[str] = []
+    for key in ("artifact_type", "content_type", "type", "format", "genre", "genres", "source_genre", "project_type"):
+        value = metadata.get(key)
+        if isinstance(value, (list, tuple, set)):
+            values.extend(str(item) for item in value if item)
+        elif value:
+            values.append(str(value))
+    for key in ("project_config", "project"):
+        value = metadata.get(key)
+        if isinstance(value, dict):
+            values.extend(str(item) for item in value.values() if item)
+        elif value:
+            values.append(str(value))
+    return " ".join(values)
+
+
+def _is_voice_heavy_or_flagship_artifact(output: str, *, content: str, metadata: dict | None) -> bool:
+    if isinstance(metadata, dict):
+        for key in ("voice_heavy", "flagship"):
+            if _coerce_bool(metadata.get(key)):
+                return True
+        for key in ("project_config", "project"):
+            value = metadata.get(key)
+            if isinstance(value, dict) and any(_coerce_bool(value.get(flag)) for flag in ("voice_heavy", "flagship")):
+                return True
+
+    configured_types = tuple(getattr(_writer_config, "VOICE_PRESERVING_GENRES", ()))
+    signal_text = " ".join([_metadata_signal_text(metadata), content[:3000], output[:3000]])
+    haystack = re.sub(r"[_-]+", " ", signal_text.lower())
+    if any(_normalize_source_genre(kind).replace("_", " ") in haystack for kind in configured_types):
+        return True
+    if any(keyword in haystack for keyword in _OBSESSION_GAP_KEYWORDS):
+        return True
+    return bool(
+        _uses_first_person_voice(output)
+        and re.search(r"\b(?:narrative|essay|memoir|critique)\b|散文|随笔|评论", haystack)
+    )
+
+
+def _assess_obsession_gap(output: str, *, content: str, metadata: dict | None) -> dict:
+    artifact_metadata = metadata if isinstance(metadata, dict) else {}
+    ceiling_flag = _is_voice_heavy_or_flagship_artifact(output, content=content, metadata=artifact_metadata)
+    artifact_metadata["ceiling_flag"] = ceiling_flag
+    if ceiling_flag:
+        artifact_metadata["ceiling_note"] = _OBSESSION_GAP_NOTE
+    else:
+        artifact_metadata.pop("ceiling_note", None)
+    return artifact_metadata
+
+
+def _obsession_gap_check(text: str) -> bool:
+    if not text or len(text.strip()) < 80:
+        return False
+    prompt = (
+        "You are a detail‑obsessed editor. On a scale of 1 to 10, how much does this text lack obsessive "
+        "attention to subtle polish and refinement? If your rating is ≥7, reply ONLY with OBSESSION_GAP.\n\n"
+        f"{text[:16000]}"
+    )
+    try:
+        response = claude_think(prompt, timeout=120, tier="light")
+    except Exception as e:
+        log.warning("obsession_gap_check: LLM call failed (%s)", e)
+        return False
+    return "OBSESSION_GAP" in (response or "")
 
 
 def _speaker_identity_checklist_excerpt(checklist: str) -> str:
@@ -385,6 +633,155 @@ def scan_anti_ai_patterns(text: str, *, anti_ai_mode: AntiAiMode = "strict") -> 
     }
 
 
+def scan_obsession_constraints(text: str) -> dict:
+    paragraphs = _paragraph_spans(text)
+    violations: list[dict[str, object]] = []
+
+    for index, (start, end, paragraph) in enumerate(paragraphs):
+        em_dash_count = paragraph.count("—")
+        if em_dash_count > 1:
+            violations.append(
+                {
+                    "trigger": "em_dash_overuse",
+                    "severity": "obsession-grade",
+                    "paragraph": index,
+                    "start": start,
+                    "end": end,
+                    "count": em_dash_count,
+                    "text": paragraph[:180],
+                }
+            )
+
+        abstract_hits = sum(len(re.findall(re.escape(noun), paragraph)) for noun in _ABSTRACT_NOUNS)
+        abstract_hits += sum(
+            len(re.findall(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", paragraph, re.IGNORECASE))
+            for term in _ABSTRACT_STRUCTURAL_TERMS
+        )
+        if abstract_hits >= 3:
+            violations.append(
+                {
+                    "trigger": "abstract_structural_vocab",
+                    "severity": "obsession-grade",
+                    "paragraph": index,
+                    "start": start,
+                    "end": end,
+                    "count": abstract_hits,
+                    "text": paragraph[:180],
+                }
+            )
+
+    for pattern in (*_PARALLELISM_PATTERNS, *_ENGLISH_PARALLELISM_PATTERNS):
+        for match in pattern.finditer(text):
+            violations.append(
+                {
+                    "trigger": "not_x_but_y_parallelism",
+                    "severity": "obsession-grade",
+                    "pattern": pattern.pattern,
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": match.group(0)[:180],
+                }
+            )
+
+    lower = text.lower()
+    for shell in _GENERIC_AI_ESSAY_SHELLS:
+        index = lower.find(shell)
+        if index >= 0:
+            violations.append(
+                {
+                    "trigger": "generic_ai_essay_shell",
+                    "severity": "obsession-grade",
+                    "start": index,
+                    "end": index + len(shell),
+                    "text": text[index : index + 180],
+                }
+            )
+
+    return {"violations": violations}
+
+
+def _format_obsession_constraint_block(report: dict) -> str:
+    violations = report.get("violations")
+    if not isinstance(violations, list) or not violations:
+        return ""
+    _load_obsession_constraints()
+    lines = [
+        "Writer obsession constraints blocked finalization: obsession-grade friction pattern(s) remain.",
+        "Explicit resolution is required before anti-AI smoothing or efficiency optimizations may run.",
+    ]
+    for item in violations[:8]:
+        if not isinstance(item, dict):
+            continue
+        trigger = str(item.get("trigger") or "unknown")
+        severity = str(item.get("severity") or "obsession-grade")
+        excerpt = _short_excerpt(str(item.get("text") or ""), limit=120)
+        lines.append(f"- {trigger} [{severity}]: {excerpt}")
+    if len(violations) > 8:
+        lines.append(f"- {len(violations) - 8} more obsession constraint violation(s).")
+    return "\n".join(lines)
+
+
+def _apply_obsession_constraints_gate(workspace: Path, text: str, *, output_path: Path | None = None) -> bool:
+    report = scan_obsession_constraints(text)
+    summary = _format_obsession_constraint_block(report)
+    if not summary:
+        return False
+    (workspace / "summary.txt").write_text(summary, encoding="utf-8")
+    if output_path is not None:
+        output_path.write_text(summary, encoding="utf-8")
+    log.warning("obsession constraints blocked writer output: %s", summary.replace("\n", " ")[:1000])
+    return True
+
+
+def _obsession_constraint_feedback_candidates(feedback: str) -> list[dict[str, str]]:
+    if not _FRICTION_FEEDBACK_RE.search(feedback or ""):
+        return []
+    candidates: list[dict[str, str]] = []
+    for line in re.split(r"[\n。！？.!?]+", feedback):
+        fragment = line.strip()
+        if not fragment or not _FRICTION_FEEDBACK_RE.search(fragment):
+            continue
+        lower = fragment.lower()
+        if "dash" in lower or "破折号" in fragment or "—" in fragment:
+            trigger = "em_dash_overuse"
+        elif "不是" in fragment or "而是" in fragment or "not " in lower or " but " in lower:
+            trigger = "not_x_but_y_parallelism"
+        elif any(term in lower for term in _ABSTRACT_STRUCTURAL_TERMS) or any(
+            noun in fragment for noun in _ABSTRACT_NOUNS
+        ):
+            trigger = "abstract_structural_vocab"
+        else:
+            trigger = "user_reported_friction"
+        candidates.append(
+            {
+                "trigger": trigger,
+                "severity": "candidate obsession-grade",
+                "feedback": fragment[:240],
+            }
+        )
+    return candidates
+
+
+def _surface_obsession_constraint_candidates(workspace: Path, feedback: str) -> None:
+    candidates = _obsession_constraint_feedback_candidates(feedback)
+    if not candidates:
+        return
+    lines = [
+        "# Obsession Constraint Candidates",
+        "",
+        "WA feedback used friction language. Review these before normal memory decay converts them into generic style preferences.",
+        "",
+    ]
+    for candidate in candidates:
+        lines.append(f"- trigger: `{candidate['trigger']}`")
+        lines.append(f"  severity: `{candidate['severity']}`")
+        lines.append(f"  feedback: {candidate['feedback']}")
+    try:
+        (workspace / "obsession_constraints_candidates.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as e:
+        log.warning("failed to surface obsession constraint candidates: %s", e)
+
+
 def _de_ai_section(text: str, *, tier: str, timeout: int, anti_ai_mode: AntiAiMode = "strict") -> str:
     """Internal: edit a single section. Used by de_ai_pass after chunking."""
     if not text or len(text.strip()) < 80:
@@ -495,6 +892,132 @@ def de_ai_pass(
         )
         text = _run_de_ai_sections(text, tier="heavy", timeout=max(timeout, 240), anti_ai_mode=anti_ai_mode)
     return _run_de_ai_sections(text, tier=tier, timeout=timeout, anti_ai_mode=anti_ai_mode)
+
+
+def _obsession_friction_points(report: str) -> list[dict[str, str]]:
+    cleaned = _clean_llm_metadata_response(report or "")
+    if not cleaned:
+        return []
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        if re.search(r"\bzero\b|no remaining|none|没有|无", cleaned, re.IGNORECASE):
+            return []
+        return [{"fragment": "unparsed", "bother": cleaned[:1000]}]
+    if isinstance(parsed, list):
+        raw_points = parsed
+    elif isinstance(parsed, dict):
+        raw_points = parsed.get("friction_points") or parsed.get("points") or []
+    else:
+        return []
+    points: list[dict[str, str]] = []
+    for point in raw_points:
+        if isinstance(point, str):
+            text = point.strip()
+            if text:
+                points.append({"fragment": text, "bother": text})
+        elif isinstance(point, dict):
+            fragment = str(point.get("fragment") or point.get("text") or point.get("location") or "").strip()
+            bother = str(
+                point.get("bother") or point.get("why") or point.get("reason") or point.get("issue") or ""
+            ).strip()
+            if fragment or bother:
+                points.append({"fragment": fragment, "bother": bother})
+    return points
+
+
+def _obsessive_revise(
+    draft: str,
+    *,
+    tier: str = "light",
+    timeout: int = 180,
+    anti_ai_mode: AntiAiMode = "strict",
+) -> str:
+    if not draft or len(draft.strip()) < 80:
+        return draft
+    checklist = _load_obsession_checklist()
+    if not checklist:
+        return draft
+    review_prompt = (
+        "Run the Reflective Self-Critique skill prompt against the draft below. This is one iteration only. "
+        "Find places where the writing is merely adequate, the voice lacks distinctiveness, or a micro-detail "
+        "could be made more specific, surprising, or alive.\n\n"
+        "Return JSON only in this exact shape:\n"
+        '{"friction_points":[{"fragment":"exact phrase or sentence","bother":"why an obsessive writer would be bothered"}]}\n'
+        'If there are zero remaining friction points, return {"friction_points":[]}.\n\n'
+        "# Reflective Self-Critique skill prompt\n\n"
+        f"{checklist}\n\n"
+        "# Draft\n\n"
+        f"{draft}"
+    )
+    try:
+        report = claude_think(review_prompt, timeout=timeout, tier=tier)
+    except Exception as e:
+        log.warning("obsessive_revise: critique LLM call failed (%s)", e)
+        return draft
+    points = _obsession_friction_points(report or "")
+    if not points:
+        log.info("obsessive_revise: no revision points found")
+        return draft
+    revise_prompt = (
+        "Revise the draft by rewriting only the listed fragments. Satisfy the stated bothers without "
+        "changing unrelated sentences, structure, names, facts, quotes, sources, Markdown headings, or "
+        "the user's requested language. Preserve everything else as closely as possible.\n\n"
+        "# Friction points\n\n"
+        f"{json.dumps(points, ensure_ascii=False, indent=2)}\n\n"
+        "# Draft\n\n"
+        f"{draft}\n\n"
+        "Output only the full revised markdown. No preface, no checklist report."
+    )
+    try:
+        revised = claude_think(revise_prompt, timeout=timeout, tier=tier)
+    except Exception as e:
+        log.warning("obsessive_revise: revision LLM call failed (%s)", e)
+        return draft
+    cleaned = _clean_llm_metadata_response(revised or "")
+    if not cleaned or len(cleaned) < len(draft) * 0.5:
+        log.warning("obsessive_revise: revision output invalid; keeping original draft")
+        return draft
+    return de_ai_pass(cleaned, tier=tier, timeout=timeout, anti_ai_mode=anti_ai_mode)
+
+
+def minimal_voice_preserving_editorial_pass(text: str, *, tier: str = "light", timeout: int = 120) -> str:
+    if not text or len(text.strip()) < 80:
+        return text
+    prompt = (
+        "You are Mira's minimal copyeditor for voice-sensitive personal writing.\n\n"
+        "Apply only an error pass. Fix outright typos, duplicated words, malformed Markdown, "
+        "obvious truncation or concatenation artifacts, and content that looks like accidental "
+        "pipeline output. Do not smooth the voice, normalize punctuation, polish rhythm, remove "
+        "friction, apply an anti-AI checklist, or transform the narrator's character voice. "
+        "Do not add claims, evidence, transitions, summaries, or explanations.\n\n"
+        "Output only the edited markdown. No preface, no explanation.\n\n"
+        "# Draft\n\n"
+        f"{text}"
+    )
+    try:
+        edited = claude_think(prompt, timeout=timeout, tier=tier)
+    except Exception as e:
+        log.warning("minimal_voice_preserving_editorial_pass: LLM call failed (%s) — returning original", e)
+        return text
+    if not edited:
+        return text
+    cleaned = edited.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    if len(cleaned) < len(text) * 0.8:
+        log.warning(
+            "minimal_voice_preserving_editorial_pass: output too short (%d < 80%% of %d) — returning original",
+            len(cleaned),
+            len(text),
+        )
+        return text
+    return cleaned
 
 
 def epistemic_bias_pass(text: str, *, tier: str = "light", timeout: int = 180) -> str:
@@ -650,6 +1173,39 @@ def _append_speaker_identity_editorial_choice(
         )
 
 
+def _append_minimal_editorial_choice(
+    choices: list[dict[str, str]],
+    before: str,
+    after: str,
+) -> None:
+    if after != before:
+        choices.append(
+            {
+                "decision": "Applied minimal voice-preserving copyedit.",
+                "reason": "Source genre calls for fixing outright errors without anti-AI smoothing or character-voice changes.",
+            }
+        )
+
+
+def _append_audit_editorial_choice(
+    choices: list[dict[str, str]],
+    before: str,
+    after: str,
+    report: str,
+) -> None:
+    if report:
+        if after != before:
+            decision = "Applied audit-mode findings in the final revision."
+        else:
+            decision = "Ran audit-mode review before finalization."
+        choices.append(
+            {
+                "decision": decision,
+                "reason": "Audit rule: check fluent-looking claims for factual accuracy, verification needs, and hidden logical gaps.",
+            }
+        )
+
+
 def _build_judgment_disclosure(draft: str, editorial_choices: list[dict[str, str]]) -> str:
     lines = ["---", "", "## Judgment Disclosure"]
     if editorial_choices:
@@ -663,6 +1219,433 @@ def _build_judgment_disclosure(draft: str, editorial_choices: list[dict[str, str
     else:
         lines.append("- No automated editorial changes were detected.")
     return "\n\n" + "\n".join(lines)
+
+
+def _clean_llm_metadata_response(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    return cleaned
+
+
+def _normalize_audit_classification(value: object) -> str:
+    status = str(value or "").strip().upper()
+    if status in {"VERIFIED", "UNVERIFIED", "FALSE"}:
+        return status
+    for candidate in ("UNVERIFIED", "VERIFIED", "FALSE"):
+        if candidate in status:
+            return candidate
+    return "UNVERIFIED"
+
+
+def _extract_audit_claims(parsed: object) -> list[dict[str, str]]:
+    if isinstance(parsed, list):
+        raw_claims = parsed
+    elif isinstance(parsed, dict):
+        raw_claims = parsed.get("claims") or parsed.get("flagged_claims") or parsed.get("findings") or []
+    else:
+        raw_claims = []
+    claims: list[dict[str, str]] = []
+    if not isinstance(raw_claims, list):
+        return claims
+    for item in raw_claims:
+        if not isinstance(item, dict):
+            continue
+        claim = str(item.get("claim") or item.get("text") or item.get("statement") or "").strip()
+        classification = _normalize_audit_classification(
+            item.get("classification") or item.get("status") or item.get("verdict")
+        )
+        source = str(item.get("source") or item.get("required_source") or item.get("citation") or "").strip()
+        location = str(item.get("location") or item.get("where") or "").strip()
+        if claim or location:
+            claims.append(
+                {
+                    "claim": claim,
+                    "classification": classification,
+                    "source": source,
+                    "location": location,
+                }
+            )
+    return claims
+
+
+def audit_pass(draft: str, mode: str = "strict") -> dict[str, object]:
+    if not draft or len(draft.strip()) < 80:
+        return {"mode": mode, "claims": [], "raw": "", "parse_error": False}
+    prompt = (
+        f"Mode: {mode}\n\n"
+        "Return JSON only with this schema:\n"
+        "{\n"
+        '  "claims": [\n'
+        '    {"claim": "...", "classification": "VERIFIED|UNVERIFIED|FALSE", "source": "...", "location": "..."}\n'
+        "  ]\n"
+        "}\n\n"
+        "Only include factual claims that could be false even if they sound plausible. "
+        'If there are no flagged claims, return {"claims": []}.\n\n'
+        "# Draft\n\n"
+        f"{draft[:16000]}"
+    )
+    raw = ""
+    try:
+        if get_provider is not None and LLMMessage is not None and LLMRequest is not None:
+            response = get_provider("local").complete(
+                LLMRequest(
+                    messages=[
+                        LLMMessage(role="system", content=_AUDIT_PASS_SYSTEM_PROMPT),
+                        LLMMessage(role="user", content=prompt),
+                    ],
+                    model_class="local",
+                    max_tokens=getattr(_writer_config, "AUDIT_MODE_MAX_TOKENS", 2048),
+                    timeout=180,
+                    metadata={"temperature": 0},
+                )
+            )
+            raw = response.text.strip()
+        else:
+            raw = (
+                claude_think(
+                    f"SYSTEM:\n{_AUDIT_PASS_SYSTEM_PROMPT}\n\nUSER:\n{prompt}",
+                    timeout=180,
+                    tier="light",
+                    max_tokens=getattr(_writer_config, "AUDIT_MODE_MAX_TOKENS", 2048),
+                )
+                or ""
+            ).strip()
+    except Exception as e:
+        log.warning("audit_pass: LLM call failed (%s)", e)
+        return {
+            "mode": mode,
+            "claims": [
+                {
+                    "claim": "Strict audit pass failed to run.",
+                    "classification": "UNVERIFIED",
+                    "source": "",
+                    "location": "",
+                }
+            ],
+            "raw": "",
+            "parse_error": True,
+        }
+    cleaned = _clean_llm_metadata_response(raw)
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {"mode": mode, "claims": [], "raw": cleaned, "parse_error": True}
+    return {"mode": mode, "claims": _extract_audit_claims(parsed), "raw": cleaned, "parse_error": False}
+
+
+def _audit_pass_unresolved_claims(report: dict[str, object]) -> list[dict[str, str]]:
+    if report.get("parse_error"):
+        return [
+            {
+                "claim": "Strict audit pass did not return parseable claim classifications.",
+                "classification": "UNVERIFIED",
+                "source": "",
+                "location": "",
+            }
+        ]
+    unresolved: list[dict[str, str]] = []
+    claims = report.get("claims")
+    if not isinstance(claims, list):
+        return unresolved
+    for item in claims:
+        if not isinstance(item, dict):
+            continue
+        classification = _normalize_audit_classification(item.get("classification"))
+        source = str(item.get("source") or "").strip()
+        source_missing = source.lower() in {"", "n/a", "none", "unknown", "unspecified"}
+        if classification in _AUDIT_BLOCKING_STATUSES or source_missing:
+            unresolved.append(
+                {
+                    "claim": str(item.get("claim") or "").strip(),
+                    "classification": classification,
+                    "source": source,
+                    "location": str(item.get("location") or "").strip(),
+                }
+            )
+    return unresolved
+
+
+def _format_audit_block_summary(report: dict[str, object]) -> str:
+    unresolved = _audit_pass_unresolved_claims(report)
+    lines = ["Writer audit blocked finalization: unresolved factual claims remain."]
+    for item in unresolved[:5]:
+        claim = item.get("claim") or item.get("location") or "Unspecified claim"
+        source = item.get("source") or "source required"
+        lines.append(f"- {item.get('classification', 'UNVERIFIED')}: {claim} ({source})")
+    if len(unresolved) > 5:
+        lines.append(f"- {len(unresolved) - 5} more unresolved claim(s).")
+    return "\n".join(lines)
+
+
+def _audit_mode_review(text: str, *, content: str, metadata: dict | None, timeout: int = 180) -> str:
+    prompt = (
+        "Audit the draft below for correctness, not polish.\n\n"
+        "Evaluation priority:\n"
+        "1. Factual accuracy and source discipline.\n"
+        "2. Logical consistency and unsupported inference.\n"
+        "3. Smooth transitions that hide gaps.\n"
+        "4. Plausible wording that a domain expert would reject.\n\n"
+        "Return JSON only with these keys:\n"
+        "{\n"
+        '  "errors_found": [{"severity": "high|medium|low", "location": "...", "issue": "...", "recommended_fix": "..."}],\n'
+        '  "plausibility_flags": [{"location": "...", "why_it_only_sounds_right": "..."}],\n'
+        '  "verification_needed_items": [{"claim": "...", "needed_source_or_check": "..."}],\n'
+        '  "logical_gaps": [{"location": "...", "gap": "..."}]\n'
+        "}\n\n"
+        "# Original task\n\n"
+        f"{content[:3000]}\n\n"
+        "# Metadata\n\n"
+        f"{json.dumps(metadata or {}, ensure_ascii=False)[:2000]}\n\n"
+        "# Draft\n\n"
+        f"{text[:16000]}"
+    )
+    try:
+        if get_provider is not None and LLMMessage is not None and LLMRequest is not None:
+            response = get_provider("local").complete(
+                LLMRequest(
+                    messages=[
+                        LLMMessage(role="system", content=_AUDITOR_PERSONA),
+                        LLMMessage(role="user", content=prompt),
+                    ],
+                    model_class="local",
+                    max_tokens=getattr(_writer_config, "AUDIT_MODE_MAX_TOKENS", 2048),
+                    timeout=timeout,
+                    metadata={"temperature": getattr(_writer_config, "AUDIT_MODE_TEMPERATURE", 0.3)},
+                )
+            )
+            return response.text.strip()
+    except Exception as e:
+        log.warning("audit_mode_review: low-temperature audit provider failed (%s); using default route", e)
+    try:
+        return (
+            claude_think(
+                f"SYSTEM:\n{_AUDITOR_PERSONA}\n\nUSER:\n{prompt}",
+                timeout=timeout,
+                tier="light",
+                max_tokens=getattr(_writer_config, "AUDIT_MODE_MAX_TOKENS", 2048),
+            )
+            or ""
+        ).strip()
+    except Exception as e:
+        log.warning("audit_mode_review: LLM call failed (%s)", e)
+        return ""
+
+
+def _audit_report_has_findings(report: str) -> bool:
+    cleaned = _clean_llm_metadata_response(report or "")
+    if not cleaned:
+        return False
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return True
+    if not isinstance(parsed, dict):
+        return True
+    for key in ("errors_found", "plausibility_flags", "verification_needed_items", "logical_gaps"):
+        value = parsed.get(key)
+        if isinstance(value, list) and value:
+            return True
+        if value and not isinstance(value, list):
+            return True
+    return False
+
+
+def audit_mode_pass(
+    text: str,
+    *,
+    content: str,
+    metadata: dict | None = None,
+    tier: str = "light",
+    timeout: int = 180,
+) -> tuple[str, str]:
+    if not text or len(text.strip()) < 80:
+        return text, ""
+    report = _audit_mode_review(text, content=content, metadata=metadata, timeout=timeout)
+    if not _audit_report_has_findings(report):
+        return text, report
+    prompt = (
+        f"{_AUDITOR_PERSONA}\n\n"
+        "Revise the draft using only the audit report below. This is not a style-polish pass. "
+        "Prioritize factual accuracy, logical consistency, and explicit uncertainty over fluent prose. "
+        "For claims that require verification but cannot be verified from the provided material, either "
+        "remove the specific claim, hedge it, or mark it as needing verification. Do not invent sources, "
+        "new examples, or new facts. Preserve the user's requested language and Markdown structure.\n\n"
+        "# Audit report\n\n"
+        f"{_clean_llm_metadata_response(report)[:6000]}\n\n"
+        "# Draft\n\n"
+        f"{text}\n\n"
+        "Output only the revised markdown. No preface, no explanation."
+    )
+    try:
+        revised = claude_think(prompt, timeout=timeout, tier=tier)
+    except Exception as e:
+        log.warning("audit_mode_pass: revision LLM call failed (%s) — returning original", e)
+        return text, report
+    if not revised:
+        return text, report
+    cleaned = _clean_llm_metadata_response(revised)
+    if len(cleaned) < len(text) * 0.5:
+        log.warning(
+            "audit_mode_pass: output too short (%d < 50%% of %d) — returning original",
+            len(cleaned),
+            len(text),
+        )
+        return text, report
+    return cleaned, report
+
+
+def _ceiling_handoff(output: str, *, content: str, tier: str = "light", timeout: int = 180) -> dict[str, object]:
+    checklist = _load_ceiling_check()
+    if not checklist or not output.strip():
+        note: dict[str, object] = {
+            "boundary": "unknown",
+            "assessment": "Ceiling check skipped because no prompt or output was available.",
+            "friction_points": [],
+            "publication_blocking": False,
+        }
+        log.info("ceiling_handoff: %s", note)
+        return note
+    prompt = (
+        "You are Mira's final quality-ceiling assessor.\n\n"
+        "Assess the finished output without rewriting it. This is a non-blocking handoff note for a human editor. "
+        "Do not approve or reject publication.\n\n"
+        "# Ceiling-check prompt\n\n"
+        f"{checklist}\n\n"
+        "# Original task\n\n"
+        f"{content[:3000]}\n\n"
+        "# Finished output\n\n"
+        f"{output[:12000]}\n\n"
+        "Return only JSON with these keys: boundary, assessment, bothered_detail, friction_points, publication_blocking. "
+        "Use boundary as either 'exceptional' or 'adequate'. friction_points must be a list of 2-4 concrete strings. "
+        "publication_blocking must be false."
+    )
+    try:
+        raw_note = claude_think(prompt, timeout=timeout, tier=tier)
+    except Exception as e:
+        note = {
+            "boundary": "unknown",
+            "assessment": f"Ceiling check failed: {e}",
+            "friction_points": [],
+            "publication_blocking": False,
+        }
+        log.warning("ceiling_handoff: LLM call failed (%s)", e)
+        return note
+    cleaned = _clean_llm_metadata_response(raw_note or "")
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        parsed = {
+            "boundary": "unparsed",
+            "assessment": cleaned[:2000],
+            "friction_points": [],
+            "publication_blocking": False,
+        }
+    if not isinstance(parsed, dict):
+        parsed = {
+            "boundary": "unparsed",
+            "assessment": cleaned[:2000],
+            "friction_points": [],
+            "publication_blocking": False,
+        }
+    parsed["publication_blocking"] = False
+    log.info("ceiling_handoff: %s", json.dumps(parsed, ensure_ascii=False)[:2000])
+    return parsed
+
+
+def _write_ceiling_note_result(
+    workspace: Path,
+    task_id: str,
+    summary: str,
+    ceiling_note: dict[str, object],
+    metadata: dict | None = None,
+) -> None:
+    result_path = workspace / "result.json"
+    try:
+        if result_path.exists():
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            if not isinstance(result, dict):
+                result = {}
+        else:
+            result = {}
+        result["task_id"] = result.get("task_id") or task_id
+        result["status"] = result.get("status") or "done"
+        result["summary"] = result.get("summary") or summary
+        result["ceiling_note"] = ceiling_note
+        if isinstance(metadata, dict) and metadata.get("needs_obsession") is True:
+            output_metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+            output_metadata["needs_obsession"] = True
+            result["metadata"] = output_metadata
+        tmp_path = result_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.rename(result_path)
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning("ceiling_handoff: failed to write result metadata (%s)", e)
+
+
+def _format_human_raw_notes(content: str) -> str:
+    text = content.strip()
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    formatted: list[str] = []
+    has_h1 = False
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip()
+        stripped = line.strip()
+        if i + 1 < len(lines) and stripped and re.fullmatch(r"[=-]{3,}", lines[i + 1].strip()):
+            level = "#" if lines[i + 1].strip().startswith("=") else "##"
+            formatted.append(f"{level} {stripped}")
+            has_h1 = has_h1 or level == "#"
+            i += 2
+            continue
+        match = re.fullmatch(r"(#{1,6})\s*(.*?)\s*#*", stripped)
+        if match and match.group(2):
+            heading = f"{match.group(1)} {match.group(2).strip()}"
+            formatted.append(heading)
+            has_h1 = has_h1 or match.group(1) == "#"
+        else:
+            formatted.append(line)
+        i += 1
+
+    final_text = "\n".join(formatted).strip()
+    if final_text and not has_h1:
+        for index, line in enumerate(formatted):
+            match = re.fullmatch(r"#{2,6}\s+(.*)", line.strip())
+            if match:
+                formatted[index] = f"# {match.group(1).strip()}"
+                final_text = "\n".join(formatted).strip()
+                break
+    return final_text
+
+
+def _handle_human_raw_notes(workspace: Path, content: str, title: str) -> str | None:
+    final_text = _format_human_raw_notes(content)
+    if not final_text:
+        return None
+    passed, safety_msg = _generated_content_preflight(workspace, content, final_text)
+    if not passed:
+        (workspace / "summary.txt").write_text(safety_msg, encoding="utf-8")
+        return None
+    out_path = workspace / "output.md"
+    out_path.write_text(final_text, encoding="utf-8")
+    verify = verify_artifact("file", str(out_path), {"min_size": 20})
+    if not verify.verified:
+        log.error("Writer artifact verification failed: %s", verify.summary())
+        return None
+    record_writer_gate(workspace, channel="publish", artifact_path=str(out_path), source="writer.human_raw")
+    title_match = re.search(r"^#\s+(.+)$", final_text, re.MULTILINE)
+    summary_title = title_match.group(1)[:40] if title_match else title
+    summary = f"Human raw notes formatted: {summary_title} (~{len(final_text)} chars)"
+    (workspace / "summary.txt").write_text(summary, encoding="utf-8")
+    return summary
 
 
 _QUICK_WRITE_SIGNALS = (
@@ -755,6 +1738,8 @@ def handle(
     thread_id: str,
     anti_ai_mode: Literal["strict", "relaxed"] | None = None,
     anti_ai_strictness: Literal["strict", "relaxed"] | None = None,
+    source_type: SourceType = "ai",
+    audit_mode: bool = False,
     **kwargs,
 ) -> str | None:
     """Handle a writing request and return a short summary."""
@@ -765,7 +1750,14 @@ def handle(
         metadata = task.get("metadata")
     if metadata is None:
         metadata = kwargs.get("metadata", {})
+    _surface_obsession_constraint_candidates(workspace, content)
     anti_ai_mode = _resolve_anti_ai_mode(anti_ai_mode, anti_ai_strictness, metadata, kwargs)
+    source_type = _resolve_source_type(source_type, metadata, kwargs)
+    audit_mode = _resolve_audit_mode(audit_mode, metadata, kwargs)
+    source_genre = _resolve_source_genre(metadata, kwargs)
+    voice_preserving = _is_voice_preserving_genre(source_genre)
+    if source_type == "human_raw":
+        return _handle_human_raw_notes(workspace, content, title)
     raw_writing_mode = RAW_WRITING_MODE_ALLOWED and isinstance(metadata, dict) and bool(metadata.get("raw"))
     bundle = build_runtime_context(
         content,
@@ -782,21 +1774,27 @@ def handle(
     if _is_quick_write(content):
         return _handle_quick_write(
             workspace,
+            task_id,
             content,
             title,
             bundle,
             metadata=metadata if isinstance(metadata, dict) else None,
             anti_ai_mode=anti_ai_mode,
+            audit_mode=audit_mode,
             raw_writing_mode=raw_writing_mode,
+            voice_preserving=voice_preserving,
         )
     return _handle_full_write(
         workspace,
+        task_id,
         content,
         title,
         bundle,
         metadata=metadata if isinstance(metadata, dict) else None,
         anti_ai_mode=anti_ai_mode,
+        audit_mode=audit_mode,
         raw_writing_mode=raw_writing_mode,
+        voice_preserving=voice_preserving,
     )
 
 
@@ -822,13 +1820,16 @@ def _is_quick_write(content: str) -> bool:
 
 def _handle_quick_write(
     workspace: Path,
+    task_id: str,
     content: str,
     title: str,
     bundle,
     *,
     metadata: dict | None = None,
     anti_ai_mode: AntiAiMode = "strict",
+    audit_mode: bool = False,
     raw_writing_mode: bool = False,
+    voice_preserving: bool = False,
 ) -> str | None:
     extra = []
     if bundle.thread_history:
@@ -858,16 +1859,26 @@ def _handle_quick_write(
         return None
 
     final_text = text if text.lstrip().startswith("#") else f"# {title}\n\n{text}"
+    if _apply_obsession_constraints_gate(workspace, final_text):
+        return None
     # POLICY (CLAUDE.md #5): de-AI runs before disk unless raw writing mode opts out.
     draft_before_de_ai = final_text
     run_de_ai_checklist = _should_run_de_ai_checklist()
-    if not raw_writing_mode and run_de_ai_checklist:
+    if voice_preserving:
+        final_text = minimal_voice_preserving_editorial_pass(final_text, tier="light", timeout=180)
+    elif not raw_writing_mode and run_de_ai_checklist:
         final_text = de_ai_pass(final_text, tier="light", timeout=180, relaxed=anti_ai_mode == "relaxed")
+        if getattr(_config, "WRITER_OBSESSION_MODE", False):
+            final_text = _obsessive_revise(final_text, tier="light", timeout=180, anti_ai_mode=anti_ai_mode)
+    metadata = _assess_obsession_gap(final_text, content=content, metadata=metadata)
+    if _obsession_gap_check(final_text):
+        metadata["needs_obsession"] = True
+        log.info("obsession_gap_check: flagged output as needing obsessive polish")
     draft_before_epistemic = final_text
-    if _is_tech_industry_editorial_input(content):
+    if not voice_preserving and _is_tech_industry_editorial_input(content):
         final_text = epistemic_bias_pass(final_text, tier="light", timeout=180)
     draft_before_speaker_identity = final_text
-    if run_de_ai_checklist:
+    if not voice_preserving and run_de_ai_checklist:
         final_text = speaker_identity_vulnerability_pass(
             final_text,
             content=content,
@@ -875,11 +1886,31 @@ def _handle_quick_write(
             tier="light",
             timeout=180,
         )
-    editorial_choices = _collect_editorial_choices(draft_before_de_ai, final_text, anti_ai_mode=anti_ai_mode)
-    _append_epistemic_editorial_choice(editorial_choices, draft_before_epistemic, final_text)
-    _append_speaker_identity_editorial_choice(editorial_choices, draft_before_speaker_identity, final_text)
+    draft_before_audit = final_text
+    audit_report = ""
+    if audit_mode:
+        final_text, audit_report = audit_mode_pass(
+            final_text,
+            content=content,
+            metadata=metadata,
+            tier="light",
+            timeout=180,
+        )
+    strict_audit_report = audit_pass(final_text, mode="strict")
+    if _audit_pass_unresolved_claims(strict_audit_report):
+        summary = _format_audit_block_summary(strict_audit_report)
+        (workspace / "summary.txt").write_text(summary, encoding="utf-8")
+        return None
+    if voice_preserving:
+        editorial_choices = []
+        _append_minimal_editorial_choice(editorial_choices, draft_before_de_ai, final_text)
+    else:
+        editorial_choices = _collect_editorial_choices(draft_before_de_ai, final_text, anti_ai_mode=anti_ai_mode)
+        _append_epistemic_editorial_choice(editorial_choices, draft_before_epistemic, final_text)
+        _append_speaker_identity_editorial_choice(editorial_choices, draft_before_speaker_identity, final_text)
+    _append_audit_editorial_choice(editorial_choices, draft_before_audit, final_text, audit_report)
     final_text += _build_judgment_disclosure(final_text, editorial_choices)
-    if not run_de_ai_checklist:
+    if voice_preserving or not run_de_ai_checklist:
         passed, safety_msg = _generated_content_preflight(workspace, content, final_text)
         if not passed:
             (workspace / "summary.txt").write_text(safety_msg, encoding="utf-8")
@@ -890,18 +1921,23 @@ def _handle_quick_write(
 
     summary = f"Quick draft ready: {title} (~{len(final_text)} chars)"
     (workspace / "summary.txt").write_text(summary, encoding="utf-8")
+    ceiling_note = _ceiling_handoff(final_text, content=content, tier="light", timeout=180)
+    _write_ceiling_note_result(workspace, task_id, summary, ceiling_note, metadata=metadata)
     return summary
 
 
 def _handle_full_write(
     workspace: Path,
+    task_id: str,
     content: str,
     title: str,
     bundle,
     *,
     metadata: dict | None = None,
     anti_ai_mode: AntiAiMode = "strict",
+    audit_mode: bool = False,
     raw_writing_mode: bool = False,
+    voice_preserving: bool = False,
 ) -> str | None:
     context_parts = []
     if bundle.thread_history:
@@ -933,15 +1969,25 @@ def _handle_full_write(
     out_path = workspace / "output.md"
     try:
         existing = out_path.read_text(encoding="utf-8")
+        if _apply_obsession_constraints_gate(workspace, existing, output_path=out_path):
+            return None
         edited = existing
         run_de_ai_checklist = _should_run_de_ai_checklist()
-        if not raw_writing_mode and run_de_ai_checklist:
+        if voice_preserving:
+            edited = minimal_voice_preserving_editorial_pass(edited, tier="light", timeout=240)
+        elif not raw_writing_mode and run_de_ai_checklist:
             edited = de_ai_pass(edited, tier="light", timeout=240, relaxed=anti_ai_mode == "relaxed")
+            if getattr(_config, "WRITER_OBSESSION_MODE", False):
+                edited = _obsessive_revise(edited, tier="light", timeout=240, anti_ai_mode=anti_ai_mode)
+        metadata = _assess_obsession_gap(edited, content=content, metadata=metadata)
+        if _obsession_gap_check(edited):
+            metadata["needs_obsession"] = True
+            log.info("obsession_gap_check: flagged output as needing obsessive polish")
         before_epistemic = edited
-        if _is_tech_industry_editorial_input(content):
+        if not voice_preserving and _is_tech_industry_editorial_input(content):
             edited = epistemic_bias_pass(edited, tier="light", timeout=240)
         before_speaker_identity = edited
-        if run_de_ai_checklist:
+        if not voice_preserving and run_de_ai_checklist:
             edited = speaker_identity_vulnerability_pass(
                 edited,
                 content=content,
@@ -949,11 +1995,32 @@ def _handle_full_write(
                 tier="light",
                 timeout=240,
             )
-        editorial_choices = _collect_editorial_choices(existing, edited, anti_ai_mode=anti_ai_mode)
-        _append_epistemic_editorial_choice(editorial_choices, before_epistemic, edited)
-        _append_speaker_identity_editorial_choice(editorial_choices, before_speaker_identity, edited)
+        before_audit = edited
+        audit_report = ""
+        if audit_mode:
+            edited, audit_report = audit_mode_pass(
+                edited,
+                content=content,
+                metadata=metadata,
+                tier="light",
+                timeout=240,
+            )
+        strict_audit_report = audit_pass(edited, mode="strict")
+        if _audit_pass_unresolved_claims(strict_audit_report):
+            summary = _format_audit_block_summary(strict_audit_report)
+            out_path.write_text(summary, encoding="utf-8")
+            (workspace / "summary.txt").write_text(summary, encoding="utf-8")
+            return None
+        if voice_preserving:
+            editorial_choices = []
+            _append_minimal_editorial_choice(editorial_choices, existing, edited)
+        else:
+            editorial_choices = _collect_editorial_choices(existing, edited, anti_ai_mode=anti_ai_mode)
+            _append_epistemic_editorial_choice(editorial_choices, before_epistemic, edited)
+            _append_speaker_identity_editorial_choice(editorial_choices, before_speaker_identity, edited)
+        _append_audit_editorial_choice(editorial_choices, before_audit, edited, audit_report)
         edited += _build_judgment_disclosure(edited, editorial_choices)
-        if not run_de_ai_checklist:
+        if voice_preserving or not run_de_ai_checklist:
             passed, safety_msg = _generated_content_preflight(workspace, content, edited)
             if not passed:
                 out_path.write_text(safety_msg, encoding="utf-8")
@@ -977,6 +2044,12 @@ def _handle_full_write(
     summary = f"Writing project complete: {title}. " f"Project: {project_dir}."
     (workspace / "summary.txt").write_text(summary, encoding="utf-8")
     (workspace / "project_path.txt").write_text(str(project_dir), encoding="utf-8")
+    try:
+        ceiling_output = (workspace / "output.md").read_text(encoding="utf-8")
+    except OSError:
+        ceiling_output = ""
+    ceiling_note = _ceiling_handoff(ceiling_output, content=content, tier="light", timeout=180)
+    _write_ceiling_note_result(workspace, task_id, summary, ceiling_note, metadata=metadata)
     record_writer_gate(workspace, channel="publish", artifact_path=str(workspace / "output.md"), source="writer.full")
     return summary
 
@@ -990,12 +2063,9 @@ def compile_book(
     language: str = "zh",
     tier: str = "light",
     per_chapter_timeout: int = 240,
+    source_type: SourceType = "human_raw",
 ) -> dict:
-    """Compile a list of markdown chapters into one de-AI'd EPUB.
-
-    POLICY (CLAUDE.md #5): the canonical path for "compile reading notes
-    into a book artifact". Each chapter is run through `de_ai_pass()`
-    BEFORE concatenation. Never bypass with raw pandoc on raw chapters.
+    """Compile a list of markdown chapters into one EPUB.
 
     Returns: {"epub": str, "chapters_edited": int, "chapters_skipped": int}.
     """
@@ -1017,7 +2087,10 @@ def compile_book(
             log.warning("compile_book: cannot read %s (%s)", ch, e)
             skipped_count += 1
             continue
-        edited = de_ai_pass(raw, tier=tier, timeout=per_chapter_timeout)
+        if source_type == "human_raw":
+            edited = _format_human_raw_notes(raw)
+        else:
+            edited = de_ai_pass(raw, tier=tier, timeout=per_chapter_timeout)
         parts.append(edited)
         if edited != raw:
             edited_count += 1

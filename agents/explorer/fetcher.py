@@ -17,6 +17,8 @@ from trust_guard import is_suspicious_content
 log = logging.getLogger("mira")
 
 USER_AGENT = "MiraAgent/1.0 (research bot)"
+SOURCE_DAILY_COUNTS_FILE = FEEDS_DIR / "source_daily_counts.json"
+SOURCE_COUNT_WINDOW_DAYS = 30
 
 
 def _item_text(item: dict) -> str:
@@ -66,6 +68,78 @@ def load_sources() -> dict:
     except (json.JSONDecodeError, OSError) as e:
         log.error("Failed to load sources.json: %s", e)
         return {}
+
+
+def _load_source_daily_counts() -> dict[str, dict[str, int]]:
+    if not SOURCE_DAILY_COUNTS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(SOURCE_DAILY_COUNTS_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning("Could not read source daily counts %s: %s", SOURCE_DAILY_COUNTS_FILE, e)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    counts: dict[str, dict[str, int]] = {}
+    for source, daily_counts in data.items():
+        if not isinstance(source, str) or not isinstance(daily_counts, dict):
+            continue
+        clean_daily_counts = {}
+        for day_text, count in daily_counts.items():
+            if not isinstance(day_text, str):
+                continue
+            try:
+                datetime.fromisoformat(day_text).date()
+                clean_daily_counts[day_text] = max(0, int(count))
+            except (TypeError, ValueError):
+                continue
+        if clean_daily_counts:
+            counts[source] = clean_daily_counts
+    return counts
+
+
+def _write_source_daily_counts(counts: dict[str, dict[str, int]]) -> None:
+    try:
+        SOURCE_DAILY_COUNTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = SOURCE_DAILY_COUNTS_FILE.with_suffix(SOURCE_DAILY_COUNTS_FILE.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(counts, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(SOURCE_DAILY_COUNTS_FILE)
+    except OSError as e:
+        log.warning("Could not write source daily counts %s: %s", SOURCE_DAILY_COUNTS_FILE, e)
+
+
+def _record_source_count(
+    counts: dict[str, dict[str, int]], current_counts: dict[str, int], source: str, count: int, day_key: str
+) -> None:
+    source_key = str(source).strip()
+    if not source_key:
+        return
+    item_count = max(0, int(count))
+    counts.setdefault(source_key, {})[day_key] = item_count
+    current_counts[source_key] = item_count
+
+
+def _source_moving_average(counts: dict[str, dict[str, int]], source: str, today) -> float:
+    cutoff = today - timedelta(days=SOURCE_COUNT_WINDOW_DAYS)
+    values = []
+    for day_text, count in counts.get(source, {}).items():
+        try:
+            day = datetime.fromisoformat(day_text).date()
+        except ValueError:
+            continue
+        if cutoff <= day < today:
+            values.append(count)
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+
+def _warn_on_silent_sources(counts: dict[str, dict[str, int]], current_counts: dict[str, int], today) -> None:
+    for source, count in current_counts.items():
+        avg = _source_moving_average(counts, source, today)
+        if count == 0 and avg > 0:
+            log.warning("feed %s silent: 0 articles, expected ~%.1f", source, avg)
 
 
 def _http_get(url: str, timeout: int = 15) -> str:
@@ -435,6 +509,10 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
 
     all_items = []
     names_lower = [n.strip().lower() for n in source_names]
+    today = datetime.now(timezone.utc).date()
+    day_key = today.isoformat()
+    source_daily_counts = _load_source_daily_counts()
+    current_counts = {}
 
     # Arxiv
     if "arxiv" in names_lower:
@@ -442,6 +520,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
         if arxiv_cfg.get("categories"):
             items = fetch_arxiv(arxiv_cfg["categories"], arxiv_cfg.get("max_results", 10))
             all_items.extend(items)
+            _record_source_count(source_daily_counts, current_counts, "arxiv", len(items), day_key)
             log.info("Arxiv: %d items", len(items))
 
     # Reddit
@@ -450,6 +529,13 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
         if reddit_cfg.get("subreddits"):
             items = fetch_reddit(reddit_cfg["subreddits"], reddit_cfg.get("limit", 10))
             all_items.extend(items)
+            reddit_counts = {f"r/{sub}": 0 for sub in reddit_cfg["subreddits"]}
+            for item in items:
+                source = item.get("source")
+                if source in reddit_counts:
+                    reddit_counts[source] += 1
+            for source, count in reddit_counts.items():
+                _record_source_count(source_daily_counts, current_counts, source, count, day_key)
             log.info("Reddit: %d items", len(items))
 
     # HuggingFace
@@ -457,6 +543,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
         if sources.get("huggingface", {}).get("enabled", True):
             items = fetch_hf_papers()
             all_items.extend(items)
+            _record_source_count(source_daily_counts, current_counts, "huggingface", len(items), day_key)
             log.info("HuggingFace: %d items", len(items))
 
     # GitHub Trending
@@ -469,6 +556,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
                 per_page=gh_cfg.get("per_page", 25),
             )
             all_items.extend(items)
+            _record_source_count(source_daily_counts, current_counts, "github_trending", len(items), day_key)
             log.info("GitHub Trending: %d items", len(items))
 
     # Hacker News (native Algolia API — richer than RSS)
@@ -480,6 +568,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
                 min_points=hn_cfg.get("min_points", 50),
             )
             all_items.extend(items)
+            _record_source_count(source_daily_counts, current_counts, "hackernews", len(items), day_key)
             log.info("HackerNews: %d items", len(items))
 
     # Lobsters
@@ -488,6 +577,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
         if lob_cfg.get("enabled", True):
             items = fetch_lobsters(count=lob_cfg.get("count", 25))
             all_items.extend(items)
+            _record_source_count(source_daily_counts, current_counts, "lobsters", len(items), day_key)
             log.info("Lobsters: %d items", len(items))
 
     # Dev.to
@@ -499,6 +589,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
                 top_days=dt_cfg.get("top_days", 7),
             )
             all_items.extend(items)
+            _record_source_count(source_daily_counts, current_counts, "devto", len(items), day_key)
             log.info("Dev.to: %d items", len(items))
 
     # Web Search (DuckDuckGo — query driven, not config-driven)
@@ -509,6 +600,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
             if query:
                 items = fetch_web_search(query, max_results=10)
                 all_items.extend(items)
+                _record_source_count(source_daily_counts, current_counts, f"web_search:{query}", len(items), day_key)
                 log.info("Web search '%s': %d items", query, len(items))
 
     # Specific RSS feeds by name, or all RSS
@@ -518,6 +610,13 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
         if rss_feeds:
             items = fetch_rss(rss_feeds)
             all_items.extend(items)
+            rss_counts = {feed.get("name", "RSS"): 0 for feed in rss_feeds if feed.get("url")}
+            for item in items:
+                source = item.get("source")
+                if source in rss_counts:
+                    rss_counts[source] += 1
+            for source, count in rss_counts.items():
+                _record_source_count(source_daily_counts, current_counts, source, count, day_key)
             log.info("RSS (all): %d items", len(items))
     else:
         # Match specific feeds by name (e.g. "hacker_news" matches "Hacker News")
@@ -529,7 +628,18 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
         if matched:
             items = fetch_rss(matched)
             all_items.extend(items)
+            rss_counts = {feed.get("name", "RSS"): 0 for feed in matched if feed.get("url")}
+            for item in items:
+                source = item.get("source")
+                if source in rss_counts:
+                    rss_counts[source] += 1
+            for source, count in rss_counts.items():
+                _record_source_count(source_daily_counts, current_counts, source, count, day_key)
             log.info("RSS (matched %d feeds): %d items", len(matched), len(items))
+
+    if current_counts:
+        _write_source_daily_counts(source_daily_counts)
+        _warn_on_silent_sources(source_daily_counts, current_counts, today)
 
     log.info("Selective fetch (%s): %d items total", ",".join(source_names), len(all_items))
     all_items = _filter_suspicious_items(all_items)

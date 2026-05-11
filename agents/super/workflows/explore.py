@@ -42,6 +42,7 @@ from memory.soul import (
 from llm import claude_think, claude_act
 from fetcher import fetch_all
 from briefing_writer import apply_source_diversity_note, annotate_epistemic_metadata, detect_survivorship_bias
+from feed_monitor import FEED_STATS_FILE, check_feed_health, update_feed_stats
 from yield_monitor import record_skill_yield, warn_on_zero_skill_yield
 from prompts import explore_prompt, deep_dive_prompt, internalize_prompt
 
@@ -84,6 +85,20 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
         items = fetch_sources(source_names)
     else:
         items = fetch_all()
+    fetched_at = datetime.utcnow().isoformat() + "Z"
+    feed_counts = {}
+    for item in items:
+        feed_name = str(item.get("source") or "unknown")
+        feed_counts[feed_name] = feed_counts.get(feed_name, 0) + 1
+    for feed_name, item_count in feed_counts.items():
+        update_feed_stats(feed_name, item_count, fetched_at)
+    if source_names:
+        for feed_name in source_names:
+            if feed_name not in feed_counts:
+                update_feed_stats(feed_name, 0, fetched_at)
+    feed_health_alerts = check_feed_health(FEED_STATS_FILE)
+    for alert in feed_health_alerts:
+        log.warning("Explorer feed health blind spot: %s", alert.get("message", alert))
     if not items:
         log.info("No items fetched, skipping explore")
         # Still update state so this group gets rotated and we don't
@@ -159,6 +174,11 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
         record_skill_yield(run_id, skills_extracted=0, briefing_produced=False)
         return
     briefing = apply_source_diversity_note(briefing, items)
+    if feed_health_alerts:
+        health_note = "## Feed health warnings\n" + "\n".join(
+            f"- {alert.get('message', alert)}" for alert in feed_health_alerts
+        )
+        briefing = f"{health_note}\n\n{briefing}"
 
     # 4. Save briefing (slot-specific so multiple explores don't overwrite)
     today = datetime.now().strftime("%Y-%m-%d")

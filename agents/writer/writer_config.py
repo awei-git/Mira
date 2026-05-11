@@ -37,6 +37,12 @@ MAX_STEPS_PER_RUN = WRITER_MAX_STEPS_PER_RUN
 # Anti-AI checklist strictness: "strict" or "relaxed"
 ANTI_AI_STRICTNESS = "strict"
 
+ENABLE_AUDIT_MODE = True
+AUDIT_MODE_TEMPERATURE = 0.3
+AUDIT_MODE_MAX_TOKENS = 2048
+
+VOICE_PRESERVING_GENRES = ["reading_note", "journal", "personal_essay"]
+
 # Type-to-framework mapping
 TYPE_FRAMEWORK = {
     "essay": "essay.md",

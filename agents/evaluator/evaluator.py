@@ -27,6 +27,15 @@ log = logging.getLogger("evaluator_agent")
 
 _DRIFT_LOG_FILE = _MIRA_ROOT / "agents" / "shared" / "soul" / "drift_log.json"
 _DRIFT_HISTORY_LIMIT = 30
+_EXPLORATORY_ESTIMATE_LABEL = "[EXPLORATORY ESTIMATE]"
+_EXPLORATORY_ESTIMATE_DISCLAIMER = (
+    "This assessment is an exploratory, unverified estimate and should not be treated as ground truth. "
+    "Seek independent verification before making decisions."
+)
+
+
+def _label_exploratory_assessment(assessment: str) -> str:
+    return f"{_EXPLORATORY_ESTIMATE_LABEL}\n{assessment.strip()}\n\n{_EXPLORATORY_ESTIMATE_DISCLAIMER}"
 
 
 def _parse_datetime(value: str | None) -> datetime:
@@ -89,11 +98,16 @@ def detect_drift(scores, window=10, threshold=-0.05):
 
     warning = {
         "type": "DRIFT_WARNING",
+        "label": _EXPLORATORY_ESTIMATE_LABEL,
         "agent": agent_name,
         "slope": slope,
         "window": window,
+        "disclaimer": _EXPLORATORY_ESTIMATE_DISCLAIMER,
     }
-    message = f"DRIFT_WARNING agent={agent_name} slope={slope:.6f} window={window}"
+    message = (
+        f"{_EXPLORATORY_ESTIMATE_LABEL} DRIFT_WARNING agent={agent_name} slope={slope:.6f} window={window}\n"
+        f"{_EXPLORATORY_ESTIMATE_DISCLAIMER}"
+    )
     print(message, file=sys.stderr)
     log.warning(message)
     return warning
@@ -375,12 +389,14 @@ def _assess_article_quality(article: dict[str, Any], article_text: str) -> tuple
     prompt = (
         "On a scale of 1-10, is this article well-written, engaging, and free of AI tells? "
         "10 is perfect.\n\n"
+        "Treat the score as an exploratory performance estimate, not verified ground truth. "
+        "Never use definitive language like 'proven', 'verified', or 'final'.\n\n"
         "Return the score first as `Score: N`, then one short reason.\n\n"
         f"Title: {article.get('title') or 'Untitled'}\n\n"
         f"{article_text[:12000]}"
     )
     response = (claude_think(prompt, timeout=90, tier="light") or "").strip()
-    return _extract_quality_score(response), response
+    return _extract_quality_score(response), _label_exploratory_assessment(response)
 
 
 def _send_proxy_drift_notification(flagged: list[dict[str, Any]], user_id: str = "ang") -> None:
@@ -388,6 +404,7 @@ def _send_proxy_drift_notification(flagged: list[dict[str, Any]], user_id: str =
     week = now.strftime("%G_W%V")
     item_id = f"proxy_drift_{week}"
     lines = [
+        _EXPLORATORY_ESTIMATE_LABEL,
         "Proxy drift detected in recent published articles.",
         "",
         "The proxy said the article was acceptable, but a fresh quality assessment scored it below 5/10.",
@@ -408,6 +425,8 @@ def _send_proxy_drift_notification(flagged: list[dict[str, Any]], user_id: str =
         [
             "",
             "Suggested follow-up: review the proxy definition, especially writer/checklists/anti-ai.md and the content guard assumptions.",
+            "",
+            _EXPLORATORY_ESTIMATE_DISCLAIMER,
         ]
     )
 
@@ -452,10 +471,12 @@ def detect_proxy_drift(num_samples: int = 3) -> list[dict[str, Any]]:
         proxy_indicated_success = any(value is True for value in proxies.values())
         if proxy_indicated_success and score < 5:
             flagged_item = {
+                "label": _EXPLORATORY_ESTIMATE_LABEL,
                 "article": article,
                 "proxies": proxies,
                 "score": score,
                 "assessment": assessment,
+                "disclaimer": _EXPLORATORY_ESTIMATE_DISCLAIMER,
             }
             if drift_warning:
                 flagged_item["drift_warning"] = drift_warning

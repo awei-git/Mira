@@ -160,6 +160,12 @@ if isinstance(_raw_narrative_sources, str):
     NARRATIVE_MONOPOLY_SOURCES = tuple(s.strip() for s in _raw_narrative_sources.split(",") if s.strip())
 else:
     NARRATIVE_MONOPOLY_SOURCES = tuple(_raw_narrative_sources)
+OBSESSION_GATE_MIN_WORDS = int(_NARRATIVE_CFG.get("obsession_gate_min_words", 250))
+OBSESSION_MIN_PERSONAL_PRONOUNS = int(_NARRATIVE_CFG.get("obsession_min_personal_pronouns", 3))
+OBSESSION_MIN_SENSORY_DETAILS = int(_NARRATIVE_CFG.get("obsession_min_sensory_details", 2))
+OBSESSION_MIN_UNEXPECTED_CONTRASTS = int(_NARRATIVE_CFG.get("obsession_min_unexpected_contrasts", 1))
+OBSESSION_MAX_MISSING_METRICS = int(_NARRATIVE_CFG.get("obsession_max_missing_metrics", 1))
+_OBSESSION_GATE_LOG = MIRA_ROOT / "logs" / "trust_inflation" / "obsession_gate.log"
 _DEEP_VERIFY_STOPWORDS = {
     "a",
     "an",
@@ -287,6 +293,21 @@ _DEEP_VERIFY_SUPPORT_RE = re.compile(
     r"[\"“”]",
     re.IGNORECASE,
 )
+_OBSESSION_PERSONAL_PRONOUN_RE = re.compile(
+    r"\b(?:i|me|my|mine|myself|we|us|our|ours|ourselves)\b",
+    re.IGNORECASE,
+)
+_OBSESSION_SENSORY_RE = re.compile(
+    r"\b(?:bright|dark|cold|hot|warm|wet|dry|rough|smooth|sharp|soft|heavy|thin|"
+    r"loud|quiet|silent|hiss|hum|click|smell|scent|taste|bitter|sweet|metallic|"
+    r"dust|smoke|paper|screen|keyboard|hand|face|room|street|window|light|shadow)\b",
+    re.IGNORECASE,
+)
+_OBSESSION_CONTRAST_RE = re.compile(
+    r"\b(?:but|yet|although|though|despite|instead|however|still|whereas|unlike|even though)\b|"
+    r"\bnot\b.{1,80}\bbut\b",
+    re.IGNORECASE | re.DOTALL,
+)
 _NARRATIVE_ENTITY_RE = r"[A-Z][A-Za-z0-9&.'-]*(?:\s+(?:[A-Z][A-Za-z0-9&.'-]*|of|and|the|for)){0,5}"
 _NARRATIVE_CITATION_PATTERNS = [
     re.compile(rf"\b(?i:according to|via|citing)\s+(?P<source>{_NARRATIVE_ENTITY_RE})\b"),
@@ -359,6 +380,87 @@ def _check_narrative_monopoly(content: str) -> bool:
     """Return True if content shows signs of narrative monopoly (e.g., >80% of source citations from one named entity)."""
     monopoly_detected = _narrative_monopoly_report(content) is not None
     return monopoly_detected
+
+
+def _obsession_gate_report(text: str) -> dict:
+    tokens = _deep_verify_tokens(text or "")
+    word_count = len(tokens)
+    personal_pronouns = len(_OBSESSION_PERSONAL_PRONOUN_RE.findall(text or ""))
+    sensory_details = len(_OBSESSION_SENSORY_RE.findall(text or ""))
+    unexpected_contrasts = len(_OBSESSION_CONTRAST_RE.findall(text or ""))
+    missing_metrics = []
+    if word_count >= OBSESSION_GATE_MIN_WORDS:
+        if personal_pronouns < OBSESSION_MIN_PERSONAL_PRONOUNS:
+            missing_metrics.append("personal_pronouns")
+        if sensory_details < OBSESSION_MIN_SENSORY_DETAILS:
+            missing_metrics.append("sensory_details")
+        if unexpected_contrasts < OBSESSION_MIN_UNEXPECTED_CONTRASTS:
+            missing_metrics.append("unexpected_contrasts")
+    return {
+        "word_count": word_count,
+        "personal_pronouns": personal_pronouns,
+        "sensory_details": sensory_details,
+        "unexpected_contrasts": unexpected_contrasts,
+        "missing_metrics": missing_metrics,
+        "thresholds": {
+            "min_words": OBSESSION_GATE_MIN_WORDS,
+            "min_personal_pronouns": OBSESSION_MIN_PERSONAL_PRONOUNS,
+            "min_sensory_details": OBSESSION_MIN_SENSORY_DETAILS,
+            "min_unexpected_contrasts": OBSESSION_MIN_UNEXPECTED_CONTRASTS,
+            "max_missing_metrics": OBSESSION_MAX_MISSING_METRICS,
+        },
+    }
+
+
+def _content_lacks_obsession(text):
+    report = _obsession_gate_report(text)
+    if report["word_count"] < OBSESSION_GATE_MIN_WORDS:
+        return False
+    return len(report["missing_metrics"]) > OBSESSION_MAX_MISSING_METRICS
+
+
+def _log_obsession_gate_flag(context: str, content: str, report: dict) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "context": context,
+        "guard": "obsession_gate",
+        "action": "hold_for_human_review",
+        "status": "pending_review",
+        "revision_request": "inject obsessive friction",
+        "metrics": {
+            "word_count": report.get("word_count", 0),
+            "personal_pronouns": report.get("personal_pronouns", 0),
+            "sensory_details": report.get("sensory_details", 0),
+            "unexpected_contrasts": report.get("unexpected_contrasts", 0),
+            "missing_metrics": report.get("missing_metrics", []),
+        },
+        "thresholds": report.get("thresholds", {}),
+        "content_len": len(content),
+        "content_prefix": content[:120],
+    }
+    try:
+        _OBSESSION_GATE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _OBSESSION_GATE_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning("obsession gate log write failed: %s", e)
+
+    try:
+        state = _load_state()
+        queue = state.get("pending_review", [])
+        if not isinstance(queue, list):
+            queue = []
+        queue.append(entry)
+        state["pending_review"] = queue[-100:]
+        _save_state(state)
+    except Exception as e:
+        log.warning("obsession gate pending review write failed: %s", e)
+
+    log.warning(
+        "Obsession gate held %s for human review: missing=%s; revision required to inject obsessive friction",
+        context,
+        ",".join(report.get("missing_metrics", [])),
+    )
 
 
 def _log_narrative_monopoly_flag(context: str, content: str, report: dict) -> None:
@@ -540,6 +642,9 @@ def _maybe_deep_verify_content(content: str, context: str) -> bool:
         report = _narrative_monopoly_report(content)
         if report:
             _log_narrative_monopoly_flag(context, content, report)
+        return False
+    if _content_lacks_obsession(content):
+        _log_obsession_gate_flag(context, content, _obsession_gate_report(content))
         return False
     if not _should_run_deep_verify():
         return True

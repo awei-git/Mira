@@ -581,6 +581,196 @@ def detect_agent_drift(score_records: list, window_size: int = 10, slope_thresho
     }
 
 
+def _substantive_file_mtimes(paths: list[Path], min_size_bytes: int = 200) -> list[float]:
+    mtimes: list[float] = []
+    suffixes = {".md", ".txt", ".json", ".jsonl", ".html", ".pdf"}
+    for root in paths:
+        if not root.exists():
+            continue
+        candidates = root.rglob("*") if root.is_dir() else [root]
+        for path in candidates:
+            try:
+                if not path.is_file() or path.suffix.lower() not in suffixes:
+                    continue
+                if path.stat().st_size < min_size_bytes:
+                    continue
+                mtimes.append(path.stat().st_mtime)
+            except OSError:
+                continue
+    return mtimes
+
+
+def _task_result_mtimes(agent_names: set[str], limit: int = 300) -> dict[str, list[float]]:
+    try:
+        from task_manager import TASKS_DIR
+    except Exception:
+        return {agent: [] for agent in agent_names}
+
+    result_mtimes: dict[str, list[float]] = {agent: [] for agent in agent_names}
+    try:
+        result_files = sorted(TASKS_DIR.rglob("result.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+    except OSError:
+        return result_mtimes
+
+    for result_file in result_files:
+        try:
+            result = json.loads(result_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        agent = str(result.get("agent") or result.get("agent_type") or result.get("declared_agent") or "").strip()
+        if agent not in result_mtimes:
+            continue
+        status = str(result.get("status") or "").lower()
+        if status not in {"done", "success", "completed"}:
+            continue
+        output_file = result_file.parent / "output.md"
+        try:
+            mtime = output_file.stat().st_mtime if output_file.stat().st_size >= 200 else result_file.stat().st_mtime
+        except OSError:
+            mtime = result_file.stat().st_mtime
+        result_mtimes[agent].append(mtime)
+    return result_mtimes
+
+
+def _output_cadence_hours(timestamps: list[float], fallback_hours: float) -> float:
+    unique = sorted(set(timestamps), reverse=True)[:25]
+    if len(unique) < 2:
+        return fallback_hours
+    ordered = sorted(unique)
+    gaps = [(newer - older) / 3600 for older, newer in zip(ordered, ordered[1:]) if newer > older]
+    if not gaps:
+        return fallback_hours
+    gaps.sort()
+    median_gap = gaps[len(gaps) // 2]
+    return max(1.0, min(24 * 14, median_gap * 2))
+
+
+def _shared_dependency_diagnostics(common_output_paths: dict[str, list[Path]]) -> dict:
+    import importlib
+
+    imports = {}
+    for module_name in ("bridge", "memory.soul", "llm", "task_manager", "notes_bridge", "config"):
+        try:
+            importlib.import_module(module_name)
+            imports[module_name] = {"ok": True}
+        except Exception as exc:
+            imports[module_name] = {"ok": False, "error": str(exc)}
+
+    api_keys = {"secrets_file_exists": False, "keys": {}}
+    try:
+        from config import SECRETS_FILE, _load_secrets_config
+
+        api_keys["secrets_file_exists"] = SECRETS_FILE.exists()
+        secrets = _load_secrets_config()
+        flattened: dict[str, object] = {}
+
+        def flatten(prefix: str, value: object) -> None:
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    child_prefix = f"{prefix}.{key}" if prefix else str(key)
+                    flatten(child_prefix, child)
+                return
+            flattened[prefix] = value
+
+        flatten("", secrets if isinstance(secrets, dict) else {})
+        for key, value in flattened.items():
+            if not re.search(r"(api[_-]?key|token|secret)$", key, re.IGNORECASE):
+                continue
+            text = str(value or "").strip()
+            api_keys["keys"][key] = {"present": bool(text), "looks_valid": len(text) >= 12}
+    except Exception as exc:
+        api_keys["error"] = str(exc)
+
+    filesystem = {}
+    seen_paths = []
+    for paths in common_output_paths.values():
+        seen_paths.extend(paths)
+    for path in sorted({p for p in seen_paths}, key=str):
+        target = path if path.exists() else path.parent
+        filesystem[str(path)] = {
+            "exists": path.exists(),
+            "readable": os.access(target, os.R_OK),
+            "writable": os.access(target, os.W_OK),
+            "executable": os.access(target, os.X_OK),
+        }
+
+    return {"imports": imports, "api_keys": api_keys, "filesystem": filesystem}
+
+
+def _append_heartbeat_alert(record: dict) -> None:
+    try:
+        from config import LOGS_DIR
+
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOGS_DIR / "heartbeat.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.debug("heartbeat alert write failed: %s", exc)
+
+
+def detect_cross_agent_silence(min_silent_agents: int = 3) -> dict | None:
+    try:
+        from config import (
+            AUTORESEARCH_DIR,
+            BRIEFINGS_DIR,
+            RESEARCH_DIR,
+            SOCIAL_STATE_DIR,
+            WRITINGS_OUTPUT_DIR,
+        )
+    except Exception as exc:
+        log.debug("cross-agent silence config import failed: %s", exc)
+        return None
+
+    output_paths = {
+        "explorer": [BRIEFINGS_DIR],
+        "writer": [WRITINGS_OUTPUT_DIR],
+        "researcher": [RESEARCH_DIR, AUTORESEARCH_DIR],
+        "socialmedia": [SOCIAL_STATE_DIR],
+    }
+    fallback_hours = {
+        "explorer": 24.0,
+        "writer": 72.0,
+        "researcher": 168.0,
+        "socialmedia": 48.0,
+    }
+    task_mtimes = _task_result_mtimes(set(output_paths))
+    now = datetime.now(timezone.utc).timestamp()
+    silent_agents = []
+
+    for agent, paths in output_paths.items():
+        timestamps = _substantive_file_mtimes(paths) + task_mtimes.get(agent, [])
+        last_output = max(timestamps) if timestamps else None
+        baseline_hours = _output_cadence_hours(timestamps, fallback_hours[agent])
+        age_hours = None if last_output is None else (now - last_output) / 3600
+        if last_output is None or age_hours is not None and age_hours > baseline_hours:
+            silent_agents.append(
+                {
+                    "agent": agent,
+                    "last_output": (
+                        datetime.fromtimestamp(last_output, timezone.utc).isoformat() if last_output else None
+                    ),
+                    "age_hours": round(age_hours, 2) if age_hours is not None else None,
+                    "baseline_hours": round(baseline_hours, 2),
+                }
+            )
+
+    if len(silent_agents) < min_silent_agents:
+        return None
+
+    alert = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": "coordinated_blind_spot",
+        "silent_agents": silent_agents,
+        "diagnostics": _shared_dependency_diagnostics(output_paths),
+    }
+    _append_heartbeat_alert(alert)
+    log.warning(
+        "COORDINATED_BLIND_SPOT silent_agents=%s",
+        json.dumps(silent_agents, ensure_ascii=False, sort_keys=True),
+    )
+    return alert
+
+
 def _trust_audit_log() -> Path:
     global _TRUST_AUDIT_LOG
     if _TRUST_AUDIT_LOG is None:
@@ -1856,6 +2046,24 @@ def _check_instruction_injection(skill_text: str) -> list[str]:
     return [label for label, pattern in _INSTRUCTION_INJECTION_PATTERNS if pattern.search(lower_text)]
 
 
+def _check_behavioral_injection(skill_text: str) -> list[str]:
+    behavioral_injection_patterns = [
+        r"(ignore|disregard).{0,30}(previous|prior|above).{0,30}(instruction|rule|context)",
+        r"you are now\b",
+        r"from now on\b",
+        r"new persona",
+        r"your real (name|identity|purpose)",
+        r"(system|assistant):\s",
+        r"<\|im_start\|>",
+        r"\[INST\]",
+        r"when(ever)?\s+you\s+(see|hear|encounter)\s+the\s+word",
+    ]
+    for pattern in behavioral_injection_patterns:
+        if re.search(pattern, skill_text, re.IGNORECASE | re.DOTALL):
+            return ["behavioral_injection"]
+    return []
+
+
 def _label_without_mechanism(skill_name: str, skill_description: str, skill_code: str) -> bool:
     _trust_text = (skill_name + " " + skill_description).lower()
     if not any(vocab in _trust_text for vocab in _TRUST_VOCAB):
@@ -2247,7 +2455,16 @@ _EXTERNAL_IMPORT_LINE_PATTERN = re.compile(
 )
 
 
-_STATIC_DANGEROUS_EXEC_PATTERN = re.compile(r"\b(?:exec|eval)\s*\(|\bos\.system\s*\(")
+_STATIC_DANGEROUS_EXEC_PATTERN = re.compile(
+    r"\b(?:exec|eval|__import__|compile)\s*\("
+    r"|\bos\.system\s*\("
+    r"|\bsubprocess\."
+    r"|\bimportlib\.import_module\s*\("
+    r"|\bpickle\.loads\b"
+    r"|\bpickle\.load\s*\("
+    r"|\bmarshal\.loads\b"
+    r"|\bmarshal\.load\s*\("
+)
 _STATIC_SUBPROCESS_SHELL_PATTERN = re.compile(r"\bsubprocess\b.{0,200}shell\s*=\s*True", re.DOTALL)
 _STATIC_CURL_PIPE_PATTERN = re.compile(
     r"\bcurl\b.{0,200}\|\s*(?:bash|sh)\b|\bwget\b.{0,200}\|\s*(?:bash|sh)\b", re.DOTALL
@@ -3318,6 +3535,70 @@ def _increment_daily_skill_import_counter() -> None:
         log.warning("SKILL_AUDIT daily import counter update failed: %s", exc)
 
 
+def content_looks_like_injection(text: str) -> str | None:
+    injection_signals = [
+        "ignore previous",
+        "ignore above",
+        "you are now",
+        "new persona",
+        "disregard your instructions",
+        "system:",
+        "assistant:",
+        "### instruction",
+        "forget everything",
+        "act as if",
+    ]
+    for signal in injection_signals:
+        if re.search(re.escape(signal), text, re.IGNORECASE):
+            return signal
+    return None
+
+
+def _configured_skill_knowledge_blocklist() -> list[str]:
+    try:
+        from config import SKILL_KNOWLEDGE_BLOCKLIST
+    except Exception:
+        SKILL_KNOWLEDGE_BLOCKLIST = []
+
+    if isinstance(SKILL_KNOWLEDGE_BLOCKLIST, str):
+        values = [SKILL_KNOWLEDGE_BLOCKLIST]
+    elif isinstance(SKILL_KNOWLEDGE_BLOCKLIST, (list, tuple, set, frozenset)):
+        values = SKILL_KNOWLEDGE_BLOCKLIST
+    else:
+        values = []
+    return [str(value) for value in values if str(value).strip()]
+
+
+def _extract_knowledge_payloads(skill_content: str, min_chars: int = 100) -> list[str]:
+    payloads: list[str] = []
+    try:
+        tree = ast.parse(skill_content)
+    except SyntaxError:
+        return payloads
+    except Exception:
+        return payloads
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and len(node.value) > min_chars:
+            payloads.append(node.value)
+    return payloads
+
+
+def _dangerous_knowledge_payload_match(skill_content: str) -> tuple[str, str] | None:
+    payloads = _extract_knowledge_payloads(skill_content)
+    if not payloads:
+        return None
+    for payload in payloads:
+        for pattern in _configured_skill_knowledge_blocklist():
+            try:
+                matched = re.search(pattern, payload, re.IGNORECASE)
+            except re.error:
+                matched = re.search(re.escape(pattern), payload, re.IGNORECASE)
+            if matched:
+                return pattern, payload[max(0, matched.start() - 80) : matched.end() + 80]
+    return None
+
+
 def _audit_skill_impl(
     skill_name: str,
     skill_content: str,
@@ -3640,6 +3921,7 @@ def _audit_skill_impl(
         blocked_categories.append("obfuscated_payloads")
     if has_privilege_escalation:
         blocked_categories.append("privilege_escalation")
+    blocked_categories.extend(_check_behavioral_injection(skill_content))
     for finding in dependency_findings:
         blocked_categories.append(f"dependency_{finding['category']}: {finding['file']}:{finding['line_no']}")
         log.warning(
@@ -3674,6 +3956,58 @@ def _audit_skill_impl(
                 network_domains,
                 sorted(allowed_domains),
             )
+    dangerous_knowledge_match = _dangerous_knowledge_payload_match(skill_content)
+    if dangerous_knowledge_match:
+        matched_pattern, matched_context = dangerous_knowledge_match
+        blocked_categories.append("DANGEROUS_KNOWLEDGE_PAYLOAD")
+        _audit_flags["dangerous_knowledge_payload"] = {
+            "detected": True,
+            "category": "DANGEROUS_KNOWLEDGE_PAYLOAD",
+            "severity": "high",
+            "detail": matched_pattern,
+            "matches": [matched_context],
+            "requires_review": True,
+        }
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s category=DANGEROUS_KNOWLEDGE_PAYLOAD pattern=%r",
+            skill_name,
+            matched_pattern,
+        )
+    skill_description = (metadata or {}).get("description", "")
+    raw_skill_text = "\n".join(
+        [
+            skill_name,
+            skill_description if isinstance(skill_description, str) else "",
+            skill_content,
+        ]
+    )
+    matched_content_injection = content_looks_like_injection(raw_skill_text)
+    if matched_content_injection:
+        content_injection_categories = blocked_categories + ["prompt_injection_content"]
+        log.warning(
+            "SKILL_AUDIT BLOCKED: skill=%s reason='prompt_injection_content' pattern=%r",
+            skill_name,
+            matched_content_injection,
+        )
+        _alert_skill_audit_blocked(
+            skill_name,
+            content_injection_categories,
+            skill_content,
+            source,
+            metadata,
+            matched_content_injection,
+        )
+        return _audit_result(
+            skill_name,
+            source,
+            True,
+            content_injection_categories,
+            warning_categories,
+            [],
+            reason="prompt_injection_content",
+            matched_phrase=matched_content_injection,
+            audit_flags=_audit_flags,
+        )
     semantic_injection_patterns = [
         "ignore previous",
         "ignore your",
@@ -3868,6 +4202,16 @@ def _audit_skill_impl(
                 "category": "SENSITIVE_FILE_ACCESS",
                 "pattern": _sensitive_file_match,
                 "mechanism": f"Skill attempts to read sensitive local file: {_sensitive_file_match}",
+            }
+        )
+    if dangerous_knowledge_match:
+        matched_pattern, matched_context = dangerous_knowledge_match
+        audit_findings.append(
+            {
+                "severity": "high",
+                "category": "DANGEROUS_KNOWLEDGE_PAYLOAD",
+                "detail": matched_pattern,
+                "context": matched_context,
             }
         )
     for _instruction_injection in _check_instruction_injection(skill_content):
@@ -4806,6 +5150,107 @@ def _audit_skill_impl(
     )
 
 
+def _skill_provenance_value(metadata: dict, provenance: dict, *keys: str) -> str:
+    for key in keys:
+        value = provenance.get(key)
+        if value is None:
+            value = metadata.get(key)
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _raw_skill_content_for_provenance(content: str, metadata: dict, provenance: dict) -> str:
+    raw_content = None
+    for key in ("raw_content", "raw_fetched_content", "fetched_content", "raw_skill_content"):
+        raw_content = provenance.get(key)
+        if raw_content is None:
+            raw_content = metadata.get(key)
+        if raw_content is not None:
+            break
+    if raw_content is None:
+        return content
+    if isinstance(raw_content, bytes):
+        return raw_content.decode("utf-8", errors="replace")
+    return str(raw_content)
+
+
+def _skill_save_provenance(content: str, source: str, metadata: dict) -> dict[str, str]:
+    existing = metadata.get("provenance")
+    provenance = existing if isinstance(existing, dict) else {}
+    raw_content = _raw_skill_content_for_provenance(content, metadata, provenance)
+    return {
+        "source": _skill_provenance_value(
+            metadata,
+            provenance,
+            "source_url",
+            "url",
+            "channel",
+            "source",
+        )
+        or str(source or "unknown"),
+        "fetched_at": _skill_provenance_value(metadata, provenance, "fetched_at")
+        or datetime.now(timezone.utc).isoformat(),
+        "triggering_agent": _skill_provenance_value(
+            metadata,
+            provenance,
+            "triggering_agent",
+            "agent",
+            "agent_name",
+        )
+        or "unknown",
+        "raw_content_sha256": hashlib.sha256(raw_content.encode("utf-8")).hexdigest(),
+    }
+
+
+def _yaml_string(value: str) -> str:
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _skill_provenance_frontmatter(provenance: dict[str, str]) -> str:
+    lines = ["provenance:"]
+    for key in ("source", "fetched_at", "triggering_agent", "raw_content_sha256"):
+        lines.append(f"  {key}: {_yaml_string(provenance[key])}")
+    return "\n".join(lines)
+
+
+def _skill_content_with_provenance(content: str, provenance: dict[str, str]) -> str:
+    block = _skill_provenance_frontmatter(provenance)
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end != -1:
+            header = content[4:end]
+            if re.search(r"(?m)^provenance\s*:", header):
+                return content
+            return content[:end] + "\n" + block + content[end:]
+    return f"---\n{block}\n---\n\n{content}"
+
+
+def _append_skill_provenance_audit_trail(skill_name: str, provenance: dict[str, str]) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": "skill_save_provenance",
+        "skill_name": skill_name,
+        "provenance": provenance,
+        "audited_by": "soul_manager.save_skill",
+    }
+    try:
+        path = _skill_audit_trail_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        fd = os.open(path, flags, 0o600)
+        try:
+            os.write(fd, (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        log.debug("skill provenance audit trail write failed: %s", exc)
+
+
 def save_skill(
     skill_name: str,
     content: str,
@@ -4865,12 +5310,17 @@ def save_skill(
             return False
         _audit_summary = _result
 
+    provenance = _skill_save_provenance(content, source, metadata)
+    metadata["provenance"] = provenance
+    content = _skill_content_with_provenance(content, provenance)
+
     try:
         skill_file.parent.mkdir(parents=True, exist_ok=True)
         skill_file.write_text(content, encoding="utf-8")
     except OSError as _exc:
         log.debug("save_skill: write failed skill=%s: %s", skill_name, _exc)
         return False
+    _append_skill_provenance_audit_trail(skill_name, provenance)
 
     try:
         from config import SOUL_DIR

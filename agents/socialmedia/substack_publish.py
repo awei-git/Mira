@@ -6,7 +6,9 @@ Handles article publishing (draft creation + publish) and audio embedding.
 import json
 import logging
 import os
+import re
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -41,6 +43,50 @@ def _get_substack_config(*, publication: str = "") -> dict:
     from substack import _get_substack_config as _cfg
 
     return _cfg(publication=publication)
+
+
+def _human_obsession_check(draft_text: str) -> bool:
+    from config import MIRA_DIR, OBSESSION_GATE_TIMEOUT_HOURS
+    from bridge import Mira
+
+    marker = f"[publish-obsession-gate:{int(time.time())}]"
+    item_id = marker.strip("[]").replace(":", "_")
+    excerpt = (draft_text or "").strip()[:3000]
+    prompt = (
+        f"{marker}\n"
+        "Final Substack obsession check. Reply with `ok` to publish. "
+        "Any other reply aborts publishing. If there is no reply within "
+        f"{OBSESSION_GATE_TIMEOUT_HOURS} hours, publishing proceeds automatically.\n\n"
+        f"{excerpt}"
+    )
+    bridge = Mira(MIRA_DIR, user_id="ang")
+    bridge.create_discussion(
+        item_id,
+        "Substack publish approval requested",
+        prompt,
+        sender="agent",
+        tags=["socialmedia", "substack", "publish-obsession-gate"],
+    )
+
+    deadline = time.monotonic() + max(0, OBSESSION_GATE_TIMEOUT_HOURS) * 3600
+    ok_re = re.compile(r"\bok\b", re.IGNORECASE)
+    while time.monotonic() < deadline:
+        item = bridge._read_item(item_id) or {}
+        after_marker = False
+        for message in item.get("messages", []):
+            content = message.get("content", "")
+            if marker in content and message.get("sender") == "agent":
+                after_marker = True
+                continue
+            if not after_marker or message.get("sender") == "agent":
+                continue
+            return bool(ok_re.search(content or ""))
+        time.sleep(60)
+
+    log.warning(
+        "Substack obsession gate timed out after %s hours; proceeding with publish", OBSESSION_GATE_TIMEOUT_HOURS
+    )
+    return True
 
 
 def publish_to_substack(title: str, subtitle: str, article_text: str, workspace: Path, *, publication: str = "") -> str:
@@ -83,6 +129,16 @@ def publish_to_substack(title: str, subtitle: str, article_text: str, workspace:
             msg = f"Preflight blocked publish: {'; '.join(pf.blocking_reasons)}"
             log.error(msg)
             _log_scaffolding_rejection("publisher", title, "preflight_check", article_text)
+            return msg
+    except ImportError:
+        pass
+
+    try:
+        from config import PUBLISH_OBSESSION_GATE_ENABLED
+
+        if PUBLISH_OBSESSION_GATE_ENABLED and not _human_obsession_check(article_text):
+            msg = "Substack publish aborted: WA rejected the human obsession check."
+            log.warning(msg)
             return msg
     except ImportError:
         pass
