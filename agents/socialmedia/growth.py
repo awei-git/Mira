@@ -29,6 +29,9 @@ from config import (
     GROWTH_DISCOVERY_COOLDOWN_DAYS,
     GROWTH_MAX_LIKES_PER_CYCLE,
     MIRA_ROOT,
+    PUBLISH_COOLDOWN_PER_TYPE,
+    PUBLISH_MAX_PER_WINDOW,
+    PUBLISH_WINDOW_MINUTES,
 )
 
 try:
@@ -637,7 +640,34 @@ def _should_run_deep_verify() -> bool:
     return True
 
 
+def _verify_loaded_skills_integrity() -> bool:
+    try:
+        from config import SKILLS_DIR
+        from soul_manager import verify_skill_integrity
+    except Exception as exc:
+        log.warning("SECURITY: skill integrity check skipped — import failed: %s", exc)
+        return True
+
+    if not SKILLS_DIR.exists():
+        return True
+
+    all_ok = True
+    for skill_file in sorted(SKILLS_DIR.glob("*.md")):
+        ok, reason = verify_skill_integrity(skill_file.stem)
+        if not ok:
+            log.critical(
+                "SECURITY: skill integrity failure — skill=%s reason=%s",
+                skill_file.stem,
+                reason,
+            )
+            all_ok = False
+    return all_ok
+
+
 def _maybe_deep_verify_content(content: str, context: str) -> bool:
+    if not _verify_loaded_skills_integrity():
+        log.critical("SECURITY: publish blocked due to skill integrity failure in context=%s", context)
+        return False
     if _check_narrative_monopoly(content):
         report = _narrative_monopoly_report(content)
         if report:
@@ -882,6 +912,77 @@ def _save_state(state: dict):
     _state_file().write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _recent_publish_times(state: dict, now: datetime) -> list[datetime]:
+    cutoff = now - timedelta(minutes=PUBLISH_WINDOW_MINUTES)
+    recent: list[datetime] = []
+    for raw in state.get("recent_publish_timestamps", []):
+        try:
+            dt = datetime.fromisoformat(str(raw))
+        except ValueError:
+            continue
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        if dt >= cutoff:
+            recent.append(dt)
+    return recent
+
+
+def _check_publish_window(content_type: str, state: dict) -> bool:
+    now = datetime.now()
+    recent = _recent_publish_times(state, now)
+    state["recent_publish_timestamps"] = [dt.isoformat() for dt in recent]
+    if len(recent) >= PUBLISH_MAX_PER_WINDOW:
+        log.warning(
+            "Publish window limit active: %s blocked (%d/%d publishes in last %dm)",
+            content_type,
+            len(recent),
+            PUBLISH_MAX_PER_WINDOW,
+            PUBLISH_WINDOW_MINUTES,
+        )
+        _save_state(state)
+        return False
+    return True
+
+
+def _check_publish_cooldown(content_type: str) -> bool:
+    state = _load_state()
+    if content_type != "tweet" and not _check_publish_window(content_type, state):
+        return False
+    cooldown_minutes = PUBLISH_COOLDOWN_PER_TYPE.get(content_type, 0)
+    if not cooldown_minutes:
+        return True
+    last = state.get(f"last_publish_time_{content_type}", "")
+    if not last:
+        return True
+    try:
+        last_dt = datetime.fromisoformat(last)
+        if datetime.now() - last_dt < timedelta(minutes=cooldown_minutes):
+            log.info(
+                "Per-type cooldown active: %s (last: %s, cooldown: %dm)",
+                content_type,
+                last,
+                cooldown_minutes,
+            )
+            return False
+    except ValueError:
+        pass
+    return True
+
+
+def _record_publish_time(content_type: str, state: dict | None = None, now: datetime | None = None):
+    save = state is None
+    if state is None:
+        state = _load_state()
+    now = now or datetime.now()
+    state[f"last_publish_time_{content_type}"] = now.isoformat()
+    if content_type != "tweet":
+        recent = _recent_publish_times(state, now)
+        recent.append(now)
+        state["recent_publish_timestamps"] = [dt.isoformat() for dt in recent]
+    if save:
+        _save_state(state)
+
+
 def _grief_crisis_user_key(user: str | int | None) -> str:
     return re.sub(r"\s+", " ", str(user or "unknown").strip().lower()) or "unknown"
 
@@ -993,6 +1094,9 @@ def can_comment_now() -> bool:
         except ValueError:
             pass
 
+    if not _check_publish_cooldown("comment"):
+        return False
+
     return True
 
 
@@ -1009,6 +1113,7 @@ def record_comment(post_url: str, comment_text: str, comment_id: int, pattern: s
 
     state["last_comment_at"] = now.isoformat()
     state[f"comments_{today}"] = state.get(f"comments_{today}", 0) + 1
+    _record_publish_time("comment", state=state, now=now)
 
     # Keep history for dedup and review
     history = state.get("comment_history", [])
@@ -1221,12 +1326,17 @@ def get_comment_stats() -> dict:
 
 def post_note(text: str) -> dict | None:
     """Post a Substack Note. Delegates to notes.py."""
+    if not _check_publish_cooldown("note"):
+        return None
     if not _maybe_deep_verify_content(text, "substack_note"):
         return None
 
     from notes import post_note as _post_note
 
-    return _post_note(text)
+    result = _post_note(text)
+    if result:
+        _record_publish_time("note")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2171,6 +2281,8 @@ def _twitter_promotion(soul_context: str = ""):
 
     if not _can_tweet():
         return
+    if not _check_publish_cooldown("tweet"):
+        return
 
     state = _load_state()
     tweeted_slugs = set(state.get("tweeted_slugs", []))
@@ -2219,6 +2331,7 @@ def _twitter_promotion(soul_context: str = ""):
                 tweeted_slugs.add(slug)
                 state["tweeted_slugs"] = list(tweeted_slugs)
                 state["last_article_promo_at"] = datetime.now().isoformat()
+                state["last_publish_time_tweet"] = datetime.now().isoformat()
                 _save_state(state)
                 log.info("Tweeted about article: %s", title)
                 break  # One promo per cycle, but continue to sparks below
@@ -2278,6 +2391,7 @@ def _twitter_promotion(soul_context: str = ""):
                 sparks_this_cycle += 1
                 state["tweeted_spark_files"] = list(already_tweeted)[-50:]
                 state[f"sparks_tweeted_{today}"] = sparks_tweeted_today
+                state["last_publish_time_tweet"] = datetime.now().isoformat()
                 _save_state(state)
                 log.info("Tweeted spark from %s (%d this cycle)", sf.name, sparks_this_cycle)
     except Exception as e:

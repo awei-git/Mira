@@ -34,6 +34,15 @@ def test_local_policy_overrides_cloud_fallback_chain():
         llm.set_model_policy(None)
 
 
+def test_legacy_local_model_request_uses_codex_subscription_by_default():
+    assert llm._fallback_chain("omlx", "Summarize this routine note.") == [
+        "codex",
+        "claude",
+        "deepseek",
+        "omlx",
+    ]
+
+
 def test_codex_provider_uses_current_exec_flags(monkeypatch, tmp_path):
     calls = []
 

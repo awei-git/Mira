@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib
 import importlib.util
 import json
 import sys
@@ -33,6 +34,8 @@ import pathsetup  # noqa: F401,E402
 
 SCAN_ROOTS = [MIRA_ROOT / "agents", MIRA_ROOT / "lib"]
 EXCLUDE_DIRS = {"__pycache__", ".venv", "venv", "node_modules", "tests"}
+
+EXPECTED_CONFIG = str((MIRA_ROOT / "lib" / "config.py").resolve())
 
 
 def extract_imports(path: Path) -> list[tuple[str, int]]:
@@ -96,6 +99,21 @@ def main() -> int:
         help="Limit scan to these files (pre-commit uses this).",
     )
     args = ap.parse_args()
+
+    config_spec = importlib.util.find_spec("config")
+    config_origin = config_spec.origin if config_spec and config_spec.origin else ""
+    if str(Path(config_origin).resolve()) != EXPECTED_CONFIG:
+        msg = (
+            "BROKEN — module name collision: `import config` does not resolve to lib/config.py.\n"
+            f"  expected: {EXPECTED_CONFIG}\n"
+            f"  actual:   {config_origin or '(not found)'}\n"
+            "  fix: ensure sys.path ordering keeps `lib/` ahead of agent subdirs, or rename per-agent config modules."
+        )
+        if args.format == "json":
+            print(json.dumps({"broken": {"<runtime>": [{"module": "config", "reason": msg}]}}))
+        else:
+            print(msg)
+        return 1
 
     files = walk_targets(SCAN_ROOTS, args.files)
 

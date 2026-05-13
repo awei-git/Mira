@@ -8,6 +8,16 @@ log = logging.getLogger("sub_agent")
 
 LOCAL_ONLY_AGENTS: frozenset[str] = frozenset({"secret", "health"})
 LOCAL_MODEL_PATTERNS: tuple[str, ...] = ("mlx", "local", "ollama", "omlx")
+INJECTION_TRIGGER_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"ignore (previous|prior|all) instructions",
+        r"new (task|instructions|system prompt):",
+        r"you are now",
+        r"\[SYSTEM\]",
+        r"disregard your",
+    )
+)
 
 
 REASONING_RESPONSE_REQUIREMENT = """\
@@ -76,8 +86,9 @@ def require_reasoning_in_instruction(instruction: str, pipeline_context: dict | 
     return append_pipeline_context_to_system_prompt(text, pipeline_context)
 
 
-def extract_reasoning_payload(text: str) -> tuple[str, str] | None:
-    for candidate in _json_candidates(str(text or "")):
+def extract_reasoning_payload(text: str, agent_name: str | None = None) -> tuple[str, str] | None:
+    sanitized_text = _sanitize_output(str(text or ""), agent_name)
+    for candidate in _json_candidates(sanitized_text):
         try:
             payload = json.loads(candidate)
         except json.JSONDecodeError:
@@ -96,6 +107,22 @@ def extract_reasoning_payload(text: str) -> tuple[str, str] | None:
             output_text = str(output or "").strip()
         return reasoning, output_text
     return None
+
+
+def _sanitize_output(text: str, agent_name: str | None = None) -> str:
+    sanitized = str(text or "")
+    preview = sanitized[:200]
+    agent = str(agent_name or "unknown")
+    for pattern in INJECTION_TRIGGER_PATTERNS:
+        if pattern.search(sanitized):
+            log.warning(
+                "OUTPUT_INJECTION_PATTERN agent=%s pattern=%r preview=%r",
+                agent,
+                pattern.pattern,
+                preview,
+            )
+            sanitized = pattern.sub("[REDACTED:injection-pattern]", sanitized)
+    return sanitized
 
 
 def _json_candidates(text: str) -> list[str]:

@@ -3184,6 +3184,63 @@ def _scheduled_pipeline_blind_spots(now: float, outputs: dict) -> list[dict]:
     return anomalies
 
 
+def _tail_file(path: Path, *, max_lines: int = 40, max_chars: int = 2000) -> str:
+    try:
+        if not path.exists():
+            return ""
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-max_lines:]
+        text = "\n".join(lines).strip()
+        if len(text) > max_chars:
+            return text[-max_chars:]
+        return text
+    except OSError:
+        return ""
+
+
+def _emit_output_stale_probe(state: dict, field: str, title: str, body: str) -> None:
+    """Lightweight probe: when output is missing, push a short alert to the bridge."""
+    now = time.time()
+    last = _parse_recovery_timestamp(state.get(field)) or 0
+    if now - last < 6 * 3600:
+        return
+    state[field] = datetime.now(timezone.utc).isoformat()
+    if Mira is None:
+        return
+    try:
+        bridge = Mira(MIRA_DIR, user_id="ang")
+        item_id = f"output_stale_{field}"
+        if bridge.item_exists(item_id):
+            bridge.append_message(item_id, "agent", body)
+        else:
+            bridge.create_item(
+                item_id,
+                "alert",
+                title,
+                body,
+                sender="agent",
+                tags=["system", "liveness", "output-stale"],
+                origin="agent",
+            )
+    except Exception:
+        return
+
+
+def _latest_task_result_mtime() -> float | None:
+    if not TASKS_DIR.is_dir():
+        return None
+    latest = None
+    try:
+        for path in TASKS_DIR.rglob("result.json"):
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            latest = mtime if latest is None else max(latest, mtime)
+    except OSError:
+        return None
+    return latest
+
+
 def periodic_blind_spot_check() -> None:
     state = load_state()
     now = time.time()
@@ -3231,10 +3288,52 @@ def periodic_blind_spot_check() -> None:
         )
     state["blind_spot_feed_total_items"] = fetch_snapshot["total_items"]
 
-    for anomaly in _scheduled_pipeline_blind_spots(now, _read_last_outputs()):
+    anomalies = _scheduled_pipeline_blind_spots(now, _read_last_outputs())
+    for anomaly in anomalies:
         _blind_spot_warn(
             "scheduled pipeline trigger is active but output is absent or stale",
             **anomaly,
+        )
+
+    # Symptom-driven tracing: when "regular output" is missing, push a trace.
+    latest_task_result = _latest_task_result_mtime()
+    if latest_task_result is not None:
+        task_gap = now - latest_task_result
+        if task_gap > 24 * 3600:
+            hours = int(task_gap // 3600)
+            err_tail = _tail_file(Path("/tmp/mira-agent.err"), max_lines=80, max_chars=4000)
+            crash_tail = _tail_file(Path("/tmp/mira-crash.log"), max_lines=60, max_chars=4000)
+            body = (
+                f"No new `result.json` under `{TASKS_DIR}` for ~{hours}h. "
+                "This is the earliest symptom; start tracing immediately.\n\n"
+                "Last error tail:\n"
+                f"{err_tail or '(empty)'}\n\n"
+                "Last crash tail:\n"
+                f"{crash_tail or '(empty)'}"
+            )
+            _emit_output_stale_probe(
+                state,
+                "trace_task_output_stale",
+                "Mira output stale: no task results",
+                body,
+            )
+
+    if anomalies:
+        sample = anomalies[:3]
+        err_tail = _tail_file(Path("/tmp/mira-agent.err"), max_lines=60, max_chars=3000)
+        body = "Scheduled job trigger is active but output is stale (sample):\n"
+        for a in sample:
+            body += (
+                f"- job={a.get('job')} component={a.get('component')} user={a.get('user_id')} "
+                f"gap_s={a.get('output_gap_seconds')}\n"
+            )
+        if err_tail:
+            body += "\nLast error tail:\n" + err_tail
+        _emit_output_stale_probe(
+            state,
+            "trace_scheduled_output_stale",
+            "Mira output stale: scheduled pipeline",
+            body.strip(),
         )
 
     _check_task_distribution_blind_spots(state)

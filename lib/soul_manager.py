@@ -19,6 +19,9 @@ SkillManifestSource = Literal["domain-experience", "extraction"]
 _SKILL_MANIFEST_SOURCES: frozenset[str] = frozenset({"domain-experience", "extraction"})
 
 ENABLE_DOMAIN_GROUNDING_CHECK: bool = True
+SKILL_LOAD_UNVERIFIED_POLICY: str = "block"
+SKILL_INTEGRITY_CHECK: bool = True
+SKILL_INTEGRITY_ALLOWLIST: list[str] = []
 SENSITIVITY_CONFIDENCE_THRESHOLD: float = 0.7
 SENSITIVITY_PATTERNS: list[dict[str, object]] = [
     {
@@ -486,7 +489,26 @@ def _apply_skill_audit_load_gate(
 
     audit_metadata = dict(metadata or {})
     audit_metadata.update(_skill_audit_metadata(slug))
-    if not _skill_requires_reaudit(skill_name, audit_metadata):
+    mtime_requires_reaudit = False
+    if skill_file is not None:
+        try:
+            file_mtime = os.path.getmtime(skill_file)
+            last_audit_ts = audit_metadata.get("last_audit_timestamp") or audit_metadata.get("audited_at")
+            if last_audit_ts:
+                last_audit_dt = datetime.fromisoformat(str(last_audit_ts).replace("Z", "+00:00"))
+                if last_audit_dt.tzinfo is None:
+                    last_audit_dt = last_audit_dt.replace(tzinfo=timezone.utc)
+                if file_mtime > last_audit_dt.timestamp():
+                    log.warning(
+                        "SKILL_LOAD mtime_changed: skill=%s file modified since last audit — forcing reaudit",
+                        skill_name,
+                    )
+                    mtime_requires_reaudit = True
+            else:
+                mtime_requires_reaudit = True
+        except OSError:
+            pass
+    if not _skill_requires_reaudit(skill_name, audit_metadata) and not mtime_requires_reaudit:
         return content
     try:
         result = audit_skill(skill_name, content, metadata=metadata)
@@ -788,6 +810,71 @@ def _capability_manifest_path() -> Path:
     return soul_dir / "capability_manifest.json"
 
 
+def _knowledge_gaps_path() -> Path:
+    try:
+        from config import MIRA_ROOT, SOUL_DIR
+
+        legacy_soul_dir = MIRA_ROOT / "agents" / "shared" / "soul"
+        soul_dir = legacy_soul_dir if legacy_soul_dir.exists() else SOUL_DIR
+        return soul_dir / "knowledge_gaps.json"
+    except Exception:
+        return Path(__file__).resolve().parent.parent / "agents" / "shared" / "soul" / "knowledge_gaps.json"
+
+
+def _load_knowledge_gaps() -> list[dict]:
+    path = _knowledge_gaps_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("knowledge_gaps.json unreadable: %s", exc)
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _log_knowledge_gap(query: str, agent_id: str, timestamp: str | None = None) -> None:
+    query = str(query or "").strip()
+    if not query:
+        return
+
+    entry = {
+        "query": query,
+        "agent_id": str(agent_id or "unknown"),
+        "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
+        "resolved": False,
+    }
+    path = _knowledge_gaps_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        gaps = _load_knowledge_gaps()
+        gaps.append(entry)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(gaps, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp_path.replace(path)
+    except OSError as exc:
+        log.warning("Failed to write knowledge gap: %s", exc)
+
+
+def unresolved_knowledge_gaps(limit: int = 20) -> list[dict]:
+    gaps = [gap for gap in _load_knowledge_gaps() if isinstance(gap, dict) and not gap.get("resolved")]
+    return gaps[-limit:]
+
+
+def format_knowledge_gap_candidates(limit: int = 20) -> str:
+    gaps = unresolved_knowledge_gaps(limit=limit)
+    if not gaps:
+        return ""
+
+    lines = ["Unresolved navigation misses to consider for explorer/researcher skill acquisition:"]
+    for gap in gaps:
+        query = str(gap.get("query", "")).replace("\n", " ").strip()
+        if len(query) > 180:
+            query = query[:177].rstrip() + "..."
+        agent_id = gap.get("agent_id", "unknown")
+        timestamp = gap.get("timestamp", "")
+        lines.append(f"- [{agent_id}] {query} ({timestamp})")
+    return "\n".join(lines)
+
+
 def _audit_checks_passed(audit_summary: object) -> list[str]:
     if isinstance(audit_summary, dict):
         explicit_checks = audit_summary.get("audit_checks_passed")
@@ -938,6 +1025,48 @@ def check_audit_coverage() -> list[str]:
                 unaudited.append(skill_file.name)
 
     return unaudited
+
+
+def verify_skill_integrity(skill_name: str) -> tuple[bool, str]:
+    """Compare current skill file hash against the hash stored at audit time.
+
+    Returns (True, "") if untampered, (False, reason) if the hash has changed
+    or the skill cannot be verified.
+    """
+    try:
+        from config import SKILLS_DIR
+    except Exception as exc:
+        return False, f"config import failed: {exc}"
+
+    slug = skill_name.lower().replace(" ", "-")
+    hashes_path = SKILLS_DIR.parent / "audit_hashes.json"
+    try:
+        hashes = json.loads(hashes_path.read_text(encoding="utf-8")) if hashes_path.exists() else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"audit_hashes.json unreadable: {exc}"
+
+    entry = hashes.get(slug)
+    if not isinstance(entry, dict) or "hash" not in entry:
+        return False, f"no audit record for '{slug}'"
+
+    stored_hash = entry["hash"]
+    skill_file = SKILLS_DIR / f"{slug}.md"
+    if not skill_file.exists():
+        candidates = list(SKILLS_DIR.glob(f"{slug}.*"))
+        if not candidates:
+            return False, f"skill file not found for '{slug}'"
+        skill_file = candidates[0]
+
+    try:
+        current_content = skill_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        return False, f"cannot read skill file: {exc}"
+
+    current_hash = hashlib.sha256(current_content.encode()).hexdigest()
+    if current_hash != stored_hash:
+        return False, f"hash mismatch for '{slug}': stored={stored_hash[:16]} current={current_hash[:16]}"
+
+    return True, ""
 
 
 def _rules_integrity_paths() -> tuple[Path, Path, Path]:
@@ -1419,6 +1548,8 @@ _COMPOUND_SENSITIVE_PATH_PATTERN = re.compile(
 _COMPOUND_NETWORK_CALL_PATTERN = re.compile(
     r"\b(requests\.get|requests\.post|httpx\.|urllib\.|aiohttp\.|socket\.connect)\b|(?<!\w)curl\b",
 )
+
+_DIFF_HIGH_IMPACT_PATTERN = re.compile(r"\b(?:import|subprocess|requests|urllib|socket|eval|exec|base64|__import__)\b")
 
 COVERT_CHANNEL_SERVICES: frozenset[str] = frozenset(
     {
@@ -3306,6 +3437,69 @@ def _alert_skill_audit_blocked(
         log.warning("Failed to write skill audit block alert: %s", exc)
 
 
+def _infer_source_type(source: str, metadata: dict | None = None) -> str:
+    explicit = (metadata or {}).get("source_type")
+    if explicit:
+        return str(explicit)
+    if source and ("://" in source or source.startswith("http")):
+        return "web-import"
+    if source and any(kw in source.lower() for kw in ("feed", "arxiv", "reddit", "hf", "extract")):
+        return "feed-extracted"
+    if source in TRUSTED_INTERNAL_SOURCES or source in ("self-generated", "mira", "internal"):
+        return "self-generated"
+    if source and source != "unknown":
+        return "community-repo"
+    return "self-generated"
+
+
+def _update_skill_provenance_record(
+    skill_name: str,
+    source: str,
+    metadata: dict | None,
+    diff_summary: str,
+    audit_result: dict,
+    is_update: bool,
+) -> None:
+    try:
+        from config import SKILLS_DIR
+
+        _hashes_path = SKILLS_DIR.parent / "audit_hashes.json"
+        try:
+            _hashes = json.loads(_hashes_path.read_text(encoding="utf-8")) if _hashes_path.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            return
+        _slug = skill_name.lower().replace(" ", "-")
+        entry = _hashes.get(_slug)
+        if not isinstance(entry, dict):
+            return
+        _now = datetime.now(timezone.utc).isoformat()
+        source_url = (metadata or {}).get("source_url") or (source if source not in ("", "unknown") else "unknown")
+        source_type = _infer_source_type(source, metadata)
+        if "first_seen" not in entry:
+            entry["first_seen"] = entry.get("audited_at") or _now
+        entry["source_url"] = source_url
+        entry["source_type"] = source_type
+        if is_update:
+            mod_log = entry.get("modification_log")
+            if not isinstance(mod_log, list):
+                mod_log = []
+            mod_log.append(
+                {
+                    "timestamp": _now,
+                    "diff_summary": diff_summary,
+                    "audit_result": audit_result.get("verdict")
+                    or ("pass" if not audit_result.get("blocked") else "block"),
+                }
+            )
+            entry["modification_log"] = mod_log
+        elif "modification_log" not in entry:
+            entry["modification_log"] = []
+        _hashes[_slug] = entry
+        _hashes_path.write_text(json.dumps(_hashes, indent=2), encoding="utf-8")
+    except Exception as _exc:
+        log.debug("skill provenance record update failed: %s", _exc)
+
+
 def audit_skill(
     skill_name: str,
     skill_content: str,
@@ -3316,8 +3510,53 @@ def audit_skill(
 ) -> dict:
     content_sha256 = hashlib.sha256(skill_content.encode("utf-8")).hexdigest()
     _enforce_daily_skill_import_quota(skill_name, source)
+
+    _diff_warnings: list[str] = []
+    _is_update = False
+    _diff_summary = "new"
+    _slug = skill_name.lower().replace(" ", "-")
+    try:
+        from config import SKILLS_DIR as _diff_skills_dir
+
+        _diff_hashes_path = _diff_skills_dir.parent / "audit_hashes.json"
+        if _diff_hashes_path.exists():
+            _diff_hashes_raw = json.loads(_diff_hashes_path.read_text(encoding="utf-8"))
+            if _slug in _diff_hashes_raw:
+                _is_update = True
+                for _ext in (".md", ".py"):
+                    _prev_file = _diff_skills_dir / f"{_slug}{_ext}"
+                    if _prev_file.exists():
+                        _prev_content = _prev_file.read_text(encoding="utf-8")
+                        _diff_lines = list(
+                            difflib.unified_diff(
+                                _prev_content.splitlines(keepends=True),
+                                skill_content.splitlines(keepends=True),
+                                lineterm="",
+                            )
+                        )
+                        _added = [l[1:] for l in _diff_lines if l.startswith("+") and not l.startswith("+++")]
+                        _removed = [l[1:] for l in _diff_lines if l.startswith("-") and not l.startswith("---")]
+                        _changed = len(_added) + len(_removed)
+                        _diff_summary = f"+{len(_added)}/-{len(_removed)}"
+                        if _changed < 5:
+                            _added_text = "\n".join(_added)
+                            if _DIFF_HIGH_IMPACT_PATTERN.search(_added_text):
+                                log.warning(
+                                    "SKILL_AUDIT low_effort_high_impact: skill=%s reason='small diff (%d lines changed) introduces high-impact pattern' added=%r",
+                                    skill_name,
+                                    _changed,
+                                    _added_text[:200],
+                                )
+                                _diff_warnings.append("low_effort_high_impact_change")
+                        break
+    except Exception:
+        pass
+
     result = _audit_skill_impl(skill_name, skill_content, tags, source, metadata, include_dependencies)
     if isinstance(result, dict) and isinstance(result.get("blocked"), bool):
+        if _diff_warnings:
+            result = dict(result)
+            result["warnings"] = list(result.get("warnings") or []) + _diff_warnings
         matched_source = _survival_skill_source_match(source, metadata)
         if result["blocked"] and matched_source:
             result = dict(result)
@@ -3338,6 +3577,8 @@ def audit_skill(
         _append_skill_audit_trail(skill_name, content_sha256, result)
         if not result["blocked"]:
             _increment_daily_skill_import_counter()
+            _update_skill_provenance_record(skill_name, source, metadata, _diff_summary, result, _is_update)
+            _seal_skill(skill_name, skill_content)
     return result
 
 
@@ -5251,19 +5492,90 @@ def _append_skill_provenance_audit_trail(skill_name: str, provenance: dict[str, 
         log.debug("skill provenance audit trail write failed: %s", exc)
 
 
+def _skills_checksums_path() -> Path:
+    from config import SOUL_DIR
+
+    return SOUL_DIR / "skills_checksums.json"
+
+
+def _load_skills_checksums() -> dict:
+    path = _skills_checksums_path()
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("skills_checksums.json unreadable: %s", exc)
+        return {}
+
+
+def register_skill_checksum(skill_path: "Path | str") -> None:
+    skill_path = Path(skill_path)
+    try:
+        content = skill_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.warning("register_skill_checksum: cannot read %s: %s", skill_path, exc)
+        return
+    file_hash = hashlib.sha256(content.encode()).hexdigest()
+    checksums = _load_skills_checksums()
+    checksums[skill_path.name] = file_hash
+    path = _skills_checksums_path()
+    try:
+        path.write_text(json.dumps(checksums, indent=2), encoding="utf-8")
+    except OSError as exc:
+        log.warning("register_skill_checksum: cannot write checksums: %s", exc)
+
+
+def _seal_skill(skill_name: str, skill_content: str) -> None:
+    slug = skill_name.lower().replace(" ", "-")
+    content_hash = hashlib.sha256(skill_content.encode("utf-8")).hexdigest()
+    try:
+        from config import SKILLS_DIR
+
+        checksums = _load_skills_checksums()
+        filename = f"{slug}.md"
+        for ext in (".md", ".py"):
+            if (SKILLS_DIR / f"{slug}{ext}").exists():
+                filename = f"{slug}{ext}"
+                break
+        checksums[filename] = content_hash
+        try:
+            seal_path = _skills_checksums_path()
+            seal_path.write_text(json.dumps(checksums, indent=2), encoding="utf-8")
+        except Exception as exc:
+            log.debug("_seal_skill: checksums write failed skill=%s: %s", skill_name, exc)
+        try:
+            sidecar_dir = SKILLS_DIR / ".hashes"
+            sidecar_dir.mkdir(parents=True, exist_ok=True)
+            (sidecar_dir / f"{slug}.sha256").write_text(content_hash, encoding="utf-8")
+        except Exception as exc:
+            log.debug("_seal_skill: sidecar write failed skill=%s: %s", skill_name, exc)
+    except Exception as exc:
+        log.debug("_seal_skill: config import failed skill=%s: %s", skill_name, exc)
+
+
+def check_skill_reproducibility(skill: dict) -> tuple[bool, str]:
+    missing = []
+    if not skill.get("source"):
+        missing.append("source")
+    if not skill.get("application_context"):
+        missing.append("application_context")
+    if not skill.get("verification_criteria"):
+        missing.append("verification_criteria")
+    if missing:
+        return False, f"missing required fields: {', '.join(missing)}"
+    return True, ""
+
+
 def save_skill(
     skill_name: str,
     content: str,
     source: str = "unknown",
     metadata: dict | None = None,
 ) -> bool:
-    """Write a skill file, blocking the write if content changed and re-audit fails.
+    """Write a skill file, always auditing before write regardless of whether the skill is new or existing.
 
     Returns True on success, False if blocked or write failed.
-    On first write (no stored hash) the file is written without re-audit — the
-    caller is expected to have run audit_skill() beforehand.  On any subsequent
-    write where the content hash differs from the stored audit-time hash,
-    audit_skill() is re-run; a failing audit blocks the write entirely.
+    audit_skill() is called unconditionally — both new and existing skills are audited before
+    the file is written. A failing audit blocks the write entirely.
     """
     try:
         from config import SKILLS_DIR
@@ -5279,6 +5591,11 @@ def save_skill(
         )
         return False
 
+    _repro_ok, _repro_reason = check_skill_reproducibility(metadata)
+    if not _repro_ok:
+        log.warning("save_skill reproducibility warning: skill=%s reason='%s'", skill_name, _repro_reason)
+        metadata["reproducibility_warning"] = True
+
     slug = skill_name.lower().replace(" ", "-")
     skill_file = SKILLS_DIR / f"{slug}.md"
     new_hash = hashlib.sha256(content.encode()).hexdigest()
@@ -5293,22 +5610,21 @@ def save_skill(
     _stored_hash = _stored_entry.get("hash") if isinstance(_stored_entry, dict) else None
     _audit_summary: object | None = None
 
-    if _stored_hash is not None and new_hash != _stored_hash:
-        try:
-            _result = audit_skill(skill_name, content, source=source, metadata=metadata)
-            if not isinstance(_result, dict) or "blocked" not in _result:
-                raise ValueError(f"unexpected audit result: {_result!r}")
-        except Exception as _e:
-            log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", _e)
-            return False
-        if _result["blocked"]:
-            log.warning(
-                "skill update blocked: skill=%s content changed and failed re-audit categories=%s",
-                skill_name,
-                _result["categories"],
-            )
-            return False
-        _audit_summary = _result
+    try:
+        _result = audit_skill(skill_name, content, source=source, metadata=metadata)
+        if not isinstance(_result, dict) or "blocked" not in _result:
+            raise ValueError(f"unexpected audit result: {_result!r}")
+    except Exception as _e:
+        log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", _e)
+        return False
+    if _result["blocked"]:
+        log.warning(
+            "skill write blocked: skill=%s failed audit before write categories=%s",
+            skill_name,
+            _result.get("categories", []),
+        )
+        return False
+    _audit_summary = _result
 
     provenance = _skill_save_provenance(content, source, metadata)
     metadata["provenance"] = provenance
@@ -5320,6 +5636,7 @@ def save_skill(
     except OSError as _exc:
         log.debug("save_skill: write failed skill=%s: %s", skill_name, _exc)
         return False
+    register_skill_checksum(skill_file)
     _append_skill_provenance_audit_trail(skill_name, provenance)
 
     try:
@@ -5369,6 +5686,29 @@ def load_skill(skill_name: str, metadata: dict | None = None) -> str:
         return ""
 
     current_hash = hashlib.sha256(content.encode()).hexdigest()
+
+    if SKILL_INTEGRITY_CHECK and slug not in SKILL_INTEGRITY_ALLOWLIST:
+        _checksums = _load_skills_checksums()
+        _skill_filename = skill_file.name
+        if _skill_filename not in _checksums:
+            if SKILL_LOAD_UNVERIFIED_POLICY == "block":
+                log.warning(
+                    "SKILL_LOAD blocked: skill=%s reason='not in skills_checksums.json'",
+                    skill_name,
+                )
+                return ""
+            log.warning(
+                "SKILL_LOAD sandboxed: skill=%s reason='not in skills_checksums.json'",
+                skill_name,
+            )
+        elif _checksums[_skill_filename] != current_hash:
+            log.critical(
+                "SKILL_INTEGRITY_VIOLATION: skill=%s hash_actual=%s — load blocked",
+                skill_name,
+                current_hash,
+            )
+            return ""
+
     sidecar = SKILLS_DIR / ".hashes" / f"{slug}.sha256"
     skill_source, skill_depth = get_skill_provenance(skill_name)
 
@@ -5419,7 +5759,7 @@ def load_skill(skill_name: str, metadata: dict | None = None) -> str:
         return gated_content
 
     stored_hash = sidecar.read_text(encoding="utf-8").strip()
-    if current_hash != stored_hash:
+    if current_hash != stored_hash and (not SKILL_INTEGRITY_CHECK or slug not in SKILL_INTEGRITY_ALLOWLIST):
         trusted_match = _trusted_skill_source_match(skill_file=skill_file, source=skill_source, metadata=metadata)
         trusted_skill = trusted_match is not None
         if trusted_match:

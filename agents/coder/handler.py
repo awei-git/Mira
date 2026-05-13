@@ -111,6 +111,15 @@ _LOGIC_RE = re.compile(
 _BUGFIX_CLAIM_RE = re.compile(
     r"\b(bug|fix|crash|error|fail|fault|logic|control.?flow|incorrect|wrong|security|regression)\b", re.I
 )
+_BUG_REPORT_HEADING_RE = re.compile(r"\b(bug|vulnerability|vuln|security\s+issue|security\s+flaw)\b", re.I)
+_BUG_FIELD_REPRODUCTION_RE = re.compile(
+    r"\b(reproduction\s+steps?|to\s+reproduce|steps?\s+to\s+reproduce|repro)\b", re.I
+)
+_BUG_FIELD_OBSERVED_RE = re.compile(
+    r"\b(observed\s+behavior|actual\s+behavior|what\s+happened|actual\s+result)\b", re.I
+)
+_BUG_FIELD_EXPECTED_RE = re.compile(r"\b(expected\s+behavior|what\s+should|expected\s+result)\b", re.I)
+_BUG_FIELD_EVIDENCE_RE = re.compile(r"\b(evidence|file\s+path|line\s+number|test\s+case)\b", re.I)
 _COSMETIC_CLAIM_RE = re.compile(
     r"\b(format|formatting|style|whitespace|comment|rename|renaming|refactor|docs?|documentation)\b", re.I
 )
@@ -180,6 +189,15 @@ Identify and analyze at least one non-trivial edge case or failure mode and the 
 Note anything that seemed unexpected, ambiguous, confusing, or potentially wrong during review.
 
 If any Review Depth Evidence subsection is missing or contains only vague/generic content such as "looks fine" or "no issues", the review is incomplete and the change is blocked.
+
+## BUG REPORT FORMAT (MANDATORY)
+Every bug or vulnerability finding MUST include:
+(a) **REPRODUCTION STEPS** — minimal sequence to trigger the issue
+(b) **OBSERVED BEHAVIOR** — what actually happened with exact output/logs
+(c) **EXPECTED BEHAVIOR** — what should have happened
+(d) **EVIDENCE** — file paths, line numbers, or test case
+
+If you cannot provide all four, explicitly state what's missing and downgrade the finding from BUG to OBSERVATION.
 """
 
 
@@ -808,6 +826,33 @@ def _wait_for_human_review(task_id: str, thread_id: str, sender: str, diff_text:
         time.sleep(_HUMAN_REVIEW_POLL_SECONDS)
 
 
+def _validate_bug_report_fields(result: str, task_id: str) -> str | None:
+    if not _BUG_REPORT_HEADING_RE.search(result or ""):
+        return None
+    missing = []
+    if not _BUG_FIELD_REPRODUCTION_RE.search(result):
+        missing.append("REPRODUCTION STEPS")
+    if not _BUG_FIELD_OBSERVED_RE.search(result):
+        missing.append("OBSERVED BEHAVIOR")
+    if not _BUG_FIELD_EXPECTED_RE.search(result):
+        missing.append("EXPECTED BEHAVIOR")
+    if not _BUG_FIELD_EVIDENCE_RE.search(result):
+        missing.append("EVIDENCE")
+    if missing:
+        log.warning(
+            "Bug report for task %s missing required fields: %s",
+            task_id,
+            ", ".join(missing),
+        )
+        return (
+            f"\n\n⚠️ WARNING: This bug/vulnerability report is missing required fields: "
+            f"{', '.join(missing)}. Include exact reproduction steps (commands/inputs), "
+            f"expected vs actual output, and the specific file path with line range. "
+            f"If you cannot reproduce, state that explicitly rather than reporting a speculative bug."
+        )
+    return None
+
+
 def handle(
     workspace: Path,
     task_id: str,
@@ -995,6 +1040,9 @@ The first proposed fix did not pass a separate audit. Revise the fix using this 
         )
     _record_diff_presented(thread_id, task_id, workspace, result)
 
+    bug_report_warning = _validate_bug_report_fields(result, task_id)
+    if bug_report_warning:
+        result = result.rstrip() + bug_report_warning
     log.info("Coder agent completed task %s (%d chars output)", task_id, len(result))
     return result
 

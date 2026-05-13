@@ -33,5 +33,8 @@ _PATHS = [
 ]
 
 for p in _PATHS:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+    while p in sys.path:
+        sys.path.remove(p)
+
+for p in reversed(_PATHS):
+    sys.path.insert(0, p)

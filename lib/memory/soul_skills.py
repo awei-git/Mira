@@ -35,7 +35,7 @@ from memory.soul_io import (
     _locked_read_modify_write,
     _log_change,
 )
-from soul_manager import filter_superseded_skill_candidates, warn_if_deprecated_skill_loaded
+from soul_manager import _log_knowledge_gap, filter_superseded_skill_candidates, warn_if_deprecated_skill_loaded
 
 log = logging.getLogger("mira")
 
@@ -381,6 +381,9 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
         skipped_categories,
     )
 
+    best_score = top[0][0] if top else 0
+    if not top or best_score < 1:
+        _log_knowledge_gap(task_content, agent_type or "unknown", datetime.utcnow().isoformat() + "Z")
     if not top:
         return ""
 

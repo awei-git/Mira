@@ -267,6 +267,14 @@ def do_reflect(user_id: str = "ang"):
     except Exception as _bae:
         log.warning("Blocked skill pattern check failed: %s", _bae)
 
+    knowledge_gap_candidates = ""
+    try:
+        from soul_manager import format_knowledge_gap_candidates
+
+        knowledge_gap_candidates = format_knowledge_gap_candidates(limit=20)
+    except Exception as _kge:
+        log.warning("Knowledge gap candidate load failed: %s", _kge)
+
     prompt = reflect_prompt(soul_ctx, recent_briefings, recent_work)
     if audit_summary:
         prompt += (
@@ -276,6 +284,12 @@ def do_reflect(user_id: str = "ang"):
         )
     if blocked_skill_alerts:
         prompt += "\n\n---\n\n## Blocked skill feed alerts\n" + "\n".join(blocked_skill_alerts)
+    if knowledge_gap_candidates:
+        prompt += (
+            "\n\n---\n\n## Navigation misses / skill acquisition candidates\n"
+            f"{knowledge_gap_candidates}\n\n"
+            "Consider whether any unresolved miss should become an explorer or researcher acquisition topic."
+        )
     result = claude_think(prompt, timeout=300, tier="heavy")
 
     if not result:

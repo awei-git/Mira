@@ -495,8 +495,10 @@ def _looks_like_chinese_writing(prompt: str) -> bool:
 
 def _fallback_chain(model_name: str, prompt: str) -> list[str]:
     requested = (model_name or DEFAULT_MODEL or "codex").lower()
-    if _force_local() or requested in {"omlx", "ollama", "local", "localllm"}:
+    if _force_local():
         return ["omlx"]
+    if requested in {"omlx", "ollama", "local", "localllm"}:
+        return _fallback_chain("codex", prompt)
     if requested in {"deepseek", "deepseek-r1"}:
         return [requested, "codex", "claude", "omlx"]
     if requested == "claude":

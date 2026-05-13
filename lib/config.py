@@ -148,6 +148,37 @@ STALE_THRESHOLDS: dict[str, int] = {"writer": 172800, "explorer": 21600, "reflec
 FEEDS_DIR = DATA_DIR / "feeds"
 SOURCES_FILE = MIRA_ROOT / "sources.json"
 
+# Calibration / drift monitoring defaults (used by super agent)
+CALIBRATION_INTERVAL_DAYS = 7
+CALIBRATION_SAMPLE_SIZE = 4
+BLIND_SPOT_LOOKBACK_DAYS = 30
+BLIND_SPOT_SILENCE_THRESHOLD_DAYS = 3
+
+# Survival / sensitivity routing defaults (used by super + notes bridge)
+SURVIVAL_CRITICAL_COMPONENTS = ["heartbeat", "notes_bridge", "task_worker", "preflight"]
+SENSITIVE_SURVIVAL_TERMS = [
+    "妈妈去世",
+    "怎么活下去",
+    "自杀",
+    "不想活了",
+    "不想活",
+    "不想活下去了",
+    "失去亲人",
+    "好想死",
+    "想死",
+    "我撑不住了",
+    "撑不下去了",
+    "活不下去了",
+    "不想醒来",
+    "结束生命",
+    "去世后",
+    "死了以后",
+]
+SENSITIVE_FORCE_LOCAL = True
+SENSITIVITY_HOURS_START = 23
+SENSITIVITY_HOURS_END = 6
+SENSITIVITY_ROUTE_TO_LOCAL = True
+
 # Artifacts — subdirectory definitions deferred until iCloud override is applied (see below)
 
 # Writing resources (frameworks, templates, ideas — lives under writer agent)

@@ -132,6 +132,36 @@ _SYSTEM_ERROR_SIGNATURE_RE = re.compile(
 _MIN_PUBLISH_CHARS = 1
 _PREFLIGHT_CACHE = ".socialmedia_preflight.json"
 
+EVIDENCE_FLOOR_RATIO = 0.2
+
+_CLAIM_SIGNAL_RE = re.compile(
+    r"\b(i found|we found|i discovered|we discovered|i noticed|we noticed|"
+    r"i observed|we observed|i measured|we measured|shows that|demonstrates that|"
+    r"proves that|indicates that|reveals that|suggests that|confirms that|"
+    r"研究表明|数据显示|我们发现|我发现|结果显示|分析表明)\b",
+    re.IGNORECASE,
+)
+_EVIDENCE_SIGNAL_RE = re.compile(
+    r"https?://\S+|"
+    r"\b(according to|source:|see:|ref:|cited in|from the|per the|"
+    r"in \w+ et al|in the \w+ study|in the \w+ report|"
+    r"doi:|arxiv:|github\.com|\[\d+\]|\(\d{4}\)|"
+    r"来源|参见|引用|据.*报告|根据.*研究|数据来自)\b",
+    re.IGNORECASE,
+)
+
+
+def _content_lacks_verifiability(text: str) -> bool:
+    sentences = [s.strip() for s in re.split(r"[。.!?！？\n]", text) if s.strip()]
+    if len(sentences) < 5:
+        return False
+    claim_count = sum(1 for s in sentences if _CLAIM_SIGNAL_RE.search(s))
+    if claim_count == 0:
+        return False
+    evidence_count = sum(1 for s in sentences if _EVIDENCE_SIGNAL_RE.search(s))
+    ratio = evidence_count / len(sentences)
+    return claim_count >= 2 and ratio < EVIDENCE_FLOOR_RATIO
+
 
 def _content_looks_like_error(text: str) -> tuple[bool, str]:
     """Return (True, reason) if text looks like an error message, not publishable content.
@@ -160,6 +190,10 @@ def _content_looks_like_error(text: str) -> tuple[bool, str]:
                 reason = f"内容包含错误关键词「{kw}」，疑似上一步的错误信息"
                 _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
                 return True, reason
+    if _content_lacks_verifiability(stripped):
+        reason = f"内容存在大量断言但缺少可验证来源（evidence_floor={EVIDENCE_FLOOR_RATIO}）"
+        _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
+        return True, reason
     return False, ""
 
 

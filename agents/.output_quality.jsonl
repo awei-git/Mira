@@ -196,3 +196,4 @@
 {"agent": "general", "status": "failed", "length": 44, "has_content": false, "ts": "2026-05-05T22:59:38Z"}
 {"agent": "general", "status": "failed", "length": 44, "has_content": false, "ts": "2026-05-05T23:31:32Z"}
 {"agent": "health", "status": "failed", "length": 90, "has_content": true, "ts": "2026-05-08T13:40:36Z"}
+{"agent": "health", "status": "needs-input", "length": 118, "has_content": true, "ts": "2026-05-12T20:05:19Z"}
