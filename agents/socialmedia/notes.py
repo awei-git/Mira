@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config import NOTES_MAX_PER_DAY, NOTES_MIN_INTERVAL_MINUTES, NOTES_POST_MAX_ATTEMPTS
+from public_text_guard import PublicTextLeakError, validate_public_text
 
 log = logging.getLogger("socialmedia.notes")
 
@@ -170,6 +171,12 @@ def post_note(text: str, link_url: str | None = None, post_id: int | None = None
     subdomain = cfg.get("subdomain", "")
     if not cookie or not subdomain:
         log.error("Substack not configured — cannot post Note")
+        return None
+
+    try:
+        text = validate_public_text(text, surface="substack_note")
+    except PublicTextLeakError as e:
+        log.error("Blocked Substack Note privacy leak: %s", e)
         return None
 
     ok, reason = _has_personal_anchor(text)
@@ -385,6 +392,12 @@ def reply_to_note(parent_note_id: int, text: str) -> dict | None:
     cfg = _get_substack_config()
     cookie = cfg.get("cookie", "")
     subdomain = cfg.get("subdomain", "")
+
+    try:
+        text = validate_public_text(text, surface="substack_note_reply")
+    except PublicTextLeakError as e:
+        log.error("Blocked Substack Note reply privacy leak: %s", e)
+        return None
 
     paragraphs = _text_to_prosemirror(text)
     doc = _build_note_doc(paragraphs)

@@ -12,6 +12,8 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+from public_text_guard import PublicTextLeakError, validate_public_text
+
 log = logging.getLogger("publisher.substack")
 
 
@@ -80,6 +82,12 @@ def reply_to_comment(post_id: int, parent_comment_id: int, reply_text: str) -> d
     subdomain = cfg.get("subdomain", "")
     cookie = cfg.get("cookie", "")
     if not subdomain or not cookie:
+        return None
+
+    try:
+        reply_text = validate_public_text(reply_text, surface="substack_comment_reply")
+    except PublicTextLeakError as e:
+        log.error("Blocked Substack comment reply privacy leak: %s", e)
         return None
 
     # Substack accepts plain text and auto-wraps into ProseMirror
@@ -318,6 +326,12 @@ def comment_on_post(post_url: str, comment_text: str) -> dict | None:
         return None
 
     if not comment_text.strip():
+        return None
+
+    try:
+        comment_text = validate_public_text(comment_text, surface="substack_external_comment")
+    except PublicTextLeakError as e:
+        log.error("Blocked outbound Substack comment privacy leak: %s", e)
         return None
 
     # Use http.client so we can detect the 301-to-custom-domain redirect

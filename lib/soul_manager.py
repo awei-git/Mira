@@ -3,10 +3,12 @@
 import ast
 import difflib
 import hashlib
+import io
 import json
 import logging
 import os
 import re
+import tokenize
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, Optional, TypedDict
@@ -23,6 +25,31 @@ SKILL_LOAD_UNVERIFIED_POLICY: str = "block"
 SKILL_INTEGRITY_CHECK: bool = True
 SKILL_INTEGRITY_ALLOWLIST: list[str] = []
 SENSITIVITY_CONFIDENCE_THRESHOLD: float = 0.7
+SEMANTIC_INJECTION_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\bignore\s+(?:previous|prior|all)\s+instructions\b", re.IGNORECASE),
+    re.compile(r"\byou\s+are\s+now\b", re.IGNORECASE),
+    re.compile(r"\bdisregard\s+your\b", re.IGNORECASE),
+    re.compile(r"\byour\s+real\s+purpose\b", re.IGNORECASE),
+    re.compile(r"\boverride\b", re.IGNORECASE),
+    re.compile(r"<\|\s*system\s*\|>", re.IGNORECASE),
+    re.compile(r"\[/?INST\]", re.IGNORECASE),
+    re.compile(
+        r"^\s{0,3}(?:#{1,6}\s*)?(?:example|examples|sample|documentation|docs|usage|note)\b"
+        r".{0,500}\b(?:ignore\s+(?:previous|prior|all)\s+instructions|you\s+are\s+now|disregard\s+your|"
+        r"your\s+real\s+purpose|override|<\|\s*system\s*\|>|\[/?INST\])",
+        re.IGNORECASE | re.MULTILINE | re.DOTALL,
+    ),
+    re.compile(
+        r"\b(?:if|when)\b.{0,160}\b(?:asked|prompted|loaded|activated|called|used|executed)\b"
+        r".{0,160}\b(?:you\s+are\s+now|become|switch\s+(?:identity|persona|role)|act\s+as)\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"^\s{0,3}```(?:text|markdown|md|prompt|instructions?)?\s*\n\s*"
+        r"(?:system|developer|assistant|user|instruction)s?\s*:",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+]
 SENSITIVITY_PATTERNS: list[dict[str, object]] = [
     {
         "category": "no_choice",
@@ -1477,6 +1504,66 @@ def _social_engineering_audit_text(skill_name: str, skill_content: str, metadata
     if metadata:
         fields.extend(_iter_string_fields(metadata))
     return "\n".join(field for field in fields if field)
+
+
+def _skill_text_content_for_semantic_audit(skill_content: str, metadata: dict | None = None) -> str:
+    text_parts: list[str] = []
+    if metadata:
+        text_parts.extend(_iter_string_fields(metadata))
+
+    def add_text(value: str | None) -> None:
+        if value and value.strip():
+            text_parts.append(value.strip())
+
+    try:
+        tree = ast.parse(skill_content)
+    except SyntaxError:
+        add_text(skill_content)
+    else:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                add_text(ast.get_docstring(node, clean=False))
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                add_text(node.value)
+
+        try:
+            for token in tokenize.generate_tokens(io.StringIO(skill_content).readline):
+                if token.type == tokenize.COMMENT:
+                    add_text(token.string.lstrip("#").strip())
+        except tokenize.TokenError:
+            add_text(skill_content)
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for part in text_parts:
+        if part not in seen:
+            seen.add(part)
+            deduped.append(part)
+    return "\n".join(deduped)
+
+
+def _check_semantic_injection(skill_content: str, metadata: dict | None = None) -> list[dict[str, object]]:
+    semantic_text = _skill_text_content_for_semantic_audit(skill_content, metadata)
+    findings: list[dict[str, object]] = []
+    if not semantic_text.strip():
+        return findings
+
+    for pattern in SEMANTIC_INJECTION_PATTERNS:
+        match = pattern.search(semantic_text)
+        if not match:
+            continue
+        snippet = semantic_text[max(0, match.start() - 80) : match.end() + 80]
+        findings.append(
+            {
+                "severity": "HIGH",
+                "category": "semantic_injection",
+                "pattern": pattern.pattern,
+                "line_no": semantic_text[: match.start()].count("\n") + 1,
+                "line_content": re.sub(r"\s+", " ", snippet).strip()[:300],
+                "mechanism": "semantic-layer instruction override signature in skill text content",
+            }
+        )
+    return findings
 
 
 _INSTRUCTION_INJECTION_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
@@ -3314,6 +3401,8 @@ def _skill_audit_excerpt(skill_content: str, failed_checks: list[str], pattern: 
         if check.startswith("PROMPT_INJECTION") or check == "prompt_injection":
             excerpt_patterns.extend(PROMPT_INJECTION_SIGNATURES)
             excerpt_patterns.extend(pattern for _, pattern in _INSTRUCTION_INJECTION_PATTERNS)
+        if check == "semantic_injection":
+            excerpt_patterns.extend(SEMANTIC_INJECTION_PATTERNS)
         if check == "SUSPICIOUS_PROMPT":
             excerpt_patterns.extend(pattern for _, pattern in _configured_social_engineering_patterns())
         if check == "compound_exfiltration_risk":
@@ -4172,6 +4261,16 @@ def _audit_skill_impl(
             finding["line_no"],
             finding["category"],
         )
+    semantic_injection_findings = _check_semantic_injection(skill_content, metadata)
+    if semantic_injection_findings:
+        if "semantic_injection" not in blocked_categories:
+            blocked_categories.append("semantic_injection")
+        for finding in semantic_injection_findings:
+            log.warning(
+                "SKILL_AUDIT blocked: skill=%s category=semantic_injection pattern=%r",
+                skill_name,
+                finding.get("pattern"),
+            )
     if has_network and "unauthorized_network_calls" in blocked_categories:
         network_domains = _network_target_domains(dependency_context)
         allowed_domains = _skill_manifest_allowed_domains(metadata)
@@ -4436,6 +4535,7 @@ def _audit_skill_impl(
         )
 
     audit_findings: list[dict[str, object]] = list(dependency_findings)
+    audit_findings.extend(semantic_injection_findings)
     for _sensitive_file_match in _sensitive_file_access_matches:
         audit_findings.append(
             {
@@ -5110,7 +5210,10 @@ def _audit_skill_impl(
         {
             "check": "prompt_injection_signatures",
             "proxy_for": "natural language instruction override",
-            "passed": not any(c == "prompt_injection" or c.startswith("PROMPT_INJECTION") for c in blocked_categories),
+            "passed": not any(
+                c in {"prompt_injection", "semantic_injection"} or c.startswith("PROMPT_INJECTION")
+                for c in blocked_categories
+            ),
         },
         {
             "check": "circular_trust_pattern",
