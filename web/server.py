@@ -51,6 +51,8 @@ from config import (
 
 BRIDGE = MIRA_DIR
 USERS_DIR = BRIDGE / "users"
+WEB_DIR = Path(__file__).parent
+WEB_ICON = WEB_DIR / "mira-icon.png"
 
 app = FastAPI(title="Mira", docs_url=None, redoc_url=None)
 _mdns_process: subprocess.Popen | None = None
@@ -1861,12 +1863,27 @@ async def events(user_id: str, request: Request, last_event_id: int = 0):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return (Path(__file__).parent / "backend-dashboard.html").read_text(encoding="utf-8")
+    return (WEB_DIR / "backend-dashboard.html").read_text(encoding="utf-8")
 
 
 @app.get("/chat", response_class=HTMLResponse)
 def chat():
-    return (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
+    return (WEB_DIR / "index.html").read_text(encoding="utf-8")
+
+
+@app.get("/mira-icon.png")
+def mira_icon():
+    return FileResponse(WEB_ICON, media_type="image/png")
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return FileResponse(WEB_ICON, media_type="image/png")
+
+
+@app.get("/apple-touch-icon.png")
+def apple_touch_icon():
+    return FileResponse(WEB_ICON, media_type="image/png")
 
 
 if __name__ == "__main__":
