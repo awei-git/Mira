@@ -3,90 +3,117 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
 <meta name="darkreader-lock">
 <title>Mira Backend</title>
 <style>
-  :root{color-scheme:light;--bg:#f7f3ea;--panel:#fffaf2;--rail:#f3eadf;--ink:#2b241d;--muted:#766a5f;--line:#ded3c4;--accent:#c96442;--shadow:0 18px 50px rgba(48,37,25,.08)}
-  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}
-  .shell{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh} aside{position:sticky;top:0;height:100vh;padding:24px 18px;border-right:1px solid var(--line);background:var(--rail)}
-  .brand,h1,h2{font-family:ui-serif,Georgia,Cambria,serif;font-weight:500}.brand{font-size:30px;line-height:1;margin-bottom:6px}.sub{font-size:12px;color:var(--muted);margin-bottom:22px}
-  select,.btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:9px 10px}.profile{width:100%;margin-bottom:18px}
-  nav{display:flex;flex-direction:column;gap:4px}nav button{border:0;background:transparent;text-align:left;color:var(--muted);padding:9px 10px;border-radius:8px;cursor:pointer;font:inherit;font-size:13px}nav button.active,nav button:hover{background:#eadccc;color:var(--ink)}
-  .meta{position:absolute;bottom:20px;left:18px;right:18px;font-size:11px;color:var(--muted);line-height:1.6}.meta a{color:var(--accent)}
-  main{padding:24px 28px 44px;max-width:1600px}.top{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:18px}h1{font-size:34px;margin:0}h2{font-size:22px;margin:28px 0 12px}.timestamp{font-size:12px;color:var(--muted);text-align:right}
-  .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}.three{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
-  .card,.panel,table{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}.card,.panel{padding:14px}.label{font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;letter-spacing:.06em}.value{font-size:28px;margin-top:8px;font-family:ui-serif,Georgia,Cambria,serif}.note{font-size:12px;color:var(--muted);margin-top:4px;overflow:hidden;text-overflow:ellipsis}
-  .list{display:flex;flex-direction:column;gap:8px}.row{padding:10px;border:1px solid var(--line);border-radius:8px;background:#fffdf8}.row-title{font-weight:650;font-size:13px}.row-sub{color:var(--muted);font-size:11px;margin-top:4px;white-space:pre-wrap;word-break:break-word}
-  table{width:100%;border-collapse:separate;border-spacing:0;overflow:hidden}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;font-size:12px}th{background:#efe4d6;color:var(--muted);text-transform:uppercase;font-size:10px;letter-spacing:.06em}tr:last-child td{border-bottom:0}
-  .mono,code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:11px}.pill{display:inline-flex;border:1px solid var(--line);background:#f5eee5;border-radius:999px;padding:3px 8px;margin:2px 4px 2px 0;font-size:11px;color:var(--muted)}
-  .toolbar{display:flex;gap:8px;align-items:center}.btn{cursor:pointer}.btn:hover{border-color:var(--accent);color:var(--accent)}
-  @media(max-width:1100px){.shell{grid-template-columns:1fr}aside{position:relative;height:auto}.meta{position:static;margin-top:18px}.grid,.two,.three{grid-template-columns:1fr}}
+  :root{color-scheme:light;--bg:#faf9f5;--surface:#fffdf8;--rail:#f3eee6;--rail-strong:#ebe3d8;--text:#2f2a24;--muted:#7b7167;--faint:#a49a90;--line:#e4ddd4;--line-strong:#d6cabd;--accent:#d97757;--accent-strong:#b95c3e;--good:#2f7d55;--warn:#b7791f;--bad:#b5473c;--shadow:0 1px 2px rgba(45,35,25,.05),0 10px 28px rgba(45,35,25,.06)}
+  :root,html,body{background:var(--bg)!important;color:var(--text)!important}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:14px;letter-spacing:0;line-height:1.45}
+  .shell{display:grid;grid-template-columns:236px minmax(0,1fr);min-height:100vh}
+  aside{position:sticky;top:0;height:100vh;padding:22px 14px;background:var(--rail)!important;border-right:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:10px;margin:0 0 18px 2px}
+  .mark{display:grid;place-items:center;width:34px;height:34px;border-radius:9px;background:var(--text)!important;color:var(--surface)!important;font-weight:700}
+  .brand-name{font-size:16px;font-weight:680;color:var(--text)!important}.brand-sub{font-size:12px;color:var(--muted)!important;margin-top:1px}
+  select,.button{width:100%;border:1px solid var(--line);background:var(--surface)!important;color:var(--text)!important;border-radius:10px;padding:9px 10px;font:inherit}
+  nav{display:flex;flex-direction:column;gap:3px;margin-top:18px}
+  nav button{display:flex;align-items:center;gap:8px;border:0;background:transparent!important;color:var(--muted)!important;text-align:left;padding:9px 10px;border-radius:9px;cursor:pointer;font:inherit;font-weight:560}
+  nav button.active,nav button:hover{background:var(--rail-strong)!important;color:var(--text)!important}
+  .meta{position:absolute;bottom:20px;left:16px;right:16px;color:var(--muted)!important;font-size:11px;line-height:1.55}.meta a{color:var(--accent-strong)!important}
+  main{min-width:0;padding:28px 34px 56px}.content{max-width:1420px;margin:0 auto}
+  .top{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:22px}
+  h1{font-size:27px;line-height:1.15;margin:0 0 6px;font-weight:690;color:var(--text)!important}
+  h2{font-size:18px;margin:30px 0 12px;font-weight:650;color:var(--text)!important}.subtitle{color:var(--muted)!important}
+  .actions{display:flex;align-items:center;gap:10px}.refresh{width:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)!important;color:var(--text)!important;padding:8px 11px;cursor:pointer}.refresh:hover{border-color:var(--accent);color:var(--accent-strong)!important}
+  .stamp{font-size:12px;color:var(--muted)!important;text-align:right}.status{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:var(--surface)!important;border-radius:999px;padding:6px 10px;color:var(--muted)!important;font-size:12px}.dot{width:8px;height:8px;border-radius:50%;background:var(--good)!important}
+  .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.metric{background:var(--surface)!important;border:1px solid var(--line);border-radius:12px;padding:14px 15px;box-shadow:var(--shadow)}
+  .metric-label{font-size:12px;color:var(--muted)!important}.metric-value{font-size:25px;font-weight:690;margin-top:4px;color:var(--text)!important}.metric-note{font-size:12px;color:var(--faint)!important;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .panel{background:var(--surface)!important;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:15px}.panel-title{font-size:12px;color:var(--muted)!important;font-weight:700;text-transform:uppercase;letter-spacing:.045em;margin-bottom:11px}
+  .kv{display:grid;grid-template-columns:132px minmax(0,1fr);gap:10px;padding:9px 0;border-top:1px solid var(--line)}.kv:first-child{border-top:0;padding-top:0}.k{color:var(--muted)!important}.v{min-width:0;color:var(--text)!important;word-break:break-word}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:12px}.muted{color:var(--muted)!important}
+  .list{display:flex;flex-direction:column;gap:8px}.item{border:1px solid var(--line);background:#fffaf2!important;border-radius:11px;padding:10px 11px}.item-title{font-weight:640;color:var(--text)!important}.item-sub{font-size:12px;color:var(--muted)!important;margin-top:3px;word-break:break-word}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;border:1px solid var(--line);background:#f8f2ea!important;color:var(--muted)!important;border-radius:999px;padding:4px 8px;font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+  .table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:var(--surface)!important;box-shadow:var(--shadow)}table{width:100%;border-collapse:collapse;background:transparent!important}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;font-size:12px;color:var(--text)!important}th{position:sticky;top:0;background:#f4eee6!important;color:var(--muted)!important;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.045em}tr:last-child td{border-bottom:0}
+  .wide{min-width:960px}.section{scroll-margin-top:24px}.empty{color:var(--muted)!important;font-size:13px}
+  @media(max-width:1050px){.shell{grid-template-columns:1fr}aside{position:relative;height:auto}.meta{position:static;margin-top:18px}.metrics,.grid-2,.grid-3{grid-template-columns:1fr}main{padding:22px 16px}.top{flex-direction:column}.actions{width:100%;justify-content:space-between}}
 </style>
 </head>
 <body>
 <div class="shell">
   <aside>
-    <div class="brand">Mira</div>
-    <div class="sub">backend dashboard</div>
-    <select class="profile" id="profile"></select>
+    <div class="brand"><div class="mark">M</div><div><div class="brand-name">Mira</div><div class="brand-sub">Backend</div></div></div>
+    <select id="profile"></select>
     <nav id="nav"></nav>
-    <div class="meta"><div>Claude-inspired local UI</div><div><a href="/chat">old chat UI</a></div><div class="mono" id="apiPath"></div></div>
+    <div class="meta"><div>Local backend dashboard</div><div><a href="/chat">Chat UI</a></div><div class="mono" id="apiPath"></div></div>
   </aside>
-  <main>
-    <div class="top"><div><h1>Mira Backend</h1><div class="sub">technical state of memory, pipelines, services, policies, outputs</div></div><div class="toolbar"><button class="btn" id="refresh">Refresh</button><div class="timestamp" id="stamp">Loading...</div></div></div>
-    <section id="overview"><div class="grid" id="cards"></div><div class="two" style="margin-top:12px"><div class="panel"><div class="label">Service</div><div id="service"></div></div><div class="panel"><div class="label">Control Plane</div><div id="control"></div></div></div></section>
-    <section id="memory"><h2>Memory</h2><div class="three"><div class="panel"><div class="label">Kernel</div><div id="kernel"></div></div><div class="panel"><div class="label">Review Queues</div><div id="queues"></div></div><div class="panel"><div class="label">Recent Commits</div><div id="commits"></div></div></div><h2>Ledger</h2><div id="ledger"></div></section>
-    <section id="pipelines"><h2>Pipelines</h2><div id="pipelineTable"></div></section>
-    <section id="outputs"><h2>Outputs</h2><div class="three"><div class="panel"><div class="label">Artifacts</div><div id="artifacts"></div></div><div class="panel"><div class="label">Jobs / Cost</div><div id="jobs"></div></div><div class="panel"><div class="label">Recent Items</div><div id="items"></div></div></div><h2>Side Effects</h2><div id="effects"></div></section>
-    <section id="paths"><h2>Paths</h2><div id="pathTable"></div></section>
-  </main>
+  <main><div class="content">
+    <div class="top">
+      <div><h1>Mira backend</h1><div class="subtitle">Memory, pipeline, service, policy, and output state.</div></div>
+      <div class="actions"><span class="status"><span class="dot"></span><span id="healthText">Loading</span></span><button class="refresh" id="refresh">Refresh</button><div class="stamp" id="stamp"></div></div>
+    </div>
+    <section class="section" id="overview"><div class="metrics" id="cards"></div><h2>Runtime</h2><div class="grid-2"><div class="panel"><div class="panel-title">Service</div><div id="service"></div></div><div class="panel"><div class="panel-title">Control plane</div><div id="control"></div></div></div></section>
+    <section class="section" id="memory"><h2>Memory</h2><div class="grid-3"><div class="panel"><div class="panel-title">Kernel</div><div id="kernel"></div></div><div class="panel"><div class="panel-title">Review queues</div><div id="queues"></div></div><div class="panel"><div class="panel-title">Recent commits</div><div id="commits"></div></div></div><h2>Ledger</h2><div id="ledger"></div></section>
+    <section class="section" id="pipelines"><h2>Pipelines</h2><div id="pipelineTable"></div></section>
+    <section class="section" id="outputs"><h2>Outputs</h2><div class="grid-3"><div class="panel"><div class="panel-title">Artifacts</div><div id="artifacts"></div></div><div class="panel"><div class="panel-title">Jobs and cost</div><div id="jobs"></div></div><div class="panel"><div class="panel-title">Recent items</div><div id="items"></div></div></div><h2>Side effects</h2><div id="effects"></div></section>
+    <section class="section" id="paths"><h2>Paths</h2><div id="pathTable"></div></section>
+  </div></main>
 </div>
 <script>
 let currentUser = localStorage.getItem('mira_profile') || 'ang';
 const sections = ['overview','memory','pipelines','outputs','paths'];
+const themeVars = { '--bg':'#faf9f5','--surface':'#fffdf8','--rail':'#f3eee6','--rail-strong':'#ebe3d8','--text':'#2f2a24','--muted':'#7b7167','--faint':'#a49a90','--line':'#e4ddd4','--line-strong':'#d6cabd','--accent':'#d97757','--accent-strong':'#b95c3e','--good':'#2f7d55','--warn':'#b7791f','--bad':'#b5473c' };
 const $ = id => document.getElementById(id);
-function text(tag, value, className){const el=document.createElement(tag); if(className)el.className=className; el.textContent=value == null ? '' : String(value); return el}
-function clear(el){el.replaceChildren(); return el}
-function row(title, sub){const r=text('div','', 'row'); r.append(text('div', title, 'row-title'), text('div', sub || '', 'row-sub mono')); return r}
-function list(el, rows, empty='None'){clear(el); if(!rows.length){el.append(text('div', empty, 'row-sub')); return} const wrap=text('div','', 'list'); rows.forEach(r=>wrap.append(r)); el.append(wrap)}
-function card(label, value, note){const c=text('div','', 'card'); c.append(text('div', label, 'label'), text('div', value, 'value'), text('div', note, 'note')); return c}
-function pill(value){return text('span', value, 'pill')}
-function table(el, headers, rows){clear(el); if(!rows.length){const p=text('div','', 'panel'); p.append(text('div','No records','row-sub')); el.append(p); return} const t=document.createElement('table'); const thead=document.createElement('thead'); const hrow=document.createElement('tr'); headers.forEach(h=>hrow.append(text('th',h))); thead.append(hrow); const tbody=document.createElement('tbody'); rows.forEach(cells=>{const tr=document.createElement('tr'); cells.forEach(cell=>{const td=document.createElement('td'); if(Array.isArray(cell)) cell.forEach(v=>td.append(v)); else td.textContent=cell == null ? '' : String(cell); tr.append(td)}); tbody.append(tr)}); t.append(thead,tbody); el.append(t)}
+function forceLight(){Object.entries(themeVars).forEach(([k,v])=>document.documentElement.style.setProperty(k,v,'important')); document.documentElement.style.colorScheme='light'; document.body.style.backgroundColor=themeVars['--bg']; document.body.style.color=themeVars['--text']}
+function el(tag, value='', className=''){const node=document.createElement(tag); if(className)node.className=className; node.textContent=value == null ? '' : String(value); return node}
+function clear(node){node.replaceChildren(); return node}
+function kv(k,v,mono=false){const row=el('div','', 'kv'); row.append(el('div',k,'k'), el('div',v, mono?'v mono':'v')); return row}
+function item(title, sub){const row=el('div','', 'item'); row.append(el('div',title,'item-title'), el('div',sub || '', 'item-sub mono')); return row}
+function list(node, rows, empty='No records'){clear(node); if(!rows.length){node.append(el('div',empty,'empty')); return} const wrap=el('div','', 'list'); rows.forEach(r=>wrap.append(r)); node.append(wrap)}
+function metric(label, value, note){const card=el('div','', 'metric'); card.append(el('div',label,'metric-label'), el('div',value,'metric-value'), el('div',note,'metric-note')); return card}
+function chip(value){return el('span', value, 'chip')}
+function chips(values, limit=7){const wrap=el('div','', 'chips'); const shown=(values||[]).slice(0,limit); shown.forEach(v=>wrap.append(chip(v))); if((values||[]).length>shown.length)wrap.append(chip(`+${values.length-shown.length}`)); return wrap}
+function table(node, headers, rows){clear(node); if(!rows.length){const panel=el('div','', 'panel'); panel.append(el('div','No records','empty')); node.append(panel); return} const wrap=el('div','', 'table-wrap'); const t=el('table','', 'wide'); const thead=document.createElement('thead'); const hrow=document.createElement('tr'); headers.forEach(h=>hrow.append(el('th',h))); thead.append(hrow); const tbody=document.createElement('tbody'); rows.forEach(cells=>{const tr=document.createElement('tr'); cells.forEach(cell=>{const td=document.createElement('td'); if(cell instanceof Node)td.append(cell); else if(Array.isArray(cell))cell.forEach(v=>td.append(v)); else td.textContent=cell == null ? '' : String(cell); tr.append(td)}); tbody.append(tr)}); t.append(thead,tbody); wrap.append(t); node.append(wrap)}
 async function api(url){const res=await fetch(url); if(!res.ok)throw new Error(`HTTP ${res.status}`); return res.json()}
 function fmtTokens(n){n=Number(n||0); if(n>=1000000)return (n/1000000).toFixed(1)+'M'; if(n>=1000)return (n/1000).toFixed(1)+'K'; return String(n)}
+function timeAgo(iso){const t=Date.parse(iso||''); if(!t)return ''; const sec=Math.max(0,Math.round((Date.now()-t)/1000)); if(sec<90)return `${sec}s ago`; const min=Math.round(sec/60); if(min<90)return `${min}m ago`; const hr=Math.round(min/60); return `${hr}h ago`}
 function jump(id, btn){$(id).scrollIntoView({behavior:'smooth'}); document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active')); btn.classList.add('active')}
-function buildNav(){const nav=$('nav'); sections.forEach((id,i)=>{const b=text('button', id[0].toUpperCase()+id.slice(1)); if(i===0)b.classList.add('active'); b.onclick=()=>jump(id,b); nav.append(b)})}
+function buildNav(){const nav=$('nav'); clear(nav); sections.forEach((id,i)=>{const b=el('button', id[0].toUpperCase()+id.slice(1)); if(i===0)b.classList.add('active'); b.onclick=()=>jump(id,b); nav.append(b)})}
 async function loadProfiles(){const data=await api('/api/profiles'); const s=$('profile'); clear(s); data.profiles.forEach(p=>{const o=document.createElement('option'); o.value=p.id; o.textContent=`${p.display_name} · ${p.agent_name}`; s.append(o)}); s.value=currentUser; s.onchange=()=>{currentUser=s.value; localStorage.setItem('mira_profile', currentUser); loadDashboard()}}
 async function loadDashboard(){
+  forceLight();
   $('apiPath').textContent = `/api/${currentUser}/backend-dashboard`;
   const data = await api(`/api/${currentUser}/backend-dashboard`);
-  $('stamp').textContent = data.server_time;
   const hb=data.service.heartbeat||{}, queues=data.memory.queues||{}, jobs=data.outputs.jobs||{}, usage=jobs.usage_totals||{};
   const queueCount=Object.values(queues).reduce((n,rows)=>n+rows.length,0);
+  $('stamp').textContent = data.server_time;
+  $('healthText').textContent = hb.busy ? `${hb.active_count||0} active` : `Online · ${timeAgo(hb.timestamp)}`;
   clear($('cards')).append(
-    card('Service', hb.busy ? `${hb.active_count||0} running` : 'Online', hb.status || 'heartbeat'),
-    card('Pipelines', data.pipelines.length, 'registered V3.1 definitions'),
-    card('Policies', data.policies.hard + data.policies.soft, `${data.policies.hard} hard · ${data.policies.soft} soft`),
-    card('Review', queueCount, 'approval, memory, experiment, incident'),
-    card('Ledger', data.memory.ledger.length, 'recent records shown'),
-    card('Commits', data.memory.commits.length, 'gateway decisions shown'),
-    card('Effects', data.memory.effects.length, 'idempotent side effects'),
-    card('Cost', `$${Number(usage.cost_usd||0).toFixed(2)}`, `${usage.calls||0} calls · ${fmtTokens(usage.tokens||0)}`)
+    metric('Service', hb.busy ? `${hb.active_count||0} running` : 'Online', hb.status || 'heartbeat'),
+    metric('Pipelines', data.pipelines.length, 'registered definitions'),
+    metric('Policies', data.policies.hard + data.policies.soft, `${data.policies.hard} hard · ${data.policies.soft} soft`),
+    metric('Review', queueCount, 'queued checks'),
+    metric('Ledger', data.memory.ledger.length, 'recent records'),
+    metric('Commits', data.memory.commits.length, 'gateway decisions'),
+    metric('Effects', data.memory.effects.length, 'side effects'),
+    metric('Cost', `$${Number(usage.cost_usd||0).toFixed(2)}`, `${usage.calls||0} calls · ${fmtTokens(usage.tokens||0)} tokens`)
   );
-  list($('service'), [row('Heartbeat', `status=${hb.status||''} busy=${!!hb.busy} active=${hb.active_count||0}`), row('Network', JSON.stringify(hb.network_status||{})), row('Web', `host=${data.service.web.host} port=${data.service.web.port} https=${data.service.web.https}`)]);
-  list($('control'), Object.entries(data.service.control).map(([k,v])=>row(k,v)));
-  list($('kernel'), [row('Identity',data.memory.kernel.identity), row('Scars',(data.memory.kernel.scars||[]).join(', ')||'none'), row('Hypotheses',(data.memory.kernel.hypotheses||[]).join(', ')||'none'), row('Failure signatures',(data.memory.kernel.failure_signatures||[]).join(', ')||'none')]);
-  list($('queues'), Object.entries(queues).map(([k,v])=>row(k,`${v.length} item(s)`)));
-  list($('commits'), (data.memory.commits||[]).slice(0,8).map(c=>row(`${c.status} · ${c.pipeline}`, `${c.id}\n${(c.findings||[]).join('; ')}`)));
-  table($('ledger'), ['id','pipeline','outcome','proposal','commit','time'], (data.memory.ledger||[]).map(r=>[r.id,r.pipeline,r.outcome,r.proposal_id,r.commit_id,r.timestamp]));
-  table($('pipelineTable'), ['pipeline','class','trigger','priority','steps','skills'], data.pipelines.map(p=>[p.name,p.memory_class,p.trigger,p.priority,(p.steps||[]).map(pill),(p.skills||[]).map(pill)]));
-  list($('artifacts'), (data.outputs.artifacts||[]).map(a=>row(a.name,`${a.count} item(s)`)), 'No artifact sections');
-  list($('jobs'), (jobs.recent||[]).slice(0,8).map(j=>row(`${j.status} · ${j.name}`, `$${Number((j.usage||{}).cost_usd||0).toFixed(4)} · ${fmtTokens((j.usage||{}).tokens||0)} · ${j.ran_at||''}`)), 'No jobs');
-  list($('items'), (data.outputs.recent_items||[]).slice(0,8).map(i=>row(`${i.status} · ${i.title}`, `${i.id} · ${(i.tags||[]).join(', ')}`)), 'No items');
+  clear($('service')).append(kv('Heartbeat', `status=${hb.status||''} busy=${!!hb.busy} active=${hb.active_count||0}`), kv('Network', JSON.stringify(hb.network_status||{}), true), kv('Web', `host=${data.service.web.host} port=${data.service.web.port} https=${data.service.web.https}`));
+  clear($('control')); Object.entries(data.service.control).forEach(([k,v])=>$('control').append(kv(k,v)));
+  clear($('kernel')).append(kv('Identity', data.memory.kernel.identity), kv('Scars', `${(data.memory.kernel.scars||[]).length} recorded`), chips(data.memory.kernel.scars||[], 6), kv('Hypotheses', (data.memory.kernel.hypotheses||[]).length), kv('Failures', (data.memory.kernel.failure_signatures||[]).length));
+  list($('queues'), Object.entries(queues).map(([k,v])=>item(k,`${v.length} item(s)`)));
+  list($('commits'), (data.memory.commits||[]).slice(0,7).map(c=>item(`${c.status} · ${c.pipeline}`, `${c.id}\n${(c.findings||[]).join('; ')}`)));
+  table($('ledger'), ['id','pipeline','outcome','proposal','commit','time'], (data.memory.ledger||[]).map(r=>[r.id,r.pipeline,r.outcome,r.proposal_id,r.commit_id,timeAgo(r.timestamp)]));
+  table($('pipelineTable'), ['pipeline','class','trigger','priority','steps','skills'], data.pipelines.map(p=>[p.name,p.memory_class,p.trigger,p.priority,chips(p.steps||[], 5),chips(p.skills||[], 4)]));
+  list($('artifacts'), (data.outputs.artifacts||[]).map(a=>item(a.name,`${a.count} item(s)`)), 'No artifact sections');
+  list($('jobs'), (jobs.recent||[]).slice(0,8).map(j=>item(`${j.status} · ${j.name}`, `$${Number((j.usage||{}).cost_usd||0).toFixed(4)} · ${fmtTokens((j.usage||{}).tokens||0)} tokens · ${j.ran_at||''}`)), 'No jobs');
+  list($('items'), (data.outputs.recent_items||[]).slice(0,8).map(i=>item(`${i.status} · ${i.title}`, `${i.id} · ${(i.tags||[]).join(', ')}`)), 'No items');
   table($('effects'), ['id','pipeline','action','target','status','idempotency'], (data.memory.effects||[]).map(e=>[e.id,e.pipeline,e.action,e.target,e.status,e.idempotency_key]));
   table($('pathTable'), ['name','path'], Object.entries(data.paths).map(([k,v])=>[k,v]));
+  forceLight();
 }
-window.onload=async()=>{buildNav(); $('refresh').onclick=loadDashboard; await loadProfiles(); await loadDashboard(); setInterval(loadDashboard,30000)};
+window.onload=async()=>{forceLight(); buildNav(); $('refresh').onclick=loadDashboard; await loadProfiles(); await loadDashboard(); setInterval(loadDashboard,30000); setInterval(forceLight,1200)};
 </script>
 </body>
 </html>
