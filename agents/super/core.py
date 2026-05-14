@@ -615,6 +615,33 @@ def _record_agent_invocation_audit(msg, task_id: str, duration_ms: int, outcome:
         log.debug("agent invocation audit write failed: %s", exc)
 
 
+def _agent_declared_permissions(agent_name: str):
+    registry = getattr(mira_config, "AGENT_REGISTRY", {})
+    if not isinstance(registry, dict):
+        return None
+    agent_config = registry.get(agent_name)
+    if not isinstance(agent_config, dict):
+        return None
+    return agent_config.get("permissions")
+
+
+def _record_agent_permissions_audit(msg) -> None:
+    try:
+        agent_name = _task_dispatch_category(msg)
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "event": "agent_dispatch_permissions",
+            "agent_name": agent_name,
+            "declared_permissions": _agent_declared_permissions(agent_name),
+            "message_id": str(getattr(msg, "id", "") or ""),
+        }
+        AGENT_AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(AGENT_AUDIT_LOG, "a", encoding="utf-8") as audit_file:
+            audit_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        log.debug("agent permissions audit write failed: %s", exc)
+
+
 def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
     skip_audit = False
     try:
@@ -626,6 +653,8 @@ def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
     task_id = ""
     outcome = "error"
     try:
+        if not skip_audit:
+            _record_agent_permissions_audit(msg)
         task_id = _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
         outcome = "success" if task_id else "error"
         return task_id

@@ -24,75 +24,147 @@ AGENT_AUDIT_LOG = MIRA_ROOT / "logs" / "agent_audit.jsonl"
 AGENT_REGISTRY = {
     "general": {
         "tier": "light",
-        "permissions": ["filesystem:sandbox", "web:read", "bash:local"],
+        "permissions": {
+            "network": "any",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "discussion": {
         "tier": "light",
-        "permissions": [],
+        "permissions": {
+            "network": "none",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "writer": {
         "tier": "heavy",
-        "permissions": ["filesystem:sandbox"],
+        "permissions": {
+            "network": "none",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "explorer": {
         "tier": "light",
-        "permissions": ["web:read", "filesystem:sandbox"],
+        "permissions": {
+            "network": "any",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "analyst": {
         "tier": "heavy",
-        "permissions": ["web:search", "filesystem:sandbox:read"],
+        "permissions": {
+            "network": "any",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "researcher": {
         "tier": "heavy",
-        "permissions": ["web:read", "filesystem:sandbox"],
+        "permissions": {
+            "network": "any",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "video": {
         "tier": "light",
-        "permissions": ["filesystem:sandbox", "bash:local"],
+        "permissions": {
+            "network": "none",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "photo": {
         "tier": "light",
-        "permissions": ["filesystem:sandbox", "bash:local"],
+        "permissions": {
+            "network": "none",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "podcast": {
         "tier": "heavy",
-        "permissions": ["filesystem:sandbox", "bash:local", "api:tts"],
+        "permissions": {
+            "network": "any",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "socialmedia": {
         "tier": "light",
-        "permissions": ["substack:publish", "web:read", "filesystem:sandbox:read"],
+        "permissions": {
+            "network": "any",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "surfer": {
         "tier": "light",
-        "permissions": ["web:read", "browser:automation", "filesystem:sandbox"],
+        "permissions": {
+            "network": "any",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "secret": {
         "tier": "light",
-        "permissions": ["filesystem:sandbox:read", "local_llm:only"],
+        "permissions": {
+            "network": "none",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": True,
+        },
     },
     "coder": {
         "tier": "light",
-        "permissions": ["filesystem:sandbox", "bash:local"],
+        "permissions": {
+            "network": "none",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "reader": {
         "tier": "light",
-        "permissions": ["filesystem:sandbox"],
+        "permissions": {
+            "network": "none",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "health": {
         "tier": "light",
-        "permissions": ["filesystem:sandbox:read", "local_llm:only"],
+        "permissions": {
+            "network": "none",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": True,
+        },
     },
     "evaluator": {
         "tier": "light",
-        "permissions": ["filesystem:sandbox:read"],
+        "permissions": {
+            "network": "none",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "substack": {
         "tier": "heavy",
-        "permissions": ["filesystem:sandbox:read", "substack:plan", "substack:publish:delegated"],
+        "permissions": {
+            "network": ["substack.com"],
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
     "super": {
         "tier": "light",
-        "permissions": ["filesystem:sandbox"],
+        "permissions": {
+            "network": "none",
+            "filesystem": ["~/Sandbox/Mira/"],
+            "local_llm_only": False,
+        },
     },
 }
 QUALITY_CEILING = "high"  # AI can reach 'high' but not 'exceptional'; exceptional requires human obsession (see reading note 2026-05-10).
