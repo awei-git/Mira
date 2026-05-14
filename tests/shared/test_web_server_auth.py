@@ -9,7 +9,6 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-
 SERVER_PATH = Path(__file__).resolve().parent.parent.parent / "web" / "server.py"
 SPEC = importlib.util.spec_from_file_location("mira_web_server_for_tests", SERVER_PATH)
 server = importlib.util.module_from_spec(SPEC)
@@ -206,6 +205,19 @@ def test_heartbeat_top_level_status_uses_task_manager(monkeypatch, tmp_path: Pat
     assert data["active_count"] == 1
     assert data["active_tasks"] == [{"task_id": "req_todo_1cacf0e3"}]
     assert data["agent_status"]["busy"] is True
+
+
+def test_v3_dashboard_endpoint_returns_config(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+
+    resp = client.get("/api/ang/v3")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["dashboard"]["hard_policy_count"] == 45
+    assert body["dashboard"]["soft_policy_count"] == 9
+    assert len(body["dashboard"]["active_pipelines"]) == 20
+    assert body["config"]["policy_parameters"]["max_concurrent_pipelines"] == 5
 
 
 def test_safe_join_rejects_parent_traversal(tmp_path: Path):

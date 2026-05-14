@@ -277,6 +277,12 @@ def _dispatch_background(name: str, cmd: list[str], group: str = "default"):
     ]
     existing = bg_env.get("PYTHONPATH", "")
     bg_env["PYTHONPATH"] = os.pathsep.join([p for p in extra_paths if p] + ([existing] if existing else []))
+    try:
+        from mira.runtime import prepare_background_context
+
+        bg_env.update(prepare_background_context(name))
+    except Exception as e:
+        log.debug("V3 background context unavailable for '%s': %s", name, e)
 
     try:
         proc = subprocess.Popen(

@@ -4,6 +4,8 @@ activation_trigger: "Apply when the coder agent is reviewing AI-generated code, 
 
 # Code Audit Mindset
 
+## Trigger
+
 Use this skill when reviewing code, especially AI-generated code. Creation and audit are different modes: do not judge code by whether it resembles a plausible solution. Judge it by whether each behavior is actually correct against the stated specification.
 
 ## Mandatory Verification Protocol

@@ -149,6 +149,17 @@ def _run_auto_flush(task_id: str, status: str, summary: str, tags: list[str] | N
         return False
 
 
+def _run_v3_experience_write(task_id: str, status: str, summary: str, tags: list[str] | None) -> bool:
+    try:
+        from mira.runtime import record_task_completion
+
+        record_task_completion(task_id=task_id, status=status, summary=summary, tags=tags)
+        return True
+    except Exception as exc:
+        log.warning("v3 experience write failed: %s", exc)
+        return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Mira post-task hook runner")
     parser.add_argument("--input", required=True, help="JSON payload file")
@@ -178,6 +189,7 @@ def main() -> int:
     if status == "failed":
         _run_failure_lesson(task_id, summary)
 
+    _run_v3_experience_write(task_id, status, summary, tags=tags)
     _run_auto_flush(task_id, status, summary, tags=tags)
 
     rebuild_outcome = _maybe_rebuild_index()
