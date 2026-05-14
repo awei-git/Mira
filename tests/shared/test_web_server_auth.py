@@ -220,6 +220,23 @@ def test_v3_dashboard_endpoint_returns_config(monkeypatch, tmp_path: Path):
     assert body["config"]["policy_parameters"]["max_concurrent_pipelines"] == 5
 
 
+def test_backend_dashboard_endpoint_returns_technical_snapshot(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+
+    resp = client.get("/api/ang/backend-dashboard")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["profile"]["id"] == "ang"
+    assert body["service"]["web"]["port"] == server.WEBGUI_PORT
+    assert body["policies"]["hard"] == 43
+    assert body["policies"]["soft"] == 9
+    assert len(body["pipelines"]) == 20
+    assert set(body["memory"]) == {"kernel", "ledger", "commits", "effects", "queues"}
+    assert set(body["outputs"]) == {"artifacts", "recent_items", "jobs"}
+    assert {"kernel", "ledger", "commits", "effect_log", "eval_history", "snapshots", "artifacts"} <= set(body["paths"])
+
+
 def test_safe_join_rejects_parent_traversal(tmp_path: Path):
     base = tmp_path / "artifacts"
     base.mkdir()

@@ -858,6 +858,157 @@ def get_v3_dashboard(user_id: str):
     }
 
 
+@app.get("/api/{user_id}/backend-dashboard")
+def get_backend_dashboard(user_id: str):
+    if not is_known_user(user_id):
+        raise HTTPException(404, "Unknown profile")
+
+    from mira.configuration import default_v3_config
+    from mira.engine.effect_log import EffectLog
+    from mira.kernel.commit import MemoryCommitLog
+    from mira.kernel.store import JsonKernelStore
+    from mira.pipelines import PIPELINE_CATALOG
+    from mira.runtime import default_ledger, default_v3_paths
+    from mira.web.dashboard import build_dashboard_snapshot
+
+    paths = default_v3_paths()
+    ledger = default_ledger()
+    commit_log = MemoryCommitLog(paths.commits)
+    effect_log = EffectLog(paths.effect_log)
+    kernel = JsonKernelStore(paths.kernel).load()
+    snapshot = build_dashboard_snapshot(kernel, ledger, commit_log, effect_log)
+    records = ledger.list(limit=25)
+    commits = commit_log.list(limit=25)
+    effects = effect_log.list(limit=25)
+    heartbeat = get_heartbeat()
+    jobs = get_jobs_today(user_id)
+    items = get_items(user_id)[:25]
+    artifacts = list_artifact_sections(user_id)
+    config = default_v3_config().to_dict()
+
+    pipeline_rows = []
+    for name, pipeline in sorted(PIPELINE_CATALOG.items()):
+        pipeline_rows.append(
+            {
+                "name": name,
+                "memory_class": pipeline.memory_class,
+                "trigger": f"{pipeline.trigger.type}: {pipeline.trigger.detail}",
+                "priority": pipeline.priority,
+                "version": pipeline.version,
+                "steps": [step.name for step in pipeline.steps],
+                "skills": pipeline.involved_skills,
+            }
+        )
+
+    return {
+        "server_time": _utc_iso(),
+        "profile": {"id": user_id, **get_user_config(user_id)},
+        "service": {
+            "heartbeat": heartbeat,
+            "web": {
+                "host": WEBGUI_HOST,
+                "port": WEBGUI_PORT,
+                "https": WEBGUI_HTTPS_ENABLED,
+                "cert": str(WEBGUI_TLS_CERT_FILE),
+            },
+            "control": {
+                "api_writes": CONTROL_API_WRITES_ENABLED,
+                "runtime_db": CONTROL_RUNTIME_DB_ENABLED,
+                "sse": CONTROL_SSE_ENABLED,
+            },
+        },
+        "memory": {
+            "kernel": {
+                "identity": kernel.identity.statement,
+                "scars": [scar.scar_id for scar in kernel.scars],
+                "hypotheses": [h.hypothesis_id for h in kernel.pending_hypotheses],
+                "skill_traces": {trace.skill_name: trace.success_rate for trace in kernel.skill_traces},
+                "failure_signatures": [sig.pattern for sig in kernel.failure_signatures],
+                "relationship_notes": kernel.relationship_model.notes[-10:],
+            },
+            "ledger": [
+                {
+                    "id": record.id,
+                    "pipeline": record.pipeline,
+                    "outcome": record.outcome,
+                    "proposal_id": record.memory_delta_proposal_id,
+                    "commit_id": record.memory_commit_id,
+                    "timestamp": record.timestamp.isoformat(),
+                }
+                for record in records
+            ],
+            "commits": [
+                {
+                    "id": commit.commit_id,
+                    "pipeline": commit.pipeline,
+                    "status": commit.status,
+                    "proposal_id": commit.proposal_id,
+                    "findings": [finding.reason for finding in commit.findings],
+                    "timestamp": commit.timestamp.isoformat(),
+                }
+                for commit in commits
+            ],
+            "effects": [
+                {
+                    "id": effect.effect_id,
+                    "pipeline": effect.pipeline,
+                    "action": effect.action,
+                    "target": effect.target,
+                    "status": effect.status,
+                    "idempotency_key": effect.idempotency_key,
+                    "timestamp": effect.timestamp.isoformat(),
+                }
+                for effect in effects
+            ],
+            "queues": snapshot.review_queues,
+        },
+        "pipelines": pipeline_rows,
+        "policies": {
+            "hard": snapshot.hard_policy_count,
+            "soft": snapshot.soft_policy_count,
+            "config": config.get("policy_parameters", {}),
+        },
+        "models": config.get("models", []),
+        "outputs": {
+            "artifacts": artifacts,
+            "recent_items": [
+                {
+                    "id": item.get("id", ""),
+                    "type": item.get("type", ""),
+                    "title": item.get("title", ""),
+                    "status": item.get("status", ""),
+                    "tags": item.get("tags", []),
+                    "updated_at": item.get("updated_at", ""),
+                }
+                for item in items
+            ],
+            "jobs": {
+                "date": jobs.get("date"),
+                "usage_totals": jobs.get("usage_totals", {}),
+                "recent": [
+                    {
+                        "name": job.get("name", ""),
+                        "status": job.get("status", ""),
+                        "agent": job.get("agent", ""),
+                        "usage": job.get("usage", {}),
+                        "ran_at": job.get("ran_at", ""),
+                    }
+                    for job in jobs.get("jobs", [])[:20]
+                ],
+            },
+        },
+        "paths": {
+            "kernel": str(paths.kernel),
+            "ledger": str(paths.ledger),
+            "commits": str(paths.commits),
+            "effect_log": str(paths.effect_log),
+            "eval_history": str(paths.eval_history),
+            "snapshots": str(paths.snapshots),
+            "artifacts": str(_artifacts_dir(user_id)),
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # API — Write (commands)
 # ---------------------------------------------------------------------------
@@ -1710,6 +1861,11 @@ async def events(user_id: str, request: Request, last_event_id: int = 0):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
+    return (Path(__file__).parent / "backend-dashboard.html").read_text(encoding="utf-8")
+
+
+@app.get("/chat", response_class=HTMLResponse)
+def chat():
     return (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
 
 

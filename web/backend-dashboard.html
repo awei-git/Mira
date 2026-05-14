@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="darkreader-lock">
+<title>Mira Backend</title>
+<style>
+  :root{color-scheme:light;--bg:#f7f3ea;--panel:#fffaf2;--rail:#f3eadf;--ink:#2b241d;--muted:#766a5f;--line:#ded3c4;--accent:#c96442;--shadow:0 18px 50px rgba(48,37,25,.08)}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}
+  .shell{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh} aside{position:sticky;top:0;height:100vh;padding:24px 18px;border-right:1px solid var(--line);background:var(--rail)}
+  .brand,h1,h2{font-family:ui-serif,Georgia,Cambria,serif;font-weight:500}.brand{font-size:30px;line-height:1;margin-bottom:6px}.sub{font-size:12px;color:var(--muted);margin-bottom:22px}
+  select,.btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:9px 10px}.profile{width:100%;margin-bottom:18px}
+  nav{display:flex;flex-direction:column;gap:4px}nav button{border:0;background:transparent;text-align:left;color:var(--muted);padding:9px 10px;border-radius:8px;cursor:pointer;font:inherit;font-size:13px}nav button.active,nav button:hover{background:#eadccc;color:var(--ink)}
+  .meta{position:absolute;bottom:20px;left:18px;right:18px;font-size:11px;color:var(--muted);line-height:1.6}.meta a{color:var(--accent)}
+  main{padding:24px 28px 44px;max-width:1600px}.top{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:18px}h1{font-size:34px;margin:0}h2{font-size:22px;margin:28px 0 12px}.timestamp{font-size:12px;color:var(--muted);text-align:right}
+  .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}.three{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .card,.panel,table{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}.card,.panel{padding:14px}.label{font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;letter-spacing:.06em}.value{font-size:28px;margin-top:8px;font-family:ui-serif,Georgia,Cambria,serif}.note{font-size:12px;color:var(--muted);margin-top:4px;overflow:hidden;text-overflow:ellipsis}
+  .list{display:flex;flex-direction:column;gap:8px}.row{padding:10px;border:1px solid var(--line);border-radius:8px;background:#fffdf8}.row-title{font-weight:650;font-size:13px}.row-sub{color:var(--muted);font-size:11px;margin-top:4px;white-space:pre-wrap;word-break:break-word}
+  table{width:100%;border-collapse:separate;border-spacing:0;overflow:hidden}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;font-size:12px}th{background:#efe4d6;color:var(--muted);text-transform:uppercase;font-size:10px;letter-spacing:.06em}tr:last-child td{border-bottom:0}
+  .mono,code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:11px}.pill{display:inline-flex;border:1px solid var(--line);background:#f5eee5;border-radius:999px;padding:3px 8px;margin:2px 4px 2px 0;font-size:11px;color:var(--muted)}
+  .toolbar{display:flex;gap:8px;align-items:center}.btn{cursor:pointer}.btn:hover{border-color:var(--accent);color:var(--accent)}
+  @media(max-width:1100px){.shell{grid-template-columns:1fr}aside{position:relative;height:auto}.meta{position:static;margin-top:18px}.grid,.two,.three{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <div class="brand">Mira</div>
+    <div class="sub">backend dashboard</div>
+    <select class="profile" id="profile"></select>
+    <nav id="nav"></nav>
+    <div class="meta"><div>Claude-inspired local UI</div><div><a href="/chat">old chat UI</a></div><div class="mono" id="apiPath"></div></div>
+  </aside>
+  <main>
+    <div class="top"><div><h1>Mira Backend</h1><div class="sub">technical state of memory, pipelines, services, policies, outputs</div></div><div class="toolbar"><button class="btn" id="refresh">Refresh</button><div class="timestamp" id="stamp">Loading...</div></div></div>
+    <section id="overview"><div class="grid" id="cards"></div><div class="two" style="margin-top:12px"><div class="panel"><div class="label">Service</div><div id="service"></div></div><div class="panel"><div class="label">Control Plane</div><div id="control"></div></div></div></section>
+    <section id="memory"><h2>Memory</h2><div class="three"><div class="panel"><div class="label">Kernel</div><div id="kernel"></div></div><div class="panel"><div class="label">Review Queues</div><div id="queues"></div></div><div class="panel"><div class="label">Recent Commits</div><div id="commits"></div></div></div><h2>Ledger</h2><div id="ledger"></div></section>
+    <section id="pipelines"><h2>Pipelines</h2><div id="pipelineTable"></div></section>
+    <section id="outputs"><h2>Outputs</h2><div class="three"><div class="panel"><div class="label">Artifacts</div><div id="artifacts"></div></div><div class="panel"><div class="label">Jobs / Cost</div><div id="jobs"></div></div><div class="panel"><div class="label">Recent Items</div><div id="items"></div></div></div><h2>Side Effects</h2><div id="effects"></div></section>
+    <section id="paths"><h2>Paths</h2><div id="pathTable"></div></section>
+  </main>
+</div>
+<script>
+let currentUser = localStorage.getItem('mira_profile') || 'ang';
+const sections = ['overview','memory','pipelines','outputs','paths'];
+const $ = id => document.getElementById(id);
+function text(tag, value, className){const el=document.createElement(tag); if(className)el.className=className; el.textContent=value == null ? '' : String(value); return el}
+function clear(el){el.replaceChildren(); return el}
+function row(title, sub){const r=text('div','', 'row'); r.append(text('div', title, 'row-title'), text('div', sub || '', 'row-sub mono')); return r}
+function list(el, rows, empty='None'){clear(el); if(!rows.length){el.append(text('div', empty, 'row-sub')); return} const wrap=text('div','', 'list'); rows.forEach(r=>wrap.append(r)); el.append(wrap)}
+function card(label, value, note){const c=text('div','', 'card'); c.append(text('div', label, 'label'), text('div', value, 'value'), text('div', note, 'note')); return c}
+function pill(value){return text('span', value, 'pill')}
+function table(el, headers, rows){clear(el); if(!rows.length){const p=text('div','', 'panel'); p.append(text('div','No records','row-sub')); el.append(p); return} const t=document.createElement('table'); const thead=document.createElement('thead'); const hrow=document.createElement('tr'); headers.forEach(h=>hrow.append(text('th',h))); thead.append(hrow); const tbody=document.createElement('tbody'); rows.forEach(cells=>{const tr=document.createElement('tr'); cells.forEach(cell=>{const td=document.createElement('td'); if(Array.isArray(cell)) cell.forEach(v=>td.append(v)); else td.textContent=cell == null ? '' : String(cell); tr.append(td)}); tbody.append(tr)}); t.append(thead,tbody); el.append(t)}
+async function api(url){const res=await fetch(url); if(!res.ok)throw new Error(`HTTP ${res.status}`); return res.json()}
+function fmtTokens(n){n=Number(n||0); if(n>=1000000)return (n/1000000).toFixed(1)+'M'; if(n>=1000)return (n/1000).toFixed(1)+'K'; return String(n)}
+function jump(id, btn){$(id).scrollIntoView({behavior:'smooth'}); document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active')); btn.classList.add('active')}
+function buildNav(){const nav=$('nav'); sections.forEach((id,i)=>{const b=text('button', id[0].toUpperCase()+id.slice(1)); if(i===0)b.classList.add('active'); b.onclick=()=>jump(id,b); nav.append(b)})}
+async function loadProfiles(){const data=await api('/api/profiles'); const s=$('profile'); clear(s); data.profiles.forEach(p=>{const o=document.createElement('option'); o.value=p.id; o.textContent=`${p.display_name} · ${p.agent_name}`; s.append(o)}); s.value=currentUser; s.onchange=()=>{currentUser=s.value; localStorage.setItem('mira_profile', currentUser); loadDashboard()}}
+async function loadDashboard(){
+  $('apiPath').textContent = `/api/${currentUser}/backend-dashboard`;
+  const data = await api(`/api/${currentUser}/backend-dashboard`);
+  $('stamp').textContent = data.server_time;
+  const hb=data.service.heartbeat||{}, queues=data.memory.queues||{}, jobs=data.outputs.jobs||{}, usage=jobs.usage_totals||{};
+  const queueCount=Object.values(queues).reduce((n,rows)=>n+rows.length,0);
+  clear($('cards')).append(
+    card('Service', hb.busy ? `${hb.active_count||0} running` : 'Online', hb.status || 'heartbeat'),
+    card('Pipelines', data.pipelines.length, 'registered V3.1 definitions'),
+    card('Policies', data.policies.hard + data.policies.soft, `${data.policies.hard} hard · ${data.policies.soft} soft`),
+    card('Review', queueCount, 'approval, memory, experiment, incident'),
+    card('Ledger', data.memory.ledger.length, 'recent records shown'),
+    card('Commits', data.memory.commits.length, 'gateway decisions shown'),
+    card('Effects', data.memory.effects.length, 'idempotent side effects'),
+    card('Cost', `$${Number(usage.cost_usd||0).toFixed(2)}`, `${usage.calls||0} calls · ${fmtTokens(usage.tokens||0)}`)
+  );
+  list($('service'), [row('Heartbeat', `status=${hb.status||''} busy=${!!hb.busy} active=${hb.active_count||0}`), row('Network', JSON.stringify(hb.network_status||{})), row('Web', `host=${data.service.web.host} port=${data.service.web.port} https=${data.service.web.https}`)]);
+  list($('control'), Object.entries(data.service.control).map(([k,v])=>row(k,v)));
+  list($('kernel'), [row('Identity',data.memory.kernel.identity), row('Scars',(data.memory.kernel.scars||[]).join(', ')||'none'), row('Hypotheses',(data.memory.kernel.hypotheses||[]).join(', ')||'none'), row('Failure signatures',(data.memory.kernel.failure_signatures||[]).join(', ')||'none')]);
+  list($('queues'), Object.entries(queues).map(([k,v])=>row(k,`${v.length} item(s)`)));
+  list($('commits'), (data.memory.commits||[]).slice(0,8).map(c=>row(`${c.status} · ${c.pipeline}`, `${c.id}\n${(c.findings||[]).join('; ')}`)));
+  table($('ledger'), ['id','pipeline','outcome','proposal','commit','time'], (data.memory.ledger||[]).map(r=>[r.id,r.pipeline,r.outcome,r.proposal_id,r.commit_id,r.timestamp]));
+  table($('pipelineTable'), ['pipeline','class','trigger','priority','steps','skills'], data.pipelines.map(p=>[p.name,p.memory_class,p.trigger,p.priority,(p.steps||[]).map(pill),(p.skills||[]).map(pill)]));
+  list($('artifacts'), (data.outputs.artifacts||[]).map(a=>row(a.name,`${a.count} item(s)`)), 'No artifact sections');
+  list($('jobs'), (jobs.recent||[]).slice(0,8).map(j=>row(`${j.status} · ${j.name}`, `$${Number((j.usage||{}).cost_usd||0).toFixed(4)} · ${fmtTokens((j.usage||{}).tokens||0)} · ${j.ran_at||''}`)), 'No jobs');
+  list($('items'), (data.outputs.recent_items||[]).slice(0,8).map(i=>row(`${i.status} · ${i.title}`, `${i.id} · ${(i.tags||[]).join(', ')}`)), 'No items');
+  table($('effects'), ['id','pipeline','action','target','status','idempotency'], (data.memory.effects||[]).map(e=>[e.id,e.pipeline,e.action,e.target,e.status,e.idempotency_key]));
+  table($('pathTable'), ['name','path'], Object.entries(data.paths).map(([k,v])=>[k,v]));
+}
+window.onload=async()=>{buildNav(); $('refresh').onclick=loadDashboard; await loadProfiles(); await loadDashboard(); setInterval(loadDashboard,30000)};
+</script>
+</body>
+</html>
