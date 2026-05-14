@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="dark">
 <meta name="darkreader-lock">
 <title>Mira Backend</title>
 <style>
-  :root{color-scheme:light;--bg:#faf9f5;--surface:#fffdf8;--rail:#f3eee6;--rail-strong:#ebe3d8;--text:#2f2a24;--muted:#7b7167;--faint:#a49a90;--line:#e4ddd4;--line-strong:#d6cabd;--accent:#d97757;--accent-strong:#b95c3e;--good:#2f7d55;--warn:#b7791f;--bad:#b5473c;--shadow:0 1px 2px rgba(45,35,25,.05),0 10px 28px rgba(45,35,25,.06)}
+  :root{color-scheme:dark;--bg:#191715;--surface:#24211d;--rail:#211d19;--rail-strong:#2b261f;--text:#f4efe7;--muted:#b8afa5;--faint:#8e8479;--line:#3a332b;--line-strong:#51483d;--accent:#d97757;--accent-strong:#e08a6d;--good:#77c99a;--warn:#d19a45;--bad:#de6f62;--shadow:0 1px 2px rgba(0,0,0,.22),0 12px 34px rgba(0,0,0,.24)}
   :root,html,body{background:var(--bg)!important;color:var(--text)!important}
   *{box-sizing:border-box}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:14px;letter-spacing:0;line-height:1.45}
@@ -33,9 +33,9 @@
   .panel{background:var(--surface)!important;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:15px}.panel-title{font-size:12px;color:var(--muted)!important;font-weight:700;text-transform:uppercase;letter-spacing:.045em;margin-bottom:11px}
   .kv{display:grid;grid-template-columns:132px minmax(0,1fr);gap:10px;padding:9px 0;border-top:1px solid var(--line)}.kv:first-child{border-top:0;padding-top:0}.k{color:var(--muted)!important}.v{min-width:0;color:var(--text)!important;word-break:break-word}
   .mono{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:12px}.muted{color:var(--muted)!important}
-  .list{display:flex;flex-direction:column;gap:8px}.item{border:1px solid var(--line);background:#fffaf2!important;border-radius:11px;padding:10px 11px}.item-title{font-weight:640;color:var(--text)!important}.item-sub{font-size:12px;color:var(--muted)!important;margin-top:3px;word-break:break-word}
-  .chips{display:flex;gap:6px;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;border:1px solid var(--line);background:#f8f2ea!important;color:var(--muted)!important;border-radius:999px;padding:4px 8px;font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis}
-  .table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:var(--surface)!important;box-shadow:var(--shadow)}table{width:100%;border-collapse:collapse;background:transparent!important}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;font-size:12px;color:var(--text)!important}th{position:sticky;top:0;background:#f4eee6!important;color:var(--muted)!important;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.045em}tr:last-child td{border-bottom:0}
+  .list{display:flex;flex-direction:column;gap:8px}.item{border:1px solid var(--line);background:#211e1a!important;border-radius:11px;padding:10px 11px}.item-title{font-weight:640;color:var(--text)!important}.item-sub{font-size:12px;color:var(--muted)!important;margin-top:3px;word-break:break-word}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;border:1px solid var(--line);background:#2a251f!important;color:var(--muted)!important;border-radius:999px;padding:4px 8px;font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+  .table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:var(--surface)!important;box-shadow:var(--shadow)}table{width:100%;border-collapse:collapse;background:transparent!important}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;font-size:12px;color:var(--text)!important}th{position:sticky;top:0;background:#2b261f!important;color:var(--muted)!important;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.045em}tr:last-child td{border-bottom:0}
   .wide{min-width:960px}.section{scroll-margin-top:24px}.empty{color:var(--muted)!important;font-size:13px}
   @media(max-width:1050px){.shell{grid-template-columns:1fr}aside{position:relative;height:auto}.meta{position:static;margin-top:18px}.metrics,.grid-2,.grid-3{grid-template-columns:1fr}main{padding:22px 16px}.top{flex-direction:column}.actions{width:100%;justify-content:space-between}}
 </style>
@@ -63,9 +63,9 @@
 <script>
 let currentUser = localStorage.getItem('mira_profile') || 'ang';
 const sections = ['overview','memory','pipelines','outputs','paths'];
-const themeVars = { '--bg':'#faf9f5','--surface':'#fffdf8','--rail':'#f3eee6','--rail-strong':'#ebe3d8','--text':'#2f2a24','--muted':'#7b7167','--faint':'#a49a90','--line':'#e4ddd4','--line-strong':'#d6cabd','--accent':'#d97757','--accent-strong':'#b95c3e','--good':'#2f7d55','--warn':'#b7791f','--bad':'#b5473c' };
+const themeVars = { '--bg':'#191715','--surface':'#24211d','--rail':'#211d19','--rail-strong':'#2b261f','--text':'#f4efe7','--muted':'#b8afa5','--faint':'#8e8479','--line':'#3a332b','--line-strong':'#51483d','--accent':'#d97757','--accent-strong':'#e08a6d','--good':'#77c99a','--warn':'#d19a45','--bad':'#de6f62' };
 const $ = id => document.getElementById(id);
-function forceLight(){Object.entries(themeVars).forEach(([k,v])=>document.documentElement.style.setProperty(k,v,'important')); document.documentElement.style.colorScheme='light'; document.body.style.backgroundColor=themeVars['--bg']; document.body.style.color=themeVars['--text']}
+function forceDark(){Object.entries(themeVars).forEach(([k,v])=>document.documentElement.style.setProperty(k,v,'important')); document.documentElement.style.colorScheme='dark'; document.body.style.backgroundColor=themeVars['--bg']; document.body.style.color=themeVars['--text']}
 function el(tag, value='', className=''){const node=document.createElement(tag); if(className)node.className=className; node.textContent=value == null ? '' : String(value); return node}
 function clear(node){node.replaceChildren(); return node}
 function kv(k,v,mono=false){const row=el('div','', 'kv'); row.append(el('div',k,'k'), el('div',v, mono?'v mono':'v')); return row}
@@ -82,7 +82,7 @@ function jump(id, btn){$(id).scrollIntoView({behavior:'smooth'}); document.query
 function buildNav(){const nav=$('nav'); clear(nav); sections.forEach((id,i)=>{const b=el('button', id[0].toUpperCase()+id.slice(1)); if(i===0)b.classList.add('active'); b.onclick=()=>jump(id,b); nav.append(b)})}
 async function loadProfiles(){const data=await api('/api/profiles'); const s=$('profile'); clear(s); data.profiles.forEach(p=>{const o=document.createElement('option'); o.value=p.id; o.textContent=`${p.display_name} · ${p.agent_name}`; s.append(o)}); s.value=currentUser; s.onchange=()=>{currentUser=s.value; localStorage.setItem('mira_profile', currentUser); loadDashboard()}}
 async function loadDashboard(){
-  forceLight();
+  forceDark();
   $('apiPath').textContent = `/api/${currentUser}/backend-dashboard`;
   const data = await api(`/api/${currentUser}/backend-dashboard`);
   const hb=data.service.heartbeat||{}, queues=data.memory.queues||{}, jobs=data.outputs.jobs||{}, usage=jobs.usage_totals||{};
@@ -111,9 +111,9 @@ async function loadDashboard(){
   list($('items'), (data.outputs.recent_items||[]).slice(0,8).map(i=>item(`${i.status} · ${i.title}`, `${i.id} · ${(i.tags||[]).join(', ')}`)), 'No items');
   table($('effects'), ['id','pipeline','action','target','status','idempotency'], (data.memory.effects||[]).map(e=>[e.id,e.pipeline,e.action,e.target,e.status,e.idempotency_key]));
   table($('pathTable'), ['name','path'], Object.entries(data.paths).map(([k,v])=>[k,v]));
-  forceLight();
+  forceDark();
 }
-window.onload=async()=>{forceLight(); buildNav(); $('refresh').onclick=loadDashboard; await loadProfiles(); await loadDashboard(); setInterval(loadDashboard,30000); setInterval(forceLight,1200)};
+window.onload=async()=>{forceDark(); buildNav(); $('refresh').onclick=loadDashboard; await loadProfiles(); await loadDashboard(); setInterval(loadDashboard,30000); setInterval(forceDark,1200)};
 </script>
 </body>
 </html>
