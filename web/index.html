@@ -209,6 +209,7 @@
 let currentUser = null, currentTab = 'home', currentItemId = null, items = [], currentSection = null, pollTimer = null;
 let webToken = localStorage.getItem('mira_web_token') || '';
 let operatorSummary = null;
+let v3Summary = null;
 
 function authHeaders(extra) {
   const headers = {...(extra || {})};
@@ -256,6 +257,7 @@ async function loadProfiles() {
 }
 function selectProfile(id, name) {
   currentUser = id;
+  v3Summary = null;
   document.getElementById('profilePicker').style.display = 'none';
   document.getElementById('mainLayout').style.display = 'grid';
   document.getElementById('userName').textContent = name;
@@ -269,7 +271,7 @@ function selectProfile(id, name) {
 function switchProfile() {
   clearInterval(pollTimer);
   if (eventSource) { eventSource.close(); eventSource = null; }
-  currentUser = null; currentItemId = null;
+  currentUser = null; currentItemId = null; v3Summary = null;
   localStorage.removeItem('mira_profile');
   document.getElementById('profilePicker').style.display = 'flex';
   document.getElementById('mainLayout').style.display = 'none';
@@ -288,6 +290,7 @@ function buildSidebar() {
     <div class="nav-item" data-nav="failed" onclick="navTo('failed')">failed</div>
     <div class="nav-item" data-nav="jobs" onclick="navTo('jobs')">jobs</div>
     <div class="nav-item" data-nav="operator" onclick="navTo('operator')">operator</div>
+    <div class="nav-item" data-nav="v3" onclick="navTo('v3')">v3 foundation</div>
     <div class="nav-sep"></div>
     <div class="nav-item" data-nav="writings" onclick="navToArtifact('writings')">writings</div>
     <div class="nav-item" data-nav="briefings" onclick="navToArtifact('briefings')">briefings</div>
@@ -300,10 +303,13 @@ function buildSidebar() {
 function navTo(tab) {
   currentTab = tab; currentSection = null;
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.nav === tab));
-  document.getElementById('listTitle').textContent = {home:'home',timeline:'timeline',requests:'requests',pinned:'pinned',failed:'failed',operator:'operator',jobs:'jobs'}[tab] || tab.toLowerCase();
+  document.getElementById('listTitle').textContent = {home:'home',timeline:'timeline',requests:'requests',pinned:'pinned',failed:'failed',operator:'operator',jobs:'jobs',v3:'v3 foundation'}[tab] || tab.toLowerCase();
   if (tab === 'operator') {
     currentItemId = null;
     renderOperator();
+  } else if (tab === 'v3') {
+    currentItemId = null;
+    renderV3();
   } else if (tab === 'jobs') {
     currentItemId = null;
     renderJobs();
@@ -345,6 +351,7 @@ async function refresh() {
     const badge = document.getElementById('badgeNeedsInput');
     if (ni > 0) { badge.style.display=''; badge.textContent=ni; } else { badge.style.display='none'; }
     if (currentTab === 'operator') renderOperator();
+    else if (currentTab === 'v3') renderV3();
     else if (currentTab === 'jobs') renderJobs();
     else if (currentTab !== 'artifacts') renderList();
     if (currentItemId && currentTab !== 'operator') renderDetail(currentItemId);
@@ -579,6 +586,137 @@ function operatorRow(title, subtitle, note) {
   return `<div class="operator-row"><div class="operator-row-title">${esc(title || '')}</div><div class="operator-row-sub">${esc(subtitle || '')}${note ? `<br>${esc(note)}` : ''}</div></div>`;
 }
 function sec(t,c,cls) { return `<div class="section-label ${cls||''}">${esc((t||'').toLowerCase())}${c?`<span class="cnt">${c}</span>`:''}</div>`; }
+
+async function renderV3() {
+  document.getElementById('detailTitle').textContent = 'V3 Foundation';
+  document.getElementById('replyBar').style.display = 'none';
+  const listEl = document.getElementById('listContent');
+  const detailEl = document.getElementById('detailMessages');
+  if (!v3Summary) {
+    listEl.replaceChildren(emptyNode('Loading V3 foundation...'));
+    detailEl.replaceChildren(emptyNode('Loading V3 foundation...'));
+  }
+
+  try {
+    v3Summary = await apiFetch(`/api/${currentUser}/v3`).then(r=>r.json());
+  } catch(e) {
+    listEl.replaceChildren(emptyNode('Failed to load V3 foundation'));
+    detailEl.replaceChildren(emptyNode('V3 endpoint is unavailable'));
+    return;
+  }
+
+  const dashboard = v3Summary.dashboard || {};
+  const config = v3Summary.config || {};
+  const paths = v3Summary.paths || {};
+  const pipelines = dashboard.active_pipelines || [];
+  const recent = dashboard.recent_experience_ids || [];
+  const scars = dashboard.scars || [];
+  const hypotheses = dashboard.active_hypotheses || [];
+  const skillTraces = dashboard.skill_traces || {};
+  const policyParams = config.policy_parameters || {};
+  const modelRouting = config.model_routing || {};
+
+  listEl.replaceChildren(
+    operatorSectionNode('Runtime Surface', [
+      operatorRowNode('Web API', '/api/' + currentUser + '/v3', 'live'),
+      operatorRowNode('Pipeline Catalog', `${pipelines.length} active pipelines`, 'loaded from mira.pipelines'),
+      operatorRowNode('Experience Ledger', `${recent.length} recent record(s) visible`, paths.ledger || ''),
+      operatorRowNode('Memory Kernel', `${scars.length} scar(s) · ${hypotheses.length} active hypothesis`, paths.kernel || ''),
+    ]),
+    operatorSectionNode(
+      'Active Pipelines',
+      pipelines.map(name => operatorRowNode(name, 'registered', 'memory-first runtime catalog')),
+      'No V3 pipelines registered.'
+    )
+  );
+
+  const skillTraceRows = Object.entries(skillTraces).map(([name, rate]) =>
+    operatorRowNode(name, `${Math.round(Number(rate || 0) * 100)}% success`, 'kernel skill trace')
+  );
+  const recentRows = recent.map(id => operatorRowNode(id, 'experience record', 'ledger'));
+  const modelRows = Object.entries(modelRouting).map(([key, value]) => operatorRowNode(key, String(value), 'configured model'));
+
+  detailEl.replaceChildren(
+    operatorGridNode([
+      metricCardNode('Pipelines', pipelines.length, 'active catalog entries'),
+      metricCardNode('Policies', Number(dashboard.hard_policy_count || 0) + Number(dashboard.soft_policy_count || 0), `${dashboard.hard_policy_count || 0} hard · ${dashboard.soft_policy_count || 0} soft`),
+      metricCardNode('Memory', recent.length, 'recent experiences'),
+      metricCardNode('Scheduler', policyParams.max_concurrent_pipelines || '-', 'max concurrent pipelines'),
+    ]),
+    operatorSectionNode('Memory State', [
+      operatorRowNode('Scars', scars.length ? scars.join(', ') : 'none', 'kernel'),
+      operatorRowNode('Active Hypotheses', hypotheses.length ? hypotheses.join(', ') : 'none', 'self-evolution'),
+    ]),
+    operatorSectionNode('Skill Traces', skillTraceRows, 'No skill traces recorded yet'),
+    operatorSectionNode('Recent Experiences', recentRows, 'No experience records yet'),
+    operatorSectionNode('Model Routing', modelRows, 'No model routing config'),
+    operatorSectionNode('Storage Paths', [
+      operatorRowNode('Kernel', paths.kernel || '', ''),
+      operatorRowNode('Ledger', paths.ledger || '', ''),
+      operatorRowNode('Eval History', paths.eval_history || '', ''),
+    ])
+  );
+}
+
+function emptyNode(text) {
+  const node = document.createElement('div');
+  node.className = 'empty';
+  node.textContent = text;
+  return node;
+}
+
+function operatorGridNode(cards) {
+  const grid = document.createElement('div');
+  grid.className = 'operator-grid';
+  cards.forEach(card => grid.appendChild(card));
+  return grid;
+}
+
+function metricCardNode(title, value, note) {
+  const card = document.createElement('div');
+  card.className = 'operator-card';
+  const titleEl = document.createElement('h4');
+  titleEl.textContent = title;
+  const valueEl = document.createElement('div');
+  valueEl.className = 'operator-value';
+  valueEl.textContent = String(value);
+  const noteEl = document.createElement('div');
+  noteEl.className = 'operator-note';
+  noteEl.textContent = note || '';
+  card.append(titleEl, valueEl, noteEl);
+  return card;
+}
+
+function operatorSectionNode(title, rows, emptyText) {
+  const section = document.createElement('div');
+  section.className = 'operator-section';
+  const heading = document.createElement('h4');
+  heading.textContent = title;
+  const list = document.createElement('div');
+  list.className = 'operator-list';
+  if (rows.length) {
+    rows.forEach(row => list.appendChild(row));
+  } else {
+    const empty = emptyNode(emptyText || 'No items');
+    empty.style.padding = '20px';
+    list.appendChild(empty);
+  }
+  section.append(heading, list);
+  return section;
+}
+
+function operatorRowNode(title, subtitle, note) {
+  const row = document.createElement('div');
+  row.className = 'operator-row';
+  const rowTitle = document.createElement('div');
+  rowTitle.className = 'operator-row-title';
+  rowTitle.textContent = title || '';
+  const rowSub = document.createElement('div');
+  rowSub.className = 'operator-row-sub';
+  rowSub.textContent = [subtitle || '', note || ''].filter(Boolean).join('\n');
+  row.append(rowTitle, rowSub);
+  return row;
+}
 
 // Category style — mirrors iOS categoryStyle(). Returns {label, color, icon}.
 // Tag-based first (specific), then falls back to item.type. Same visual
