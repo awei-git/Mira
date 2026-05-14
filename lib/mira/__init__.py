@@ -1,4 +1,11 @@
-"""Shared utilities for Mira agent system."""
+"""Mira V3 memory-first architecture package.
+
+This package also preserves the legacy top-level ``mira`` utility API that
+previously lived in ``agents/shared/mira.py``. Existing agents import those
+helpers as ``from mira import ...``.
+"""
+
+from __future__ import annotations
 
 import json
 import logging
@@ -7,12 +14,10 @@ from pathlib import Path
 
 import config
 
-__path__ = [str(Path(__file__).resolve().parents[2] / "lib" / "mira")]
-
+BACKGROUND_STALENESS_THRESHOLD_HOURS = 4
 _SCAFFOLDING_AUDIT_LOG = Path(config.MIRA_ROOT) / "logs" / "scaffolding_audit.jsonl"
 _SCAFFOLD_REJECTIONS_DIR = Path(config.MIRA_ROOT) / "logs" / "scaffold_rejections"
 _INTERFACE_LATENCY_FILE = Path(config.MIRA_ROOT) / "logs" / "interface_latency.json"
-BACKGROUND_STALENESS_THRESHOLD_HOURS = 4
 _log = logging.getLogger("scaffolding_audit")
 
 
@@ -37,12 +42,11 @@ def log_scaffolding_audit(
         _SCAFFOLDING_AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
         with _SCAFFOLDING_AUDIT_LOG.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception as e:
-        _log.warning("scaffolding_audit write failed: %s", e)
+    except Exception as exc:
+        _log.warning("scaffolding_audit write failed: %s", exc)
 
 
 def update_interface_latency(latency_ms: int) -> float:
-    """Append latency_ms to a rolling 5-sample buffer and return the average."""
     samples: list[int] = []
     try:
         if _INTERFACE_LATENCY_FILE.exists():
@@ -81,5 +85,18 @@ def write_scaffold_rejection(
         day_file = _SCAFFOLD_REJECTIONS_DIR / f"{_date.today().isoformat()}.jsonl"
         with day_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception as e:
-        _log.warning("scaffold_rejection write failed: %s", e)
+    except Exception as exc:
+        _log.warning("scaffold_rejection write failed: %s", exc)
+
+
+__all__ = [
+    "BACKGROUND_STALENESS_THRESHOLD_HOURS",
+    "agents",
+    "engine",
+    "kernel",
+    "log_scaffolding_audit",
+    "policies",
+    "pipelines",
+    "update_interface_latency",
+    "write_scaffold_rejection",
+]

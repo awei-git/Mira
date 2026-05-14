@@ -825,6 +825,30 @@ def get_operator_dashboard(user_id: str):
     return module.build_operator_summary(user_id=user_id)
 
 
+@app.get("/api/{user_id}/v3")
+def get_v3_dashboard(user_id: str):
+    if not is_known_user(user_id):
+        raise HTTPException(404, "Unknown profile")
+
+    from mira.configuration import default_v3_config
+    from mira.kernel.store import JsonKernelStore
+    from mira.runtime import default_ledger, default_v3_paths
+    from mira.web.dashboard import build_dashboard_snapshot
+
+    paths = default_v3_paths()
+    kernel = JsonKernelStore(paths.kernel).load()
+    dashboard = build_dashboard_snapshot(kernel, default_ledger())
+    return {
+        "dashboard": dashboard.__dict__,
+        "config": default_v3_config().to_dict(),
+        "paths": {
+            "kernel": str(paths.kernel),
+            "ledger": str(paths.ledger),
+            "eval_history": str(paths.eval_history),
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # API — Write (commands)
 # ---------------------------------------------------------------------------

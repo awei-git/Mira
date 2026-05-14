@@ -51,6 +51,13 @@ def _dispatch_pipeline_followups(completed: list[str], session_new: list[dict]):
     from runtime.jobs import get_pipeline_followups, get_job, build_job_dispatch
 
     for bg_name in completed:
+        try:
+            from mira.runtime import record_background_completion
+
+            record_background_completion(bg_name)
+        except Exception as exc:
+            log.warning("V3 background experience write failed for %s: %s", bg_name, exc)
+
         followups = get_pipeline_followups(bg_name)
         if not followups:
             continue
