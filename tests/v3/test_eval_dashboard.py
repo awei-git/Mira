@@ -48,5 +48,5 @@ def test_dashboard_snapshot_exposes_monitor_counts(tmp_path: Path):
     assert "communication" in snapshot.active_pipelines
     assert snapshot.skill_traces["article_writing"] == 1.0
     assert snapshot.recent_experience_ids == ["exp_1"]
-    assert snapshot.hard_policy_count == 45
+    assert snapshot.hard_policy_count == 43
     assert snapshot.soft_policy_count == 9

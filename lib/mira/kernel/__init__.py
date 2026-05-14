@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from .delta import MemoryAction, MemoryDelta
+from .causal import BehavioralEffect, DecisionRecord, MemoryUseTrace, derive_causal_links
+from .commit import MemoryCommit, MemoryCommitLog, SecurityGateway, ValidationFinding
+from .delta import MemoryAction, MemoryDelta, MemoryDeltaProposal
 from .ledger import ExperienceLedger, ExperienceRecord
 from .schema import (
     EvalCalibration,
@@ -18,9 +20,11 @@ from .schema import (
     SkillTrace,
     Worldview,
 )
-from .snapshot import MemorySnapshot, SnapshotBuilder
+from .snapshot import MemorySnapshot, SnapshotBuilder, SnapshotManifest
 
 __all__ = [
+    "BehavioralEffect",
+    "DecisionRecord",
     "EvalCalibration",
     "ExperienceLedger",
     "ExperienceRecord",
@@ -29,14 +33,22 @@ __all__ = [
     "Identity",
     "Interests",
     "MemoryAction",
+    "MemoryCommit",
+    "MemoryCommitLog",
     "MemoryClass",
     "MemoryDelta",
+    "MemoryDeltaProposal",
     "MemoryKernel",
     "MemorySnapshot",
+    "MemoryUseTrace",
     "Preferences",
     "RelationshipModel",
     "Scar",
+    "SecurityGateway",
     "SkillTrace",
     "SnapshotBuilder",
+    "SnapshotManifest",
+    "ValidationFinding",
     "Worldview",
+    "derive_causal_links",
 ]

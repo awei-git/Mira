@@ -832,18 +832,27 @@ def get_v3_dashboard(user_id: str):
 
     from mira.configuration import default_v3_config
     from mira.kernel.store import JsonKernelStore
+    from mira.engine.effect_log import EffectLog
+    from mira.kernel.commit import MemoryCommitLog
     from mira.runtime import default_ledger, default_v3_paths
     from mira.web.dashboard import build_dashboard_snapshot
 
     paths = default_v3_paths()
     kernel = JsonKernelStore(paths.kernel).load()
-    dashboard = build_dashboard_snapshot(kernel, default_ledger())
+    dashboard = build_dashboard_snapshot(
+        kernel,
+        default_ledger(),
+        MemoryCommitLog(paths.commits),
+        EffectLog(paths.effect_log),
+    )
     return {
         "dashboard": dashboard.__dict__,
         "config": default_v3_config().to_dict(),
         "paths": {
             "kernel": str(paths.kernel),
             "ledger": str(paths.ledger),
+            "commits": str(paths.commits),
+            "effect_log": str(paths.effect_log),
             "eval_history": str(paths.eval_history),
         },
     }

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from mira.agents.base import Agent, StepInput, StepOutput
+from mira.kernel.commit import MemoryCommitLog, SecurityGateway
 from mira.kernel.consolidation import ConsolidationResult, MemoryConsolidator
 from mira.kernel.delta import MemoryAction, MemoryDelta
 from mira.kernel.ledger import ExperienceLedger, ExperienceRecord, new_run_id
@@ -34,11 +35,15 @@ class PipelineExecutor:
         ledger: ExperienceLedger,
         agents: dict[str, Agent] | None = None,
         consolidator: MemoryConsolidator | None = None,
+        gateway: SecurityGateway | None = None,
+        commit_log: MemoryCommitLog | None = None,
     ):
         self.kernel_store = kernel_store
         self.ledger = ledger
         self.agents = agents or {}
         self.consolidator = consolidator or MemoryConsolidator()
+        self.gateway = gateway or SecurityGateway()
+        self.commit_log = commit_log
 
     def run(
         self, pipeline: Pipeline, payload: dict[str, Any], intent: str, trigger: str = "manual"
@@ -54,6 +59,10 @@ class PipelineExecutor:
         )
         outputs, failure = self._execute_steps(pipeline, run_id, payload, snapshot)
         delta = self._build_delta(pipeline, run_id, outputs, failure)
+        commit = self.gateway.validate(delta)
+        consolidation = self.consolidator.apply_commit(kernel, delta, commit)
+        if self.commit_log is not None:
+            self.commit_log.append(commit)
         record = ExperienceRecord(
             id=run_id,
             pipeline=pipeline.name,
@@ -61,11 +70,14 @@ class PipelineExecutor:
             intent=intent,
             outcome=outputs.get("_outcome", "completed" if failure is None else "failed"),
             delta=delta,
-            causal_links=snapshot.causal_links(),
+            causal_links=list(outputs.get("_causal_links", snapshot.causal_links())),
             confidence=0.8 if failure is None else 0.4,
             memory_class=pipeline.memory_class,
+            artifacts=list(outputs.get("_artifacts", [])),
+            eval_refs=list(outputs.get("_eval_refs", [])),
+            side_effect_refs=list(outputs.get("_side_effect_refs", [])),
+            memory_commit_id=commit.commit_id,
         )
-        consolidation = self.consolidator.apply_delta(kernel, delta)
         self.ledger.append(record)
         self.kernel_store.save(kernel)
         return PipelineRunResult(run_id, record, snapshot, outputs, consolidation)

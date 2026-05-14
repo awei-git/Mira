@@ -613,8 +613,14 @@ async function renderV3() {
   const scars = dashboard.scars || [];
   const hypotheses = dashboard.active_hypotheses || [];
   const skillTraces = dashboard.skill_traces || {};
+  const reviewQueues = dashboard.review_queues || {};
+  const effectLogIds = dashboard.effect_log_ids || [];
   const policyParams = config.policy_parameters || {};
   const modelRouting = config.model_routing || {};
+  const approvalRows = (reviewQueues.approval || []).map(item => operatorRowNode(item.pipeline || 'action', item.status || 'pending', item.reason || 'approval queue'));
+  const memoryRows = (reviewQueues.memory_commit || []).map(item => operatorRowNode(item.pipeline || item.proposal_id, item.status || 'pending', item.reason || item.proposal_id));
+  const experimentRows = (reviewQueues.experiment || []).map(item => operatorRowNode(item.hypothesis_id || item.pipeline, item.status || 'testing', item.claim || 'experiment'));
+  const incidentRows = (reviewQueues.incident_dlq || []).map(item => operatorRowNode(item.pipeline || item.run_id, item.status || 'failed', item.proposal_id || 'incident/dlq'));
 
   listEl.replaceChildren(
     operatorSectionNode('Runtime Surface', [
@@ -622,6 +628,8 @@ async function renderV3() {
       operatorRowNode('Pipeline Catalog', `${pipelines.length} active pipelines`, 'loaded from mira.pipelines'),
       operatorRowNode('Experience Ledger', `${recent.length} recent record(s) visible`, paths.ledger || ''),
       operatorRowNode('Memory Kernel', `${scars.length} scar(s) · ${hypotheses.length} active hypothesis`, paths.kernel || ''),
+      operatorRowNode('Gateway Commit Log', `${memoryRows.length} review item(s)`, paths.commits || ''),
+      operatorRowNode('Effect Log', `${effectLogIds.length} recent effect(s)`, paths.effect_log || ''),
     ]),
     operatorSectionNode(
       'Active Pipelines',
@@ -641,8 +649,12 @@ async function renderV3() {
       metricCardNode('Pipelines', pipelines.length, 'active catalog entries'),
       metricCardNode('Policies', Number(dashboard.hard_policy_count || 0) + Number(dashboard.soft_policy_count || 0), `${dashboard.hard_policy_count || 0} hard · ${dashboard.soft_policy_count || 0} soft`),
       metricCardNode('Memory', recent.length, 'recent experiences'),
-      metricCardNode('Scheduler', policyParams.max_concurrent_pipelines || '-', 'max concurrent pipelines'),
+      metricCardNode('Review', memoryRows.length + approvalRows.length + experimentRows.length + incidentRows.length, 'V3.1 queues'),
     ]),
+    operatorSectionNode('Approval Queue', approvalRows, 'No actions waiting for approval'),
+    operatorSectionNode('Memory Commit Queue', memoryRows, 'No memory proposals waiting'),
+    operatorSectionNode('Experiment Queue', experimentRows, 'No experiments pending'),
+    operatorSectionNode('Incident / DLQ', incidentRows, 'No incident replay bundles'),
     operatorSectionNode('Memory State', [
       operatorRowNode('Scars', scars.length ? scars.join(', ') : 'none', 'kernel'),
       operatorRowNode('Active Hypotheses', hypotheses.length ? hypotheses.join(', ') : 'none', 'self-evolution'),
@@ -653,6 +665,8 @@ async function renderV3() {
     operatorSectionNode('Storage Paths', [
       operatorRowNode('Kernel', paths.kernel || '', ''),
       operatorRowNode('Ledger', paths.ledger || '', ''),
+      operatorRowNode('Commits', paths.commits || '', ''),
+      operatorRowNode('Effect Log', paths.effect_log || '', ''),
       operatorRowNode('Eval History', paths.eval_history || '', ''),
     ])
   );

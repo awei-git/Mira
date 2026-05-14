@@ -6,7 +6,8 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .delta import MemoryAction, MemoryDelta
+from .commit import MemoryCommit, SecurityGateway
+from .delta import MemoryAction, MemoryDelta, MemoryDeltaProposal
 from .schema import FailureSignature, Hypothesis, MemoryKernel, Scar
 
 
@@ -17,15 +18,27 @@ class ConsolidationResult:
 
 
 class MemoryConsolidator:
-    """Applies per-run deltas to the durable kernel."""
+    """Applies gateway-approved commits to the durable kernel."""
 
     def apply_delta(self, kernel: MemoryKernel, delta: MemoryDelta) -> ConsolidationResult:
+        commit = SecurityGateway().validate(delta)
+        return self.apply_commit(kernel, delta, commit)
+
+    def apply_commit(
+        self,
+        kernel: MemoryKernel,
+        proposal: MemoryDeltaProposal,
+        commit: MemoryCommit,
+    ) -> ConsolidationResult:
         applied: list[str] = []
-        escalations: list[str] = []
-        for action in delta.actions:
-            label = self._apply_action(kernel, delta, action, escalations)
+        escalations: list[str] = [
+            f.reason for f in commit.findings if f.decision in {"quarantine", "require_human", "reject"}
+        ]
+        for action in commit.committed_actions:
+            label = self._apply_action(kernel, proposal, action, escalations)
             applied.append(label)
-        kernel.outcome_history.outcome_ids.append(delta.run_id)
+        if commit.status in {"applied", "noop"}:
+            kernel.outcome_history.outcome_ids.append(proposal.run_id)
         return ConsolidationResult(applied=applied, escalations=escalations)
 
     def apply_decay(self, kernel: MemoryKernel, now: datetime | None = None) -> None:

@@ -13,6 +13,8 @@ if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
 
 from mira.configuration import default_v3_config
+from mira.engine.effect_log import EffectLog
+from mira.kernel.commit import MemoryCommitLog
 from mira.kernel.store import JsonKernelStore
 from mira.runtime import default_ledger, default_v3_paths, run_communication
 from mira.web.dashboard import build_dashboard_snapshot
@@ -21,19 +23,24 @@ from mira.web.dashboard import build_dashboard_snapshot
 def render_status() -> str:
     paths = default_v3_paths(ROOT)
     kernel = JsonKernelStore(paths.kernel).load()
-    snapshot = build_dashboard_snapshot(kernel, default_ledger(ROOT))
+    snapshot = build_dashboard_snapshot(
+        kernel, default_ledger(ROOT), MemoryCommitLog(paths.commits), EffectLog(paths.effect_log)
+    )
     lines = [
         "Mira V3 Status",
         "==============",
         "",
         f"Kernel: {paths.kernel}",
         f"Ledger: {paths.ledger}",
+        f"Commits: {paths.commits}",
+        f"Effect log: {paths.effect_log}",
         f"Pipelines: {len(snapshot.active_pipelines)}",
         f"Recent experiences: {len(snapshot.recent_experience_ids)}",
         f"Scars: {len(snapshot.scars)}",
         f"Active hypotheses: {len(snapshot.active_hypotheses)}",
         f"Skill traces: {len(snapshot.skill_traces)}",
         f"Policies: {snapshot.hard_policy_count} hard, {snapshot.soft_policy_count} soft",
+        f"Review queues: {sum(len(v) for v in snapshot.review_queues.values())}",
     ]
     return "\n".join(lines)
 
@@ -50,7 +57,12 @@ def main() -> int:
     if args.json:
         paths = default_v3_paths(ROOT)
         kernel = JsonKernelStore(paths.kernel).load()
-        dashboard = build_dashboard_snapshot(kernel, default_ledger(ROOT))
+        dashboard = build_dashboard_snapshot(
+            kernel,
+            default_ledger(ROOT),
+            MemoryCommitLog(paths.commits),
+            EffectLog(paths.effect_log),
+        )
         print(json.dumps({"dashboard": dashboard.__dict__, "config": default_v3_config().to_dict()}, indent=2))
         return 0
     print(render_status())

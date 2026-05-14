@@ -214,7 +214,7 @@ def test_v3_dashboard_endpoint_returns_config(monkeypatch, tmp_path: Path):
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["dashboard"]["hard_policy_count"] == 45
+    assert body["dashboard"]["hard_policy_count"] == 43
     assert body["dashboard"]["soft_policy_count"] == 9
     assert len(body["dashboard"]["active_pipelines"]) == 20
     assert body["config"]["policy_parameters"]["max_concurrent_pipelines"] == 5

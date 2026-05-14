@@ -14,6 +14,7 @@ import re
 
 from mira.engine import PipelineExecutor
 from mira.kernel import ExperienceLedger, MemoryAction, MemoryDelta
+from mira.kernel.commit import MemoryCommitLog, SecurityGateway
 from mira.kernel.consolidation import MemoryConsolidator
 from mira.kernel.ledger import ExperienceRecord, new_run_id
 from mira.kernel.schema import MemoryClass, to_jsonable
@@ -101,6 +102,8 @@ class V3Paths:
     root: Path
     kernel: Path
     ledger: Path
+    commits: Path
+    effect_log: Path
     eval_history: Path
     snapshots: Path
 
@@ -118,6 +121,8 @@ def default_v3_paths(root: Path | str | None = None) -> V3Paths:
         root=data_dir,
         kernel=data_dir / "kernel.json",
         ledger=data_dir / "experience_ledger.jsonl",
+        commits=data_dir / "memory_commits.jsonl",
+        effect_log=data_dir / "effect_log.jsonl",
         eval_history=data_dir / "eval_history.jsonl",
         snapshots=data_dir / "snapshots",
     )
@@ -129,6 +134,10 @@ def default_kernel_store(root: Path | str | None = None) -> KernelStore:
 
 def default_ledger(root: Path | str | None = None) -> ExperienceLedger:
     return ExperienceLedger(default_v3_paths(root).ledger)
+
+
+def default_commit_log(root: Path | str | None = None) -> MemoryCommitLog:
+    return MemoryCommitLog(default_v3_paths(root).commits)
 
 
 def pipeline_for_background_job(bg_name: str) -> str:
@@ -174,6 +183,11 @@ def record_experience(
         what_failed=what_failed,
         actions=list(actions or []),
     )
+    store = default_kernel_store(root)
+    kernel = store.load()
+    commit = SecurityGateway().validate(delta)
+    MemoryConsolidator().apply_commit(kernel, delta, commit)
+    default_commit_log(root).append(commit)
     record = ExperienceRecord(
         id=run_id,
         pipeline=pipeline,
@@ -184,10 +198,8 @@ def record_experience(
         causal_links=list(causal_links or []),
         confidence=confidence,
         memory_class=memory_class,
+        memory_commit_id=commit.commit_id,
     )
-    store = default_kernel_store(root)
-    kernel = store.load()
-    MemoryConsolidator().apply_delta(kernel, delta)
     default_ledger(root).append(record)
     store.save(kernel)
     return record
@@ -284,7 +296,7 @@ def prepare_background_context(
 
 
 def run_communication(message: str, *, root: Path | str | None = None) -> str:
-    executor = PipelineExecutor(default_kernel_store(root), default_ledger(root))
+    executor = PipelineExecutor(default_kernel_store(root), default_ledger(root), commit_log=default_commit_log(root))
     result = executor.run(
         build_communication_pipeline(),
         {"message": message},
