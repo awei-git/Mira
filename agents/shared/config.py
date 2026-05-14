@@ -18,6 +18,9 @@ for _name in dir(_lib_config):
         globals()[_name] = getattr(_lib_config, _name)
 
 MIRA_ROOT = _lib_config.MIRA_ROOT
+AGENT_AUDIT_LOG = MIRA_ROOT / "logs" / "agent_audit.jsonl"
+# Optional local fallback placeholder for future offline/resilience routing.
+# LOCAL_FALLBACK_MODEL = None  # path to local .gguf or MLX model for offline/resilience (future use)
 AGENT_REGISTRY = {
     "general": {
         "tier": "light",
@@ -97,6 +100,7 @@ PUBLISH_OBSESSION_GATE_ENABLED = False
 OBSESSION_GATE_TIMEOUT_HOURS = 24
 SKILL_YIELD_FILE = MIRA_ROOT / "logs" / "skill_yield.json"
 MIN_DIFF_REVIEW_SECONDS = 30
+LOG_RETENTION_DAYS = int(getattr(_lib_config, "LOG_RETENTION_DAYS", 30))
 CALIBRATION_INTERVAL_DAYS = 7
 CALIBRATION_SAMPLE_SIZE = 4
 CODER_REQUIRE_HUMAN_REVIEW = True
@@ -110,6 +114,7 @@ BLIND_SPOT_LOOKBACK_DAYS = 30
 BLIND_SPOT_SILENCE_THRESHOLD_DAYS = 3
 MAX_TASKS_PER_CYCLE = getattr(_lib_config, "MAX_TASKS_PER_CYCLE", 5)
 MAX_SKILL_IMPORTS_PER_DAY = getattr(_lib_config, "MAX_SKILL_IMPORTS_PER_DAY", 20)
+MAX_SKILLS_PER_AGENT = getattr(_lib_config, "MAX_SKILLS_PER_AGENT", 12)
 EVALUATOR_MIN_ISSUE_SEVERITY = getattr(_lib_config, "EVALUATOR_MIN_ISSUE_SEVERITY", "medium")
 DEEP_VERIFY_PROBABILITY = 0.15
 DEEP_VERIFY_COOLDOWN_MINUTES = 120

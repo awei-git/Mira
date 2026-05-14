@@ -50,6 +50,18 @@ SEMANTIC_INJECTION_PATTERNS: list[re.Pattern] = [
         re.IGNORECASE | re.MULTILINE,
     ),
 ]
+SEMANTIC_MANIPULATION_PATTERNS: list[re.Pattern] = [
+    re.compile(r"ignore (your )?(previous |prior )?instructions", re.IGNORECASE),
+    re.compile(r"forget (your |all )?rules", re.IGNORECASE),
+    re.compile(r"override your", re.IGNORECASE),
+    re.compile(r"you are now", re.IGNORECASE),
+    re.compile(r"your (true |real )?purpose is", re.IGNORECASE),
+    re.compile(r"disregard (the |your )?(above|previous|rules)", re.IGNORECASE),
+    re.compile(r"act as if", re.IGNORECASE),
+    re.compile(r"(?m)^\s{0,3}##\s+System\b", re.IGNORECASE),
+    re.compile(r"(?m)^\s{0,3}#\s+Identity\b", re.IGNORECASE),
+    re.compile(r"(?m)^\s*SYSTEM\s*:", re.IGNORECASE),
+]
 SENSITIVITY_PATTERNS: list[dict[str, object]] = [
     {
         "category": "no_choice",
@@ -253,6 +265,74 @@ def validate_soul_files() -> list[tuple[str, str]]:
             failures.append(("journal", f"unreadable: {exc}"))
 
     return failures
+
+
+_LOCAL_MODEL_PROVIDERS = frozenset({"local", "offline", "omlx", "ollama", "mlx", "llama.cpp", "llamacpp", "gguf"})
+
+
+def _agent_registry_items(agent_registry) -> list[tuple[str, object]]:
+    if agent_registry is None:
+        return []
+    if isinstance(agent_registry, dict):
+        return [(str(name), config) for name, config in agent_registry.items()]
+    if hasattr(agent_registry, "list_agents") and hasattr(agent_registry, "get_manifest"):
+        return [(str(name), agent_registry.get_manifest(name)) for name in agent_registry.list_agents()]
+    manifests = getattr(agent_registry, "_manifests", None)
+    if isinstance(manifests, dict):
+        return [(str(name), manifest) for name, manifest in manifests.items()]
+    return []
+
+
+def _agent_config_value(agent_config, *names: str):
+    if isinstance(agent_config, dict):
+        for name in names:
+            if agent_config.get(name):
+                return agent_config.get(name)
+        return None
+    for name in names:
+        value = getattr(agent_config, name, None)
+        if value:
+            return value
+    return None
+
+
+def audit_model_dependency(agent_registry) -> None:
+    """Warn when all observable active agents depend on one cloud provider."""
+    try:
+        import config as _config
+    except ImportError:
+        LOCAL_FALLBACK_MODEL = None
+        MODELS = {}
+    else:
+        LOCAL_FALLBACK_MODEL = getattr(_config, "LOCAL_FALLBACK_MODEL", None)
+        MODELS = getattr(_config, "MODELS", {})
+
+    if LOCAL_FALLBACK_MODEL:
+        return
+
+    providers: set[str] = set()
+    observed_agents: list[str] = []
+    for agent_name, agent_config in _agent_registry_items(agent_registry):
+        provider = _agent_config_value(agent_config, "model_provider", "llm_provider", "provider")
+        model_name = _agent_config_value(agent_config, "model_name", "llm_model", "model")
+        if not provider and model_name and isinstance(MODELS, dict):
+            model_config = MODELS.get(str(model_name), {})
+            if isinstance(model_config, dict):
+                provider = model_config.get("provider")
+        if not provider:
+            continue
+        provider_name = str(provider).strip().lower()
+        if not provider_name or provider_name in _LOCAL_MODEL_PROVIDERS:
+            continue
+        providers.add(provider_name)
+        observed_agents.append(agent_name)
+
+    if len(observed_agents) > 1 and len(providers) == 1:
+        provider = next(iter(providers))
+        log.warning(
+            "MODEL_DEPENDENCY_RISK: all observable active agents use cloud provider '%s' and LOCAL_FALLBACK_MODEL is not set",
+            provider,
+        )
 
 
 class SkillMetadata(TypedDict, total=False):
@@ -1243,6 +1323,7 @@ AUDIT_BOUNDARY = {
         "dangerous_code_execution",
         "obfuscated_payloads",
         "privilege_escalation",
+        "semantic_manipulation",
     ],
     "not_checked": [
         "static analysis only",
@@ -1260,6 +1341,7 @@ AUDIT_BOUNDARY = {
         "privilege escalation patterns including sudo, chmod, chown, setuid, and setgid",
         "high-confidence static threat patterns including shell injection, keychain access, persistence calls, and gate suppression attempts",
         "prompt injection signatures in skill content and metadata",
+        "semantic and behavioral manipulation patterns in raw skill body content",
         "natural-language judgment skills missing reviewer pairing, pass/fail criteria, edge-case policy, or authority scope",
         "compound sensitive-path and network exfiltration risk patterns",
         "verification anchor injection through validation logic coupled to network or subprocess calls",
@@ -1381,6 +1463,21 @@ _CIRC_WRITE_PATTERN = re.compile(r"\b(?:open\s*\([^)]*['\"][wa]['\"]|write_text|
 _CIRC_GT_PATH_PATTERN = re.compile("|".join(re.escape(p) for p in sorted(_CIRC_GROUND_TRUTH_PATHS)))
 _CIRC_FUNC_DEF_PATTERN = re.compile(
     r"\bdef\s+(" + "|".join(re.escape(f) for f in sorted(_CIRC_AUDIT_FN_NAMES)) + r")\s*\("
+)
+_DEFERRED_EXFILTRATION_ENCODE_STORE_PATTERN = re.compile(r"(base64|b64encode|hexlify).{0,200}(open|write|Path)")
+_DEFERRED_EXFILTRATION_PERSISTENCE_PATTERN = re.compile(r"(launchctl|crontab|at\s+now)")
+_DEFERRED_EXFILTRATION_ENV_PATTERN = re.compile(
+    r"os\." r"environ\[.*\]\s*=.*key|token|secret",
+    re.IGNORECASE,
+)
+_DEFERRED_EXFILTRATION_OPEN_WRITE_PATTERN = re.compile(
+    r"""open\s*\(\s*f?['"]([^'"]+)['"][^)]*(?:,\s*f?['"][^'"]*[wax+][^'"]*['"]|mode\s*=\s*f?['"][^'"]*[wax+][^'"]*['"])"""
+)
+_DEFERRED_EXFILTRATION_PATH_WRITE_PATTERN = re.compile(
+    r"""Path\s*\(\s*f?['"]([^'"]+)['"]\s*\)\s*\.\s*(?:write_(?:text|bytes)|open\s*\([^)]*['"][^'"]*[wax+][^'"]*['"])"""
+)
+_DEFERRED_EXFILTRATION_SHELL_RC_PATTERN = re.compile(
+    r"""(?:(?:open|write|Path).{0,200}(?:\.bashrc|\.bash_profile|\.zshrc|\.zprofile|\.profile|\.zlogin|config\.fish)|(?:\.bashrc|\.bash_profile|\.zshrc|\.zprofile|\.profile|\.zlogin|config\.fish).{0,200}(?:open|write|Path))"""
 )
 
 _SELF_REF_AUDIT_PATTERNS = [
@@ -1563,6 +1660,24 @@ def _check_semantic_injection(skill_content: str, metadata: dict | None = None) 
                 "mechanism": "semantic-layer instruction override signature in skill text content",
             }
         )
+    return findings
+
+
+def _check_semantic_manipulation(skill_content: str) -> list[dict[str, object]]:
+    findings: list[dict[str, object]] = []
+    for pattern in SEMANTIC_MANIPULATION_PATTERNS:
+        for match in pattern.finditer(skill_content):
+            snippet = skill_content[max(0, match.start() - 80) : match.end() + 80]
+            findings.append(
+                {
+                    "severity": "semantic_manipulation",
+                    "category": "semantic_manipulation",
+                    "pattern": pattern.pattern,
+                    "line_no": skill_content[: match.start()].count("\n") + 1,
+                    "line_content": re.sub(r"\s+", " ", snippet).strip()[:300],
+                    "mechanism": "semantic or behavioral instruction override in raw skill body",
+                }
+            )
     return findings
 
 
@@ -2746,6 +2861,51 @@ def _path_within_mira_root(path: Path, root: Path) -> bool:
         return False
 
 
+def _deferred_exfiltration_write_outside_allowed_roots(path_value: str) -> bool:
+    try:
+        from config import MIRA_ROOT as _deferred_mira_root
+
+        mira_root = Path(_deferred_mira_root).expanduser().resolve()
+    except Exception:
+        mira_root = _mira_root_for_dependency_audit().resolve()
+
+    try:
+        path = Path(os.path.expandvars(path_value)).expanduser()
+        if not path.is_absolute():
+            path = mira_root / path
+        resolved_path = path.resolve()
+        tmp_root = Path("/tmp").resolve()
+        private_tmp_root = Path("/private/tmp").resolve()
+    except OSError:
+        return True
+
+    return not (
+        _path_within_mira_root(resolved_path, mira_root)
+        or _path_within_mira_root(resolved_path, tmp_root)
+        or _path_within_mira_root(resolved_path, private_tmp_root)
+    )
+
+
+def _check_deferred_exfiltration(skill_content: str) -> list[str]:
+    matches: list[str] = []
+    if _DEFERRED_EXFILTRATION_ENCODE_STORE_PATTERN.search(skill_content):
+        matches.append("encode_then_store")
+    if _DEFERRED_EXFILTRATION_PERSISTENCE_PATTERN.search(skill_content):
+        matches.append("persistence_registration")
+    if _DEFERRED_EXFILTRATION_ENV_PATTERN.search(skill_content):
+        matches.append("credential_stuffed_environment")
+    if _DEFERRED_EXFILTRATION_SHELL_RC_PATTERN.search(skill_content):
+        matches.append("shell_rc_write")
+
+    for pattern in (_DEFERRED_EXFILTRATION_OPEN_WRITE_PATTERN, _DEFERRED_EXFILTRATION_PATH_WRITE_PATTERN):
+        for match in pattern.finditer(skill_content):
+            path_value = match.group(1)
+            if path_value and _deferred_exfiltration_write_outside_allowed_roots(path_value):
+                matches.append(f"write_outside_allowed_roots:{path_value}")
+
+    return matches
+
+
 def _resolve_skill_audit_path(skill_name: str, metadata: dict | None) -> Path | None:
     root = _mira_root_for_dependency_audit()
     for value in (
@@ -3403,6 +3563,8 @@ def _skill_audit_excerpt(skill_content: str, failed_checks: list[str], pattern: 
             excerpt_patterns.extend(pattern for _, pattern in _INSTRUCTION_INJECTION_PATTERNS)
         if check == "semantic_injection":
             excerpt_patterns.extend(SEMANTIC_INJECTION_PATTERNS)
+        if check == "semantic_manipulation":
+            excerpt_patterns.extend(SEMANTIC_MANIPULATION_PATTERNS)
         if check == "SUSPICIOUS_PROMPT":
             excerpt_patterns.extend(pattern for _, pattern in _configured_social_engineering_patterns())
         if check == "compound_exfiltration_risk":
@@ -3663,6 +3825,36 @@ def audit_skill(
                 result.get("categories", []),
             )
             _record_survival_skill_audit_bypass(skill_name, source, matched_source, result, metadata)
+        if not result["blocked"]:
+            prompt_injection_matches = _check_prompt_injection(
+                _prompt_injection_text_fields(skill_name, skill_content, tags, metadata)
+            )
+            if prompt_injection_matches:
+                log.warning(
+                    "SKILL_AUDIT blocked: skill=%s reason='prompt_injection_detected' matches=%r",
+                    skill_name,
+                    prompt_injection_matches,
+                )
+                _alert_skill_audit_blocked(
+                    skill_name,
+                    ["prompt_injection_detected"],
+                    "\n".join(prompt_injection_matches),
+                    source,
+                    metadata,
+                )
+                result = _audit_result(
+                    skill_name,
+                    source,
+                    True,
+                    ["prompt_injection_detected"],
+                    list(result.get("warnings") or []),
+                    list(result.get("overreach_warnings") or []),
+                    reason="prompt_injection_detected",
+                    matched_phrases=prompt_injection_matches,
+                    status="BLOCKED",
+                    verdict="BLOCKED",
+                    audit_flags=result.get("audit_flags"),
+                )
         _append_skill_audit_trail(skill_name, content_sha256, result)
         if not result["blocked"]:
             _increment_daily_skill_import_counter()
@@ -3884,6 +4076,75 @@ def content_looks_like_injection(text: str) -> str | None:
     return None
 
 
+_PROMPT_INJECTION_TEXT_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"\bignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions\b", re.IGNORECASE),
+    re.compile(r"\bdisregard\b", re.IGNORECASE),
+    re.compile(r"\bnew\s+objective\b", re.IGNORECASE),
+    re.compile(r"\byour\s+real\s+goal\s+is\b", re.IGNORECASE),
+    re.compile(r"\bsystem\s+prompt\b", re.IGNORECASE),
+    re.compile(r"\bjailbreak\b", re.IGNORECASE),
+    re.compile(r"\b[A-Za-z0-9+/]{100,}={0,2}\b"),
+)
+
+_PROMPT_INJECTION_TEXT_BLOCKLIST: tuple[str, ...] = (
+    "ignore previous instructions",
+    "ignore all prior",
+    "disregard",
+    "you are now",
+    "new persona",
+    "forget your",
+    "override your",
+    "your real instructions",
+    "system prompt",
+    "do not follow",
+)
+
+
+def _check_prompt_injection(skill_text: str) -> list[str]:
+    matches: list[str] = []
+    seen: set[str] = set()
+    for pattern in _PROMPT_INJECTION_TEXT_PATTERNS:
+        for match in pattern.finditer(skill_text):
+            flagged = match.group(0)
+            if flagged in seen:
+                continue
+            seen.add(flagged)
+            matches.append(flagged)
+    return matches
+
+
+def _match_prompt_injection_text_blocklist(skill_text: str) -> tuple[str, int] | None:
+    for line_number, line in enumerate(skill_text.splitlines(), start=1):
+        lowered_line = line.lower()
+        for phrase in _PROMPT_INJECTION_TEXT_BLOCKLIST:
+            if phrase in lowered_line:
+                return phrase, line_number
+    return None
+
+
+def _strip_markdown_code_blocks(text: str) -> str:
+    return re.sub(r"(?ms)^```.*?^```", "", text)
+
+
+def _prompt_injection_text_fields(
+    skill_name: str,
+    skill_content: str,
+    tags: list[str] | None,
+    metadata: dict | None,
+) -> str:
+    field_values: list[str] = [skill_name]
+    frontmatter = skill_metadata_from_frontmatter(skill_content)
+    combined_metadata = dict(frontmatter)
+    combined_metadata.update(metadata or {})
+
+    for key in ("name", "description", "tags", "body", "examples"):
+        field_values.extend(_iter_string_fields(combined_metadata.get(key)))
+    if tags:
+        field_values.extend(str(tag) for tag in tags)
+    field_values.append(_strip_markdown_code_blocks(_extract_skill_natural_language_text(skill_content)))
+    return "\n".join(value for value in field_values if value)
+
+
 def _configured_skill_knowledge_blocklist() -> list[str]:
     try:
         from config import SKILL_KNOWLEDGE_BLOCKLIST
@@ -3944,6 +4205,7 @@ def _audit_skill_impl(
     - dangerous_code_execution
     - obfuscated_payloads
     - privilege_escalation
+    - DEFERRED_EXFILTRATION
     - SENSITIVE_FILE_ACCESS
     - verification_anchor_injection (WARNING only, requires manual review)
     - judgment_boundaries_missing (WARNING only, does not block deployment)
@@ -4000,6 +4262,7 @@ def _audit_skill_impl(
             _sensitive_file_strict_provenance,
         )
     }
+    deferred_exfiltration_matches = _check_deferred_exfiltration(skill_content)
 
     _evasion_terms = ["soul_manager", "audit_skill", "_content_looks_like_error", "preflight_check"]
     if any(term in (skill_name + "\n" + skill_content) for term in _evasion_terms) or re.search(
@@ -4028,6 +4291,26 @@ def _audit_skill_impl(
 
     _static_blocked, _static_pattern = _static_audit(skill_content)
     if _static_blocked:
+        _static_categories = [f"static_audit:{_static_pattern}"]
+        _static_extra: dict[str, object] = {}
+        if deferred_exfiltration_matches:
+            _static_categories.append("DEFERRED_EXFILTRATION")
+            _audit_flags["deferred_exfiltration"] = {
+                "detected": True,
+                "severity": "HIGH",
+                "reason": "deferred_exfiltration_risk",
+                "matches": deferred_exfiltration_matches,
+            }
+            _static_extra["reason"] = "deferred_exfiltration_risk"
+            _static_extra["findings"] = [
+                {
+                    "severity": "HIGH",
+                    "category": "DEFERRED_EXFILTRATION",
+                    "reason": "deferred_exfiltration_risk",
+                    "pattern": match,
+                }
+                for match in deferred_exfiltration_matches
+            ]
         log.warning(
             "SKILL_AUDIT blocked: skill=%s reason='static_audit: matched high-confidence threat pattern=%s'",
             skill_name,
@@ -4035,7 +4318,7 @@ def _audit_skill_impl(
         )
         _alert_skill_audit_blocked(
             skill_name,
-            [f"static_audit:{_static_pattern}"],
+            _static_categories,
             skill_content,
             source,
             metadata,
@@ -4044,10 +4327,11 @@ def _audit_skill_impl(
             skill_name,
             source,
             True,
-            [f"static_audit:{_static_pattern}"],
+            _static_categories,
             [],
             [],
             audit_flags=_audit_flags,
+            **_static_extra,
         )
 
     _skill_id = skill_name.lower().replace(" ", "-")
@@ -4251,6 +4535,87 @@ def _audit_skill_impl(
         blocked_categories.append("obfuscated_payloads")
     if has_privilege_escalation:
         blocked_categories.append("privilege_escalation")
+
+    if deferred_exfiltration_matches:
+        blocked_categories.append("DEFERRED_EXFILTRATION")
+        _audit_flags["deferred_exfiltration"] = {
+            "detected": True,
+            "severity": "HIGH",
+            "reason": "deferred_exfiltration_risk",
+            "matches": deferred_exfiltration_matches,
+        }
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s category=DEFERRED_EXFILTRATION reason='deferred_exfiltration_risk' matches=%s",
+            skill_name,
+            deferred_exfiltration_matches,
+        )
+
+    semantic_manipulation_findings = _check_semantic_manipulation(skill_content)
+    if semantic_manipulation_findings:
+        first_semantic_manipulation = semantic_manipulation_findings[0]
+        for finding in semantic_manipulation_findings:
+            log.warning(
+                "SKILL_AUDIT blocked: skill=%s category=semantic_manipulation severity=semantic_manipulation pattern=%r line=%s",
+                skill_name,
+                finding.get("pattern"),
+                finding.get("line_no"),
+            )
+        _alert_skill_audit_blocked(
+            skill_name,
+            ["semantic_manipulation"],
+            skill_content,
+            source,
+            metadata,
+            str(first_semantic_manipulation.get("pattern", "")),
+        )
+        return _audit_result(
+            skill_name,
+            source,
+            True,
+            ["semantic_manipulation"],
+            warning_categories,
+            [],
+            reason="semantic_manipulation",
+            severity="semantic_manipulation",
+            matched_pattern=first_semantic_manipulation.get("pattern"),
+            matched_line_number=first_semantic_manipulation.get("line_no"),
+            findings=semantic_manipulation_findings,
+            status="BLOCKED",
+            verdict="BLOCKED",
+            audit_flags=_audit_flags,
+        )
+
+    prompt_injection_text_match = _match_prompt_injection_text_blocklist(skill_content)
+    if prompt_injection_text_match:
+        matched_phrase, matched_line_number = prompt_injection_text_match
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason='prompt_injection_pattern' phrase=%r line=%d",
+            skill_name,
+            matched_phrase,
+            matched_line_number,
+        )
+        _alert_skill_audit_blocked(
+            skill_name,
+            ["prompt_injection_pattern"],
+            skill_content,
+            source,
+            metadata,
+            matched_phrase,
+        )
+        return _audit_result(
+            skill_name,
+            source,
+            True,
+            ["prompt_injection_pattern"],
+            warning_categories,
+            [],
+            reason="prompt_injection_pattern",
+            matched_phrase=matched_phrase,
+            matched_line_number=matched_line_number,
+            status="BLOCKED",
+            verdict="BLOCKED",
+            audit_flags=_audit_flags,
+        )
     blocked_categories.extend(_check_behavioral_injection(skill_content))
     for finding in dependency_findings:
         blocked_categories.append(f"dependency_{finding['category']}: {finding['file']}:{finding['line_no']}")
@@ -4536,6 +4901,15 @@ def _audit_skill_impl(
 
     audit_findings: list[dict[str, object]] = list(dependency_findings)
     audit_findings.extend(semantic_injection_findings)
+    for _deferred_exfiltration_match in deferred_exfiltration_matches:
+        audit_findings.append(
+            {
+                "severity": "HIGH",
+                "category": "DEFERRED_EXFILTRATION",
+                "reason": "deferred_exfiltration_risk",
+                "pattern": _deferred_exfiltration_match,
+            }
+        )
     for _sensitive_file_match in _sensitive_file_access_matches:
         audit_findings.append(
             {
@@ -5203,6 +5577,16 @@ def _audit_skill_impl(
             "passed": not has_privilege_escalation,
         },
         {
+            "check": "semantic_manipulation",
+            "proxy_for": "semantic or behavioral instruction override in raw skill body content",
+            "passed": not semantic_manipulation_findings,
+        },
+        {
+            "check": "DEFERRED_EXFILTRATION",
+            "proxy_for": "deferred credential harvest, local staging, or persistence before exfiltration",
+            "passed": not deferred_exfiltration_matches,
+        },
+        {
             "check": "SENSITIVE_FILE_ACCESS",
             "proxy_for": "secret, credential, browser-store, SSH-key, or keychain file access",
             "passed": not _sensitive_file_access_matches,
@@ -5490,6 +5874,7 @@ def _audit_skill_impl(
         judgment_encapsulation_missing=judgment_encapsulation_warnings,
         judgment_encapsulation_requires_review=judgment_encapsulation_requires_review,
         audit_flags=_audit_flags,
+        **({"reason": "deferred_exfiltration_risk"} if "DEFERRED_EXFILTRATION" in blocked_categories else {}),
         **sensitive_file_access_denial,
     )
 
@@ -5570,6 +5955,69 @@ def _skill_content_with_provenance(content: str, provenance: dict[str, str]) -> 
                 return content
             return content[:end] + "\n" + block + content[end:]
     return f"---\n{block}\n---\n\n{content}"
+
+
+def _parse_last_audited_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _skill_last_audited(content: str) -> datetime | None:
+    metadata = skill_metadata_from_frontmatter(content)
+    parsed = _parse_last_audited_timestamp(metadata.get("last_audited"))
+    if parsed is not None:
+        return parsed
+
+    header_lines: list[str] = []
+    for line in content.splitlines()[:40]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("//"):
+            header_lines.append(line)
+            continue
+        break
+    header = "\n".join(header_lines)
+    match = re.search(r"(?m)^\s*(?:#|//)\s*last_audited:\s*(\S+)", header)
+    return _parse_last_audited_timestamp(match.group(1) if match else None)
+
+
+def _skill_content_with_last_audited(content: str, timestamp: str, suffix: str = ".md") -> str:
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end != -1:
+            header = content[4:end]
+            if re.search(r"(?m)^last_audited\s*:", header):
+                header = re.sub(r"(?m)^last_audited\s*:.*$", f"last_audited: {timestamp}", header)
+            else:
+                header = header.rstrip("\n") + f"\nlast_audited: {timestamp}"
+            return f"---\n{header}{content[end:]}"
+
+    if suffix == ".py":
+        pattern = re.compile(r"(?m)^(\s*#\s*last_audited:\s*).*$")
+        if pattern.search(content[:1000]):
+            return pattern.sub(rf"\g<1>{timestamp}", content, count=1)
+        lines = content.splitlines(keepends=True)
+        insert_at = 0
+        if lines and lines[0].startswith("#!"):
+            insert_at = 1
+        if insert_at < len(lines) and re.search(r"coding[:=]", lines[insert_at]):
+            insert_at += 1
+        lines.insert(insert_at, f"# last_audited: {timestamp}\n")
+        return "".join(lines)
+
+    return f"---\nlast_audited: {timestamp}\n---\n\n{content}"
+
+
+def _write_skill_content(path: Path, content: str) -> None:
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def _append_skill_provenance_audit_trail(skill_name: str, provenance: dict[str, str]) -> None:
@@ -5729,6 +6177,8 @@ def save_skill(
         return False
     _audit_summary = _result
 
+    metadata["last_audited"] = datetime.now(timezone.utc).isoformat()
+    content = _skill_content_with_last_audited(content, metadata["last_audited"], skill_file.suffix)
     provenance = _skill_save_provenance(content, source, metadata)
     metadata["provenance"] = provenance
     content = _skill_content_with_provenance(content, provenance)
@@ -5756,6 +6206,86 @@ def save_skill(
         _update_capability_manifest(skill_name, skill_tags, _audit_summary)
 
     return True
+
+
+def reaudit_stale_skills(max_age_days: int = 30) -> dict[str, int]:
+    try:
+        from config import SKILLS_DIR
+    except Exception as exc:
+        log.debug("reaudit_stale_skills: config import failed: %s", exc)
+        return {"checked": 0, "passed": 0, "quarantined": 0, "skipped": 0}
+
+    if not SKILLS_DIR.exists():
+        return {"checked": 0, "passed": 0, "quarantined": 0, "skipped": 0}
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    counts = {"checked": 0, "passed": 0, "quarantined": 0, "skipped": 0}
+    skill_files = [path for path in sorted(SKILLS_DIR.rglob("*")) if path.is_file() and path.suffix in {".md", ".py"}]
+
+    for skill_file in skill_files:
+        skill_name = skill_file.stem
+        try:
+            content = skill_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            log.warning("reaudit_stale_skills: cannot read %s: %s", skill_file.name, exc)
+            counts["skipped"] += 1
+            continue
+
+        last_audited = _skill_last_audited(content)
+        if last_audited is not None and last_audited >= cutoff:
+            counts["skipped"] += 1
+            continue
+
+        counts["checked"] += 1
+        audited_at = datetime.now(timezone.utc).isoformat()
+        updated_content = _skill_content_with_last_audited(content, audited_at, skill_file.suffix)
+        metadata = skill_metadata_from_frontmatter(updated_content)
+        try:
+            result = audit_skill(skill_name, updated_content, source="internal", metadata=metadata)
+            if not isinstance(result, dict) or "blocked" not in result:
+                raise ValueError(f"unexpected audit result: {result!r}")
+        except Exception as exc:
+            log.warning("reaudit_stale_skills: audit error for %s: %s", skill_name, exc)
+            counts["skipped"] += 1
+            continue
+
+        if result["blocked"]:
+            blocked_path = skill_file.with_suffix(".blocked")
+            if blocked_path.exists():
+                blocked_name = f"{skill_file.stem}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.blocked"
+                blocked_path = skill_file.with_name(blocked_name)
+            try:
+                skill_file.rename(blocked_path)
+                counts["quarantined"] += 1
+                log.warning(
+                    "reaudit_stale_skills: %s failed audit and was quarantined as %s categories=%s",
+                    skill_name,
+                    blocked_path.name,
+                    result.get("categories", []),
+                )
+            except OSError as exc:
+                counts["skipped"] += 1
+                log.warning("reaudit_stale_skills: quarantine failed for %s: %s", skill_name, exc)
+            continue
+
+        try:
+            _write_skill_content(skill_file, updated_content)
+            register_skill_checksum(skill_file)
+        except OSError as exc:
+            counts["skipped"] += 1
+            log.warning("reaudit_stale_skills: timestamp update failed for %s: %s", skill_name, exc)
+            continue
+        counts["passed"] += 1
+        log.info("reaudit_stale_skills: %s passed audit", skill_name)
+
+    log.info(
+        "reaudit_stale_skills: checked=%d passed=%d quarantined=%d skipped=%d",
+        counts["checked"],
+        counts["passed"],
+        counts["quarantined"],
+        counts["skipped"],
+    )
+    return counts
 
 
 def load_skill(skill_name: str, metadata: dict | None = None) -> str:

@@ -13,10 +13,13 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
 import uuid
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +31,7 @@ import pathsetup  # noqa: F401  (side-effect: registers all Mira package dirs)
 
 import config as mira_config
 import health_monitor
+import soul_manager
 from logging_util import throttled_warning  # noqa: E402  — used inside _check_invisible_deps
 from notes_bridge import detect_vulnerability_disclosure
 
@@ -166,6 +170,7 @@ from soul_manager import (
     check_audit_coverage,
     check_rules_integrity,
     get_skill_provenance,
+    reaudit_stale_skills,
     validate_soul_files,
 )
 
@@ -233,10 +238,15 @@ log = logging.getLogger("mira")
 BRIDGE_STALENESS_THRESHOLD_MINUTES = BRIDGE_STALE_THRESHOLD / 60
 BACKGROUND_HEALTH_LOG = LOGS_DIR / "background_health.jsonl"
 TASK_DISTRIBUTION_FILE = LOGS_DIR / "task_distribution.json"
+AGENT_AUDIT_LOG = getattr(mira_config, "AGENT_AUDIT_LOG", MIRA_ROOT / "logs" / "agent_audit.jsonl")
 THIRD_THING_FILE = Path(__file__).resolve().parent / "notes_outbox" / "third_thing.md"
 BRIDGE_THIRD_THING_FILE = MIRA_DIR / "outbox" / "third_thing.md"
 JOINT_GARDEN_FILE = _AGENTS_DIR / "shared" / "soul" / "joint_garden.md"
 JOINT_GARDEN_STALE_DAYS = 21
+CLAUDE_API_PING_URL = "https://api.anthropic.com/v1/messages"
+CLAUDE_API_PING_TIMEOUT_SECONDS = 3
+OFFLINE_FALLBACK_PROMPT = _AGENTS_DIR / "shared" / "prompts" / "offline_fallback.txt"
+_LAST_NETWORK_STATUS: dict | None = None
 
 _INTENT_CLARIFICATION_REPLY = "What do you want to achieve with this?"
 _SENSITIVE_REDACTED_CONTENT = "[sensitive survival exposure routed local]"
@@ -270,6 +280,8 @@ _AMBIGUOUS_INTENT_PATTERNS = (
     re.compile(r"\bwhatever\b", re.IGNORECASE),
     re.compile(r"\banything\b", re.IGNORECASE),
 )
+_LOG_PRUNE_STATE_KEY = "last_log_prune"
+_LOG_PRUNE_STATE_DIR_PREFIXES = (".", "_")
 _ACTION_VERBS = frozenset(
     {
         "analyze",
@@ -318,6 +330,36 @@ _ACTION_VERBS = frozenset(
         "write",
     }
 )
+
+
+def _is_prunable_log_file(path: Path) -> bool:
+    if not path.is_file() or path.name.startswith("."):
+        return False
+    rel = path.relative_to(LOGS_DIR)
+    return not any(part.startswith(_LOG_PRUNE_STATE_DIR_PREFIXES) for part in rel.parts[:-1])
+
+
+def _prune_old_logs_if_due() -> None:
+    state = load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+    if state.get(_LOG_PRUNE_STATE_KEY) == today:
+        return
+
+    cutoff = time.time() - LOG_RETENTION_DAYS * 86400
+    deleted = 0
+    for path in LOGS_DIR.rglob("*"):
+        try:
+            if _is_prunable_log_file(path) and path.stat().st_mtime < cutoff:
+                os.remove(path)
+                deleted += 1
+        except OSError as exc:
+            log.debug("log prune skipped %s: %s", path, exc)
+
+    state[_LOG_PRUNE_STATE_KEY] = today
+    save_state(state)
+    log.info("Pruned %d log file(s) older than %d days", deleted, LOG_RETENTION_DAYS)
+
+
 _CJK_ACTION_VERBS = (
     "写",
     "做",
@@ -553,6 +595,50 @@ def _record_task_distribution_dispatch(msg) -> None:
         _write_task_distribution(data)
     except Exception as exc:
         log.debug("task distribution record failed: %s", exc)
+
+
+def _record_agent_invocation_audit(msg, task_id: str, duration_ms: int, outcome: str) -> None:
+    try:
+        content = str(getattr(msg, "content", "") or "")
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "agent_name": _task_dispatch_category(msg),
+            "task_id": task_id or str(getattr(msg, "id", "") or ""),
+            "task_summary_truncated_to_100chars": content[:100],
+            "duration_ms": duration_ms,
+            "outcome": outcome,
+        }
+        AGENT_AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(AGENT_AUDIT_LOG, "a", encoding="utf-8") as audit_file:
+            audit_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        log.debug("agent invocation audit write failed: %s", exc)
+
+
+def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
+    skip_audit = False
+    try:
+        skip_audit = self.is_busy()
+    except Exception:
+        skip_audit = False
+
+    start = time.monotonic()
+    task_id = ""
+    outcome = "error"
+    try:
+        task_id = _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
+        outcome = "success" if task_id else "error"
+        return task_id
+    except (TimeoutError, subprocess.TimeoutExpired):
+        outcome = "timeout"
+        raise
+    except Exception:
+        outcome = "error"
+        raise
+    finally:
+        if not skip_audit:
+            duration_ms = int((time.monotonic() - start) * 1000)
+            _record_agent_invocation_audit(msg, task_id, duration_ms, outcome)
 
 
 def _task_distribution_recent_total(daily_counts: dict, dates: list[str]) -> int:
@@ -928,7 +1014,7 @@ def _dispatch_with_survival_guard(self, msg, workspace_dir, *args, **kwargs):
     survival_sensitive = _detect_survival_exposure(original_content)
     time_sensitive = _detect_time_sensitive_message(original_content)
     if not survival_sensitive and not time_sensitive:
-        task_id = _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
+        task_id = _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs)
         if task_id:
             _record_task_distribution_dispatch(msg)
         return task_id
@@ -943,7 +1029,7 @@ def _dispatch_with_survival_guard(self, msg, workspace_dir, *args, **kwargs):
         _mark_time_sensitive_message(msg, original_content)
     msg.content = redacted_content
     try:
-        task_id = _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
+        task_id = _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs)
         if task_id:
             _record_task_distribution_dispatch(msg)
         return task_id
@@ -1219,10 +1305,131 @@ def _log_skill_depth_advisories(command: str) -> None:
             )
 
 
+def _claude_api_reachable() -> bool:
+    request = urllib.request.Request(
+        CLAUDE_API_PING_URL,
+        method="HEAD",
+        headers={"User-Agent": "Mira/claude-reachability-check"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=CLAUDE_API_PING_TIMEOUT_SECONDS):
+            return True
+    except urllib.error.HTTPError as exc:
+        if exc.code < 500:
+            return True
+        log.warning("Claude API ping failed with HTTP %s", exc.code)
+        return False
+    except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
+        log.warning("Claude API unreachable: %s", exc)
+        return False
+
+
+def _offline_fallback_message() -> str:
+    try:
+        return OFFLINE_FALLBACK_PROMPT.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        log.warning("Offline fallback prompt unavailable: %s", exc)
+        return "Received. Claude API connectivity is unavailable right now, so I will resume processing when connectivity is restored."
+
+
+def _offline_command_item_id(cmd: dict) -> str:
+    cmd_type = cmd.get("type", "")
+    item_id = str(cmd.get("item_id") or "")
+    if item_id:
+        return item_id
+    if cmd_type == "new_discussion":
+        item_id = f"disc_{uuid.uuid4().hex[:8]}"
+    elif cmd_type == "recall":
+        item_id = f"req_recall_{uuid.uuid4().hex[:8]}"
+    else:
+        item_id = f"req_{uuid.uuid4().hex[:8]}"
+    cmd["item_id"] = item_id
+    return item_id
+
+
+def _inject_offline_command_fallback(bridge, cmd: dict, fallback: str) -> None:
+    if cmd.get("_offline_fallback_notified"):
+        return
+    cmd_type = cmd.get("type", "")
+    item_id = _offline_command_item_id(cmd)
+    sender = cmd.get("sender", "user")
+    content = cmd.get("query") if cmd_type == "recall" else cmd.get("content", "")
+    title = cmd.get("title") or (str(content)[:50] if content else "Offline request")
+    tags = cmd.get("tags") or []
+    try:
+        if cmd_type == "reply":
+            if bridge.item_exists(item_id):
+                bridge.update_status(item_id, "queued", agent_message=fallback)
+            else:
+                bridge.create_discussion(item_id, title, str(content or ""), sender=sender, tags=tags)
+                bridge.update_status(item_id, "queued", agent_message=fallback)
+        elif cmd_type == "new_discussion":
+            if not bridge.item_exists(item_id):
+                bridge.create_discussion(item_id, title, str(content or ""), sender=sender, tags=tags)
+            bridge.update_status(item_id, "queued", agent_message=fallback)
+        else:
+            if not bridge.item_exists(item_id):
+                bridge.create_task(item_id, title, str(content or ""), sender=sender, tags=tags, origin="user")
+            bridge.update_status(item_id, "queued", agent_message=fallback)
+        cmd["_offline_fallback_notified"] = True
+    except Exception as exc:
+        log.warning("Offline fallback injection failed for command %s: %s", cmd.get("id") or item_id, exc)
+
+
+def _process_offline_control_tasks(fallback: str) -> int:
+    if not getattr(mira_config, "CONTROL_RUNTIME_DB_ENABLED", False) or getattr(
+        mira_config, "BRIDGE_COMPAT_EXPORT_ENABLED", False
+    ):
+        return 0
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository
+
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            items = repo.list_dispatchable_tasks(limit=MAX_TASKS_PER_CYCLE)
+            for item in items:
+                repo.update_task_status(
+                    item.get("user_id") or "ang",
+                    item.get("id") or "",
+                    "queued",
+                    summary="Offline fallback delivered; waiting for Claude API connectivity.",
+                    agent_message=fallback,
+                )
+            return len(items)
+    except Exception as exc:
+        log.warning("Offline control-plane fallback failed: %s", exc)
+        return 0
+
+
+def _do_talk_offline_fallback() -> None:
+    fallback = _offline_fallback_message()
+    handled = _process_offline_control_tasks(fallback)
+    if Mira is None:
+        return
+    try:
+        bridges = Mira.for_all_users(MIRA_DIR)
+    except Exception as exc:
+        log.warning("Offline fallback bridge discovery failed: %s", exc)
+        return
+    for bridge in bridges:
+        try:
+            for cmd in bridge.poll_commands():
+                _inject_offline_command_fallback(bridge, cmd, fallback)
+                if hasattr(bridge, "requeue_command"):
+                    bridge.requeue_command(cmd)
+                handled += 1
+        except Exception as exc:
+            log.warning("Offline fallback command processing failed for %s: %s", getattr(bridge, "user_id", "?"), exc)
+    log.warning("Mira offline fallback active; deferred %d request(s)", handled)
+
+
 def do_talk():
     _install_clear_intent_gate()
     _install_survival_dispatch_guard()
     talk_module.MAX_TASKS_PER_CYCLE = MAX_TASKS_PER_CYCLE
+    if not _claude_api_reachable():
+        return _do_talk_offline_fallback()
     return _do_talk()
 
 
@@ -1445,6 +1652,57 @@ def _check_stuck_tasks_audit() -> None:
         )
 
 
+def _record_network_status_in_heartbeat(network_status: dict) -> None:
+    heartbeat = MIRA_DIR / "heartbeat.json"
+    if not heartbeat.exists():
+        log.debug("network status heartbeat write skipped: missing heartbeat file")
+        return
+
+    data = _load_heartbeat_data(heartbeat)
+    if data is None:
+        log.debug("network status heartbeat write skipped: unreadable heartbeat file")
+        return
+
+    data["network_status"] = network_status
+    try:
+        tmp = heartbeat.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.rename(heartbeat)
+    except OSError as exc:
+        log.debug("network status heartbeat write failed: %s", exc)
+
+
+def _check_network_connectivity_audit() -> None:
+    import urllib.error
+    import urllib.request
+
+    global _LAST_NETWORK_STATUS
+    network_status = {
+        "endpoint": CLAUDE_API_PING_URL,
+        "timeout_seconds": CLAUDE_API_PING_TIMEOUT_SECONDS,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "reachable": False,
+    }
+
+    try:
+        request = urllib.request.Request(CLAUDE_API_PING_URL, method="HEAD")
+        with urllib.request.urlopen(request, timeout=CLAUDE_API_PING_TIMEOUT_SECONDS) as response:
+            network_status["reachable"] = True
+            network_status["http_status"] = response.status
+    except urllib.error.HTTPError as exc:
+        network_status["reachable"] = True
+        network_status["http_status"] = exc.code
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        network_status["error"] = f"{type(exc).__name__}: {exc}"
+        log.warning(
+            "Network unreachable. Mira is running offline. If local inference is configured, "
+            "tasks may still proceed with degraded capability."
+        )
+
+    _LAST_NETWORK_STATUS = network_status
+    _record_network_status_in_heartbeat(network_status)
+
+
 # ---------------------------------------------------------------------------
 # Startup health check — make invisible dependencies visible
 # ---------------------------------------------------------------------------
@@ -1551,7 +1809,10 @@ def _check_invisible_dependencies():
     # 6. Stuck task detection: active states past transition threshold
     _check_stuck_tasks_audit()
 
-    # 7. Survival-critical components: no fallback, separate from strategic degradations
+    # 7. Network connectivity: centralized cloud APIs may be unavailable
+    _check_network_connectivity_audit()
+
+    # 8. Survival-critical components: no fallback, separate from strategic degradations
     survival_status = _check_survival_critical_components()
     survival_log = log.info if survival_status["tier"] == "ok" else log.warning
     survival_log(
@@ -2573,6 +2834,7 @@ def cmd_run():
         "Annotate this entry with anything Mira should notice during this cycle.",
     )
     _record_stale_heartbeat_mourning(time.time())
+    _prune_old_logs_if_due()
 
     self_heal()
     _check_invisible_dependencies()
@@ -2720,6 +2982,9 @@ def cmd_run():
     except Exception as _ile:
         log.debug("interface_latency write failed: %s", _ile)
 
+    if _LAST_NETWORK_STATUS is not None:
+        _record_network_status_in_heartbeat(_LAST_NETWORK_STATUS)
+
     if should_shutdown():
         log.info("Shutdown requested — exiting after talk phase")
         return
@@ -2812,8 +3077,6 @@ def cmd_run():
             _reaudit_state[_reaudit_key] = _reaudit_now.isoformat()
             save_state(_reaudit_state)
             try:
-                from memory.soul_skills import reaudit_stale_skills
-
                 reaudit_stale_skills()
             except Exception as e:
                 log.error("Skill re-audit failed: %s", e)
@@ -3764,32 +4027,17 @@ def main():
 
     check_rules_integrity()
 
-    # Prune old log files — once daily, gated by marker file
-    import os as _prune_os
-
-    _prune_marker = LOGS_DIR / ".last_prune"
-    _prune_today = datetime.now().strftime("%Y-%m-%d")
-    if not _prune_marker.exists() or _prune_marker.read_text(encoding="utf-8").strip() != _prune_today:
-        _cutoff = time.time() - LOG_RETENTION_DAYS * 86400
-        for _lf in LOGS_DIR.rglob("*"):
-            if not _lf.is_file() or _lf.name.startswith("."):
-                continue
-            _rel = _lf.relative_to(LOGS_DIR)
-            if any(p.startswith("_") for p in _rel.parts[:-1]):
-                continue
-            try:
-                if _lf.stat().st_mtime < _cutoff:
-                    _prune_os.remove(_lf)
-            except OSError:
-                pass
-        try:
-            _prune_marker.write_text(_prune_today, encoding="utf-8")
-        except OSError:
-            pass
-
     # Validate configuration — log errors but don't crash
     if not validate_config():
         log.warning("Config validation failed — some features may not work")
+
+    try:
+        from agent_registry import get_registry
+
+        agents = get_registry()
+        soul_manager.audit_model_dependency(agents)
+    except Exception as exc:
+        log.debug("Model dependency audit failed: %s", exc)
 
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
     _log_skill_depth_advisories(command)

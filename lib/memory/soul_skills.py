@@ -357,6 +357,10 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
 
     scored = filter_superseded_skill_candidates(scored, SKILLS_DIR)
     scored.sort(key=lambda x: (x[0], x[1].get("score", 0), x[1].get("created", "")), reverse=True)
+    if affinity_tags and len(scored) > max_skills:
+        domain_relevant = [item for item in scored if {t.lower() for t in item[1].get("tags", [])} & affinity_tags]
+        other_relevant = [item for item in scored if not ({t.lower() for t in item[1].get("tags", [])} & affinity_tags)]
+        scored = domain_relevant + other_relevant
     if len(scored) > max_skills:
         log.warning(
             "skill load truncated: %d skills available, loaded %d (agent=%s)",
