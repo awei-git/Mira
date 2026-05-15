@@ -895,6 +895,10 @@ def _status_rank(status: str) -> int:
     return {"red": 3, "yellow": 2, "green": 1, "gray": 0}.get(status, 0)
 
 
+def _empty_usage_bucket() -> dict:
+    return {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}, "agents": {}}
+
+
 def _usage_history(days: int = 30) -> dict:
     from datetime import date as _date
 
@@ -902,9 +906,10 @@ def _usage_history(days: int = 30) -> dict:
 
     today = _date.today()
     by_agent: dict[str, dict] = {}
-    by_day_agent: dict[tuple[str, str], dict] = {}
+    daily: dict[str, dict] = {}
     for offset in range(days):
         day = (today - timedelta(days=offset)).isoformat()
+        daily[day] = _empty_usage_bucket()
         usage_path = LOGS_DIR / f"usage_{day}.jsonl"
         if not usage_path.exists():
             continue
@@ -919,11 +924,11 @@ def _usage_history(days: int = 30) -> dict:
             model = str(rec.get("model") or "unknown")
             tokens = int(rec.get("total_tokens") or rec.get("tokens") or 0)
             cost = float(rec.get("cost_usd") or 0)
+            day_row = daily[day]
             row = by_agent.setdefault(
                 agent,
                 {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}, "days": set()},
             )
-            day_row = by_day_agent.setdefault((day, agent), {"calls": 0, "tokens": 0, "cost_usd": 0.0})
             row["calls"] += 1
             row["tokens"] += tokens
             row["cost_usd"] += cost
@@ -932,6 +937,14 @@ def _usage_history(days: int = 30) -> dict:
             day_row["calls"] += 1
             day_row["tokens"] += tokens
             day_row["cost_usd"] += cost
+            day_model = day_row["models"].setdefault(model, {"calls": 0, "tokens": 0, "cost_usd": 0.0})
+            day_model["calls"] += 1
+            day_model["tokens"] += tokens
+            day_model["cost_usd"] += cost
+            day_agent = day_row["agents"].setdefault(agent, {"calls": 0, "tokens": 0, "cost_usd": 0.0})
+            day_agent["calls"] += 1
+            day_agent["tokens"] += tokens
+            day_agent["cost_usd"] += cost
 
     out = {}
     for agent, row in by_agent.items():
@@ -944,7 +957,56 @@ def _usage_history(days: int = 30) -> dict:
             "avg_monthly_calls": round(row["calls"] / max(1, days / 30), 2),
             "top_model": max(row["models"], key=row["models"].get) if row["models"] else "",
         }
-    return {"days": days, "by_agent": out, "by_day_agent": by_day_agent}
+    daily_rows = []
+    for day in sorted(daily):
+        row = daily[day]
+        for collection in (row["models"], row["agents"]):
+            for stats in collection.values():
+                stats["cost_usd"] = round(stats["cost_usd"], 4)
+        daily_rows.append(
+            {
+                "date": day,
+                "calls": row["calls"],
+                "tokens": row["tokens"],
+                "cost_usd": round(row["cost_usd"], 4),
+                "models": row["models"],
+                "agents": row["agents"],
+            }
+        )
+
+    def range_total(window: int) -> dict:
+        rows = daily_rows[-window:]
+        total = _empty_usage_bucket()
+        for row in rows:
+            total["calls"] += row["calls"]
+            total["tokens"] += row["tokens"]
+            total["cost_usd"] += row["cost_usd"]
+            for model, stats in row["models"].items():
+                dest = total["models"].setdefault(model, {"calls": 0, "tokens": 0, "cost_usd": 0.0})
+                dest["calls"] += stats["calls"]
+                dest["tokens"] += stats["tokens"]
+                dest["cost_usd"] += stats["cost_usd"]
+            for agent, stats in row["agents"].items():
+                dest = total["agents"].setdefault(agent, {"calls": 0, "tokens": 0, "cost_usd": 0.0})
+                dest["calls"] += stats["calls"]
+                dest["tokens"] += stats["tokens"]
+                dest["cost_usd"] += stats["cost_usd"]
+        total["cost_usd"] = round(total["cost_usd"], 4)
+        for collection in (total["models"], total["agents"]):
+            for stats in collection.values():
+                stats["cost_usd"] = round(stats["cost_usd"], 4)
+        return total
+
+    return {
+        "days": days,
+        "by_agent": out,
+        "daily": daily_rows,
+        "totals": {
+            "today": range_total(1),
+            "last_7d": range_total(7),
+            "last_30d": range_total(days),
+        },
+    }
 
 
 def _job_agent_stats(jobs: dict, usage_history: dict) -> list[dict]:
@@ -977,7 +1039,32 @@ def _job_agent_stats(jobs: dict, usage_history: dict) -> list[dict]:
                     "top_model": "",
                 }
             )
+    if not rows:
+        for job in jobs.get("jobs", []):
+            calls = int(job.get("dispatch_count") or (1 if job.get("status") == "done" else 0))
+            if not calls and not job.get("enabled", True):
+                continue
+            rows.append(
+                {
+                    "agent": job.get("agent") or job.get("name", "unknown"),
+                    "calls_30d": calls,
+                    "tokens_30d": int((job.get("usage") or {}).get("tokens") or 0),
+                    "cost_30d": float((job.get("usage") or {}).get("cost_usd") or 0.0),
+                    "daily_avg": calls,
+                    "weekly_avg": calls * 7,
+                    "monthly_avg": calls * 30,
+                    "top_model": max(
+                        ((job.get("usage") or {}).get("models") or {}),
+                        key=lambda model: ((job.get("usage") or {}).get("models") or {}).get(model, {}).get("calls", 0),
+                        default="",
+                    ),
+                }
+            )
     return sorted(rows, key=lambda r: (r["cost_30d"], r["calls_30d"]), reverse=True)[:50]
+
+
+def _memory_action_dict(action) -> dict:
+    return {"type": action.type, "target": action.target, "detail": action.detail}
 
 
 def _security_posture(request: Request | None = None) -> dict:
@@ -1075,6 +1162,16 @@ def _pipeline_status_rows(pipelines, records, commits, effects, jobs: dict, conf
             status = "green"
         else:
             status = "gray"
+        status_text = (
+            errors[0]
+            if errors
+            else {
+                "green": "success",
+                "yellow": "scheduled",
+                "red": "needs attention",
+                "gray": "not observed",
+            }.get(status, status)
+        )
 
         usage = {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}}
         for job in pipeline_jobs:
@@ -1112,7 +1209,12 @@ def _pipeline_status_rows(pipelines, records, commits, effects, jobs: dict, conf
             {
                 "name": name,
                 "status": status,
-                "status_text": errors[0] if errors else ("running/pending" if status == "yellow" else status),
+                "status_text": status_text,
+                "status_detail": (
+                    errors[0]
+                    if errors
+                    else ("No run evidence in the current V3 ledger/job window." if status == "gray" else "")
+                ),
                 "memory_class": pipeline.memory_class,
                 "trigger": f"{pipeline.trigger.type}: {pipeline.trigger.detail}",
                 "priority": pipeline.priority,
@@ -1214,6 +1316,18 @@ def get_backend_dashboard(user_id: str, request: Request):
             "kernel": {
                 "identity": kernel.identity.statement,
                 "scars": [scar.scar_id for scar in kernel.scars],
+                "failure_lessons": [
+                    {
+                        "id": scar.scar_id,
+                        "incident": scar.incident,
+                        "root_cause": scar.root_cause,
+                        "behavioral_change": scar.behavioral_change,
+                        "policy_created": scar.policy_created,
+                        "reinforcement_count": scar.reinforcement_count,
+                        "date": scar.date.isoformat(),
+                    }
+                    for scar in kernel.scars[-20:]
+                ],
                 "hypotheses": [h.hypothesis_id for h in kernel.pending_hypotheses],
                 "skill_traces": {trace.skill_name: trace.success_rate for trace in kernel.skill_traces},
                 "failure_signatures": [sig.pattern for sig in kernel.failure_signatures],
@@ -1237,6 +1351,12 @@ def get_backend_dashboard(user_id: str, request: Request):
                     "status": commit.status,
                     "proposal_id": commit.proposal_id,
                     "findings": [finding.reason for finding in commit.findings],
+                    "committed_actions": [_memory_action_dict(action) for action in commit.committed_actions],
+                    "rejected_actions": [_memory_action_dict(action) for action in commit.rejected_actions],
+                    "quarantined_actions": [_memory_action_dict(action) for action in commit.quarantined_actions],
+                    "summary": "; ".join(action.detail for action in commit.committed_actions[:3])
+                    or "; ".join(finding.reason for finding in commit.findings[:3])
+                    or commit.status,
                     "timestamp": commit.timestamp.isoformat(),
                 }
                 for commit in commits
@@ -1280,6 +1400,7 @@ def get_backend_dashboard(user_id: str, request: Request):
                 "date": jobs.get("date"),
                 "usage_totals": jobs.get("usage_totals", {}),
                 "by_agent": jobs.get("by_agent", {}),
+                "usage_history": usage_history,
                 "agent_stats": _job_agent_stats(jobs, usage_history),
                 "recent": [
                     {
