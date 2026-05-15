@@ -30,6 +30,7 @@ _PATHS = [
     str(_MIRA_ROOT / "agents" / "health"),
     str(_MIRA_ROOT / "agents" / "analyst"),
     str(_MIRA_ROOT / "agents" / "coder"),
+    str(_MIRA_ROOT),
 ]
 
 for p in _PATHS:

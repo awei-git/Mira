@@ -3115,6 +3115,82 @@ def _has_boundary_declaration(metadata: dict | None) -> bool:
     return isinstance(boundary, str) and len(boundary.strip()) >= 20
 
 
+def _is_present_epistemic_metadata_value(value: object) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return value is not None
+
+
+_REQUIRED_SKILL_SECTION_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    ("failure_modes_or_when_not_to_use", re.compile(r"\b(failure\s+modes?|when\s+not\s+to\s+use)\b", re.IGNORECASE)),
+    ("validation_or_evidence_signals", re.compile(r"\b(validation|evidence)\b", re.IGNORECASE)),
+    ("assumptions_or_bias_risks", re.compile(r"\b(assumptions?|bias\s+risks?)\b", re.IGNORECASE)),
+)
+
+
+def _missing_required_skill_sections(skill_content: str) -> list[str]:
+    section_matches = list(re.finditer(r"(?m)^\s{0,3}(?:#{1,6}\s+|\*\*)([^\n*#][^\n]*?)(?:\*\*)?\s*$", skill_content))
+    sections: list[tuple[str, bool]] = []
+    for index, match in enumerate(section_matches):
+        heading = match.group(1).strip()
+        next_start = section_matches[index + 1].start() if index + 1 < len(section_matches) else len(skill_content)
+        body = skill_content[match.end() : next_start].strip()
+        inline_detail = ":" in heading and bool(heading.split(":", 1)[1].strip())
+        sections.append((heading, inline_detail or bool(body)))
+    missing: list[str] = []
+    for section_name, section_pattern in _REQUIRED_SKILL_SECTION_PATTERNS:
+        if not any(section_pattern.search(heading) and has_content for heading, has_content in sections):
+            missing.append(section_name)
+    return missing
+
+
+def _missing_epistemic_audit_metadata(metadata: dict | None) -> list[str]:
+    if not isinstance(metadata, dict):
+        return ["provenance_or_source_task", "scope", "evidence", "limits_or_counterexamples"]
+
+    epistemic_audit = metadata.get("epistemic_audit")
+    if not isinstance(epistemic_audit, dict):
+        epistemic_audit = {}
+    provenance = metadata.get("provenance")
+    if not isinstance(provenance, dict):
+        provenance = {}
+
+    def _value(*keys: str) -> object:
+        for key in keys:
+            for source in (metadata, epistemic_audit, provenance):
+                if key in source and _is_present_epistemic_metadata_value(source[key]):
+                    return source[key]
+        return None
+
+    missing: list[str] = []
+    has_origin = (
+        _is_present_epistemic_metadata_value(metadata.get("provenance"))
+        or _value("source_task", "source_task_id") is not None
+        or any(
+            _is_present_epistemic_metadata_value(provenance.get(key))
+            for key in ("source", "source_task", "source_task_id")
+        )
+    )
+    if not has_origin:
+        missing.append("provenance_or_source_task")
+    for field in ("scope", "evidence", "limits_or_counterexamples"):
+        if _value(field) is None:
+            missing.append(field)
+    return missing
+
+
+def _requires_epistemic_audit_metadata(source: str, metadata: dict | None, is_update: bool) -> bool:
+    if is_update:
+        return False
+    source_type = _infer_source_type(source, metadata)
+    if source_type in {"self-generated", "web-import", "feed-extracted", "community-repo"}:
+        return True
+    normalized_source = str(source or "").strip().lower().replace("_", "-")
+    return normalized_source in {"agent-generated", "self-generated", "external", "imported", "community-import"}
+
+
 def _has_review_boundary(metadata: dict | None) -> bool:
     if not isinstance(metadata, dict):
         return False
@@ -3751,6 +3827,32 @@ def _update_skill_provenance_record(
         log.debug("skill provenance record update failed: %s", _exc)
 
 
+_GLOBAL_RULE_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\balways\s+(apply|use|follow|enforce|override)\b", re.IGNORECASE),
+    re.compile(r"\bnever\s+(allow|permit|skip|bypass)\b", re.IGNORECASE),
+    re.compile(r"\bglobal(?:ly)?\s+(?:rule|policy|override|applies?)\b", re.IGNORECASE),
+    re.compile(r"\bpermanent(?:ly)?\s+(?:rule|policy|override|applies?|replace)\b", re.IGNORECASE),
+    re.compile(r"\boverride[s]?\s+all\b", re.IGNORECASE),
+    re.compile(r"\bapplies?\s+to\s+all\s+(?:tasks?|agents?|sessions?|contexts?)\b", re.IGNORECASE),
+    re.compile(r"\bin\s+all\s+(?:cases|contexts?|situations?|tasks?)\b", re.IGNORECASE),
+]
+
+
+def _epistemic_overgeneralization_failures(skill_content: str, source: str, metadata: dict | None) -> list[str]:
+    if source in TRUSTED_INTERNAL_SOURCES:
+        return []
+    failures: list[str] = []
+    matched_patterns = [p.pattern for p in _GLOBAL_RULE_PATTERNS if p.search(skill_content)]
+    if matched_patterns:
+        has_scope = bool(metadata and metadata.get("scope") and str(metadata["scope"]).strip())
+        has_review_after = bool(metadata and metadata.get("review_after") and str(metadata["review_after"]).strip())
+        if not has_scope:
+            failures.append("unbounded_scope")
+        if not has_review_after:
+            failures.append("no_review_criteria")
+    return failures
+
+
 def audit_skill(
     skill_name: str,
     skill_content: str,
@@ -3759,6 +3861,25 @@ def audit_skill(
     metadata: dict | None = None,
     include_dependencies: bool = True,
 ) -> dict:
+    PROMPT_INJECTION_TEXT_CONTENT_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+        (
+            "instruction_override",
+            re.compile(
+                r"\bignore\s+(?:all|previous|prior|above|your)\s+" r"(?:instructions|rules|guidelines)\b",
+                re.IGNORECASE,
+            ),
+        ),
+        ("you_are_now", re.compile(r"\byou\s+are\s+now\b", re.IGNORECASE)),
+        ("new_persona", re.compile(r"\bnew\s+persona\b", re.IGNORECASE)),
+        ("disregard", re.compile(r"\bdisregard\b", re.IGNORECASE)),
+        ("system_prompt", re.compile(r"\bsystem\s+prompt\b", re.IGNORECASE)),
+        ("user_role_boundary", re.compile(r"(?im)^[ \t]*---[ \t]*\r?\n[ \t]*user\s*:")),
+        ("assistant_role_boundary", re.compile(r"(?im)^[ \t]*---[ \t]*\r?\n[ \t]*assistant\s*:")),
+        (
+            "instruction_boundary_role_marker",
+            re.compile(r"(?im)^[ \t]*[-=]{3,}[ \t]*(?:\r?\n[ \t]*)?(?:system|user|assistant|developer)\s*:"),
+        ),
+    )
     content_sha256 = hashlib.sha256(skill_content.encode("utf-8")).hexdigest()
     _enforce_daily_skill_import_quota(skill_name, source)
 
@@ -3826,19 +3947,78 @@ def audit_skill(
             )
             _record_survival_skill_audit_bypass(skill_name, source, matched_source, result, metadata)
         if not result["blocked"]:
-            prompt_injection_matches = _check_prompt_injection(
-                _prompt_injection_text_fields(skill_name, skill_content, tags, metadata)
-            )
+            raw_skill_file_text = skill_content
+            raw_skill_lines = raw_skill_file_text.splitlines()
+            prompt_injection_matches: list[dict[str, object]] = []
+            seen_prompt_injection_matches: set[tuple[str, int, str]] = set()
+            for pattern_name, prompt_injection_pattern in PROMPT_INJECTION_TEXT_CONTENT_PATTERNS:
+                for prompt_injection_match in prompt_injection_pattern.finditer(raw_skill_file_text):
+                    matched_lines = prompt_injection_match.group(0).splitlines() or [prompt_injection_match.group(0)]
+                    role_line_offset = next(
+                        (
+                            index
+                            for index, line in enumerate(matched_lines)
+                            if re.search(r"\b(?:system|user|assistant|developer)\s*:", line, re.IGNORECASE)
+                        ),
+                        0,
+                    )
+                    line_number = raw_skill_file_text.count("\n", 0, prompt_injection_match.start()) + 1
+                    line_number += role_line_offset
+                    matching_line = (
+                        raw_skill_lines[line_number - 1].strip()
+                        if 0 < line_number <= len(raw_skill_lines)
+                        else matched_lines[role_line_offset].strip()
+                    )
+                    matched_text = re.sub(r"\s+", " ", matching_line).strip()[:300]
+                    match_key = (pattern_name, line_number, matched_text)
+                    if match_key in seen_prompt_injection_matches:
+                        continue
+                    seen_prompt_injection_matches.add(match_key)
+                    prompt_injection_matches.append(
+                        {"pattern": pattern_name, "line": line_number, "text": matched_text}
+                    )
             if prompt_injection_matches:
+                first_prompt_injection_match = prompt_injection_matches[0]
                 log.warning(
-                    "SKILL_AUDIT blocked: skill=%s reason='prompt_injection_detected' matches=%r",
+                    "SKILL_AUDIT blocked: skill=%s category=prompt_injection pattern=%s line=%s matching_line=%r",
                     skill_name,
-                    prompt_injection_matches,
+                    first_prompt_injection_match["pattern"],
+                    first_prompt_injection_match["line"],
+                    first_prompt_injection_match["text"],
                 )
                 _alert_skill_audit_blocked(
                     skill_name,
-                    ["prompt_injection_detected"],
-                    "\n".join(prompt_injection_matches),
+                    ["prompt_injection"],
+                    raw_skill_file_text,
+                    source,
+                    metadata,
+                    str(first_prompt_injection_match["text"]),
+                )
+                result = _audit_result(
+                    skill_name,
+                    source,
+                    True,
+                    ["prompt_injection"],
+                    list(result.get("warnings") or []),
+                    list(result.get("overreach_warnings") or []),
+                    reason="prompt_injection",
+                    matched_lines=prompt_injection_matches,
+                    status="BLOCKED",
+                    verdict="BLOCKED",
+                    audit_flags=result.get("audit_flags"),
+                )
+        if not result["blocked"]:
+            text_field_matches = _sanitize_text_fields(skill_name, skill_content, tags, metadata)
+            if text_field_matches:
+                log.warning(
+                    "SKILL_AUDIT blocked: skill=%s reason='prompt_injection_in_text_field' matches=%r",
+                    skill_name,
+                    text_field_matches,
+                )
+                _alert_skill_audit_blocked(
+                    skill_name,
+                    ["prompt_injection_in_text_field"],
+                    "\n".join(str(match) for match in text_field_matches),
                     source,
                     metadata,
                 )
@@ -3846,11 +4026,60 @@ def audit_skill(
                     skill_name,
                     source,
                     True,
-                    ["prompt_injection_detected"],
+                    ["prompt_injection_in_text_field"],
                     list(result.get("warnings") or []),
                     list(result.get("overreach_warnings") or []),
-                    reason="prompt_injection_detected",
-                    matched_phrases=prompt_injection_matches,
+                    reason="prompt_injection_in_text_field",
+                    matched_phrases=text_field_matches,
+                    status="BLOCKED",
+                    verdict="BLOCKED",
+                    audit_flags=result.get("audit_flags"),
+                )
+        if not result["blocked"] and _requires_epistemic_audit_metadata(source, metadata, _is_update):
+            missing_epistemic_fields = _missing_epistemic_audit_metadata(metadata)
+            if missing_epistemic_fields:
+                log.warning(
+                    "SKILL_AUDIT blocked: skill=%s reason=missing_epistemic_audit_metadata missing=%s",
+                    skill_name,
+                    missing_epistemic_fields,
+                )
+                _alert_skill_audit_blocked(
+                    skill_name,
+                    ["missing_epistemic_audit_metadata"],
+                    skill_content,
+                    source,
+                    metadata,
+                )
+                result = _audit_result(
+                    skill_name,
+                    source,
+                    True,
+                    ["missing_epistemic_audit_metadata"],
+                    list(result.get("warnings") or []),
+                    list(result.get("overreach_warnings") or []),
+                    reason="missing_epistemic_audit_metadata",
+                    missing_fields=missing_epistemic_fields,
+                    status="BLOCKED",
+                    verdict="BLOCKED",
+                    audit_flags=result.get("audit_flags"),
+                )
+        if not result["blocked"] and _requires_epistemic_audit_metadata(source, metadata, _is_update):
+            missing_required_sections = _missing_required_skill_sections(skill_content)
+            if missing_required_sections:
+                log.warning(
+                    "SKILL_AUDIT blocked: skill=%s reason=missing_required_skill_sections missing=%s",
+                    skill_name,
+                    missing_required_sections,
+                )
+                result = _audit_result(
+                    skill_name,
+                    source,
+                    True,
+                    ["missing_required_skill_sections"],
+                    list(result.get("warnings") or []),
+                    list(result.get("overreach_warnings") or []),
+                    reason="missing_required_skill_sections",
+                    missing_sections=missing_required_sections,
                     status="BLOCKED",
                     verdict="BLOCKED",
                     audit_flags=result.get("audit_flags"),
@@ -4145,6 +4374,86 @@ def _prompt_injection_text_fields(
     return "\n".join(value for value in field_values if value)
 
 
+def _sanitize_text_fields(
+    skill_name: str,
+    skill_content: str,
+    tags: list[str] | None,
+    metadata: dict | None,
+) -> list[dict[str, str]]:
+    frontmatter = skill_metadata_from_frontmatter(skill_content)
+    combined_metadata = dict(frontmatter)
+    combined_metadata.update(metadata or {})
+    text_fields: dict[str, list[str]] = {
+        "name": [skill_name],
+        "description": [],
+        "rationale": [],
+        "tags": [],
+    }
+    for field_name in text_fields:
+        text_fields[field_name].extend(_iter_string_fields(combined_metadata.get(field_name)))
+    if tags:
+        text_fields["tags"].extend(str(tag) for tag in tags)
+
+    prompt_injection_signatures: tuple[tuple[str, re.Pattern], ...] = (
+        (
+            "ignore_previous_instructions",
+            re.compile(
+                r"\bignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions\b",
+                re.IGNORECASE,
+            ),
+        ),
+        ("you_are_now", re.compile(r"\byou\s+are\s+now\b", re.IGNORECASE)),
+        ("system_role_marker", re.compile(r"\bsystem\s*:", re.IGNORECASE)),
+        ("assistant_role_marker", re.compile(r"\bassistant\s*:", re.IGNORECASE)),
+        ("markdown_instruction_marker", re.compile(r"###")),
+        (
+            "system_prompt_leakage",
+            re.compile(
+                r"\b(?:reveal|print|show|leak|expose|dump)\b.{0,80}\bsystem\s+prompt\b",
+                re.IGNORECASE | re.DOTALL,
+            ),
+        ),
+        ("system_prompt_reference", re.compile(r"\bsystem\s+prompt\b", re.IGNORECASE)),
+        (
+            "role_switching_imperative",
+            re.compile(
+                r"\b(?:act|respond|operate|behave|assume|become|switch)\b.{0,60}\b"
+                r"(?:system|developer|assistant|admin|root)\s*(?:role|persona|identity)?\b",
+                re.IGNORECASE | re.DOTALL,
+            ),
+        ),
+        (
+            "instruction_override",
+            re.compile(
+                r"\b(?:new\s+instructions?|override\s+(?:your|all|previous)|" r"forget\s+(?:your|all|previous))\b",
+                re.IGNORECASE,
+            ),
+        ),
+    )
+    base64_blob = re.compile(r"\b[A-Za-z0-9+/]{80,}={0,2}\b")
+    matches: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for field_name, values in text_fields.items():
+        for value in values:
+            for label, pattern in prompt_injection_signatures:
+                for match in pattern.finditer(value):
+                    matched_text = re.sub(r"\s+", " ", match.group(0)).strip()[:160]
+                    key = (field_name, label, matched_text)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    matches.append({"field": field_name, "pattern": label, "match": matched_text})
+            if field_name in {"description", "rationale"}:
+                for match in base64_blob.finditer(value):
+                    matched_text = match.group(0)[:160]
+                    key = (field_name, "base64_blob", matched_text)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    matches.append({"field": field_name, "pattern": "base64_blob", "match": matched_text})
+    return matches
+
+
 def _configured_skill_knowledge_blocklist() -> list[str]:
     try:
         from config import SKILL_KNOWLEDGE_BLOCKLIST
@@ -4218,6 +4527,28 @@ def _audit_skill_impl(
     'warnings' (list[str]), 'overreach_warnings' (list[str]), and the active
     audit boundary declaration/version/hash.
     """
+    PROMPT_INJECTION_TEXT_FIELD_PATTERNS: tuple[re.Pattern, ...] = (
+        re.compile(r"\bignore\s+(?:all\s+)?(?:previous|prior|above)\b", re.IGNORECASE),
+        re.compile(r"\bdisregard\b", re.IGNORECASE),
+        re.compile(r"\byou\s+are\s+now\b", re.IGNORECASE),
+        re.compile(r"\bnew\s+instructions?\b", re.IGNORECASE),
+        re.compile(r"\bsystem\s+prompt\b", re.IGNORECASE),
+        re.compile(r"\boverride\b", re.IGNORECASE),
+        re.compile(
+            r"\b(?:act|respond|operate|behave)\s+as\s+(?:a|an|the\s+)?" r"(?:system|developer|admin|root)\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b(?:assume|become|switch\s+to)\s+(?:the\s+)?"
+            r"(?:system|developer|admin|root)\s*(?:role|persona|identity)?\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b(?:follow|obey|execute)\b.{0,80}\b(?:system|developer|admin|root)\s+"
+            r"(?:prompt|instructions?|message)\b",
+            re.IGNORECASE,
+        ),
+    )
     metadata = _skill_metadata_with_efficacy_defaults(metadata)
     if not _auditor_integrity_ok():
         log.critical(
@@ -4517,7 +4848,20 @@ def _audit_skill_impl(
             _sensitive_file_strict_provenance,
         )
 
-    has_dangerous_exec = bool(re.search(r"\b(eval|exec|__import__|compile)\s*\(", dependency_context))
+    has_dangerous_exec = bool(
+        re.search(
+            r"\b(eval|exec|__import__|compile)\s*\("
+            r"|\b(os\.system|subprocess\.run|subprocess\.call|subprocess\.Popen|"
+            r"subprocess\.check_output|subprocess\.check_call)\b",
+            dependency_context,
+        )
+    )
+    if "import subprocess" in skill_content and not has_dangerous_exec:
+        warning_categories.append("subprocess_import_requires_review")
+        log.warning(
+            "SKILL_AUDIT warning: skill=%s reason='subprocess import requires review'",
+            skill_name,
+        )
 
     has_obfuscation = bool(
         (_STRICT_OBFUSCATION_PATTERN if strict_mode else _OBFUSCATION_PATTERN).search(dependency_context)
@@ -4548,6 +4892,44 @@ def _audit_skill_impl(
             "SKILL_AUDIT blocked: skill=%s category=DEFERRED_EXFILTRATION reason='deferred_exfiltration_risk' matches=%s",
             skill_name,
             deferred_exfiltration_matches,
+        )
+
+    prompt_injection_text = _prompt_injection_text_fields(skill_name, skill_content, tags, metadata)
+    prompt_injection_text_field_matches: list[str] = []
+    seen_prompt_injection_text_field_matches: set[str] = set()
+    for prompt_injection_pattern in PROMPT_INJECTION_TEXT_FIELD_PATTERNS:
+        for prompt_injection_match in prompt_injection_pattern.finditer(prompt_injection_text):
+            matched_text = prompt_injection_match.group(0)
+            if matched_text in seen_prompt_injection_text_field_matches:
+                continue
+            seen_prompt_injection_text_field_matches.add(matched_text)
+            prompt_injection_text_field_matches.append(matched_text)
+    if prompt_injection_text_field_matches:
+        prompt_injection_categories = blocked_categories + ["prompt_injection_in_text_field"]
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason='prompt_injection_in_text_field' matches=%r",
+            skill_name,
+            prompt_injection_text_field_matches,
+        )
+        _alert_skill_audit_blocked(
+            skill_name,
+            prompt_injection_categories,
+            "\n".join(prompt_injection_text_field_matches),
+            source,
+            metadata,
+        )
+        return _audit_result(
+            skill_name,
+            source,
+            True,
+            prompt_injection_categories,
+            warning_categories,
+            [],
+            reason="prompt_injection_in_text_field",
+            matched_phrases=prompt_injection_text_field_matches,
+            status="BLOCKED",
+            verdict="BLOCKED",
+            audit_flags=_audit_flags,
         )
 
     semantic_manipulation_findings = _check_semantic_manipulation(skill_content)

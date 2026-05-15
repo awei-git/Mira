@@ -99,6 +99,38 @@ def _save_project(ws: Path, p: dict):
     )
 
 
+def _is_substack_project_text(text: str) -> bool:
+    return bool(re.search(r"(^|\n)\s*-?\s*\**platform\**\s*:\s*substack\b|\bSubstack\b", text or "", re.I))
+
+
+def _force_substack_english_idea(body: str) -> str:
+    """Normalize Substack idea metadata so source-language notes cannot drive draft language."""
+    if not _is_substack_project_text(body):
+        return body
+
+    normalized = body
+    if re.search(r"(?im)^\s*-\s*\*\*language\*\*\s*:", normalized):
+        normalized = re.sub(r"(?im)^\s*-\s*\*\*language\*\*\s*:.*$", "- **language**: en", normalized)
+    elif re.search(r"(?im)^\s*language\s*:", normalized):
+        normalized = re.sub(r"(?im)^\s*language\s*:.*$", "language: en", normalized)
+    else:
+        normalized += "\n\n- **language**: en"
+
+    policy = (
+        "Language policy: final Substack title, subtitle, section headers, and body must be English. "
+        "Chinese source notes are background only; translate the ideas, not the surface language."
+    )
+    if policy not in normalized:
+        normalized += f"\n\n{policy}"
+    return normalized
+
+
+def _force_substack_english_analysis(analysis: dict, body: str) -> dict:
+    if _is_substack_project_text(body):
+        analysis["language"] = "en"
+    return analysis
+
+
 def _vdir(ws: Path, v: int) -> Path:
     d = ws / "versions" / f"v{v}"
     d.mkdir(parents=True, exist_ok=True)
@@ -113,6 +145,7 @@ def _vdir(ws: Path, v: int) -> Path:
 def start_project(title: str, body: str, workspace: Path):
     """Initialize a writing project: ANALYZE -> PLAN -> post for user approval."""
     log.info("Starting writing project: %s", title)
+    body = _force_substack_english_idea(body)
     workspace.mkdir(parents=True, exist_ok=True)
 
     # --- Analyze ---
@@ -183,6 +216,7 @@ def _analyze(body: str) -> dict:
     analysis["type"] = t
     analysis["type_name"] = WRITING_CRITERIA[t]["name"]
     analysis["criteria"] = WRITING_CRITERIA[t]["criteria"]
+    analysis = _force_substack_english_analysis(analysis, body)
     return analysis
 
 
@@ -882,6 +916,7 @@ def run_full_pipeline(
 
     log.info("Full writing pipeline: '%s' → %s", title, ws)
 
+    body = _force_substack_english_idea(body)
     plan_body = body
     if context_note:
         plan_body = f"{body}\n\n## Context\n{context_note}"

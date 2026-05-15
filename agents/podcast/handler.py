@@ -118,7 +118,7 @@ def _prepare_episode_mp3_for_publish(episode_mp3: Path) -> Path:
 # MiniMax TTS config (primary TTS backend)
 # ---------------------------------------------------------------------------
 
-MINIMAX_MODEL_TTS = "speech-02-hd"
+MINIMAX_MODEL_TTS = "speech-2.8-hd"
 MINIMAX_API_URL = "https://api.minimax.io/v1/t2a_v2"
 
 # MiniMax voice IDs — one voice per character, consistent across all turns

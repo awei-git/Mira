@@ -809,7 +809,7 @@ BROWSER_TYPING_DELAY_MS = _timeouts.get("browser_typing_delay_ms", 50)
 # ---------------------------------------------------------------------------
 _api_models = _MODEL_VERSION_CFG
 CLAUDE_SONNET_MODEL = _api_models.get("claude_sonnet", "claude-sonnet-4-6")
-CLAUDE_OPUS_MODEL = _api_models.get("claude_opus", "claude-opus-4-6")
+CLAUDE_OPUS_MODEL = _api_models.get("claude_opus", "claude-opus-4-7")
 
 TIER_MODEL_MAP = {
     "light": os.getenv("MODEL_LIGHT", CLAUDE_SONNET_MODEL),
@@ -821,7 +821,7 @@ DEEPSEEK_CHAT_MODEL = _api_models.get("deepseek_chat", "deepseek-v4-pro")
 DEEPSEEK_REASONER_MODEL = _api_models.get("deepseek_reasoner", "deepseek-reasoner")
 GEMINI_FLASH_MODEL = _api_models.get("gemini_flash", "gemini-3.1-flash-lite-preview")
 GEMINI_PRO_MODEL = _api_models.get("gemini_pro", "gemini-3.1-pro-preview")
-GEMINI_TTS_MODEL = _api_models.get("gemini_tts", "gemini-2.5-flash-preview-tts")
+GEMINI_TTS_MODEL = _api_models.get("gemini_tts", "gemini-3.1-flash-tts-preview")
 GEMINI_VIDEO_MODEL = _api_models.get("gemini_video", "gemini-2.5-pro")
 GEMINI_FRAME_MODEL = _api_models.get("gemini_frame", "gemini-2.5-flash")
 

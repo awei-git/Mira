@@ -862,6 +862,10 @@ def analyze_writing_prompt(idea: str) -> str:
 **Idea:**
 {idea}
 
+Hard language rule:
+- If the idea targets Substack, set "language" to "en" even when the source notes or title are Chinese.
+- For Substack, the final title, subtitle, headings, and body must be English.
+
 Respond in JSON format ONLY (no markdown fences, no explanation):
 {{
     "type": "novel|essay|blog|technical|poetry",
@@ -904,6 +908,10 @@ A writing project has been initiated. Propose a detailed writing plan.
 
 ---
 
+Language rule:
+- If this is a Substack project, plan an English piece. Chinese source notes are background only.
+- Do not preserve a Chinese idea title as the publication title; propose an English title/deck direction.
+
 Create a detailed plan with these sections:
 
 ## 大纲 (Outline)
@@ -915,7 +923,7 @@ Word count, tone, POV, style guidelines, constraints.
 ## 描述 (Description)
 How this piece should feel to the reader. What makes it work. The core insight or emotional arc.
 
-Write in the language matching the idea. Be specific and actionable.
+Write in English for Substack projects; otherwise match the idea language. Be specific and actionable.
 """
 
 
@@ -942,7 +950,7 @@ Your job:
 3. Propose specific improvements
 4. Write your OWN revised version (大纲 + 规格 + 描述)
 
-Be constructive but direct. Write in the language matching the idea.
+Be constructive but direct. Write in English for Substack projects; otherwise match the idea language.
 """
 
 
@@ -976,7 +984,7 @@ Output with these exact sections:
 ## 描述 (Description)
 
 This plan goes to the user for approval, then to writers. Make it clear and actionable.
-Write in the language matching the idea.
+Write in English for Substack projects; otherwise match the idea language. Do not preserve a Chinese source title as the publication title for Substack.
 """
 
 
@@ -1001,7 +1009,8 @@ Context:
 
 Write the COMPLETE piece following the plan. Rules:
 - Follow the plan's structure, specifications, and description closely
-- Write in the language specified in the plan
+- For Substack projects, write the title, subtitle, section headers, and body in English even if source notes are Chinese
+- For non-Substack projects, write in the language specified in the plan
 - Produce the COMPLETE work, not an outline or summary
 - Let your unique voice come through — the plan is a guide, not a cage
 - No meta-commentary — just the actual writing

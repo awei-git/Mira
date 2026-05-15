@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from secrets import compare_digest
 from typing import Optional
+from urllib.parse import quote
 
 from enum import Enum
 
@@ -53,10 +54,12 @@ BRIDGE = MIRA_DIR
 USERS_DIR = BRIDGE / "users"
 WEB_DIR = Path(__file__).parent
 WEB_ICON = WEB_DIR / "mira-icon.png"
+BACKEND_DASHBOARD_ASSETS = WEB_DIR / "backend_dashboard"
 
 app = FastAPI(title="Mira", docs_url=None, redoc_url=None)
 _mdns_process: subprocess.Popen | None = None
 _JSON_FILE_LOCKS: collections.defaultdict[str, threading.RLock] = collections.defaultdict(threading.RLock)
+app.mount("/backend-assets", StaticFiles(directory=BACKEND_DASHBOARD_ASSETS), name="backend-dashboard-assets")
 
 # ---------------------------------------------------------------------------
 # CORS — allow the web GUI and local dev origins
@@ -395,6 +398,11 @@ class V2StatusReply(BaseModel):
     reply: str = Field(..., min_length=1, max_length=200)
 
 
+class ModelAssignmentUpdate(BaseModel):
+    model: str = Field(..., min_length=1, max_length=80)
+    token_budget: int = Field(default=0, ge=0, le=1_000_000)
+
+
 @app.get("/api/{user_id}/todos")
 def get_todos(user_id: str):
     path = _user_dir(user_id) / "todos.json"
@@ -533,8 +541,23 @@ def get_item(user_id: str, item_id: str):
     return item
 
 
+def _is_internal_liveness_item(item: dict) -> bool:
+    item_id = str(item.get("id") or "")
+    if item_id.startswith(("req_liveness_", "mira_liveness_", "output_stale_")):
+        return True
+    tags = {str(tag).lower() for tag in item.get("tags") or []}
+    title = str(item.get("title") or "").lower()
+    return "liveness" in tags and ("system" in tags or "stale" in title or "watchdog" in title)
+
+
 @app.get("/api/{user_id}/tasks")
-def get_tasks(user_id: str, include_archived: bool = False, limit: int = 200, messages_per_item: int = 20):
+def get_tasks(
+    user_id: str,
+    include_archived: bool = False,
+    include_internal: bool = False,
+    limit: int = 200,
+    messages_per_item: int = 20,
+):
     """Return API-control-plane task projection.
 
     Phase 1 is intentionally read-only: it projects existing bridge item JSON
@@ -555,6 +578,8 @@ def get_tasks(user_id: str, include_archived: bool = False, limit: int = 200, me
                 limit=max(1, min(limit, 500)),
                 messages_per_item=max(1, min(messages_per_item, 50)),
             )
+            if not include_internal:
+                items = [item for item in items if not _is_internal_liveness_item(item)]
             last_event_id = repo.last_event_id(user_id)
         return {"items": items, "server_time": _utc_iso(), "last_event_id": last_event_id}
     except Exception as exc:
@@ -582,7 +607,13 @@ def get_task_detail(user_id: str, task_id: str, messages_per_item: int = 50):
 
 
 @app.get("/api/{user_id}/threads")
-def get_threads(user_id: str, include_archived: bool = False, limit: int = 200, messages_per_item: int = 20):
+def get_threads(
+    user_id: str,
+    include_archived: bool = False,
+    include_internal: bool = False,
+    limit: int = 200,
+    messages_per_item: int = 20,
+):
     """Return app thread projections backed by canonical tasks/messages."""
     try:
         from control.db import transaction
@@ -597,6 +628,8 @@ def get_threads(user_id: str, include_archived: bool = False, limit: int = 200, 
                 limit=max(1, min(limit, 500)),
                 messages_per_item=max(1, min(messages_per_item, 50)),
             )
+            if not include_internal:
+                threads = [item for item in threads if not _is_internal_liveness_item(item)]
         return {"threads": threads, "server_time": _utc_iso()}
     except Exception as exc:
         raise HTTPException(503, f"Control DB unavailable: {exc}") from exc
@@ -896,7 +929,7 @@ def _date_range(values: list[str]) -> dict:
 
 
 def _status_rank(status: str) -> int:
-    return {"red": 3, "yellow": 2, "green": 1, "gray": 0}.get(status, 0)
+    return {"red": 4, "yellow": 3, "blue": 2, "green": 1, "gray": 0}.get(status, 0)
 
 
 def _normalize_dashboard_status(status: str | None) -> str:
@@ -905,13 +938,303 @@ def _normalize_dashboard_status(status: str | None) -> str:
         return "green"
     if value in {"red", "error", "failed", "failure", "rejected", "quarantined"}:
         return "red"
-    if value in {"yellow", "pending", "queued", "running", "started", "scheduled", "requires_human"}:
+    if value in {"blue", "pending", "queued", "scheduled"}:
+        return "blue"
+    if value in {"yellow", "running", "started", "active", "requires_human", "attention"}:
         return "yellow"
     return "gray"
 
 
 def _empty_usage_bucket() -> dict:
     return {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}, "agents": {}}
+
+
+_SUCCESS_OUTCOMES = {"green", "ok", "done", "applied", "success", "succeeded", "completed", "verified"}
+_RUNNING_JOB_STATUSES = {"running", "started", "active"}
+_QUEUED_JOB_STATUSES = {"pending", "queued", "scheduled"}
+_MODEL_CATALOG_CHECKED_AT = "2026-05-15"
+_MODEL_CATALOG_SOURCES = [
+    {
+        "provider": "Anthropic",
+        "url": "https://platform.claude.com/docs/en/about-claude/models/overview",
+    },
+    {"provider": "OpenAI", "url": "https://platform.openai.com/docs/models"},
+    {"provider": "Google", "url": "https://ai.google.dev/gemini-api/docs/models"},
+    {"provider": "Google TTS", "url": "https://ai.google.dev/gemini-api/docs/speech-generation"},
+    {"provider": "DeepSeek", "url": "https://api-docs.deepseek.com/api/list-models"},
+    {"provider": "MiniMax", "url": "https://platform.minimax.io/docs/guides/models-intro"},
+    {"provider": "MLX", "url": "https://huggingface.co/mlx-community/gemma-4-31b-4bit"},
+]
+_MODEL_CATALOG = [
+    {
+        "provider": "Claude",
+        "models": [
+            {"value": "claude", "label": "Claude Code subscription"},
+            {"value": "claude-opus-4-7", "label": "Claude Opus 4.7"},
+            {"value": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6"},
+            {"value": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
+        ],
+    },
+    {
+        "provider": "GPT / Codex",
+        "models": [
+            {"value": "codex", "label": "Codex code subscription"},
+            {"value": "gpt-5.5", "label": "GPT-5.5"},
+        ],
+    },
+    {
+        "provider": "DeepSeek",
+        "models": [
+            {"value": "deepseek-v4-pro", "label": "DeepSeek V4-Pro"},
+        ],
+    },
+    {
+        "provider": "Gemini",
+        "models": [
+            {"value": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro Preview"},
+            {"value": "gemini-3.1-flash-tts-preview", "label": "Gemini 3.1 Flash TTS Preview"},
+        ],
+    },
+    {
+        "provider": "MiniMax",
+        "models": [
+            {"value": "speech-2.8-hd", "label": "MiniMax Speech 2.8 HD"},
+        ],
+    },
+    {
+        "provider": "Local oMLX",
+        "models": [
+            {"value": "omlx", "label": "Gemma 4 31B IT 4-bit"},
+        ],
+    },
+    {
+        "provider": "System",
+        "models": [
+            {"value": "none", "label": "No model"},
+        ],
+    },
+]
+_MODEL_OPTIONS = [
+    str(model["value"]) for group in _MODEL_CATALOG for model in group.get("models", []) if model.get("value")
+]
+_PIPELINE_AGENT_HINTS: dict[str, list[str]] = {
+    "article_creation": ["writer"],
+    "podcast_production": ["podcast"],
+    "book_reading_notes": ["reader"],
+    "social_reactive": ["social"],
+    "social_proactive": ["social"],
+    "weekly_growth_report": ["social"],
+    "intelligence_briefing": ["explorer"],
+    "research_deep_dive": ["researcher"],
+    "daily_thought_discussion": ["discussion"],
+    "daily_journal": ["orchestrator"],
+    "weekly_reflection": ["memory_organizer"],
+    "market_monitor": ["analyst"],
+    "communication": ["orchestrator"],
+    "system_health": ["monitor"],
+    "incident_response": ["coder"],
+    "health_wellness": ["health"],
+    "self_evolution": ["coder"],
+    "skill_learning": ["memory_organizer"],
+    "memory_maintenance": ["memory_organizer"],
+    "deterministic_reference": ["policy_runner"],
+}
+
+
+def _parse_maybe_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            return datetime.strptime(str(value)[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+
+def _latest_timestamp(values: list[str]) -> str:
+    parsed = [(dt, raw) for raw in values if (dt := _parse_maybe_datetime(raw))]
+    if not parsed:
+        return ""
+    parsed.sort(key=lambda row: row[0])
+    return parsed[-1][1]
+
+
+def _job_event_times(job: dict) -> list[str]:
+    times = []
+    if job.get("ran_at"):
+        times.append(str(job["ran_at"]))
+    times.extend(str(value) for value in job.get("dispatch_times") or [] if value)
+    return times
+
+
+def _configured_model_for_pipeline(pipeline_name: str, pipeline, model_by_agent: dict[str, str]) -> tuple[str, str]:
+    candidates = [*_PIPELINE_AGENT_HINTS.get(pipeline_name, []), *(pipeline.involved_skills or []), pipeline_name]
+    for agent in candidates:
+        model = model_by_agent.get(agent)
+        if model:
+            return agent, model
+    return "", ""
+
+
+def _configured_model_for_step(pipeline_name: str, step_name: str, default_model: str) -> str:
+    if pipeline_name == "daily_thought_discussion":
+        if "opus" in step_name:
+            return "claude-opus"
+        if "sonnet" in step_name:
+            return "claude-sonnet"
+        if "deepseek" in step_name or "gemini" in step_name:
+            return "deepseek / gemini"
+    return default_model
+
+
+def _step_model_hint(step_name: str, configured_model: str) -> tuple[str, str]:
+    name = step_name.lower()
+    if "agent_a_opus" in name:
+        return "claude-opus", "step policy"
+    if "agent_b_sonnet" in name:
+        return "claude-sonnet", "step policy"
+    if "agent_c_deepseek" in name or "deepseek" in name or "gemini" in name:
+        return "deepseek / gemini", "step policy"
+    llm_keywords = (
+        "agent_",
+        "analysis",
+        "briefing",
+        "compile",
+        "diagnostic",
+        "draft",
+        "generate",
+        "insight",
+        "novelty",
+        "outline",
+        "pick_topic",
+        "quality_eval",
+        "research",
+        "root_cause",
+        "script",
+        "synthesis",
+        "trend",
+        "write_",
+    )
+    if configured_model and configured_model != "none" and any(keyword in name for keyword in llm_keywords):
+        return configured_model, "agent policy"
+    return "", "no LLM"
+
+
+def _model_options() -> list[str]:
+    return list(_MODEL_OPTIONS)
+
+
+def _model_catalog() -> dict:
+    return {
+        "checked_at": _MODEL_CATALOG_CHECKED_AT,
+        "sources": list(_MODEL_CATALOG_SOURCES),
+        "groups": [
+            {
+                "provider": str(group.get("provider", "")),
+                "models": [
+                    {"value": str(model.get("value", "")), "label": str(model.get("label", model.get("value", "")))}
+                    for model in group.get("models", [])
+                    if model.get("value")
+                ],
+            }
+            for group in _MODEL_CATALOG
+        ],
+    }
+
+
+def _latest_timestamp_from_map(values: dict) -> str:
+    return _latest_timestamp([str(value) for value in values.values() if value])
+
+
+def _pipeline_outputs(user_id: str, pipeline_name: str) -> list[dict]:
+    base = _artifacts_dir(user_id)
+    outputs: list[dict] = []
+    if pipeline_name == "article_creation":
+        manifest = _read_json(base / "writings" / "publish_manifest.json")
+        articles = manifest.get("articles", {}) if isinstance(manifest, dict) else {}
+        rows = []
+        for slug, article in articles.items():
+            if not isinstance(article, dict):
+                continue
+            timestamps = article.get("timestamps") if isinstance(article.get("timestamps"), dict) else {}
+            rows.append((_latest_timestamp_from_map(timestamps), str(slug), article))
+        rows.sort(key=lambda row: row[0], reverse=True)
+        for ts, slug, article in rows[:3]:
+            status = str(article.get("status") or "")
+            href = f"/api/{quote(user_id)}/artifacts/writings/{quote(slug)}/final.md"
+            outputs.append(
+                {
+                    "title": article.get("title") or slug,
+                    "status": status,
+                    "updated_at": ts,
+                    "href": href,
+                    "error": article.get("error") or "",
+                }
+            )
+    elif pipeline_name == "book_reading_notes":
+        books_dir = base / "books"
+        if books_dir.exists():
+            for project in sorted(books_dir.iterdir(), key=lambda path: path.stat().st_mtime, reverse=True)[:3]:
+                if not project.is_dir() or project.name.startswith("_"):
+                    continue
+                latest_file = next(
+                    (
+                        path
+                        for path in sorted(project.glob("*.md"), key=lambda path: path.stat().st_mtime, reverse=True)
+                        if path.is_file()
+                    ),
+                    None,
+                )
+                if not latest_file:
+                    continue
+                outputs.append(
+                    {
+                        "title": project.name,
+                        "status": "ready",
+                        "updated_at": datetime.fromtimestamp(latest_file.stat().st_mtime, timezone.utc).isoformat(),
+                        "href": f"/api/{quote(user_id)}/artifacts/books/{quote(project.name)}/{quote(latest_file.name)}",
+                        "error": "",
+                    }
+                )
+    return outputs
+
+
+def _dashboard_model_assignments_path() -> Path:
+    from mira.runtime import default_v3_paths
+
+    return default_v3_paths().root / "model_assignments.json"
+
+
+def _load_model_assignment_overrides() -> dict[str, dict]:
+    data = _read_json(_dashboard_model_assignments_path())
+    if not isinstance(data, dict):
+        return {}
+    return {str(agent): row for agent, row in data.items() if isinstance(row, dict)}
+
+
+def _dashboard_config() -> dict:
+    from mira.configuration import default_v3_config
+
+    config = default_v3_config().to_dict()
+    overrides = _load_model_assignment_overrides()
+    by_agent = {str(row.get("agent")): row for row in config.get("models", []) if isinstance(row, dict)}
+    for agent, override in overrides.items():
+        row = by_agent.setdefault(agent, {"agent": agent, "model": "", "token_budget": 0})
+        if override.get("model"):
+            row["model"] = str(override["model"])
+        if "token_budget" in override:
+            row["token_budget"] = int(override.get("token_budget") or 0)
+        row["override"] = True
+    config["models"] = sorted(by_agent.values(), key=lambda row: str(row.get("agent", "")))
+    config["token_budgets"] = {
+        str(row.get("agent")): int(row.get("token_budget") or 0) for row in config["models"] if row.get("agent")
+    }
+    config["model_options"] = _model_options()
+    config["model_catalog"] = _model_catalog()
+    config["model_overrides"] = overrides
+    return config
 
 
 def _usage_history(days: int = 30) -> dict:
@@ -1143,7 +1466,7 @@ def _security_posture(request: Request | None = None) -> dict:
     }
 
 
-def _pipeline_status_rows(pipelines, records, commits, effects, jobs: dict, config: dict) -> list[dict]:
+def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jobs: dict, config: dict) -> list[dict]:
     from mira.runtime import JOB_PIPELINE_MAP
 
     job_by_pipeline: dict[str, list[dict]] = {}
@@ -1161,7 +1484,45 @@ def _pipeline_status_rows(pipelines, records, commits, effects, jobs: dict, conf
         pipeline_jobs = job_by_pipeline.get(name, [])
         latest_record = recent_records[-1] if recent_records else None
         latest_commit = recent_commits[-1] if recent_commits else None
+        successful_records = [
+            record for record in recent_records if str(record.outcome).strip().lower() in _SUCCESS_OUTCOMES
+        ]
+        latest_success_record = successful_records[-1] if successful_records else None
+        latest_done_job_at = _latest_timestamp(
+            [
+                ts
+                for job in pipeline_jobs
+                if job.get("enabled", True) and job.get("status") == "done"
+                for ts in _job_event_times(job)
+            ]
+        )
+        last_success_at = latest_success_record.timestamp.isoformat() if latest_success_record else latest_done_job_at
+        running_jobs = [
+            job.get("name", "")
+            for job in pipeline_jobs
+            if job.get("enabled", True) and job.get("status") in _RUNNING_JOB_STATUSES
+        ]
+        queued_jobs = [
+            job.get("name", "")
+            for job in pipeline_jobs
+            if job.get("enabled", True) and job.get("status") in _QUEUED_JOB_STATUSES
+        ]
         errors = []
+        outputs = _pipeline_outputs(user_id, name)
+        latest_output = outputs[0] if outputs else {}
+        latest_output_status = str(latest_output.get("status") or "").lower()
+        latest_output_blocker = (
+            latest_output if latest_output_status.startswith("blocked") or latest_output.get("error") else {}
+        )
+        output_blockers = [latest_output_blocker] if latest_output_blocker else []
+        if latest_output_status in {"approved", "published", "ready", "done", "success"} and latest_output.get(
+            "updated_at"
+        ):
+            last_success_at = (
+                max(last_success_at, str(latest_output["updated_at"]))
+                if last_success_at
+                else str(latest_output["updated_at"])
+            )
         if latest_record and (latest_record.outcome == "failed" or latest_record.delta.what_failed):
             errors.extend(latest_record.delta.what_failed or [latest_record.outcome])
         if latest_commit and latest_commit.status in {"quarantined", "rejected", "requires_human"}:
@@ -1171,21 +1532,36 @@ def _pipeline_status_rows(pipelines, records, commits, effects, jobs: dict, conf
                 errors.append(f"{effect.action} {effect.status}")
         if errors:
             status = "red" if any("failed" in e.lower() or "reject" in e.lower() for e in errors) else "yellow"
-        elif pipeline_jobs and any(job.get("status") == "pending" for job in pipeline_jobs if job.get("enabled", True)):
+        elif latest_output_blocker:
             status = "yellow"
-        elif latest_record or any(job.get("status") == "done" for job in pipeline_jobs):
+        elif name == "article_creation" and latest_output_status == "approved":
+            status = "blue"
+        elif running_jobs:
+            status = "yellow"
+        elif last_success_at:
             status = "green"
+        elif queued_jobs:
+            status = "blue"
         else:
             status = "gray"
         status_text = (
             errors[0]
             if errors
-            else {
-                "green": "success",
-                "yellow": "scheduled",
-                "red": "needs attention",
-                "gray": "not observed",
-            }.get(status, status)
+            else (
+                str(latest_output_blocker.get("status") or "output blocked")
+                if latest_output_blocker
+                else (
+                    "approved / publish queued"
+                    if name == "article_creation" and latest_output_status == "approved"
+                    else {
+                        "green": "success",
+                        "yellow": "running",
+                        "blue": "scheduled",
+                        "red": "needs attention",
+                        "gray": "not observed",
+                    }.get(status, status)
+                )
+            )
         )
 
         usage = {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}}
@@ -1200,16 +1576,30 @@ def _pipeline_status_rows(pipelines, records, commits, effects, jobs: dict, conf
                 usage["models"][model]["tokens"] += row.get("tokens", 0)
                 usage["models"][model]["cost_usd"] += row.get("cost_usd", 0.0)
         top_model = max(usage["models"], key=lambda m: usage["models"][m]["calls"]) if usage["models"] else ""
-        default_model = top_model or model_by_agent.get((pipeline.involved_skills or [""])[0], "")
+        configured_agent, configured_model = _configured_model_for_pipeline(name, pipeline, model_by_agent)
         steps = []
         step_count = max(1, len(pipeline.steps))
         failed_step_index: int | None = None
+        attention_step_index: int | None = None
         if errors:
             first_error = errors[0]
             for idx, step in enumerate(pipeline.steps):
                 if first_error.startswith(f"{step.name}:"):
                     failed_step_index = idx
                     break
+        if output_blockers:
+            blocker_text = f"{output_blockers[0].get('status', '')} {output_blockers[0].get('error', '')}".lower()
+            preferred_step = ""
+            if "security" in blocker_text:
+                preferred_step = "content_hard_policy"
+            elif "quality gate" in blocker_text or "writer_gate" in blocker_text:
+                preferred_step = "quality_eval"
+            for idx, step in enumerate(pipeline.steps):
+                if preferred_step and preferred_step == step.name:
+                    attention_step_index = idx
+                    break
+            if attention_step_index is None and pipeline.steps:
+                attention_step_index = len(pipeline.steps) - 1
         for idx, step in enumerate(pipeline.steps):
             if status == "red" and failed_step_index is not None:
                 if idx < failed_step_index:
@@ -1220,25 +1610,54 @@ def _pipeline_status_rows(pipelines, records, commits, effects, jobs: dict, conf
                     step_status = "gray"
             elif status == "red":
                 step_status = "red" if idx == step_count - 1 else "gray"
+            elif output_blockers and attention_step_index is not None:
+                if idx < attention_step_index:
+                    step_status = "green"
+                elif idx == attention_step_index:
+                    step_status = "yellow"
+                else:
+                    step_status = "gray"
+            elif status == "yellow" and last_success_at:
+                step_status = "green"
+            elif status == "yellow":
+                step_status = "yellow" if idx == 0 else "gray"
             else:
                 step_status = status
             step_status = _normalize_dashboard_status(step_status)
+            hinted_model, model_source = _step_model_hint(step.name, configured_model)
+            step_model = top_model or hinted_model
+            if top_model:
+                model_source = "recorded"
+            observed_at = latest_record.timestamp.isoformat() if latest_record else latest_done_job_at
+            if step_status == "blue":
+                observed_at = ""
             steps.append(
                 {
                     "name": step.name,
                     "type": step.type,
                     "status": step_status,
-                    "model": default_model or "deterministic",
+                    "model": step_model,
+                    "model_recorded": bool(top_model),
+                    "model_source": model_source,
+                    "configured_model": _configured_model_for_step(name, step.name, configured_model),
+                    "configured_agent": configured_agent,
+                    "usage_recorded": bool(usage["calls"] or usage["tokens"] or usage["cost_usd"]),
                     "cost_usd": round(usage["cost_usd"] / step_count, 4),
                     "tokens": int(usage["tokens"] / step_count),
+                    "observed_at": observed_at,
+                    "timestamp_source": "pipeline run" if observed_at else "",
                     "error": (
-                        errors[0]
-                        if errors
-                        and (
-                            (failed_step_index is not None and idx == failed_step_index)
-                            or (failed_step_index is None and idx == step_count - 1)
+                        output_blockers[0].get("error") or output_blockers[0].get("status") or ""
+                        if output_blockers and attention_step_index == idx
+                        else (
+                            errors[0]
+                            if errors
+                            and (
+                                (failed_step_index is not None and idx == failed_step_index)
+                                or (failed_step_index is None and idx == step_count - 1)
+                            )
+                            else ""
                         )
-                        else ""
                     ),
                 }
             )
@@ -1250,16 +1669,44 @@ def _pipeline_status_rows(pipelines, records, commits, effects, jobs: dict, conf
                 "status_detail": (
                     errors[0]
                     if errors
-                    else ("No run evidence in the current V3 ledger/job window." if status == "gray" else "")
+                    else (
+                        output_blockers[0].get("error")
+                        if output_blockers
+                        else (
+                            f"Latest output approved: {latest_output.get('title', '')}; publish queued"
+                            if name == "article_creation" and latest_output_status == "approved"
+                            else (
+                                f"Active job(s): {', '.join(running_jobs)}; last success {last_success_at or 'not observed'}"
+                                if running_jobs
+                                else (
+                                    f"Scheduled but not observed today: {', '.join(queued_jobs)}"
+                                    if status == "blue"
+                                    else (
+                                        "No run evidence in the current V3 ledger/job window."
+                                        if status == "gray"
+                                        else ""
+                                    )
+                                )
+                            )
+                        )
+                    )
                 ),
                 "memory_class": pipeline.memory_class,
                 "trigger": f"{pipeline.trigger.type}: {pipeline.trigger.detail}",
                 "priority": pipeline.priority,
                 "version": pipeline.version,
-                "last_run": latest_record.timestamp.isoformat() if latest_record else "",
+                "last_run": latest_record.timestamp.isoformat() if latest_record else latest_done_job_at,
+                "last_success_at": last_success_at,
+                "last_success_outcome": (
+                    latest_success_record.outcome if latest_success_record else ("done" if latest_done_job_at else "")
+                ),
+                "current_jobs": running_jobs or queued_jobs,
                 "outcome": latest_record.outcome if latest_record else "",
-                "error": errors[0] if errors else "",
+                "error": errors[0] if errors else (output_blockers[0].get("error") if output_blockers else ""),
                 "usage": {**usage, "cost_usd": round(usage["cost_usd"], 4)},
+                "configured_agent": configured_agent,
+                "configured_model": configured_model,
+                "outputs": outputs,
                 "steps": steps,
                 "skills": pipeline.involved_skills,
             }
@@ -1272,7 +1719,6 @@ def get_backend_dashboard(user_id: str, request: Request):
     if not is_known_user(user_id):
         raise HTTPException(404, "Unknown profile")
 
-    from mira.configuration import default_v3_config
     from mira.engine.effect_log import EffectLog
     from mira.engine.risk_gate import ApprovalStore
     from mira.kernel.commit import MemoryCommitLog
@@ -1288,16 +1734,21 @@ def get_backend_dashboard(user_id: str, request: Request):
     approval_store = ApprovalStore(paths.approvals)
     kernel = JsonKernelStore(paths.kernel).load()
     snapshot = build_dashboard_snapshot(kernel, ledger, commit_log, effect_log, approval_store)
-    records = ledger.list(limit=25)
-    commits = commit_log.list(limit=25)
-    effects = effect_log.list(limit=25)
+    pipeline_records = ledger.list(limit=500)
+    pipeline_commits = commit_log.list(limit=500)
+    pipeline_effects = effect_log.list(limit=500)
+    records = pipeline_records[-25:]
+    commits = pipeline_commits[-25:]
+    effects = pipeline_effects[-25:]
     heartbeat = get_heartbeat()
     jobs = get_jobs_today(user_id)
     items = get_items(user_id)[:25]
     artifacts = list_artifact_sections(user_id)
-    config = default_v3_config().to_dict()
+    config = _dashboard_config()
     usage_history = _usage_history(days=30)
-    pipeline_rows = _pipeline_status_rows(PIPELINE_CATALOG, records, commits, effects, jobs, config)
+    pipeline_rows = _pipeline_status_rows(
+        user_id, PIPELINE_CATALOG, pipeline_records, pipeline_commits, pipeline_effects, jobs, config
+    )
     memory_timestamps = [
         *(record.timestamp.isoformat() for record in records),
         *(commit.timestamp.isoformat() for commit in commits),
@@ -1421,6 +1872,8 @@ def get_backend_dashboard(user_id: str, request: Request):
             "config": config.get("policy_parameters", {}),
         },
         "models": config.get("models", []),
+        "model_options": config.get("model_options", _MODEL_OPTIONS),
+        "model_catalog": config.get("model_catalog", _model_catalog()),
         "outputs": {
             "artifacts": artifacts,
             "recent_items": [
@@ -1466,6 +1919,33 @@ def get_backend_dashboard(user_id: str, request: Request):
             "artifacts": str(_artifacts_dir(user_id)),
         },
     }
+
+
+@app.post("/api/{user_id}/backend-dashboard/models/{agent}")
+def update_backend_dashboard_model(user_id: str, agent: str, assignment: ModelAssignmentUpdate):
+    if not is_known_user(user_id):
+        raise HTTPException(404, "Unknown profile")
+    if not CONTROL_API_WRITES_ENABLED:
+        raise HTTPException(409, "Control API writes are disabled")
+    clean_agent = agent.strip()
+    clean_model = assignment.model.strip()
+    if not clean_agent:
+        raise HTTPException(400, "Agent is required")
+    if not clean_model:
+        raise HTTPException(400, "Model is required")
+    if clean_model not in _MODEL_OPTIONS:
+        raise HTTPException(400, "Unknown model option")
+    overrides_path = _dashboard_model_assignments_path()
+    overrides_path.parent.mkdir(parents=True, exist_ok=True)
+    overrides = _load_model_assignment_overrides()
+    overrides[clean_agent] = {
+        "model": clean_model,
+        "token_budget": int(assignment.token_budget or 0),
+        "updated_at": _utc_iso(),
+        "updated_by": user_id,
+    }
+    _atomic_write(overrides_path, overrides)
+    return {"agent": clean_agent, "assignment": overrides[clean_agent], "config": _dashboard_config()}
 
 
 # ---------------------------------------------------------------------------
@@ -2107,7 +2587,7 @@ def _rebuild_manifest(user_id: str):
 
 # All data from iCloud Drive only — accessible from any network
 _ICLOUD_ARTIFACTS = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/MtJoy/Mira-Artifacts"
-_USER_ARTIFACT_SECTIONS = ("writings", "briefings", "audio", "video", "photos", "research")
+_USER_ARTIFACT_SECTIONS = ("writings", "briefings", "audio", "video", "photos", "research", "books")
 _SHARED_ARTIFACT_SECTIONS = ("briefings", "writings", "research")
 
 
@@ -2322,6 +2802,12 @@ async def events(user_id: str, request: Request, last_event_id: int = 0):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
+    return (WEB_DIR / "backend-dashboard.html").read_text(encoding="utf-8")
+
+
+@app.get("/backend", response_class=HTMLResponse)
+@app.get("/backend/{page}", response_class=HTMLResponse)
+def backend_dashboard(page: str = "pipelines"):
     return (WEB_DIR / "backend-dashboard.html").read_text(encoding="utf-8")
 
 

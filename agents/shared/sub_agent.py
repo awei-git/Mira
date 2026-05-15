@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from datetime import datetime, timezone
 
 log = logging.getLogger("sub_agent")
 
@@ -109,6 +110,45 @@ def extract_reasoning_payload(text: str, agent_name: str | None = None) -> tuple
     return None
 
 
+def token_usage_from_response(response) -> dict | None:
+    usage = _usage_field(response)
+    if usage is None:
+        return None
+    input_tokens = _usage_value(usage, "input_tokens")
+    output_tokens = _usage_value(usage, "output_tokens")
+    if input_tokens is None or output_tokens is None:
+        return None
+    return {"input": input_tokens, "output": output_tokens}
+
+
+def log_token_usage(agent_name: str, task_type: str, model_id: str | None, response) -> dict | None:
+    token_usage = token_usage_from_response(response)
+    if token_usage is None:
+        return None
+    resolved_model = str(model_id or _response_value(response, "model") or "")
+    record = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "agent_name": str(agent_name or "unknown"),
+        "task_type": str(task_type or "unknown"),
+        "model_id": resolved_model,
+        "input_tokens": token_usage["input"],
+        "output_tokens": token_usage["output"],
+        "token_usage": token_usage,
+    }
+    try:
+        from config import TOKEN_USAGE_LOG_PATH
+
+        TOKEN_USAGE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with TOKEN_USAGE_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, ValueError):
+        return None
+    return record
+
+
+record_token_usage = log_token_usage
+
+
 def _sanitize_output(text: str, agent_name: str | None = None) -> str:
     sanitized = str(text or "")
     preview = sanitized[:200]
@@ -138,6 +178,26 @@ def _json_candidates(text: str) -> list[str]:
     if start >= 0 and end > start:
         candidates.append(text[start : end + 1])
     return candidates
+
+
+def _usage_field(response):
+    return _response_value(response, "usage")
+
+
+def _response_value(value, key: str):
+    if isinstance(value, dict):
+        return value.get(key)
+    return getattr(value, key, None)
+
+
+def _usage_value(usage, key: str) -> int | None:
+    value = _response_value(usage, key)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _current_model_policy() -> str | None:

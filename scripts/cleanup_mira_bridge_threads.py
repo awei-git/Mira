@@ -70,7 +70,7 @@ def _decision(item: dict, *, now: datetime) -> CleanupDecision | None:
     if status == "archived":
         return None
 
-    if re.match(r"^req_liveness_[0-9a-f]+$", item_id):
+    if re.match(r"^(req|mira)_liveness_[0-9a-zA-Z_-]+$", item_id) or item_id.startswith("output_stale_"):
         return CleanupDecision(item_id, "archive", "internal liveness alert noise", status, "archived")
     if re.match(r"^req_watchdog_[0-9a-f]+$", item_id):
         return CleanupDecision(item_id, "archive", "superseded watchdog alert", status, "archived")

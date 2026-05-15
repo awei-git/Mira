@@ -4,6 +4,7 @@ import importlib.util
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -232,16 +233,62 @@ def test_backend_dashboard_endpoint_returns_technical_snapshot(monkeypatch, tmp_
     assert body["policies"]["hard"] == 43
     assert body["policies"]["soft"] == 9
     assert len(body["pipelines"]) == 21
-    allowed_statuses = {"green", "red", "yellow", "gray"}
+    allowed_statuses = {"green", "red", "yellow", "blue", "gray"}
     for pipeline in body["pipelines"]:
         for step in pipeline["steps"]:
             assert step["status"] in allowed_statuses
-            assert step["model"]
+            assert step["model"] or step["model_source"] == "no LLM"
     assert set(body["memory"]) == {"status", "kernel", "ledger", "commits", "effects", "queues"}
     assert set(body["outputs"]) == {"artifacts", "recent_items", "jobs"}
     assert "security" in body
     assert "agent_stats" in body["outputs"]["jobs"]
     assert {"kernel", "ledger", "commits", "effect_log", "eval_history", "snapshots", "artifacts"} <= set(body["paths"])
+
+
+def test_backend_dashboard_shell_and_static_assets_are_served(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+
+    shell = client.get("/backend/pipelines")
+    asset = client.get("/backend-assets/app.js")
+
+    assert shell.status_code == 200
+    assert '<script type="module" src="/backend-assets/app.js"></script>' in shell.text
+    assert asset.status_code == 200
+    assert "loadDashboard" in asset.text
+
+
+def test_backend_dashboard_model_update_persists_override(monkeypatch, tmp_path: Path):
+    import mira.runtime as runtime
+
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
+    config_root = tmp_path / "v3-config"
+    monkeypatch.setattr(runtime, "default_v3_paths", lambda: SimpleNamespace(root=config_root))
+
+    resp = client.post(
+        "/api/ang/backend-dashboard/models/writer",
+        json={"model": "claude-sonnet-4-6", "token_budget": 128000},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["assignment"]["model"] == "claude-sonnet-4-6"
+    overrides = json.loads((config_root / "model_assignments.json").read_text(encoding="utf-8"))
+    assert overrides["writer"]["token_budget"] == 128000
+    assert overrides["writer"]["updated_by"] == "ang"
+
+
+def test_backend_dashboard_model_update_rejects_unknown_model(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
+
+    resp = client.post(
+        "/api/ang/backend-dashboard/models/writer",
+        json={"model": "../../not-a-model", "token_budget": 128000},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Unknown model option"
 
 
 def test_safe_join_rejects_parent_traversal(tmp_path: Path):
@@ -363,6 +410,48 @@ def test_tasks_endpoint_uses_control_projection_without_mutating_bridge(monkeypa
     assert calls["list"] == ("ang", False, 200, 20)
     assert item_path.read_text(encoding="utf-8") == before
     assert _command_files(tmp_path) == []
+
+
+def test_tasks_endpoint_hides_internal_liveness_items(monkeypatch, tmp_path: Path):
+    import control.db as control_db
+    import control.repository as control_repository
+
+    client = _make_client(monkeypatch, tmp_path)
+
+    class FakeTx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def list_items(self, user_id, *, include_archived=False, limit=200, messages_per_item=None):
+            return [
+                {
+                    "id": "mira_liveness_task_dispatch",
+                    "type": "discussion",
+                    "title": "Output Liveness: task_dispatch stale",
+                    "status": "done",
+                    "tags": ["system", "liveness"],
+                },
+                {"id": "req_123", "type": "request", "title": "Existing task", "status": "working"},
+            ]
+
+        def last_event_id(self, user_id):
+            return 42
+
+    monkeypatch.setattr(control_repository, "sync_user_from_legacy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
+
+    resp = client.get("/api/ang/tasks")
+
+    assert resp.status_code == 200
+    assert resp.json()["items"] == [{"id": "req_123", "type": "request", "title": "Existing task", "status": "working"}]
 
 
 def test_task_detail_endpoint_uses_control_projection(monkeypatch, tmp_path: Path):

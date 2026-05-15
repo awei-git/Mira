@@ -894,12 +894,13 @@ def _maybe_create_spontaneous_idea(thought_text: str, source: str = "", user_id:
 {{
     "connected_threads": 2,  // 关联的线索数量
     "threads": ["线索1简述", "线索2简述"],
-    "title": "基于这个连接可以写的文章标题（中文或英文，15字以内）",
-    "thesis": "核心论点（一句话）",
+    "title": "English Substack title, 5-12 words, no Chinese",
+    "thesis": "English core thesis in one sentence",
     "skip": false  // 如果连接很弱或牵强，设为 true
 }}
 
-只输出JSON。如果关联不足2条或连接牵强，connected_threads 设为实际数量，skip 设为 true。"""
+只输出JSON。如果关联不足2条或连接牵强，connected_threads 设为实际数量，skip 设为 true。
+Substack文章一律用英文；中文思考只能作为素材，不能决定最终写作语言。"""
 
     try:
         result = model_think(prompt, model_name="omlx", timeout=30)
@@ -942,7 +943,7 @@ def _maybe_create_spontaneous_idea(thought_text: str, source: str = "", user_id:
     idea_content = f"""# {title}
 
 - **type**: essay
-- **language**: 中文
+- **language**: en
 - **platform**: Substack
 - **target_words**: 2000
 - **deadline**:
@@ -959,6 +960,7 @@ def _maybe_create_spontaneous_idea(thought_text: str, source: str = "", user_id:
 ## Notes
 
 Spontaneous idea — emerged from connecting 2+ existing threads.
+Language policy: final Substack title, subtitle, section headers, and body must be English. Translate Chinese source material into English; do not draft in Chinese.
 Original thought: {thought_text[:500]}
 
 ## Feedback

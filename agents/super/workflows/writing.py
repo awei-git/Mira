@@ -52,6 +52,47 @@ def _autowrite_workspace(task_id: str) -> Path:
     return workspace
 
 
+def _normalize_substack_english_idea(text: str) -> str:
+    """Ensure queued Substack idea metadata cannot force a non-English article."""
+    if not re.search(r"(?im)^\s*-\s*\*\*platform\*\*\s*:\s*substack\b|^\s*platform\s*:\s*substack\b", text or ""):
+        return text
+    normalized = text
+    if re.search(r"(?im)^\s*-\s*\*\*language\*\*\s*:", normalized):
+        normalized = re.sub(r"(?im)^\s*-\s*\*\*language\*\*\s*:.*$", "- **language**: en", normalized)
+    elif re.search(r"(?im)^\s*language\s*:", normalized):
+        normalized = re.sub(r"(?im)^\s*language\s*:.*$", "language: en", normalized)
+    else:
+        normalized += "\n\n- **language**: en"
+    policy = (
+        "Language policy: final Substack title, subtitle, section headers, and body must be English. "
+        "Chinese source notes are background only; translate the ideas, not the surface language."
+    )
+    if policy not in normalized:
+        normalized += f"\n\n{policy}"
+    return normalized
+
+
+def _extract_markdown_h1(text: str) -> str:
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped[2:].strip()
+    return ""
+
+
+def _cjk_char_count(text: str) -> int:
+    return len(re.findall(r"[\u3400-\u9fff]", text or ""))
+
+
+def _is_substack_language_violation(idea_text: str, article_text: str) -> bool:
+    if not re.search(r"(?im)^\s*-\s*\*\*platform\*\*\s*:\s*substack\b|^\s*platform\s*:\s*substack\b", idea_text or ""):
+        return False
+    if _cjk_char_count(_extract_markdown_h1(article_text)):
+        return True
+    cjk = _cjk_char_count(article_text)
+    return cjk > 40 or cjk / max(len(article_text), 1) > 0.02
+
+
 def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_content: str):
     """Run autonomous writing on the canonical writer pipeline.
 
@@ -62,6 +103,7 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
     bridge = Mira() if Mira else None
 
     try:
+        idea_content = _normalize_substack_english_idea(idea_content)
         project_dir, final_text = run_full_pipeline(title, idea_content)
         final_file = project_dir / "final.md"
         if final_file.exists():
@@ -70,10 +112,11 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
         else:
             article_text = final_text
             (workspace / "output.md").write_text(article_text, encoding="utf-8")
+        publish_title = _extract_markdown_h1(article_text) or title
 
         meta = {
             "task_id": task_id,
-            "title": title,
+            "title": publish_title,
             "writing_type": writing_type,
             "slug": project_dir.name,
             "workspace": str(project_dir),
@@ -84,8 +127,30 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
             json.dumps(meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        summary = f"Autowrite draft ready: {title}"
+        summary = f"Autowrite draft ready: {publish_title}"
         (workspace / "summary.txt").write_text(summary, encoding="utf-8")
+
+        if _is_substack_language_violation(idea_content, article_text):
+            error = "Substack English-only policy blocked generated non-English article."
+            try:
+                from publish.manifest import update_manifest
+
+                update_manifest(
+                    meta["slug"],
+                    title=publish_title,
+                    status="blocked_language",
+                    workspace=meta["workspace"],
+                    final_md=meta["final_md"],
+                    item_id=task_id,
+                    auto_podcast=True,
+                    error=error,
+                )
+            except Exception as e:
+                log.error("Failed to mark language block for '%s': %s", publish_title, e)
+            if bridge:
+                bridge.update_task_status(task_id, "error", agent_message=error)
+            log.warning("%s title=%s path=%s", error, publish_title, meta["final_md"])
+            return
 
         # Full autonomy mode (2026-04-07): auto-approve in publish_manifest so
         # _check_pending_publish() picks it up and publishes on the next cycle.
@@ -103,7 +168,7 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
 
             update_manifest(
                 meta["slug"],
-                title=title,
+                title=publish_title,
                 status="approved",
                 workspace=meta["workspace"],
                 final_md=meta["final_md"],
@@ -111,17 +176,17 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
                 auto_podcast=True,
                 writer_gate_passed=True,
             )
-            log.info("Auto-approved '%s' in publish_manifest", title)
+            log.info("Auto-approved '%s' in publish_manifest", publish_title)
         except Exception as e:
             log.error("Failed to auto-approve '%s' in manifest: %s", title, e)
 
         preview_text = article_text[:4000]
         if len(article_text) > 4000:
             preview_text += f"\n\n[...文章还有 {len(article_text) - 4000} 字，已截断]"
-        status_msg = f"写好了，已排队发布：\n\n" f"**{title}**\n\n" f"---\n\n" f"{preview_text}"
+        status_msg = f"写好了，已排队发布：\n\n" f"**{publish_title}**\n\n" f"---\n\n" f"{preview_text}"
         if bridge:
             bridge.update_task_status(task_id, "done", agent_message=status_msg)
-        log.info("Canonical autowrite complete for '%s' (%s)", title, project_dir)
+        log.info("Canonical autowrite complete for '%s' (%s)", publish_title, project_dir)
     except Exception as e:
         log.error("Canonical autowrite failed for '%s': %s", title, e)
         (workspace / "summary.txt").write_text(f"Autowrite failed: {e}", encoding="utf-8")
@@ -207,7 +272,22 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
     task_id = f"autowrite_{today}"
 
     # Create task visible to iOS
-    content = f"{title}\n\n{thesis}\n\n{outline}"
+    content = _normalize_substack_english_idea(
+        f"""# {title}
+
+- **type**: {writing_type}
+- **language**: en
+- **platform**: Substack
+
+## Thesis
+
+{thesis}
+
+## Outline
+
+{outline}
+"""
+    )
     bridge.create_task(
         task_id=task_id,
         title=f"Mira writes: {title}",
@@ -511,7 +591,22 @@ def do_autowrite_check():
     task_id = f"autowrite_{today}"
 
     bridge = Mira()
-    content = f"{title}\n\n{thesis}\n\n{outline}"
+    content = _normalize_substack_english_idea(
+        f"""# {title}
+
+- **type**: {writing_type}
+- **language**: en
+- **platform**: Substack
+
+## Thesis
+
+{thesis}
+
+## Outline
+
+{outline}
+"""
+    )
     bridge.create_task(
         task_id=task_id,
         title=f"Mira writes: {title}",

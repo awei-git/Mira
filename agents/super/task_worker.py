@@ -1785,6 +1785,7 @@ def main():
     record_phase_duration(task_agent, "act", CLAUDE_TIMEOUT_ACT, _act_duration)
 
     _in_tok, _out_tok, _model_id = get_session_tokens()
+    _token_usage = {"input": _in_tok, "output": _out_tok}
     _result_words = 0
     _out_md = workspace / "output.md"
     if _out_md.exists():
@@ -1864,7 +1865,7 @@ def main():
                 "configured_timeout_s": configured_timeout,
                 "actual_duration_s": round(elapsed, 2),
                 "utilization_pct": round(utilization_pct, 1),
-                "token_usage": {"input": _in_tok, "output": _out_tok},
+                "token_usage": _token_usage,
             },
             ensure_ascii=False,
         )
@@ -1877,7 +1878,7 @@ def main():
         _result_file = workspace / "result.json"
         if _result_file.exists():
             _result = json.loads(_result_file.read_text(encoding="utf-8"))
-            _result["token_usage"] = {"input": _in_tok, "output": _out_tok}
+            _result["token_usage"] = _token_usage
             _tmp = _result_file.with_suffix(".tmp")
             _tmp.write_text(json.dumps(_result, ensure_ascii=False, indent=2), encoding="utf-8")
             _tmp.rename(_result_file)
@@ -1892,6 +1893,7 @@ def main():
         "phase_inference_ms": _perf_inference_ms,
         "phase_tools_ms": _perf_tools_ms,
         "total_ms": _perf_total_ms,
+        "token_usage": _token_usage,
     }
     log.info("PHASE_BREAKDOWN %s", json.dumps(_phase_record, ensure_ascii=False))
     try:

@@ -128,6 +128,68 @@ def test_write_health_feed_replaces_digest_without_duplication(monkeypatch):
     assert bridge.item["messages"][0]["content"] == "new digest"
 
 
+def test_write_health_feed_drops_stale_generated_noise(monkeypatch):
+    from agents.super import health
+
+    _stub_control_db(monkeypatch)
+    bridge = FakeBridge(
+        {
+            "id": "health_today_ang",
+            "type": "feed",
+            "title": "今日健康",
+            "status": "done",
+            "origin": "agent",
+            "created_at": "2026-05-02T08:00:00Z",
+            "updated_at": "2026-05-02T08:00:00Z",
+            "messages": [
+                {
+                    "id": "health_today_ang_digest",
+                    "sender": "health_agent",
+                    "content": "old digest",
+                    "timestamp": "2026-05-02T08:00:00Z",
+                    "kind": "text",
+                },
+                {
+                    "id": "reply_1",
+                    "sender": "ang",
+                    "content": "为什么剧烈运动会血氧低？",
+                    "timestamp": "2026-05-02T09:00:00Z",
+                    "kind": "text",
+                },
+                {
+                    "id": "generic_1",
+                    "sender": "agent",
+                    "content": "What do you want to achieve with this?",
+                    "timestamp": "2026-05-02T09:05:00Z",
+                    "kind": "text",
+                },
+                {
+                    "id": "error_1",
+                    "sender": "agent",
+                    "content": "处理失败: health produced no verifiable output: output.md missing.",
+                    "timestamp": "2026-05-02T09:06:00Z",
+                    "kind": "error",
+                },
+                {
+                    "id": "answer_1",
+                    "sender": "agent",
+                    "content": "运动时手表读数可能受佩戴松紧影响。",
+                    "timestamp": "2026-05-02T09:10:00Z",
+                    "kind": "text",
+                },
+            ],
+        }
+    )
+
+    health._write_health_feed(bridge, "health_today_ang", "今日健康", "new digest", ["health"])
+
+    assert [m["id"] for m in bridge.item["messages"]] == [
+        "health_today_ang_digest",
+        "reply_1",
+        "answer_1",
+    ]
+
+
 def test_write_health_feed_can_skip_manifest_for_compatibility_alias(monkeypatch):
     from agents.super import health
 
@@ -149,3 +211,52 @@ def test_write_health_feed_can_skip_manifest_for_compatibility_alias(monkeypatch
     assert bridge.item["pinned"] is False
     assert bridge.manifest_updates == []
     assert FakeRepo.projected[-1][1]["id"] == "health_insight_ang"
+
+
+def test_write_health_feed_can_drop_thread_for_compatibility_alias(monkeypatch):
+    from agents.super import health
+
+    _stub_control_db(monkeypatch)
+    bridge = FakeBridge(
+        {
+            "id": "health_insight_ang",
+            "type": "feed",
+            "title": "今日健康洞察",
+            "status": "done",
+            "origin": "agent",
+            "created_at": "2026-05-02T08:00:00Z",
+            "updated_at": "2026-05-02T08:00:00Z",
+            "messages": [
+                {
+                    "id": "health_insight_ang_digest",
+                    "sender": "health_agent",
+                    "content": "old digest",
+                    "timestamp": "2026-05-02T08:00:00Z",
+                    "kind": "text",
+                },
+                {
+                    "id": "generic_1",
+                    "sender": "agent",
+                    "content": "What do you want to achieve with this?",
+                    "timestamp": "2026-05-02T09:00:00Z",
+                    "kind": "text",
+                },
+            ],
+        }
+    )
+
+    health._write_health_feed(
+        bridge,
+        "health_insight_ang",
+        "今日健康洞察",
+        "new digest",
+        ["health", "insight"],
+        update_manifest=False,
+        pinned=False,
+        preserve_thread=False,
+        status_override="archived",
+    )
+
+    assert [m["id"] for m in bridge.item["messages"]] == ["health_insight_ang_digest"]
+    assert bridge.item["messages"][0]["content"] == "new digest"
+    assert bridge.item["status"] == "archived"
