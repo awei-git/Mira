@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Iterable, Literal
 
 from .delta import MemoryAction, MemoryDeltaProposal, RiskLevel
 from .ledger_ids import new_id
@@ -95,6 +95,60 @@ class MemoryCommitLog:
         return commits
 
 
+@dataclass(frozen=True)
+class QuarantineRecord:
+    proposal_id: str
+    run_id: str
+    pipeline: str
+    action: MemoryAction
+    finding: ValidationFinding
+    record_id: str = field(default_factory=lambda: new_id("quarantine"))
+    timestamp: datetime = field(default_factory=utc_now)
+
+    def to_dict(self) -> dict:
+        return to_jsonable(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "QuarantineRecord":
+        timestamp = data.get("timestamp")
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        return cls(
+            proposal_id=data["proposal_id"],
+            run_id=data["run_id"],
+            pipeline=data["pipeline"],
+            action=MemoryAction(**data["action"]),
+            finding=ValidationFinding(**data["finding"]),
+            record_id=data.get("record_id") or new_id("quarantine"),
+            timestamp=timestamp,
+        )
+
+
+class MemoryQuarantineStore:
+    """Append-only store for memory proposals that need human review."""
+
+    def __init__(self, path: Path | str):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def append(self, record: QuarantineRecord) -> None:
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record.to_dict(), sort_keys=True) + "\n")
+
+    def list(self, limit: int | None = None) -> list[QuarantineRecord]:
+        if not self.path.exists():
+            return []
+        records: list[QuarantineRecord] = []
+        with self.path.open("r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    records.append(QuarantineRecord.from_dict(json.loads(line)))
+        records.sort(key=lambda r: r.timestamp)
+        if limit is not None:
+            return records[-limit:]
+        return records
+
+
 class SecurityGateway:
     """Validates memory proposals before the durable kernel can change."""
 
@@ -108,6 +162,22 @@ class SecurityGateway:
     )
     _EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b")
     _HIGH_RISK_ACTIONS = {"create_scar", "form_hypothesis", "update_hypothesis"}
+    _EVIDENCE_REQUIRED_ACTIONS = {"form_hypothesis", "update_hypothesis"}
+    _CONTRADICTION_PAIRS = (
+        ("prefers concise", "prefers detailed"),
+        ("prefers short", "prefers long"),
+        ("likes ", "dislikes "),
+        ("use ", "avoid "),
+    )
+
+    def __init__(
+        self,
+        *,
+        existing_memory: Iterable[str] | None = None,
+        quarantine_store: MemoryQuarantineStore | None = None,
+    ):
+        self.existing_memory = [self._normalize(text) for text in existing_memory or [] if text]
+        self.quarantine_store = quarantine_store
 
     def validate(self, proposal: MemoryDeltaProposal) -> MemoryCommit:
         if proposal.status == "no_kernel_change" or not proposal.actions:
@@ -150,7 +220,7 @@ class SecurityGateway:
             status = "applied" if committed else "noop"
             approved_by = "security_gateway"
 
-        return MemoryCommit(
+        commit = MemoryCommit(
             proposal_id=proposal.proposal_id,
             run_id=proposal.run_id,
             pipeline=proposal.pipeline,
@@ -162,6 +232,8 @@ class SecurityGateway:
             rollback_pointer=proposal.run_id,
             status=status,
         )
+        self._store_quarantine(proposal, commit)
+        return commit
 
     def _validate_action(self, proposal: MemoryDeltaProposal, action: MemoryAction) -> ValidationFinding:
         if not action.type or not action.target:
@@ -180,6 +252,16 @@ class SecurityGateway:
         if proposal.trust_tier == "untrusted":
             return ValidationFinding(
                 "source_trust", "quarantine", "untrusted source cannot mutate kernel", action.target
+            )
+        duplicate_or_contradiction = self._memory_consistency_check(action)
+        if duplicate_or_contradiction is not None:
+            return duplicate_or_contradiction
+        if action.type in self._EVIDENCE_REQUIRED_ACTIONS and not self._has_evidence_ref(action):
+            return ValidationFinding(
+                "evidence_ref",
+                "require_human",
+                "memory action needs an evidence_ref before it can mutate the kernel",
+                action.target,
             )
         if self._risk_requires_human(proposal.risk_level, action.type):
             return ValidationFinding(
@@ -201,3 +283,53 @@ class SecurityGateway:
 
     def _redact(self, value: str) -> str:
         return self._EMAIL_RE.sub("[redacted-email]", value)
+
+    def _store_quarantine(self, proposal: MemoryDeltaProposal, commit: MemoryCommit) -> None:
+        if self.quarantine_store is None:
+            return
+        findings_by_target = {finding.action_target: finding for finding in commit.findings}
+        for action in [*commit.quarantined_actions, *commit.rejected_actions]:
+            finding = findings_by_target.get(action.target)
+            if finding is None:
+                continue
+            self.quarantine_store.append(
+                QuarantineRecord(
+                    proposal_id=proposal.proposal_id,
+                    run_id=proposal.run_id,
+                    pipeline=proposal.pipeline,
+                    action=action,
+                    finding=finding,
+                )
+            )
+
+    def _memory_consistency_check(self, action: MemoryAction) -> ValidationFinding | None:
+        detail = self._normalize(action.detail)
+        if not detail:
+            return None
+        if detail in self.existing_memory:
+            return ValidationFinding("duplicate_memory", "reject", "same memory already exists", action.target)
+        for existing in self.existing_memory:
+            if self._contradicts(detail, existing):
+                return ValidationFinding(
+                    "contradiction",
+                    "require_human",
+                    "new memory appears to contradict existing memory",
+                    action.target,
+                )
+        return None
+
+    def _has_evidence_ref(self, action: MemoryAction) -> bool:
+        if action.metadata.get("evidence_ref") or action.metadata.get("evidence_refs"):
+            return True
+        return "evidence_ref=" in action.detail or "evidence:" in action.detail.lower()
+
+    def _contradicts(self, new: str, existing: str) -> bool:
+        for left, right in self._CONTRADICTION_PAIRS:
+            if left in new and right in existing:
+                return True
+            if right in new and left in existing:
+                return True
+        return False
+
+    def _normalize(self, value: str) -> str:
+        return " ".join(value.strip().lower().split())

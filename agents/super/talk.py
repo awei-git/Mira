@@ -293,9 +293,13 @@ def _intent_gate_allows(bridge, item_id: str, task_description: str) -> bool:
     result = check_intent_clarity(task_description)
     if result.get("is_clear", True):
         return True
+    if not callable(getattr(bridge, "item_exists", None)):
+        return True
     question = result.get("question") or "What specific outcome do you want Mira to produce?"
     if item_id and bridge.item_exists(item_id):
-        bridge.update_status(item_id, "needs-input", agent_message=question)
+        update = getattr(bridge, "update_status", None) or getattr(bridge, "update_task_status", None)
+        if callable(update):
+            update(item_id, "needs-input", agent_message=question)
     else:
         _write_intent_clarification_outbox(bridge, item_id, question)
     log.info("Intent gate paused task %s: %s", item_id or "-", question)

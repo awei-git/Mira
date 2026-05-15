@@ -1,0 +1,20 @@
+name: system_health
+memory_class: operational
+trigger:
+  type: schedule
+  detail: every 5 min
+priority: 5
+version: 1
+max_duration_s: 120
+checkpoint_every: 1
+involved_skills:
+  - system_health
+steps:
+  - name: heartbeat_processes_crash_tasks_failure_sig
+    type: monitor
+    action: system_health_probe
+  - name: status_hard_policy
+    type: policy
+  - name: experience_record_on_change
+    type: memory
+    action: system_health_record

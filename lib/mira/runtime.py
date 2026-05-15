@@ -12,15 +12,18 @@ import json
 from pathlib import Path
 import re
 
-from mira.engine import PipelineExecutor
+from mira.engine import ApprovalStore, EffectLog, PipelineExecutor
+from mira.engine.checkpoint import CheckpointStore
+from mira.baselines import capture_all_baselines
 from mira.kernel import ExperienceLedger, MemoryAction, MemoryDelta
-from mira.kernel.commit import MemoryCommitLog, SecurityGateway
+from mira.kernel.commit import MemoryCommitLog, MemoryQuarantineStore, SecurityGateway
 from mira.kernel.consolidation import MemoryConsolidator
 from mira.kernel.ledger import ExperienceRecord, new_run_id
 from mira.kernel.schema import MemoryClass, to_jsonable
 from mira.kernel.snapshot import SnapshotBuilder
 from mira.kernel.store import JsonKernelStore, KernelStore
 from mira.pipelines.operational import build_communication_pipeline
+from mira.workflows import compile_workflow_pack
 
 V3_DIRNAME = "v3"
 
@@ -82,6 +85,7 @@ PIPELINE_MEMORY_CLASS: dict[str, MemoryClass] = {
     "weekly_growth_report": "social",
     "intelligence_briefing": "epistemic",
     "research_deep_dive": "epistemic",
+    "a2a_trust_experiment": "epistemic",
     "daily_thought_discussion": "epistemic",
     "daily_journal": "epistemic",
     "weekly_reflection": "epistemic",
@@ -105,7 +109,12 @@ class V3Paths:
     commits: Path
     effect_log: Path
     eval_history: Path
+    approvals: Path
+    quarantine: Path
+    checkpoints: Path
     snapshots: Path
+    artifacts: Path
+    baselines: Path
 
 
 def default_v3_paths(root: Path | str | None = None) -> V3Paths:
@@ -124,7 +133,12 @@ def default_v3_paths(root: Path | str | None = None) -> V3Paths:
         commits=data_dir / "memory_commits.jsonl",
         effect_log=data_dir / "effect_log.jsonl",
         eval_history=data_dir / "eval_history.jsonl",
+        approvals=data_dir / "approvals.jsonl",
+        quarantine=data_dir / "memory_quarantine.jsonl",
+        checkpoints=data_dir / "checkpoints",
         snapshots=data_dir / "snapshots",
+        artifacts=data_dir / "artifacts",
+        baselines=data_dir / "baselines",
     )
 
 
@@ -138,6 +152,22 @@ def default_ledger(root: Path | str | None = None) -> ExperienceLedger:
 
 def default_commit_log(root: Path | str | None = None) -> MemoryCommitLog:
     return MemoryCommitLog(default_v3_paths(root).commits)
+
+
+def default_quarantine_store(root: Path | str | None = None) -> MemoryQuarantineStore:
+    return MemoryQuarantineStore(default_v3_paths(root).quarantine)
+
+
+def default_effect_log(root: Path | str | None = None) -> EffectLog:
+    return EffectLog(default_v3_paths(root).effect_log)
+
+
+def default_approval_store(root: Path | str | None = None) -> ApprovalStore:
+    return ApprovalStore(default_v3_paths(root).approvals)
+
+
+def default_checkpoint_store(root: Path | str | None = None) -> CheckpointStore:
+    return CheckpointStore(default_v3_paths(root).checkpoints)
 
 
 def pipeline_for_background_job(bg_name: str) -> str:
@@ -185,7 +215,11 @@ def record_experience(
     )
     store = default_kernel_store(root)
     kernel = store.load()
-    commit = SecurityGateway().validate(delta)
+    existing_memory = [*kernel.relationship_model.notes, *(scar.behavioral_change for scar in kernel.scars)]
+    commit = SecurityGateway(
+        existing_memory=existing_memory,
+        quarantine_store=default_quarantine_store(root),
+    ).validate(delta)
     MemoryConsolidator().apply_commit(kernel, delta, commit)
     default_commit_log(root).append(commit)
     record = ExperienceRecord(
@@ -295,8 +329,77 @@ def prepare_background_context(
     }
 
 
+WORKFLOW_PACK_PATHS: dict[str, str] = {
+    "system_health": "workflow_packs/operational/commands/system_health.yaml",
+    "intelligence_briefing": "workflow_packs/epistemic/commands/intelligence_briefing.yaml",
+    "article_creation": "workflow_packs/creative/commands/article_creation.yaml",
+    "a2a_trust_experiment": "workflow_packs/epistemic/commands/a2a_trust_experiment.yaml",
+}
+
+
+def run_workflow_pack(
+    pack_path: Path | str,
+    *,
+    payload: dict | None = None,
+    intent: str = "",
+    trigger: str = "manual",
+    root: Path | str | None = None,
+):
+    paths = default_v3_paths(root)
+    payload = dict(payload or {})
+    payload.setdefault("artifact_dir", str(paths.artifacts))
+    executor = PipelineExecutor(
+        default_kernel_store(root),
+        default_ledger(root),
+        commit_log=default_commit_log(root),
+        effect_log=default_effect_log(root),
+        approval_store=default_approval_store(root),
+        checkpoint_store=default_checkpoint_store(root),
+        artifact_root=paths.artifacts,
+    )
+    return executor.run(compile_workflow_pack(pack_path), payload, intent=intent or f"run {pack_path}", trigger=trigger)
+
+
+def run_named_workflow(
+    name: str,
+    *,
+    payload: dict | None = None,
+    intent: str = "",
+    trigger: str = "manual",
+    root: Path | str | None = None,
+):
+    if name not in WORKFLOW_PACK_PATHS:
+        raise KeyError(f"No V3.1 workflow pack registered for {name}")
+    base = Path(__file__).resolve().parents[2]
+    return run_workflow_pack(
+        base / WORKFLOW_PACK_PATHS[name],
+        payload=payload,
+        intent=intent or f"run {name}",
+        trigger=trigger,
+        root=root,
+    )
+
+
+def capture_v31_baselines(root: Path | str | None = None):
+    paths = default_v3_paths(root)
+    return capture_all_baselines(
+        ledger=default_ledger(root),
+        commit_log=default_commit_log(root),
+        effect_log=default_effect_log(root),
+        approval_store=default_approval_store(root),
+        output_dir=paths.baselines,
+    )
+
+
 def run_communication(message: str, *, root: Path | str | None = None) -> str:
-    executor = PipelineExecutor(default_kernel_store(root), default_ledger(root), commit_log=default_commit_log(root))
+    executor = PipelineExecutor(
+        default_kernel_store(root),
+        default_ledger(root),
+        commit_log=default_commit_log(root),
+        effect_log=default_effect_log(root),
+        approval_store=default_approval_store(root),
+        checkpoint_store=default_checkpoint_store(root),
+    )
     result = executor.run(
         build_communication_pipeline(),
         {"message": message},

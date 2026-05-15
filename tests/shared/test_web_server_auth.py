@@ -216,7 +216,7 @@ def test_v3_dashboard_endpoint_returns_config(monkeypatch, tmp_path: Path):
     body = resp.json()
     assert body["dashboard"]["hard_policy_count"] == 43
     assert body["dashboard"]["soft_policy_count"] == 9
-    assert len(body["dashboard"]["active_pipelines"]) == 20
+    assert len(body["dashboard"]["active_pipelines"]) == 21
     assert body["config"]["policy_parameters"]["max_concurrent_pipelines"] == 5
 
 
@@ -231,7 +231,7 @@ def test_backend_dashboard_endpoint_returns_technical_snapshot(monkeypatch, tmp_
     assert body["service"]["web"]["port"] == server.WEBGUI_PORT
     assert body["policies"]["hard"] == 43
     assert body["policies"]["soft"] == 9
-    assert len(body["pipelines"]) == 20
+    assert len(body["pipelines"]) == 21
     allowed_statuses = {"green", "red", "yellow", "gray"}
     for pipeline in body["pipelines"]:
         for step in pipeline["steps"]:

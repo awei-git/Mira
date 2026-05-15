@@ -148,6 +148,6 @@ def handle(
         if not summary:
             summary = result[:300]
 
-        return summary
+        return result
 
     return None

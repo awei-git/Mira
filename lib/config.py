@@ -864,9 +864,16 @@ PODCAST_PUBLISH_DAY = _rate_limits.get("podcast_publish_day", 4)
 GROWTH_MAX_FOLLOWS_PER_CYCLE = _rate_limits.get("growth_max_follows_per_cycle", 2)
 GROWTH_DISCOVERY_COOLDOWN_DAYS = _rate_limits.get("growth_discovery_cooldown_days", 3)
 GROWTH_MAX_LIKES_PER_CYCLE = _rate_limits.get("growth_max_likes_per_cycle", 20)
+PUBLISH_MAX_PER_WINDOW = _rate_limits.get("publish_max_per_window", 2)
+PUBLISH_WINDOW_MINUTES = _rate_limits.get("publish_window_minutes", 30)
+PUBLISH_COOLDOWN_PER_TYPE = _rate_limits.get(
+    "publish_cooldown_per_type",
+    {"article": 1440, "note": 120, "comment": 30, "tweet": 60},
+)
 SELF_EVOLVE_MAX_PER_DAY = _rate_limits.get("self_evolve_max_per_day", 1)
 IPHONE_BRIDGE_WARN_LATENCY_MS = _rate_limits.get("iphone_bridge_warn_latency_ms", 45000)
 BRIDGE_STALE_THRESHOLD = _rate_limits.get("bridge_stale_threshold", 600)
+RAW_WRITING_MODE_ALLOWED = bool(_cfg.get("raw_writing_mode_allowed", True))
 
 # ---------------------------------------------------------------------------
 # Social engineering patterns for skill security audit

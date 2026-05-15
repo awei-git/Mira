@@ -1,0 +1,14 @@
+read:
+  grant_required: false
+draft:
+  grant_required: false
+write_internal:
+  grant_required: false
+publish_public:
+  grant_required: true
+code_config:
+  grant_required: true
+memory_kernel:
+  grant_required: true
+destructive:
+  grant_required: true

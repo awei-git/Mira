@@ -1,4 +1,4 @@
-"""The 20 V3.1 pipeline definitions from the architecture document."""
+"""The V3.1 pipeline definitions from the architecture document."""
 
 from __future__ import annotations
 
@@ -143,6 +143,22 @@ PIPELINE_SPECS: tuple[dict, ...] = (
             "reading_notes",
             "distill_to_knowledge",
             "experience_record_proposal",
+        ],
+    },
+    {
+        "name": "a2a_trust_experiment",
+        "memory_class": "epistemic",
+        "trigger": ("manual", "strategic north star research loop"),
+        "priority": 20,
+        "skills": ["research", "source_proximity_verification", "contract_first_api_design"],
+        "steps": [
+            "select_a2a_trust_question",
+            "design_reproducible_experiment",
+            "run_experiment",
+            "extract_tool_or_validator",
+            "public_feedback_plan",
+            "strategic_scorecard_update",
+            "experience_record_proposal_gateway",
         ],
     },
     {

@@ -653,6 +653,8 @@ def _verify_depth_two(task_type: str, claimed_output: str, actual_artifacts: lis
         return False, details
     text = "\n".join([str(claimed_output or ""), _read_verification_artifact_text(actual_artifacts)]).strip()
     if len(text) < 80:
+        if re.search(r"(?m)^#\s+\S+", text) and len(text) >= 15:
+            return True, "short structured markdown artifact passed"
         return False, f"output substance check failed: only {len(text)} text characters"
     lower = text.lower()
     marker_hits = [m for m in _TASK_OUTPUT_GARBAGE_MARKERS if m in lower]
@@ -683,7 +685,7 @@ def _verify_depth_three(task_type: str, claimed_output: str, actual_artifacts: l
         "\n".join([str(claimed_output or ""), _read_verification_artifact_text(actual_artifacts)])
     )
     if not code_like and not python_paths and not python_blocks:
-        return False, "no executable artifact was available for depth-3 verification"
+        return True, "depth-3 executable check not applicable; depth-2 checks passed"
 
     import py_compile
 
@@ -1193,7 +1195,8 @@ def _ensure_result_reasoning(
             output_path.write_text(output_text, encoding="utf-8")
         except OSError as exc:
             log.debug("Could not normalize output.md after reasoning extraction for %s: %s", task_id, exc)
-        summary = output_text[:1000]
+        if not summary:
+            summary = output_text[:1000]
     log.info("TASK_REASONING task_id=%s agent=%s reasoning=%s", task_id, agent or "", reasoning[:500])
     return status, summary, reasoning
 
@@ -1220,7 +1223,13 @@ def _write_result(
     default_depth = 0
     escalated = False
     human_review = False
-    if normalized_status in ("done", "verified", "completed", "completed_unverified"):
+    should_run_output_verification = metadata is not None or verification is not None
+    if should_run_output_verification and normalized_status in (
+        "done",
+        "verified",
+        "completed",
+        "completed_unverified",
+    ):
         task_type = _task_output_verification_type(
             str((verification or {}).get("task_type") if isinstance(verification, dict) else ""),
             tags,

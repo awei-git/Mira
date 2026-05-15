@@ -120,6 +120,26 @@ AGENT_CRITERIA = {
             },
         },
     },
+    "substack": {
+        "description": "Substack publication strategy and guarded publishing orchestration",
+        "metrics": {
+            "strategy_report_produced": {
+                "description": "Planning requests that produce a publication strategy artifact",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
+            "topic_backlog_quality": {
+                "description": "Topic candidates with thesis, audience fit, and Mira edge",
+                "metric_type": "proxy",
+                "ground_truth_type": "consensus_proxy",
+            },
+            "live_publish_delegation": {
+                "description": "Live publishing intents delegated to the guarded socialmedia stack",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+            },
+        },
+    },
     "researcher": {
         "description": "Deep research, math proofs, iterative investigation",
         "metrics": {

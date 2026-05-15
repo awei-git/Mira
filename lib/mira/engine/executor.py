@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from mira.agents.base import Agent, StepInput, StepOutput
+from mira.capabilities import PreflightResult, preflight_for_pipeline, run_preflight
+from mira.engine.checkpoint import Checkpoint, CheckpointStore
+from mira.engine.effect_log import EffectLog
+from mira.engine.risk_gate import ApprovalRequest, ApprovalStore, grant_required
 from mira.kernel.commit import MemoryCommitLog, SecurityGateway
 from mira.kernel.consolidation import ConsolidationResult, MemoryConsolidator
 from mira.kernel.delta import MemoryAction, MemoryDelta
@@ -37,6 +42,11 @@ class PipelineExecutor:
         consolidator: MemoryConsolidator | None = None,
         gateway: SecurityGateway | None = None,
         commit_log: MemoryCommitLog | None = None,
+        effect_log: EffectLog | None = None,
+        approval_store: ApprovalStore | None = None,
+        checkpoint_store: CheckpointStore | None = None,
+        connector_status: dict[str, bool] | None = None,
+        artifact_root: Path | str | None = None,
     ):
         self.kernel_store = kernel_store
         self.ledger = ledger
@@ -44,11 +54,22 @@ class PipelineExecutor:
         self.consolidator = consolidator or MemoryConsolidator()
         self.gateway = gateway or SecurityGateway()
         self.commit_log = commit_log
+        self.effect_log = effect_log
+        self.approval_store = approval_store
+        self.checkpoint_store = checkpoint_store
+        self.connector_status = connector_status or {}
+        self.artifact_root = Path(artifact_root) if artifact_root else None
 
     def run(
-        self, pipeline: Pipeline, payload: dict[str, Any], intent: str, trigger: str = "manual"
+        self,
+        pipeline: Pipeline,
+        payload: dict[str, Any],
+        intent: str,
+        trigger: str = "manual",
+        run_id: str | None = None,
+        resume: bool = False,
     ) -> PipelineRunResult:
-        run_id = new_run_id(pipeline.name)
+        run_id = run_id or new_run_id(pipeline.name)
         kernel = self.kernel_store.load()
         snapshot = SnapshotBuilder(self.ledger).build(
             kernel=kernel,
@@ -57,7 +78,19 @@ class PipelineExecutor:
             involved_skills=pipeline.involved_skills,
             intent=intent,
         )
-        outputs, failure = self._execute_steps(pipeline, run_id, payload, snapshot)
+        preflight = self._preflight(pipeline, payload)
+        checkpoint = self.checkpoint_store.load(run_id) if resume and self.checkpoint_store else None
+        if preflight.ok:
+            outputs, failure = self._execute_steps(pipeline, run_id, payload, snapshot, checkpoint)
+        else:
+            outputs = {
+                "_outcome": "blocked_preflight",
+                "_what_happened": f"{pipeline.name} blocked by missing capabilities",
+                "_what_mattered": ", ".join(preflight.missing),
+                "_what_changed": "No workflow side effects ran because preflight failed",
+                "_preflight": preflight,
+            }
+            failure = f"missing capabilities: {', '.join(preflight.missing)}"
         delta = self._build_delta(pipeline, run_id, outputs, failure)
         commit = self.gateway.validate(delta)
         consolidation = self.consolidator.apply_commit(kernel, delta, commit)
@@ -88,13 +121,19 @@ class PipelineExecutor:
         run_id: str,
         payload: dict[str, Any],
         snapshot: MemorySnapshot,
+        checkpoint: Checkpoint | None = None,
     ) -> tuple[dict[str, Any], str | None]:
-        outputs: dict[str, Any] = {}
-        index = 0
+        outputs: dict[str, Any] = dict(checkpoint.outputs) if checkpoint else {}
+        index = self._resume_index(pipeline, checkpoint)
         loop_counts: dict[str, int] = {}
         failure: str | None = None
         while index < len(pipeline.steps):
             step = pipeline.steps[index]
+            if step.name in outputs.get("_skip_steps", []):
+                outputs[step.name] = {"status": "skipped_by_prior_step"}
+                self._save_checkpoint(pipeline, run_id, step.name, outputs, index)
+                index += 1
+                continue
             try:
                 output = self._execute_step(step, pipeline, run_id, payload, outputs, snapshot)
             except Exception as exc:
@@ -114,6 +153,7 @@ class PipelineExecutor:
             self._merge_control_fields(outputs, output.payload)
             if output.summary:
                 outputs.setdefault("_summaries", []).append(output.summary)
+            self._save_checkpoint(pipeline, run_id, step.name, outputs, index)
             if not output.succeeded and step.loop_to:
                 count = loop_counts.get(step.name, 0)
                 if count < step.loop_max:
@@ -147,18 +187,45 @@ class PipelineExecutor:
         step_input = StepInput(
             run_id=run_id, pipeline=pipeline.name, step=step.name, payload=payload, prior_outputs=outputs
         )
-        if step.type == "agent":
-            if not step.agent or step.agent not in self.agents:
-                raise ValueError(f"agent not registered: {step.agent}")
-            return self.agents[step.agent].execute(step_input, snapshot)
-        if step.action is None:
-            return StepOutput(payload={"status": "skipped"}, summary=f"{step.name} had no action")
-        result = step.action(input=step_input, memory=snapshot)
-        if isinstance(result, StepOutput):
-            return result
-        if isinstance(result, dict):
-            return StepOutput(payload=result)
-        return StepOutput(payload={"result": result})
+        approval = self._approval_blocker(pipeline, step, run_id)
+        if approval is not None:
+            return approval
+        effect_key = self._effect_key(pipeline, step, run_id, payload)
+        if effect_key and self.effect_log:
+            self.effect_log.plan(
+                idempotency_key=effect_key,
+                run_id=run_id,
+                pipeline=pipeline.name,
+                action=pipeline.effect_steps.get(step.name, step.name),
+                target=str(payload.get("target") or payload.get("title") or run_id),
+            )
+            self.effect_log.mark_executing(effect_key)
+        try:
+            if step.type == "agent":
+                if not step.agent or step.agent not in self.agents:
+                    raise ValueError(f"agent not registered: {step.agent}")
+                output = self.agents[step.agent].execute(step_input, snapshot)
+            elif step.action is None:
+                output = StepOutput(payload={"status": "skipped"}, summary=f"{step.name} had no action")
+            else:
+                result = step.action(input=step_input, memory=snapshot)
+                if isinstance(result, StepOutput):
+                    output = result
+                elif isinstance(result, dict):
+                    output = StepOutput(payload=result)
+                else:
+                    output = StepOutput(payload={"result": result})
+        except Exception:
+            if effect_key and self.effect_log:
+                self.effect_log.mark_unknown(effect_key, "step raised after execution started")
+            raise
+        if effect_key and self.effect_log:
+            if output.succeeded:
+                effect_entry = self.effect_log.mark_succeeded(effect_key, output.summary)
+            else:
+                effect_entry = self.effect_log.mark_failed(effect_key, output.summary)
+            output.payload.setdefault("_side_effect_refs", []).append(effect_entry.effect_id)
+        return output
 
     def _build_delta(
         self,
@@ -183,3 +250,80 @@ class PipelineExecutor:
             what_failed=failure,
             actions=actions,
         )
+
+    def _preflight(self, pipeline: Pipeline, payload: dict[str, Any]) -> PreflightResult:
+        connectors = dict(self.connector_status)
+        connectors.update(payload.get("connectors", {}))
+        if pipeline.required_capabilities:
+            return run_preflight(
+                pipeline.name,
+                {name: connectors.get(name, available) for name, available in pipeline.required_capabilities.items()},
+            )
+        return preflight_for_pipeline(pipeline.name, connectors)
+
+    def _approval_blocker(
+        self,
+        pipeline: Pipeline,
+        step: Step,
+        run_id: str,
+    ) -> StepOutput | None:
+        risk = pipeline.risk_actions.get(step.name)
+        if not risk or not grant_required(risk):  # type: ignore[arg-type]
+            return None
+        if self.approval_store and self.approval_store.find_grant(action=step.name, risk=risk, scope=pipeline.name):
+            return None
+        if self.approval_store:
+            request = self.approval_store.request(
+                ApprovalRequest(
+                    action=step.name,
+                    risk=risk,  # type: ignore[arg-type]
+                    scope=pipeline.name,
+                    reason=f"{pipeline.name}.{step.name} requires {risk} approval",
+                    run_id=run_id,
+                )
+            )
+            return StepOutput(
+                payload={
+                    "_outcome": "approval_required",
+                    "_what_failed": f"approval required: {request.request_id}",
+                    "_approval_request_id": request.request_id,
+                },
+                summary=f"approval required: {request.request_id}",
+                succeeded=False,
+            )
+        return StepOutput(
+            payload={
+                "_outcome": "approval_required",
+                "_what_failed": f"{pipeline.name}.{step.name} requires {risk} approval",
+            },
+            summary=f"{risk} approval required",
+            succeeded=False,
+        )
+
+    def _effect_key(self, pipeline: Pipeline, step: Step, run_id: str, payload: dict[str, Any]) -> str | None:
+        if step.name in pipeline.effect_steps:
+            target = str(payload.get("target") or payload.get("title") or run_id)
+            return f"{pipeline.name}:{step.name}:{target}"
+        return None
+
+    def _save_checkpoint(
+        self,
+        pipeline: Pipeline,
+        run_id: str,
+        step_name: str,
+        outputs: dict[str, Any],
+        index: int,
+    ) -> None:
+        if self.checkpoint_store is None:
+            return
+        if pipeline.checkpoint_every <= 0 or (index + 1) % pipeline.checkpoint_every != 0:
+            return
+        self.checkpoint_store.save(Checkpoint(run_id=run_id, pipeline=pipeline.name, step=step_name, outputs=outputs))
+
+    def _resume_index(self, pipeline: Pipeline, checkpoint: Checkpoint | None) -> int:
+        if checkpoint is None:
+            return 0
+        try:
+            return pipeline.step_index(checkpoint.step) + 1
+        except KeyError:
+            return 0

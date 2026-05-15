@@ -11,8 +11,17 @@ if str(_SUBSTACK_AGENT) not in sys.path:
     sys.path.insert(0, str(_SUBSTACK_AGENT))
 
 
+def _load_substack_handler():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("substack_handler_test", _SUBSTACK_AGENT / "handler.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_live_publish_intent_is_delegated(monkeypatch, tmp_path: Path):
-    import handler
+    handler = _load_substack_handler()
 
     calls = []
 
@@ -29,7 +38,7 @@ def test_live_publish_intent_is_delegated(monkeypatch, tmp_path: Path):
 
 
 def test_planning_request_writes_strategy_report(monkeypatch, tmp_path: Path):
-    import handler
+    handler = _load_substack_handler()
     from models import PublicationStrategy, TopicCandidate
     from storage import SubstackStore
 

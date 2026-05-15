@@ -2,10 +2,11 @@ from mira.pipelines import PIPELINE_CATALOG
 from mira.policies.catalog import HARD_POLICY_NAMES, SOFT_POLICY_SPECS
 
 
-def test_catalog_contains_all_twenty_v3_pipelines():
-    assert len(PIPELINE_CATALOG) == 20
+def test_catalog_contains_all_v31_pipelines():
+    assert len(PIPELINE_CATALOG) == 21
     assert PIPELINE_CATALOG["communication"].memory_class == "operational"
     assert PIPELINE_CATALOG["self_evolution"].memory_class == "self_modification"
+    assert PIPELINE_CATALOG["a2a_trust_experiment"].memory_class == "epistemic"
 
 
 def test_v31_catalog_uses_governed_memory_flow():

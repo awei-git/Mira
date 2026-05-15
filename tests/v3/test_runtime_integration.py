@@ -18,6 +18,9 @@ def test_runtime_paths_are_under_data_v3(tmp_path: Path):
     assert paths.root == tmp_path / "data" / "v3"
     assert paths.kernel.name == "kernel.json"
     assert paths.ledger.name == "experience_ledger.jsonl"
+    assert paths.approvals.name == "approvals.jsonl"
+    assert paths.quarantine.name == "memory_quarantine.jsonl"
+    assert paths.baselines.name == "baselines"
 
 
 def test_legacy_job_and_task_mapping():
@@ -65,3 +68,17 @@ def test_run_communication_uses_memory_between_runs(tmp_path: Path):
 
     assert first.startswith("I read this as:")
     assert second.startswith("Short answer:")
+
+
+def test_run_named_workflow_uses_default_v31_stores(tmp_path: Path):
+    from mira.runtime import default_commit_log, run_named_workflow
+
+    result = run_named_workflow(
+        "a2a_trust_experiment",
+        payload={"connectors": {"local_files": True}},
+        root=tmp_path,
+    )
+
+    assert result.record.pipeline == "a2a_trust_experiment"
+    assert result.record.artifacts
+    assert default_commit_log(tmp_path).list()[0].status == "applied"

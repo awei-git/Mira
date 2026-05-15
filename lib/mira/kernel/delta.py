@@ -37,6 +37,7 @@ class MemoryAction:
     type: MemoryActionType
     target: str
     detail: str
+    metadata: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return to_jsonable(self)

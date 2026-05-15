@@ -678,6 +678,7 @@ def test_do_talk_stops_retry_when_retry_ceiling_reached(monkeypatch):
     monkeypatch.setattr(core.Mira, "for_all_users", classmethod(lambda cls: [bridge]))
     monkeypatch.setattr("talk.TaskManager", FakeTaskManager)
     monkeypatch.setattr("talk._sweep_stuck_items", lambda bridge, task_mgr: None)
+    monkeypatch.setattr("talk.CONTROL_RUNTIME_DB_ENABLED", False)
     monkeypatch.setattr("core._is_meta_command", lambda content: False)
     monkeypatch.setattr("core._talk_slug", lambda content, task_id: task_id)
     monkeypatch.setattr("evaluation.emptiness.on_external_input", lambda user_id: None)
