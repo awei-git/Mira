@@ -49,12 +49,15 @@
   .dag-name{font-weight:760}
   .dag-meta{font-size:12px;color:var(--muted)!important}
   .dag-steps{display:flex;gap:8px;overflow:auto;padding-top:11px}
-  .task{min-width:150px;max-width:190px;border:1px solid var(--line);border-radius:7px;padding:8px;background:var(--rail-strong)!important}
+  .step-top{display:flex;gap:8px}
+  .step-top .status-pill{flex:0 0 auto;font-size:11px;padding:2px 6px}
+  .task{min-width:170px;max-width:220px;border:1px solid var(--line);border-radius:7px;padding:8px;background:var(--rail-strong)!important}
   .task.green{border-color:rgba(119,201,154,.42);background:rgba(119,201,154,.09)!important}
   .task.yellow{border-color:rgba(209,154,69,.48);background:rgba(209,154,69,.11)!important}
   .task.red{border-color:rgba(222,111,98,.55);background:rgba(222,111,98,.12)!important}
   .t-title{font-weight:700;overflow:hidden;text-overflow:ellipsis}
   .t-meta{font-size:11px;color:var(--muted)!important;margin-top:4px}
+  .t-model{font-size:12px;color:var(--text)!important;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .t-error{color:var(--bad)!important;white-space:pre-wrap}
   .table-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)!important;box-shadow:var(--shadow)}table{width:100%;border-collapse:collapse;background:transparent!important}th,td{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;font-size:13px;color:var(--text)!important}th{position:sticky;top:0;background:#243349!important;color:var(--muted)!important;font-size:12px;font-weight:740;text-transform:uppercase;letter-spacing:.045em}tr:last-child td{border-bottom:0}
   .wide{min-width:960px}.section{scroll-margin-top:24px}.empty{color:var(--muted)!important;font-size:13px}
@@ -104,7 +107,8 @@ function scrollList(node, rows, empty='No records'){clear(node); if(!rows.length
 function metric(label, value, note){const card=el('div','', 'metric'); card.append(el('div',label,'metric-label'), el('div',value,'metric-value'), el('div',note,'metric-note')); return card}
 function chip(value){return el('span', value, 'chip')}
 function chips(values, limit=7){const wrap=el('div','', 'chips'); const shown=(values||[]).slice(0,limit); shown.forEach(v=>wrap.append(chip(v))); if((values||[]).length>shown.length)wrap.append(chip(`+${values.length-shown.length}`)); return wrap}
-function statusPill(status, label=''){return el('span', label || status || 'gray', `status-pill ${status||'gray'}`)}
+function normalizeStatus(status){const value=String(status||'').toLowerCase(); if(['green','ok','done','applied','success','succeeded','completed','verified'].includes(value))return 'green'; if(['red','error','failed','failure','rejected','quarantined'].includes(value))return 'red'; if(['yellow','pending','queued','running','started','scheduled','requires_human'].includes(value))return 'yellow'; return 'gray'}
+function statusPill(status, label=''){const value=normalizeStatus(status); return el('span', label || value, `status-pill ${value}`)}
 function stepList(steps){const wrap=el('div','', 'steps'); (steps||[]).forEach(s=>{const row=el('div','', 'step'); row.append(el('div',s.name||'', 'step-name'), statusPill(s.status||'gray'), el('div', `${s.model||''} · $${Number(s.cost_usd||0).toFixed(4)} · ${fmtTokens(s.tokens||0)} tok${s.error ? '\n' + s.error : ''}`, s.error?'step-meta step-error':'step-meta')); wrap.append(row)}); return wrap}
 function table(node, headers, rows){clear(node); if(!rows.length){const panel=el('div','', 'panel'); panel.append(el('div','No records','empty')); node.append(panel); return} const wrap=el('div','', 'table-wrap'); const t=el('table','', 'wide'); const thead=document.createElement('thead'); const hrow=document.createElement('tr'); headers.forEach(h=>hrow.append(el('th',h))); thead.append(hrow); const tbody=document.createElement('tbody'); rows.forEach(cells=>{const tr=document.createElement('tr'); cells.forEach(cell=>{const td=document.createElement('td'); if(cell instanceof Node)td.append(cell); else if(Array.isArray(cell))cell.forEach(v=>td.append(v)); else td.textContent=cell == null ? '' : String(cell); tr.append(td)}); tbody.append(tr)}); t.append(thead,tbody); wrap.append(t); node.append(wrap)}
 async function api(url){const res=await fetch(url); if(!res.ok)throw new Error(`HTTP ${res.status}`); return res.json()}
@@ -126,9 +130,13 @@ function renderDag(rows){
     if(p.status_detail)dag.append(el('div',p.status_detail,'dag-meta'));
     const steps=el('div','', 'dag-steps');
     (p.steps||[]).forEach(s=>{
-      const step=typeof s === 'string' ? {name:s,status:p.status||'gray'} : s;
-      const box=el('div','', `task ${step.status||'gray'}`);
-      box.append(el('div',step.name||'', 't-title'),el('div',`${step.model||'deterministic'} · $${Number(step.cost_usd||0).toFixed(4)} · ${fmtTokens(step.tokens||0)} tok`,'t-meta'));
+      const step=typeof s === 'string' ? {name:s,status:'gray',model:'deterministic'} : s;
+      const stepStatus=normalizeStatus(step.status);
+      const model=step.model||'deterministic';
+      const box=el('div','', `task ${stepStatus}`);
+      const top=el('div','', 'step-top');
+      top.append(el('div',step.name||'', 't-title'), statusPill(stepStatus));
+      box.append(top, el('div',`model: ${model}`,'t-model'), el('div',`cost: $${Number(step.cost_usd||0).toFixed(4)} · tokens: ${fmtTokens(step.tokens||0)}`,'t-meta'));
       if(step.error)box.append(el('div',step.error,'t-meta t-error'));
       steps.append(box);
     });

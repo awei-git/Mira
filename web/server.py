@@ -895,6 +895,17 @@ def _status_rank(status: str) -> int:
     return {"red": 3, "yellow": 2, "green": 1, "gray": 0}.get(status, 0)
 
 
+def _normalize_dashboard_status(status: str | None) -> str:
+    value = str(status or "").strip().lower()
+    if value in {"green", "ok", "done", "applied", "success", "succeeded", "completed", "verified"}:
+        return "green"
+    if value in {"red", "error", "failed", "failure", "rejected", "quarantined"}:
+        return "red"
+    if value in {"yellow", "pending", "queued", "running", "started", "scheduled", "requires_human"}:
+        return "yellow"
+    return "gray"
+
+
 def _empty_usage_bucket() -> dict:
     return {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}, "agents": {}}
 
@@ -1188,12 +1199,26 @@ def _pipeline_status_rows(pipelines, records, commits, effects, jobs: dict, conf
         default_model = top_model or model_by_agent.get((pipeline.involved_skills or [""])[0], "")
         steps = []
         step_count = max(1, len(pipeline.steps))
+        failed_step_index: int | None = None
+        if errors:
+            first_error = errors[0]
+            for idx, step in enumerate(pipeline.steps):
+                if first_error.startswith(f"{step.name}:"):
+                    failed_step_index = idx
+                    break
         for idx, step in enumerate(pipeline.steps):
-            step_status = status
-            if status == "green":
-                step_status = "green"
-            elif status == "red" and idx < step_count - 1:
-                step_status = "yellow"
+            if status == "red" and failed_step_index is not None:
+                if idx < failed_step_index:
+                    step_status = "green"
+                elif idx == failed_step_index:
+                    step_status = "red"
+                else:
+                    step_status = "gray"
+            elif status == "red":
+                step_status = "red" if idx == step_count - 1 else "gray"
+            else:
+                step_status = status
+            step_status = _normalize_dashboard_status(step_status)
             steps.append(
                 {
                     "name": step.name,
@@ -1202,7 +1227,15 @@ def _pipeline_status_rows(pipelines, records, commits, effects, jobs: dict, conf
                     "model": default_model or "deterministic",
                     "cost_usd": round(usage["cost_usd"] / step_count, 4),
                     "tokens": int(usage["tokens"] / step_count),
-                    "error": errors[0] if errors and idx == step_count - 1 else "",
+                    "error": (
+                        errors[0]
+                        if errors
+                        and (
+                            (failed_step_index is not None and idx == failed_step_index)
+                            or (failed_step_index is None and idx == step_count - 1)
+                        )
+                        else ""
+                    ),
                 }
             )
         rows.append(

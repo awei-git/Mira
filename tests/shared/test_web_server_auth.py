@@ -232,6 +232,11 @@ def test_backend_dashboard_endpoint_returns_technical_snapshot(monkeypatch, tmp_
     assert body["policies"]["hard"] == 43
     assert body["policies"]["soft"] == 9
     assert len(body["pipelines"]) == 20
+    allowed_statuses = {"green", "red", "yellow", "gray"}
+    for pipeline in body["pipelines"]:
+        for step in pipeline["steps"]:
+            assert step["status"] in allowed_statuses
+            assert step["model"]
     assert set(body["memory"]) == {"status", "kernel", "ledger", "commits", "effects", "queues"}
     assert set(body["outputs"]) == {"artifacts", "recent_items", "jobs"}
     assert "security" in body
