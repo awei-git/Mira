@@ -9,39 +9,41 @@
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>Mira Backend</title>
 <style>
-  :root{color-scheme:dark;--bg:#191715;--surface:#24211d;--rail:#211d19;--rail-strong:#2b261f;--text:#f4efe7;--muted:#b8afa5;--faint:#8e8479;--line:#3a332b;--line-strong:#51483d;--accent:#d97757;--accent-strong:#e08a6d;--accent-soft:#3a241c;--accent-text:#1f140f;--good:#77c99a;--warn:#d19a45;--bad:#de6f62;--shadow:0 1px 2px rgba(0,0,0,.22),0 12px 34px rgba(0,0,0,.24)}
+  :root{color-scheme:dark;--bg:#121923;--surface:#202938;--rail:#172130;--rail-strong:#223147;--text:#f7f3ea;--muted:#c8c5b9;--faint:#949aa6;--line:#35445a;--line-strong:#526782;--accent:#7dd3fc;--accent-strong:#a5e6ff;--accent-soft:#123245;--accent-text:#07131b;--good:#63d990;--warn:#f2b84b;--bad:#f07b72;--violet:#c4a7ff;--rose:#ff9db9;--shadow:0 1px 2px rgba(0,0,0,.22),0 12px 34px rgba(0,0,0,.24)}
   :root,html,body{background:var(--bg)!important;color:var(--text)!important}
   *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:14px;letter-spacing:0;line-height:1.45}
-  .shell{display:grid;grid-template-columns:236px minmax(0,1fr);min-height:100vh}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:16px;letter-spacing:0;line-height:1.48}
+  .shell{display:grid;grid-template-columns:258px minmax(0,1fr);min-height:100vh}
   aside{position:sticky;top:0;height:100vh;padding:22px 14px;background:var(--rail)!important;border-right:1px solid var(--line)}
-  .brand{display:flex;align-items:center;gap:10px;margin:0 0 18px 2px}
-  .mark{width:34px;height:34px;border-radius:9px;background:var(--accent)!important;box-shadow:0 0 0 1px rgba(244,239,231,.08),0 8px 24px rgba(217,119,87,.24);overflow:hidden}
+  .brand{display:flex;align-items:center;gap:12px;margin:0 0 20px 2px}
+  .mark{width:52px;height:52px;border-radius:10px;background:var(--accent)!important;box-shadow:0 0 0 1px rgba(244,239,231,.1),0 8px 28px rgba(125,211,252,.24);overflow:hidden}
   .mark img{display:block;width:100%;height:100%;object-fit:cover}
-  .brand-name{font-size:16px;font-weight:680;color:var(--text)!important}.brand-sub{font-size:12px;color:var(--muted)!important;margin-top:1px}
+  .brand-name{font-size:19px;font-weight:700;color:var(--text)!important}.brand-sub{font-size:13px;color:var(--muted)!important;margin-top:1px}
   select,.button{width:100%;border:1px solid var(--line);background:var(--surface)!important;color:var(--text)!important;border-radius:10px;padding:9px 10px;font:inherit;accent-color:var(--accent)}
   select:focus,.button:focus,.refresh:focus{outline:2px solid var(--accent);outline-offset:2px;border-color:var(--accent)}
   nav{display:flex;flex-direction:column;gap:3px;margin-top:18px}
-  nav button{display:flex;align-items:center;gap:8px;border:0;background:transparent!important;color:var(--muted)!important;text-align:left;padding:9px 10px;border-radius:9px;cursor:pointer;font:inherit;font-weight:560}
+  nav button{display:flex;align-items:center;gap:8px;border:0;background:transparent!important;color:var(--muted)!important;text-align:left;padding:10px 11px;border-radius:9px;cursor:pointer;font:inherit;font-weight:600}
   nav button.active{background:var(--accent-soft)!important;color:var(--accent-strong)!important;box-shadow:inset 3px 0 0 var(--accent)}
   nav button:hover{background:var(--rail-strong)!important;color:var(--accent-strong)!important}
   .meta{position:absolute;bottom:20px;left:16px;right:16px;color:var(--muted)!important;font-size:11px;line-height:1.55}.meta a{color:var(--accent-strong)!important}
   main{min-width:0;padding:28px 34px 56px}.content{max-width:1420px;margin:0 auto}
   .top{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:22px}
-  h1{font-size:27px;line-height:1.15;margin:0 0 6px;font-weight:690;color:var(--text)!important}
-  h2{font-size:18px;margin:30px 0 12px;font-weight:650;color:var(--text)!important}.subtitle{color:var(--muted)!important}
+  h1{font-size:32px;line-height:1.15;margin:0 0 6px;font-weight:720;color:var(--text)!important}
+  h2{font-size:21px;margin:32px 0 13px;font-weight:700;color:var(--text)!important}.subtitle{color:var(--muted)!important}
   .actions{display:flex;align-items:center;gap:10px}.refresh{width:auto;border:1px solid var(--accent);border-radius:10px;background:var(--accent)!important;color:var(--accent-text)!important;padding:8px 11px;cursor:pointer;font-weight:650}.refresh:hover{background:var(--accent-strong)!important;border-color:var(--accent-strong)}
   .stamp{font-size:12px;color:var(--muted)!important;text-align:right}.status{display:inline-flex;align-items:center;gap:7px;border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));background:var(--accent-soft)!important;border-radius:999px;padding:6px 10px;color:var(--accent-strong)!important;font-size:12px}.dot{width:8px;height:8px;border-radius:50%;background:var(--accent)!important;box-shadow:0 0 0 3px rgba(217,119,87,.18)}
   .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.metric{background:var(--surface)!important;border:1px solid var(--line);border-radius:12px;padding:14px 15px;box-shadow:var(--shadow)}
   .metric:first-child{border-color:color-mix(in srgb,var(--accent) 52%,var(--line));background:linear-gradient(180deg,var(--accent-soft),var(--surface))!important}.metric:first-child .metric-value{color:var(--accent-strong)!important}
-  .metric-label{font-size:12px;color:var(--muted)!important}.metric-value{font-size:25px;font-weight:690;margin-top:4px;color:var(--text)!important}.metric-note{font-size:12px;color:var(--faint)!important;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .metric-label{font-size:13px;color:var(--muted)!important}.metric-value{font-size:28px;font-weight:720;margin-top:4px;color:var(--text)!important}.metric-note{font-size:13px;color:var(--faint)!important;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
-  .panel{background:var(--surface)!important;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:15px}.panel-title{font-size:12px;color:var(--accent-strong)!important;font-weight:700;text-transform:uppercase;letter-spacing:.045em;margin-bottom:11px}
+  .panel{background:var(--surface)!important;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:16px}.panel-title{font-size:13px;color:var(--accent-strong)!important;font-weight:740;text-transform:uppercase;letter-spacing:.045em;margin-bottom:12px}
   .kv{display:grid;grid-template-columns:132px minmax(0,1fr);gap:10px;padding:9px 0;border-top:1px solid var(--line)}.kv:first-child{border-top:0;padding-top:0}.k{color:var(--muted)!important}.v{min-width:0;color:var(--text)!important;word-break:break-word}
-  .mono{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:12px}.muted{color:var(--muted)!important}
-  .list{display:flex;flex-direction:column;gap:8px}.item{border:1px solid var(--line);background:#211e1a!important;border-radius:11px;padding:10px 11px}.item-title{font-weight:640;color:var(--text)!important}.item-sub{font-size:12px;color:var(--muted)!important;margin-top:3px;word-break:break-word}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:13px}.muted{color:var(--muted)!important}
+  .list{display:flex;flex-direction:column;gap:8px}.scroll-list{max-height:430px;overflow:auto;padding-right:3px}.item{display:block;border:1px solid var(--line);background:#182233!important;border-radius:10px;padding:11px 12px;text-decoration:none;color:inherit}.item:hover{border-color:var(--accent);background:#1c2b3e!important}.item-title{font-weight:680;color:var(--text)!important}.item-sub{font-size:13px;color:var(--muted)!important;margin-top:3px;word-break:break-word}
   .chips{display:flex;gap:6px;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));background:#2a251f!important;color:var(--accent-strong)!important;border-radius:999px;padding:4px 8px;font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis}
-  .table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:var(--surface)!important;box-shadow:var(--shadow)}table{width:100%;border-collapse:collapse;background:transparent!important}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;font-size:12px;color:var(--text)!important}th{position:sticky;top:0;background:#2b261f!important;color:var(--muted)!important;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.045em}tr:last-child td{border-bottom:0}
+  .status-pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:4px 9px;font-size:13px;font-weight:700;text-transform:capitalize}.status-pill::before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor}.green{color:var(--good);background:rgba(99,217,144,.13)}.yellow{color:var(--warn);background:rgba(242,184,75,.14)}.red{color:var(--bad);background:rgba(240,123,114,.14)}.gray{color:var(--faint);background:rgba(148,154,166,.14)}
+  .steps{display:grid;gap:7px;min-width:360px}.step{display:grid;grid-template-columns:120px 82px 1fr;gap:8px;align-items:start;border:1px solid var(--line);border-radius:8px;padding:8px;background:#182233!important}.step-name{font-weight:650}.step-meta{font-size:12px;color:var(--muted)!important}.step-error{color:var(--bad)!important}
+  .table-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)!important;box-shadow:var(--shadow)}table{width:100%;border-collapse:collapse;background:transparent!important}th,td{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;font-size:13px;color:var(--text)!important}th{position:sticky;top:0;background:#243349!important;color:var(--muted)!important;font-size:12px;font-weight:740;text-transform:uppercase;letter-spacing:.045em}tr:last-child td{border-bottom:0}
   .wide{min-width:960px}.section{scroll-margin-top:24px}.empty{color:var(--muted)!important;font-size:13px}
   @media(max-width:1050px){.shell{grid-template-columns:1fr}aside{position:relative;height:auto}.meta{position:static;margin-top:18px}.metrics,.grid-2,.grid-3{grid-template-columns:1fr}main{padding:22px 16px}.top{flex-direction:column}.actions{width:100%;justify-content:space-between}}
 </style>
@@ -59,27 +61,30 @@
       <div><h1>Mira backend</h1><div class="subtitle">Memory, pipeline, service, policy, and output state.</div></div>
       <div class="actions"><span class="status"><span class="dot"></span><span id="healthText">Loading</span></span><button class="refresh" id="refresh">Refresh</button><div class="stamp" id="stamp"></div></div>
     </div>
-    <section class="section" id="overview"><div class="metrics" id="cards"></div><h2>Runtime</h2><div class="grid-2"><div class="panel"><div class="panel-title">Service</div><div id="service"></div></div><div class="panel"><div class="panel-title">Control plane</div><div id="control"></div></div></div></section>
+    <section class="section" id="overview"><div class="metrics" id="cards"></div><h2>Runtime</h2><div class="grid-3"><div class="panel"><div class="panel-title">Service</div><div id="service"></div></div><div class="panel"><div class="panel-title">Control plane</div><div id="control"></div></div><div class="panel"><div class="panel-title">Security</div><div id="security"></div></div></div></section>
     <section class="section" id="memory"><h2>Memory</h2><div class="grid-3"><div class="panel"><div class="panel-title">Kernel</div><div id="kernel"></div></div><div class="panel"><div class="panel-title">Review queues</div><div id="queues"></div></div><div class="panel"><div class="panel-title">Recent commits</div><div id="commits"></div></div></div><h2>Ledger</h2><div id="ledger"></div></section>
     <section class="section" id="pipelines"><h2>Pipelines</h2><div id="pipelineTable"></div></section>
-    <section class="section" id="outputs"><h2>Outputs</h2><div class="grid-3"><div class="panel"><div class="panel-title">Artifacts</div><div id="artifacts"></div></div><div class="panel"><div class="panel-title">Jobs and cost</div><div id="jobs"></div></div><div class="panel"><div class="panel-title">Recent items</div><div id="items"></div></div></div><h2>Side effects</h2><div id="effects"></div></section>
+    <section class="section" id="outputs"><h2>Outputs</h2><div class="grid-3"><div class="panel"><div class="panel-title">Artifacts</div><div id="artifacts"></div></div><div class="panel"><div class="panel-title">Jobs and cost</div><div id="jobs"></div></div><div class="panel"><div class="panel-title">Recent items</div><div id="items"></div></div></div><h2>Agent Usage</h2><div id="agentStats"></div><h2>Side effects</h2><div id="effects"></div></section>
     <section class="section" id="paths"><h2>Paths</h2><div id="pathTable"></div></section>
   </div></main>
 </div>
 <script>
 let currentUser = localStorage.getItem('mira_profile') || 'ang';
 const sections = ['overview','memory','pipelines','outputs','paths'];
-const themeVars = { '--bg':'#191715','--surface':'#24211d','--rail':'#211d19','--rail-strong':'#2b261f','--text':'#f4efe7','--muted':'#b8afa5','--faint':'#8e8479','--line':'#3a332b','--line-strong':'#51483d','--accent':'#d97757','--accent-strong':'#e08a6d','--accent-soft':'#3a241c','--accent-text':'#1f140f','--good':'#77c99a','--warn':'#d19a45','--bad':'#de6f62' };
+const themeVars = { '--bg':'#121923','--surface':'#202938','--rail':'#172130','--rail-strong':'#223147','--text':'#f7f3ea','--muted':'#c8c5b9','--faint':'#949aa6','--line':'#35445a','--line-strong':'#526782','--accent':'#7dd3fc','--accent-strong':'#a5e6ff','--accent-soft':'#123245','--accent-text':'#07131b','--good':'#63d990','--warn':'#f2b84b','--bad':'#f07b72','--violet':'#c4a7ff','--rose':'#ff9db9' };
 const $ = id => document.getElementById(id);
 function forceDark(){Object.entries(themeVars).forEach(([k,v])=>document.documentElement.style.setProperty(k,v,'important')); document.documentElement.style.colorScheme='dark'; document.body.style.backgroundColor=themeVars['--bg']; document.body.style.color=themeVars['--text']}
 function el(tag, value='', className=''){const node=document.createElement(tag); if(className)node.className=className; node.textContent=value == null ? '' : String(value); return node}
 function clear(node){node.replaceChildren(); return node}
 function kv(k,v,mono=false){const row=el('div','', 'kv'); row.append(el('div',k,'k'), el('div',v, mono?'v mono':'v')); return row}
-function item(title, sub){const row=el('div','', 'item'); row.append(el('div',title,'item-title'), el('div',sub || '', 'item-sub mono')); return row}
+function item(title, sub, href=''){const row=href?document.createElement('a'):el('div'); row.className='item'; if(href){row.href=href; row.target='_blank'; row.rel='noopener'} row.append(el('div',title,'item-title'), el('div',sub || '', 'item-sub mono')); return row}
 function list(node, rows, empty='No records'){clear(node); if(!rows.length){node.append(el('div',empty,'empty')); return} const wrap=el('div','', 'list'); rows.forEach(r=>wrap.append(r)); node.append(wrap)}
+function scrollList(node, rows, empty='No records'){clear(node); if(!rows.length){node.append(el('div',empty,'empty')); return} const wrap=el('div','', 'list scroll-list'); rows.forEach(r=>wrap.append(r)); node.append(wrap)}
 function metric(label, value, note){const card=el('div','', 'metric'); card.append(el('div',label,'metric-label'), el('div',value,'metric-value'), el('div',note,'metric-note')); return card}
 function chip(value){return el('span', value, 'chip')}
 function chips(values, limit=7){const wrap=el('div','', 'chips'); const shown=(values||[]).slice(0,limit); shown.forEach(v=>wrap.append(chip(v))); if((values||[]).length>shown.length)wrap.append(chip(`+${values.length-shown.length}`)); return wrap}
+function statusPill(status, label=''){return el('span', label || status || 'gray', `status-pill ${status||'gray'}`)}
+function stepList(steps){const wrap=el('div','', 'steps'); (steps||[]).forEach(s=>{const row=el('div','', 'step'); row.append(el('div',s.name||'', 'step-name'), statusPill(s.status||'gray'), el('div', `${s.model||''} · $${Number(s.cost_usd||0).toFixed(4)} · ${fmtTokens(s.tokens||0)} tok${s.error ? '\n' + s.error : ''}`, s.error?'step-meta step-error':'step-meta')); wrap.append(row)}); return wrap}
 function table(node, headers, rows){clear(node); if(!rows.length){const panel=el('div','', 'panel'); panel.append(el('div','No records','empty')); node.append(panel); return} const wrap=el('div','', 'table-wrap'); const t=el('table','', 'wide'); const thead=document.createElement('thead'); const hrow=document.createElement('tr'); headers.forEach(h=>hrow.append(el('th',h))); thead.append(hrow); const tbody=document.createElement('tbody'); rows.forEach(cells=>{const tr=document.createElement('tr'); cells.forEach(cell=>{const td=document.createElement('td'); if(cell instanceof Node)td.append(cell); else if(Array.isArray(cell))cell.forEach(v=>td.append(v)); else td.textContent=cell == null ? '' : String(cell); tr.append(td)}); tbody.append(tr)}); t.append(thead,tbody); wrap.append(t); node.append(wrap)}
 async function api(url){const res=await fetch(url); if(!res.ok)throw new Error(`HTTP ${res.status}`); return res.json()}
 function fmtTokens(n){n=Number(n||0); if(n>=1000000)return (n/1000000).toFixed(1)+'M'; if(n>=1000)return (n/1000).toFixed(1)+'K'; return String(n)}
@@ -91,13 +96,15 @@ async function loadDashboard(){
   forceDark();
   $('apiPath').textContent = `/api/${currentUser}/backend-dashboard`;
   const data = await api(`/api/${currentUser}/backend-dashboard`);
-  const hb=data.service.heartbeat||{}, queues=data.memory.queues||{}, jobs=data.outputs.jobs||{}, usage=jobs.usage_totals||{};
+  const hb=data.service.heartbeat||{}, queues=data.memory.queues||{}, jobs=data.outputs.jobs||{}, usage=jobs.usage_totals||{}, memStatus=data.memory.status||{};
   const queueCount=Object.values(queues).reduce((n,rows)=>n+rows.length,0);
+  const redPipelines=(data.pipelines||[]).filter(p=>p.status==='red').length;
+  const yellowPipelines=(data.pipelines||[]).filter(p=>p.status==='yellow').length;
   $('stamp').textContent = data.server_time;
   $('healthText').textContent = hb.busy ? `${hb.active_count||0} active` : `Online · ${timeAgo(hb.timestamp)}`;
   clear($('cards')).append(
     metric('Service', hb.busy ? `${hb.active_count||0} running` : 'Online', hb.status || 'heartbeat'),
-    metric('Pipelines', data.pipelines.length, 'registered definitions'),
+    metric('Pipelines', data.pipelines.length, `${redPipelines} red · ${yellowPipelines} yellow`),
     metric('Policies', data.policies.hard + data.policies.soft, `${data.policies.hard} hard · ${data.policies.soft} soft`),
     metric('Review', queueCount, 'queued checks'),
     metric('Ledger', data.memory.ledger.length, 'recent records'),
@@ -107,14 +114,16 @@ async function loadDashboard(){
   );
   clear($('service')).append(kv('Heartbeat', `status=${hb.status||''} busy=${!!hb.busy} active=${hb.active_count||0}`), kv('Network', JSON.stringify(hb.network_status||{}), true), kv('Web', `host=${data.service.web.host} port=${data.service.web.port} https=${data.service.web.https}`));
   clear($('control')); Object.entries(data.service.control).forEach(([k,v])=>$('control').append(kv(k,v)));
-  clear($('kernel')).append(kv('Identity', data.memory.kernel.identity), kv('Scars', `${(data.memory.kernel.scars||[]).length} recorded`), chips(data.memory.kernel.scars||[], 6), kv('Hypotheses', (data.memory.kernel.hypotheses||[]).length), kv('Failures', (data.memory.kernel.failure_signatures||[]).length));
+  clear($('security')).append(statusPill((data.security||{}).status||'gray',(data.security||{}).summary||'security'), ...((data.security||{}).checks||[]).map(c=>kv(c.name, `${c.status}: ${c.detail}`)), ...((data.security||{}).recommendations||[]).map(r=>kv('Fix', r)));
+  clear($('kernel')).append(statusPill(memStatus.overall||'gray','memory'), kv('Date range', `${((memStatus.date_range||{}).first)||''} -> ${((memStatus.date_range||{}).last)||''}`), kv('Item range', `${((memStatus.item_date_range||{}).first)||''} -> ${((memStatus.item_date_range||{}).last)||''}`), kv('Identity', data.memory.kernel.identity), kv('Scars', `${(data.memory.kernel.scars||[]).length} recorded`), chips(data.memory.kernel.scars||[], 6), kv('Hypotheses', (data.memory.kernel.hypotheses||[]).length), kv('Failures', (data.memory.kernel.failure_signatures||[]).length), kv('Errors', (memStatus.errors||[]).join('; ') || 'none'));
   list($('queues'), Object.entries(queues).map(([k,v])=>item(k,`${v.length} item(s)`)));
   list($('commits'), (data.memory.commits||[]).slice(0,7).map(c=>item(`${c.status} · ${c.pipeline}`, `${c.id}\n${(c.findings||[]).join('; ')}`)));
   table($('ledger'), ['id','pipeline','outcome','proposal','commit','time'], (data.memory.ledger||[]).map(r=>[r.id,r.pipeline,r.outcome,r.proposal_id,r.commit_id,timeAgo(r.timestamp)]));
-  table($('pipelineTable'), ['pipeline','class','trigger','priority','steps','skills'], data.pipelines.map(p=>[p.name,p.memory_class,p.trigger,p.priority,chips(p.steps||[], 5),chips(p.skills||[], 4)]));
-  list($('artifacts'), (data.outputs.artifacts||[]).map(a=>item(a.name,`${a.count} item(s)`)), 'No artifact sections');
-  list($('jobs'), (jobs.recent||[]).slice(0,8).map(j=>item(`${j.status} · ${j.name}`, `$${Number((j.usage||{}).cost_usd||0).toFixed(4)} · ${fmtTokens((j.usage||{}).tokens||0)} tokens · ${j.ran_at||''}`)), 'No jobs');
-  list($('items'), (data.outputs.recent_items||[]).slice(0,8).map(i=>item(`${i.status} · ${i.title}`, `${i.id} · ${(i.tags||[]).join(', ')}`)), 'No items');
+  table($('pipelineTable'), ['status','pipeline','trigger','last','cost','steps','skills'], data.pipelines.map(p=>[statusPill(p.status,p.status_text||p.status),p.name,p.trigger,timeAgo(p.last_run),`$${Number((p.usage||{}).cost_usd||0).toFixed(4)} · ${fmtTokens((p.usage||{}).tokens||0)} tok`,stepList(p.steps||[]),chips(p.skills||[], 4)]));
+  scrollList($('artifacts'), (data.outputs.artifacts||[]).map(a=>item(a.name,`${a.count} item(s)`, a.href)), 'No artifact sections');
+  scrollList($('jobs'), (jobs.recent||[]).map(j=>item(`${j.status} · ${j.name}`, `$${Number((j.usage||{}).cost_usd||0).toFixed(4)} · ${fmtTokens((j.usage||{}).tokens||0)} tokens · dispatch ${j.dispatch_count||0} · ${j.ran_at||''}`)), 'No jobs');
+  scrollList($('items'), (data.outputs.recent_items||[]).map(i=>item(`${i.status} · ${i.title}`, `${i.id} · ${(i.tags||[]).join(', ')}`, i.href)), 'No items');
+  table($('agentStats'), ['agent','daily avg','weekly avg','monthly avg','30d calls','30d tokens','30d cost','model'], (jobs.agent_stats||[]).map(a=>[a.agent,a.daily_avg,a.weekly_avg,a.monthly_avg,a.calls_30d,fmtTokens(a.tokens_30d),`$${Number(a.cost_30d||0).toFixed(4)}`,a.top_model]));
   table($('effects'), ['id','pipeline','action','target','status','idempotency'], (data.memory.effects||[]).map(e=>[e.id,e.pipeline,e.action,e.target,e.status,e.idempotency_key]));
   table($('pathTable'), ['name','path'], Object.entries(data.paths).map(([k,v])=>[k,v]));
   forceDark();

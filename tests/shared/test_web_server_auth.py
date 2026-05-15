@@ -232,8 +232,10 @@ def test_backend_dashboard_endpoint_returns_technical_snapshot(monkeypatch, tmp_
     assert body["policies"]["hard"] == 43
     assert body["policies"]["soft"] == 9
     assert len(body["pipelines"]) == 20
-    assert set(body["memory"]) == {"kernel", "ledger", "commits", "effects", "queues"}
+    assert set(body["memory"]) == {"status", "kernel", "ledger", "commits", "effects", "queues"}
     assert set(body["outputs"]) == {"artifacts", "recent_items", "jobs"}
+    assert "security" in body
+    assert "agent_stats" in body["outputs"]["jobs"]
     assert {"kernel", "ledger", "commits", "effect_log", "eval_history", "snapshots", "artifacts"} <= set(body["paths"])
 
 

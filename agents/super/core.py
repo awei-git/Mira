@@ -3490,31 +3490,23 @@ def _tail_file(path: Path, *, max_lines: int = 40, max_chars: int = 2000) -> str
 
 
 def _emit_output_stale_probe(state: dict, field: str, title: str, body: str) -> None:
-    """Lightweight probe: when output is missing, push a short alert to the bridge."""
+    """Record output-liveness findings for assessment without pushing Home noise."""
     now = time.time()
     last = _parse_recovery_timestamp(state.get(field)) or 0
     if now - last < 6 * 3600:
         return
     state[field] = datetime.now(timezone.utc).isoformat()
-    if Mira is None:
-        return
-    try:
-        bridge = Mira(MIRA_DIR, user_id="ang")
-        item_id = f"output_stale_{field}"
-        if bridge.item_exists(item_id):
-            bridge.append_message(item_id, "agent", body)
-        else:
-            bridge.create_item(
-                item_id,
-                "alert",
-                title,
-                body,
-                sender="agent",
-                tags=["system", "liveness", "output-stale"],
-                origin="agent",
-            )
-    except Exception:
-        return
+    findings = state.setdefault("output_liveness_findings", [])
+    findings.append(
+        {
+            "field": field,
+            "title": title,
+            "body": body,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    del findings[:-20]
+    log.warning("Output liveness finding recorded: %s", title)
 
 
 def _latest_task_result_mtime() -> float | None:

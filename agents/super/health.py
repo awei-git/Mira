@@ -155,6 +155,7 @@ def _run_health_check():
             title,
             combined,
             item_tags,
+            update_manifest=False,
             pinned=False,
         )
 

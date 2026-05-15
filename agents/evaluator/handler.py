@@ -2377,9 +2377,17 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
 
     # Format report
     agg = assessment["aggregate"]
+    verdict = (
+        "healthy" if agg.get("overall_success_rate", 0) >= 0.8 and agg.get("crash_rate", 0) == 0 else "needs attention"
+    )
     lines = [
         f"# Mira Performance Assessment ({days}-day window)",
         f"Generated: {assessment['generated_at'][:16]}",
+        "",
+        "## Verdict",
+        f"- Status: {verdict}",
+        f"- Main risk: {'crashes/errors' if agg.get('crash_rate', 0) else 'thin or stale measurement' if agg.get('stale_score_count', 0) else 'none detected in this window'}",
+        f"- Cost: ${agg.get('daily_cost_usd', 0):.4f}/day",
         "",
         f"## Aggregate",
         f"- Tasks: {agg.get('total_tasks', 0)}",
@@ -2400,13 +2408,25 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
         if card["task_count"] == 0:
             lines.append(f"- **{name}**: no tasks")
         else:
-            emoji = "✅" if card["success_rate"] >= 0.8 else "⚠️" if card["success_rate"] >= 0.5 else "❌"
+            label = "good" if card["success_rate"] >= 0.8 else "watch" if card["success_rate"] >= 0.5 else "bad"
             suffix = " [low confidence — score history thin or stale]" if name in low_conf_agents else ""
             score_prefix = f"{rubric_warning} " if rubric_warning else ""
             lines.append(
-                f"- {score_prefix}**{name}** {emoji}: {card['success_rate']:.0%} "
+                f"- {score_prefix}**{name}** {label}: {card['success_rate']:.0%} "
                 f"({card['succeeded']}/{card['task_count']}){suffix}"
             )
+
+    try:
+        from config import STATE_FILE
+
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8")) if STATE_FILE.exists() else {}
+        liveness = state.get("output_liveness_findings", [])[-5:]
+        if liveness:
+            lines.extend(["", "## Output Liveness Findings"])
+            for finding in liveness:
+                lines.append(f"- {finding.get('timestamp', '')[:16]} {finding.get('title', '')}")
+    except Exception as _e:
+        log.debug("Could not load output liveness findings: %s", _e)
 
     # Stale skills
     stale_skills = assessment.get("stale_skills", [])

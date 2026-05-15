@@ -452,13 +452,29 @@ def do_journal(user_id: str = "ang"):
         report_content = "\n".join(report_lines)
 
         bridge = Mira(MIRA_DIR, user_id=user_id)
+        day_id = f"feed_mira_{today.replace('-', '')}"
         report_id = f"feed_social_report_{today.replace('-', '')}"
-        if not bridge.item_exists(report_id):
-            bridge.create_item(
-                report_id, "feed", f"Social Media Report {today}", report_content, tags=["mira", "social", "report"]
+        if bridge.item_exists(day_id):
+            item = bridge._read_item(day_id) or {}
+            messages = item.get("messages") or []
+            messages = [m for m in messages if m.get("id") != f"{day_id}_social_report"]
+            messages.append(
+                {
+                    "id": f"{day_id}_social_report",
+                    "sender": "agent",
+                    "content": report_content,
+                    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "kind": "text",
+                }
             )
-            bridge.update_status(report_id, "done")
-        log.info("Social media daily report pushed as feed item")
+            item["messages"] = messages
+            item["tags"] = sorted(set((item.get("tags") or []) + ["social"]))
+            item["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            bridge._write_item(item)
+            bridge._update_manifest(item)
+        if bridge.item_exists(report_id):
+            bridge.update_status(report_id, "archived")
+        log.info("Social media daily report added to Mira's Day")
     except Exception as e:
         log.warning("Social media daily report failed: %s", e)
 

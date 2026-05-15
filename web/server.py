@@ -860,8 +860,276 @@ def get_v3_dashboard(user_id: str):
     }
 
 
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _file_meta(path: Path) -> dict:
+    try:
+        stat = path.stat()
+    except OSError:
+        return {"path": str(path), "exists": False, "bytes": 0, "updated_at": ""}
+    return {
+        "path": str(path),
+        "exists": True,
+        "bytes": stat.st_size,
+        "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def _date_range(values: list[str]) -> dict:
+    dates = sorted(dt for dt in (_parse_datetime(v) for v in values) if dt is not None)
+    return {
+        "first": dates[0].strftime("%Y-%m-%dT%H:%M:%SZ") if dates else "",
+        "last": dates[-1].strftime("%Y-%m-%dT%H:%M:%SZ") if dates else "",
+        "count": len(dates),
+    }
+
+
+def _status_rank(status: str) -> int:
+    return {"red": 3, "yellow": 2, "green": 1, "gray": 0}.get(status, 0)
+
+
+def _usage_history(days: int = 30) -> dict:
+    from datetime import date as _date
+
+    from config import LOGS_DIR
+
+    today = _date.today()
+    by_agent: dict[str, dict] = {}
+    by_day_agent: dict[tuple[str, str], dict] = {}
+    for offset in range(days):
+        day = (today - timedelta(days=offset)).isoformat()
+        usage_path = LOGS_DIR / f"usage_{day}.jsonl"
+        if not usage_path.exists():
+            continue
+        for line in usage_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            agent = str(rec.get("agent") or "unknown")
+            model = str(rec.get("model") or "unknown")
+            tokens = int(rec.get("total_tokens") or rec.get("tokens") or 0)
+            cost = float(rec.get("cost_usd") or 0)
+            row = by_agent.setdefault(
+                agent,
+                {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}, "days": set()},
+            )
+            day_row = by_day_agent.setdefault((day, agent), {"calls": 0, "tokens": 0, "cost_usd": 0.0})
+            row["calls"] += 1
+            row["tokens"] += tokens
+            row["cost_usd"] += cost
+            row["days"].add(day)
+            row["models"][model] = row["models"].get(model, 0) + 1
+            day_row["calls"] += 1
+            day_row["tokens"] += tokens
+            day_row["cost_usd"] += cost
+
+    out = {}
+    for agent, row in by_agent.items():
+        active_days = max(1, len(row.pop("days")))
+        out[agent] = {
+            **row,
+            "cost_usd": round(row["cost_usd"], 4),
+            "avg_daily_calls": round(row["calls"] / active_days, 2),
+            "avg_weekly_calls": round(row["calls"] / max(1, days / 7), 2),
+            "avg_monthly_calls": round(row["calls"] / max(1, days / 30), 2),
+            "top_model": max(row["models"], key=row["models"].get) if row["models"] else "",
+        }
+    return {"days": days, "by_agent": out, "by_day_agent": by_day_agent}
+
+
+def _job_agent_stats(jobs: dict, usage_history: dict) -> list[dict]:
+    rows = []
+    by_agent = usage_history.get("by_agent", {})
+    for name, usage in by_agent.items():
+        rows.append(
+            {
+                "agent": name,
+                "calls_30d": usage.get("calls", 0),
+                "tokens_30d": usage.get("tokens", 0),
+                "cost_30d": usage.get("cost_usd", 0.0),
+                "daily_avg": usage.get("avg_daily_calls", 0),
+                "weekly_avg": usage.get("avg_weekly_calls", 0),
+                "monthly_avg": usage.get("avg_monthly_calls", 0),
+                "top_model": usage.get("top_model", ""),
+            }
+        )
+    if not rows:
+        for agent, usage in (jobs.get("by_agent") or {}).items():
+            rows.append(
+                {
+                    "agent": agent,
+                    "calls_30d": usage.get("calls", 0),
+                    "tokens_30d": usage.get("tokens", 0),
+                    "cost_30d": usage.get("cost_usd", 0.0),
+                    "daily_avg": usage.get("calls", 0),
+                    "weekly_avg": usage.get("calls", 0) * 7,
+                    "monthly_avg": usage.get("calls", 0) * 30,
+                    "top_model": "",
+                }
+            )
+    return sorted(rows, key=lambda r: (r["cost_30d"], r["calls_30d"]), reverse=True)[:50]
+
+
+def _security_posture(request: Request | None = None) -> dict:
+    checks = [
+        {
+            "name": "API token",
+            "status": "green" if bool(WEBGUI_TOKEN) else "red",
+            "detail": "Bearer/X-Mira-Token required" if WEBGUI_TOKEN else "No WEBGUI_TOKEN configured",
+        },
+        {
+            "name": "Loopback bypass",
+            "status": "yellow" if WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN else "green",
+            "detail": (
+                "Loopback can access without token"
+                if WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN
+                else "Loopback still requires token"
+            ),
+        },
+        {
+            "name": "LAN bypass",
+            "status": "red" if WEBGUI_ALLOW_LAN_WITHOUT_TOKEN else "green",
+            "detail": (
+                "Private LAN clients can access without token"
+                if WEBGUI_ALLOW_LAN_WITHOUT_TOKEN
+                else "LAN clients require token"
+            ),
+        },
+        {
+            "name": "Transport",
+            "status": "green" if WEBGUI_HTTPS_ENABLED else "yellow",
+            "detail": "HTTPS enabled" if WEBGUI_HTTPS_ENABLED else "HTTP enabled; acceptable only on trusted loopback",
+        },
+        {
+            "name": "Write API",
+            "status": "yellow" if CONTROL_API_WRITES_ENABLED else "green",
+            "detail": "Write endpoints enabled" if CONTROL_API_WRITES_ENABLED else "Read-only control API",
+        },
+        {
+            "name": "Rate limits",
+            "status": "green",
+            "detail": f"read={_READ_RATE_LIMIT}/min write={_WRITE_RATE_LIMIT}/min per IP",
+        },
+    ]
+    worst = max(checks, key=lambda item: _status_rank(item["status"]))["status"]
+    recommendations = []
+    if not WEBGUI_TOKEN:
+        recommendations.append("Set WEBGUI_TOKEN and require it from the iOS/web clients.")
+    if WEBGUI_ALLOW_LAN_WITHOUT_TOKEN:
+        recommendations.append("Disable WEBGUI_ALLOW_LAN_WITHOUT_TOKEN before binding beyond localhost.")
+    if not WEBGUI_HTTPS_ENABLED and WEBGUI_HOST not in {"127.0.0.1", "localhost", "::1"}:
+        recommendations.append("Enable HTTPS or bind WEBGUI_HOST to loopback only.")
+    if CONTROL_API_WRITES_ENABLED:
+        recommendations.append("Keep write endpoints token-gated and prefer short-lived local tokens.")
+    return {
+        "status": worst,
+        "checks": checks,
+        "summary": (
+            "Not secure enough for exposed networks" if worst in {"red", "yellow"} else "Local posture is acceptable"
+        ),
+        "recommendations": recommendations,
+    }
+
+
+def _pipeline_status_rows(pipelines, records, commits, effects, jobs: dict, config: dict) -> list[dict]:
+    from mira.runtime import JOB_PIPELINE_MAP
+
+    job_by_pipeline: dict[str, list[dict]] = {}
+    for job in jobs.get("jobs", []):
+        pipeline_name = JOB_PIPELINE_MAP.get(job.get("name", ""))
+        if pipeline_name:
+            job_by_pipeline.setdefault(pipeline_name, []).append(job)
+
+    model_by_agent = {m.get("agent"): m.get("model") for m in config.get("models", []) if isinstance(m, dict)}
+    rows = []
+    for name, pipeline in sorted(pipelines.items()):
+        recent_records = [record for record in records if record.pipeline == name]
+        recent_commits = [commit for commit in commits if commit.pipeline == name]
+        recent_effects = [effect for effect in effects if effect.pipeline == name]
+        pipeline_jobs = job_by_pipeline.get(name, [])
+        latest_record = recent_records[-1] if recent_records else None
+        latest_commit = recent_commits[-1] if recent_commits else None
+        errors = []
+        if latest_record and (latest_record.outcome == "failed" or latest_record.delta.what_failed):
+            errors.extend(latest_record.delta.what_failed or [latest_record.outcome])
+        if latest_commit and latest_commit.status in {"quarantined", "rejected", "requires_human"}:
+            errors.extend(f.reason for f in latest_commit.findings)
+        for effect in recent_effects[-3:]:
+            if effect.status not in {"done", "applied", "ok", "success"}:
+                errors.append(f"{effect.action} {effect.status}")
+        if errors:
+            status = "red" if any("failed" in e.lower() or "reject" in e.lower() for e in errors) else "yellow"
+        elif pipeline_jobs and any(job.get("status") == "pending" for job in pipeline_jobs if job.get("enabled", True)):
+            status = "yellow"
+        elif latest_record or any(job.get("status") == "done" for job in pipeline_jobs):
+            status = "green"
+        else:
+            status = "gray"
+
+        usage = {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}}
+        for job in pipeline_jobs:
+            job_usage = job.get("usage") or {}
+            usage["calls"] += int(job_usage.get("calls") or 0)
+            usage["tokens"] += int(job_usage.get("tokens") or 0)
+            usage["cost_usd"] += float(job_usage.get("cost_usd") or 0)
+            for model, row in (job_usage.get("models") or {}).items():
+                usage["models"].setdefault(model, {"calls": 0, "tokens": 0, "cost_usd": 0.0})
+                usage["models"][model]["calls"] += row.get("calls", 0)
+                usage["models"][model]["tokens"] += row.get("tokens", 0)
+                usage["models"][model]["cost_usd"] += row.get("cost_usd", 0.0)
+        top_model = max(usage["models"], key=lambda m: usage["models"][m]["calls"]) if usage["models"] else ""
+        default_model = top_model or model_by_agent.get((pipeline.involved_skills or [""])[0], "")
+        steps = []
+        step_count = max(1, len(pipeline.steps))
+        for idx, step in enumerate(pipeline.steps):
+            step_status = status
+            if status == "green":
+                step_status = "green"
+            elif status == "red" and idx < step_count - 1:
+                step_status = "yellow"
+            steps.append(
+                {
+                    "name": step.name,
+                    "type": step.type,
+                    "status": step_status,
+                    "model": default_model or "deterministic",
+                    "cost_usd": round(usage["cost_usd"] / step_count, 4),
+                    "tokens": int(usage["tokens"] / step_count),
+                    "error": errors[0] if errors and idx == step_count - 1 else "",
+                }
+            )
+        rows.append(
+            {
+                "name": name,
+                "status": status,
+                "status_text": errors[0] if errors else ("running/pending" if status == "yellow" else status),
+                "memory_class": pipeline.memory_class,
+                "trigger": f"{pipeline.trigger.type}: {pipeline.trigger.detail}",
+                "priority": pipeline.priority,
+                "version": pipeline.version,
+                "last_run": latest_record.timestamp.isoformat() if latest_record else "",
+                "outcome": latest_record.outcome if latest_record else "",
+                "error": errors[0] if errors else "",
+                "usage": {**usage, "cost_usd": round(usage["cost_usd"], 4)},
+                "steps": steps,
+                "skills": pipeline.involved_skills,
+            }
+        )
+    return rows
+
+
 @app.get("/api/{user_id}/backend-dashboard")
-def get_backend_dashboard(user_id: str):
+def get_backend_dashboard(user_id: str, request: Request):
     if not is_known_user(user_id):
         raise HTTPException(404, "Unknown profile")
 
@@ -887,20 +1155,22 @@ def get_backend_dashboard(user_id: str):
     items = get_items(user_id)[:25]
     artifacts = list_artifact_sections(user_id)
     config = default_v3_config().to_dict()
-
-    pipeline_rows = []
-    for name, pipeline in sorted(PIPELINE_CATALOG.items()):
-        pipeline_rows.append(
-            {
-                "name": name,
-                "memory_class": pipeline.memory_class,
-                "trigger": f"{pipeline.trigger.type}: {pipeline.trigger.detail}",
-                "priority": pipeline.priority,
-                "version": pipeline.version,
-                "steps": [step.name for step in pipeline.steps],
-                "skills": pipeline.involved_skills,
-            }
+    usage_history = _usage_history(days=30)
+    pipeline_rows = _pipeline_status_rows(PIPELINE_CATALOG, records, commits, effects, jobs, config)
+    memory_timestamps = [
+        *(record.timestamp.isoformat() for record in records),
+        *(commit.timestamp.isoformat() for commit in commits),
+        *(effect.timestamp.isoformat() for effect in effects),
+    ]
+    item_timestamps = [item.get("updated_at", "") for item in items]
+    memory_status = "green"
+    memory_errors = []
+    if snapshot.review_queues.get("memory_commit") or snapshot.review_queues.get("incident_dlq"):
+        memory_status = "yellow"
+        memory_errors.extend(
+            row.get("reason") or row.get("status") or "" for row in snapshot.review_queues.get("memory_commit", [])
         )
+        memory_errors.extend(row.get("status") or "" for row in snapshot.review_queues.get("incident_dlq", []))
 
     return {
         "server_time": _utc_iso(),
@@ -919,7 +1189,28 @@ def get_backend_dashboard(user_id: str):
                 "sse": CONTROL_SSE_ENABLED,
             },
         },
+        "security": _security_posture(request),
         "memory": {
+            "status": {
+                "overall": memory_status,
+                "errors": [err for err in memory_errors if err][:10],
+                "date_range": _date_range(memory_timestamps),
+                "item_date_range": _date_range(item_timestamps),
+                "files": {
+                    "kernel": _file_meta(paths.kernel),
+                    "ledger": _file_meta(paths.ledger),
+                    "commits": _file_meta(paths.commits),
+                    "effect_log": _file_meta(paths.effect_log),
+                    "eval_history": _file_meta(paths.eval_history),
+                },
+                "counts": {
+                    "ledger": len(records),
+                    "commits": len(commits),
+                    "effects": len(effects),
+                    "queued": sum(len(rows) for rows in snapshot.review_queues.values()),
+                    "items": len(items),
+                },
+            },
             "kernel": {
                 "identity": kernel.identity.statement,
                 "scars": [scar.scar_id for scar in kernel.scars],
@@ -981,12 +1272,15 @@ def get_backend_dashboard(user_id: str):
                     "status": item.get("status", ""),
                     "tags": item.get("tags", []),
                     "updated_at": item.get("updated_at", ""),
+                    "href": f"/api/{user_id}/items/{item.get('id', '')}",
                 }
                 for item in items
             ],
             "jobs": {
                 "date": jobs.get("date"),
                 "usage_totals": jobs.get("usage_totals", {}),
+                "by_agent": jobs.get("by_agent", {}),
+                "agent_stats": _job_agent_stats(jobs, usage_history),
                 "recent": [
                     {
                         "name": job.get("name", ""),
@@ -994,6 +1288,9 @@ def get_backend_dashboard(user_id: str):
                         "agent": job.get("agent", ""),
                         "usage": job.get("usage", {}),
                         "ran_at": job.get("ran_at", ""),
+                        "dispatch_count": job.get("dispatch_count", 0),
+                        "trigger": job.get("trigger", ""),
+                        "enabled": job.get("enabled", True),
                     }
                     for job in jobs.get("jobs", [])[:20]
                 ],
@@ -1716,7 +2013,7 @@ def list_artifact_sections(user_id: str):
         d = base / name
         if d.exists():
             count = len(list(d.glob("*")))
-            sections.append({"name": name, "count": count})
+            sections.append({"name": name, "count": count, "href": f"/api/{user_id}/artifacts/{name}"})
     # Also check shared
     shared = _shared_artifacts_dir()
     if shared.exists():
@@ -1725,7 +2022,9 @@ def list_artifact_sections(user_id: str):
             if d.exists():
                 count = len(list(d.glob("*")))
                 if count:
-                    sections.append({"name": f"shared/{name}", "count": count})
+                    sections.append(
+                        {"name": f"shared/{name}", "count": count, "href": f"/api/{user_id}/artifacts/shared/{name}"}
+                    )
     return sections
 
 
