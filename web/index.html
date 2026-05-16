@@ -377,15 +377,21 @@ function renderList() {
   if (currentTab === 'home' || currentTab === 'timeline') {
     const tenDaysAgo = new Date(new Date().setHours(0,0,0,0) - 10*86400000);
     const visible = (q ? f : f.filter(i => new Date(i.created_at||i.updated_at) >= tenDaysAgo)).filter(i=>i.type!=='request');
-    // Needs-attention banner first
-    const ni = visible.filter(i=>i.status==='needs-input');
-    if(ni.length) { html.push(sec('Reply Needed',ni.length,'warn')); ni.forEach(i=>html.push(row(i))); }
     // Date-grouped items — pinned first within each group, then by recency
     const sortPinnedFirst = (a, b) => {
       if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
       return new Date(b.updated_at) - new Date(a.updated_at);
     };
-    groupByDate(visible.filter(i=>i.status!=='needs-input')).forEach(g => {
+    const alerts = visible.filter(isSecurityAlert);
+    if(alerts.length) {
+      alerts.sort(sortPinnedFirst);
+      html.push(sec('Security Alerts',alerts.length,'warn'));
+      alerts.forEach(i=>html.push(row(i)));
+    }
+    // Needs-attention banner first
+    const ni = visible.filter(i=>i.status==='needs-input' && !isSecurityAlert(i));
+    if(ni.length) { html.push(sec('Reply Needed',ni.length,'warn')); ni.forEach(i=>html.push(row(i))); }
+    groupByDate(visible.filter(i=>i.status!=='needs-input' && !isSecurityAlert(i))).forEach(g => {
       g.items.sort(sortPinnedFirst);
       const isRecent = g.label==='Today'||g.label==='Yesterday';
       if (isRecent) {
@@ -764,6 +770,15 @@ function categoryStyle(item) {
   return {label:'agent', color:cv('--c-agent'), icon:'·'};
 }
 
+function isSecurityAlert(item) {
+  const tags = new Set(item.tags || []);
+  const errorCode = String((item.error || {}).code || '').toLowerCase();
+  return tags.has('security')
+    || tags.has('skill_audit')
+    || tags.has('error')
+    || errorCode.includes('skill_audit');
+}
+
 // Persist read-versions in localStorage. Item is unread iff updated_at != last seen.
 function readVersions() {
   try { return JSON.parse(localStorage.getItem('mira_read_versions') || '{}'); }
@@ -1083,7 +1098,7 @@ function startSSE(userId) {
       if (notifiedIds.has(key)) return;
       notifiedIds.add(key);
       // Only notify for actionable states
-      if (item.status === 'needs-input' || item.status === 'done' || item.type === 'feed') {
+      if (isSecurityAlert(item) || item.status === 'needs-input' || item.status === 'done' || item.type === 'feed') {
         showBrowserNotification(item);
       }
       // Also refresh the UI
@@ -1098,7 +1113,10 @@ function startSSE(userId) {
 function showBrowserNotification(item) {
   if (Notification.permission !== 'granted') return;
   let title, body;
-  if (item.status === 'needs-input') {
+  if (isSecurityAlert(item)) {
+    title = 'Security Alert';
+    body = item.title;
+  } else if (item.status === 'needs-input') {
     title = 'Needs your reply';
     body = item.title;
   } else if (item.status === 'done' && item.origin === 'user') {
@@ -1114,7 +1132,7 @@ function showBrowserNotification(item) {
   } else return;
 
   const n = new Notification(title, { body, icon: '/favicon.ico', tag: item.id });
-  n.onclick = () => { window.focus(); loadItem(item.id); };
+  n.onclick = () => { window.focus(); navTo('home'); refresh().then(()=>openDetail(item.id)); };
 }
 
 // ===== Init =====

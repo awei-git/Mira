@@ -109,6 +109,7 @@ function buildNav() {
 function updateShell(data) {
   const hb = data.service.heartbeat || {};
   const jobs = data.outputs.jobs || {};
+  const alerts = data.outputs.alert_items || [];
   const history = jobs.usage_history || {};
   const usage = (history.totals || {}).today || jobs.usage_totals || {};
   const queues = data.memory.queues || {};
@@ -125,6 +126,7 @@ function updateShell(data) {
   document.querySelector(".status")?.classList.toggle("online", !hb.busy);
   clear($("cards")).append(
     metric("Service", hb.busy ? `${hb.active_count || 0} active` : "Online", hb.status || "heartbeat", hb.busy ? "" : "online"),
+    metric("Security alerts", data.outputs.alert_count || alerts.length || 0, alerts[0]?.title || "none", alerts.length ? "red" : ""),
     metric("Pipelines", data.pipelines.length, `${scheduledPipelines} scheduled - ${yellowPipelines} attention - ${redPipelines} failed - ${grayPipelines} not observed`),
     metric("Today tokens", fmtTokens(usage.tokens || 0), `${usage.calls || 0} calls - $${Number(usage.cost_usd || 0).toFixed(2)}`),
     miniUsageCard((history || {}).daily || []),

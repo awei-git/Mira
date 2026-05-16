@@ -76,6 +76,11 @@ export function renderOutputsPage(root, data) {
   head.append(title);
 
   const grid = el("div", "", "grid-3");
+  const alerts = el("div", "", "panel");
+  const alertBody = el("div");
+  list(alertBody, (data.outputs.alert_items || []).map((i) => item(`${i.status} - ${i.title || i.id}`, `${i.id}\n${i.type} - ${(i.tags || []).join(", ")}\n${i.updated_at}`, i.href || `/api/${state.currentUser}/items/${i.id}`)), "No security alerts", true);
+  alerts.append(el("div", "Security alerts", "panel-title"), alertBody);
+
   const artifacts = el("div", "", "panel");
   const artifactList = el("div");
   artifactList.id = "artifacts-list";
@@ -99,7 +104,7 @@ export function renderOutputsPage(root, data) {
   const jobBody = el("div");
   list(jobBody, (jobs.recent || []).map((j) => item(`${j.status} - ${j.name}`, `$${Number((j.usage || {}).cost_usd || 0).toFixed(4)} - ${fmtTokens((j.usage || {}).tokens || 0)} tokens - dispatch ${j.dispatch_count || 0} - ${j.ran_at || ""}`)), "No jobs", true);
   jobPanel.append(el("div", "Jobs", "panel-title"), jobBody);
-  grid.append(artifacts, items, jobPanel);
+  grid.append(alerts, artifacts, items, jobPanel);
 
   const agentPanel = el("div", "", "panel");
   const agentTable = el("div");

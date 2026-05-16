@@ -945,6 +945,25 @@ def _normalize_dashboard_status(status: str | None) -> str:
     return "gray"
 
 
+def _is_dashboard_security_alert(item: dict) -> bool:
+    tags = {str(tag).lower() for tag in item.get("tags") or []}
+    error = item.get("error") if isinstance(item.get("error"), dict) else {}
+    error_code = str(error.get("code") or "").lower()
+    return bool(tags & {"security", "skill_audit", "error"}) or "skill_audit" in error_code
+
+
+def _dashboard_item_summary(user_id: str, item: dict) -> dict:
+    return {
+        "id": item.get("id", ""),
+        "type": item.get("type", ""),
+        "title": item.get("title", ""),
+        "status": item.get("status", ""),
+        "tags": item.get("tags", []),
+        "updated_at": item.get("updated_at", ""),
+        "href": f"/api/{user_id}/items/{item.get('id', '')}",
+    }
+
+
 def _empty_usage_bucket() -> dict:
     return {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}, "agents": {}}
 
@@ -1742,7 +1761,9 @@ def get_backend_dashboard(user_id: str, request: Request):
     effects = pipeline_effects[-25:]
     heartbeat = get_heartbeat()
     jobs = get_jobs_today(user_id)
-    items = get_items(user_id)[:25]
+    all_items = get_items(user_id)
+    items = all_items[:25]
+    alert_items = [item for item in all_items if _is_dashboard_security_alert(item)][:25]
     artifacts = list_artifact_sections(user_id)
     config = _dashboard_config()
     usage_history = _usage_history(days=30)
@@ -1876,18 +1897,9 @@ def get_backend_dashboard(user_id: str, request: Request):
         "model_catalog": config.get("model_catalog", _model_catalog()),
         "outputs": {
             "artifacts": artifacts,
-            "recent_items": [
-                {
-                    "id": item.get("id", ""),
-                    "type": item.get("type", ""),
-                    "title": item.get("title", ""),
-                    "status": item.get("status", ""),
-                    "tags": item.get("tags", []),
-                    "updated_at": item.get("updated_at", ""),
-                    "href": f"/api/{user_id}/items/{item.get('id', '')}",
-                }
-                for item in items
-            ],
+            "alert_count": len(alert_items),
+            "alert_items": [_dashboard_item_summary(user_id, item) for item in alert_items],
+            "recent_items": [_dashboard_item_summary(user_id, item) for item in items],
             "jobs": {
                 "date": jobs.get("date"),
                 "usage_totals": jobs.get("usage_totals", {}),
