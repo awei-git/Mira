@@ -1088,6 +1088,16 @@ def _job_event_times(job: dict) -> list[str]:
     return times
 
 
+def _dashboard_failure_messages(value) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]
+
+
 def _configured_model_for_pipeline(pipeline_name: str, pipeline, model_by_agent: dict[str, str]) -> tuple[str, str]:
     candidates = [*_PIPELINE_AGENT_HINTS.get(pipeline_name, []), *(pipeline.involved_skills or []), pipeline_name]
     for agent in candidates:
@@ -1542,8 +1552,10 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
                 if last_success_at
                 else str(latest_output["updated_at"])
             )
-        if latest_record and (latest_record.outcome == "failed" or latest_record.delta.what_failed):
-            errors.extend(latest_record.delta.what_failed or [latest_record.outcome])
+        if latest_record:
+            failure_messages = _dashboard_failure_messages(latest_record.delta.what_failed)
+            if latest_record.outcome == "failed" or failure_messages:
+                errors.extend(failure_messages or [latest_record.outcome])
         if latest_commit and latest_commit.status in {"quarantined", "rejected", "requires_human"}:
             errors.extend(f.reason for f in latest_commit.findings)
         for effect in recent_effects[-3:]:

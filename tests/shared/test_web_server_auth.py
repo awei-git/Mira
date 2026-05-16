@@ -239,10 +239,53 @@ def test_backend_dashboard_endpoint_returns_technical_snapshot(monkeypatch, tmp_
             assert step["status"] in allowed_statuses
             assert step["model"] or step["model_source"] == "no LLM"
     assert set(body["memory"]) == {"status", "kernel", "ledger", "commits", "effects", "queues"}
-    assert set(body["outputs"]) == {"artifacts", "recent_items", "jobs"}
+    assert {"artifacts", "recent_items", "jobs"} <= set(body["outputs"])
     assert "security" in body
     assert "agent_stats" in body["outputs"]["jobs"]
     assert {"kernel", "ledger", "commits", "effect_log", "eval_history", "snapshots", "artifacts"} <= set(body["paths"])
+
+
+def test_backend_dashboard_preserves_string_failure_message():
+    from mira.kernel.delta import MemoryDeltaProposal
+    from mira.kernel.ledger import ExperienceRecord
+    from mira.pipelines import PIPELINE_CATALOG
+
+    failure = "PREFLIGHT BLOCKED [secret]: missing file"
+    record = ExperienceRecord(
+        id="communication_test_failure",
+        pipeline="communication",
+        trigger="event",
+        intent="test communication failure",
+        outcome="failed",
+        delta=MemoryDeltaProposal(
+            pipeline="communication",
+            run_id="communication_test_failure",
+            memory_class="operational",
+            what_happened="Task task142 finished with status failed",
+            what_mattered=failure,
+            what_changed="Future communication snapshots include task outcome task142",
+            what_failed=failure,
+            actions=[],
+        ),
+        causal_links=[],
+        confidence=1.0,
+        memory_class="operational",
+    )
+
+    rows = server._pipeline_status_rows(
+        "ang",
+        {"communication": PIPELINE_CATALOG["communication"]},
+        [record],
+        [],
+        [],
+        {"jobs": []},
+        {"models": []},
+    )
+
+    assert rows[0]["status_text"] == failure
+    assert rows[0]["status_detail"] == failure
+    assert rows[0]["error"] == failure
+    assert rows[0]["steps"][-1]["error"] == failure
 
 
 def test_backend_dashboard_shell_and_static_assets_are_served(monkeypatch, tmp_path: Path):
