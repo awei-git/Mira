@@ -241,6 +241,28 @@ def test_description_not_raw_dialogue():
     assert "claude_think" in src, "publish_episode doesn't use LLM for description generation"
 
 
+def test_feed_verification_accepts_raw_feed_when_pages_is_stale():
+    """GitHub Pages can lag the pushed feed; raw main feed proves the commit landed."""
+    from rss import _get_config, _raw_feed_url, _verify_feed_contains_slug
+
+    cfg = _get_config("en")
+    feed_url = f"{cfg['pages_url']}/feed.xml"
+    raw_url = _raw_feed_url(cfg)
+    slug = "what-the-ai-interface-is-really-promising"
+
+    def fake_fetch(url):
+        if url == feed_url:
+            return "<rss><channel></channel></rss>"
+        if url == raw_url:
+            return f"<rss><channel><guid>{slug}</guid></channel></rss>"
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    verified, source = _verify_feed_contains_slug(slug, feed_url, cfg, fetch_text=fake_fetch)
+
+    assert verified is True
+    assert source == "raw"
+
+
 # ---------------------------------------------------------------------------
 # 7. Metadata stripping — publish_to_substack
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import subprocess
+import urllib.request as _urllib_request
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
@@ -106,6 +107,29 @@ REPO_DIR = _PODCAST_CONFIG["zh"]["repo_dir"]
 
 def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
+
+
+def _fetch_text(url: str, timeout: int = 20) -> str:
+    req = _urllib_request.Request(url, headers={"User-Agent": "Mira/1.0"})
+    with _urllib_request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode()
+
+
+def _raw_feed_url(cfg: dict) -> str:
+    return f"https://raw.githubusercontent.com/{cfg['repo']}/main/feed.xml"
+
+
+def _verify_feed_contains_slug(slug: str, feed_url: str, cfg: dict, fetch_text=_fetch_text) -> tuple[bool, str]:
+    """Verify publish against Pages, then raw GitHub as commit-side truth."""
+    errors: list[str] = []
+    for source, url in (("pages", feed_url), ("raw", _raw_feed_url(cfg))):
+        try:
+            if slug in fetch_text(url):
+                return True, source
+            errors.append(f"{source}:missing")
+        except Exception as exc:
+            errors.append(f"{source}:{type(exc).__name__}")
+    return False, ", ".join(errors)
 
 
 from contextlib import contextmanager
@@ -641,35 +665,30 @@ def publish_episode(
     log.info("Published to %s feed: %s", lang.upper(), feed_url)
 
     # Post-condition: verify episode appears in the published feed
-    try:
-        import urllib.request as _urllib_req
+    verified, source = _verify_feed_contains_slug(slug, feed_url, cfg)
+    if verified:
+        log.info("RSS verification: episode '%s' found in %s feed", slug, source)
+    else:
+        try:
+            import sys as _sys
 
-        req = _urllib_req.Request(feed_url, headers={"User-Agent": "Mira/1.0"})
-        resp = _urllib_req.urlopen(req, timeout=20)
-        feed_content = resp.read().decode()
-        if slug not in feed_content:
-            try:
-                import sys as _sys
+            _shared = str(Path(__file__).resolve().parent.parent.parent / "lib")
+            if _shared not in _sys.path:
+                _sys.path.insert(0, _shared)
+            from ops.failure_log import record_failure
 
-                _shared = str(Path(__file__).resolve().parent.parent.parent / "lib")
-                if _shared not in _sys.path:
-                    _sys.path.insert(0, _shared)
-                from ops.failure_log import record_failure
-
-                record_failure(
-                    pipeline="rss",
-                    step="feed_verification",
-                    slug=slug,
-                    error_type="episode_not_in_feed",
-                    error_message=f"Episode '{slug}' not found in published feed",
-                    expected_output=f"Episode entry in {feed_url}",
-                    actual_output="Episode missing from feed XML",
-                )
-            except Exception:
-                pass
-            log.warning("RSS verification: episode '%s' not found in feed", slug)
-    except Exception as e:
-        log.warning("RSS feed verification failed: %s", e)
+            record_failure(
+                pipeline="rss",
+                step="feed_verification",
+                slug=slug,
+                error_type="episode_not_in_feed",
+                error_message=f"Episode '{slug}' not found in published feed",
+                expected_output=f"Episode entry in {feed_url}",
+                actual_output=f"Episode missing from feed XML ({source})",
+            )
+        except Exception:
+            pass
+        log.warning("RSS verification: episode '%s' not found in feed (%s)", slug, source)
 
     return feed_url
 
