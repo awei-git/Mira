@@ -122,6 +122,12 @@ def token_usage_from_response(response) -> dict | None:
 
 
 def log_token_usage(agent_name: str, task_type: str, model_id: str | None, response) -> dict | None:
+    try:
+        from config import TOKEN_LOG_ENABLED
+    except (ImportError, AttributeError):
+        TOKEN_LOG_ENABLED = True
+    if not TOKEN_LOG_ENABLED:
+        return None
     token_usage = token_usage_from_response(response)
     if token_usage is None:
         return None
