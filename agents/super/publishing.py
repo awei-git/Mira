@@ -21,6 +21,7 @@ from runtime.dispatcher import _dispatch_background
 log = logging.getLogger("mira")
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
+_PIPELINE_STATUS_ORDER = ["approved", "published", "podcast_en", "podcast_zh", "complete"]
 
 
 def _check_pending_publish():
@@ -184,6 +185,47 @@ def _blocked_publish_status(result: str) -> str:
     return ""
 
 
+def _week_from_manifest_timestamp(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).strftime("%Y-W%W")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _status_at_least(status: str | None, threshold: str) -> bool:
+    try:
+        return _PIPELINE_STATUS_ORDER.index(str(status or "")) >= _PIPELINE_STATUS_ORDER.index(threshold)
+    except ValueError:
+        return False
+
+
+def _sync_podcast_week_state(state: dict, manifest: dict, current_week: str) -> bool:
+    """Consume weekly podcast quota only after a verified manifest transition."""
+    changed = False
+    for entry in manifest.get("articles", {}).values():
+        if not entry.get("auto_podcast", True):
+            continue
+        timestamps = entry.get("timestamps") or {}
+        status = entry.get("status")
+        if (
+            _status_at_least(status, "podcast_en")
+            and _week_from_manifest_timestamp(timestamps.get("podcast_en")) == current_week
+            and state.get("podcast_en_week") != current_week
+        ):
+            state["podcast_en_week"] = current_week
+            changed = True
+        if (
+            _status_at_least(status, "podcast_zh")
+            and _week_from_manifest_timestamp(timestamps.get("podcast_zh")) == current_week
+            and state.get("podcast_zh_week") != current_week
+        ):
+            state["podcast_zh_week"] = current_week
+            changed = True
+    return changed
+
+
 def _check_pending_podcast():
     """Trigger podcast generation for published articles.
 
@@ -195,6 +237,9 @@ def _check_pending_podcast():
 
     state = load_state()
     current_week = datetime.now().strftime("%Y-W%W")
+    manifest = load_manifest()
+    if _sync_podcast_week_state(state, manifest, current_week):
+        save_state(state)
     done_en_week = state.get("podcast_en_week")
     done_zh_week = state.get("podcast_zh_week")
 
@@ -270,10 +315,6 @@ def _check_pending_podcast():
                         slug,
                     ],
                 )
-                # Mark the week as spent (optimistic — avoids double-dispatch
-                # if dispatch succeeds but generation fails mid-week).
-                state["podcast_en_week"] = current_week
-                save_state(state)
             else:
                 update_manifest(slug, error=f"Podcast: final_md not found: {final}")
     else:
@@ -311,8 +352,6 @@ def _check_pending_podcast():
                         slug,
                     ],
                 )
-                state["podcast_zh_week"] = current_week
-                save_state(state)
             else:
                 update_manifest(slug, error=f"Podcast: final_md not found: {final}")
     else:
