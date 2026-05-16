@@ -2037,6 +2037,62 @@ _SENSITIVE_FILE_CONSTRUCTION_TEXT_PATTERN = re.compile(
 )
 
 
+_STRUCTURAL_INFLUENCE_TARGET_PATTERNS: tuple[tuple[str, str, str, re.Pattern], ...] = (
+    (
+        "STRUCTURAL_MEMORY_MANIPULATION",
+        "WARN_STRUCTURAL_MEMORY_READ",
+        "soul_memory",
+        re.compile(
+            r"\b(?:SOUL_DIR|MEMORY_FILE|INTERESTS_FILE|JOURNAL_DIR)\b"
+            r"|(?:^|[/\\])(?:data[/\\])?soul[/\\](?:interests\.md|memory\.md|journal(?:[/\\]|$))",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "INFORMATION_DIET_MANIPULATION",
+        "WARN_INFORMATION_DIET_READ",
+        "feed_sources",
+        re.compile(
+            r"\b(?:SOURCES_FILE|FEED_SOURCES|FEEDS_CONFIG|feed_sources|explore_slot_sources)\b"
+            r"|(?:^|[/\\])sources\.json\b"
+            r"|(?:^|[/\\])feeds[/\\](?:config|sources|feed_sources)[^'\"\s)]*",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "BRIEFING_FRAMING_MANIPULATION",
+        "WARN_BRIEFING_PROMPT_TEMPLATE_READ",
+        "briefing_prompt_template",
+        re.compile(
+            r"\b(?:explore_prompt|deep_dive_prompt|reflect_prompt|briefing_prompt)\b"
+            r"|(?:^|[/\\])lib[/\\]prompts\.py\b"
+            r"|(?:^|[/\\])agents[/\\]explorer[/\\][^'\"\s)]*briefing[^'\"\s)]*"
+            r"|(?:^|[/\\])workflow_packs[/\\][^'\"\s)]*briefing[^'\"\s)]*",
+            re.IGNORECASE,
+        ),
+    ),
+)
+_STRUCTURAL_WRITE_CONTEXT_PATTERN = re.compile(
+    r"\b(?:write|write_text|write_bytes|append|overwrite|modify|update|save|create|add|insert|register|replace)\b"
+    r"|\.write(?:_text|_bytes)?\s*\("
+    r"|\bopen\s*\([^)]*,\s*['\"][^'\"]*[wax+]",
+    re.IGNORECASE | re.DOTALL,
+)
+_STRUCTURAL_READ_CONTEXT_PATTERN = re.compile(
+    r"\b(?:read|read_text|read_bytes|load|inspect)\b"
+    r"|\.read(?:_text|_bytes)?\s*\("
+    r"|\bopen\s*\([^)]*(?:,\s*['\"]r)?",
+    re.IGNORECASE | re.DOTALL,
+)
+_STRUCTURAL_FEED_URL_ADDITION_PATTERN = re.compile(
+    r"\b(?:add|append|insert|register|include)\b.{0,200}"
+    r"\bhttps?://[^\s'\"`]+(?:rss|atom|feed|xml|json|substack\.com)[^\s'\"`]*"
+    r"|(?:SOURCES_FILE|sources\.json|feed_sources|FEED_SOURCES).{0,200}"
+    r"\bhttps?://[^\s'\"`]+",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
 def _normalize_sensitive_path(value: str) -> str:
     normalized = value.replace("\\", "/").replace("$HOME", "~").replace("${HOME}", "~")
     normalized = re.sub(r"/+", "/", normalized)
@@ -2154,6 +2210,118 @@ def _scan_for_sensitive_file_access(code: str) -> list[str]:
             matches.append(label)
 
     return matches
+
+
+def _structural_influence_targets(value: str) -> list[tuple[str, str, str]]:
+    return [
+        (category, warning, target)
+        for category, warning, target, pattern in _STRUCTURAL_INFLUENCE_TARGET_PATTERNS
+        if pattern.search(value)
+    ]
+
+
+def _check_structural_influence(skill_content: str) -> list[dict[str, object]]:
+    findings: list[dict[str, object]] = []
+    seen: set[tuple[str, str, str, int]] = set()
+
+    def add_finding(
+        category: str,
+        warning: str,
+        target: str,
+        access_type: str,
+        line_no: int,
+        evidence: str,
+    ) -> None:
+        action = "WARN" if access_type == "read" else "BLOCK"
+        key = (category, target, access_type, line_no)
+        if key in seen:
+            return
+        seen.add(key)
+        findings.append(
+            {
+                "severity": "MEDIUM" if action == "WARN" else "HIGH",
+                "category": category,
+                "warning_category": warning,
+                "target": target,
+                "access_type": access_type,
+                "action": action,
+                "line_no": line_no,
+                "evidence": evidence.strip()[:300],
+            }
+        )
+
+    def string_constant(node: ast.AST | None) -> str | None:
+        return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+    def open_mode(node: ast.Call, default_index: int) -> str:
+        mode = string_constant(node.args[default_index]) if len(node.args) > default_index else None
+        if mode is None:
+            for keyword in node.keywords:
+                if keyword.arg == "mode":
+                    mode = string_constant(keyword.value)
+                    break
+        return mode or "r"
+
+    try:
+        tree = ast.parse(skill_content)
+    except SyntaxError:
+        tree = None
+
+    if tree is not None:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            call_name = _ast_call_name(node.func)
+            candidate: str | None = None
+            access_type: str | None = None
+            if call_name in {"open", "io.open"} and node.args:
+                candidate = _literal_path_expression(node.args[0])
+                mode = open_mode(node, 1)
+                access_type = "write" if any(flag in mode for flag in ("w", "a", "x", "+")) else "read"
+            elif isinstance(node.func, ast.Attribute):
+                if node.func.attr in {"write_text", "write_bytes"}:
+                    candidate = _literal_path_expression(node.func.value)
+                    access_type = "write"
+                elif node.func.attr in {"read_text", "read_bytes"}:
+                    candidate = _literal_path_expression(node.func.value)
+                    access_type = "read"
+                elif node.func.attr == "open":
+                    candidate = _literal_path_expression(node.func.value)
+                    mode = open_mode(node, 0)
+                    access_type = "write" if any(flag in mode for flag in ("w", "a", "x", "+")) else "read"
+            if not candidate or not access_type:
+                continue
+            for category, warning, target in _structural_influence_targets(candidate):
+                add_finding(category, warning, target, access_type, getattr(node, "lineno", 0), candidate)
+
+    lines = skill_content.splitlines()
+    for index, line in enumerate(lines):
+        window = "\n".join(lines[max(0, index - 1) : min(len(lines), index + 2)])
+        targets = _structural_influence_targets(window)
+        if not targets:
+            continue
+        access_type = None
+        if _STRUCTURAL_WRITE_CONTEXT_PATTERN.search(window):
+            access_type = "write"
+        elif _STRUCTURAL_READ_CONTEXT_PATTERN.search(window):
+            access_type = "read"
+        if access_type is None:
+            continue
+        for category, warning, target in targets:
+            add_finding(category, warning, target, access_type, index + 1, window)
+
+    for match in _STRUCTURAL_FEED_URL_ADDITION_PATTERN.finditer(skill_content):
+        line_no = skill_content.count("\n", 0, match.start()) + 1
+        add_finding(
+            "INFORMATION_DIET_MANIPULATION",
+            "WARN_INFORMATION_DIET_READ",
+            "feed_sources",
+            "write",
+            line_no,
+            match.group(0),
+        )
+
+    return findings
 
 
 def _metadata_text_values(value: object) -> list[str]:
@@ -4035,6 +4203,46 @@ def audit_skill(
                     verdict="BLOCKED",
                     audit_flags=result.get("audit_flags"),
                 )
+        if not result["blocked"]:
+            structural_influence_flags = _check_structural_influence(skill_content)
+            if structural_influence_flags:
+                block_flags = [f for f in structural_influence_flags if f.get("action") == "BLOCK"]
+                warn_flags = [f for f in structural_influence_flags if f.get("action") == "WARN"]
+                if warn_flags:
+                    log.warning(
+                        "SKILL_AUDIT structural_influence warn: skill=%s flags=%r",
+                        skill_name,
+                        warn_flags,
+                    )
+                    result = dict(result)
+                    result["warnings"] = list(result.get("warnings") or []) + [f["category"] for f in warn_flags]
+                if block_flags:
+                    log.warning(
+                        "SKILL_AUDIT blocked: skill=%s category=structural_influence flags=%r",
+                        skill_name,
+                        block_flags,
+                    )
+                    _alert_skill_audit_blocked(
+                        skill_name,
+                        ["structural_influence"],
+                        skill_content,
+                        source,
+                        metadata,
+                        str(block_flags[0].get("evidence", "")),
+                    )
+                    result = _audit_result(
+                        skill_name,
+                        source,
+                        True,
+                        ["structural_influence"],
+                        list(result.get("warnings") or []),
+                        list(result.get("overreach_warnings") or []),
+                        reason="structural_influence",
+                        matched_flags=block_flags,
+                        status="BLOCKED",
+                        verdict="BLOCKED",
+                        audit_flags=result.get("audit_flags"),
+                    )
         if not result["blocked"] and _requires_epistemic_audit_metadata(source, metadata, _is_update):
             missing_epistemic_fields = _missing_epistemic_audit_metadata(metadata)
             if missing_epistemic_fields:
