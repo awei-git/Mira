@@ -2,6 +2,15 @@ import { el, kv, table } from "../dom.js";
 import { cliObservationLine, fmtTokens, modelBreakdown, modelMixFamily } from "../format.js";
 import { state } from "../state.js";
 
+function sourceBreakdown(sources) {
+  const rows = Object.entries(sources || {})
+    .map(([source, stats]) => [source, Number((stats || {}).tokens || 0), Number((stats || {}).calls || 0)])
+    .filter((row) => row[1] > 0 || row[2] > 0)
+    .sort((a, b) => b[1] - a[1]);
+  if (!rows.length) return "not labeled";
+  return rows.map(([source, tokens, calls]) => `${source}: ${fmtTokens(tokens)} tokens, ${calls} calls`).join(" | ");
+}
+
 function renderTokenChart(root, daily) {
   const legend = el("div", "", "chart-legend");
   [["claude", "Claude"], ["deepseek", "DeepSeek"], ["gpt", "GPT/Codex"], ["gemini", "Gemini"], ["local", "Local"], ["mixed", "Mixed/unknown"]].forEach(([cls, label]) => {
@@ -15,7 +24,7 @@ function renderTokenChart(root, daily) {
     const family = modelMixFamily(d.models);
     const bar = el("div", "", `bar ${family}`);
     bar.style.height = `${Math.max(2, Math.round(((d.tokens || 0) / max) * 132))}px`;
-    bar.title = `${d.date}: ${fmtTokens(d.tokens)} measured tokens, ${d.calls} measured calls\nmodels: ${modelBreakdown(d.models, d.tokens)}\nCLI observed: ${cliObservationLine(d.cli_observed)}`;
+    bar.title = `${d.date}: ${fmtTokens(d.tokens)} measured tokens, ${d.calls} measured calls\nsources: ${sourceBreakdown(d.sources)}\nmodels: ${modelBreakdown(d.models, d.tokens)}\nCLI observed: ${cliObservationLine(d.cli_observed)}`;
     bar.append(el("span", String(d.date || "").slice(8)));
     bars.append(bar);
   });
@@ -65,23 +74,24 @@ export function renderUsagePage(root, data) {
   }
   const modelTable = el("div");
   const totalTokens = Number(total.tokens || 0);
-  table(modelTable, ["model", "share", "tokens", "calls", "cost"], Object.entries(total.models || {}).sort((a, b) => (b[1].tokens || 0) - (a[1].tokens || 0)).map(([model, stats]) => {
+  table(modelTable, ["model", "source", "share", "tokens", "calls", "cost"], Object.entries(total.models || {}).sort((a, b) => (b[1].tokens || 0) - (a[1].tokens || 0)).map(([model, stats]) => {
     const tokens = Number(stats.tokens || 0);
     const share = totalTokens > 0 ? `${Math.round((tokens / totalTokens) * 100)}%` : "0%";
-    return [model, share, fmtTokens(tokens), stats.calls, `$${Number(stats.cost_usd || 0).toFixed(4)}`];
+    return [model, sourceBreakdown(stats.sources), share, fmtTokens(tokens), stats.calls, `$${Number(stats.cost_usd || 0).toFixed(4)}`];
   }));
   const dailyTable = el("div");
   breakdown.append(
     el("div", "Measured Model Breakdown", "panel-title"),
     tabs,
     kv("measured total", `${fmtTokens(total.tokens || 0)} tokens - ${total.calls || 0} calls - $${Number(total.cost_usd || 0).toFixed(4)}`),
+    kv("measured sources", sourceBreakdown(total.sources)),
     kv("Codex CLI observed", cliObservationLine(total.cli_observed)),
     modelTable
   );
 
   grid.append(chartPanel, breakdown);
   const dailyPanel = el("div", "", "panel");
-  table(dailyTable, ["date", "measured tokens", "measured calls", "measured models", "Codex CLI observed"], daily.slice().reverse().map((d) => [d.date, fmtTokens(d.tokens || 0), d.calls || 0, modelBreakdown(d.models, d.tokens), cliObservationLine(d.cli_observed)]));
+  table(dailyTable, ["date", "measured tokens", "measured calls", "measured sources", "measured models", "Codex CLI observed"], daily.slice().reverse().map((d) => [d.date, fmtTokens(d.tokens || 0), d.calls || 0, sourceBreakdown(d.sources), modelBreakdown(d.models, d.tokens), cliObservationLine(d.cli_observed)]));
   dailyPanel.append(el("div", "Daily Measured Mix + CLI Evidence", "panel-title"), hist.coverage_note ? kv("coverage", hist.coverage_note) : "", dailyTable);
   root.append(head, grid, dailyPanel);
 }

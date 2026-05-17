@@ -140,6 +140,39 @@ def _cloud_disabled() -> bool:
     return False
 
 
+_MODEL_ROUTE_ALIASES = {
+    "gpt-5.5": "codex",
+    "gpt-5": "codex",
+    "claude-sonnet-4-6": "claude",
+    "claude-opus-4-7": "claude",
+    "claude-haiku-4-5": "claude",
+    "deepseek-v4-pro": "deepseek",
+    "deepseek-reasoner": "deepseek-r1",
+    "gemini-3.1-pro-preview": "gemini-pro",
+    "gemini-3.1-flash-lite-preview": "gemini",
+    "gemini-3.1-flash-tts-preview": "gemini",
+    "gemma-4-31b-it-4bit": "omlx",
+    "none": "omlx",
+}
+
+
+def _canonical_model_route(model_name: str) -> str:
+    requested = str(model_name or DEFAULT_MODEL).strip().lower()
+    return _MODEL_ROUTE_ALIASES.get(requested, requested)
+
+
+def _usage_source(provider: str, model: str, estimated: bool) -> str:
+    if provider == "codex_cli":
+        return "Codex subscription estimate" if estimated else "Codex subscription"
+    if provider == "anthropic":
+        return "Claude Code subscription estimate" if estimated else "Claude Code subscription"
+    if provider in {"deepseek", "gemini", "openai", "minimax"}:
+        return f"{provider} API"
+    if provider == "omlx":
+        return "local oMLX"
+    return provider or "unknown"
+
+
 def _force_ollama() -> bool:
     """Backward-compatible alias during the Ollama -> oMLX migration."""
     return _force_local()
@@ -186,6 +219,7 @@ def _log_usage(provider: str, model: str, prompt_tokens: int, completion_tokens:
             "agent": _get_usage_agent(),
             "provider": provider,
             "model": model,
+            "source": _usage_source(provider, model, estimated),
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
@@ -494,7 +528,7 @@ def _looks_like_chinese_writing(prompt: str) -> bool:
 
 
 def _fallback_chain(model_name: str, prompt: str) -> list[str]:
-    requested = (model_name or DEFAULT_MODEL or "codex").lower()
+    requested = _canonical_model_route(model_name or DEFAULT_MODEL or "codex")
     if _force_local():
         return ["omlx"]
     if requested in {"omlx", "ollama", "local", "localllm"}:

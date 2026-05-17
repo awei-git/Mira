@@ -26,6 +26,12 @@ def test_deepseek_first_routes_do_not_die_when_deepseek_is_down():
     ]
 
 
+def test_dashboard_model_ids_route_to_runtime_backends():
+    assert llm._fallback_chain("claude-sonnet-4-6", "Summarize this.")[:2] == ["claude", "deepseek"]
+    assert llm._fallback_chain("deepseek-v4-pro", "Summarize this.")[:2] == ["deepseek", "codex"]
+    assert llm._fallback_chain("gpt-5.5", "Summarize this.")[:2] == ["codex", "claude"]
+
+
 def test_local_policy_overrides_cloud_fallback_chain():
     llm.set_model_policy("omlx")
     try:

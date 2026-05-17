@@ -1079,7 +1079,24 @@ def _dashboard_item_summary(user_id: str, item: dict) -> dict:
 
 
 def _empty_usage_bucket() -> dict:
-    return {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}, "agents": {}}
+    return {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}, "agents": {}, "sources": {}}
+
+
+def _usage_source_label(rec: dict) -> str:
+    source = str(rec.get("source") or "").strip()
+    if source:
+        return source
+    provider = str(rec.get("provider") or "").strip().lower()
+    estimated = bool(rec.get("estimated"))
+    if provider == "codex_cli":
+        return "Codex subscription estimate" if estimated else "Codex subscription"
+    if provider == "anthropic":
+        return "Claude Code subscription estimate" if estimated else "Claude Code subscription"
+    if provider in {"deepseek", "gemini", "openai", "minimax"}:
+        return f"{provider} API"
+    if provider == "omlx":
+        return "local oMLX"
+    return provider or "unknown"
 
 
 def _empty_cli_observation_bucket() -> dict:
@@ -1137,16 +1154,16 @@ _MODEL_CATALOG = [
         "provider": "Claude",
         "models": [
             {"value": "claude", "label": "Claude Code subscription"},
-            {"value": "claude-opus-4-7", "label": "Claude Opus 4.7"},
-            {"value": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6"},
-            {"value": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
+            {"value": "claude-opus-4-7", "label": "Claude Opus 4.7 via Claude Code"},
+            {"value": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 via Claude Code"},
+            {"value": "claude-haiku-4-5", "label": "Claude Haiku 4.5 via Claude Code"},
         ],
     },
     {
         "provider": "GPT / Codex",
         "models": [
             {"value": "codex", "label": "Codex code subscription"},
-            {"value": "gpt-5.5", "label": "GPT-5.5"},
+            {"value": "gpt-5.5", "label": "GPT-5.5 via Codex subscription"},
         ],
     },
     {
@@ -1201,7 +1218,7 @@ _PIPELINE_AGENT_HINTS: dict[str, list[str]] = {
     "system_health": ["monitor"],
     "incident_response": ["coder"],
     "health_wellness": ["health"],
-    "self_evolution": ["coder"],
+    "self_evolution": ["self_evolution", "coder"],
     "skill_learning": ["memory_organizer"],
     "memory_maintenance": ["memory_organizer"],
     "deterministic_reference": ["policy_runner"],
@@ -1500,6 +1517,7 @@ def _usage_history(days: int = 30) -> dict:
                 continue
             agent = str(rec.get("agent") or "unknown")
             model = str(rec.get("model") or "unknown")
+            source = _usage_source_label(rec)
             tokens = int(rec.get("total_tokens") or rec.get("tokens") or 0)
             cost = float(rec.get("cost_usd") or 0)
             day_row = daily[day]
@@ -1515,14 +1533,22 @@ def _usage_history(days: int = 30) -> dict:
             day_row["calls"] += 1
             day_row["tokens"] += tokens
             day_row["cost_usd"] += cost
-            day_model = day_row["models"].setdefault(model, {"calls": 0, "tokens": 0, "cost_usd": 0.0})
+            day_model = day_row["models"].setdefault(model, {"calls": 0, "tokens": 0, "cost_usd": 0.0, "sources": {}})
             day_model["calls"] += 1
             day_model["tokens"] += tokens
             day_model["cost_usd"] += cost
+            day_model_source = day_model["sources"].setdefault(source, {"calls": 0, "tokens": 0, "cost_usd": 0.0})
+            day_model_source["calls"] += 1
+            day_model_source["tokens"] += tokens
+            day_model_source["cost_usd"] += cost
             day_agent = day_row["agents"].setdefault(agent, {"calls": 0, "tokens": 0, "cost_usd": 0.0})
             day_agent["calls"] += 1
             day_agent["tokens"] += tokens
             day_agent["cost_usd"] += cost
+            day_source = day_row["sources"].setdefault(source, {"calls": 0, "tokens": 0, "cost_usd": 0.0})
+            day_source["calls"] += 1
+            day_source["tokens"] += tokens
+            day_source["cost_usd"] += cost
 
     out = {}
     for agent, row in by_agent.items():
@@ -1538,9 +1564,11 @@ def _usage_history(days: int = 30) -> dict:
     daily_rows = []
     for day in sorted(daily):
         row = daily[day]
-        for collection in (row["models"], row["agents"]):
+        for collection in (row["models"], row["agents"], row["sources"]):
             for stats in collection.values():
                 stats["cost_usd"] = round(stats["cost_usd"], 4)
+                for source_stats in (stats.get("sources") or {}).values():
+                    source_stats["cost_usd"] = round(source_stats["cost_usd"], 4)
         daily_rows.append(
             {
                 "date": day,
@@ -1549,6 +1577,7 @@ def _usage_history(days: int = 30) -> dict:
                 "cost_usd": round(row["cost_usd"], 4),
                 "models": row["models"],
                 "agents": row["agents"],
+                "sources": row["sources"],
                 "cli_observed": cli_observed.get(day, _empty_cli_observation_bucket()),
             }
         )
@@ -1562,12 +1591,22 @@ def _usage_history(days: int = 30) -> dict:
             total["tokens"] += row["tokens"]
             total["cost_usd"] += row["cost_usd"]
             for model, stats in row["models"].items():
-                dest = total["models"].setdefault(model, {"calls": 0, "tokens": 0, "cost_usd": 0.0})
+                dest = total["models"].setdefault(model, {"calls": 0, "tokens": 0, "cost_usd": 0.0, "sources": {}})
                 dest["calls"] += stats["calls"]
                 dest["tokens"] += stats["tokens"]
                 dest["cost_usd"] += stats["cost_usd"]
+                for source, source_stats in (stats.get("sources") or {}).items():
+                    source_dest = dest["sources"].setdefault(source, {"calls": 0, "tokens": 0, "cost_usd": 0.0})
+                    source_dest["calls"] += int(source_stats.get("calls") or 0)
+                    source_dest["tokens"] += int(source_stats.get("tokens") or 0)
+                    source_dest["cost_usd"] += float(source_stats.get("cost_usd") or 0.0)
             for agent, stats in row["agents"].items():
                 dest = total["agents"].setdefault(agent, {"calls": 0, "tokens": 0, "cost_usd": 0.0})
+                dest["calls"] += stats["calls"]
+                dest["tokens"] += stats["tokens"]
+                dest["cost_usd"] += stats["cost_usd"]
+            for source, stats in row["sources"].items():
+                dest = total["sources"].setdefault(source, {"calls": 0, "tokens": 0, "cost_usd": 0.0})
                 dest["calls"] += stats["calls"]
                 dest["tokens"] += stats["tokens"]
                 dest["cost_usd"] += stats["cost_usd"]
@@ -1579,9 +1618,11 @@ def _usage_history(days: int = 30) -> dict:
                 dest["calls"] += int(stats.get("calls") or 0)
                 dest["output_chars"] += int(stats.get("output_chars") or 0)
         total["cost_usd"] = round(total["cost_usd"], 4)
-        for collection in (total["models"], total["agents"]):
+        for collection in (total["models"], total["agents"], total["sources"]):
             for stats in collection.values():
                 stats["cost_usd"] = round(stats["cost_usd"], 4)
+                for source_stats in (stats.get("sources") or {}).values():
+                    source_stats["cost_usd"] = round(source_stats["cost_usd"], 4)
         total["cli_observed"] = total_cli
         return total
 
@@ -1590,8 +1631,9 @@ def _usage_history(days: int = 30) -> dict:
         "by_agent": out,
         "daily": daily_rows,
         "coverage_note": (
-            "Token/cost totals are measured from usage_YYYY-MM-DD.jsonl. "
-            "Codex CLI calls before this fix may appear only as observed call counts from runtime logs."
+            "Token/cost totals are measured from usage_YYYY-MM-DD.jsonl. Source labels distinguish API calls "
+            "from Codex and Claude Code subscription estimates. Codex CLI calls before usage logging may appear "
+            "only as observed call counts from runtime logs."
         ),
         "totals": {
             "today": range_total(1),

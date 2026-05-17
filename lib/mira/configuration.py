@@ -43,6 +43,7 @@ def default_v3_config() -> V3Config:
         ModelAssignment("podcast", "claude-sonnet-4-6", 64000),
         ModelAssignment("evaluator", "claude-opus-4-7", 32000),
         ModelAssignment("memory_organizer", "claude-haiku-4-5", 64000),
+        ModelAssignment("self_evolution", "codex", 128000),
         ModelAssignment("health", "omlx", 16000),
         ModelAssignment("reader", "claude-sonnet-4-6", 64000),
         ModelAssignment("discussion", "claude-sonnet-4-6", 64000),

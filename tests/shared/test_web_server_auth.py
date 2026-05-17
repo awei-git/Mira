@@ -564,6 +564,62 @@ def test_backend_dashboard_model_update_persists_override(monkeypatch, tmp_path:
     assert overrides["writer"]["updated_by"] == "ang"
 
 
+def test_backend_dashboard_exposes_self_evolution_model_row(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+
+    resp = client.get("/api/ang/backend-dashboard")
+
+    assert resp.status_code == 200
+    models = {row["agent"]: row for row in resp.json()["models"]}
+    assert models["self_evolution"]["model"] == "codex"
+
+
+def test_usage_history_labels_subscription_and_api_sources(monkeypatch, tmp_path: Path):
+    from datetime import date
+
+    import config
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    today = date.today().isoformat()
+    (logs / f"usage_{today}.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "agent": "self-evolve",
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-6",
+                        "total_tokens": 100,
+                        "cost_usd": 0.001,
+                        "estimated": True,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "agent": "self-evolve",
+                        "provider": "deepseek",
+                        "model": "deepseek-v4-pro",
+                        "total_tokens": 200,
+                        "cost_usd": 0.002,
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "LOGS_DIR", logs)
+    monkeypatch.setattr(server, "_codex_cli_observations", lambda logs_dir, days=30: {})
+
+    history = server._usage_history(days=1)
+
+    sources = history["totals"]["today"]["sources"]
+    assert sources["Claude Code subscription estimate"]["calls"] == 1
+    assert sources["deepseek API"]["calls"] == 1
+    claude_model = history["totals"]["today"]["models"]["claude-sonnet-4-6"]
+    assert claude_model["sources"]["Claude Code subscription estimate"]["tokens"] == 100
+
+
 def test_backend_dashboard_model_update_rejects_unknown_model(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
     monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
