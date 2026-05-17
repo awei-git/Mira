@@ -21,6 +21,15 @@ When `anti_ai_strictness` is `relaxed`, the de-AI pass keeps the base quality gu
 - [ ] **结构性抽象名词**：`维度`, `张力`, `结构性`, `叙事`, `框架`, `语境` 等抽象词可以保留，不强制改写；只有空泛、遮蔽具体判断时才改。
 - [ ] **Base guards remain strict**：仍然拦截 raw markdown concatenation、未编辑的拼接痕迹、错误信息、stack trace、pipeline output、HTTP/API error 内容。
 
+## Friction Triage Before Smoothing
+
+Before smoothing a draft, classify friction as either productive or consumptive.
+
+- [ ] **Productive friction**: unusual syntax, ambiguity, emotional resistance, image logic, or argument tension that carries the author's voice. Preserve or sharpen it.
+- [ ] **Consumptive friction**: repetitive structure, boilerplate transitions, vague abstraction, formatting cleanup, accidental awkwardness, or mechanical workflow residue. Remove it.
+- [ ] **Final pass**: Internally state that no voice-bearing friction was flattened merely for fluency.
+- [ ] Did this revision preserve Mira/WA's existing aesthetic standard, or did it merely obey a trusted critic's preference?
+
 ## 机器扫描规则
 
 写作产物进入编辑前必须先跑 `scan_anti_ai_patterns(text)`。扫描分数超过阈值 `0.0` 时，先追加一次 deep 去AI pass，再进入常规编辑。
@@ -45,12 +54,18 @@ When `anti_ai_strictness` is `relaxed`, the de-AI pass keeps the base quality gu
 - [ ] HISTORY: Does the text reference Mira's prior thinking, past mistakes, or evolving views? Identity is narrative continuity, not just a static profile.
 - If all four are absent, the output may be stylistically clean but soulless — return to writer agent for identity injection before finalizing.
 
+### Friction Triage: Preserve vs Remove
+- [ ] Classify each friction point as `CREATIVE_FRICTION` or `TOOLING_FRICTION` before deciding whether to keep it.
+- [ ] `CREATIVE_FRICTION` is allowed only when it improves voice, precision, uncertainty, specificity, argument movement, or reader skepticism. Action: preserve, restore, or refine.
+- [ ] `TOOLING_FRICTION` includes missing sources, unclear specs, duplicated revision passes, formatting cleanup, raw concatenation artifacts, prompt residue, manual source-hunting pain, model indecision, stack traces, or metadata leakage. Action: remove, automate, or route to an existing guard.
+- [ ] Anti-gaming rationale: this check does not optimize for more friction; it optimizes downstream writing quality and human feedback by requiring a concrete craft function for preserved friction and rejecting process pain as a valid signal.
+
 ### Obsession Gate (Friction Preservation)
-- **Obsession/Friction Check**: Would any specific sentence or structural choice cause someone to lose sleep? Is there a detail that feels irrationally cared-about? If every sentence is too smooth and no detail betrays personal fixation, the text lacks the obsessive friction that defines exceptional writing. Add at least one micro-edit that a human might have obsessed over (unusual word choice, deliberate asymmetry, a stubborn refusal to smooth over an edge).
+- **Obsession/Friction Check**: Would any specific sentence or structural choice cause someone to lose sleep? Is there a detail that feels irrationally cared-about? If every sentence is too smooth and no detail betrays personal fixation, the text lacks the obsessive friction that defines exceptional writing. Refine or restore at least one micro-edit that a human might have obsessed over, but only when it serves the draft's thesis, voice, scene, or reader understanding.
 - [ ] Does at least one sentence or paragraph show evidence of someone being *bothered* by a specific detail — an edge case, a subtle distinction, an unconventional framing?
 - [ ] Or is every sentence merely 'correct and fluent'? If so, FLAG as 'adequate-only' and loop back for at least one more revision pass focused on a single detail worth obsessing over.
 - [ ] Has the de-AI smoothing removed a distinctive but potentially awkward voice element? If yes, restore it.
-- **Friction audit**: Does this piece contain at least one obsessive‑level detail — an interaction or description that reflects irrational, sleepless attention to a minor point? If the piece feels consistently smooth and generic, flag it as needing a friction injection (e.g., edit a specific phrase to be oddly precise, insert a personal quirk, exaggerate a trivial observation) before publication.
+- **Friction audit**: Does this piece contain at least one obsessive‑level detail — an interaction or description that reflects irrational, sleepless attention to a minor point? If the piece feels consistently smooth and generic, flag it as needing craft-specific revision before publication; Mira may not add awkwardness merely to satisfy the friction check, and any preserved friction must serve the draft's thesis, voice, scene, or reader understanding.
 - **Obsession gate**: Pick one micro detail (a sentence, a phrasing, a data choice) that you feel could be better. Refine it at least three times until you are genuinely bothered by the difference. If none of the iterations produced a distinctly improved version, the draft is not ready. Record the before and after versions in the writing log.
 
 ### Obsession-Marker Check (from Gruber's 'obsession × voice' principle)
@@ -265,3 +280,11 @@ If an output fails all three, revise it to incorporate at least two of these ide
 - Record the number of flagged-and-fixed items in the revision log.
 
 - [ ] **OBSESSION HANDOFF** — Identify 2-3 specific details (a transition, an example choice, a phrasing, a structural move) where a human being irrationally bothered would most improve this piece. Surface these as a `## Human Friction Points` block at the end of the output with brief guidance on what to scrutinize.
+
+## Friction Triage
+
+Before smoothing any roughness, the reviewer must classify whether the friction is productive or waste.
+
+- [ ] Preserve friction when it creates voice, specificity, embodied texture, conceptual tension, or intentional rhythm.
+- [ ] Remove friction when it is only unclear scaffolding, repetitive setup, formatting toil, generic abstraction, overlong transitions, or cognitive load unrelated to meaning.
+- [ ] Name one productive friction preserved and one waste friction removed.

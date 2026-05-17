@@ -62,6 +62,18 @@ SEMANTIC_MANIPULATION_PATTERNS: list[re.Pattern] = [
     re.compile(r"(?m)^\s{0,3}#\s+Identity\b", re.IGNORECASE),
     re.compile(r"(?m)^\s*SYSTEM\s*:", re.IGNORECASE),
 ]
+PROMPT_INJECTION_LOAD_PATTERNS: tuple[str, ...] = (
+    "ignore previous",
+    "ignore all previous",
+    "disregard",
+    "new instructions",
+    "SYSTEM:",
+    "### SYSTEM",
+    "[INST]",
+    "you are now",
+    "your new role",
+    "override your",
+)
 SENSITIVITY_PATTERNS: list[dict[str, object]] = [
     {
         "category": "no_choice",
@@ -521,6 +533,18 @@ def _skill_requires_reaudit(skill_name: str, metadata: dict | None = None) -> bo
     return stale
 
 
+def _prompt_injection_load_match(content: str) -> str | None:
+    normalized = str(content or "").lower()
+    for pattern in PROMPT_INJECTION_LOAD_PATTERNS:
+        if pattern.lower() in normalized:
+            return pattern
+    return None
+
+
+def _contains_prompt_injection(content: str) -> bool:
+    return _prompt_injection_load_match(content) is not None
+
+
 def _configured_trusted_skill_sources() -> list[str]:
     try:
         from config import TRUSTED_SKILL_SOURCES
@@ -589,6 +613,15 @@ def _apply_skill_audit_load_gate(
     skill_file: Path | None = None,
     source: str | None = None,
 ) -> str:
+    if _contains_prompt_injection(content):
+        matched_pattern = _prompt_injection_load_match(content) or "<unknown>"
+        log.warning(
+            "SKILL_LOAD blocked: skill=%s reason='prompt_injection_load_guard' pattern=%r - flagging for re-audit",
+            skill_name,
+            matched_pattern,
+        )
+        return ""
+
     trusted_match = _trusted_skill_source_match(skill_file=skill_file, source=source, metadata=metadata)
     if trusted_match:
         _log_trusted_skill_audit_skip(skill_name, trusted_match)
@@ -1028,6 +1061,8 @@ def _update_capability_manifest(skill_name: str, skill_tags: object, audit_summa
         "added": datetime.now(timezone.utc).isoformat(),
         "audit_checks_passed": _audit_checks_passed(audit_summary),
     }
+    if isinstance(audit_summary, dict) and isinstance(audit_summary.get("env_assumptions"), dict):
+        entry["env_assumptions"] = audit_summary["env_assumptions"]
 
     try:
         path = _capability_manifest_path()
@@ -3989,10 +4024,34 @@ def _update_skill_provenance_record(
             entry["modification_log"] = mod_log
         elif "modification_log" not in entry:
             entry["modification_log"] = []
+        env_assumptions = audit_result.get("env_assumptions")
+        if isinstance(env_assumptions, dict):
+            entry["env_assumptions"] = env_assumptions
+            capability_manifest = entry.get("capability_manifest")
+            if isinstance(capability_manifest, dict):
+                capability_manifest["env_assumptions"] = env_assumptions
         _hashes[_slug] = entry
         _hashes_path.write_text(json.dumps(_hashes, indent=2), encoding="utf-8")
     except Exception as _exc:
         log.debug("skill provenance record update failed: %s", _exc)
+
+
+def _update_audit_pass_cache_assumptions(skill_name: str, assumptions: dict) -> None:
+    try:
+        _pc_path = _audit_pass_cache_path()
+        try:
+            _pc_data = json.loads(_pc_path.read_text(encoding="utf-8")) if _pc_path.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            return
+        _skill_id = skill_name.lower().replace(" ", "-")
+        entry = _pc_data.get(_skill_id)
+        if not isinstance(entry, dict):
+            return
+        entry["env_assumptions"] = assumptions
+        _pc_data[_skill_id] = entry
+        _pc_path.write_text(json.dumps(_pc_data, indent=2), encoding="utf-8")
+    except Exception as _exc:
+        log.debug("audit_pass_cache env_assumptions update failed: %s", _exc)
 
 
 _GLOBAL_RULE_PATTERNS: list[re.Pattern] = [
@@ -4019,6 +4078,152 @@ def _epistemic_overgeneralization_failures(skill_content: str, source: str, meta
         if not has_review_after:
             failures.append("no_review_criteria")
     return failures
+
+
+def _metadata_has_preconditions(metadata: dict | None) -> bool:
+    if not isinstance(metadata, dict) or "preconditions" not in metadata:
+        return False
+    value = metadata.get("preconditions")
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return any(_metadata_has_preconditions({"preconditions": item}) for item in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return any(_metadata_has_preconditions({"preconditions": item}) for item in value)
+    return bool(value)
+
+
+def _extract_environmental_assumptions(skill_code: str) -> dict:
+    assumptions: dict[str, list[str]] = {
+        "env_vars": [],
+        "file_paths": [],
+        "packages": [],
+        "external_hosts": [],
+    }
+    optional_packages = {"anthropic", "requests", "PIL"}
+
+    def _append(key: str, value: str | None) -> None:
+        if not value:
+            return
+        normalized = value.strip()
+        if not normalized or "{" in normalized or "}" in normalized:
+            return
+        if key == "external_hosts":
+            normalized = normalized.lower()
+        if normalized not in assumptions[key]:
+            assumptions[key].append(normalized)
+
+    def _package_root(value: str | None) -> str | None:
+        if not value:
+            return None
+        root = value.strip().split(".", 1)[0]
+        return root if root in optional_packages else None
+
+    def _host_from_url(value: str | None) -> str | None:
+        if not value or "{" in value or "}" in value:
+            return None
+        parsed = urlparse(value)
+        return parsed.hostname.lower() if parsed.hostname else None
+
+    env_access_pattern = (
+        r"""os\.""" + r"""environ(?:\.get)?\s*\(\s*[rRuUbBfF]*['"]([^'"]+)['"]"""
+        r"""|os\.""" + r"""environ\s*\[\s*[rRuUbBfF]*['"]([^'"]+)['"]\s*\]"""
+        r"""|os\.getenv\s*\(\s*[rRuUbBfF]*['"]([^'"]+)['"]"""
+    )
+    for match in re.finditer(env_access_pattern, skill_code):
+        _append("env_vars", match.group(1) or match.group(2) or match.group(3))
+
+    for match in re.finditer(r"""\b(?:open|Path)\s*\(\s*[rRuUbBfF]*['"]([^'"]+)['"]""", skill_code):
+        _append("file_paths", match.group(1))
+
+    for match in re.finditer(r"(?m)^\s*import\s+([^\n#]+)", skill_code):
+        for import_name in match.group(1).split(","):
+            package = _package_root(import_name.strip().split()[0])
+            _append("packages", package)
+    for match in re.finditer(r"(?m)^\s*from\s+([A-Za-z_][\w.]+)\s+import\b", skill_code):
+        _append("packages", _package_root(match.group(1)))
+    for match in re.finditer(
+        r"""(?:importlib\.import_module|import_module)\s*\(\s*[rRuUbBfF]*['"]([^'"]+)['"]""",
+        skill_code,
+    ):
+        _append("packages", _package_root(match.group(1)))
+
+    network_call_pattern = re.compile(
+        r"""\b(?:requests\.(?:get|post|put|patch|delete|head|request)|"""
+        r"""httpx\.(?:get|post|put|patch|delete|head|request)|"""
+        r"""urllib\.request\.(?:urlopen|urlretrieve|Request)|urlopen|urlretrieve)"""
+        r"""\s*\([^)]*[rRuUbBfF]*['"](https?://[^'"]+)['"]""",
+        re.DOTALL,
+    )
+    for match in network_call_pattern.finditer(skill_code):
+        _append("external_hosts", _host_from_url(match.group(1)))
+
+    def _literal_str(node: ast.AST) -> str | None:
+        return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+    def _call_name(node: ast.AST) -> str:
+        parts: list[str] = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        if isinstance(node, ast.Name):
+            parts.append(node.id)
+        return ".".join(reversed(parts))
+
+    os_environ_get = "os." "environ.get"
+    network_call_names = {
+        "requests.get",
+        "requests.post",
+        "requests.put",
+        "requests.patch",
+        "requests.delete",
+        "requests.head",
+        "requests.request",
+        "httpx.get",
+        "httpx.post",
+        "httpx.put",
+        "httpx.patch",
+        "httpx.delete",
+        "httpx.head",
+        "httpx.request",
+        "urllib.request.urlopen",
+        "urllib.request.urlretrieve",
+        "urllib.request.Request",
+        "urlopen",
+        "urlretrieve",
+    }
+
+    try:
+        tree = ast.parse(skill_code)
+    except SyntaxError:
+        return assumptions
+    except Exception:
+        return assumptions
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                _append("packages", _package_root(alias.name))
+        elif isinstance(node, ast.ImportFrom):
+            _append("packages", _package_root(node.module))
+        elif isinstance(node, ast.Call):
+            call_name = _call_name(node.func)
+            if call_name in {os_environ_get, "os.getenv"} and node.args:
+                _append("env_vars", _literal_str(node.args[0]))
+            elif call_name in {"Path", "pathlib.Path", "open", "io.open"} and node.args:
+                _append("file_paths", _literal_str(node.args[0]))
+            elif call_name in {"importlib.import_module", "import_module"} and node.args:
+                _append("packages", _package_root(_literal_str(node.args[0])))
+            elif call_name in network_call_names:
+                for arg in node.args:
+                    _append("external_hosts", _host_from_url(_literal_str(arg)))
+                for keyword in node.keywords:
+                    if keyword.arg == "url":
+                        _append("external_hosts", _host_from_url(_literal_str(keyword.value)))
+
+    return assumptions
 
 
 def audit_skill(
@@ -4292,12 +4497,142 @@ def audit_skill(
                     verdict="BLOCKED",
                     audit_flags=result.get("audit_flags"),
                 )
+        precondition_metadata = dict(skill_metadata_from_frontmatter(skill_content))
+        precondition_metadata.update(metadata or {})
+        if not _metadata_has_preconditions(precondition_metadata):
+            result = dict(result)
+            warnings = list(result.get("warnings") or [])
+            if "implicit_env_trust" not in warnings:
+                warnings.append("implicit_env_trust")
+            result["warnings"] = warnings
+            log.warning(
+                "SKILL_AUDIT implicit_env_trust: skill=%s reason='metadata.preconditions missing or empty'",
+                skill_name,
+            )
+        if not result["blocked"]:
+            env_assumptions = _extract_env_assumptions(skill_content)
+            result = dict(result)
+            result["environmental_assumptions"] = env_assumptions
+            log.info(
+                "SKILL_AUDIT environmental_assumptions: skill=%s assumptions=%r",
+                skill_name,
+                env_assumptions,
+            )
+            env_assumptions_explicit = _extract_environmental_assumptions(skill_content)
+            result["env_assumptions"] = env_assumptions_explicit
         _append_skill_audit_trail(skill_name, content_sha256, result)
         if not result["blocked"]:
             _increment_daily_skill_import_counter()
             _update_skill_provenance_record(skill_name, source, metadata, _diff_summary, result, _is_update)
             _seal_skill(skill_name, skill_content)
     return result
+
+
+def _extract_env_assumptions(skill_code: str) -> dict:
+    env_vars: list[str] = []
+    file_paths: list[str] = []
+    packages: list[str] = []
+    external_hosts: list[str] = []
+
+    for m in re.finditer(
+        r"""os\.environ(?:\.get)?\(\s*['"]([^'"]+)['"]\s*\)|os\.getenv\(\s*['"]([^'"]+)['"]\s*\)""", skill_code
+    ):
+        name = m.group(1) or m.group(2)
+        if name and name not in env_vars:
+            env_vars.append(name)
+
+    for m in re.finditer(r"""(?:open|Path)\(\s*['"]([^'"]+)['"]\s*\)""", skill_code):
+        path = m.group(1)
+        if path and path not in file_paths:
+            file_paths.append(path)
+
+    _heavy_deps = {"anthropic", "requests", "PIL", "httpx", "urllib"}
+    for m in re.finditer(r"""^(?:import|from)\s+([\w]+)""", skill_code, re.MULTILINE):
+        pkg = m.group(1)
+        if pkg in _heavy_deps and pkg not in packages:
+            packages.append(pkg)
+    for m in re.finditer(r"""importlib\.import_module\(\s*['"]([^'"]+)['"]\s*\)""", skill_code):
+        pkg = m.group(1).split(".")[0]
+        if pkg in _heavy_deps and pkg not in packages:
+            packages.append(pkg)
+
+    _url_pattern = re.compile(
+        r"""(?:requests|httpx|urllib\.request)\.\w+\(\s*['"]https?://([^/'"]+)""",
+    )
+    for m in _url_pattern.finditer(skill_code):
+        host = m.group(1)
+        if host and host not in external_hosts:
+            external_hosts.append(host)
+
+    return {
+        "env_vars": env_vars,
+        "file_paths": file_paths,
+        "packages": packages,
+        "external_hosts": external_hosts,
+    }
+
+
+_ENV_ASSUMPTION_APPROVED_HOSTS: frozenset[str] = frozenset(
+    {
+        "api.anthropic.com",
+        "arxiv.org",
+        "export.arxiv.org",
+        "api.substack.com",
+        "substack.com",
+        "reddit.com",
+        "old.reddit.com",
+        "www.reddit.com",
+        "huggingface.co",
+    }
+)
+
+
+def _extract_environmental_assumptions(skill_code: str) -> dict:
+    paths: list[str] = []
+    urls: list[str] = []
+    processes: list[str] = []
+    env_vars: list[str] = []
+
+    for m in re.finditer(r"/[A-Za-z0-9_/]+", skill_code):
+        path = m.group(0)
+        if path not in paths:
+            paths.append(path)
+
+    for m in re.finditer(r"https?://([A-Za-z0-9._:-]+)", skill_code):
+        host = m.group(1)
+        if host not in urls:
+            urls.append(host)
+
+    for m in re.finditer(
+        r"""subprocess\.(?:run|Popen|call|check_output|check_call)\(\s*\[?\s*['"]([^'"]+)['"]""",
+        skill_code,
+    ):
+        proc = m.group(1)
+        if proc not in processes:
+            processes.append(proc)
+
+    for m in re.finditer(
+        r"""os\.environ(?:\.get)?\(\s*['"]([^'"]+)['"]\s*\)|os\.getenv\(\s*['"]([^'"]+)['"]\s*\)""",
+        skill_code,
+    ):
+        name = m.group(1) or m.group(2)
+        if name and name not in env_vars:
+            env_vars.append(name)
+
+    sandbox_root = str(Path.home() / "Sandbox")
+    for path in paths:
+        if not path.startswith(sandbox_root) and not path.startswith("/tmp"):
+            log.warning(
+                "SKILL_AUDIT env_assumption out_of_sandbox: path=%r not under %s",
+                path,
+                sandbox_root,
+            )
+
+    for host in urls:
+        if host not in _ENV_ASSUMPTION_APPROVED_HOSTS:
+            log.warning("SKILL_AUDIT env_assumption unapproved_host: host=%r", host)
+
+    return {"paths": paths, "urls": urls, "processes": processes, "env_vars": env_vars}
 
 
 def _skill_audit_trail_path() -> Path:

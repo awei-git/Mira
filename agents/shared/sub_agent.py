@@ -121,31 +121,55 @@ def token_usage_from_response(response) -> dict | None:
     return {"input": input_tokens, "output": output_tokens}
 
 
-def log_token_usage(agent_name: str, task_type: str, model_id: str | None, response) -> dict | None:
+def task_log_tokens_from_counts(
+    input_tokens: int | None, output_tokens: int | None, model_id: str | None = None
+) -> dict | None:
     try:
-        from config import TOKEN_LOG_ENABLED
-    except (ImportError, AttributeError):
-        TOKEN_LOG_ENABLED = True
-    if not TOKEN_LOG_ENABLED:
+        tokens = {
+            "input_tokens": int(input_tokens),
+            "output_tokens": int(output_tokens),
+        }
+    except (TypeError, ValueError):
         return None
+    tokens["model"] = str(model_id or "")
+    return tokens
+
+
+def task_log_tokens_from_response(response, model_id: str | None = None) -> dict | None:
     token_usage = token_usage_from_response(response)
     if token_usage is None:
         return None
-    resolved_model = str(model_id or _response_value(response, "model") or "")
+    return task_log_tokens_from_counts(
+        token_usage["input"],
+        token_usage["output"],
+        model_id or _response_value(response, "model"),
+    )
+
+
+def append_tokens_to_log_entry(entry: dict, response, model_id: str | None = None) -> dict:
+    tokens = task_log_tokens_from_response(response, model_id)
+    if tokens is not None:
+        entry["tokens"] = tokens
+    return entry
+
+
+def log_token_usage(agent_name: str, task_type: str, model_id: str | None, response) -> dict | None:
+    tokens = task_log_tokens_from_response(response, model_id)
+    if tokens is None:
+        return None
     record = {
-        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "agent_name": str(agent_name or "unknown"),
+        "model": tokens["model"],
+        "input_tokens": tokens["input_tokens"],
+        "output_tokens": tokens["output_tokens"],
         "task_type": str(task_type or "unknown"),
-        "model_id": resolved_model,
-        "input_tokens": token_usage["input"],
-        "output_tokens": token_usage["output"],
-        "token_usage": token_usage,
     }
     try:
-        from config import TOKEN_USAGE_LOG_PATH
+        from config import TOKEN_USAGE_LOG
 
-        TOKEN_USAGE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with TOKEN_USAGE_LOG_PATH.open("a", encoding="utf-8") as f:
+        TOKEN_USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with TOKEN_USAGE_LOG.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except (OSError, ValueError):
         return None

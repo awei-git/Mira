@@ -19,7 +19,8 @@ for _name in dir(_lib_config):
 
 MIRA_ROOT = _lib_config.MIRA_ROOT
 AGENT_AUDIT_LOG = MIRA_ROOT / "logs" / "agent_audit.jsonl"
-TOKEN_USAGE_LOG_PATH = MIRA_ROOT / "logs" / "token_usage.jsonl"
+TOKEN_USAGE_LOG = MIRA_ROOT / "logs/token_usage.jsonl"
+TOKEN_USAGE_LOG_PATH = TOKEN_USAGE_LOG
 TOKEN_LOG_ENABLED = getattr(_lib_config, "TOKEN_LOG_ENABLED", True)
 # Optional local fallback placeholder for future offline/resilience routing.
 # LOCAL_FALLBACK_MODEL = None  # path to local .gguf or MLX model for offline/resilience (future use)

@@ -84,6 +84,7 @@ from sub_agent import (
     REASONING_REWRITE_PROMPT,
     extract_reasoning_payload,
     require_reasoning_in_instruction,
+    task_log_tokens_from_counts,
 )
 
 # Handler functions extracted to handlers_legacy.py (imported after all helpers
@@ -893,7 +894,7 @@ def _maybe_log_proxy_audit(workspace: Path, task_id: str, summary: str) -> None:
 
 from task_support import (
     _load_exec_history,
-    _append_exec_log,
+    _append_exec_log as _base_append_exec_log,
     _verify_output,
     _get_round_num,
     smart_classify,
@@ -931,6 +932,80 @@ from task_result import (
     _load_step_summary,
     _update_thread_memory,
 )
+
+
+_exec_log_token_state = _threading.local()
+
+
+def _reset_exec_log_token_state():
+    _exec_log_token_state.input = 0
+    _exec_log_token_state.output = 0
+
+
+def _token_delta_for_exec_log() -> dict | None:
+    input_tokens, output_tokens, model_id = get_session_tokens()
+    prev_input = int(getattr(_exec_log_token_state, "input", 0) or 0)
+    prev_output = int(getattr(_exec_log_token_state, "output", 0) or 0)
+    _exec_log_token_state.input = input_tokens
+    _exec_log_token_state.output = output_tokens
+    delta_input = max(0, int(input_tokens) - prev_input)
+    delta_output = max(0, int(output_tokens) - prev_output)
+    if delta_input == 0 and delta_output == 0:
+        return None
+    return task_log_tokens_from_counts(delta_input, delta_output, model_id)
+
+
+def _add_tokens_to_last_exec_log_entry(workspace: Path, tokens: dict) -> None:
+    log_file = workspace / "exec_log.jsonl"
+    if not log_file.exists():
+        return
+    try:
+        lines = log_file.read_text(encoding="utf-8").splitlines()
+        if not lines:
+            return
+        entry = json.loads(lines[-1])
+        entry["tokens"] = tokens
+        lines[-1] = json.dumps(entry, ensure_ascii=False)
+        log_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except (json.JSONDecodeError, OSError):
+        return
+
+
+def _append_exec_log(
+    workspace: Path,
+    round_num: int,
+    agent: str,
+    status: str,
+    output_preview: str,
+    verification_depth: str = "",
+):
+    _base_append_exec_log(workspace, round_num, agent, status, output_preview, verification_depth)
+    tokens = _token_delta_for_exec_log()
+    if tokens is not None:
+        _add_tokens_to_last_exec_log_entry(workspace, tokens)
+
+
+def _write_token_usage_record(agent_name: str, model: str, input_tokens: int, output_tokens: int) -> None:
+    if int(input_tokens or 0) == 0 and int(output_tokens or 0) == 0:
+        return
+    record = {
+        "timestamp": _utc_iso(),
+        "agent_name": str(agent_name or "unknown"),
+        "model": str(model or ""),
+        "input_tokens": int(input_tokens or 0),
+        "output_tokens": int(output_tokens or 0),
+    }
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with (LOGS_DIR / "token_usage.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, ValueError):
+        return
+
+
+import task_support as _task_support_module
+
+_task_support_module._append_exec_log = _append_exec_log
 
 
 _SUBAGENT_TRUST_FLAG_KEYS = ("verified", "confirmed", "ground_truth")
@@ -1288,6 +1363,10 @@ from plan_executor import (
     _execute_plan as _base_execute_plan,
     _execute_plan_steps as _base_execute_plan_steps,
 )
+
+import plan_executor as _plan_executor_module
+
+_plan_executor_module._append_exec_log = _append_exec_log
 
 
 def _require_reasoning_in_plan(plan: list[dict]) -> list[dict]:
@@ -1752,6 +1831,7 @@ def main():
         plan = plan[:_horizon_limit]
 
     reset_session_tokens()
+    _reset_exec_log_token_state()
     _act_start = time.time()
     _perf_tools_t0 = time.perf_counter()
     _execute_plan(
@@ -1785,6 +1865,7 @@ def main():
     record_phase_duration(task_agent, "act", CLAUDE_TIMEOUT_ACT, _act_duration)
 
     _in_tok, _out_tok, _model_id = get_session_tokens()
+    _write_token_usage_record(task_agent, _model_id, _in_tok, _out_tok)
     _token_usage = {"input": _in_tok, "output": _out_tok}
     _result_words = 0
     _out_md = workspace / "output.md"

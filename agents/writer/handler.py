@@ -13,6 +13,8 @@ import json
 import logging
 import re
 import shutil
+from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -42,6 +44,8 @@ _CEILING_CHECK_PATH = Path(__file__).resolve().parent / "checklists" / "ceiling-
 _EPISTEMIC_BIAS_PATH = Path(__file__).resolve().parent / "checklists" / "epistemic-bias.md"
 _SUBSTACK_VOICE_PATH = Path(__file__).resolve().parent / "voice" / "substack_voice.md"
 _SPEAKER_IDENTITY_PATH = Path(__file__).resolve().parents[1] / "shared" / "soul" / "identity.md"
+_PATTERN_LOG_PATH = Path(__file__).resolve().parent / "pattern_log.jsonl"
+_PATTERN_LOG_HEADER = "# productive-error log — see reading note 2026-05-16"
 _ANTI_AI_SCAN_THRESHOLD = 0.0
 _TECH_INDUSTRY_TERMS = (
     "ai",
@@ -551,6 +555,43 @@ def _paragraph_spans(text: str) -> list[tuple[int, int, str]]:
     return spans
 
 
+def _article_slug(value: str | None) -> str:
+    slug = re.sub(r"[^\w\s\u4e00-\u9fff-]", "", str(value or "")[:60]).strip()
+    slug = re.sub(r"[\s_]+", "-", slug).strip("-")
+    return slug or "untitled"
+
+
+def _anti_ai_pattern_counts(scan: dict) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for span in scan.get("flagged_spans", []):
+        if not isinstance(span, dict):
+            continue
+        pattern = str(span.get("type") or "").strip()
+        if not pattern:
+            continue
+        count = span.get("count")
+        counts[pattern] += count if isinstance(count, int) and count > 0 else 1
+    return counts
+
+
+def _append_anti_ai_pattern_log(article: str, counts: Counter[str]) -> None:
+    if not counts:
+        return
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        needs_header = not _PATTERN_LOG_PATH.exists() or _PATTERN_LOG_PATH.stat().st_size == 0
+        with _PATTERN_LOG_PATH.open("a", encoding="utf-8") as fh:
+            if needs_header:
+                fh.write(f"{_PATTERN_LOG_HEADER}\n")
+            for pattern, count in sorted(counts.items()):
+                fh.write(
+                    json.dumps({"ts": ts, "article": article, "pattern": pattern, "count": count}, ensure_ascii=False)
+                    + "\n"
+                )
+    except OSError as e:
+        log.warning("failed to append anti-AI pattern log: %s", e)
+
+
 def scan_anti_ai_patterns(text: str, *, anti_ai_mode: AntiAiMode = "strict") -> dict:
     paragraphs = _paragraph_spans(text)
     flagged_spans: list[dict] = []
@@ -805,6 +846,12 @@ def _de_ai_section(text: str, *, tier: str, timeout: int, anti_ai_mode: AntiAiMo
         "emotional register, section order, and factual claims.\n\n"
         "Voice guide:\n"
         f"{voice[:5000]}\n\n"
+        "Friction triage before smoothing:\n"
+        "Silently classify each rough spot as productive friction to preserve or consumptive friction to remove before smoothing text.\n"
+        "Preserve or sharpen productive friction such as unusual syntax, emotional resistance, image logic, argument tension, or voice-bearing ambiguity.\n"
+        "Remove consumptive friction such as boilerplate transitions, repetitive structures, vague abstraction, accidental awkwardness, formatting cleanup, or pipeline residue.\n"
+        "Do not optimize for smoothness alone.\n"
+        "If unsure, preserve roughness unless it blocks comprehension or matches a hard anti-AI/pipeline-artifact guard.\n\n"
         "Fix AI-shaped writing patterns:\n"
         f"{mode_rules}"
         "Always block raw markdown concatenation artifacts and content that looks like errors, stack traces, or pipeline output.\n"
@@ -860,6 +907,7 @@ def de_ai_pass(
     timeout: int = 120,
     anti_ai_mode: AntiAiMode = "strict",
     relaxed: bool = False,
+    article_slug: str | None = None,
 ) -> str:
     """Apply the de-AI editorial pass on a piece of markdown.
 
@@ -882,7 +930,9 @@ def de_ai_pass(
         return text
     if relaxed:
         anti_ai_mode = "relaxed"
+    original_text = text
     scan = scan_anti_ai_patterns(text, anti_ai_mode=anti_ai_mode)
+    pattern_counts = _anti_ai_pattern_counts(scan)
     if scan["score"] > scan["threshold"]:
         log.info(
             "de_ai_pass: anti-AI scan score %.3f exceeded threshold %.3f (%d spans)",
@@ -891,7 +941,10 @@ def de_ai_pass(
             len(scan["flagged_spans"]),
         )
         text = _run_de_ai_sections(text, tier="heavy", timeout=max(timeout, 240), anti_ai_mode=anti_ai_mode)
-    return _run_de_ai_sections(text, tier=tier, timeout=timeout, anti_ai_mode=anti_ai_mode)
+    result = _run_de_ai_sections(text, tier=tier, timeout=timeout, anti_ai_mode=anti_ai_mode)
+    if result != original_text:
+        _append_anti_ai_pattern_log(_article_slug(article_slug), pattern_counts)
+    return result
 
 
 def _obsession_friction_points(report: str) -> list[dict[str, str]]:
@@ -932,6 +985,7 @@ def _obsessive_revise(
     tier: str = "light",
     timeout: int = 180,
     anti_ai_mode: AntiAiMode = "strict",
+    article_slug: str | None = None,
 ) -> str:
     if not draft or len(draft.strip()) < 80:
         return draft
@@ -978,7 +1032,7 @@ def _obsessive_revise(
     if not cleaned or len(cleaned) < len(draft) * 0.5:
         log.warning("obsessive_revise: revision output invalid; keeping original draft")
         return draft
-    return de_ai_pass(cleaned, tier=tier, timeout=timeout, anti_ai_mode=anti_ai_mode)
+    return de_ai_pass(cleaned, tier=tier, timeout=timeout, anti_ai_mode=anti_ai_mode, article_slug=article_slug)
 
 
 def minimal_voice_preserving_editorial_pass(text: str, *, tier: str = "light", timeout: int = 120) -> str:
@@ -1522,7 +1576,9 @@ def _ceiling_handoff(output: str, *, content: str, tier: str = "light", timeout:
         "# Finished output\n\n"
         f"{output[:12000]}\n\n"
         "Return only JSON with these keys: boundary, assessment, bothered_detail, friction_points, publication_blocking. "
-        "Use boundary as either 'exceptional' or 'adequate'. friction_points must be a list of 2-4 concrete strings. "
+        "Use boundary as either 'exceptional' or 'adequate'. friction_points must be a list of objects shaped "
+        '{"fragment":"...","kind":"originality_preserving|tool_eliminable|human_handoff",'
+        '"rationale":"one-sentence reason","recommended_action":"preserve|fix|ask_human"}. '
         "publication_blocking must be false."
     )
     try:
@@ -1553,6 +1609,21 @@ def _ceiling_handoff(output: str, *, content: str, tier: str = "light", timeout:
             "friction_points": [],
             "publication_blocking": False,
         }
+    raw_points = parsed.get("friction_points")
+    if isinstance(raw_points, list):
+        parsed["friction_points"] = [
+            (
+                {
+                    "fragment": point,
+                    "kind": "human_handoff",
+                    "rationale": "Unclassified legacy ceiling output",
+                    "recommended_action": "ask_human",
+                }
+                if isinstance(point, str)
+                else point
+            )
+            for point in raw_points
+        ]
     parsed["publication_blocking"] = False
     log.info("ceiling_handoff: %s", json.dumps(parsed, ensure_ascii=False)[:2000])
     return parsed
@@ -1867,9 +1938,21 @@ def _handle_quick_write(
     if voice_preserving:
         final_text = minimal_voice_preserving_editorial_pass(final_text, tier="light", timeout=180)
     elif not raw_writing_mode and run_de_ai_checklist:
-        final_text = de_ai_pass(final_text, tier="light", timeout=180, relaxed=anti_ai_mode == "relaxed")
+        final_text = de_ai_pass(
+            final_text,
+            tier="light",
+            timeout=180,
+            relaxed=anti_ai_mode == "relaxed",
+            article_slug=title,
+        )
         if getattr(_config, "WRITER_OBSESSION_MODE", False):
-            final_text = _obsessive_revise(final_text, tier="light", timeout=180, anti_ai_mode=anti_ai_mode)
+            final_text = _obsessive_revise(
+                final_text,
+                tier="light",
+                timeout=180,
+                anti_ai_mode=anti_ai_mode,
+                article_slug=title,
+            )
     metadata = _assess_obsession_gap(final_text, content=content, metadata=metadata)
     if _obsession_gap_check(final_text):
         metadata["needs_obsession"] = True
@@ -1976,9 +2059,21 @@ def _handle_full_write(
         if voice_preserving:
             edited = minimal_voice_preserving_editorial_pass(edited, tier="light", timeout=240)
         elif not raw_writing_mode and run_de_ai_checklist:
-            edited = de_ai_pass(edited, tier="light", timeout=240, relaxed=anti_ai_mode == "relaxed")
+            edited = de_ai_pass(
+                edited,
+                tier="light",
+                timeout=240,
+                relaxed=anti_ai_mode == "relaxed",
+                article_slug=project_dir.name,
+            )
             if getattr(_config, "WRITER_OBSESSION_MODE", False):
-                edited = _obsessive_revise(edited, tier="light", timeout=240, anti_ai_mode=anti_ai_mode)
+                edited = _obsessive_revise(
+                    edited,
+                    tier="light",
+                    timeout=240,
+                    anti_ai_mode=anti_ai_mode,
+                    article_slug=project_dir.name,
+                )
         metadata = _assess_obsession_gap(edited, content=content, metadata=metadata)
         if _obsession_gap_check(edited):
             metadata["needs_obsession"] = True
@@ -2090,7 +2185,7 @@ def compile_book(
         if source_type == "human_raw":
             edited = _format_human_raw_notes(raw)
         else:
-            edited = de_ai_pass(raw, tier=tier, timeout=per_chapter_timeout)
+            edited = de_ai_pass(raw, tier=tier, timeout=per_chapter_timeout, article_slug=ch.stem)
         parts.append(edited)
         if edited != raw:
             edited_count += 1
