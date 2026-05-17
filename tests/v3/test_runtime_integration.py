@@ -26,6 +26,9 @@ def test_runtime_paths_are_under_data_v3(tmp_path: Path):
 def test_legacy_job_and_task_mapping():
     assert pipeline_for_background_job("explore-morning") == "intelligence_briefing"
     assert pipeline_for_background_job("analyst-pre") == "market_monitor"
+    assert pipeline_for_background_job("podcast-en-essay") == "podcast_production"
+    assert pipeline_for_background_job("podcast-zh-essay") == "podcast_production"
+    assert pipeline_for_background_job("voiceover-essay") == "podcast_production"
     assert pipeline_for_background_job("unknown") == "memory_maintenance"
     assert pipeline_for_task(["research"]) == "research_deep_dive"
     assert pipeline_for_task(["unknown"]) == "communication"

@@ -4,6 +4,7 @@ import asyncio
 import atexit
 import collections
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -1227,6 +1228,54 @@ def _pipeline_outputs(user_id: str, pipeline_name: str) -> list[dict]:
                         "error": "",
                     }
                 )
+    elif pipeline_name == "podcast_production":
+        manifest = _read_json(base / "writings" / "publish_manifest.json")
+        articles = manifest.get("articles", {}) if isinstance(manifest, dict) else {}
+        rows = []
+        for slug, article in articles.items():
+            if not isinstance(article, dict):
+                continue
+            status = str(article.get("status") or "")
+            timestamps = article.get("timestamps") if isinstance(article.get("timestamps"), dict) else {}
+            podcast_ts = _latest_timestamp(
+                [
+                    str(timestamps.get("podcast_en") or ""),
+                    str(timestamps.get("podcast_zh") or ""),
+                    str(timestamps.get("complete") or ""),
+                ]
+            )
+            if not podcast_ts:
+                continue
+            audio_slug = str(article.get("podcast_slug") or article.get("audio_slug") or "")
+            title_slug = re.sub(r"[\s_]+", "-", re.sub(r"[^\w\s-]", "", str(article.get("title") or "").lower())).strip(
+                "-"
+            )[:50]
+            candidate_slugs = [candidate for candidate in (audio_slug, str(slug), title_slug) if candidate]
+            episode_exists = False
+            completed_langs = []
+            for lang in ("en", "zh"):
+                if any(
+                    (base / "audio" / "podcast" / lang / candidate / "episode.mp3").exists()
+                    for candidate in candidate_slugs
+                ):
+                    episode_exists = True
+                    completed_langs.append(lang.upper())
+            if not episode_exists and status not in {"podcast_en", "podcast_zh", "complete"}:
+                continue
+            rows.append((podcast_ts, str(slug), article, completed_langs))
+        rows.sort(key=lambda row: row[0], reverse=True)
+        for ts, slug, article, completed_langs in rows[:3]:
+            title = article.get("title") or slug
+            lang_label = f" ({'+'.join(completed_langs)})" if completed_langs else ""
+            outputs.append(
+                {
+                    "title": f"{title}{lang_label}",
+                    "status": "done",
+                    "updated_at": ts,
+                    "href": "",
+                    "error": article.get("error") or "",
+                }
+            )
     return outputs
 
 
@@ -1496,12 +1545,12 @@ def _security_posture(request: Request | None = None) -> dict:
 
 
 def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jobs: dict, config: dict) -> list[dict]:
-    from mira.runtime import JOB_PIPELINE_MAP
+    from mira.runtime import pipeline_for_background_job
 
     job_by_pipeline: dict[str, list[dict]] = {}
     for job in jobs.get("jobs", []):
-        pipeline_name = JOB_PIPELINE_MAP.get(job.get("name", ""))
-        if pipeline_name:
+        pipeline_name = pipeline_for_background_job(str(job.get("name", "")))
+        if pipeline_name in pipelines:
             job_by_pipeline.setdefault(pipeline_name, []).append(job)
 
     model_by_agent = {m.get("agent"): m.get("model") for m in config.get("models", []) if isinstance(m, dict)}

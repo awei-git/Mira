@@ -288,6 +288,54 @@ def test_backend_dashboard_preserves_string_failure_message():
     assert rows[0]["steps"][-1]["error"] == failure
 
 
+def test_backend_dashboard_uses_podcast_artifacts_as_pipeline_evidence(monkeypatch, tmp_path: Path):
+    from mira.pipelines import PIPELINE_CATALOG
+
+    monkeypatch.setattr(server, "_ICLOUD_ARTIFACTS", tmp_path)
+    user_root = tmp_path / "ang"
+    writings = user_root / "writings"
+    audio = user_root / "audio" / "podcast"
+    (audio / "en" / "episode-slug").mkdir(parents=True)
+    (audio / "zh" / "episode-slug").mkdir(parents=True)
+    writings.mkdir(parents=True)
+    (audio / "en" / "episode-slug" / "episode.mp3").write_bytes(b"mp3")
+    (audio / "zh" / "episode-slug" / "episode.mp3").write_bytes(b"mp3")
+    (writings / "publish_manifest.json").write_text(
+        json.dumps(
+            {
+                "articles": {
+                    "essay": {
+                        "title": "Essay",
+                        "status": "complete",
+                        "podcast_slug": "episode-slug",
+                        "timestamps": {
+                            "podcast_en": "2026-05-15T16:36:46Z",
+                            "podcast_zh": "2026-05-15T17:06:13Z",
+                            "complete": "2026-05-15T17:06:59Z",
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = server._pipeline_status_rows(
+        "ang",
+        {"podcast_production": PIPELINE_CATALOG["podcast_production"]},
+        [],
+        [],
+        [],
+        {"jobs": []},
+        {"models": []},
+    )
+
+    assert rows[0]["status"] == "green"
+    assert rows[0]["last_success_at"] == "2026-05-15T17:06:59Z"
+    assert rows[0]["outputs"][0]["status"] == "done"
+    assert rows[0]["outputs"][0]["title"] == "Essay (EN+ZH)"
+
+
 def test_backend_dashboard_shell_and_static_assets_are_served(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
 

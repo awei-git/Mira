@@ -43,6 +43,8 @@ JOB_PIPELINE_MAP: dict[str, str] = {
     "analyst-pre": "market_monitor",
     "analyst-post": "market_monitor",
     "daily-research": "research_deep_dive",
+    "podcast": "podcast_production",
+    "voiceover": "podcast_production",
     "book-review": "book_reading_notes",
     "comparative-book-project": "book_reading_notes",
     "skill-study": "skill_learning",
