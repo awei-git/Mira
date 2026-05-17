@@ -953,6 +953,41 @@ def _is_dashboard_security_alert(item: dict) -> bool:
     return bool(tags & {"security", "skill_audit", "error"}) or "skill_audit" in error_code
 
 
+def _item_message_payload(item: dict) -> dict:
+    for message in item.get("messages") or []:
+        content = str(message.get("content") or "").strip()
+        if not content.startswith("{"):
+            continue
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _security_alert_action(item: dict) -> str:
+    payload = _item_message_payload(item)
+    error = item.get("error") if isinstance(item.get("error"), dict) else {}
+    code = str(error.get("code") or payload.get("event") or "").lower()
+    if "skill_audit_blocked" in code:
+        skill = payload.get("skill_name") or str(item.get("title", "")).split(":", 1)[-1].strip() or "skill"
+        failed = payload.get("failed_checks") or [payload.get("failed_check") or error.get("message") or "blocked"]
+        reason = ", ".join(str(value) for value in failed if value)
+        if "missing_epistemic_audit_metadata" in reason:
+            return (
+                f"Action: keep '{skill}' blocked. Rewrite it with provenance, rationale, verification_depth, "
+                "assumptions, and a concrete How-to-Apply control, then re-run the skill audit."
+            )
+        if "privilege" in reason.lower() or "secret" in reason.lower() or "credential" in reason.lower():
+            return f"Action: keep '{skill}' blocked. Remove secret/credential access and re-audit before enabling."
+        return f"Action: keep '{skill}' blocked; fix audit reason ({reason}) and re-run the skill audit."
+    if error.get("message"):
+        return f"Action: inspect and resolve: {error['message']}"
+    return "Action: inspect the linked alert item and resolve before enabling or retrying."
+
+
 def _dashboard_item_summary(user_id: str, item: dict) -> dict:
     return {
         "id": item.get("id", ""),
@@ -961,6 +996,7 @@ def _dashboard_item_summary(user_id: str, item: dict) -> dict:
         "status": item.get("status", ""),
         "tags": item.get("tags", []),
         "updated_at": item.get("updated_at", ""),
+        "action": _security_alert_action(item) if _is_dashboard_security_alert(item) else "",
         "href": f"/api/{user_id}/items/{item.get('id', '')}",
     }
 

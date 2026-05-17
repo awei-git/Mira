@@ -457,6 +457,35 @@ def test_codex_cli_provider_writes_usage_record(monkeypatch, tmp_path: Path):
     assert record["total_tokens"] > 0
 
 
+def test_security_alert_summary_includes_concrete_skill_audit_action():
+    item = {
+        "id": "skill_audit_blocked_test",
+        "type": "alert",
+        "title": "Skill audit blocked: adversarial-market-flywheel",
+        "status": "failed",
+        "tags": ["security", "skill_audit", "error"],
+        "updated_at": "2026-05-15T23:05:23.686Z",
+        "messages": [
+            {
+                "content": json.dumps(
+                    {
+                        "event": "skill_audit_blocked",
+                        "skill_name": "adversarial-market-flywheel",
+                        "failed_check": "missing_epistemic_audit_metadata",
+                        "failed_checks": ["missing_epistemic_audit_metadata"],
+                    }
+                )
+            }
+        ],
+    }
+
+    summary = server._dashboard_item_summary("ang", item)
+
+    assert "keep 'adversarial-market-flywheel' blocked" in summary["action"]
+    assert "provenance" in summary["action"]
+    assert "re-run the skill audit" in summary["action"]
+
+
 def test_backend_dashboard_shell_and_static_assets_are_served(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
 

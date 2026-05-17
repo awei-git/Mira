@@ -78,7 +78,7 @@ export function renderOutputsPage(root, data) {
   const grid = el("div", "", "grid-3");
   const alerts = el("div", "", "panel");
   const alertBody = el("div");
-  list(alertBody, (data.outputs.alert_items || []).map((i) => item(`${i.status} - ${i.title || i.id}`, `${i.id}\n${i.type} - ${(i.tags || []).join(", ")}\n${i.updated_at}`, i.href || `/api/${state.currentUser}/items/${i.id}`)), "No security alerts", true);
+  list(alertBody, (data.outputs.alert_items || []).map((i) => item(`${i.status} - ${i.title || i.id}`, `${i.action || "Action: inspect linked alert"}\n${i.id}\n${i.type} - ${(i.tags || []).join(", ")}\n${i.updated_at}`, i.href || `/api/${state.currentUser}/items/${i.id}`)), "No security alerts", true);
   alerts.append(el("div", "Security alerts", "panel-title"), alertBody);
 
   const artifacts = el("div", "", "panel");
