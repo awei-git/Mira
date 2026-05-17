@@ -1,5 +1,5 @@
 import { el, kv, table } from "../dom.js";
-import { fmtTokens, modelFamily, topModel } from "../format.js";
+import { fmtTokens, modelBreakdown, modelMixFamily } from "../format.js";
 import { state } from "../state.js";
 
 function renderTokenChart(root, daily) {
@@ -12,10 +12,10 @@ function renderTokenChart(root, daily) {
   const max = Math.max(1, ...daily.map((d) => d.tokens || 0));
   const bars = el("div", "", "chart");
   daily.forEach((d) => {
-    const family = modelFamily(topModel(d.models));
+    const family = modelMixFamily(d.models);
     const bar = el("div", "", `bar ${family}`);
     bar.style.height = `${Math.max(2, Math.round(((d.tokens || 0) / max) * 132))}px`;
-    bar.title = `${d.date}: ${fmtTokens(d.tokens)} tokens, ${d.calls} calls, dominant ${topModel(d.models) || "mixed"}`;
+    bar.title = `${d.date}: ${fmtTokens(d.tokens)} tokens, ${d.calls} calls\nmodels: ${modelBreakdown(d.models, d.tokens)}`;
     bar.append(el("span", String(d.date || "").slice(8)));
     bars.append(bar);
   });
@@ -64,9 +64,18 @@ export function renderUsagePage(root, data) {
     }));
   }
   const modelTable = el("div");
-  table(modelTable, ["model", "tokens", "calls", "cost"], Object.entries(total.models || {}).sort((a, b) => (b[1].tokens || 0) - (a[1].tokens || 0)).map(([model, stats]) => [model, fmtTokens(stats.tokens), stats.calls, `$${Number(stats.cost_usd || 0).toFixed(4)}`]));
+  const totalTokens = Number(total.tokens || 0);
+  table(modelTable, ["model", "share", "tokens", "calls", "cost"], Object.entries(total.models || {}).sort((a, b) => (b[1].tokens || 0) - (a[1].tokens || 0)).map(([model, stats]) => {
+    const tokens = Number(stats.tokens || 0);
+    const share = totalTokens > 0 ? `${Math.round((tokens / totalTokens) * 100)}%` : "0%";
+    return [model, share, fmtTokens(tokens), stats.calls, `$${Number(stats.cost_usd || 0).toFixed(4)}`];
+  }));
+  const dailyTable = el("div");
+  table(dailyTable, ["date", "tokens", "calls", "models"], daily.slice().reverse().map((d) => [d.date, fmtTokens(d.tokens || 0), d.calls || 0, modelBreakdown(d.models, d.tokens)]));
   breakdown.append(el("div", "Model breakdown", "panel-title"), tabs, kv("total", `${fmtTokens(total.tokens || 0)} tokens - ${total.calls || 0} calls - $${Number(total.cost_usd || 0).toFixed(4)}`), modelTable);
 
   grid.append(chartPanel, breakdown);
-  root.append(head, grid);
+  const dailyPanel = el("div", "", "panel");
+  dailyPanel.append(el("div", "Daily model mix", "panel-title"), dailyTable);
+  root.append(head, grid, dailyPanel);
 }

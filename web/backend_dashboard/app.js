@@ -1,5 +1,5 @@
 import { $, clear, el, metric } from "./dom.js";
-import { api, fmtTokens, modelFamily, timeAgo, topModel } from "./format.js";
+import { api, fmtTokens, modelBreakdown, modelMixFamily, timeAgo } from "./format.js";
 import { pageFromLocation, pages, pathForPage, state } from "./state.js";
 import { renderAccessPage } from "./pages/access.js";
 import { renderConfigPage } from "./pages/config.js";
@@ -28,9 +28,9 @@ function miniUsageCard(daily) {
   const card = metric("30d usage", fmtTokens(total), `${rows.length || 0} days - tokens`);
   const chart = el("div", "", "mini-chart");
   rows.forEach((row) => {
-    const bar = el("div", "", `mini-bar ${modelFamily(topModel(row.models))}`);
+    const bar = el("div", "", `mini-bar ${modelMixFamily(row.models)}`);
     bar.style.height = `${Math.max(2, Math.round((Number(row.tokens || 0) / max) * 32))}px`;
-    bar.title = `${row.date}: ${fmtTokens(row.tokens || 0)} tokens - $${Number(row.cost_usd || 0).toFixed(4)} - ${topModel(row.models) || "mixed"}`;
+    bar.title = `${row.date}: ${fmtTokens(row.tokens || 0)} tokens - $${Number(row.cost_usd || 0).toFixed(4)}\n${modelBreakdown(row.models, row.tokens)}`;
     chart.append(bar);
   });
   card.append(chart);

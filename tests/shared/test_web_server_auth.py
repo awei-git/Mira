@@ -342,6 +342,70 @@ def test_backend_dashboard_uses_podcast_artifacts_as_pipeline_evidence(monkeypat
     assert tts_step["model_recorded"] is False
 
 
+def test_backend_dashboard_does_not_invent_step_usage_from_pipeline_aggregate():
+    from mira.pipelines import PIPELINE_CATALOG
+
+    rows = server._pipeline_status_rows(
+        "ang",
+        {"article_creation": PIPELINE_CATALOG["article_creation"]},
+        [],
+        [],
+        [],
+        {
+            "jobs": [
+                {
+                    "name": "writing-pipeline",
+                    "enabled": True,
+                    "status": "done",
+                    "usage": {
+                        "calls": 2,
+                        "tokens": 12000,
+                        "cost_usd": 0.42,
+                        "models": {"claude-sonnet-4-6": {"calls": 2, "tokens": 12000, "cost_usd": 0.42}},
+                    },
+                }
+            ]
+        },
+        {"models": [{"agent": "writer", "model": "claude-sonnet-4-6"}]},
+    )
+
+    assert rows[0]["usage"]["tokens"] == 12000
+    draft_step = next(step for step in rows[0]["steps"] if step["name"] == "draft")
+    assert draft_step["tokens"] == 0
+    assert draft_step["cost_usd"] == 0
+    assert draft_step["usage_recorded"] is False
+    assert draft_step["usage_scope"] == "pipeline aggregate only; exact per-step usage is not instrumented"
+    assert draft_step["model"] == "claude-sonnet-4-6"
+    assert draft_step["model_recorded"] is False
+    assert draft_step["model_source"] == "agent policy"
+
+
+def test_book_reading_pipeline_labels_match_actual_refinement_flow():
+    from mira.pipelines import PIPELINE_CATALOG
+
+    step_names = [step.name for step in PIPELINE_CATALOG["book_reading_notes"].steps]
+
+    assert "compile_notes_de_ai" not in step_names
+    assert "voice_refinement_pass" in step_names
+    assert "epub_language_cleanup" in step_names
+
+    rows = server._pipeline_status_rows(
+        "ang",
+        {"book_reading_notes": PIPELINE_CATALOG["book_reading_notes"]},
+        [],
+        [],
+        [],
+        {"jobs": []},
+        {"models": [{"agent": "reader", "model": "claude-sonnet-4-6"}]},
+    )
+    draft_step = next(step for step in rows[0]["steps"] if step["name"] == "draft_reading_report")
+    refine_step = next(step for step in rows[0]["steps"] if step["name"] == "voice_refinement_pass")
+    cleanup_step = next(step for step in rows[0]["steps"] if step["name"] == "epub_language_cleanup")
+    assert draft_step["model"] == "gpt5 / claude heavy fallback"
+    assert refine_step["model"] == "claude heavy tier"
+    assert cleanup_step["model"] == "deepseek cleanup when translation is needed"
+
+
 def test_backend_dashboard_shell_and_static_assets_are_served(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
 

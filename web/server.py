@@ -1128,6 +1128,13 @@ def _step_model_hint(pipeline_name: str, step_name: str, configured_model: str) 
             return "EN: Gemini 3.1 Flash TTS Preview / ZH: MiniMax Speech 2.8 HD", "step policy"
         if "tts" in name:
             return "Gemini 3.1 Flash TTS Preview / MiniMax Speech 2.8 HD", "step policy"
+    if pipeline_name == "book_reading_notes":
+        if name == "draft_reading_report":
+            return "gpt5 / claude heavy fallback", "step policy"
+        if name == "voice_refinement_pass":
+            return "claude heavy tier", "step policy"
+        if name == "epub_language_cleanup":
+            return "deepseek cleanup when translation is needed", "step policy"
     if "agent_a_opus" in name:
         return "claude-opus", "step policy"
     if "agent_b_sonnet" in name:
@@ -1521,6 +1528,15 @@ def _security_posture(request: Request | None = None) -> dict:
             "detail": "HTTPS enabled" if WEBGUI_HTTPS_ENABLED else "HTTP enabled; acceptable only on trusted loopback",
         },
         {
+            "name": "Browser certificate",
+            "status": "yellow" if WEBGUI_HTTPS_ENABLED else "gray",
+            "detail": (
+                f"Local TLS cert {WEBGUI_TLS_CERT_FILE}; browser will show Not Secure until this cert is trusted"
+                if WEBGUI_HTTPS_ENABLED
+                else "No TLS certificate in use"
+            ),
+        },
+        {
             "name": "Write API",
             "status": "yellow" if CONTROL_API_WRITES_ENABLED else "green",
             "detail": "Write endpoints enabled" if CONTROL_API_WRITES_ENABLED else "Read-only control API",
@@ -1539,6 +1555,10 @@ def _security_posture(request: Request | None = None) -> dict:
         recommendations.append("Disable WEBGUI_ALLOW_LAN_WITHOUT_TOKEN before binding beyond localhost.")
     if not WEBGUI_HTTPS_ENABLED and WEBGUI_HOST not in {"127.0.0.1", "localhost", "::1"}:
         recommendations.append("Enable HTTPS or bind WEBGUI_HOST to loopback only.")
+    if WEBGUI_HTTPS_ENABLED:
+        recommendations.append(
+            "Trust the local Mira TLS certificate in the browser/OS, or replace it with a CA-issued certificate."
+        )
     if CONTROL_API_WRITES_ENABLED:
         recommendations.append("Keep write endpoints token-gated and prefer short-lived local tokens.")
     return {
@@ -1549,6 +1569,20 @@ def _security_posture(request: Request | None = None) -> dict:
         ),
         "recommendations": recommendations,
     }
+
+
+_STEP_LABELS = {
+    "draft_reading_report": "draft reading report",
+    "voice_refinement_pass": "voice/style refinement pass",
+    "originality_self_check": "originality self-check",
+    "epub_language_cleanup": "EPUB language cleanup",
+    "export_book_artifacts": "export book artifacts",
+    "language_detect_tts_route_synthesis_postprocess": "language detect, TTS route, synthesize, postprocess",
+}
+
+
+def _step_label(step_name: str) -> str:
+    return _STEP_LABELS.get(step_name, step_name.replace("_", " "))
 
 
 def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jobs: dict, config: dict) -> list[dict]:
@@ -1662,7 +1696,6 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
                 usage["models"][model]["calls"] += row.get("calls", 0)
                 usage["models"][model]["tokens"] += row.get("tokens", 0)
                 usage["models"][model]["cost_usd"] += row.get("cost_usd", 0.0)
-        top_model = max(usage["models"], key=lambda m: usage["models"][m]["calls"]) if usage["models"] else ""
         configured_agent, configured_model = _configured_model_for_pipeline(name, pipeline, model_by_agent)
         steps = []
         step_count = max(1, len(pipeline.steps))
@@ -1712,16 +1745,15 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
                 step_status = status
             step_status = _normalize_dashboard_status(step_status)
             hinted_model, model_source = _step_model_hint(name, step.name, configured_model)
-            step_model = hinted_model if model_source == "step policy" else top_model or hinted_model
-            model_recorded = bool(top_model and model_source != "step policy")
-            if model_recorded:
-                model_source = "recorded"
+            step_model = hinted_model
+            model_recorded = False
             observed_at = latest_record.timestamp.isoformat() if latest_record else latest_done_job_at
             if step_status == "blue":
                 observed_at = ""
             steps.append(
                 {
                     "name": step.name,
+                    "label": _step_label(step.name),
                     "type": step.type,
                     "status": step_status,
                     "model": step_model,
@@ -1729,9 +1761,14 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
                     "model_source": model_source,
                     "configured_model": _configured_model_for_step(name, step.name, configured_model),
                     "configured_agent": configured_agent,
-                    "usage_recorded": bool(usage["calls"] or usage["tokens"] or usage["cost_usd"]),
-                    "cost_usd": round(usage["cost_usd"] / step_count, 4),
-                    "tokens": int(usage["tokens"] / step_count),
+                    "usage_recorded": False,
+                    "usage_scope": (
+                        "pipeline aggregate only; exact per-step usage is not instrumented"
+                        if usage["calls"] or usage["tokens"] or usage["cost_usd"]
+                        else ""
+                    ),
+                    "cost_usd": 0,
+                    "tokens": 0,
                     "observed_at": observed_at,
                     "timestamp_source": "pipeline run" if observed_at else "",
                     "error": (

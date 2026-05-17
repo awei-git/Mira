@@ -66,6 +66,32 @@ export function topModel(models) {
   return best;
 }
 
+export function modelBreakdown(models, totalTokens = 0) {
+  const rows = Object.entries(models || {})
+    .map(([model, stats]) => [model, Number((stats || {}).tokens || 0), Number((stats || {}).calls || 0)])
+    .filter((row) => row[1] > 0 || row[2] > 0)
+    .sort((a, b) => b[1] - a[1]);
+  if (!rows.length) return "no model usage recorded";
+  const total = Number(totalTokens || 0) || rows.reduce((sum, row) => sum + row[1], 0);
+  return rows
+    .map(([model, tokens, calls]) => {
+      const share = total > 0 ? `, ${Math.round((tokens / total) * 100)}%` : "";
+      return `${model}: ${fmtTokens(tokens)} tokens${share}, ${calls} calls`;
+    })
+    .join(" | ");
+}
+
+export function modelMixFamily(models) {
+  const rows = Object.entries(models || {})
+    .map(([model, stats]) => [model, Number((stats || {}).tokens || 0)])
+    .filter((row) => row[1] > 0)
+    .sort((a, b) => b[1] - a[1]);
+  if (!rows.length) return "mixed";
+  const total = rows.reduce((sum, row) => sum + row[1], 0);
+  if (rows.length > 1 && total > 0 && rows[0][1] / total < 0.95) return "mixed";
+  return modelFamily(rows[0][0]);
+}
+
 export function modelFamily(model) {
   const value = String(model || "").toLowerCase();
   if (value.includes("claude")) return "claude";

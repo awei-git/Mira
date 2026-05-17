@@ -23,12 +23,14 @@ function modelLabel(step) {
 function stepTooltip(p, step) {
   const usageRecorded = !!(step.usage_recorded || step.tokens || step.cost_usd);
   return [
-    `${p.name} / ${step.name || ""}`,
+    `${p.name} / ${step.label || step.name || ""}`,
+    step.label && step.name ? `id: ${step.name}` : "",
     `status: ${normalizeStatus(stepStatusValue(p, step))}`,
     `model: ${modelLabel(step)}`,
     step.observed_at ? `observed: ${step.observed_at} (${step.timestamp_source || "pipeline"})` : "observed: no step timestamp",
     usageRecorded ? `tokens: ${step.tokens || 0}` : "tokens: not persisted",
     usageRecorded ? `cost: $${Number(step.cost_usd || 0).toFixed(4)}` : "cost: not persisted",
+    step.usage_scope ? `usage scope: ${step.usage_scope}` : "",
     step.error ? `error: ${step.error}` : "",
   ].filter(Boolean).join("\n");
 }
@@ -77,10 +79,11 @@ function inlinePipelineDetail(p, step = null) {
   if (step) {
     stepBox.append(
       kv("name", step.name || ""),
+      step.label ? kv("label", step.label) : "",
       kv("status", normalizeStatus(stepStatusValue(p, step))),
       kv("model", modelLabel(step)),
       kv("observed", step.observed_at ? `${step.observed_at} (${step.timestamp_source || "pipeline"})` : "not instrumented"),
-      kv("usage", step.usage_recorded ? `${step.tokens || 0} tokens - $${Number(step.cost_usd || 0).toFixed(4)}` : "not persisted")
+      kv("usage", step.usage_recorded ? `${step.tokens || 0} tokens - $${Number(step.cost_usd || 0).toFixed(4)}` : (step.usage_scope || "not persisted"))
     );
     if (step.configured_model) stepBox.append(kv("configured", step.configured_model));
     if (step.error) stepBox.append(kv("error", step.error));
