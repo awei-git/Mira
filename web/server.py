@@ -35,8 +35,10 @@ from config import (
     CONTROL_RUNTIME_DB_ENABLED,
     CONTROL_SSE_ENABLED,
     ICLOUD_COMMAND_FALLBACK_ENABLED,
+    LOGS_DIR,
     MDNS_ADVERTISE_ENABLED,
     MIRA_DIR,
+    SOCIAL_STATE_DIR,
     TASKS_DIR,
     WEBGUI_ALLOW_LAN_WITHOUT_TOKEN,
     WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN,
@@ -1359,8 +1361,8 @@ def _latest_timestamp_from_map(values: dict) -> str:
 def _pipeline_outputs(user_id: str, pipeline_name: str) -> list[dict]:
     base = _artifacts_dir(user_id)
     outputs: list[dict] = []
-    social_dir = MIRA_DIR / "data" / "social"
-    logs_dir = MIRA_DIR / "data" / "logs"
+    social_dir = SOCIAL_STATE_DIR
+    logs_dir = LOGS_DIR
     if pipeline_name == "article_creation":
         manifest = _read_json(base / "writings" / "publish_manifest.json")
         articles = manifest.get("articles", {}) if isinstance(manifest, dict) else {}

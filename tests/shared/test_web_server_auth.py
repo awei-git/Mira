@@ -421,7 +421,8 @@ def test_backend_dashboard_surfaces_social_partial_blockers(monkeypatch, tmp_pat
     logs = data_root / "logs"
     social.mkdir(parents=True)
     logs.mkdir(parents=True)
-    monkeypatch.setattr(server, "MIRA_DIR", tmp_path / "mira")
+    monkeypatch.setattr(server, "SOCIAL_STATE_DIR", social)
+    monkeypatch.setattr(server, "LOGS_DIR", logs)
     (logs / "bg-substack-growth.log").write_text(
         "2026-05-16 22:08:45,352 [ERROR] Tweet failed (HTTP 403): SpendCapReached reset_date 2026-05-27\n"
         "2026-05-16 22:11:15,974 [WARNING] Bluesky cycle skipped: bluesky not configured\n",
