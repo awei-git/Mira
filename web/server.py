@@ -1265,6 +1265,83 @@ def _dashboard_failure_messages(value) -> list[str]:
     return [str(value)]
 
 
+def _record_task_id(record) -> str:
+    if not record:
+        return ""
+    fragments = [
+        getattr(record, "intent", ""),
+        getattr(getattr(record, "delta", None), "what_happened", ""),
+        getattr(getattr(record, "delta", None), "what_changed", ""),
+        getattr(getattr(record, "delta", None), "what_mattered", ""),
+        getattr(getattr(record, "delta", None), "what_failed", ""),
+    ]
+    for action in getattr(getattr(record, "delta", None), "actions", []) or []:
+        fragments.extend([getattr(action, "target", ""), getattr(action, "detail", "")])
+    for fragment in fragments:
+        match = re.search(r"\btask[\w-]+\b", str(fragment))
+        if match:
+            return match.group(0)
+    return ""
+
+
+def _record_is_stale(record, *, hours: int = 24) -> bool:
+    if not record or not getattr(record, "timestamp", None):
+        return False
+    timestamp = record.timestamp
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - timestamp > timedelta(hours=hours)
+
+
+def _preflight_agent(error: str) -> str:
+    match = re.search(r"PREFLIGHT BLOCKED \[([^\]]+)\]", error, flags=re.IGNORECASE)
+    return match.group(1).strip().lower() if match else ""
+
+
+def _dashboard_error_status_text(error: str, record=None, running_jobs: list[str] | None = None) -> str:
+    lower = error.lower()
+    if "preflight blocked" in lower:
+        agent = _preflight_agent(error) or "agent"
+        reason = "missing file" if "missing file" in lower or "找不到" in lower else "blocked"
+        stale = "stale " if _record_is_stale(record) and not running_jobs else ""
+        return f"{stale}{agent} preflight: {reason}"
+    return error
+
+
+def _dashboard_error_detail(error: str, record=None, running_jobs: list[str] | None = None) -> str:
+    lower = error.lower()
+    task_id = _record_task_id(record)
+    task_prefix = f"{task_id} " if task_id else ""
+    when = record.timestamp.isoformat() if record and getattr(record, "timestamp", None) else ""
+    when_text = f" at {when}" if when else ""
+    if "preflight blocked" in lower:
+        agent = _preflight_agent(error) or "agent"
+        if agent == "secret" and ("missing file" in lower or "找不到" in lower):
+            detail = (
+                f"{task_prefix}failed during execute_agent{when_text}: the secret agent preflight stopped execution "
+                "because the request referenced a local file that Mira could not find."
+            )
+        else:
+            detail = f"{task_prefix}failed during execute_agent{when_text}: {error}."
+        if _record_is_stale(record) and not running_jobs:
+            detail += (
+                " No current job is running; this is stale ledger evidence from the last failed communication task."
+            )
+        return detail
+    return error
+
+
+def _failure_step_index(error: str, pipeline) -> int | None:
+    for idx, step in enumerate(pipeline.steps):
+        if error.startswith(f"{step.name}:"):
+            return idx
+    if "preflight blocked" in error.lower():
+        for idx, step in enumerate(pipeline.steps):
+            if step.name == "execute_agent":
+                return idx
+    return None
+
+
 def _configured_model_for_pipeline(pipeline_name: str, pipeline, model_by_agent: dict[str, str]) -> tuple[str, str]:
     candidates = [*_PIPELINE_AGENT_HINTS.get(pipeline_name, []), *(pipeline.involved_skills or []), pipeline_name]
     for agent in candidates:
@@ -1358,7 +1435,7 @@ def _latest_timestamp_from_map(values: dict) -> str:
     return _latest_timestamp([str(value) for value in values.values() if value])
 
 
-def _pipeline_outputs(user_id: str, pipeline_name: str) -> list[dict]:
+def _pipeline_outputs(user_id: str, pipeline_name: str, recent_records: list | None = None) -> list[dict]:
     base = _artifacts_dir(user_id)
     outputs: list[dict] = []
     social_dir = SOCIAL_STATE_DIR
@@ -1480,6 +1557,24 @@ def _pipeline_outputs(user_id: str, pipeline_name: str) -> list[dict]:
                 )
     elif pipeline_name in {"social_proactive", "social_reactive", "weekly_growth_report"}:
         outputs.extend(_social_pipeline_outputs(pipeline_name, social_dir, logs_dir))
+    elif pipeline_name == "communication":
+        for record in reversed(recent_records or []):
+            failure_messages = _dashboard_failure_messages(getattr(record.delta, "what_failed", ""))
+            if str(record.outcome).strip().lower() != "failed" and not failure_messages:
+                continue
+            error = failure_messages[0] if failure_messages else str(record.outcome)
+            task_id = _record_task_id(record)
+            outputs.append(
+                {
+                    "title": f"{task_id or record.id}: {_dashboard_error_status_text(error, record)}",
+                    "status": "stale_blocked" if _record_is_stale(record) else "blocked",
+                    "updated_at": record.timestamp.isoformat(),
+                    "href": f"/api/{quote(user_id)}/backend-dashboard/pipeline-records/{quote(record.id)}",
+                    "error": _dashboard_error_detail(error, record),
+                }
+            )
+            if len(outputs) >= 3:
+                break
     elif pipeline_name == "system_health":
         health_log = logs_dir / "background_health.jsonl"
         if health_log.exists():
@@ -1982,7 +2077,7 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
             if job.get("enabled", True) and job.get("status") in _QUEUED_JOB_STATUSES
         ]
         errors = []
-        outputs = _pipeline_outputs(user_id, name)
+        outputs = _pipeline_outputs(user_id, name, recent_records)
         latest_output = outputs[0] if outputs else {}
         latest_output_status = str(latest_output.get("status") or "").lower()
         latest_output_blocker = (
@@ -2024,7 +2119,7 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
         else:
             status = "gray"
         status_text = (
-            errors[0]
+            _dashboard_error_status_text(errors[0], latest_record, running_jobs)
             if errors
             else (
                 str(latest_output_blocker.get("status") or "output blocked")
@@ -2065,10 +2160,7 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
         attention_step_index: int | None = None
         if errors:
             first_error = errors[0]
-            for idx, step in enumerate(pipeline.steps):
-                if first_error.startswith(f"{step.name}:"):
-                    failed_step_index = idx
-                    break
+            failed_step_index = _failure_step_index(first_error, pipeline)
         if output_blockers:
             blocker_text = f"{output_blockers[0].get('status', '')} {output_blockers[0].get('error', '')}".lower()
             preferred_step = ""
@@ -2092,6 +2184,13 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
                     step_status = "gray"
             elif status == "red":
                 step_status = "red" if idx == step_count - 1 else "gray"
+            elif status == "yellow" and failed_step_index is not None:
+                if idx < failed_step_index:
+                    step_status = "green"
+                elif idx == failed_step_index:
+                    step_status = "yellow"
+                else:
+                    step_status = "gray"
             elif output_blockers and attention_step_index is not None:
                 if idx < attention_step_index:
                     step_status = "green"
@@ -2134,15 +2233,15 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
                     "observed_at": observed_at,
                     "timestamp_source": "pipeline run" if observed_at else "",
                     "error": (
-                        output_blockers[0].get("error") or output_blockers[0].get("status") or ""
-                        if output_blockers and attention_step_index == idx
+                        _dashboard_error_detail(errors[0], latest_record, running_jobs)
+                        if errors
+                        and (
+                            (failed_step_index is not None and idx == failed_step_index)
+                            or (failed_step_index is None and idx == step_count - 1)
+                        )
                         else (
-                            errors[0]
-                            if errors
-                            and (
-                                (failed_step_index is not None and idx == failed_step_index)
-                                or (failed_step_index is None and idx == step_count - 1)
-                            )
+                            output_blockers[0].get("error") or output_blockers[0].get("status") or ""
+                            if not errors and output_blockers and attention_step_index == idx
                             else ""
                         )
                     ),
@@ -2154,7 +2253,7 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
                 "status": status,
                 "status_text": status_text,
                 "status_detail": (
-                    errors[0]
+                    _dashboard_error_detail(errors[0], latest_record, running_jobs)
                     if errors
                     else (
                         output_blockers[0].get("error")
@@ -2203,6 +2302,34 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
             }
         )
     return rows
+
+
+@app.get("/api/{user_id}/backend-dashboard/pipeline-records/{run_id}")
+def get_backend_dashboard_pipeline_record(user_id: str, run_id: str):
+    if not is_known_user(user_id):
+        raise HTTPException(404, "Unknown profile")
+
+    from mira.runtime import default_ledger
+
+    for record in reversed(default_ledger().list(limit=1000)):
+        if record.id != run_id:
+            continue
+        error_messages = _dashboard_failure_messages(getattr(record.delta, "what_failed", ""))
+        error = error_messages[0] if error_messages else ""
+        return {
+            "run_id": record.id,
+            "pipeline": record.pipeline,
+            "trigger": record.trigger,
+            "intent": record.intent,
+            "outcome": record.outcome,
+            "timestamp": record.timestamp.isoformat(),
+            "task_id": _record_task_id(record),
+            "status_text": _dashboard_error_status_text(error, record) if error else record.outcome,
+            "status_detail": _dashboard_error_detail(error, record) if error else "",
+            "what_happened": record.delta.what_happened,
+            "what_changed": record.delta.what_changed,
+        }
+    raise HTTPException(404, "Pipeline record not found")
 
 
 @app.get("/api/{user_id}/backend-dashboard")

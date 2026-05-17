@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -304,7 +305,7 @@ def test_backend_dashboard_endpoint_returns_technical_snapshot(monkeypatch, tmp_
     assert {"kernel", "ledger", "commits", "effect_log", "eval_history", "snapshots", "artifacts"} <= set(body["paths"])
 
 
-def test_backend_dashboard_preserves_string_failure_message():
+def test_backend_dashboard_explains_stale_secret_preflight_failure():
     from mira.kernel.delta import MemoryDeltaProposal
     from mira.kernel.ledger import ExperienceRecord
     from mira.pipelines import PIPELINE_CATALOG
@@ -329,6 +330,7 @@ def test_backend_dashboard_preserves_string_failure_message():
         causal_links=[],
         confidence=1.0,
         memory_class="operational",
+        timestamp=datetime.now(timezone.utc) - timedelta(days=2),
     )
 
     rows = server._pipeline_status_rows(
@@ -341,10 +343,22 @@ def test_backend_dashboard_preserves_string_failure_message():
         {"models": []},
     )
 
-    assert rows[0]["status_text"] == failure
-    assert rows[0]["status_detail"] == failure
+    assert rows[0]["status_text"] == "stale secret preflight: missing file"
+    assert "task142 failed during execute_agent" in rows[0]["status_detail"]
+    assert "referenced a local file that Mira could not find" in rows[0]["status_detail"]
+    assert "stale ledger evidence" in rows[0]["status_detail"]
     assert rows[0]["error"] == failure
-    assert rows[0]["steps"][-1]["error"] == failure
+    execute_step = next(step for step in rows[0]["steps"] if step["name"] == "execute_agent")
+    final_step = next(step for step in rows[0]["steps"] if step["name"] == "experience_record_proposal")
+    assert execute_step["status"] == "yellow"
+    assert "task142 failed during execute_agent" in execute_step["error"]
+    assert final_step["status"] == "gray"
+    assert final_step["error"] == ""
+    assert rows[0]["outputs"][0]["title"] == "task142: stale secret preflight: missing file"
+    assert rows[0]["outputs"][0]["status"] == "stale_blocked"
+    assert rows[0]["outputs"][0]["href"].endswith(
+        "/api/ang/backend-dashboard/pipeline-records/communication_test_failure"
+    )
 
 
 def test_backend_dashboard_uses_podcast_artifacts_as_pipeline_evidence(monkeypatch, tmp_path: Path):
