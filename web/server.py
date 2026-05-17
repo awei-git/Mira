@@ -969,6 +969,40 @@ def _empty_usage_bucket() -> dict:
     return {"calls": 0, "tokens": 0, "cost_usd": 0.0, "models": {}, "agents": {}}
 
 
+def _empty_cli_observation_bucket() -> dict:
+    return {"calls": 0, "output_chars": 0, "models": {}}
+
+
+_CODEX_CLI_LOG_RE = re.compile(r"^(20\d{2}-\d{2}-\d{2}) .*Codex CLI call: ([^ ]+) -> (\d+) chars")
+
+
+def _codex_cli_observations(logs_dir: Path, days: int = 30) -> dict[str, dict]:
+    from datetime import date as _date
+
+    valid_days = {(_date.today() - timedelta(days=offset)).isoformat() for offset in range(days)}
+    daily = {day: _empty_cli_observation_bucket() for day in valid_days}
+    for path in logs_dir.glob("bg-*.log"):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            match = _CODEX_CLI_LOG_RE.search(line)
+            if not match:
+                continue
+            day, model, chars_text = match.groups()
+            if day not in daily:
+                continue
+            chars = int(chars_text)
+            row = daily[day]
+            row["calls"] += 1
+            row["output_chars"] += chars
+            model_row = row["models"].setdefault(model, {"calls": 0, "output_chars": 0})
+            model_row["calls"] += 1
+            model_row["output_chars"] += chars
+    return daily
+
+
 _SUCCESS_OUTCOMES = {"green", "ok", "done", "applied", "success", "succeeded", "completed", "verified"}
 _RUNNING_JOB_STATUSES = {"running", "started", "active"}
 _QUEUED_JOB_STATUSES = {"pending", "queued", "scheduled"}
@@ -1337,6 +1371,7 @@ def _usage_history(days: int = 30) -> dict:
     today = _date.today()
     by_agent: dict[str, dict] = {}
     daily: dict[str, dict] = {}
+    cli_observed = _codex_cli_observations(LOGS_DIR, days=days)
     for offset in range(days):
         day = (today - timedelta(days=offset)).isoformat()
         daily[day] = _empty_usage_bucket()
@@ -1401,12 +1436,14 @@ def _usage_history(days: int = 30) -> dict:
                 "cost_usd": round(row["cost_usd"], 4),
                 "models": row["models"],
                 "agents": row["agents"],
+                "cli_observed": cli_observed.get(day, _empty_cli_observation_bucket()),
             }
         )
 
     def range_total(window: int) -> dict:
         rows = daily_rows[-window:]
         total = _empty_usage_bucket()
+        total_cli = _empty_cli_observation_bucket()
         for row in rows:
             total["calls"] += row["calls"]
             total["tokens"] += row["tokens"]
@@ -1421,16 +1458,28 @@ def _usage_history(days: int = 30) -> dict:
                 dest["calls"] += stats["calls"]
                 dest["tokens"] += stats["tokens"]
                 dest["cost_usd"] += stats["cost_usd"]
+            cli = row.get("cli_observed") or {}
+            total_cli["calls"] += int(cli.get("calls") or 0)
+            total_cli["output_chars"] += int(cli.get("output_chars") or 0)
+            for model, stats in (cli.get("models") or {}).items():
+                dest = total_cli["models"].setdefault(model, {"calls": 0, "output_chars": 0})
+                dest["calls"] += int(stats.get("calls") or 0)
+                dest["output_chars"] += int(stats.get("output_chars") or 0)
         total["cost_usd"] = round(total["cost_usd"], 4)
         for collection in (total["models"], total["agents"]):
             for stats in collection.values():
                 stats["cost_usd"] = round(stats["cost_usd"], 4)
+        total["cli_observed"] = total_cli
         return total
 
     return {
         "days": days,
         "by_agent": out,
         "daily": daily_rows,
+        "coverage_note": (
+            "Token/cost totals are measured from usage_YYYY-MM-DD.jsonl. "
+            "Codex CLI calls before this fix may appear only as observed call counts from runtime logs."
+        ),
         "totals": {
             "today": range_total(1),
             "last_7d": range_total(7),

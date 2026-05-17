@@ -81,6 +81,15 @@ export function modelBreakdown(models, totalTokens = 0) {
     .join(" | ");
 }
 
+export function cliObservationLine(cli) {
+  const row = cli || {};
+  const models = Object.entries(row.models || {})
+    .sort((a, b) => Number((b[1] || {}).calls || 0) - Number((a[1] || {}).calls || 0))
+    .map(([model, stats]) => `${model}: ${Number((stats || {}).calls || 0)} calls, ${Number((stats || {}).output_chars || 0)} output chars`);
+  if (!Number(row.calls || 0)) return "none observed";
+  return `${Number(row.calls || 0)} Codex CLI calls observed${models.length ? ` (${models.join(" | ")})` : ""}`;
+}
+
 export function modelMixFamily(models) {
   const rows = Object.entries(models || {})
     .map(([model, stats]) => [model, Number((stats || {}).tokens || 0)])

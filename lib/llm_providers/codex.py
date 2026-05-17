@@ -86,6 +86,18 @@ def _run_codex(
                 return ""
             text = stdout
         log.info("Codex CLI call: %s -> %d chars", model, len(text))
+        try:
+            from llm import _estimate_tokens, _log_usage
+
+            _log_usage(
+                "codex_cli",
+                model,
+                _estimate_tokens(prompt),
+                _estimate_tokens(text),
+                estimated=True,
+            )
+        except Exception as exc:
+            log.debug("Codex CLI usage logging failed: %s", exc)
         return text
     except subprocess.TimeoutExpired:
         log.error("Codex CLI timed out (%ds)", timeout)

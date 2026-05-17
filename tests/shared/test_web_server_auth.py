@@ -406,6 +406,57 @@ def test_book_reading_pipeline_labels_match_actual_refinement_flow():
     assert cleanup_step["model"] == "deepseek cleanup when translation is needed"
 
 
+def test_codex_cli_observations_are_reported_from_runtime_logs(tmp_path: Path):
+    from datetime import date
+
+    log_path = tmp_path / "bg-daily-research.log"
+    today = date.today().isoformat()
+    log_path.write_text(
+        f"{today} 14:35:21,575 [INFO] Codex CLI call: gpt-5.5 -> 546 chars\n"
+        f"{today} 14:36:07,093 [INFO] Codex CLI call: gpt-5.5 -> 551 chars\n"
+        "2020-01-01 00:00:00,000 [INFO] Codex CLI call: old-model -> 100 chars\n",
+        encoding="utf-8",
+    )
+
+    rows = server._codex_cli_observations(tmp_path, days=2)
+
+    assert rows[today]["calls"] == 2
+    assert rows[today]["output_chars"] == 1097
+    assert rows[today]["models"]["gpt-5.5"] == {"calls": 2, "output_chars": 1097}
+
+
+def test_codex_cli_provider_writes_usage_record(monkeypatch, tmp_path: Path):
+    import llm
+    import llm_providers.codex as codex
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        out_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        out_path.write_text("codex answer", encoding="utf-8")
+        return Result()
+
+    monkeypatch.setattr(codex.subprocess, "run", fake_run)
+    monkeypatch.setattr(llm, "LOGS_DIR", tmp_path)
+    monkeypatch.setattr(llm, "TOKEN_USAGE_LOG_PATH", tmp_path / "token_usage.jsonl")
+    llm.set_usage_agent("codex-test")
+
+    result = codex.codex_think("hello world", model_id="gpt-5.5", timeout=5)
+
+    usage_files = list(tmp_path.glob("usage_*.jsonl"))
+    assert result == "codex answer"
+    assert len(usage_files) == 1
+    record = json.loads(usage_files[0].read_text(encoding="utf-8").splitlines()[0])
+    assert record["agent"] == "codex-test"
+    assert record["provider"] == "codex_cli"
+    assert record["model"] == "gpt-5.5"
+    assert record["estimated"] is True
+    assert record["total_tokens"] > 0
+
+
 def test_backend_dashboard_shell_and_static_assets_are_served(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
 

@@ -1,5 +1,5 @@
 import { el, kv, table } from "../dom.js";
-import { fmtTokens, modelBreakdown, modelMixFamily } from "../format.js";
+import { cliObservationLine, fmtTokens, modelBreakdown, modelMixFamily } from "../format.js";
 import { state } from "../state.js";
 
 function renderTokenChart(root, daily) {
@@ -15,7 +15,7 @@ function renderTokenChart(root, daily) {
     const family = modelMixFamily(d.models);
     const bar = el("div", "", `bar ${family}`);
     bar.style.height = `${Math.max(2, Math.round(((d.tokens || 0) / max) * 132))}px`;
-    bar.title = `${d.date}: ${fmtTokens(d.tokens)} tokens, ${d.calls} calls\nmodels: ${modelBreakdown(d.models, d.tokens)}`;
+    bar.title = `${d.date}: ${fmtTokens(d.tokens)} measured tokens, ${d.calls} measured calls\nmodels: ${modelBreakdown(d.models, d.tokens)}\nCLI observed: ${cliObservationLine(d.cli_observed)}`;
     bar.append(el("span", String(d.date || "").slice(8)));
     bars.append(bar);
   });
@@ -32,14 +32,14 @@ export function renderUsagePage(root, data) {
   }
   const head = el("div", "", "page-head");
   const title = el("div");
-  title.append(el("h2", "Usage"), el("div", "Daily token chart and model-level cost breakdown.", "page-subtitle"));
+  title.append(el("h2", "Usage"), el("div", "Measured usage plus Codex CLI observations where token logs were missing.", "page-subtitle"));
   head.append(title);
 
   const grid = el("div", "", "grid-2");
   const chartPanel = el("div", "", "panel");
   const chart = el("div");
   renderTokenChart(chart, daily);
-  chartPanel.append(el("div", "Daily tokens", "panel-title"), chart);
+  chartPanel.append(el("div", "Measured Daily Tokens", "panel-title"), chart);
 
   const breakdown = el("div", "", "panel");
   const tabs = el("div", "", "range-tabs");
@@ -71,11 +71,17 @@ export function renderUsagePage(root, data) {
     return [model, share, fmtTokens(tokens), stats.calls, `$${Number(stats.cost_usd || 0).toFixed(4)}`];
   }));
   const dailyTable = el("div");
-  table(dailyTable, ["date", "tokens", "calls", "models"], daily.slice().reverse().map((d) => [d.date, fmtTokens(d.tokens || 0), d.calls || 0, modelBreakdown(d.models, d.tokens)]));
-  breakdown.append(el("div", "Model breakdown", "panel-title"), tabs, kv("total", `${fmtTokens(total.tokens || 0)} tokens - ${total.calls || 0} calls - $${Number(total.cost_usd || 0).toFixed(4)}`), modelTable);
+  breakdown.append(
+    el("div", "Measured Model Breakdown", "panel-title"),
+    tabs,
+    kv("measured total", `${fmtTokens(total.tokens || 0)} tokens - ${total.calls || 0} calls - $${Number(total.cost_usd || 0).toFixed(4)}`),
+    kv("Codex CLI observed", cliObservationLine(total.cli_observed)),
+    modelTable
+  );
 
   grid.append(chartPanel, breakdown);
   const dailyPanel = el("div", "", "panel");
-  dailyPanel.append(el("div", "Daily model mix", "panel-title"), dailyTable);
+  table(dailyTable, ["date", "measured tokens", "measured calls", "measured models", "Codex CLI observed"], daily.slice().reverse().map((d) => [d.date, fmtTokens(d.tokens || 0), d.calls || 0, modelBreakdown(d.models, d.tokens), cliObservationLine(d.cli_observed)]));
+  dailyPanel.append(el("div", "Daily Measured Mix + CLI Evidence", "panel-title"), hist.coverage_note ? kv("coverage", hist.coverage_note) : "", dailyTable);
   root.append(head, grid, dailyPanel);
 }

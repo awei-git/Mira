@@ -1,5 +1,5 @@
 import { $, clear, el, metric } from "./dom.js";
-import { api, fmtTokens, modelBreakdown, modelMixFamily, timeAgo } from "./format.js";
+import { api, cliObservationLine, fmtTokens, modelBreakdown, modelMixFamily, timeAgo } from "./format.js";
 import { pageFromLocation, pages, pathForPage, state } from "./state.js";
 import { renderAccessPage } from "./pages/access.js";
 import { renderConfigPage } from "./pages/config.js";
@@ -30,7 +30,7 @@ function miniUsageCard(daily) {
   rows.forEach((row) => {
     const bar = el("div", "", `mini-bar ${modelMixFamily(row.models)}`);
     bar.style.height = `${Math.max(2, Math.round((Number(row.tokens || 0) / max) * 32))}px`;
-    bar.title = `${row.date}: ${fmtTokens(row.tokens || 0)} tokens - $${Number(row.cost_usd || 0).toFixed(4)}\n${modelBreakdown(row.models, row.tokens)}`;
+    bar.title = `${row.date}: ${fmtTokens(row.tokens || 0)} measured tokens - $${Number(row.cost_usd || 0).toFixed(4)}\n${modelBreakdown(row.models, row.tokens)}\nCLI observed: ${cliObservationLine(row.cli_observed)}`;
     chart.append(bar);
   });
   card.append(chart);
