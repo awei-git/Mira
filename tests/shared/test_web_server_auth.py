@@ -284,6 +284,20 @@ def test_backend_dashboard_endpoint_returns_technical_snapshot(monkeypatch, tmp_
             assert step["status"] in allowed_statuses
             assert step["model"] or step["model_source"] == "no LLM"
     assert set(body["memory"]) == {"status", "kernel", "ledger", "commits", "effects", "queues"}
+    memory_counts = body["memory"]["status"]["counts"]
+    assert {
+        "ledger_window",
+        "commit_window",
+        "effect_window",
+        "review_queue",
+        "recent_app_items",
+        "kernel_records",
+    } <= set(memory_counts)
+    assert memory_counts["ledger"] == memory_counts["ledger_window"]
+    assert memory_counts["commits"] == memory_counts["commit_window"]
+    assert memory_counts["effects"] == memory_counts["effect_window"]
+    assert memory_counts["queued"] == memory_counts["review_queue"]
+    assert memory_counts["items"] == memory_counts["recent_app_items"]
     assert {"artifacts", "recent_items", "jobs"} <= set(body["outputs"])
     assert "security" in body
     assert "agent_stats" in body["outputs"]["jobs"]

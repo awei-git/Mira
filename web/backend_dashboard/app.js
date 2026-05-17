@@ -131,6 +131,9 @@ function updateShell(data) {
   const memStatus = data.memory.status || {};
   const memCounts = memStatus.counts || {};
   const queueCount = Object.values(queues).reduce((n, rows) => n + rows.length, 0);
+  const ledgerWindow = memCounts.ledger_window ?? (data.memory.ledger || []).length;
+  const commitWindow = memCounts.commit_window ?? (data.memory.commits || []).length;
+  const reviewQueue = memCounts.review_queue ?? queueCount;
   const redPipelines = (data.pipelines || []).filter((p) => p.status === "red").length;
   const scheduledPipelines = (data.pipelines || []).filter((p) => p.status === "blue").length;
   const yellowPipelines = (data.pipelines || []).filter((p) => p.status === "yellow").length;
@@ -142,7 +145,7 @@ function updateShell(data) {
   const securityNote = alerts[0]?.title || "none";
   const pipelineNote = `${scheduledPipelines} scheduled - ${yellowPipelines} attention - ${redPipelines} failed - ${grayPipelines} not observed`;
   const tokenNote = `${usage.calls || 0} calls - $${Number(usage.cost_usd || 0).toFixed(2)}`;
-  const memoryNote = `${queueCount} queued - ${memCounts.items || 0} items`;
+  const memoryNote = `${ledgerWindow} recent events - ${reviewQueue} review queued`;
   clear($("cards")).append(
     linkMetric(
       metric("Service", hb.busy ? `${hb.active_count || 0} active` : "Online", hb.status || "heartbeat", hb.busy ? "" : "online"),
@@ -157,7 +160,7 @@ function updateShell(data) {
     linkMetric(metric("Pipelines", data.pipelines.length, pipelineNote), "pipelines", `Pipelines: ${pipelineNote}`),
     linkMetric(metric("Today tokens", fmtTokens(usage.tokens || 0), tokenNote), "usage", `Today tokens: ${tokenNote}`),
     linkMetric(miniUsageCard((history || {}).daily || []), "usage", "30 day usage chart"),
-    linkMetric(metric("Memory", (data.memory.commits || []).length, memoryNote), "memory", `Memory: ${memoryNote}`)
+    linkMetric(metric("Memory commits", commitWindow, memoryNote), "memory", `Memory commits: ${memoryNote}`)
   );
 }
 

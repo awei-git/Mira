@@ -2097,6 +2097,17 @@ def get_backend_dashboard(user_id: str, request: Request):
             row.get("reason") or row.get("status") or "" for row in snapshot.review_queues.get("memory_commit", [])
         )
         memory_errors.extend(row.get("status") or "" for row in snapshot.review_queues.get("incident_dlq", []))
+    review_queue_count = sum(len(rows) for rows in snapshot.review_queues.values())
+    kernel_record_count = (
+        len(kernel.scars)
+        + len(kernel.open_questions)
+        + len(kernel.skill_traces)
+        + len(kernel.failure_signatures)
+        + len(kernel.relationship_model.notes)
+        + len(kernel.active_threads)
+        + len(kernel.pending_hypotheses)
+        + len(kernel.commitments)
+    )
 
     return {
         "server_time": _utc_iso(),
@@ -2130,10 +2141,24 @@ def get_backend_dashboard(user_id: str, request: Request):
                     "eval_history": _file_meta(paths.eval_history),
                 },
                 "counts": {
+                    "ledger_window": len(records),
+                    "commit_window": len(commits),
+                    "effect_window": len(effects),
+                    "review_queue": review_queue_count,
+                    "recent_app_items": len(items),
+                    "kernel_records": kernel_record_count,
+                    "kernel_scars": len(kernel.scars),
+                    "kernel_open_questions": len(kernel.open_questions),
+                    "kernel_skill_traces": len(kernel.skill_traces),
+                    "kernel_failure_signatures": len(kernel.failure_signatures),
+                    "kernel_relationship_notes": len(kernel.relationship_model.notes),
+                    "kernel_active_threads": len(kernel.active_threads),
+                    "kernel_pending_hypotheses": len(kernel.pending_hypotheses),
+                    "kernel_commitments": len(kernel.commitments),
                     "ledger": len(records),
                     "commits": len(commits),
                     "effects": len(effects),
-                    "queued": sum(len(rows) for rows in snapshot.review_queues.values()),
+                    "queued": review_queue_count,
                     "items": len(items),
                 },
             },

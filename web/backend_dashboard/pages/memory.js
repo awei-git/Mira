@@ -10,6 +10,11 @@ export function renderMemoryPage(root, data) {
   const lessons = (mem.kernel || {}).failure_lessons || [];
   const queues = mem.queues || {};
   const queueCount = Object.values(queues).reduce((n, rows) => n + rows.length, 0);
+  const ledgerWindow = counts.ledger_window ?? (mem.ledger || []).length;
+  const commitWindow = counts.commit_window ?? commits.length;
+  const reviewQueue = counts.review_queue ?? queueCount;
+  const recentAppItems = counts.recent_app_items ?? counts.items ?? 0;
+  const kernelRecords = counts.kernel_records ?? 0;
   const latestCommit = commits.slice(-1)[0];
   const latestLesson = lessons.slice(-1)[0];
 
@@ -24,10 +29,11 @@ export function renderMemoryPage(root, data) {
   windowPanel.append(
     el("div", "Kernel window", "panel-title"),
     statusPill(status.overall || "gray", "memory"),
-    kv("experience events", `${counts.ledger || (mem.ledger || []).length} recent V3 events in the ledger window`),
-    kv("kernel commits", `${commits.length} accepted/rejected/quarantined memory proposals`),
-    kv("queued review", `${queueCount} items waiting for review across memory queues`),
-    kv("stored items", `${counts.items || 0} kernel store items`),
+    kv("ledger window", `${ledgerWindow} recent V3 events loaded`),
+    kv("commit window", `${commitWindow} recent memory commit records loaded`),
+    kv("review queue", `${reviewQueue} memory review items waiting`),
+    kv("recent app items", `${recentAppItems} bridge/control items loaded for context`),
+    kv("kernel records", `${kernelRecords} scars, traces, hypotheses, notes, threads, and commitments`),
     kv("latest kernel commit", latestCommit ? `${latestCommit.status} - ${latestCommit.pipeline} - ${shortText(latestCommit.summary || (latestCommit.findings || []).join("; "), 90)}` : "none"),
     kv("latest failure lesson", latestLesson ? `${latestLesson.date} - ${shortText(latestLesson.incident, 90)}` : "none"),
     kv("ledger dates", `${(status.date_range || {}).first || "none"} -> ${(status.date_range || {}).last || "none"}`),
