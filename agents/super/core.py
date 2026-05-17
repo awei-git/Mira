@@ -280,6 +280,23 @@ _AMBIGUOUS_INTENT_PATTERNS = (
     re.compile(r"\bwhatever\b", re.IGNORECASE),
     re.compile(r"\banything\b", re.IGNORECASE),
 )
+_AUTHORIZATION_SOURCES = frozenset({"iphone_bridge", "api_key", "cron", "internal"})
+_HIGH_PERMISSION_ROLES = frozenset({"admin", "owner", "root", "system", "high"})
+_LOW_PERMISSION_ROLES = frozenset({"guest", "read_only", "readonly", "low"})
+_INTERNAL_SENDERS = frozenset({"agent", "mira", "system"})
+_CRON_SENDERS = frozenset({"cron", "schedule", "scheduler", "auto"})
+_BYPASSED_CONFIRMATION_KEYS = (
+    "bypassed_check",
+    "confirmation_skipped",
+    "skipped_confirmation",
+    "skip_confirmation",
+)
+_CONFIRMATION_COMPLETE_KEYS = (
+    "confirmation_completed",
+    "confirmation_done",
+    "confirmation_passed",
+    "confirmed",
+)
 _LOG_PRUNE_STATE_KEY = "last_log_prune"
 _LOG_PRUNE_STATE_DIR_PREFIXES = (".", "_")
 _ACTION_VERBS = frozenset(
@@ -642,6 +659,88 @@ def _record_agent_permissions_audit(msg) -> None:
         log.debug("agent permissions audit write failed: %s", exc)
 
 
+def _authorization_metadata(msg) -> dict:
+    metadata = getattr(msg, "metadata", None)
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _normalize_authorization_source(value: object) -> str | None:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in _AUTHORIZATION_SOURCES:
+        return normalized
+    if normalized in {"iphone", "ios", "bridge", "notes_bridge", "icloud_bridge"}:
+        return "iphone_bridge"
+    if normalized in {"api", "api_token", "bearer", "token", "remote_trigger"}:
+        return "api_key"
+    if normalized in {"launchd", "scheduled"}:
+        return "cron"
+    if normalized in {"agent", "orchestrator", "system"}:
+        return "internal"
+    return None
+
+
+def _authorization_source_for_dispatch(msg) -> str:
+    metadata = _authorization_metadata(msg)
+    for key in ("authorizing_source", "authorization_source", "auth_source", "auth_method", "source"):
+        source = _normalize_authorization_source(metadata.get(key) or getattr(msg, key, None))
+        if source:
+            return source
+
+    sender = str(getattr(msg, "sender", "") or "").strip().lower()
+    if sender in _CRON_SENDERS:
+        return "cron"
+    if sender in _INTERNAL_SENDERS:
+        return "internal"
+    return "iphone_bridge"
+
+
+def _permission_level_for_dispatch(msg) -> str:
+    metadata = _authorization_metadata(msg)
+    explicit = str(metadata.get("permission_level") or getattr(msg, "permission_level", "") or "").strip().lower()
+    if explicit in {"high", "normal", "low"}:
+        return explicit
+
+    role = str(getattr(msg, "user_role", "") or metadata.get("user_role") or "").strip().lower()
+    if role in _HIGH_PERMISSION_ROLES:
+        return "high"
+    if role in _LOW_PERMISSION_ROLES:
+        return "low"
+    return "normal"
+
+
+def _confirmation_was_skipped_for_dispatch(msg) -> bool:
+    metadata = _authorization_metadata(msg)
+    for key in _BYPASSED_CONFIRMATION_KEYS:
+        if bool(metadata.get(key) or getattr(msg, key, False)):
+            return True
+
+    confirmation_required = bool(
+        metadata.get("confirmation_required")
+        or metadata.get("requires_confirmation")
+        or getattr(msg, "confirmation_required", False)
+        or getattr(msg, "requires_confirmation", False)
+    )
+    if not confirmation_required:
+        return False
+
+    confirmation_complete = any(
+        bool(metadata.get(key) or getattr(msg, key, False)) for key in _CONFIRMATION_COMPLETE_KEYS
+    )
+    return not confirmation_complete
+
+
+def _log_worker_dispatch_authorization(msg) -> None:
+    try:
+        log_authorization_event(
+            f"dispatch:{_task_dispatch_category(msg)}",
+            _authorization_source_for_dispatch(msg),
+            _permission_level_for_dispatch(msg),
+            bypassed_check=_confirmation_was_skipped_for_dispatch(msg),
+        )
+    except Exception as exc:
+        log.debug("worker authorization audit write failed: %s", exc)
+
+
 def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
     skip_audit = False
     try:
@@ -655,6 +754,7 @@ def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
     try:
         if not skip_audit:
             _record_agent_permissions_audit(msg)
+            _log_worker_dispatch_authorization(msg)
         task_id = _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
         outcome = "success" if task_id else "error"
         return task_id
