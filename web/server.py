@@ -1359,6 +1359,8 @@ def _latest_timestamp_from_map(values: dict) -> str:
 def _pipeline_outputs(user_id: str, pipeline_name: str) -> list[dict]:
     base = _artifacts_dir(user_id)
     outputs: list[dict] = []
+    social_dir = MIRA_DIR / "data" / "social"
+    logs_dir = MIRA_DIR / "data" / "logs"
     if pipeline_name == "article_creation":
         manifest = _read_json(base / "writings" / "publish_manifest.json")
         articles = manifest.get("articles", {}) if isinstance(manifest, dict) else {}
@@ -1450,11 +1452,155 @@ def _pipeline_outputs(user_id: str, pipeline_name: str) -> list[dict]:
                     "title": f"{title}{lang_label}",
                     "status": "done",
                     "updated_at": ts,
-                    "href": "",
+                    "href": _podcast_episode_href(user_id, slug, article, completed_langs),
                     "error": article.get("error") or "",
                 }
             )
+    elif pipeline_name == "research_deep_dive":
+        research_dir = base / "research"
+        if research_dir.exists():
+            projects = [path for path in research_dir.iterdir() if path.is_dir()]
+            projects.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+            for project in projects[:3]:
+                output_file = project / "output.md"
+                plan_file = project / "plan.json"
+                target = output_file if output_file.exists() else plan_file
+                if not target.exists():
+                    continue
+                outputs.append(
+                    {
+                        "title": project.name,
+                        "status": "ready",
+                        "updated_at": datetime.fromtimestamp(target.stat().st_mtime, timezone.utc).isoformat(),
+                        "href": f"/api/{quote(user_id)}/artifacts/research/{quote(project.name)}/{quote(target.name)}",
+                        "error": "",
+                    }
+                )
+    elif pipeline_name in {"social_proactive", "social_reactive", "weekly_growth_report"}:
+        outputs.extend(_social_pipeline_outputs(pipeline_name, social_dir, logs_dir))
+    elif pipeline_name == "system_health":
+        health_log = logs_dir / "background_health.jsonl"
+        if health_log.exists():
+            outputs.append(
+                {
+                    "title": "background health log",
+                    "status": "observed",
+                    "updated_at": datetime.fromtimestamp(health_log.stat().st_mtime, timezone.utc).isoformat(),
+                    "href": "",
+                    "error": "",
+                }
+            )
     return outputs
+
+
+def _podcast_episode_href(user_id: str, slug: str, article: dict, completed_langs: list[str]) -> str:
+    audio_slug = str(article.get("podcast_slug") or article.get("audio_slug") or "")
+    title_slug = re.sub(r"[\s_]+", "-", re.sub(r"[^\w\s-]", "", str(article.get("title") or "").lower())).strip("-")[
+        :50
+    ]
+    candidate_slugs = [candidate for candidate in (audio_slug, str(slug), title_slug) if candidate]
+    langs = [lang.lower() for lang in completed_langs] or ["en", "zh"]
+    base = _artifacts_dir(user_id)
+    for lang in langs:
+        for candidate in candidate_slugs:
+            if (base / "audio" / "podcast" / lang / candidate / "episode.mp3").exists():
+                return f"/api/{quote(user_id)}/artifacts/audio/podcast/" f"{quote(lang)}/{quote(candidate)}/episode.mp3"
+    return ""
+
+
+def _tail_text(path: Path, limit: int = 120_000) -> str:
+    if not path.exists():
+        return ""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(max(0, size - limit))
+            return handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _latest_log_timestamp(text: str) -> str:
+    matches = re.findall(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", text or "")
+    if not matches:
+        return ""
+    return matches[-1].replace(" ", "T")
+
+
+def _social_pipeline_outputs(pipeline_name: str, social_dir: Path, logs_dir: Path) -> list[dict]:
+    outputs: list[dict] = []
+    growth_log = _tail_text(logs_dir / "bg-substack-growth.log")
+    comments_log = _tail_text(logs_dir / "bg-substack-comments.log")
+    log_text = growth_log if pipeline_name in {"social_proactive", "weekly_growth_report"} else comments_log
+    combined_log = "\n".join([growth_log, comments_log])
+    updated_at = _latest_log_timestamp(log_text or combined_log)
+    if "SpendCapReached" in combined_log:
+        outputs.append(
+            {
+                "title": "X/Twitter API spend cap reached",
+                "status": "blocked_external_api",
+                "updated_at": updated_at,
+                "href": "",
+                "error": "X API requests are blocked until the billing cycle resets on 2026-05-27.",
+            }
+        )
+    if "Bluesky cycle skipped" in combined_log:
+        outputs.append(
+            {
+                "title": "Bluesky not configured",
+                "status": "blocked_config",
+                "updated_at": updated_at,
+                "href": "",
+                "error": "Bluesky handle/app password or session cache is missing.",
+            }
+        )
+    notes_state = _read_json(social_dir / "notes_state.json")
+    notes = notes_state.get("history", []) if isinstance(notes_state, dict) else []
+    if notes:
+        latest = max(notes, key=lambda row: str(row.get("date", "")))
+        outputs.append(
+            {
+                "title": short_title(str(latest.get("text") or "latest Substack note"), 90),
+                "status": "posted_note",
+                "updated_at": str(latest.get("date") or ""),
+                "href": str(latest.get("link") or ""),
+                "error": "",
+            }
+        )
+    publication_stats = _read_json(social_dir / "publication_stats.json")
+    articles = publication_stats.get("articles", []) if isinstance(publication_stats, dict) else []
+    if articles:
+        latest_article = max(articles, key=lambda row: str(row.get("post_date", "")))
+        slug = str(latest_article.get("slug") or "")
+        outputs.append(
+            {
+                "title": (
+                    f"{latest_article.get('title') or slug} "
+                    f"({latest_article.get('likes', 0)} likes, {latest_article.get('comments', 0)} comments)"
+                ),
+                "status": "article_metrics",
+                "updated_at": str(latest_article.get("post_date") or publication_stats.get("fetched_at") or ""),
+                "href": f"https://uncountablemira.substack.com/p/{quote(slug)}" if slug else "",
+                "error": "",
+            }
+        )
+    if not outputs and updated_at:
+        outputs.append(
+            {
+                "title": "social cycle observed",
+                "status": "observed",
+                "updated_at": updated_at,
+                "href": "",
+                "error": "",
+            }
+        )
+    return outputs[:4]
+
+
+def short_title(value: str, limit: int) -> str:
+    text = " ".join(str(value).split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "..."
 
 
 def _dashboard_model_assignments_path() -> Path:
@@ -1849,6 +1995,7 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
                 if last_success_at
                 else str(latest_output["updated_at"])
             )
+        manual_only = pipeline.trigger.type == "manual" and not latest_record and not last_success_at
         if latest_record:
             failure_messages = _dashboard_failure_messages(latest_record.delta.what_failed)
             if latest_record.outcome == "failed" or failure_messages:
@@ -1864,6 +2011,8 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
             status = "yellow"
         elif name == "article_creation" and latest_output_status == "approved":
             status = "blue"
+        elif manual_only:
+            status = "gray"
         elif running_jobs:
             status = "yellow"
         elif last_success_at:
@@ -1881,13 +2030,17 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
                 else (
                     "approved / publish queued"
                     if name == "article_creation" and latest_output_status == "approved"
-                    else {
-                        "green": "success",
-                        "yellow": "running",
-                        "blue": "scheduled",
-                        "red": "needs attention",
-                        "gray": "not observed",
-                    }.get(status, status)
+                    else (
+                        "manual trigger only"
+                        if manual_only
+                        else {
+                            "green": "success",
+                            "yellow": "running",
+                            "blue": "scheduled",
+                            "red": "needs attention",
+                            "gray": "not observed",
+                        }.get(status, status)
+                    )
                 )
             )
         )
@@ -2008,15 +2161,19 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
                             f"Latest output approved: {latest_output.get('title', '')}; publish queued"
                             if name == "article_creation" and latest_output_status == "approved"
                             else (
-                                f"Active job(s): {', '.join(running_jobs)}; last success {last_success_at or 'not observed'}"
-                                if running_jobs
+                                "Manual-only pipeline; no background scheduler job currently dispatches it."
+                                if manual_only
                                 else (
-                                    f"Scheduled but not observed today: {', '.join(queued_jobs)}"
-                                    if status == "blue"
+                                    f"Active job(s): {', '.join(running_jobs)}; last success {last_success_at or 'not observed'}"
+                                    if running_jobs
                                     else (
-                                        "No run evidence in the current V3 ledger/job window."
-                                        if status == "gray"
-                                        else ""
+                                        f"Scheduled but not observed today: {', '.join(queued_jobs)}"
+                                        if status == "blue"
+                                        else (
+                                            "No run evidence in the current V3 ledger/job window."
+                                            if status == "gray"
+                                            else ""
+                                        )
                                     )
                                 )
                             )
@@ -3050,6 +3207,17 @@ def read_artifact(user_id: str, section: str, subsection: str, filename: str):
     path = _resolve_artifact_path(user_id, section, subsection, filename)
     if not path.exists():
         raise HTTPException(404)
+    return _read_file(path)
+
+
+@app.get("/api/{user_id}/artifacts/{section}/{artifact_path:path}")
+def read_nested_artifact(user_id: str, section: str, artifact_path: str):
+    parts = [part for part in artifact_path.split("/") if part]
+    path = _resolve_artifact_path(user_id, section, *parts)
+    if not path.exists():
+        raise HTTPException(404)
+    if path.is_dir():
+        return _list_dir(path)
     return _read_file(path)
 
 

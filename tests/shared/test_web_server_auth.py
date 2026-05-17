@@ -393,12 +393,50 @@ def test_backend_dashboard_uses_podcast_artifacts_as_pipeline_evidence(monkeypat
     assert rows[0]["last_success_at"] == "2026-05-15T17:06:59Z"
     assert rows[0]["outputs"][0]["status"] == "done"
     assert rows[0]["outputs"][0]["title"] == "Essay (EN+ZH)"
+    assert rows[0]["outputs"][0]["href"] == "/api/ang/artifacts/audio/podcast/en/episode-slug/episode.mp3"
     tts_step = next(
         step for step in rows[0]["steps"] if step["name"] == "language_detect_tts_route_synthesis_postprocess"
     )
     assert tts_step["model"] == "EN: Gemini 3.1 Flash TTS Preview / ZH: MiniMax Speech 2.8 HD"
     assert tts_step["model_source"] == "step policy"
     assert tts_step["model_recorded"] is False
+
+
+def test_backend_dashboard_links_research_outputs(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(server, "_ICLOUD_ARTIFACTS", tmp_path)
+    project = tmp_path / "ang" / "research" / "research_2026-05-16"
+    project.mkdir(parents=True)
+    (project / "output.md").write_text("research result", encoding="utf-8")
+
+    outputs = server._pipeline_outputs("ang", "research_deep_dive")
+
+    assert outputs[0]["title"] == "research_2026-05-16"
+    assert outputs[0]["status"] == "ready"
+    assert outputs[0]["href"] == "/api/ang/artifacts/research/research_2026-05-16/output.md"
+
+
+def test_backend_dashboard_surfaces_social_partial_blockers(monkeypatch, tmp_path: Path):
+    data_root = tmp_path / "mira" / "data"
+    social = data_root / "social"
+    logs = data_root / "logs"
+    social.mkdir(parents=True)
+    logs.mkdir(parents=True)
+    monkeypatch.setattr(server, "MIRA_DIR", tmp_path / "mira")
+    (logs / "bg-substack-growth.log").write_text(
+        "2026-05-16 22:08:45,352 [ERROR] Tweet failed (HTTP 403): SpendCapReached reset_date 2026-05-27\n"
+        "2026-05-16 22:11:15,974 [WARNING] Bluesky cycle skipped: bluesky not configured\n",
+        encoding="utf-8",
+    )
+    (social / "notes_state.json").write_text(
+        json.dumps({"history": [{"text": "latest note", "date": "2026-05-16T22:00:00", "link": ""}]}),
+        encoding="utf-8",
+    )
+
+    outputs = server._pipeline_outputs("ang", "social_proactive")
+
+    assert outputs[0]["status"] == "blocked_external_api"
+    assert "2026-05-27" in outputs[0]["error"]
+    assert any(row["status"] == "posted_note" for row in outputs)
 
 
 def test_backend_dashboard_does_not_invent_step_usage_from_pipeline_aggregate():
@@ -693,6 +731,18 @@ def test_artifact_routes_allow_listed_shared_sections_only(monkeypatch, tmp_path
     assert blocked.json()["detail"] == "Artifact section not found"
     assert file_read.status_code == 200
     assert file_read.text == "shared briefing"
+
+
+def test_artifact_routes_serve_nested_audio_files(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+    episode = tmp_path / "icloud" / "ang" / "audio" / "podcast" / "en" / "episode-slug" / "episode.mp3"
+    episode.parent.mkdir(parents=True)
+    episode.write_bytes(b"mp3")
+
+    resp = client.get("/api/ang/artifacts/audio/podcast/en/episode-slug/episode.mp3")
+
+    assert resp.status_code == 200
+    assert resp.content == b"mp3"
 
 
 def test_reply_requires_existing_item_and_does_not_enqueue_command(monkeypatch, tmp_path: Path):
