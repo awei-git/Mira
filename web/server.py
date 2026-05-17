@@ -1119,8 +1119,15 @@ def _configured_model_for_step(pipeline_name: str, step_name: str, default_model
     return default_model
 
 
-def _step_model_hint(step_name: str, configured_model: str) -> tuple[str, str]:
+def _step_model_hint(pipeline_name: str, step_name: str, configured_model: str) -> tuple[str, str]:
     name = step_name.lower()
+    if pipeline_name == "podcast_production":
+        if name == "script":
+            return "claude heavy tier / premium fallback", "step policy"
+        if name == "language_detect_tts_route_synthesis_postprocess":
+            return "EN: Gemini 3.1 Flash TTS Preview / ZH: MiniMax Speech 2.8 HD", "step policy"
+        if "tts" in name:
+            return "Gemini 3.1 Flash TTS Preview / MiniMax Speech 2.8 HD", "step policy"
     if "agent_a_opus" in name:
         return "claude-opus", "step policy"
     if "agent_b_sonnet" in name:
@@ -1704,9 +1711,10 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
             else:
                 step_status = status
             step_status = _normalize_dashboard_status(step_status)
-            hinted_model, model_source = _step_model_hint(step.name, configured_model)
-            step_model = top_model or hinted_model
-            if top_model:
+            hinted_model, model_source = _step_model_hint(name, step.name, configured_model)
+            step_model = hinted_model if model_source == "step policy" else top_model or hinted_model
+            model_recorded = bool(top_model and model_source != "step policy")
+            if model_recorded:
                 model_source = "recorded"
             observed_at = latest_record.timestamp.isoformat() if latest_record else latest_done_job_at
             if step_status == "blue":
@@ -1717,7 +1725,7 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
                     "type": step.type,
                     "status": step_status,
                     "model": step_model,
-                    "model_recorded": bool(top_model),
+                    "model_recorded": model_recorded,
                     "model_source": model_source,
                     "configured_model": _configured_model_for_step(name, step.name, configured_model),
                     "configured_agent": configured_agent,

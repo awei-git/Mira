@@ -334,6 +334,12 @@ def test_backend_dashboard_uses_podcast_artifacts_as_pipeline_evidence(monkeypat
     assert rows[0]["last_success_at"] == "2026-05-15T17:06:59Z"
     assert rows[0]["outputs"][0]["status"] == "done"
     assert rows[0]["outputs"][0]["title"] == "Essay (EN+ZH)"
+    tts_step = next(
+        step for step in rows[0]["steps"] if step["name"] == "language_detect_tts_route_synthesis_postprocess"
+    )
+    assert tts_step["model"] == "EN: Gemini 3.1 Flash TTS Preview / ZH: MiniMax Speech 2.8 HD"
+    assert tts_step["model_source"] == "step policy"
+    assert tts_step["model_recorded"] is False
 
 
 def test_backend_dashboard_shell_and_static_assets_are_served(monkeypatch, tmp_path: Path):
