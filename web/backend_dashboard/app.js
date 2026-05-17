@@ -37,6 +37,21 @@ function miniUsageCard(daily) {
   return card;
 }
 
+function linkMetric(card, pageId, title = "") {
+  card.classList.add("clickable");
+  card.tabIndex = 0;
+  card.setAttribute("role", "link");
+  card.title = title || card.textContent.trim();
+  card.onclick = () => navigate(pageId);
+  card.onkeydown = (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      navigate(pageId);
+    }
+  };
+  return card;
+}
+
 function buildBrand() {
   const brand = el("div", "", "brand");
   const mark = el("div", "", "mark");
@@ -124,13 +139,25 @@ function updateShell(data) {
   $("apiPath").textContent = `/api/${state.currentUser}/backend-dashboard`;
   $("healthText").textContent = hb.busy ? `${hb.active_count || 0} active` : `Online - ${timeAgo(hb.timestamp)}`;
   document.querySelector(".status")?.classList.toggle("online", !hb.busy);
+  const securityNote = alerts[0]?.title || "none";
+  const pipelineNote = `${scheduledPipelines} scheduled - ${yellowPipelines} attention - ${redPipelines} failed - ${grayPipelines} not observed`;
+  const tokenNote = `${usage.calls || 0} calls - $${Number(usage.cost_usd || 0).toFixed(2)}`;
+  const memoryNote = `${queueCount} queued - ${memCounts.items || 0} items`;
   clear($("cards")).append(
-    metric("Service", hb.busy ? `${hb.active_count || 0} active` : "Online", hb.status || "heartbeat", hb.busy ? "" : "online"),
-    metric("Security alerts", data.outputs.alert_count || alerts.length || 0, alerts[0]?.title || "none", alerts.length ? "red" : ""),
-    metric("Pipelines", data.pipelines.length, `${scheduledPipelines} scheduled - ${yellowPipelines} attention - ${redPipelines} failed - ${grayPipelines} not observed`),
-    metric("Today tokens", fmtTokens(usage.tokens || 0), `${usage.calls || 0} calls - $${Number(usage.cost_usd || 0).toFixed(2)}`),
-    miniUsageCard((history || {}).daily || []),
-    metric("Memory", (data.memory.commits || []).length, `${queueCount} queued - ${memCounts.items || 0} items`)
+    linkMetric(
+      metric("Service", hb.busy ? `${hb.active_count || 0} active` : "Online", hb.status || "heartbeat", hb.busy ? "" : "online"),
+      "access",
+      `Service: ${hb.status || "heartbeat"}`
+    ),
+    linkMetric(
+      metric("Security alerts", data.outputs.alert_count || alerts.length || 0, securityNote, alerts.length ? "red" : ""),
+      "outputs",
+      `Security alerts: ${securityNote}`
+    ),
+    linkMetric(metric("Pipelines", data.pipelines.length, pipelineNote), "pipelines", `Pipelines: ${pipelineNote}`),
+    linkMetric(metric("Today tokens", fmtTokens(usage.tokens || 0), tokenNote), "usage", `Today tokens: ${tokenNote}`),
+    linkMetric(miniUsageCard((history || {}).daily || []), "usage", "30 day usage chart"),
+    linkMetric(metric("Memory", (data.memory.commits || []).length, memoryNote), "memory", `Memory: ${memoryNote}`)
   );
 }
 
