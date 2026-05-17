@@ -636,6 +636,60 @@ def get_threads(
         raise HTTPException(503, f"Control DB unavailable: {exc}") from exc
 
 
+_WRITING_PIPELINE_ADVANCED_RE = re.compile(
+    r"^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:,\d+)? .*"
+    r"Canonical writing pipeline advanced (?P<count>\d+) project\(s\)"
+)
+
+
+def _writing_pipeline_outcome(logs_dir: Path, today: str) -> dict:
+    """Summarize today's writing pipeline checks from its worker log."""
+    path = logs_dir / "bg-writing-pipeline.log"
+    if not path.exists():
+        return {}
+
+    checks = 0
+    advanced = 0
+    last_checked_at = None
+    last_advanced_at = None
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+
+    for line in lines:
+        match = _WRITING_PIPELINE_ADVANCED_RE.match(line)
+        if not match:
+            continue
+        timestamp = match.group("timestamp")
+        if not timestamp.startswith(today):
+            continue
+        count = int(match.group("count"))
+        checks += 1
+        advanced += count
+        last_checked_at = timestamp
+        if count > 0:
+            last_advanced_at = timestamp
+
+    if checks == 0:
+        return {}
+
+    project_word = "project" if advanced == 1 else "projects"
+    check_word = "check" if checks == 1 else "checks"
+    return {
+        "checks": checks,
+        "advanced": advanced,
+        "last_checked_at": last_checked_at,
+        "last_advanced_at": last_advanced_at,
+        "summary": f"advanced {advanced} {project_word} across {checks} {check_word}",
+        "action": (
+            "Writing pipeline advanced projects; inspect writing artifacts for outputs."
+            if advanced
+            else "No writing project advanced; these are scheduler checks, not completed writing."
+        ),
+    }
+
+
 @app.get("/api/{user_id}/jobs")
 def get_jobs_today(user_id: str):
     """Return today's scheduled job runs with status, model, token, cost details."""
@@ -802,6 +856,23 @@ def get_jobs_today(user_id: str):
 
         # A job counts as "done" if it has a state key OR was dispatched today
         status = "done" if (ran_at or dispatch_times) else ("disabled" if not job.enabled else "pending")
+        outcome = None
+        action = None
+        check_count = None
+        advanced_count = None
+        last_checked_at = None
+        last_advanced_at = None
+        if job.name == "writing-pipeline":
+            writing_outcome = _writing_pipeline_outcome(logs_dir, today)
+            if writing_outcome:
+                outcome = writing_outcome["summary"]
+                action = writing_outcome["action"]
+                check_count = writing_outcome["checks"]
+                advanced_count = writing_outcome["advanced"]
+                last_checked_at = writing_outcome["last_checked_at"]
+                last_advanced_at = writing_outcome["last_advanced_at"]
+                if advanced_count == 0 and (ran_at or dispatch_times or check_count):
+                    status = "idle"
 
         entry = {
             "name": job.name,
@@ -812,6 +883,12 @@ def get_jobs_today(user_id: str):
             "priority": job.priority,
             "enabled": job.enabled,
             "status": status,
+            "outcome": outcome,
+            "action": action,
+            "check_count": check_count,
+            "advanced_count": advanced_count,
+            "last_checked_at": last_checked_at,
+            "last_advanced_at": last_advanced_at,
             "ran_at": ran_at,
             "dispatch_count": len(dispatch_times),
             "dispatch_times": dispatch_times[-5:],  # last 5
@@ -1556,21 +1633,24 @@ def _job_agent_stats(jobs: dict, usage_history: dict) -> list[dict]:
             )
     if not rows:
         for job in jobs.get("jobs", []):
-            calls = int(job.get("dispatch_count") or (1 if job.get("status") == "done" else 0))
+            usage = job.get("usage") or {}
+            calls = int(usage.get("calls") or 0)
+            if not calls and job.get("status") == "done":
+                calls = 1
             if not calls and not job.get("enabled", True):
                 continue
             rows.append(
                 {
                     "agent": job.get("agent") or job.get("name", "unknown"),
                     "calls_30d": calls,
-                    "tokens_30d": int((job.get("usage") or {}).get("tokens") or 0),
-                    "cost_30d": float((job.get("usage") or {}).get("cost_usd") or 0.0),
+                    "tokens_30d": int(usage.get("tokens") or 0),
+                    "cost_30d": float(usage.get("cost_usd") or 0.0),
                     "daily_avg": calls,
                     "weekly_avg": calls * 7,
                     "monthly_avg": calls * 30,
                     "top_model": max(
-                        ((job.get("usage") or {}).get("models") or {}),
-                        key=lambda model: ((job.get("usage") or {}).get("models") or {}).get(model, {}).get("calls", 0),
+                        (usage.get("models") or {}),
+                        key=lambda model: (usage.get("models") or {}).get(model, {}).get("calls", 0),
                         default="",
                     ),
                 }
@@ -2102,6 +2182,12 @@ def get_backend_dashboard(user_id: str, request: Request):
                         "name": job.get("name", ""),
                         "status": job.get("status", ""),
                         "agent": job.get("agent", ""),
+                        "outcome": job.get("outcome", ""),
+                        "action": job.get("action", ""),
+                        "check_count": job.get("check_count"),
+                        "advanced_count": job.get("advanced_count"),
+                        "last_checked_at": job.get("last_checked_at", ""),
+                        "last_advanced_at": job.get("last_advanced_at", ""),
                         "usage": job.get("usage", {}),
                         "ran_at": job.get("ran_at", ""),
                         "dispatch_count": job.get("dispatch_count", 0),

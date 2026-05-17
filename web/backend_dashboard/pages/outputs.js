@@ -14,12 +14,32 @@ async function openArtifactSection(root, section) {
   list(root.querySelector("#artifacts-list"), [back, ...entries], "No files");
 }
 
+function jobDetail(j) {
+  const usage = j.usage || {};
+  const parts = [
+    `$${Number(usage.cost_usd || 0).toFixed(4)}`,
+    `${fmtTokens(usage.tokens || 0)} measured tokens`,
+  ];
+  if (j.outcome) parts.push(j.outcome);
+  else if (j.check_count != null) parts.push(`${j.check_count} scheduler check(s)`);
+  else parts.push(`${j.dispatch_count || 0} dispatch(es)`);
+  if (j.action) parts.push(j.action);
+  const last = j.ran_at || j.last_checked_at || "";
+  if (last) parts.push(last);
+  return parts.join(" - ");
+}
+
 function renderAgentStats(root, jobs) {
   let stats = (jobs.agent_stats || []).length
     ? jobs.agent_stats
     : Object.entries(jobs.by_agent || {}).map(([agent, row]) => ({ agent, daily_avg: row.calls || 0, weekly_avg: (row.calls || 0) * 7, monthly_avg: (row.calls || 0) * 30, calls_30d: row.calls || 0, tokens_30d: row.tokens || 0, cost_30d: row.cost_usd || 0, top_model: "" }));
   if (!stats.length) {
-    stats = (jobs.recent || []).filter((j) => j.status === "done" || j.dispatch_count || ((j.usage || {}).tokens || 0)).map((j) => ({ agent: j.agent || j.name, daily_avg: j.dispatch_count || ((j.usage || {}).calls || 0) || 1, weekly_avg: (j.dispatch_count || 1) * 7, monthly_avg: (j.dispatch_count || 1) * 30, calls_30d: j.dispatch_count || ((j.usage || {}).calls || 0) || 1, tokens_30d: (j.usage || {}).tokens || 0, cost_30d: (j.usage || {}).cost_usd || 0, top_model: Object.keys(((j.usage || {}).models) || {})[0] || "" }));
+    stats = (jobs.recent || [])
+      .filter((j) => ((j.usage || {}).calls || 0) || ((j.usage || {}).tokens || 0) || j.status === "done")
+      .map((j) => {
+        const calls = ((j.usage || {}).calls || 0) || (j.status === "done" ? 1 : 0);
+        return { agent: j.agent || j.name, daily_avg: calls, weekly_avg: calls * 7, monthly_avg: calls * 30, calls_30d: calls, tokens_30d: (j.usage || {}).tokens || 0, cost_30d: (j.usage || {}).cost_usd || 0, top_model: Object.keys(((j.usage || {}).models) || {})[0] || "" };
+      });
   }
   state.currentAgentStats = stats;
   const columns = [["agent", "agent", (v) => v, "180px"], ["daily_avg", "daily avg", (v) => v, "110px"], ["weekly_avg", "weekly avg", (v) => v, "110px"], ["monthly_avg", "monthly avg", (v) => v, "120px"], ["calls_30d", "30d calls", (v) => v, "110px"], ["tokens_30d", "30d tokens", (v) => fmtTokens(v), "120px"], ["cost_30d", "30d cost", (v) => `$${Number(v || 0).toFixed(4)}`, "120px"], ["top_model", "model", (v) => v || "", "260px"]];
@@ -102,7 +122,7 @@ export function renderOutputsPage(root, data) {
 
   const jobPanel = el("div", "", "panel");
   const jobBody = el("div");
-  list(jobBody, (jobs.recent || []).map((j) => item(`${j.status} - ${j.name}`, `$${Number((j.usage || {}).cost_usd || 0).toFixed(4)} - ${fmtTokens((j.usage || {}).tokens || 0)} tokens - dispatch ${j.dispatch_count || 0} - ${j.ran_at || ""}`)), "No jobs", true);
+  list(jobBody, (jobs.recent || []).map((j) => item(`${j.status} - ${j.name}`, jobDetail(j))), "No jobs", true);
   jobPanel.append(el("div", "Jobs", "panel-title"), jobBody);
   grid.append(alerts, artifacts, items, jobPanel);
 

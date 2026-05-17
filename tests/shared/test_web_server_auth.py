@@ -47,6 +47,51 @@ def _command_files(tmp_path: Path, user_id: str = "ang") -> list[Path]:
     return sorted((tmp_path / "bridge" / "users" / user_id / "commands").glob("*.json"))
 
 
+def test_writing_pipeline_outcome_counts_checks_and_advancements(tmp_path: Path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "bg-writing-pipeline.log").write_text(
+        "\n".join(
+            [
+                "2026-05-15 23:58:00,000 [INFO] Canonical writing pipeline advanced 9 project(s)",
+                "2026-05-16 08:00:00,000 [INFO] Canonical writing pipeline advanced 0 project(s)",
+                "2026-05-16 09:00:00,000 [INFO] Canonical writing pipeline advanced 2 project(s)",
+                "2026-05-16 10:00:00,000 [INFO] unrelated",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    outcome = server._writing_pipeline_outcome(logs, "2026-05-16")
+
+    assert outcome["checks"] == 2
+    assert outcome["advanced"] == 2
+    assert outcome["last_checked_at"] == "2026-05-16 09:00:00"
+    assert outcome["last_advanced_at"] == "2026-05-16 09:00:00"
+    assert outcome["summary"] == "advanced 2 projects across 2 checks"
+
+
+def test_writing_pipeline_outcome_explains_noop_checks(tmp_path: Path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "bg-writing-pipeline.log").write_text(
+        "\n".join(
+            [
+                "2026-05-16 08:00:00,000 [INFO] Canonical writing pipeline advanced 0 project(s)",
+                "2026-05-16 08:01:00,000 [INFO] Canonical writing pipeline advanced 0 project(s)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    outcome = server._writing_pipeline_outcome(logs, "2026-05-16")
+
+    assert outcome["checks"] == 2
+    assert outcome["advanced"] == 0
+    assert outcome["summary"] == "advanced 0 projects across 2 checks"
+    assert "scheduler checks, not completed writing" in outcome["action"]
+
+
 def test_web_api_rejects_unknown_user(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
     resp = client.get("/api/ghost/items")
