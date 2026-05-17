@@ -56,6 +56,13 @@ def test_record_background_completion_writes_v3_experience(tmp_path: Path):
     assert default_ledger(tmp_path).list()[0].pipeline == "social_reactive"
 
 
+def test_record_background_completion_skips_writing_pipeline_noop_ticks(tmp_path: Path):
+    record = record_background_completion("writing-pipeline", root=tmp_path)
+
+    assert record is None
+    assert default_ledger(tmp_path).list() == []
+
+
 def test_prepare_background_context_exports_snapshot(tmp_path: Path):
     env = prepare_background_context("explore-morning", root=tmp_path)
 

@@ -60,6 +60,10 @@ JOB_PIPELINE_MAP: dict[str, str] = {
     "log-cleanup": "memory_maintenance",
 }
 
+NOOP_COMPLETION_JOBS: set[str] = {
+    "writing-pipeline",
+}
+
 TASK_TAG_PIPELINE_MAP: dict[str, str] = {
     "writing": "article_creation",
     "writer": "article_creation",
@@ -279,7 +283,10 @@ def record_background_completion(
     bg_name: str,
     *,
     root: Path | str | None = None,
-) -> ExperienceRecord:
+) -> ExperienceRecord | None:
+    normalized_bg_name = bg_name.strip()
+    if any(normalized_bg_name == name or normalized_bg_name.startswith(name + "-") for name in NOOP_COMPLETION_JOBS):
+        return None
     pipeline = pipeline_for_background_job(bg_name)
     return record_experience(
         pipeline=pipeline,
