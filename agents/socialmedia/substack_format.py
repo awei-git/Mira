@@ -127,6 +127,16 @@ def _md_to_html_local(markdown_text: str) -> str:
             out.append("<hr />")
             continue
 
+        m_img = _re.match(r"^!\[([^\]]*)\]\(([^)]+)\)$", stripped)
+        if m_img:
+            flush_paragraph()
+            close_list()
+            close_blockquote()
+            alt = _html_mod.escape(m_img.group(1).strip(), quote=True)
+            src = _html_mod.escape(m_img.group(2).strip(), quote=True)
+            out.append(f'<img src="{src}" alt="{alt}" />')
+            continue
+
         if stripped.startswith("# "):
             flush_paragraph()
             close_list()
@@ -230,11 +240,23 @@ def _html_to_prosemirror(html: str) -> dict:
 
     content = []
     # Split by top-level tags
-    tag_pattern = _re.compile(r"<(h[1-6]|p|blockquote|ul|ol|hr)(?:\s[^>]*)?>(.+?)</\1>|<hr\s*/?>", _re.DOTALL)
+    tag_pattern = _re.compile(
+        r"<(h[1-6]|p|blockquote|ul|ol|hr)(?:\s[^>]*)?>(.+?)</\1>|<img\s+([^>]*?)\s*/?>|<hr\s*/?>",
+        _re.DOTALL,
+    )
 
     for match in tag_pattern.finditer(html):
         if match.group(0).startswith("<hr"):
             content.append({"type": "horizontal_rule"})
+            continue
+        if match.group(0).startswith("<img"):
+            attrs_text = match.group(3) or ""
+            src_m = _re.search(r'src="([^"]*)"', attrs_text)
+            alt_m = _re.search(r'alt="([^"]*)"', attrs_text)
+            src = src_m.group(1) if src_m else ""
+            alt = alt_m.group(1) if alt_m else ""
+            if src:
+                content.append({"type": "image", "attrs": {"src": src, "alt": alt, "title": None}})
             continue
         tag = match.group(1)
         inner = match.group(2).strip()
@@ -342,6 +364,18 @@ def _get_cover_image(title: str, article_text: str, workspace: Path) -> str | No
     Priority: personal photos > DALL-E.
     Returns local file path or None.
     """
+    for candidate in (
+        workspace / "cover.png",
+        workspace / "cover.jpg",
+        workspace / "cover.jpeg",
+    ):
+        if candidate.exists():
+            return str(candidate)
+
+    hero_images = sorted(workspace.glob("*hero*.png")) + sorted(workspace.glob("*hero*.jpg"))
+    if hero_images:
+        return str(hero_images[0])
+
     # Always try personal photo library first
     personal = _pick_personal_cover()
     if personal:

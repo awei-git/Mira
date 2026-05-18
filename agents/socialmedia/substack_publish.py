@@ -89,6 +89,30 @@ def _human_obsession_check(draft_text: str) -> bool:
     return True
 
 
+def _upload_local_markdown_images(article_text: str, workspace: Path, subdomain: str, cookie: str) -> str:
+    """Upload local Markdown image references and replace them with hosted URLs."""
+    from substack_format import _upload_image_to_substack
+
+    def repl(match: re.Match) -> str:
+        alt = match.group(1).strip()
+        raw_url = match.group(2).strip()
+        if re.match(r"^https?://", raw_url, re.IGNORECASE):
+            return match.group(0)
+        image_path = Path(raw_url)
+        if not image_path.is_absolute():
+            image_path = workspace / image_path
+        if not image_path.exists():
+            log.warning("Markdown image missing, leaving reference unchanged: %s", image_path)
+            return match.group(0)
+        uploaded = _upload_image_to_substack(str(image_path), subdomain, cookie)
+        if not uploaded:
+            log.warning("Markdown image upload failed, leaving reference unchanged: %s", image_path)
+            return match.group(0)
+        return f"![{alt}]({uploaded})"
+
+    return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", repl, article_text)
+
+
 def publish_to_substack(title: str, subtitle: str, article_text: str, workspace: Path, *, publication: str = "") -> str:
     """Publish an article to Substack. Returns status message.
 
@@ -502,6 +526,8 @@ Output ONLY the subtitle, nothing else."""
         _cta = f"\n\n---\n\n*{_cta_body}*"
         log.info("CTA picked from %s pool, %d chars", "ZH" if _body_is_cjk else "EN", len(_cta_body))
         article_text = article_text + _cta
+
+    article_text = _upload_local_markdown_images(article_text, workspace, subdomain, cookie)
 
     # Convert markdown to HTML
     body_html = _md_to_html(article_text)
