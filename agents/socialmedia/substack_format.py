@@ -10,9 +10,10 @@ import logging
 import os
 import re
 import tempfile
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
-import urllib.error
 from pathlib import Path
 
 log = logging.getLogger("publisher.substack")
@@ -550,32 +551,46 @@ Output ONLY the DALL-E prompt, nothing else. Keep it under 150 words."""
 
 def _upload_image_to_substack(image_path: str, subdomain: str, cookie: str) -> str | None:
     """Upload a local image to Substack. Returns the hosted image URL."""
-    try:
-        with open(image_path, "rb") as f:
-            image_bytes = f.read()
+    with open(image_path, "rb") as f:
+        image_bytes = f.read()
 
-        b64_image = b"data:image/png;base64," + base64.b64encode(image_bytes)
+    b64_image = b"data:image/png;base64," + base64.b64encode(image_bytes)
+    payload = urllib.parse.urlencode({"image": b64_image.decode()}).encode("utf-8")
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Cookie": f"substack.sid={cookie}",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    }
 
-        # Substack image upload endpoint
-        req = urllib.request.Request(
-            f"https://{subdomain}.substack.com/api/v1/image",
-            data=urllib.parse.urlencode({"image": b64_image.decode()}).encode("utf-8"),
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Cookie": f"substack.sid={cookie}",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            },
-            method="POST",
-        )
+    for attempt in range(1, 4):
+        try:
+            req = urllib.request.Request(
+                f"https://{subdomain}.substack.com/api/v1/image",
+                data=payload,
+                headers=headers,
+                method="POST",
+            )
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
 
-        image_url = result.get("url", "")
-        if image_url:
-            log.info("Uploaded image to Substack: %s", image_url[:80])
-        return image_url or None
+            image_url = result.get("url", "")
+            if image_url:
+                log.info("Uploaded image to Substack: %s", image_url[:80])
+            return image_url or None
 
-    except Exception as e:
-        log.error("Substack image upload failed: %s", e)
-        return None
+        except urllib.error.HTTPError as e:
+            if e.code in {429, 500, 502, 503, 504} and attempt < 3:
+                log.warning("Substack image upload transient HTTP %d; retry %d/3", e.code, attempt + 1)
+                time.sleep(attempt * 2)
+                continue
+            log.error("Substack image upload failed: HTTP %d: %s", e.code, e.reason)
+            return None
+        except Exception as e:
+            if attempt < 3:
+                log.warning("Substack image upload failed transiently; retry %d/3: %s", attempt + 1, e)
+                time.sleep(attempt * 2)
+                continue
+            log.error("Substack image upload failed: %s", e)
+            return None
+    return None
