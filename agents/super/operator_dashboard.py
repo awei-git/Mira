@@ -279,11 +279,33 @@ def _sync_operator_action_backlog(summary: dict) -> dict:
     if not items:
         return {"upserted": 0, "items": []}
     backlog = ActionBacklog()
+    active_by_title = {item.title: item for item in backlog.get_active()}
     saved = []
     for item in items:
+        existing = active_by_title.get(item.title)
+        if existing and _should_suppress_backlog_refresh(existing, item):
+            saved.append({"outcome": "suppressed", "title": existing.title, "status": existing.status})
+            continue
         outcome, stored = backlog.upsert_active(item)
         saved.append({"outcome": outcome, "title": stored.title, "status": stored.status})
-    return {"upserted": len(saved), "items": saved}
+    upserted = sum(1 for item in saved if item["outcome"] in {"created", "updated"})
+    return {"upserted": upserted, "items": saved}
+
+
+def _should_suppress_backlog_refresh(existing: ActionItem, incoming: ActionItem) -> bool:
+    """Avoid turning stable operator incidents into phone-notification spam."""
+    if existing.source != "operator_dashboard" or incoming.source != "operator_dashboard":
+        return False
+    payload = incoming.payload if isinstance(incoming.payload, dict) else {}
+    if payload.get("kind") != "repeated_pipeline_incident":
+        return False
+    existing_payload = existing.payload if isinstance(existing.payload, dict) else {}
+    existing_incident = existing_payload.get("incident") if isinstance(existing_payload.get("incident"), dict) else {}
+    incoming_incident = payload.get("incident") if isinstance(payload.get("incident"), dict) else {}
+    stable_keys = ("pipeline", "step", "error_type")
+    if any(existing_incident.get(key) != incoming_incident.get(key) for key in stable_keys):
+        return False
+    return _is_recent_iso(existing.updated_at or existing.created_at, hours=_ALERT_REPEAT_HOURS)
 
 
 def _operator_action_items(summary: dict) -> list[ActionItem]:
