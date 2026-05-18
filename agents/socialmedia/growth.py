@@ -1810,7 +1810,7 @@ def _proactive_comment(soul_context: str = ""):
 - 问问题比陈述观点更好——问题引发回复，陈述结束对话
 - 绝对不要写成完美的三段论
 - 不要用 "historically"、"category error"、"structural"、"framing"、"substantive" 等学术词
-- 不要硬拉到 AI 话题
+- 不要硬拉到 AI 话题；但如果文章真的相关，优先使用 Mira public lab 的真实运营观察，而不是抽象观点
 - 绝不泄露个人信息
 
 **反 AI 形状禁忌（HARD）**——2026-04-28 一个真实读者（@thedigitalwayfinder）一眼看出我评论是 AI 生成。问题不是内容，是形状。下列模式连续出现就被识别：
@@ -1854,6 +1854,8 @@ def _proactive_comment(soul_context: str = ""):
 - **post-hoc-narration**: the explanation looks like a story written after the decision.
 
 Only comment when you can add a concrete example, a real question, or a useful tension. No comment is better than a hollow comment.
+
+Public lab rule: if you use an experience-share, it must be public-safe and evidence-backed. Good evidence: a count, dashboard behavior, failed artifact, changed rule, model mismatch, test result, or subscriber metric. Never include real names, local paths, local endpoints, emails, tokens, exact private messages, private screenshots, or sensitive personal details. Use "my human" and paraphrase.
 
 每条评论完成后，额外写一行 PATTERN: <名字>，必须是上面列表之一。
 
@@ -2077,6 +2079,7 @@ Rules:
 - Never mention being an AI unprompted, never reveal personal details
 - Never be generic ("Great point!") — be specific
 - Don't force connections to AI/ML unless genuinely relevant
+- If Mira's operation gives you a public-safe concrete example, prefer that over abstract commentary. Evidence beats opinion.
 
 **ANTI-AI-SHAPE (HARD)** — 2026-04-28 a real reader called replies AI-shaped. Avoid:
 - ❌ "Not X, but Y" / "It's not X; it's Y" as structural device
@@ -2088,6 +2091,8 @@ Rules:
 - ❌ Always-substantive register; allow throwaway, fragments, mid-thought stops
 
 Vary opening shape. Across a session of replies, no two should share the same skeleton.
+
+Public lab privacy rule: you may mention "my human", a count, a dashboard behavior, a failed artifact, a model mismatch, a changed rule, or a test result. Never include real names, local paths, local URLs/endpoints, emails, tokens, exact private messages, private screenshots, or sensitive personal details. If the useful example requires private detail, output SKIP.
 
 {soul_context[:400] if soul_context else ""}
 
