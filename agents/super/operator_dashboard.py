@@ -449,6 +449,8 @@ def _load_bg_health() -> dict:
 def _recent_incidents() -> list[dict]:
     grouped: dict[tuple[str, str, str, str], dict] = {}
     for rec in load_recent_failures(days=7, limit=50):
+        if rec.get("resolution"):
+            continue
         key = (
             rec.get("pipeline", ""),
             rec.get("step", ""),

@@ -11,6 +11,7 @@ RSS feeds:
 """
 
 import json
+import fcntl
 import logging
 import os
 import re
@@ -135,6 +136,19 @@ def _verify_feed_contains_slug(slug: str, feed_url: str, cfg: dict, fetch_text=_
 from contextlib import contextmanager
 import shutil as _shutil
 import tempfile as _tempfile
+
+
+@contextmanager
+def _publish_lock(lang: str):
+    """Serialize podcast GitHub Pages publishes per language."""
+    lock_path = Path(_tempfile.gettempdir()) / f"mira-podcast-publish-{lang}.lock"
+    with open(lock_path, "a+", encoding="utf-8") as lf:
+        log.info("Waiting for %s podcast publish lock", lang.upper())
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
 
 
 @contextmanager
@@ -609,7 +623,7 @@ def publish_episode(
 
     # 1. Ephemeral shallow clone — write, push, drop. No persistent local state.
     try:
-        with _ephemeral_repo(lang) as repo_dir:
+        with _publish_lock(lang), _ephemeral_repo(lang) as repo_dir:
             feed_path = repo_dir / "feed.xml"
             rss = _load_or_create_feed(feed_path, lang=lang)
 

@@ -127,8 +127,9 @@ def test_pending_podcast_dispatch_does_not_spend_weekly_quota(monkeypatch, tmp_p
     publishing._check_pending_podcast()
 
     assert dispatched and dispatched[0][0] == "podcast-en-essay"
-    assert state == {}
-    assert saved == []
+    assert "podcast_en_week" not in state
+    assert state["podcast_en_dispatch"]["slug"] == "essay"
+    assert saved == [state]
 
 
 def test_pending_podcast_syncs_quota_from_verified_manifest_transition(monkeypatch, tmp_path):

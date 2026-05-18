@@ -15,7 +15,7 @@ def test_tts_provider_routing():
     _spec.loader.exec_module(_mod)
     TTS_PROVIDER_ZH = _mod.TTS_PROVIDER_ZH
     TTS_PROVIDER_EN = _mod.TTS_PROVIDER_EN
-    assert TTS_PROVIDER_ZH == "minimax", f"ZH should be minimax, got {TTS_PROVIDER_ZH}"
+    assert TTS_PROVIDER_ZH == "auto", f"ZH should fail over across TTS providers, got {TTS_PROVIDER_ZH}"
     # EN should be gemini (may change but should not be minimax — bad EN voices)
     assert TTS_PROVIDER_EN != "minimax", f"EN should not be minimax (bad EN female voices)"
 

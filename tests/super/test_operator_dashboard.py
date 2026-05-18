@@ -125,6 +125,28 @@ def test_build_operator_summary_aggregates_runtime_signals(monkeypatch, tmp_path
     assert summary["latest_restore_drill"]["ok"] is True
 
 
+def test_recent_incidents_ignore_resolved_failures(monkeypatch):
+    import operator_dashboard as od
+
+    monkeypatch.setattr(
+        od,
+        "load_recent_failures",
+        lambda days=7, limit=50: [
+            {
+                "timestamp": "2026-05-18T07:49:52Z",
+                "pipeline": "podcast",
+                "step": "podcast_zh",
+                "slug": "essay",
+                "error_type": "tts_failed",
+                "error_message": "MiniMax credit exhausted",
+                "resolution": "Routed ZH TTS through Gemini fallback and throttled alerts.",
+            }
+        ],
+    )
+
+    assert od._recent_incidents() == []
+
+
 def test_operator_dashboard_filters_ephemeral_restore_and_stale_processes(monkeypatch, tmp_path: Path):
     import operator_dashboard as od
 

@@ -22,6 +22,32 @@ log = logging.getLogger("mira")
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
 _PIPELINE_STATUS_ORDER = ["approved", "published", "podcast_en", "podcast_zh", "complete"]
+_PODCAST_DISPATCH_COOLDOWN_SECONDS = 6 * 60 * 60
+
+
+def _recent_podcast_dispatch(state: dict, lang: str, slug: str, current_week: str) -> bool:
+    """Prevent one failing podcast step from being relaunched every core cycle."""
+    dispatch = state.get(f"podcast_{lang}_dispatch")
+    if not isinstance(dispatch, dict):
+        return False
+    if dispatch.get("slug") != slug or dispatch.get("week") != current_week:
+        return False
+    try:
+        ts = datetime.fromisoformat(str(dispatch.get("dispatched_at", "")).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds()
+    return age < _PODCAST_DISPATCH_COOLDOWN_SECONDS
+
+
+def _mark_podcast_dispatched(state: dict, lang: str, slug: str, current_week: str) -> None:
+    state[f"podcast_{lang}_dispatch"] = {
+        "slug": slug,
+        "week": current_week,
+        "dispatched_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _check_pending_publish():
@@ -292,29 +318,35 @@ def _check_pending_podcast():
             slug = entry["slug"]
             bg_name = f"podcast-en-{slug}"
             if final.exists():
-                log.info(
-                    "Triggering EN podcast for '%s' (week %s, %d candidates)",
-                    entry["title"],
-                    current_week,
-                    len(en_candidates),
-                )
-                _dispatch_background(
-                    bg_name,
-                    [
-                        sys.executable,
-                        str(_AGENTS_DIR / "podcast" / "handler.py"),
-                        "--run",
-                        "conversation",
-                        "--title",
+                if _recent_podcast_dispatch(state, "en", slug, current_week):
+                    log.info("EN podcast for '%s' already dispatched recently; skipping retry", entry["title"])
+                else:
+                    log.info(
+                        "Triggering EN podcast for '%s' (week %s, %d candidates)",
                         entry["title"],
-                        "--file",
-                        str(final),
-                        "--lang",
-                        "en",
-                        "--slug",
-                        slug,
-                    ],
-                )
+                        current_week,
+                        len(en_candidates),
+                    )
+                    dispatched = _dispatch_background(
+                        bg_name,
+                        [
+                            sys.executable,
+                            str(_AGENTS_DIR / "podcast" / "handler.py"),
+                            "--run",
+                            "conversation",
+                            "--title",
+                            entry["title"],
+                            "--file",
+                            str(final),
+                            "--lang",
+                            "en",
+                            "--slug",
+                            slug,
+                        ],
+                    )
+                    if dispatched:
+                        _mark_podcast_dispatched(state, "en", slug, current_week)
+                        save_state(state)
             else:
                 update_manifest(slug, error=f"Podcast: final_md not found: {final}")
     else:
@@ -329,29 +361,35 @@ def _check_pending_podcast():
             slug = entry_zh["slug"]
             bg_name = f"podcast-zh-{slug}"
             if final.exists():
-                log.info(
-                    "Triggering ZH podcast for '%s' (week %s, %d candidates)",
-                    entry_zh["title"],
-                    current_week,
-                    len(zh_candidates),
-                )
-                _dispatch_background(
-                    bg_name,
-                    [
-                        sys.executable,
-                        str(_AGENTS_DIR / "podcast" / "handler.py"),
-                        "--run",
-                        "conversation",
-                        "--title",
+                if _recent_podcast_dispatch(state, "zh", slug, current_week):
+                    log.info("ZH podcast for '%s' already dispatched recently; skipping retry", entry_zh["title"])
+                else:
+                    log.info(
+                        "Triggering ZH podcast for '%s' (week %s, %d candidates)",
                         entry_zh["title"],
-                        "--file",
-                        str(final),
-                        "--lang",
-                        "zh",
-                        "--slug",
-                        slug,
-                    ],
-                )
+                        current_week,
+                        len(zh_candidates),
+                    )
+                    dispatched = _dispatch_background(
+                        bg_name,
+                        [
+                            sys.executable,
+                            str(_AGENTS_DIR / "podcast" / "handler.py"),
+                            "--run",
+                            "conversation",
+                            "--title",
+                            entry_zh["title"],
+                            "--file",
+                            str(final),
+                            "--lang",
+                            "zh",
+                            "--slug",
+                            slug,
+                        ],
+                    )
+                    if dispatched:
+                        _mark_podcast_dispatched(state, "zh", slug, current_week)
+                        save_state(state)
             else:
                 update_manifest(slug, error=f"Podcast: final_md not found: {final}")
     else:

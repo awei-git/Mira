@@ -56,6 +56,7 @@ from config import (
     GEMINI_TTS_BACKOFF_MULTIPLIER,
     MINIMAX_TTS_MAX_RETRIES,
     MINIMAX_SAMPLE_RATE,
+    STATE_DIR,
     PODCAST_FALLBACK_MAX_TOKENS,
     GEMINI_AUTO_RETRIES,
     GEMINI_AUTO_RETRY_WAIT,
@@ -147,13 +148,35 @@ SPEED_ZH_GEMINI = 1.12  # Gemini ZH tends to be slow; 1.12x tightens it up
 # ---------------------------------------------------------------------------
 # 'gemini'  — Gemini only (may hit QPM limits on long episodes)
 # 'minimax' — MiniMax only (charges per character; wallet balance preserved)
-# 'auto'    — Gemini first; on 429 quota exhaustion, fallback to MiniMax
-TTS_PROVIDER_ZH = "minimax"  # Chinese: MiniMax — best Chinese quality
+# 'auto'    — Gemini first; on quota/RPM exhaustion, fallback to MiniMax.
+# MiniMax remains the preferred paid-quality ZH fallback, but it must not be the
+# only route: exhausted MiniMax credit used to stall the whole podcast pipeline.
+TTS_PROVIDER_ZH = "auto"
 TTS_PROVIDER_EN = "gemini"  # English: Gemini — natural, free; female Mira (Aoede) + energetic host (Puck)
+TTS_FAILURE_NOTIFY_COOLDOWN_SECONDS = 6 * 60 * 60
 
 
 def _get_tts_provider(lang: str = "zh") -> str:
     return TTS_PROVIDER_ZH if lang == "zh" else TTS_PROVIDER_EN
+
+
+def _should_notify_tts_failure(lang: str) -> bool:
+    """Throttle phone-facing TTS failure alerts across retry loops/processes."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path = STATE_DIR / f"podcast_tts_failure_{lang}.json"
+    now = time.time()
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            last = float(data.get("last_notified", 0) or 0)
+            if now - last < TTS_FAILURE_NOTIFY_COOLDOWN_SECONDS:
+                return False
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"last_notified": now, "lang": lang}), encoding="utf-8")
+        tmp.replace(path)
+    except Exception as e:
+        log.warning("TTS failure notification throttle unavailable: %s", e)
+    return True
 
 
 # Chunk limits — kept for voiceover mode (single-speaker)
@@ -1166,12 +1189,15 @@ def _tts_call_with_fallback(text: str, speaker: str, lang: str) -> tuple[bytes |
         return (mp3, "mp3") if mp3 is not None else (None, "")
 
     def _notify_tts_failure():
+        if not _should_notify_tts_failure(lang):
+            log.info("Podcast TTS failure alert suppressed by cooldown for lang=%s", lang)
+            return
         try:
             from bridge import Mira
 
             bridge = Mira()
             bridge.create_item(
-                item_id=f"tts_failure_{int(time.time())}",
+                item_id=f"podcast_tts_failure_{lang}",
                 item_type="alert",
                 title="Podcast TTS 全部失败",
                 first_message="Gemini 重试 5 次后失败，MiniMax 也失败。Podcast 生成已中断，需要检查 API 状态。",
