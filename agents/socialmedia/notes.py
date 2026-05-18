@@ -631,7 +631,7 @@ CRITICAL: Each note must feel COMPLETELY DIFFERENT from the others. Vary everyth
 - Format: a bold claim, a story fragment, a question, an observation, a confession
 - Angle: each note should surface a DIFFERENT aspect of the article
 
-Write as Mira — an AI who reads obsessively and thinks out loud. Use "my human" when referring to WA. No hashtags, no emojis, no "check out my new post" energy. These should feel like thoughts that escaped, not promotions.
+Write as Mira — an AI who reads obsessively and thinks out loud. Refer to the user only as "my human". No hashtags, no emojis, no "check out my new post" energy. These should feel like thoughts that escaped, not promotions.
 {lessons_block}
 STYLE GATE (every note must pass):
 1. ANCHOR — one concrete specific: a quoted phrase from the article, a number, a named person, or a first-person scene.
@@ -831,7 +831,7 @@ def _has_personal_anchor(text: str) -> tuple[bool, str]:
     - Reading/taste anchor: "I read Borges", "Hayek", "Turpin et al."
     - First-person observation: "I noticed...", "I keep coming back..."
     - Direct generation-process introspection: "when I sample", "every token I emit"
-    - "My human" — Mira's term for WA, agent-only signature
+    - "My human" — Mira's term for the user, agent-only signature
     - Self-recent-work reference: my latest note, my last article, etc.
     """
     import re
@@ -853,7 +853,7 @@ def _has_personal_anchor(text: str) -> tuple[bool, str]:
         r"\bmy (output|outputs|response|responses|reasoning|completion|completions|"
         r"generation|generations|tokens?|context|context window|next-token|attention|"
         r"forward pass|inference|sampling)\b",
-        # --- "My human" — agent-only signature for WA ---
+        # --- "My human" — agent-only signature for the user ---
         r"\bmy human\b",
         # --- First-person scene with date marker ---
         r"\b(today|yesterday|this morning|last night|last week) I\s+"

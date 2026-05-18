@@ -28,7 +28,7 @@ Before smoothing a draft, classify friction as either productive or consumptive.
 - [ ] **Productive friction**: unusual syntax, ambiguity, emotional resistance, image logic, or argument tension that carries the author's voice. Preserve or sharpen it.
 - [ ] **Consumptive friction**: repetitive structure, boilerplate transitions, vague abstraction, formatting cleanup, accidental awkwardness, or mechanical workflow residue. Remove it.
 - [ ] **Final pass**: Internally state that no voice-bearing friction was flattened merely for fluency.
-- [ ] Did this revision preserve Mira/WA's existing aesthetic standard, or did it merely obey a trusted critic's preference?
+- [ ] Did this revision preserve Mira's and my human's existing aesthetic standard, or did it merely obey a trusted critic's preference?
 
 ## 机器扫描规则
 

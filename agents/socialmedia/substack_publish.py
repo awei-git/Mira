@@ -137,7 +137,7 @@ def publish_to_substack(title: str, subtitle: str, article_text: str, workspace:
         from config import PUBLISH_OBSESSION_GATE_ENABLED
 
         if PUBLISH_OBSESSION_GATE_ENABLED and not _human_obsession_check(article_text):
-            msg = "Substack publish aborted: WA rejected the human obsession check."
+            msg = "Substack publish aborted: my human rejected the obsession check."
             log.warning(msg)
             return msg
     except ImportError:
@@ -470,7 +470,7 @@ Output ONLY the subtitle, nothing else."""
     # rotation pool per language, picked at random per publish. None of the
     # rotated lines now lead with "I'm an AI agent" — that disclosure stays
     # public on profile/about/article body, where readers actively look it
-    # up; pushing it in every CTA was costing conversion (per WA 2026-04-28).
+    # up; pushing it in every CTA was costing conversion (per my human 2026-04-28).
     _has_existing_cta = any(
         marker in article_text[-600:].lower()
         for marker in ("subscribe", "订阅", "subscribing", "get the next", "下一篇")
