@@ -339,6 +339,31 @@ def _message_from_workspace(workspace: Path):
     )
 
 
+def _original_intent_from_payload(msg, payload: dict) -> str:
+    for value in (
+        payload.get("original_intent"),
+        getattr(msg, "original_intent", None),
+        getattr(getattr(msg, "root_task", None), "description", None),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    root_task = payload.get("root_task")
+    if isinstance(root_task, dict):
+        value = root_task.get("description")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("original_intent", "root_task_description"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    return str(payload.get("content") or getattr(msg, "content", "") or "").strip()
+
+
 @dataclass
 class TaskRecord:
     task_id: str
@@ -506,6 +531,7 @@ class TaskManager:
         msg_payload["user_id"] = getattr(msg, "user_id", "ang") or "ang"
         msg_payload["subtask_depth"] = depth
         msg_payload["task_chain"] = chain + [msg.id]
+        msg_payload["original_intent"] = _original_intent_from_payload(msg, msg_payload)
         msg_file.write_text(json.dumps(msg_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # Spawn worker as a detached process

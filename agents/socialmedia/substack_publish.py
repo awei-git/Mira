@@ -45,6 +45,30 @@ def _get_substack_config(*, publication: str = "") -> dict:
     return _cfg(publication=publication)
 
 
+def _write_publish_audit(action: str, platform: str, title: str, audit_context: dict | None = None) -> None:
+    context = audit_context or {}
+    if context.get("logged"):
+        return
+    try:
+        import sys
+
+        shared_dir = Path(__file__).resolve().parent.parent / "shared"
+        if str(shared_dir) not in sys.path:
+            sys.path.insert(0, str(shared_dir))
+        from sub_agent import log_publish_audit
+
+        log_publish_audit(
+            context.get("triggering_agent_name") or "publisher",
+            dispatch_path=context.get("dispatch_path"),
+            autonomous=context.get("autonomous"),
+            action=action,
+            platform=platform,
+            title=title,
+        )
+    except Exception as e:
+        log.warning("publish_audit write failed: %s", e)
+
+
 def _human_obsession_check(draft_text: str) -> bool:
     from config import MIRA_DIR, OBSESSION_GATE_TIMEOUT_HOURS
     from bridge import Mira
@@ -113,7 +137,15 @@ def _upload_local_markdown_images(article_text: str, workspace: Path, subdomain:
     return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", repl, article_text)
 
 
-def publish_to_substack(title: str, subtitle: str, article_text: str, workspace: Path, *, publication: str = "") -> str:
+def publish_to_substack(
+    title: str,
+    subtitle: str,
+    article_text: str,
+    workspace: Path,
+    *,
+    publication: str = "",
+    audit_context: dict | None = None,
+) -> str:
     """Publish an article to Substack. Returns status message.
 
     Args:
@@ -135,6 +167,8 @@ def publish_to_substack(title: str, subtitle: str, article_text: str, workspace:
         )
         log.error(msg)
         return msg
+
+    _write_publish_audit("publish_article", "substack", title, audit_context)
 
     # Preflight check
     try:

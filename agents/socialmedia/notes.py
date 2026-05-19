@@ -94,6 +94,30 @@ def _build_note_doc(paragraphs: list[dict]) -> dict:
     }
 
 
+def _write_publish_audit(action: str, platform: str, title: str, audit_context: dict | None = None) -> None:
+    context = audit_context or {}
+    if context.get("logged"):
+        return
+    try:
+        import sys
+
+        shared_dir = Path(__file__).resolve().parent.parent / "shared"
+        if str(shared_dir) not in sys.path:
+            sys.path.insert(0, str(shared_dir))
+        from sub_agent import log_publish_audit
+
+        log_publish_audit(
+            context.get("triggering_agent_name") or "socialmedia.notes",
+            dispatch_path=context.get("dispatch_path") or "notes",
+            autonomous=context.get("autonomous"),
+            action=action,
+            platform=platform,
+            title=title,
+        )
+    except Exception as e:
+        log.warning("publish_audit write failed: %s", e)
+
+
 def _text_to_prosemirror(text: str) -> list[dict]:
     """Convert plain text (with newlines) into ProseMirror paragraph nodes.
 
@@ -140,7 +164,13 @@ def _text_to_prosemirror(text: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def post_note(text: str, link_url: str | None = None, post_id: int | None = None) -> dict | None:
+def post_note(
+    text: str,
+    link_url: str | None = None,
+    post_id: int | None = None,
+    *,
+    audit_context: dict | None = None,
+) -> dict | None:
     """Post a Substack Note with optional link attachment.
 
     Args:
@@ -245,6 +275,7 @@ def post_note(text: str, link_url: str | None = None, post_id: int | None = None
         body["postIds"] = [post_id]
 
     payload = json.dumps(body).encode("utf-8")
+    _write_publish_audit("publish_note", "substack_note", text[:80], audit_context)
 
     try:
         req = urllib.request.Request(

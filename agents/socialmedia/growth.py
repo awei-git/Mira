@@ -1333,7 +1333,12 @@ def post_note(text: str) -> dict | None:
 
     from notes import post_note as _post_note
 
-    result = _post_note(text)
+    audit_context = {
+        "triggering_agent_name": "socialmedia.growth",
+        "dispatch_path": "schedule",
+        "autonomous": True,
+    }
+    result = _post_note(text, audit_context=audit_context)
     if result:
         _record_publish_time("note")
     return result

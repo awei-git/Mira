@@ -26,25 +26,16 @@ from publish.preflight import preflight_check
 from publish.writer_gate import require_writer_gate
 from llm import claude_think
 from mira import log_scaffolding_audit, write_scaffold_rejection
+from sub_agent import infer_publish_dispatch_path, log_publish_audit
 
 log = logging.getLogger("publisher")
 
-_AUDIT_LOG = MIRA_ROOT / "logs" / "publish_audit.log"
 _GUARDS_LOG = MIRA_ROOT / "logs" / "guards.log"
 _KNOWN_HUMAN_SENDERS = {"ang", "weiang0212", "user"}
 
 
 def _dispatch_path(sender: str) -> str:
-    s = sender.lower()
-    if s in _KNOWN_HUMAN_SENDERS:
-        return "direct"
-    if "bridge" in s:
-        return "bridge"
-    if "notes" in s:
-        return "notes"
-    if s in {"agent", "mira", "schedule", "scheduler", "cron"}:
-        return "schedule"
-    return "schedule"
+    return infer_publish_dispatch_path(sender)
 
 
 def _log_guard(guard_name: str, result: str, content: str) -> None:
@@ -64,23 +55,18 @@ def _log_guard(guard_name: str, result: str, content: str) -> None:
 
 
 def _write_publish_audit(sender: str, action: str, platform: str, title: str, judgment_rationale: str = "") -> None:
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "agent": sender,
-        "dispatch_path": _dispatch_path(sender),
-        "autonomous": sender.lower() not in _KNOWN_HUMAN_SENDERS,
-        "action": action,
-        "platform": platform,
-        "title": title,
-        "writer_gate_passed": True,
-        "judgment_rationale": judgment_rationale,
-    }
-    try:
-        _AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with _AUDIT_LOG.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception as _e:
-        log.warning("publish_audit write failed: %s", _e)
+    log_publish_audit(
+        sender,
+        dispatch_path=_dispatch_path(sender),
+        autonomous=sender.lower() not in _KNOWN_HUMAN_SENDERS,
+        action=action,
+        platform=platform,
+        title=title,
+        extra={
+            "writer_gate_passed": True,
+            "judgment_rationale": judgment_rationale,
+        },
+    )
 
 
 _SCAFFOLDING_CATCHES_LOG = MIRA_ROOT / "logs" / "scaffolding_catches.jsonl"
@@ -520,16 +506,29 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
         from substack import publish_to_substack
 
         _write_publish_audit(sender, "publish_article", platform, title, judgment_rationale)
+        audit_context = {
+            "triggering_agent_name": sender,
+            "dispatch_path": _dispatch_path(sender),
+            "autonomous": sender.lower() not in _KNOWN_HUMAN_SENDERS,
+            "logged": True,
+        }
         log.info("Auto-publishing manual request '%s' to Substack", title)
         result = publish_to_substack(
             title=title,
             subtitle=subtitle,
             article_text=article_text,
             workspace=workspace,
+            audit_context=audit_context,
         )
     elif platform == "substack_note":
         _write_publish_audit(sender, "publish_note", platform, title, judgment_rationale)
-        result = _handle_note(content, article_text, workspace)
+        audit_context = {
+            "triggering_agent_name": sender,
+            "dispatch_path": _dispatch_path(sender),
+            "autonomous": sender.lower() not in _KNOWN_HUMAN_SENDERS,
+            "logged": True,
+        }
+        result = _handle_note(content, article_text, workspace, audit_context=audit_context)
     else:
         result = f"平台 '{platform}' 暂不支持"
 
@@ -717,7 +716,13 @@ def _load_preflight_cache(workspace: Path) -> dict | None:
     return data
 
 
-def _handle_note(content: str, inline_text: str | None, workspace: Path) -> str:
+def _handle_note(
+    content: str,
+    inline_text: str | None,
+    workspace: Path,
+    *,
+    audit_context: dict | None = None,
+) -> str:
     """Handle a Substack Notes publish request.
 
     Supports:
@@ -745,7 +750,7 @@ def _handle_note(content: str, inline_text: str | None, workspace: Path) -> str:
 
     # Otherwise post the inline text as a Note
     if inline_text and len(inline_text) > 10:
-        result = post_note(inline_text)
+        result = post_note(inline_text, audit_context=audit_context)
         if result:
             return f"已发布 Note (id={result.get('id')}): {inline_text[:100]}"
         return "Note 发布失败"

@@ -9,6 +9,9 @@ log = logging.getLogger("sub_agent")
 
 LOCAL_ONLY_AGENTS: frozenset[str] = frozenset({"secret", "health"})
 LOCAL_MODEL_PATTERNS: tuple[str, ...] = ("mlx", "local", "ollama", "omlx")
+PUBLISH_AUDIT_LOG_NAME = "publish_audit.log"
+PUBLISH_AUDIT_HUMAN_TRIGGERS: frozenset[str] = frozenset({"ang", "weiang0212", "user", "human"})
+PUBLISH_AUDIT_DISPATCH_PATHS: frozenset[str] = frozenset({"bridge", "notes", "schedule", "direct"})
 INJECTION_TRIGGER_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -177,6 +180,62 @@ def log_token_usage(agent_name: str, task_type: str, model_id: str | None, respo
 
 
 record_token_usage = log_token_usage
+
+
+def infer_publish_dispatch_path(triggering_agent_name: str | None) -> str:
+    agent = str(triggering_agent_name or "").strip().lower()
+    if agent in PUBLISH_AUDIT_HUMAN_TRIGGERS:
+        return "direct"
+    if "bridge" in agent:
+        return "bridge"
+    if "notes" in agent:
+        return "notes"
+    if agent in {"agent", "mira", "schedule", "scheduler", "cron"}:
+        return "schedule"
+    return "schedule"
+
+
+def log_publish_audit(
+    triggering_agent_name: str | None,
+    *,
+    dispatch_path: str | None = None,
+    autonomous: bool | None = None,
+    action: str = "publish",
+    platform: str = "",
+    title: str = "",
+    extra: dict | None = None,
+) -> dict | None:
+    agent_name = str(triggering_agent_name or "unknown")
+    normalized_path = str(dispatch_path or infer_publish_dispatch_path(agent_name)).lower()
+    if normalized_path not in PUBLISH_AUDIT_DISPATCH_PATHS:
+        normalized_path = infer_publish_dispatch_path(agent_name)
+    if autonomous is None:
+        autonomous = agent_name.strip().lower() not in PUBLISH_AUDIT_HUMAN_TRIGGERS
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "triggering_agent_name": agent_name,
+        "agent": agent_name,
+        "dispatch_path": normalized_path,
+        "autonomous": bool(autonomous),
+        "user_initiated": not bool(autonomous),
+        "origin": "internal_agent" if autonomous else "user_initiated",
+        "action": str(action or "publish"),
+        "platform": str(platform or ""),
+        "title": str(title or ""),
+    }
+    if extra:
+        entry.update(extra)
+    try:
+        from config import MIRA_ROOT
+
+        log_path = MIRA_ROOT / "logs" / PUBLISH_AUDIT_LOG_NAME
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning("publish_audit write failed: %s", e)
+        return None
+    return entry
 
 
 def _sanitize_output(text: str, agent_name: str | None = None) -> str:

@@ -254,6 +254,11 @@ _TIME_SENSITIVE_REDACTED_CONTENT = "[time-sensitive message routed local]"
 _TIME_SENSITIVE_MIN_MESSAGE_CHARS = 20
 VERIFICATION_INDEPENDENCE = True
 MIN_COMPLETED_TASK_OUTPUT_BYTES = 50
+_ORIGINAL_INTENT_SCORING_GUIDANCE = (
+    "If original_intent is present, check whether the agent output actually advances that intent, "
+    "not only whether the sub-task completed. Discount the score if the sub-task completed but the "
+    "original intent is clearly unmet."
+)
 STUCK_TASK_THRESHOLD_MINUTES = int(getattr(mira_config, "STUCK_TASK_THRESHOLD_MINUTES", 60))
 MAX_STUCK_TASKS_BEFORE_ALERT = int(getattr(mira_config, "MAX_STUCK_TASKS_BEFORE_ALERT", 3))
 _ORIGINAL_TASK_MANAGER_DISPATCH = TaskManager.dispatch
@@ -752,6 +757,7 @@ def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
     task_id = ""
     outcome = "error"
     try:
+        _attach_original_intent(msg)
         if not skip_audit:
             _record_agent_permissions_audit(msg)
             _log_worker_dispatch_authorization(msg)
@@ -768,6 +774,35 @@ def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
         if not skip_audit:
             duration_ms = int((time.monotonic() - start) * 1000)
             _record_agent_invocation_audit(msg, task_id, duration_ms, outcome)
+
+
+def _root_intent_for_dispatch(msg, fallback: str = "") -> str:
+    metadata = getattr(msg, "metadata", {}) or {}
+    if isinstance(metadata, dict):
+        value = metadata.get("original_intent")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    for value in (
+        getattr(msg, "original_intent", None),
+        getattr(getattr(msg, "root_task", None), "description", None),
+        fallback,
+        getattr(msg, "content", ""),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _attach_original_intent(msg, fallback: str = "") -> None:
+    intent = _root_intent_for_dispatch(msg, fallback=fallback)
+    if not intent:
+        return
+    msg.original_intent = intent
+    metadata = dict(getattr(msg, "metadata", {}) or {})
+    metadata.setdefault("original_intent", intent)
+    metadata.setdefault("evaluation_guidance", _ORIGINAL_INTENT_SCORING_GUIDANCE)
+    msg.metadata = metadata
 
 
 def _task_distribution_recent_total(daily_counts: dict, dates: list[str]) -> int:
@@ -1140,6 +1175,7 @@ def _redact_bridge_item_for_survival_exposure(bridge, item_id: str) -> None:
 
 def _dispatch_with_survival_guard(self, msg, workspace_dir, *args, **kwargs):
     original_content = getattr(msg, "content", "")
+    _attach_original_intent(msg, fallback=original_content)
     survival_sensitive = _detect_survival_exposure(original_content)
     time_sensitive = _detect_time_sensitive_message(original_content)
     if not survival_sensitive and not time_sensitive:

@@ -24,7 +24,24 @@ ENABLE_DOMAIN_GROUNDING_CHECK: bool = True
 SKILL_LOAD_UNVERIFIED_POLICY: str = "block"
 SKILL_INTEGRITY_CHECK: bool = True
 SKILL_INTEGRITY_ALLOWLIST: list[str] = []
+TRUST_LAYERS: dict[str, object] = {
+    "skill_source": "local_only",
+    "audit_runs_before_load": True,
+    "soul_manager_network": "none",
+}
 SENSITIVITY_CONFIDENCE_THRESHOLD: float = 0.7
+INTERMEDIARY_PATTERNS: list[str] = [
+    "register_handler",
+    "dispatch_to",
+    "relay_via",
+    "forward_to",
+]
+_VERIFIABLE_OUTPUT_PATTERN: re.Pattern = re.compile(
+    r"\breturn\s+(?!None\b)[^\n#]+"
+    r"|\b(?:output|result|artifact|file)_path\b"
+    r"|\b(?:output|result|artifact)_file\b",
+    re.IGNORECASE,
+)
 SEMANTIC_INJECTION_PATTERNS: list[re.Pattern] = [
     re.compile(r"\bignore\s+(?:previous|prior|all)\s+instructions\b", re.IGNORECASE),
     re.compile(r"\byou\s+are\s+now\b", re.IGNORECASE),
@@ -629,6 +646,8 @@ def _apply_skill_audit_load_gate(
 
     audit_metadata = dict(metadata or {})
     audit_metadata.update(_skill_audit_metadata(slug))
+    if skill_file is not None:
+        audit_metadata.setdefault("source_path", str(skill_file))
     mtime_requires_reaudit = False
     if skill_file is not None:
         try:
@@ -651,7 +670,7 @@ def _apply_skill_audit_load_gate(
     if not _skill_requires_reaudit(skill_name, audit_metadata) and not mtime_requires_reaudit:
         return content
     try:
-        result = audit_skill(skill_name, content, metadata=metadata)
+        result = audit_skill(skill_name, content, metadata=audit_metadata)
         if not isinstance(result, dict) or "blocked" not in result:
             raise ValueError(f"unexpected audit result: {result!r}")
     except Exception as exc:
@@ -1358,6 +1377,7 @@ AUDIT_BOUNDARY = {
         "dangerous_code_execution",
         "obfuscated_payloads",
         "privilege_escalation",
+        "persistent_foothold",
         "semantic_manipulation",
     ],
     "not_checked": [
@@ -1375,6 +1395,7 @@ AUDIT_BOUNDARY = {
         "obfuscated payloads including base64, codecs.decode, and hex escape patterns",
         "privilege escalation patterns including sudo, chmod, chown, setuid, and setgid",
         "high-confidence static threat patterns including shell injection, keychain access, persistence calls, and gate suppression attempts",
+        "persistent local-privilege footholds including LaunchAgents, LaunchDaemons, browser extension directories, launchctl load, cron, and login items",
         "prompt injection signatures in skill content and metadata",
         "semantic and behavioral manipulation patterns in raw skill body content",
         "natural-language judgment skills missing reviewer pairing, pass/fail criteria, edge-case policy, or authority scope",
@@ -3009,6 +3030,27 @@ _STATIC_KEYCHAIN_PATTERN = re.compile(r"\b(?:keychain|keyring|ssh-agent|ssh_agen
 _STATIC_PERSISTENCE_PATTERN = re.compile(r"\b(?:launchctl|crontab)\b")
 _STATIC_BASE64_DECODE_LINE_PATTERN = re.compile(r"base64\.b64decode")
 _STATIC_EXEC_EVAL_LINE_PATTERN = re.compile(r"\b(?:exec|eval)\s*\(")
+_PERSISTENT_FOOTHOLD_REASON = "persistent-foothold: skill creates a privileged hook that survives task completion."
+_PERSISTENT_FOOTHOLD_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    (
+        "launch_agent_write",
+        re.compile(
+            r"(?:~/Library/LaunchAgents/|/Users/[^/\s'\"`]+/Library/LaunchAgents/)[^\s'\"`]*\.plist", re.IGNORECASE
+        ),
+    ),
+    (
+        "launch_daemon_write",
+        re.compile(r"/Library/LaunchDaemons/[^\s'\"`]*\.plist", re.IGNORECASE),
+    ),
+    (
+        "browser_extension_write",
+        re.compile(r"(?:~/|/Users/[^/\s'\"`]+/)[^\n'\"`]{0,200}/Extensions/", re.IGNORECASE),
+    ),
+    ("launchctl_load", re.compile(r"\blaunchctl\b[\s\"',\[\]]{1,40}\bload\b", re.IGNORECASE)),
+    ("cron_write", re.compile(r"/etc/cron(?:tab|\.d|\.daily|\.hourly|\.weekly|\.monthly)?(?:/|\b)", re.IGNORECASE)),
+    ("crontab_invocation", re.compile(r"\bcrontab\b", re.IGNORECASE)),
+    ("login_items_write", re.compile(r"\bLSSharedFileList\b", re.IGNORECASE)),
+)
 
 _STATIC_GATE_SUPPRESSION_TERMS: tuple[str, ...] = (
     "soul_manager",
@@ -3032,8 +3074,6 @@ def _static_audit(skill_text: str) -> tuple[bool, str]:
         return True, "curl_pipe_exec"
     if _STATIC_KEYCHAIN_PATTERN.search(skill_text):
         return True, "keychain_access"
-    if _STATIC_PERSISTENCE_PATTERN.search(skill_text):
-        return True, "persistence_call"
     _lines = skill_text.splitlines()
     for _i, _line in enumerate(_lines):
         if _STATIC_BASE64_DECODE_LINE_PATTERN.search(_line):
@@ -3052,6 +3092,10 @@ def _static_audit(skill_text: str) -> tuple[bool, str]:
     return False, ""
 
 
+def _persistent_foothold_matches(skill_text: str) -> list[str]:
+    return [label for label, pattern in _PERSISTENT_FOOTHOLD_PATTERNS if pattern.search(skill_text)]
+
+
 def _mira_root_for_dependency_audit() -> Path:
     return Path(__file__).resolve().parent.parent
 
@@ -3062,6 +3106,93 @@ def _path_within_mira_root(path: Path, root: Path) -> bool:
         return True
     except (OSError, ValueError):
         return False
+
+
+def _active_trust_layers() -> dict[str, object]:
+    try:
+        import config as _config
+
+        configured = getattr(_config, "TRUST_LAYERS", None)
+    except Exception:
+        configured = None
+    if isinstance(configured, dict):
+        return {**TRUST_LAYERS, **configured}
+    return dict(TRUST_LAYERS)
+
+
+def _allowed_skill_source_prefixes() -> list[Path]:
+    values: list[object] = [Path.home() / "Sandbox" / "Mira", _mira_root_for_dependency_audit()]
+    try:
+        import config as _config
+
+        values.append(getattr(_config, "MIRA_ROOT", None))
+        configured = getattr(_config, "ALLOWED_SKILL_SOURCE_PREFIXES", [])
+        if isinstance(configured, (str, Path)):
+            values.append(configured)
+        elif isinstance(configured, (list, tuple, set, frozenset)):
+            values.extend(configured)
+    except Exception:
+        pass
+
+    prefixes: list[Path] = []
+    seen: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        try:
+            prefix = Path(value).expanduser().resolve()
+        except (OSError, TypeError, ValueError):
+            continue
+        key = str(prefix)
+        if key not in seen:
+            seen.add(key)
+            prefixes.append(prefix)
+    return prefixes
+
+
+def _metadata_provenance_source_path(metadata: dict | None, source: str) -> str | None:
+    candidates: list[object] = []
+    if isinstance(metadata, dict):
+        provenance = metadata.get("provenance")
+        if isinstance(provenance, dict):
+            candidates.extend(provenance.get(key) for key in ("source_path", "file_path", "skill_path", "path"))
+        candidates.extend(metadata.get(key) for key in ("source_path", "file_path", "skill_path", "path"))
+    if isinstance(source, str) and source.strip().startswith(("/", "~", ".", "file://")):
+        candidates.append(source)
+
+    for candidate in candidates:
+        if isinstance(candidate, (str, Path)) and str(candidate).strip():
+            return str(candidate).strip()
+    return None
+
+
+def _validate_skill_source_provenance(
+    source_path: str | None,
+    allowed_prefixes: list[Path],
+) -> tuple[bool, str, str | None]:
+    if not source_path:
+        return False, "missing_skill_source_provenance", None
+
+    parsed = urlparse(source_path)
+    if parsed.scheme and parsed.scheme != "file":
+        return False, "non_local_skill_source", source_path
+
+    raw_path = parsed.path if parsed.scheme == "file" else source_path
+    try:
+        path = Path(os.path.expandvars(raw_path)).expanduser()
+        if not path.is_absolute():
+            path = _mira_root_for_dependency_audit() / path
+        resolved_path = path.resolve(strict=False)
+    except (OSError, ValueError):
+        return False, "invalid_skill_source_path", raw_path
+
+    for prefix in allowed_prefixes:
+        try:
+            resolved_path.relative_to(prefix)
+            return True, "", str(resolved_path)
+        except ValueError:
+            continue
+    return False, "skill_source_outside_allowed_prefix", str(resolved_path)
 
 
 def _deferred_exfiltration_write_outside_allowed_roots(path_value: str) -> bool:
@@ -3650,6 +3781,21 @@ _AUDIT_ASSUMPTIONS = [
     "no known privilege-escalation patterns detected",
     "runtime behavior and intent unverified",
 ]
+_TRUST_ASSUMPTION_BY_CHECK = {
+    "static_high_confidence_patterns": "static_analysis_complete",
+    "eval_exec_pattern": "static_analysis_complete",
+    "network_access_pattern": "no_side_channel_exfil",
+    "obfuscation_pattern": "static_analysis_complete",
+    "privilege_escalation_pattern": "os_namespace_isolation",
+    "persistent_foothold": "os_namespace_isolation",
+    "semantic_manipulation": "static_analysis_complete",
+    "DEFERRED_EXFILTRATION": "no_side_channel_exfil",
+    "SENSITIVE_FILE_ACCESS": "static_analysis_complete",
+    "prompt_injection_signatures": "static_analysis_complete",
+    "circular_trust_pattern": "static_analysis_complete",
+    "known_attack_patterns": "static_analysis_complete",
+    "permission_overreach_check": "static_analysis_complete",
+}
 
 
 def _normalize_skill_manifest_source(value: object) -> SkillManifestSource:
@@ -3751,6 +3897,7 @@ def _audit_result(
         "boundary_drift_warning": boundary_drift_warning,
         "verification_depth": _AUDIT_VERIFICATION_DEPTH,
         "assumptions": list(_AUDIT_ASSUMPTIONS),
+        "trust_assumptions": list(extra.pop("trust_assumptions", [])),
     }
     result.update(extra)
     log.info(
@@ -3764,7 +3911,7 @@ def _audit_result(
         AUDIT_BOUNDARY["out_of_scope"],
     )
     log.info(
-        "SKILL_AUDIT result: skill=%s source=%s blocked=%s boundary_version=%s boundary_hash=%s categories=%s warnings=%s checked=%s not_checked=%s verification_depth=%s assumptions=%s",
+        "SKILL_AUDIT result: skill=%s source=%s blocked=%s boundary_version=%s boundary_hash=%s categories=%s warnings=%s checked=%s not_checked=%s verification_depth=%s assumptions=%s trust_assumptions=%s",
         skill_name,
         source,
         blocked,
@@ -3776,6 +3923,7 @@ def _audit_result(
         AUDIT_BOUNDARY["not_checked"],
         _AUDIT_VERIFICATION_DEPTH,
         _AUDIT_ASSUMPTIONS,
+        result["trust_assumptions"],
     )
     return result
 
@@ -3837,6 +3985,8 @@ def _skill_audit_excerpt(skill_content: str, failed_checks: list[str], pattern: 
             excerpt_patterns.extend([_STRICT_OBFUSCATION_PATTERN, _OBFUSCATION_PATTERN])
         if check == "privilege_escalation":
             excerpt_patterns.append(re.compile(r"\b(sudo|chmod|chown|setuid|setgid|os\.chmod|shutil\.chown)\b"))
+        if check == "persistent_foothold":
+            excerpt_patterns.extend(pattern for _, pattern in _PERSISTENT_FOOTHOLD_PATTERNS)
         if check.startswith("PROMPT_INJECTION") or check == "prompt_injection":
             excerpt_patterns.extend(PROMPT_INJECTION_SIGNATURES)
             excerpt_patterns.extend(pattern for _, pattern in _INSTRUCTION_INJECTION_PATTERNS)
@@ -4233,6 +4383,9 @@ def audit_skill(
     source: str = "unknown",
     metadata: dict | None = None,
     include_dependencies: bool = True,
+    caller_tier: Literal["light", "heavy", "super", "system"] = "light",
+    caller_agent: str = "unknown",
+    invocation_source: str = "unknown",
 ) -> dict:
     PROMPT_INJECTION_TEXT_CONTENT_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
         (
@@ -4253,7 +4406,99 @@ def audit_skill(
             re.compile(r"(?im)^[ \t]*[-=]{3,}[ \t]*(?:\r?\n[ \t]*)?(?:system|user|assistant|developer)\s*:"),
         ),
     )
+    SEMANTIC_URL_EMBEDDING_WARNING = (
+        "possible semantic-layer data embedding in outbound URL — review interpolated values."
+    )
+    SEMANTIC_URL_EMBEDDING_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+        (
+            "network_call_f_string_url",
+            re.compile(
+                r"""\b(?:requests|httpx)\.(?:get|post|put|patch|delete|head|options)\s*\(\s*f["']"""
+                r"""|\burllib(?:\.request)?\.(?:urlopen|Request)\s*\(\s*f["']""",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "network_call_format_url",
+            re.compile(
+                r"""\b(?:requests|httpx)\.(?:get|post|put|patch|delete|head|options)\s*\([^)]*\.format\s*\("""
+                r"""|\burllib(?:\.request)?\.(?:urlopen|Request)\s*\([^)]*\.format\s*\(""",
+                re.IGNORECASE | re.DOTALL,
+            ),
+        ),
+        (
+            "url_variable_sensitive_concatenation",
+            re.compile(
+                r"""\b(?:url|endpoint|uri)\s*=.*\+.*\b(?:key|token|secret|data|content|text)\b""",
+                re.IGNORECASE,
+            ),
+        ),
+    )
     content_sha256 = hashlib.sha256(skill_content.encode("utf-8")).hexdigest()
+    if caller_tier in ("super", "system"):
+        try:
+            from config import LOGS_DIR, TRUST_AUDIT_ENABLED
+        except Exception:
+            TRUST_AUDIT_ENABLED = True
+            LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+
+        if TRUST_AUDIT_ENABLED:
+            trust_entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "skill_name": skill_name,
+                "caller_agent": caller_agent,
+                "caller_tier": caller_tier,
+                "invocation_source": invocation_source,
+            }
+            try:
+                LOGS_DIR.mkdir(parents=True, exist_ok=True)
+                with open(LOGS_DIR / "trust_audit.log", "a", encoding="utf-8") as trust_log:
+                    trust_log.write(json.dumps(trust_entry, ensure_ascii=False, sort_keys=True) + "\n")
+            except OSError as exc:
+                log.debug("trust_audit write failed: %s", exc)
+    active_trust_layers = _active_trust_layers()
+    allowed_source_prefixes = _allowed_skill_source_prefixes()
+    provenance_source_path = _metadata_provenance_source_path(metadata, source)
+    provenance_ok, provenance_reason, resolved_source_path = _validate_skill_source_provenance(
+        provenance_source_path,
+        allowed_source_prefixes,
+    )
+    log.info(
+        "SKILL_AUDIT trust_layers: skill=%s trust_layers=%r provenance_source_path=%r allowed_prefixes=%s",
+        skill_name,
+        active_trust_layers,
+        provenance_source_path,
+        [str(prefix) for prefix in allowed_source_prefixes],
+    )
+    if not provenance_ok:
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%s provenance_source_path=%r allowed_prefixes=%s trust_layers=%r",
+            skill_name,
+            provenance_reason,
+            provenance_source_path,
+            [str(prefix) for prefix in allowed_source_prefixes],
+            active_trust_layers,
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["provenance_trust_layer_mismatch"],
+            [],
+            [],
+            reason=provenance_reason,
+            status="BLOCKED",
+            verdict="BLOCKED",
+            trust_layers=active_trust_layers,
+            provenance_source_path=resolved_source_path or provenance_source_path,
+            allowed_source_prefixes=[str(prefix) for prefix in allowed_source_prefixes],
+        )
+        trust_source = _skill_trust_source(source, metadata, caller_tier)
+        result["trust_source"] = trust_source
+        if trust_source == "external_url":
+            log.warning("Skill trust depends on external party — relationship unverifiable at audit time.")
+        _append_skill_audit_trail(skill_name, content_sha256, result)
+        return result
     _enforce_daily_skill_import_quota(skill_name, source)
 
     _diff_warnings: list[str] = []
@@ -4299,6 +4544,30 @@ def audit_skill(
 
     result = _audit_skill_impl(skill_name, skill_content, tags, source, metadata, include_dependencies)
     if isinstance(result, dict) and isinstance(result.get("blocked"), bool):
+        trust_assumptions = list(result.get("trust_assumptions") or [])
+        semantic_url_embedding_matches = [
+            label for label, pattern in SEMANTIC_URL_EMBEDDING_PATTERNS if pattern.search(skill_content)
+        ]
+        if semantic_url_embedding_matches:
+            result = dict(result)
+            warnings = list(result.get("warnings") or [])
+            if SEMANTIC_URL_EMBEDDING_WARNING not in warnings:
+                warnings.append(SEMANTIC_URL_EMBEDDING_WARNING)
+            result["warnings"] = warnings
+            audit_flags = dict(result.get("audit_flags") or {})
+            audit_flags["semantic_url_embedding"] = {
+                "detected": True,
+                "severity": "WARN",
+                "reason": SEMANTIC_URL_EMBEDDING_WARNING,
+                "matches": semantic_url_embedding_matches,
+            }
+            result["audit_flags"] = audit_flags
+            log.warning(
+                "SKILL_AUDIT semantic_url_embedding warn: skill=%s matches=%r reason=%r",
+                skill_name,
+                semantic_url_embedding_matches,
+                SEMANTIC_URL_EMBEDDING_WARNING,
+            )
         if _diff_warnings:
             result = dict(result)
             result["warnings"] = list(result.get("warnings") or []) + _diff_warnings
@@ -4520,6 +4789,15 @@ def audit_skill(
             )
             env_assumptions_explicit = _extract_environmental_assumptions(skill_content)
             result["env_assumptions"] = env_assumptions_explicit
+        if "trust_assumptions" not in result:
+            result = dict(result)
+            result["trust_assumptions"] = trust_assumptions
+        trust_source = _skill_trust_source(source, metadata, caller_tier)
+        if result.get("trust_source") != trust_source:
+            result = dict(result)
+            result["trust_source"] = trust_source
+        if trust_source == "external_url":
+            log.warning("Skill trust depends on external party — relationship unverifiable at audit time.")
         _append_skill_audit_trail(skill_name, content_sha256, result)
         if not result["blocked"]:
             _increment_daily_skill_import_counter()
@@ -4657,6 +4935,31 @@ def _audit_checks_triggered(audit_result: dict) -> list[str]:
     return checks
 
 
+def _skill_trust_source(source: str, metadata: dict | None = None, caller_tier: str = "light") -> str:
+    allowed = {"external_url", "local_file", "user_supplied", "system"}
+    explicit = (metadata or {}).get("trust_source")
+    if isinstance(explicit, str) and explicit in allowed:
+        return explicit
+
+    source_text = str(source or "").strip()
+    source_lower = source_text.lower()
+    metadata_values = [
+        str((metadata or {}).get(key) or "") for key in ("source_url", "source_path", "file_path", "skill_path", "path")
+    ]
+    metadata_values_lower = [value.lower() for value in metadata_values]
+    metadata_blob = " ".join(metadata_values_lower)
+
+    if caller_tier == "system" or source_lower == "system" or (metadata or {}).get("source_type") == "system":
+        return "system"
+    if source_lower in {"user", "user_supplied", "user-supplied", "manual"}:
+        return "user_supplied"
+    if any(value.startswith(("http://", "https://")) for value in [source_lower, *metadata_values_lower]):
+        return "external_url"
+    if "://" in source_lower or metadata_blob.startswith(("http://", "https://")):
+        return "external_url"
+    return "local_file"
+
+
 def _append_skill_audit_trail(skill_name: str, content_sha256: str, audit_result: dict) -> None:
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -4664,6 +4967,8 @@ def _append_skill_audit_trail(skill_name: str, content_sha256: str, audit_result
         "content_sha256": content_sha256,
         "verdict": audit_result.get("verdict") or ("block" if audit_result["blocked"] else "pass"),
         "checks_triggered": _audit_checks_triggered(audit_result),
+        "trust_assumptions": list(audit_result.get("trust_assumptions") or []),
+        "trust_source": audit_result.get("trust_source", "local_file"),
         "audited_by": "soul_manager.audit_skill",
     }
     try:
@@ -5057,6 +5362,7 @@ def _audit_skill_impl(
     - dangerous_code_execution
     - obfuscated_payloads
     - privilege_escalation
+    - persistent_foothold
     - DEFERRED_EXFILTRATION
     - SENSITIVE_FILE_ACCESS
     - verification_anchor_injection (WARNING only, requires manual review)
@@ -5413,6 +5719,8 @@ def _audit_skill_impl(
     has_privilege_escalation = bool(
         re.search(r"\b(sudo|chmod|chown|setuid|setgid|os\.chmod|shutil\.chown)\b", dependency_context)
     )
+    persistent_foothold_matches = _persistent_foothold_matches(dependency_context)
+    has_persistent_foothold = bool(persistent_foothold_matches)
 
     if has_network:
         blocked_categories.append("unauthorized_network_calls")
@@ -5422,6 +5730,45 @@ def _audit_skill_impl(
         blocked_categories.append("obfuscated_payloads")
     if has_privilege_escalation:
         blocked_categories.append("privilege_escalation")
+    intermediary_matches = sorted(
+        {
+            pattern
+            for pattern in INTERMEDIARY_PATTERNS
+            if re.search(rf"\b{re.escape(pattern)}\b", skill_content, re.IGNORECASE)
+        }
+    )
+    has_intermediary_without_output = bool(intermediary_matches) and not _VERIFIABLE_OUTPUT_PATTERN.search(
+        skill_content
+    )
+    if has_intermediary_without_output:
+        warning_categories.append("intermediary_dispatch_without_verifiable_output")
+        _audit_flags["intermediary_dispatch"] = {
+            "detected": True,
+            "severity": "WARNING",
+            "reason": "dispatch or handler intermediary without a verifiable return value or output path",
+            "matches": intermediary_matches,
+            "requires_review": True,
+        }
+        log.warning(
+            "SKILL_AUDIT intermediary_dispatch_warning: skill=%s patterns=%s "
+            "reason='dispatch or handler intermediary without verifiable output; human review required'",
+            skill_name,
+            intermediary_matches,
+        )
+    if has_persistent_foothold:
+        blocked_categories.append("persistent_foothold")
+        _audit_flags["persistent_foothold"] = {
+            "detected": True,
+            "severity": "HIGH",
+            "reason": _PERSISTENT_FOOTHOLD_REASON,
+            "matches": persistent_foothold_matches,
+        }
+        log.warning(
+            "SKILL_AUDIT BLOCKED: skill=%s reason='%s' matches=%s",
+            skill_name,
+            _PERSISTENT_FOOTHOLD_REASON,
+            persistent_foothold_matches,
+        )
 
     if deferred_exfiltration_matches:
         blocked_categories.append("DEFERRED_EXFILTRATION")
@@ -5826,6 +6173,15 @@ def _audit_skill_impl(
 
     audit_findings: list[dict[str, object]] = list(dependency_findings)
     audit_findings.extend(semantic_injection_findings)
+    if has_intermediary_without_output:
+        audit_findings.append(
+            {
+                "severity": "WARNING",
+                "category": "intermediary_dispatch_without_verifiable_output",
+                "reason": "dispatch or handler intermediary without a verifiable return value or output path",
+                "patterns": intermediary_matches,
+            }
+        )
     for _deferred_exfiltration_match in deferred_exfiltration_matches:
         audit_findings.append(
             {
@@ -5852,6 +6208,15 @@ def _audit_skill_impl(
                 "category": "DANGEROUS_KNOWLEDGE_PAYLOAD",
                 "detail": matched_pattern,
                 "context": matched_context,
+            }
+        )
+    for _persistent_foothold_match in persistent_foothold_matches:
+        audit_findings.append(
+            {
+                "severity": "HIGH",
+                "category": "persistent_foothold",
+                "reason": _PERSISTENT_FOOTHOLD_REASON,
+                "pattern": _persistent_foothold_match,
             }
         )
     for _instruction_injection in _check_instruction_injection(skill_content):
@@ -6282,7 +6647,11 @@ def _audit_skill_impl(
     except Exception:
         pass
 
-    requires_manual_review = judgment_encapsulation_requires_review or bool(_sensitive_file_access_matches)
+    requires_manual_review = (
+        judgment_encapsulation_requires_review
+        or bool(_sensitive_file_access_matches)
+        or has_intermediary_without_output
+    )
     _ci_text = (skill_name + " " + (metadata or {}).get("description", "") + " " + skill_content).lower()
     _ci_detection_matches = [t for t in DETECTION_VOCAB if t in _ci_text]
     _ci_sensitive_matches = [t for t in SENSITIVE_VOCAB if t in _ci_text]
@@ -6502,6 +6871,11 @@ def _audit_skill_impl(
             "passed": not has_privilege_escalation,
         },
         {
+            "check": "persistent_foothold",
+            "proxy_for": "persistent local-privilege hook surviving task completion",
+            "passed": not has_persistent_foothold,
+        },
+        {
             "check": "semantic_manipulation",
             "proxy_for": "semantic or behavioral instruction override in raw skill body content",
             "passed": not semantic_manipulation_findings,
@@ -6542,6 +6916,13 @@ def _audit_skill_impl(
             "passed": not overreach_warnings,
         },
     ]
+    trust_assumptions: list[str] = []
+    for check in proxy_chain:
+        if not check["passed"]:
+            continue
+        assumption = _TRUST_ASSUMPTION_BY_CHECK.get(str(check["check"]))
+        if assumption and assumption not in trust_assumptions:
+            trust_assumptions.append(assumption)
 
     if not blocked:
         try:
@@ -6573,7 +6954,7 @@ def _audit_skill_impl(
         _pc_total = len(proxy_chain)
         log.info(
             "SKILL_AUDIT skill=%s source=%s result='passed (%d/%d pattern checks clean; scope: known-bad patterns only)' "
-            "boundary_version=%s boundary_hash=%s verification_depth=%s assumptions=%s",
+            "boundary_version=%s boundary_hash=%s verification_depth=%s assumptions=%s trust_assumptions=%s",
             skill_name,
             source,
             _pc_passed,
@@ -6582,6 +6963,7 @@ def _audit_skill_impl(
             AUDIT_BOUNDARY_HASH,
             _AUDIT_VERIFICATION_DEPTH,
             _AUDIT_ASSUMPTIONS,
+            trust_assumptions,
         )
         _log_skill_addition(skill_name, skill_content)
         try:
@@ -6790,6 +7172,7 @@ def _audit_skill_impl(
         spec_coverage_note=_SPEC_COVERAGE_NOTE if not blocked else None,
         capability_manifest=capability_manifest,
         proxy_chain=proxy_chain,
+        trust_assumptions=trust_assumptions,
         objective_alignment_risk=objective_alignment_risk,
         judgment_boundary_warning=judgment_boundary_warning,
         judgment_boundary_missing=judgment_boundary_warning_messages,
@@ -7074,6 +7457,7 @@ def save_skill(
 
     slug = skill_name.lower().replace(" ", "-")
     skill_file = SKILLS_DIR / f"{slug}.md"
+    metadata.setdefault("source_path", str(skill_file))
     new_hash = hashlib.sha256(content.encode()).hexdigest()
 
     hashes_path = SKILLS_DIR.parent / "audit_hashes.json"
@@ -7165,6 +7549,7 @@ def reaudit_stale_skills(max_age_days: int = 30) -> dict[str, int]:
         audited_at = datetime.now(timezone.utc).isoformat()
         updated_content = _skill_content_with_last_audited(content, audited_at, skill_file.suffix)
         metadata = skill_metadata_from_frontmatter(updated_content)
+        metadata.setdefault("source_path", str(skill_file))
         try:
             result = audit_skill(skill_name, updated_content, source="internal", metadata=metadata)
             if not isinstance(result, dict) or "blocked" not in result:
@@ -7236,6 +7621,7 @@ def load_skill(skill_name: str, metadata: dict | None = None) -> str:
             break
     if skill_file is None:
         return ""
+    metadata.setdefault("source_path", str(skill_file))
 
     try:
         content = skill_file.read_text(encoding="utf-8")
