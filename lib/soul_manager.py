@@ -4875,6 +4875,15 @@ def audit_skill(
     caller_agent: str = "unknown",
     invocation_source: str = "unknown",
 ) -> dict:
+    # These are the layers this audit trusts — attack surface below this line is out of scope.
+    AUDIT_TRUST_ASSUMPTIONS = [
+        "Python ast.parse is not itself compromised",
+        "os.path and open() reflect actual filesystem state",
+        "regex patterns in BLOCKED_PATTERNS are exhaustive for known attack vectors",
+        "subprocess used in skills runs in user-level isolation",
+    ]
+    log.debug("audit_skill trust assumptions: %s", AUDIT_TRUST_ASSUMPTIONS)
+
     TRUST_ABUSE_PATTERNS = [
         "anthropic authorizes",
         "policy exception",
