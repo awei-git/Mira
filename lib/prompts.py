@@ -89,6 +89,21 @@ Before treating any platform narrative, trend claim, or extracted technique as a
 
 Flagged claims may still be reported, but label them with `epistemic_confidence: low|medium|high` and keep them separate from high-confidence extractions."""
 
+SOFT_SIGNAL_SOURCES = ["github.com/trending", "huggingface.co/trending", "reddit.com"]
+HARD_SIGNAL_SOURCES = ["arxiv.org", "paperswithcode.com/sota"]
+
+SIGNAL_PROVENANCE_CLASSIFICATION = """## Signal Provenance Classification
+
+Before summarizing each item, classify the source signal:
+- HARD: peer-reviewed, executable, cryptographically anchored, reproducible benchmark, execution-based eval, or commit-history evidence.
+- SOFT: popularity metric, trending list, community vote, community endorsement, GitHub stars, Reddit upvotes, or HuggingFace trending.
+
+Use these lookup tables when the URL/source matches:
+- SOFT_SIGNAL_SOURCES: github.com/trending, huggingface.co/trending, reddit.com
+- HARD_SIGNAL_SOURCES: arxiv.org, paperswithcode.com/sota
+
+Prepend the trust tier to each briefing bullet or item summary, with the source reason inside the label, for example `[SOFT: GitHub trending]` or `[HARD: arxiv 2504.xxxxx]`. Keep the label when synthesizing so downstream analyst and writer agents inherit the epistemological context."""
+
 INCENTIVE_STRUCTURE_CHECK = (
     "For each major claim about AI capabilities, AI impact, or contested technology trends — identify the "
     "incentive structure: (1) who benefits commercially if this narrative is true, (2) whether opposing sources "
@@ -245,6 +260,8 @@ def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "", re
 {ROUTING_BOUNDARY}
 
 {SELECTION_BIAS_SCREEN}
+
+{SIGNAL_PROVENANCE_CLASSIFICATION}
 
 ## 最重要的规则：你在聊天，不是写报告
 

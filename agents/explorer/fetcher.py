@@ -1,6 +1,7 @@
 """Fetch content from web sources: arxiv, Reddit, HuggingFace, GitHub, HN, Lobsters, RSS."""
 
 import email.utils
+import importlib.util
 import json
 import logging
 import urllib.request
@@ -19,6 +20,49 @@ log = logging.getLogger("mira")
 USER_AGENT = "MiraAgent/1.0 (research bot)"
 SOURCE_DAILY_COUNTS_FILE = FEEDS_DIR / "source_daily_counts.json"
 SOURCE_COUNT_WINDOW_DAYS = 30
+DEFAULT_FEED_SOURCE_TRUST = 0.5
+
+_SHARED_CONFIG_PATH = Path(__file__).resolve().parent.parent / "shared" / "config.py"
+_shared_config_spec = importlib.util.spec_from_file_location("_mira_shared_config_for_fetcher", _SHARED_CONFIG_PATH)
+if _shared_config_spec is not None and _shared_config_spec.loader is not None:
+    _shared_config = importlib.util.module_from_spec(_shared_config_spec)
+    _shared_config_spec.loader.exec_module(_shared_config)
+    FEED_SOURCE_TRUST = getattr(_shared_config, "FEED_SOURCE_TRUST", {})
+else:
+    FEED_SOURCE_TRUST = {}
+
+
+def _source_trust_weight(source: str | None, source_key: str | None = None) -> float:
+    candidates = []
+    for value in (source, source_key):
+        if not value:
+            continue
+        normalized = str(value).strip().lower().replace(" ", "_")
+        candidates.append(normalized)
+        if normalized.startswith("r/"):
+            candidates.append("reddit")
+        if normalized == "hackernews":
+            candidates.append("hacker_news")
+    for candidate in candidates:
+        if candidate in FEED_SOURCE_TRUST:
+            try:
+                return float(FEED_SOURCE_TRUST[candidate])
+            except (TypeError, ValueError):
+                return DEFAULT_FEED_SOURCE_TRUST
+    return DEFAULT_FEED_SOURCE_TRUST
+
+
+def _apply_source_trust_weight(items: list[dict], source_key: str | None = None) -> list[dict]:
+    for item in items:
+        weight = _source_trust_weight(item.get("source"), source_key)
+        for score_key in ("salience", "relevance"):
+            if score_key not in item:
+                continue
+            try:
+                item[score_key] = float(item[score_key]) * weight
+            except (TypeError, ValueError):
+                continue
+    return items
 
 
 def _item_text(item: dict) -> str:
@@ -519,6 +563,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
         arxiv_cfg = sources.get("arxiv", {})
         if arxiv_cfg.get("categories"):
             items = fetch_arxiv(arxiv_cfg["categories"], arxiv_cfg.get("max_results", 10))
+            items = _apply_source_trust_weight(items, "arxiv")
             all_items.extend(items)
             _record_source_count(source_daily_counts, current_counts, "arxiv", len(items), day_key)
             log.info("Arxiv: %d items", len(items))
@@ -528,6 +573,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
         reddit_cfg = sources.get("reddit", {})
         if reddit_cfg.get("subreddits"):
             items = fetch_reddit(reddit_cfg["subreddits"], reddit_cfg.get("limit", 10))
+            items = _apply_source_trust_weight(items, "reddit")
             all_items.extend(items)
             reddit_counts = {f"r/{sub}": 0 for sub in reddit_cfg["subreddits"]}
             for item in items:
@@ -542,6 +588,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
     if "huggingface" in names_lower:
         if sources.get("huggingface", {}).get("enabled", True):
             items = fetch_hf_papers()
+            items = _apply_source_trust_weight(items, "huggingface")
             all_items.extend(items)
             _record_source_count(source_daily_counts, current_counts, "huggingface", len(items), day_key)
             log.info("HuggingFace: %d items", len(items))
@@ -555,6 +602,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
                 language=gh_cfg.get("language"),
                 per_page=gh_cfg.get("per_page", 25),
             )
+            items = _apply_source_trust_weight(items, "github_trending")
             all_items.extend(items)
             _record_source_count(source_daily_counts, current_counts, "github_trending", len(items), day_key)
             log.info("GitHub Trending: %d items", len(items))
@@ -567,6 +615,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
                 count=hn_cfg.get("count", 30),
                 min_points=hn_cfg.get("min_points", 50),
             )
+            items = _apply_source_trust_weight(items, "hacker_news")
             all_items.extend(items)
             _record_source_count(source_daily_counts, current_counts, "hackernews", len(items), day_key)
             log.info("HackerNews: %d items", len(items))
@@ -576,6 +625,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
         lob_cfg = sources.get("lobsters", {})
         if lob_cfg.get("enabled", True):
             items = fetch_lobsters(count=lob_cfg.get("count", 25))
+            items = _apply_source_trust_weight(items, "lobsters")
             all_items.extend(items)
             _record_source_count(source_daily_counts, current_counts, "lobsters", len(items), day_key)
             log.info("Lobsters: %d items", len(items))
@@ -588,6 +638,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
                 per_page=dt_cfg.get("per_page", 20),
                 top_days=dt_cfg.get("top_days", 7),
             )
+            items = _apply_source_trust_weight(items, "devto")
             all_items.extend(items)
             _record_source_count(source_daily_counts, current_counts, "devto", len(items), day_key)
             log.info("Dev.to: %d items", len(items))
@@ -599,6 +650,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
             query = name[len("web_search:") :]
             if query:
                 items = fetch_web_search(query, max_results=10)
+                items = _apply_source_trust_weight(items, "duckduckgo")
                 all_items.extend(items)
                 _record_source_count(source_daily_counts, current_counts, f"web_search:{query}", len(items), day_key)
                 log.info("Web search '%s': %d items", query, len(items))
@@ -609,6 +661,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
         # All RSS feeds
         if rss_feeds:
             items = fetch_rss(rss_feeds)
+            items = _apply_source_trust_weight(items, "rss")
             all_items.extend(items)
             rss_counts = {feed.get("name", "RSS"): 0 for feed in rss_feeds if feed.get("url")}
             for item in items:
@@ -627,6 +680,7 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
                 matched.append(feed)
         if matched:
             items = fetch_rss(matched)
+            items = _apply_source_trust_weight(items, "rss")
             all_items.extend(items)
             rss_counts = {feed.get("name", "RSS"): 0 for feed in matched if feed.get("url")}
             for item in items:

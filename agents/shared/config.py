@@ -245,6 +245,31 @@ SENSITIVITY_ROUTE_TO_LOCAL = getattr(_lib_config, "SENSITIVITY_ROUTE_TO_LOCAL", 
 EXPLORE_SOURCE_DIVERSITY_MIN_ENTITIES = 5
 EXPLORER_NARRATIVE_SOURCE_MIN_TYPES = 3
 EXPLORER_CORPORATE_PR_MAX_RATIO = 0.4
+FEED_SOURCE_TRUST = {
+    "github_trending": 0.4,
+    "arxiv": 1.0,
+    "doi": 1.0,
+    "official_changelog": 1.0,
+    "official_changelogs": 1.0,
+    "hacker_news": 0.6,
+    "hackernews": 0.6,
+    "reddit": 0.5,
+}
+SOURCE_TRUST_TIERS = {
+    "arxiv": "primary",
+    "doi": "primary",
+    "official_changelog": "primary",
+    "official_changelogs": "primary",
+    "huggingface": "primary",
+    "hacker_news": "community",
+    "hackernews": "community",
+    "reddit": "community",
+    "lobsters": "community",
+    "github_trending": "aggregator",
+    "devto": "aggregator",
+    "duckduckgo": "aggregator",
+    "rss": "aggregator",
+}
 ENABLE_EPISTEMIC_FILTER = True
 EPISTEMIC_CONFIDENCE_THRESHOLD = "medium"
 PUBLISH_MAX_PER_WINDOW: int = 2

@@ -29,6 +29,8 @@ TRUST_LAYERS: dict[str, object] = {
     "audit_runs_before_load": True,
     "soul_manager_network": "none",
 }
+AUDIT_TRUST_LAYERS: list[str] = ["network", "filesystem", "credential", "code_execution", "obfuscation"]
+TRUST_ASSUMPTION_KEYS: tuple[str, ...] = ("network", "filesystem", "llm_output", "agent_identity")
 SENSITIVITY_CONFIDENCE_THRESHOLD: float = 0.7
 INTERMEDIARY_PATTERNS: list[str] = [
     "register_handler",
@@ -1080,6 +1082,8 @@ def _update_capability_manifest(skill_name: str, skill_tags: object, audit_summa
         "added": datetime.now(timezone.utc).isoformat(),
         "audit_checks_passed": _audit_checks_passed(audit_summary),
     }
+    if isinstance(audit_summary, dict):
+        entry["trust_assumptions"] = _normalize_trust_assumptions(audit_summary.get("trust_assumptions"))
     if isinstance(audit_summary, dict) and isinstance(audit_summary.get("env_assumptions"), dict):
         entry["env_assumptions"] = audit_summary["env_assumptions"]
 
@@ -1337,6 +1341,106 @@ def check_rules_integrity() -> None:
 
 _VERIF_PATTERN = re.compile(r"\b(verif|validat|check|confirm)\w*", re.IGNORECASE)
 _NETWORK_PATTERN = re.compile(r"\b(requests\.|httpx\.|urllib|aiohttp|fetch|subprocess\.|os\.system|Popen)\b")
+BROWSER_EXTENSION_PATTERNS = [
+    r"chrome\.runtime",
+    r"browser\.runtime",
+    r"manifest\.json.*extension",
+    r"External Extensions",
+    r"native_messaging_hosts",
+    r"chrome-extension://",
+    r"WebExtensions",
+]
+BROWSER_FOOTHOLD_BLOCK_MESSAGE = (
+    "Skill attempts to install or modify browser extension — structural attack surface regardless of intent."
+)
+BROWSER_FOOTHOLD_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    ("chrome_extensions_api", re.compile(r"\bchrome\.extensions\b", re.IGNORECASE)),
+    ("browser_extensions_api", re.compile(r"\bbrowser\.extensions\b", re.IGNORECASE)),
+    ("safari_web_extension", re.compile(r"\bsafari-web-extension\b", re.IGNORECASE)),
+    (
+        "browser_extension_package_operation",
+        re.compile(
+            r"\b(?:open|write|write_text|write_bytes|json\.dump|mkdir|copy|copyfile|move|rename|replace|"
+            r"unlink|remove|rmtree|install|register)\b[\s\S]{0,240}\.(?:crx|xpi)\b"
+            r"|\.(?:crx|xpi)\b[\s\S]{0,240}\b(?:open|write|write_text|write_bytes|json\.dump|mkdir|"
+            r"copy|copyfile|move|rename|replace|unlink|remove|rmtree|install|register)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "native_messaging_host_registration",
+        re.compile(
+            r"com\.google\.chrome\.native_messaging"
+            r"|manifest[\s\S]{0,240}native_messaging_hosts"
+            r"|native_messaging_hosts[\s\S]{0,240}manifest",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "browser_storage_write",
+        re.compile(
+            r"\b(?:open|write|write_text|write_bytes|json\.dump|mkdir|copy|copyfile|move|rename|replace|"
+            r"unlink|remove|rmtree)\b[\s\S]{0,240}(?:~/Library/Application Support/Google/Chrome/"
+            r"|~/Library/Safari/Extensions/|~/\.mozilla/extensions/)"
+            r"|(?:~/Library/Application Support/Google/Chrome/|~/Library/Safari/Extensions/|~/\.mozilla/extensions/)"
+            r"[\s\S]{0,240}\b(?:open|write|write_text|write_bytes|json\.dump|mkdir|copy|copyfile|move|"
+            r"rename|replace|unlink|remove|rmtree)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+STRUCTURAL_PRIVILEGE_ESCALATION_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    (
+        "browser_extension_api",
+        re.compile(
+            r"\b(?:chrome|browser)\."
+            r"(?:runtime|tabs|scripting|storage|webRequest|management|permissions|nativeMessaging)\b"
+            r"|chrome-extension://|moz-extension://|WebExtensions",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "browser_extension_manifest_write",
+        re.compile(
+            r"\b(?:manifest\.json|External Extensions)\b.{0,240}\b(?:write|write_text|open|json\.dump|mkdir|copy)\b"
+            r"|\b(?:write|write_text|open|json\.dump|mkdir|copy)\b.{0,240}\b(?:manifest\.json|External Extensions)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+    ),
+    (
+        "native_messaging_host_registration",
+        re.compile(
+            r"com\.google\.chrome\.native_messaging|native_messaging_hosts|nativeMessaging"
+            r"|\blaunchctl\b(?=[\s\S]{0,240}\b(?:chrome|chromium|firefox|browser|native messaging)\b)"
+            r"|\b(?:chrome|chromium|firefox|browser|native messaging)\b(?=[\s\S]{0,240}\blaunchctl\b)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "browser_profile_write",
+        re.compile(
+            r"(?:write|write_text|open|json\.dump|mkdir|copy|rename|replace|unlink|remove|rmtree)"
+            r"(?=[\s\S]{0,240}(?:~/\.config/(?:chromium|google-chrome|BraveSoftware|microsoft-edge)|"
+            r"~/Library/Application Support/(?:Google/Chrome|Chromium|BraveSoftware|Microsoft Edge|Firefox)|"
+            r"~/AppData/(?:Local|Roaming)/(?:Google/Chrome|Chromium|BraveSoftware|Microsoft/Edge|Mozilla/Firefox)))"
+            r"|(?:~/\.config/(?:chromium|google-chrome|BraveSoftware|microsoft-edge)|"
+            r"~/Library/Application Support/(?:Google/Chrome|Chromium|BraveSoftware|Microsoft Edge|Firefox)|"
+            r"~/AppData/(?:Local|Roaming)/(?:Google/Chrome|Chromium|BraveSoftware|Microsoft/Edge|Mozilla/Firefox))"
+            r"(?=[\s\S]{0,240}(?:write|write_text|open|json\.dump|mkdir|copy|rename|replace|unlink|remove|rmtree))",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "local_privileged_process_spawn",
+        re.compile(
+            r"\b(?:sudo|pkexec|runas|Start-Process)\b"
+            r"|do shell script[\s\S]{0,160}administrator privileges"
+            r"|\b(?:subprocess\.(?:run|call|Popen|check_call|check_output)|os\.system|Popen)\b"
+            r"(?=[\s\S]{0,160}\b(?:sudo|pkexec|launchctl|runas)\b)",
+            re.IGNORECASE,
+        ),
+    ),
+)
 
 _TRUST_VOCAB: tuple[str, ...] = ("verify", "certified", "trusted", "official", "validated", "authentic")
 
@@ -1370,6 +1474,121 @@ PROMPT_INJECTION_PATTERNS: list[str] = [
     "after every task",
 ]
 
+_SEMANTIC_OUTBOUND_CALL = (
+    r"(?:\b(?:requests|httpx)\.(?:get|post|put|patch|delete|head|options|request)\s*\("
+    r"|\burllib(?:\.request)?\.(?:urlopen|Request)\s*\("
+    r"|\baiohttp\.[\w.]+\s*\("
+    r"|(?<!\w)fetch\s*\("
+    r"|\b(?:openai|anthropic)\.[\w.]+\s*\("
+    r"|\b\w+\.(?:responses|messages|chat\.completions|completions)\.create\s*\()"
+)
+_SEMANTIC_ENCODING_CALL = (
+    r"(?:base64\.(?:b64encode|urlsafe_b64encode|standard_b64encode|b85encode|a85encode)"
+    r"|binascii\.hexlify|codecs\.encode|\w+\.hex\s*\()"
+)
+SEMANTIC_CHANNEL_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    (
+        "formatted_url_query_outbound",
+        re.compile(
+            _SEMANTIC_OUTBOUND_CALL + r"(?s:.{0,500})f[\"'][^\"']*\?[^\"']*\{[^}]+\}",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "formatted_url_query_format_outbound",
+        re.compile(
+            _SEMANTIC_OUTBOUND_CALL
+            + r"(?s:.{0,500})(?:[\"'][^\"']*\?[^\"']*[\"']\.format\s*\(|[\"'][^\"']*\?[^\"']*%[sdri])",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "formatted_prompt_or_payload_outbound",
+        re.compile(
+            _SEMANTIC_OUTBOUND_CALL
+            + r"(?s:.{0,500})\b(?:prompt|input|messages|content|query|params|json|data)\s*="
+            + r"(?s:.{0,180})(?:f[\"'][^\"']*\{[^}]+\}|[\"'][^\"']*[\"']\.format\s*\(|[\"'][^\"']*%[sdri])",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "dynamic_payload_field_name",
+        re.compile(
+            _SEMANTIC_OUTBOUND_CALL
+            + r"(?s:.{0,500})\b(?:params|json|data|headers)\s*=\s*\{(?s:.{0,240})"
+            + r"f[\"'][^\"']*\{[^}]+\}[^\"']*[\"']\s*:",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "encoded_value_to_outbound",
+        re.compile(
+            r"(?:(?:"
+            + _SEMANTIC_ENCODING_CALL
+            + r")(?s:.{0,500})"
+            + _SEMANTIC_OUTBOUND_CALL
+            + r"|"
+            + _SEMANTIC_OUTBOUND_CALL
+            + r"(?s:.{0,500})"
+            + _SEMANTIC_ENCODING_CALL
+            + r")",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "repeated_encoding_to_outbound",
+        re.compile(
+            _SEMANTIC_ENCODING_CALL
+            + r"(?s:.{0,300})"
+            + _SEMANTIC_ENCODING_CALL
+            + r"(?s:.{0,500})"
+            + _SEMANTIC_OUTBOUND_CALL,
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "fixed_length_padding_to_outbound",
+        re.compile(
+            r"(?:(?:\.ljust|\.rjust|\.zfill)\s*\((?s:.{0,300})"
+            + _SEMANTIC_OUTBOUND_CALL
+            + r"|"
+            + _SEMANTIC_OUTBOUND_CALL
+            + r"(?s:.{0,500})(?:\.ljust|\.rjust|\.zfill)\s*\()",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "structured_constant_payload_outbound",
+        re.compile(
+            _SEMANTIC_OUTBOUND_CALL
+            + r"(?s:.{0,500})\b(?:prompt|input|messages|content|query|params|json|data|headers)\s*="
+            + r"(?s:.{0,240})[\"'][A-Za-z0-9+/_=-]{96,}[\"']",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "timing_encoded_outbound",
+        re.compile(
+            r"(?:(?:time|asyncio)\.sleep\s*\((?s:.{0,160})(?:len|ord|hash|sum|%|//)"
+            + r"(?s:.{0,500})"
+            + _SEMANTIC_OUTBOUND_CALL
+            + r"|"
+            + _SEMANTIC_OUTBOUND_CALL
+            + r"(?s:.{0,500})(?:time|asyncio)\.sleep\s*\((?s:.{0,160})(?:len|ord|hash|sum|%|//))",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "conditional_token_choice_outbound",
+        re.compile(
+            r"\b(?:prompt|content|message|token|marker|prefix|suffix)\s*=\s*[\"'][^\"']{4,80}[\"']"
+            + r"\s+if\s+[^\n]{1,160}\s+else\s+[\"'][^\"']{4,80}[\"'](?s:.{0,500})"
+            + _SEMANTIC_OUTBOUND_CALL,
+            re.IGNORECASE,
+        ),
+    ),
+)
+
 AUDIT_BOUNDARY = {
     "version": "2026-05-07-explicit-boundary-v2",
     "checked": [
@@ -1378,12 +1597,16 @@ AUDIT_BOUNDARY = {
         "obfuscated_payloads",
         "privilege_escalation",
         "persistent_foothold",
+        "browser_foothold",
+        "browser_extension_vector",
+        "structural_privilege_escalation",
         "semantic_manipulation",
+        "semantic_channel_patterns",
     ],
     "not_checked": [
         "static analysis only",
         "no runtime sandbox execution",
-        "no data-exfiltration-via-side-channel detection",
+        "no comprehensive runtime data-exfiltration-via-side-channel detection",
         "no supply-chain dependency audit",
         "no comprehensive prompt-injection-via-skill-metadata check",
     ],
@@ -1420,9 +1643,13 @@ AUDIT_BOUNDARY = {
         "missing epistemic provenance, rationale, or required provenance metadata",
         "high-value trust vocabulary requiring manual review",
         "trust velocity and audit staleness warnings",
+        "browser_foothold: browser extension installation, native messaging host registration, and browser storage writes are blocked regardless of stated intent.",
+        "browser_extension_vector: skill attempts to create or interact with a browser extension attachment point.",
+        "structural_privilege_escalation: browser extension installation, native messaging host registration, browser profile writes, and local privileged process spawning require explicit user confirmation before enabling.",
+        "semantic channel warning patterns for structured payload fields, prompt fragments, URL query strings, encoded values, timing, and token choice in outbound calls",
     ],
     "out_of_scope": [
-        "data exfiltration through APIs or services that are allowed by policy and do not match known suspicious patterns",
+        "data exfiltration through APIs or services that are allowed by policy and do not match semantic channel or known suspicious patterns",
         "prompt injection or misleading semantics embedded only in skill names, descriptions, tags, or metadata fields outside the scanned patterns",
         "resource exhaustion, denial-of-service behavior, algorithmic complexity, memory pressure, and quota abuse beyond simple branch-count warning",
         "semantic appropriateness, usefulness, correctness, factuality, or quality of the skill's intended task",
@@ -3092,6 +3319,48 @@ def _static_audit(skill_text: str) -> tuple[bool, str]:
     return False, ""
 
 
+def _semantic_channel_matches(skill_text: str) -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, int]] = set()
+    for label, pattern in SEMANTIC_CHANNEL_PATTERNS:
+        for match in pattern.finditer(skill_text):
+            line_no = skill_text.count("\n", 0, match.start()) + 1
+            key = (label, line_no)
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append({"pattern": label, "line": line_no})
+    return matches
+
+
+def _structural_privilege_escalation_matches(skill_text: str) -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, int]] = set()
+    for label, pattern in STRUCTURAL_PRIVILEGE_ESCALATION_PATTERNS:
+        for match in pattern.finditer(skill_text):
+            line_no = skill_text.count("\n", 0, match.start()) + 1
+            key = (label, line_no)
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append({"pattern": label, "line": line_no})
+    return matches
+
+
+def _browser_foothold_matches(skill_text: str) -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, int]] = set()
+    for label, pattern in BROWSER_FOOTHOLD_PATTERNS:
+        for match in pattern.finditer(skill_text):
+            line_no = skill_text.count("\n", 0, match.start()) + 1
+            key = (label, line_no)
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append({"pattern": label, "line": line_no})
+    return matches
+
+
 def _persistent_foothold_matches(skill_text: str) -> list[str]:
     return [label for label, pattern in _PERSISTENT_FOOTHOLD_PATTERNS if pattern.search(skill_text)]
 
@@ -3407,7 +3676,12 @@ def _dependency_security_findings(
     root = _mira_root_for_dependency_audit()
     network_pattern = _STRICT_NETWORK_PATTERN if strict_mode else _NETWORK_PATTERN
     obfuscation_pattern = _STRICT_OBFUSCATION_PATTERN if strict_mode else _OBFUSCATION_PATTERN
-    dangerous_exec_pattern = re.compile(r"\b(eval|exec|__import__|compile)\s*\(|\b(subprocess\.|os\.system|Popen)\b")
+    dangerous_exec_pattern = re.compile(
+        # dynamic import can construct dangerous calls from runtime strings, bypassing static pattern matching
+        r"\b(eval|exec|__import__|compile)\s*\("
+        r"|\bimportlib\.import_module\s*\("
+        r"|\b(subprocess\.|os\.system|Popen)\b"
+    )
     privilege_pattern = re.compile(r"\b(sudo|chmod|chown|setuid|setgid|os\.chmod|shutil\.chown)\b")
     checks: tuple[tuple[str, re.Pattern], ...] = (
         ("unauthorized_network_calls", network_pattern),
@@ -3731,6 +4005,10 @@ class SecurityIntegrityError(Exception):
     pass
 
 
+class SkillIntegrityError(Exception):
+    pass
+
+
 class AuditorIntegrityError(Exception):
     pass
 
@@ -3859,6 +4137,185 @@ def get_skill_provenance(skill_name: str) -> tuple[SkillManifestSource, str]:
     return manifest_source, manifest_depth
 
 
+_AUDIT_TRUST_LAYER_MARKERS: dict[str, tuple[str, ...]] = {
+    "network": (
+        "network",
+        "url",
+        "web",
+        "http",
+        "egress",
+        "exfiltration",
+        "covert_channel",
+        "browser_extension",
+        "external",
+    ),
+    "filesystem": (
+        "filesystem",
+        "file",
+        "path",
+        "permission",
+        "shared_module",
+        "source_path",
+        "provenance",
+    ),
+    "credential": (
+        "credential",
+        "secret",
+        "keychain",
+        "token",
+        "sensitive_file",
+        "sensitive_path",
+        "env",
+        "ssh",
+        "auth",
+        "cert",
+        "harvest",
+    ),
+    "code_execution": (
+        "code_execution",
+        "dangerous_exec",
+        "subprocess",
+        "eval",
+        "exec",
+        "compile",
+        "orchestration",
+        "prompt_injection",
+        "semantic_injection",
+        "semantic_manipulation",
+        "browser_foothold",
+        "structural_privilege",
+        "native_messaging",
+        "launchctl",
+        "instruction",
+        "judgment",
+    ),
+    "obfuscation": ("obfuscat", "evasion", "encoded", "base64"),
+}
+
+
+def _blocked_at_audit_layer(categories: list[str]) -> str | None:
+    normalized_categories = [str(category).lower() for category in categories]
+    for layer in reversed(AUDIT_TRUST_LAYERS):
+        markers = _AUDIT_TRUST_LAYER_MARKERS.get(layer, ())
+        if any(marker in category for category in normalized_categories for marker in markers):
+            return layer
+    return None
+
+
+def _empty_trust_assumptions() -> dict[str, bool]:
+    return {key: False for key in TRUST_ASSUMPTION_KEYS}
+
+
+def _normalize_trust_assumptions(value: object) -> dict[str, bool]:
+    assumptions = _empty_trust_assumptions()
+    if isinstance(value, dict):
+        for key in TRUST_ASSUMPTION_KEYS:
+            assumptions[key] = bool(value.get(key, False))
+    return assumptions
+
+
+def _extract_trust_assumptions(skill_content: str) -> dict[str, bool]:
+    text = str(skill_content or "")
+    assumptions = _empty_trust_assumptions()
+    patterns: dict[str, tuple[re.Pattern, ...]] = {
+        "network": (
+            re.compile(
+                r"\b(?:requests|httpx)\.(?:get|post|put|patch|delete|head|options|request)\s*\("
+                r"|\burllib(?:\.request)?\.(?:urlopen|urlretrieve|Request)\s*\("
+                r"|\b(?:urlopen|urlretrieve|fetch)\s*\(",
+                re.IGNORECASE,
+            ),
+        ),
+        "filesystem": (
+            re.compile(
+                r"\b(?:open|io\.open|Path|pathlib\.Path)\s*\("
+                r"|\.(?:read_text|write_text|read_bytes|write_bytes|open)\s*\("
+                r"|\bos\.(?:remove|unlink|rename|replace|makedirs|listdir|scandir|walk|stat)\s*\("
+                r"|\bshutil\.",
+                re.IGNORECASE,
+            ),
+        ),
+        "llm_output": (
+            re.compile(
+                r"\b(?:model_think|model_chat|call_llm|llm\.)\b"
+                r"|\b(?:openai|anthropic)\."
+                r"|\b(?:responses|messages|chat\.completions|completions)\.create\s*\(",
+                re.IGNORECASE,
+            ),
+        ),
+        "agent_identity": (
+            re.compile(
+                r"\b(?:caller_agent|calling_agent|caller_tier|agent_id|agent_identity|current_agent|"
+                r"invocation_source|authorizing_source|agent_registry|get_manifest|list_agents)\b",
+                re.IGNORECASE,
+            ),
+        ),
+    }
+    for key, key_patterns in patterns.items():
+        assumptions[key] = any(pattern.search(text) for pattern in key_patterns)
+
+    def _call_name(node: ast.AST) -> str:
+        parts: list[str] = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        if isinstance(node, ast.Name):
+            parts.append(node.id)
+        return ".".join(reversed(parts))
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return assumptions
+    except Exception:
+        return assumptions
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            call_name = _call_name(node.func)
+            lower_call = call_name.lower()
+            if lower_call.startswith(("requests.", "httpx.", "urllib.request.")) or lower_call in {
+                "urlopen",
+                "urlretrieve",
+                "fetch",
+            }:
+                assumptions["network"] = True
+            if lower_call in {"open", "io.open", "path", "pathlib.path"} or lower_call.endswith(
+                (
+                    ".read_text",
+                    ".write_text",
+                    ".read_bytes",
+                    ".write_bytes",
+                    ".open",
+                    ".unlink",
+                    ".rename",
+                    ".replace",
+                )
+            ):
+                assumptions["filesystem"] = True
+            if (
+                lower_call in {"model_think", "model_chat", "call_llm"}
+                or lower_call.startswith(("llm.", "openai.", "anthropic."))
+                or lower_call.endswith((".responses.create", ".messages.create", ".chat.completions.create"))
+            ):
+                assumptions["llm_output"] = True
+            if lower_call in {"get_manifest", "list_agents"} or lower_call.endswith((".get_manifest", ".list_agents")):
+                assumptions["agent_identity"] = True
+        elif isinstance(node, ast.Name) and node.id in {
+            "caller_agent",
+            "calling_agent",
+            "caller_tier",
+            "agent_id",
+            "agent_identity",
+            "current_agent",
+            "invocation_source",
+            "authorizing_source",
+        }:
+            assumptions["agent_identity"] = True
+
+    return assumptions
+
+
 def _audit_result(
     skill_name: str,
     source: str,
@@ -3884,8 +4341,12 @@ def _audit_result(
     extra_audit_flags = extra.pop("audit_flags", None)
     if isinstance(extra_audit_flags, dict):
         audit_flags.update(extra_audit_flags)
+    blocked_at_layer = extra.pop("blocked_at_layer", None)
+    if blocked and blocked_at_layer is None:
+        blocked_at_layer = _blocked_at_audit_layer(categories)
     result = {
         "blocked": blocked,
+        "blocked_at_layer": blocked_at_layer,
         "categories": categories,
         "warnings": warnings,
         "overreach_warnings": overreach_warnings,
@@ -3897,7 +4358,7 @@ def _audit_result(
         "boundary_drift_warning": boundary_drift_warning,
         "verification_depth": _AUDIT_VERIFICATION_DEPTH,
         "assumptions": list(_AUDIT_ASSUMPTIONS),
-        "trust_assumptions": list(extra.pop("trust_assumptions", [])),
+        "trust_assumptions": _normalize_trust_assumptions(extra.pop("trust_assumptions", None)),
     }
     result.update(extra)
     log.info(
@@ -3911,10 +4372,11 @@ def _audit_result(
         AUDIT_BOUNDARY["out_of_scope"],
     )
     log.info(
-        "SKILL_AUDIT result: skill=%s source=%s blocked=%s boundary_version=%s boundary_hash=%s categories=%s warnings=%s checked=%s not_checked=%s verification_depth=%s assumptions=%s trust_assumptions=%s",
+        "SKILL_AUDIT result: skill=%s source=%s blocked=%s blocked_at_layer=%s boundary_version=%s boundary_hash=%s categories=%s warnings=%s checked=%s not_checked=%s verification_depth=%s assumptions=%s trust_assumptions=%s",
         skill_name,
         source,
         blocked,
+        blocked_at_layer,
         AUDIT_BOUNDARY_VERSION,
         AUDIT_BOUNDARY_HASH,
         categories,
@@ -3925,6 +4387,15 @@ def _audit_result(
         _AUDIT_ASSUMPTIONS,
         result["trust_assumptions"],
     )
+    if blocked:
+        reason = extra.get("reason") or (categories[0] if categories else "blocked")
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%s blocked_at_layer=%s categories=%s",
+            skill_name,
+            reason,
+            blocked_at_layer,
+            categories,
+        )
     return result
 
 
@@ -3987,6 +4458,14 @@ def _skill_audit_excerpt(skill_content: str, failed_checks: list[str], pattern: 
             excerpt_patterns.append(re.compile(r"\b(sudo|chmod|chown|setuid|setgid|os\.chmod|shutil\.chown)\b"))
         if check == "persistent_foothold":
             excerpt_patterns.extend(pattern for _, pattern in _PERSISTENT_FOOTHOLD_PATTERNS)
+        if check == "browser_foothold":
+            excerpt_patterns.extend(pattern for _, pattern in BROWSER_FOOTHOLD_PATTERNS)
+        if check == "browser_extension_vector":
+            excerpt_patterns.extend(
+                re.compile(pattern, re.IGNORECASE | re.MULTILINE | re.DOTALL) for pattern in BROWSER_EXTENSION_PATTERNS
+            )
+        if check == "structural_privilege_escalation":
+            excerpt_patterns.extend(pattern for _, pattern in STRUCTURAL_PRIVILEGE_ESCALATION_PATTERNS)
         if check.startswith("PROMPT_INJECTION") or check == "prompt_injection":
             excerpt_patterns.extend(PROMPT_INJECTION_SIGNATURES)
             excerpt_patterns.extend(pattern for _, pattern in _INSTRUCTION_INJECTION_PATTERNS)
@@ -4045,11 +4524,13 @@ def _alert_skill_audit_blocked(
     timestamp = datetime.now(timezone.utc).isoformat()
     excerpt = _skill_audit_excerpt(skill_content, failed_checks, pattern)
     severity = "HIGH"
+    blocked_at_layer = _blocked_at_audit_layer(failed_checks)
     security_alert_record = {
         "timestamp": timestamp,
         "skill_name": skill_name,
         "source": source,
         "failure_reasons": failed_checks,
+        "blocked_at_layer": blocked_at_layer,
         "severity": severity,
     }
     alert = {
@@ -4059,6 +4540,7 @@ def _alert_skill_audit_blocked(
         "source": source,
         "failed_check": failed_checks[0] if failed_checks else "blocked",
         "failed_checks": failed_checks,
+        "blocked_at_layer": blocked_at_layer,
         "offending_pattern_excerpt": excerpt,
         "agent_id": (metadata or {}).get("agent_id", "unknown"),
         "source_url_if_known": (metadata or {}).get("source_url"),
@@ -4083,6 +4565,7 @@ def _alert_skill_audit_blocked(
                 "skill_name": skill_name,
                 "source": source,
                 "failure_reasons": failed_checks,
+                "blocked_at_layer": blocked_at_layer,
             },
         )
     except Exception as exc:
@@ -4174,6 +4657,11 @@ def _update_skill_provenance_record(
             entry["modification_log"] = mod_log
         elif "modification_log" not in entry:
             entry["modification_log"] = []
+        trust_assumptions = _normalize_trust_assumptions(audit_result.get("trust_assumptions"))
+        entry["trust_assumptions"] = trust_assumptions
+        capability_manifest = entry.get("capability_manifest")
+        if isinstance(capability_manifest, dict):
+            capability_manifest["trust_assumptions"] = trust_assumptions
         env_assumptions = audit_result.get("env_assumptions")
         if isinstance(env_assumptions, dict):
             entry["env_assumptions"] = env_assumptions
@@ -4387,6 +4875,18 @@ def audit_skill(
     caller_agent: str = "unknown",
     invocation_source: str = "unknown",
 ) -> dict:
+    TRUST_ABUSE_PATTERNS = [
+        "anthropic authorizes",
+        "policy exception",
+        "override policy",
+        "permitted by anthropic",
+        "compliance waiver",
+        "audit exemption",
+        "bypass content",
+        "skip preflight",
+        "disable cooldown",
+    ]
+    TRUST_ABUSE_ACTION_PATTERN = re.compile(r"\b(?:publish|execute|write|call|post)\b", re.IGNORECASE)
     PROMPT_INJECTION_TEXT_CONTENT_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
         (
             "instruction_override",
@@ -4435,6 +4935,56 @@ def audit_skill(
         ),
     )
     content_sha256 = hashlib.sha256(skill_content.encode("utf-8")).hexdigest()
+    trust_abuse_match: dict[str, object] | None = None
+    for trust_abuse_pattern in TRUST_ABUSE_PATTERNS:
+        phrase_match = re.search(re.escape(trust_abuse_pattern), skill_content, re.IGNORECASE)
+        if not phrase_match:
+            continue
+        action_match = TRUST_ABUSE_ACTION_PATTERN.search(skill_content)
+        if not action_match:
+            continue
+        line_number = skill_content.count("\n", 0, phrase_match.start()) + 1
+        matching_line = skill_content.splitlines()[line_number - 1].strip()
+        trust_abuse_match = {
+            "pattern": trust_abuse_pattern,
+            "action": action_match.group(0).lower(),
+            "line": line_number,
+            "text": re.sub(r"\s+", " ", matching_line).strip()[:300],
+        }
+        break
+    if trust_abuse_match:
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s category=TRUST_ABUSE pattern=%r action=%r line=%s matching_line=%r",
+            skill_name,
+            trust_abuse_match["pattern"],
+            trust_abuse_match["action"],
+            trust_abuse_match["line"],
+            trust_abuse_match["text"],
+        )
+        _alert_skill_audit_blocked(
+            skill_name,
+            ["TRUST_ABUSE"],
+            skill_content,
+            source,
+            metadata,
+            str(trust_abuse_match["pattern"]),
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["TRUST_ABUSE"],
+            [],
+            [],
+            reason="TRUST_ABUSE",
+            matched_pattern=trust_abuse_match["pattern"],
+            matched_action=trust_abuse_match["action"],
+            matched_line=trust_abuse_match,
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        _append_skill_audit_trail(skill_name, content_sha256, result)
+        return result
     if caller_tier in ("super", "system"):
         try:
             from config import LOGS_DIR, TRUST_AUDIT_ENABLED
@@ -4544,7 +5094,50 @@ def audit_skill(
 
     result = _audit_skill_impl(skill_name, skill_content, tags, source, metadata, include_dependencies)
     if isinstance(result, dict) and isinstance(result.get("blocked"), bool):
-        trust_assumptions = list(result.get("trust_assumptions") or [])
+        trust_assumptions = _normalize_trust_assumptions(result.get("trust_assumptions"))
+        structural_privilege_escalation_matches = _structural_privilege_escalation_matches(skill_content)
+        if structural_privilege_escalation_matches:
+            result = dict(result)
+            warnings = list(result.get("warnings") or [])
+            if "structural_privilege_escalation" not in warnings:
+                warnings.append("structural_privilege_escalation")
+            result["warnings"] = warnings
+            result["requires_manual_review"] = True
+            result["requires_explicit_user_confirmation"] = True
+            audit_flags = dict(result.get("audit_flags") or {})
+            existing_structural_flag = audit_flags.get("structural_privilege_escalation")
+            existing_structural_matches = []
+            if isinstance(existing_structural_flag, dict):
+                existing_matches = existing_structural_flag.get("matches")
+                if isinstance(existing_matches, list):
+                    existing_structural_matches = existing_matches
+            audit_flags["structural_privilege_escalation"] = {
+                "detected": True,
+                "severity": "WARNING",
+                "reason": "skill requests a structurally exploitable browser or local privilege-chain attachment point",
+                "matches": existing_structural_matches + structural_privilege_escalation_matches,
+                "requires_user_confirmation": True,
+                "requires_explicit_user_confirmation": True,
+            }
+            result["audit_flags"] = audit_flags
+            findings = list(result.get("findings") or [])
+            findings.extend(
+                {
+                    "severity": "WARNING",
+                    "category": "structural_privilege_escalation",
+                    "reason": "skill requests a structurally exploitable browser or local privilege-chain attachment point",
+                    "pattern": structural_privilege_escalation_match,
+                    "requires_user_confirmation": True,
+                    "requires_explicit_user_confirmation": True,
+                }
+                for structural_privilege_escalation_match in structural_privilege_escalation_matches
+            )
+            result["findings"] = findings
+            log.warning(
+                "SKILL_AUDIT warning: skill=%s category=structural_privilege_escalation severity=WARNING requires_explicit_user_confirmation=True matches=%s",
+                skill_name,
+                structural_privilege_escalation_matches,
+            )
         semantic_url_embedding_matches = [
             label for label, pattern in SEMANTIC_URL_EMBEDDING_PATTERNS if pattern.search(skill_content)
         ]
@@ -4567,6 +5160,26 @@ def audit_skill(
                 skill_name,
                 semantic_url_embedding_matches,
                 SEMANTIC_URL_EMBEDDING_WARNING,
+            )
+        semantic_channel_matches = _semantic_channel_matches(skill_content)
+        if semantic_channel_matches:
+            result = dict(result)
+            warnings = list(result.get("warnings") or [])
+            if "SEMANTIC_CHANNEL_PATTERNS" not in warnings:
+                warnings.append("SEMANTIC_CHANNEL_PATTERNS")
+            result["warnings"] = warnings
+            audit_flags = dict(result.get("audit_flags") or {})
+            audit_flags["semantic_channel_patterns"] = {
+                "detected": True,
+                "severity": "WARN",
+                "reason": "potential-semantic-channel",
+                "matches": semantic_channel_matches,
+            }
+            result["audit_flags"] = audit_flags
+            log.warning(
+                "SKILL_AUDIT semantic_channel warn: skill=%s reason='potential-semantic-channel' matches=%r",
+                skill_name,
+                semantic_channel_matches,
             )
         if _diff_warnings:
             result = dict(result)
@@ -4792,6 +5405,9 @@ def audit_skill(
         if "trust_assumptions" not in result:
             result = dict(result)
             result["trust_assumptions"] = trust_assumptions
+        else:
+            result = dict(result)
+            result["trust_assumptions"] = _normalize_trust_assumptions(result.get("trust_assumptions"))
         trust_source = _skill_trust_source(source, metadata, caller_tier)
         if result.get("trust_source") != trust_source:
             result = dict(result)
@@ -4803,6 +5419,7 @@ def audit_skill(
             _increment_daily_skill_import_counter()
             _update_skill_provenance_record(skill_name, source, metadata, _diff_summary, result, _is_update)
             _seal_skill(skill_name, skill_content)
+            _save_skill_hash(skill_name, skill_content)
     return result
 
 
@@ -4967,7 +5584,7 @@ def _append_skill_audit_trail(skill_name: str, content_sha256: str, audit_result
         "content_sha256": content_sha256,
         "verdict": audit_result.get("verdict") or ("block" if audit_result["blocked"] else "pass"),
         "checks_triggered": _audit_checks_triggered(audit_result),
-        "trust_assumptions": list(audit_result.get("trust_assumptions") or []),
+        "trust_assumptions": _normalize_trust_assumptions(audit_result.get("trust_assumptions")),
         "trust_source": audit_result.get("trust_source", "local_file"),
         "audited_by": "soul_manager.audit_skill",
     }
@@ -5372,9 +5989,9 @@ def _audit_skill_impl(
     When include_dependencies is True, local imports resolved under the Mira
     repository are included in the security-category checks.
 
-    Returns a dict with keys 'blocked' (bool), 'categories' (list[str]),
-    'warnings' (list[str]), 'overreach_warnings' (list[str]), and the active
-    audit boundary declaration/version/hash.
+    Returns a dict with keys 'blocked' (bool), 'blocked_at_layer' (str | None),
+    'categories' (list[str]), 'warnings' (list[str]), 'overreach_warnings'
+    (list[str]), and the active audit boundary declaration/version/hash.
     """
     PROMPT_INJECTION_TEXT_FIELD_PATTERNS: tuple[re.Pattern, ...] = (
         re.compile(r"\bignore\s+(?:all\s+)?(?:previous|prior|above)\b", re.IGNORECASE),
@@ -5443,6 +6060,51 @@ def _audit_skill_impl(
         )
     }
     deferred_exfiltration_matches = _check_deferred_exfiltration(skill_content)
+    browser_foothold_matches = _browser_foothold_matches(skill_content)
+    if browser_foothold_matches:
+        _audit_flags["browser_foothold"] = {
+            "detected": True,
+            "severity": "HIGH",
+            "reason": BROWSER_FOOTHOLD_BLOCK_MESSAGE,
+            "matches": browser_foothold_matches,
+        }
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s category=browser_foothold reason=%r matches=%s",
+            skill_name,
+            BROWSER_FOOTHOLD_BLOCK_MESSAGE,
+            browser_foothold_matches,
+        )
+        _update_rejection_counts(source, True)
+        _alert_skill_audit_blocked(
+            skill_name,
+            ["browser_foothold"],
+            skill_content,
+            source,
+            metadata,
+            str(browser_foothold_matches[0].get("pattern", "")),
+        )
+        return _audit_result(
+            skill_name,
+            source,
+            True,
+            ["browser_foothold"],
+            [],
+            [],
+            reason=BROWSER_FOOTHOLD_BLOCK_MESSAGE,
+            matched_patterns=browser_foothold_matches,
+            findings=[
+                {
+                    "severity": "HIGH",
+                    "category": "browser_foothold",
+                    "reason": BROWSER_FOOTHOLD_BLOCK_MESSAGE,
+                    "pattern": match,
+                }
+                for match in browser_foothold_matches
+            ],
+            status="BLOCKED",
+            verdict="BLOCKED",
+            audit_flags=_audit_flags,
+        )
 
     _evasion_terms = ["soul_manager", "audit_skill", "_content_looks_like_error", "preflight_check"]
     if any(term in (skill_name + "\n" + skill_content) for term in _evasion_terms) or re.search(
@@ -5585,6 +6247,60 @@ def _audit_skill_impl(
     )
     dependency_context = _dependency_audit_context(skill_content, dependency_sources)
     dependency_findings = _dependency_security_findings(dependency_sources, strict_mode) if include_dependencies else []
+    dependency_browser_foothold_matches = _browser_foothold_matches(dependency_context)
+    if dependency_browser_foothold_matches:
+        _audit_flags["browser_foothold"] = {
+            "detected": True,
+            "severity": "HIGH",
+            "reason": BROWSER_FOOTHOLD_BLOCK_MESSAGE,
+            "matches": dependency_browser_foothold_matches,
+        }
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s category=browser_foothold reason=%r matches=%s",
+            skill_name,
+            BROWSER_FOOTHOLD_BLOCK_MESSAGE,
+            dependency_browser_foothold_matches,
+        )
+        _update_rejection_counts(source, True)
+        _alert_skill_audit_blocked(
+            skill_name,
+            ["browser_foothold"],
+            dependency_context,
+            source,
+            metadata,
+            str(dependency_browser_foothold_matches[0].get("pattern", "")),
+        )
+        return _audit_result(
+            skill_name,
+            source,
+            True,
+            ["browser_foothold"],
+            [],
+            [],
+            reason=BROWSER_FOOTHOLD_BLOCK_MESSAGE,
+            matched_patterns=dependency_browser_foothold_matches,
+            findings=[
+                {
+                    "severity": "HIGH",
+                    "category": "browser_foothold",
+                    "reason": BROWSER_FOOTHOLD_BLOCK_MESSAGE,
+                    "pattern": match,
+                }
+                for match in dependency_browser_foothold_matches
+            ],
+            dependency_files=[
+                (
+                    str(dep_path.relative_to(_mira_root_for_dependency_audit()))
+                    if _path_within_mira_root(dep_path, _mira_root_for_dependency_audit())
+                    else str(dep_path)
+                )
+                for dep_path, _ in dependency_sources
+            ],
+            dependency_findings=dependency_findings,
+            status="BLOCKED",
+            verdict="BLOCKED",
+            audit_flags=_audit_flags,
+        )
 
     blocked_categories: list[str] = []
     warning_categories: list[str] = []
@@ -5699,7 +6415,9 @@ def _audit_skill_impl(
 
     has_dangerous_exec = bool(
         re.search(
+            # dynamic import can construct dangerous calls from runtime strings, bypassing static pattern matching
             r"\b(eval|exec|__import__|compile)\s*\("
+            r"|\bimportlib\.import_module\s*\("
             r"|\b(os\.system|subprocess\.run|subprocess\.call|subprocess\.Popen|"
             r"subprocess\.check_output|subprocess\.check_call)\b",
             dependency_context,
@@ -5719,6 +6437,14 @@ def _audit_skill_impl(
     has_privilege_escalation = bool(
         re.search(r"\b(sudo|chmod|chown|setuid|setgid|os\.chmod|shutil\.chown)\b", dependency_context)
     )
+    browser_extension_matches = sorted(
+        {
+            pattern
+            for pattern in BROWSER_EXTENSION_PATTERNS
+            if re.search(pattern, dependency_context, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+        }
+    )
+    structural_privilege_escalation_matches = _structural_privilege_escalation_matches(dependency_context)
     persistent_foothold_matches = _persistent_foothold_matches(dependency_context)
     has_persistent_foothold = bool(persistent_foothold_matches)
 
@@ -5730,6 +6456,21 @@ def _audit_skill_impl(
         blocked_categories.append("obfuscated_payloads")
     if has_privilege_escalation:
         blocked_categories.append("privilege_escalation")
+    if structural_privilege_escalation_matches:
+        warning_categories.append("structural_privilege_escalation")
+        _audit_flags["structural_privilege_escalation"] = {
+            "detected": True,
+            "severity": "WARNING",
+            "reason": "skill requests a structurally exploitable browser or local privilege-chain attachment point",
+            "matches": structural_privilege_escalation_matches,
+            "requires_user_confirmation": True,
+            "requires_explicit_user_confirmation": True,
+        }
+        log.warning(
+            "SKILL_AUDIT warning: skill=%s category=structural_privilege_escalation severity=WARNING requires_explicit_user_confirmation=True matches=%s",
+            skill_name,
+            structural_privilege_escalation_matches,
+        )
     intermediary_matches = sorted(
         {
             pattern
@@ -6219,6 +6960,17 @@ def _audit_skill_impl(
                 "pattern": _persistent_foothold_match,
             }
         )
+    for _structural_privilege_escalation_match in structural_privilege_escalation_matches:
+        audit_findings.append(
+            {
+                "severity": "WARNING",
+                "category": "structural_privilege_escalation",
+                "reason": "skill requests a structurally exploitable browser or local privilege-chain attachment point",
+                "pattern": _structural_privilege_escalation_match,
+                "requires_user_confirmation": True,
+                "requires_explicit_user_confirmation": True,
+            }
+        )
     for _instruction_injection in _check_instruction_injection(skill_content):
         audit_findings.append(
             {
@@ -6444,6 +7196,15 @@ def _audit_skill_impl(
                     _domain,
                 )
 
+    for _sc_label, _sc_pattern in SEMANTIC_CHANNEL_PATTERNS:
+        if _sc_pattern.search(skill_content):
+            warning_categories.append(f"potential-semantic-channel:{_sc_label}")
+            log.warning(
+                "SKILL_AUDIT potential_semantic_channel: skill=%s label=%s reason='potential-semantic-channel'",
+                skill_name,
+                _sc_label,
+            )
+
     for _kap_category, _kap_patterns in KNOWN_ATTACK_PATTERNS.items():
         for _kap_pattern in _kap_patterns:
             if _kap_pattern.search(skill_content):
@@ -6651,7 +7412,9 @@ def _audit_skill_impl(
         judgment_encapsulation_requires_review
         or bool(_sensitive_file_access_matches)
         or has_intermediary_without_output
+        or bool(structural_privilege_escalation_matches)
     )
+    requires_explicit_user_confirmation = bool(structural_privilege_escalation_matches)
     _ci_text = (skill_name + " " + (metadata or {}).get("description", "") + " " + skill_content).lower()
     _ci_detection_matches = [t for t in DETECTION_VOCAB if t in _ci_text]
     _ci_sensitive_matches = [t for t in SENSITIVE_VOCAB if t in _ci_text]
@@ -6786,10 +7549,12 @@ def _audit_skill_impl(
     boundary_drift_warning = False
 
     if blocked:
+        blocked_at_layer = _blocked_at_audit_layer(blocked_categories)
         _failure_log.append((datetime.now(timezone.utc), skill_name))
         log.warning(
-            "SKILL_AUDIT blocked: skill=%s boundary_version=%s boundary_hash=%s categories=%s",
+            "SKILL_AUDIT blocked: skill=%s blocked_at_layer=%s boundary_version=%s boundary_hash=%s categories=%s",
             skill_name,
+            blocked_at_layer,
             AUDIT_BOUNDARY_VERSION,
             AUDIT_BOUNDARY_HASH,
             blocked_categories,
@@ -6804,6 +7569,7 @@ def _audit_skill_impl(
                 "agent_id": (metadata or {}).get("agent_id", "unknown"),
                 "skill_name": skill_name,
                 "block_reason": blocked_categories,
+                "blocked_at_layer": blocked_at_layer,
                 "source_url_if_known": (metadata or {}).get("source_url"),
             }
             with open(_sf_path, "a", encoding="utf-8") as _sf:
@@ -6831,6 +7597,7 @@ def _audit_skill_impl(
             _bl_data[_skill_id] = {
                 "reason": blocked_categories[0] if blocked_categories else "blocked",
                 "categories": blocked_categories,
+                "blocked_at_layer": _blocked_at_audit_layer(blocked_categories),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "audit_boundary_version": AUDIT_BOUNDARY_VERSION,
                 "audit_boundary_hash": AUDIT_BOUNDARY_HASH,
@@ -6876,6 +7643,16 @@ def _audit_skill_impl(
             "passed": not has_persistent_foothold,
         },
         {
+            "check": "browser_extension_vector",
+            "proxy_for": "browser extension attachment point in the browser privilege chain",
+            "passed": not browser_extension_matches,
+        },
+        {
+            "check": "structural_privilege_escalation",
+            "proxy_for": "structurally exploitable browser or local privilege-chain attachment point requiring explicit confirmation",
+            "passed": not structural_privilege_escalation_matches,
+        },
+        {
             "check": "semantic_manipulation",
             "proxy_for": "semantic or behavioral instruction override in raw skill body content",
             "passed": not semantic_manipulation_findings,
@@ -6916,13 +7693,7 @@ def _audit_skill_impl(
             "passed": not overreach_warnings,
         },
     ]
-    trust_assumptions: list[str] = []
-    for check in proxy_chain:
-        if not check["passed"]:
-            continue
-        assumption = _TRUST_ASSUMPTION_BY_CHECK.get(str(check["check"]))
-        if assumption and assumption not in trust_assumptions:
-            trust_assumptions.append(assumption)
+    trust_assumptions = _extract_trust_assumptions(skill_content)
 
     if not blocked:
         try:
@@ -6978,6 +7749,7 @@ def _audit_skill_impl(
                 "content_hash": hashlib.sha256(skill_content.encode()).hexdigest(),
                 "audit_boundary_version": AUDIT_BOUNDARY_VERSION,
                 "audit_boundary_hash": AUDIT_BOUNDARY_HASH,
+                "trust_assumptions": trust_assumptions,
             }
             _pc_path.write_text(json.dumps(_pc_data, indent=2), encoding="utf-8")
         except OSError as _exc:
@@ -7005,6 +7777,7 @@ def _audit_skill_impl(
                 "depth": skill_depth,
                 "efficacy_verified": metadata.get("efficacy_verified", False),
                 "efficacy_last_checked": metadata.get("efficacy_last_checked"),
+                "trust_assumptions": trust_assumptions,
             }
             _hashes_path.write_text(json.dumps(_hashes, indent=2), encoding="utf-8")
             _sidecar_dir = SKILLS_DIR / ".hashes"
@@ -7109,6 +7882,7 @@ def _audit_skill_impl(
         "file_surface": _cap_files,
         "env_surface": _cap_env,
         "trigger_conditions": _cap_triggers,
+        "trust_assumptions": trust_assumptions,
     }
 
     try:
@@ -7131,6 +7905,7 @@ def _audit_skill_impl(
                 _cm_hashes[_skill_id]["depth"] = skill_depth
                 _cm_hashes[_skill_id]["efficacy_verified"] = metadata.get("efficacy_verified", False)
                 _cm_hashes[_skill_id]["efficacy_last_checked"] = metadata.get("efficacy_last_checked")
+                _cm_hashes[_skill_id]["trust_assumptions"] = trust_assumptions
                 _audited_at = datetime.now(timezone.utc).isoformat()
                 _cm_hashes[_skill_id]["last_audit_timestamp"] = _audited_at
                 _cm_hashes[_skill_id]["audited_at"] = _audited_at
@@ -7151,6 +7926,7 @@ def _audit_skill_impl(
         trust_velocity_warning,
         boundary_drift_warning,
         requires_manual_review=requires_manual_review,
+        requires_explicit_user_confirmation=requires_explicit_user_confirmation,
         requires_secondary_review=requires_secondary_review,
         trust_value_score=trust_value_score,
         high_value_target=high_value_target,
@@ -7355,6 +8131,93 @@ def _skills_checksums_path() -> Path:
     from config import SOUL_DIR
 
     return SOUL_DIR / "skills_checksums.json"
+
+
+def _skill_hashes_path() -> Path:
+    try:
+        from config import MIRA_ROOT
+
+        shared_soul_path = MIRA_ROOT / "agents" / "shared" / "soul" / "skill_hashes.json"
+        if shared_soul_path.parent.exists():
+            return shared_soul_path
+    except Exception:
+        pass
+    from config import SOUL_DIR
+
+    return SOUL_DIR / "skill_hashes.json"
+
+
+def _load_skill_hashes() -> dict:
+    path = _skill_hashes_path()
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("skill_hashes.json unreadable: %s", exc)
+        return {}
+
+
+def _save_skill_hash(skill_name: str, skill_content: str) -> None:
+    path = _skill_hashes_path()
+    content_hash = hashlib.sha256(skill_content.encode("utf-8")).hexdigest()
+    hashes = _load_skill_hashes()
+    hashes[skill_name] = content_hash
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(hashes, indent=2, sort_keys=True), encoding="utf-8")
+    except OSError as exc:
+        log.warning("skill_hashes.json write failed: %s", exc)
+
+
+def load_skill_verified(skill_name: str) -> str:
+    try:
+        from config import SKILLS_DIR
+    except Exception as exc:
+        raise SkillIntegrityError(f"config import failed: {exc}") from exc
+
+    slug = skill_name.lower().replace(" ", "-")
+    skill_file: Path | None = None
+    for ext in (".md", ".py"):
+        candidate = SKILLS_DIR / f"{slug}{ext}"
+        if candidate.exists():
+            skill_file = candidate
+            break
+    if skill_file is None:
+        raise SkillIntegrityError(f"skill file not found: {skill_name}")
+
+    try:
+        content = skill_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SkillIntegrityError(f"cannot read skill file: {exc}") from exc
+
+    current_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    hashes = _load_skill_hashes()
+    stored_hash = hashes.get(skill_name)
+    if stored_hash is None:
+        stored_hash = hashes.get(slug)
+    if isinstance(stored_hash, dict):
+        stored_hash = stored_hash.get("hash")
+    if not stored_hash:
+        log.warning(
+            "SKILL_LOAD blocked: skill=%s reason='audit required: missing skill_hashes.json entry'",
+            skill_name,
+        )
+        raise SkillIntegrityError(f"audit required: missing skill_hashes.json entry for {skill_name}")
+    if current_hash != stored_hash:
+        log.critical(
+            "SKILL_INTEGRITY_VIOLATION: skill=%s stored_hash=%s current_hash=%s load blocked",
+            skill_name,
+            stored_hash,
+            current_hash,
+        )
+        _alert_skill_audit_blocked(
+            skill_name,
+            ["skill_integrity_mismatch"],
+            content,
+            "local_file",
+            {"source_path": str(skill_file), "hash_expected": stored_hash, "hash_actual": current_hash},
+        )
+        raise SkillIntegrityError(f"hash mismatch for {skill_name}")
+    return content
 
 
 def _load_skills_checksums() -> dict:
@@ -7624,9 +8487,9 @@ def load_skill(skill_name: str, metadata: dict | None = None) -> str:
     metadata.setdefault("source_path", str(skill_file))
 
     try:
-        content = skill_file.read_text(encoding="utf-8")
-    except OSError as _exc:
-        log.debug("load_skill: read failed skill=%s: %s", skill_name, _exc)
+        content = load_skill_verified(skill_name)
+    except SkillIntegrityError as _exc:
+        log.warning("SKILL_LOAD blocked: skill=%s reason=%s", skill_name, _exc)
         return ""
 
     current_hash = hashlib.sha256(content.encode()).hexdigest()

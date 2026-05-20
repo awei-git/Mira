@@ -15,8 +15,10 @@ _spec.loader.exec_module(_shared_config)
 EXPLORE_SOURCE_DIVERSITY_MIN_ENTITIES = _shared_config.EXPLORE_SOURCE_DIVERSITY_MIN_ENTITIES
 EXPLORER_NARRATIVE_SOURCE_MIN_TYPES = _shared_config.EXPLORER_NARRATIVE_SOURCE_MIN_TYPES
 EXPLORER_CORPORATE_PR_MAX_RATIO = _shared_config.EXPLORER_CORPORATE_PR_MAX_RATIO
+SOURCE_TRUST_TIERS = getattr(_shared_config, "SOURCE_TRUST_TIERS", {})
 ENABLE_EPISTEMIC_FILTER = getattr(_shared_config, "ENABLE_EPISTEMIC_FILTER", True)
 EPISTEMIC_CONFIDENCE_THRESHOLD = getattr(_shared_config, "EPISTEMIC_CONFIDENCE_THRESHOLD", "medium")
+TRUST_CAVEAT = "community-aggregated signal — verify against primary source"
 
 
 _AI_TECH_KEYWORDS = (
@@ -110,6 +112,10 @@ _AI_FUTURE_EFFECT_PATTERN = re.compile(
     r"\b(?:ai|artificial intelligence|llm|agent|model|automation)\b|人工智能|大模型|模型"
 )
 _URL_PATTERN = re.compile(r"https?://[^\s)\]>]+")
+_PROVENANCE_LABEL_PATTERN = re.compile(r"^\s*(?:[-*]\s*)?\[(?:HARD|SOFT):[^\]]+\]", re.IGNORECASE)
+
+SOFT_SIGNAL_SOURCES = ["github.com/trending", "huggingface.co/trending", "reddit.com"]
+HARD_SIGNAL_SOURCES = ["arxiv.org", "paperswithcode.com/sota"]
 
 _CORPORATE_DOMAINS = (
     "about.fb.com",
@@ -276,6 +282,118 @@ def _source_entity(item: dict) -> str:
 
 def _domain_matches(host: str, domains: tuple[str, ...]) -> bool:
     return any(host == domain or host.endswith(f".{domain}") for domain in domains)
+
+
+def _source_text(item: dict) -> str:
+    return " ".join(str(item.get(field, "")) for field in ("source", "url", "title", "summary", "description")).lower()
+
+
+def _signal_provenance_label(item: dict) -> str | None:
+    text = _source_text(item)
+    source_name = str(item.get("source", "")).strip().lower()
+    url = str(item.get("url", "")).strip()
+    host = urlparse(url).netloc.lower().removeprefix("www.") if url else ""
+    path = urlparse(url).path.strip("/") if url else ""
+
+    if (
+        any(source in text for source in SOFT_SIGNAL_SOURCES)
+        or source_name in {"github_trending", "huggingface"}
+        or "reddit.com" in host
+    ):
+        if "github" in text:
+            return "[SOFT: GitHub trending]"
+        if "huggingface" in text:
+            return "[SOFT: HuggingFace trending]"
+        if "reddit" in text or "reddit.com" in host:
+            return "[SOFT: Reddit]"
+        return "[SOFT: popularity signal]"
+
+    if any(source in text for source in HARD_SIGNAL_SOURCES) or source_name == "arxiv" or host.endswith("arxiv.org"):
+        if host.endswith("arxiv.org"):
+            paper_id = path.rsplit("/", 1)[-1] if path else ""
+            return f"[HARD: arxiv {paper_id}]" if paper_id else "[HARD: arxiv]"
+        if "paperswithcode.com/sota" in text:
+            return "[HARD: Papers with Code SOTA]"
+        return "[HARD: research signal]"
+
+    return None
+
+
+def _source_trust_tier(item: dict) -> str | None:
+    source = str(item.get("source", "")).strip().lower()
+    normalized = source.replace(" ", "_")
+    candidates = [normalized]
+    if normalized.startswith("r/"):
+        candidates.append("reddit")
+    if normalized == "hackernews":
+        candidates.append("hacker_news")
+    if normalized == "hacker_news":
+        candidates.append("hackernews")
+
+    for candidate in candidates:
+        tier = SOURCE_TRUST_TIERS.get(candidate)
+        if tier:
+            return tier
+    return None
+
+
+def _trust_caveat(item: dict) -> str | None:
+    tier = _source_trust_tier(item)
+    if tier in ("community", "aggregator"):
+        return TRUST_CAVEAT
+    return None
+
+
+def _annotate_signal_provenance(briefing: str, feed_items: list) -> str:
+    labels = []
+    for item in feed_items:
+        if not isinstance(item, dict):
+            continue
+        label = _signal_provenance_label(item)
+        caveat = _trust_caveat(item)
+        if not label and not caveat:
+            continue
+        title = str(item.get("title", "")).strip()
+        url = str(item.get("url", "")).strip()
+        labels.append((label, caveat, title, url))
+
+    if not labels:
+        return briefing
+
+    source_lines = briefing.splitlines()
+    lines = []
+    for index, line in enumerate(source_lines):
+        stripped = line.strip()
+        if not stripped:
+            lines.append(line)
+            continue
+        has_provenance_label = bool(_PROVENANCE_LABEL_PATTERN.search(line))
+
+        label = None
+        caveat = None
+        for candidate_label, candidate_caveat, title, url in labels:
+            if (url and url in line) or (title and title in line):
+                label = candidate_label
+                caveat = candidate_caveat
+                break
+
+        prefix = line[: len(line) - len(line.lstrip())]
+        body = line[len(prefix) :]
+        if label and not has_provenance_label:
+            if body.startswith("- "):
+                line = f"{prefix}- {label} {body[2:]}"
+            elif body.startswith("* "):
+                line = f"{prefix}* {label} {body[2:]}"
+            else:
+                line = f"{prefix}{label} {body}"
+        lines.append(line)
+        if caveat and "trust_caveat:" not in line:
+            next_line = source_lines[index + 1].strip() if index + 1 < len(source_lines) else ""
+            if not next_line.startswith("trust_caveat:"):
+                caveat_prefix = f"{prefix}    " if label or body.startswith(("- ", "* ")) else prefix
+                lines.append(f"{caveat_prefix}trust_caveat: {caveat}")
+
+    return "\n".join(lines)
 
 
 def _is_platform_vendor_item(item: dict) -> bool:
@@ -518,6 +636,7 @@ def _format_source_type_counts(counts: dict) -> str:
 
 
 def apply_source_diversity_note(briefing: str, feed_items: list) -> str:
+    briefing = _annotate_signal_provenance(briefing, feed_items)
     audit = _audit_source_diversity(feed_items)
     narrative_audit = _audit_narrative_source_diversity(briefing, feed_items)
     selection_bias_audit = screen_selection_bias(briefing, feed_items)
