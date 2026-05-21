@@ -16,7 +16,7 @@ Reviewed the V3.1 implementation surface against `docs/v3.1-architecture.html`, 
 | Workflow security audit | Strengthened | Compilation now audits the command plus pack-level files and sibling skill metadata/Markdown before enablement, computes file hashes, and persists runtime audit artifacts. |
 | Capability preflight | Implemented | Required connector gating blocks workflows before side effects. |
 | Action risk approval | Implemented MVP | Risk grants and approval queue exist; public publish is blocked without approval. |
-| Causal trace | Implemented MVP | Causal links now reference persisted causal evidence records; communication memory changes produce L3 evidence. |
+| Causal trace | Implemented MVP | Causal links now reference persisted causal evidence records; communication, article creation, and A2A trust runs produce L3 evidence. |
 | Snapshot builder | Implemented MVP | Snapshot manifests include scoring/exclusion data and hashes. |
 | Eval / north-star scorecards | Implemented MVP | Operational and strategic scorecards are exposed in dashboard snapshot. |
 | Durable runtime / effect log | Implemented MVP | Idempotency keys, open/unknown status, and reconciliation queue are present. |
@@ -33,15 +33,18 @@ Reviewed the V3.1 implementation surface against `docs/v3.1-architecture.html`, 
 - Corrected the operational `causal_link_validity` hard gate so it rates asserted causal links rather than routine records with no causal claim.
 - Added `data/v3/causal_evidence.jsonl` as the persisted causal evidence log and wired dashboard scoring to validate causal links against it.
 - Ran the communication pipeline twice; the second run used prior memory, changed reply behavior, and wrote an L3 causal evidence record.
+- Extended L3 causal evidence emission to repeated `article_creation` and `a2a_trust_experiment` workflow runs.
+- Added dashboard/status visibility for causal evidence counts by level.
 
 ## Verification
 
-- `tests/v3`: 59 passed.
+- `tests/v3`: 60 passed.
 - `v3_status --json`: strategic and operational scorecards now have no hard gate failures.
+- Live dashboard evidence counts: L3 = 3, covering communication, article creation, and A2A trust.
 
 ## Remaining Gaps
 
-1. More workflows need to emit L3/L4 causal evidence, not just the communication proof path, before Mira can make broad claims that memory changed behavior across modules.
+1. More workflows need to emit L3/L4 causal evidence, especially non-executable catalog paths such as `podcast_production`, `self_evolution`, and `memory_maintenance`, before Mira can make broad claims that memory changed behavior across modules.
 2. Workflow packs are representative, not complete for every catalog pipeline. The next highest-ROI packs are `self_evolution`, `memory_maintenance`, and `social_reactive`.
 3. Security gateway checks are deterministic but shallow. Add structured finding types for privacy downgrade, undeclared tool use, and semantic contradiction.
 4. Audit artifacts are now persisted with hashes, but they are not cryptographically signed with a private key.
@@ -49,4 +52,4 @@ Reviewed the V3.1 implementation surface against `docs/v3.1-architecture.html`, 
 
 ## Next Move
 
-Extend causal evidence emission to the next representative workflows: `podcast_production`, `article_creation`, and `self_evolution`, then add dashboard counts by evidence level.
+Create executable MVP workflow packs for `podcast_production`, `self_evolution`, and `memory_maintenance`, then wire their causal evidence and review-queue behavior into the same runtime path.
