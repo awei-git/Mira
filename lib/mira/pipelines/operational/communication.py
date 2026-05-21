@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from mira.agents.base import StepInput, StepOutput
 from mira.engine.pipeline import Pipeline, Step, Trigger
+from mira.kernel.causal import CausalEvidence
 from mira.kernel.delta import MemoryAction
 from mira.kernel.snapshot import MemorySnapshot
 
@@ -34,7 +35,19 @@ def _execute(input: StepInput, memory: MemorySnapshot) -> StepOutput:
     wants_concise = any("concise" in hint.lower() for hint in memory.hints)
     prefix = "Short answer:" if wants_concise else "I read this as:"
     reply = f"{prefix} {message.strip()}"
-    return StepOutput(payload={"reply": reply, "used_memory": wants_concise})
+    payload = {"reply": reply, "used_memory": wants_concise}
+    if wants_concise and memory.causal_context:
+        payload["_causal_evidence"] = [
+            CausalEvidence(
+                memory_id=memory.causal_context[0],
+                level="L3",
+                reason="prior communication memory changed the response prefix to concise status format",
+                run_id=input.run_id,
+                pipeline=input.pipeline,
+                effect_ids=[f"effect:{input.run_id}:concise_reply"],
+            )
+        ]
+    return StepOutput(payload=payload)
 
 
 def _quality(input: StepInput, memory: MemorySnapshot) -> StepOutput:

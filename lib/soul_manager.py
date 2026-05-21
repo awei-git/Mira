@@ -372,6 +372,8 @@ class SkillMetadata(TypedDict, total=False):
     superseded_by: Optional[str]
     deprecated_since: Optional[str]
     allowed_domains: list[str] | str
+    maintainer_origin: list[str] | str
+    last_reviewed: Optional[str]
 
 
 def _skill_metadata_with_efficacy_defaults(metadata: dict | None = None) -> SkillMetadata:
@@ -402,6 +404,48 @@ def skill_metadata_from_frontmatter(content: str) -> dict[str, str]:
             value = value[1:-1]
         metadata[match.group(1)] = value
     return metadata
+
+
+def _maintainer_origin_entries(value: object) -> set[str]:
+    if isinstance(value, (list, tuple, set)):
+        entries = [str(item) for item in value]
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return set()
+        parsed_entries = None
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    parsed_entries = [str(item) for item in parsed]
+            except json.JSONDecodeError:
+                parsed_entries = None
+        entries = parsed_entries if parsed_entries is not None else re.split(r"[,;|]", text)
+    else:
+        return set()
+
+    return {entry.strip().strip("\"'").lower() for entry in entries if entry.strip().strip("\"'")}
+
+
+def _skill_provenance_fragility_reasons(skill_content: str) -> list[str]:
+    frontmatter = skill_metadata_from_frontmatter(skill_content)
+    reasons: list[str] = []
+
+    maintainer_origins = _maintainer_origin_entries(frontmatter.get("maintainer_origin"))
+    if len(maintainer_origins) < 2:
+        reasons.append("maintainer_origin_has_fewer_than_2_distinct_entries")
+
+    last_reviewed = frontmatter.get("last_reviewed")
+    reviewed_at = _parse_audit_timestamp(last_reviewed)
+    if reviewed_at is None:
+        reasons.append("last_reviewed_missing_or_invalid")
+    else:
+        age_days = (datetime.utcnow().date() - reviewed_at.date()).days
+        if age_days > 90:
+            reasons.append(f"last_reviewed_stale:{age_days}d")
+
+    return reasons
 
 
 def _skill_deprecation_metadata(content: str = "", metadata: dict | None = None) -> dict[str, str]:
@@ -1602,6 +1646,11 @@ AUDIT_BOUNDARY = {
         "structural_privilege_escalation",
         "semantic_manipulation",
         "semantic_channel_patterns",
+        "DURABLE_STATE_ACCESS",
+        "SUSPICIOUS_PERSISTENT_STATE",
+        "persistent_state_write_external_input",
+        "durable_state_capability",
+        "durable_execution_persistent_write",
     ],
     "not_checked": [
         "static analysis only",
@@ -1619,6 +1668,9 @@ AUDIT_BOUNDARY = {
         "privilege escalation patterns including sudo, chmod, chown, setuid, and setgid",
         "high-confidence static threat patterns including shell injection, keychain access, persistence calls, and gate suppression attempts",
         "persistent local-privilege footholds including LaunchAgents, LaunchDaemons, browser extension directories, launchctl load, cron, and login items",
+        "Skills requesting write access to soul/ or memory stores",
+        "suspicious persistent state writes including direct soul, memory, notes inbox/outbox, learned skill list, cron/schedule, and LaunchAgent plist changes",
+        "persistent state write + external input patterns where durable soul, memory, state, or journal writes are combined with external input or web fetches",
         "prompt injection signatures in skill content and metadata",
         "semantic and behavioral manipulation patterns in raw skill body content",
         "natural-language judgment skills missing reviewer pairing, pass/fail criteria, edge-case policy, or authority scope",
@@ -1647,6 +1699,8 @@ AUDIT_BOUNDARY = {
         "browser_extension_vector: skill attempts to create or interact with a browser extension attachment point.",
         "structural_privilege_escalation: browser extension installation, native messaging host registration, browser profile writes, and local privileged process spawning require explicit user confirmation before enabling.",
         "semantic channel warning patterns for structured payload fields, prompt fragments, URL query strings, encoded values, timing, and token choice in outbound calls",
+        "durable_state_capability: durable_state, cross_session, or persistent_memory capability declarations in metadata or code are flagged for review.",
+        "durable_execution_persistent_write: long-running execution combined with filesystem writes outside /tmp is blocked as cross-session attack surface.",
     ],
     "out_of_scope": [
         "data exfiltration through APIs or services that are allowed by policy and do not match semantic channel or known suspicious patterns",
@@ -2675,6 +2729,7 @@ def _audit_rejection_counts_path() -> Path:
 
 _AUDIT_BLOCK_LIST_PATH: Path | None = None
 _AUDIT_PASS_CACHE_PATH: Path | None = None
+_AUDIT_BLOCK_LOG_PATH: Path | None = None
 
 
 def _audit_block_list_path() -> Path:
@@ -2699,6 +2754,18 @@ def _audit_pass_cache_path() -> Path:
         except Exception:
             _AUDIT_PASS_CACHE_PATH = Path(__file__).parent / "soul" / "audit_pass_cache.json"
     return _AUDIT_PASS_CACHE_PATH
+
+
+def _audit_block_log_path() -> Path:
+    global _AUDIT_BLOCK_LOG_PATH
+    if _AUDIT_BLOCK_LOG_PATH is None:
+        try:
+            from config import SOUL_DIR
+
+            _AUDIT_BLOCK_LOG_PATH = SOUL_DIR / "audit_block_log.jsonl"
+        except Exception:
+            _AUDIT_BLOCK_LOG_PATH = Path(__file__).parent / "soul" / "audit_block_log.jsonl"
+    return _AUDIT_BLOCK_LOG_PATH
 
 
 def _read_rejection_counts() -> dict:
@@ -3365,6 +3432,371 @@ def _persistent_foothold_matches(skill_text: str) -> list[str]:
     return [label for label, pattern in _PERSISTENT_FOOTHOLD_PATTERNS if pattern.search(skill_text)]
 
 
+_DURABLE_STATE_CAPABILITY_PATTERN = re.compile(
+    r"durable.?state|cross.?session|persistent.?memor",
+    re.IGNORECASE,
+)
+_DURABLE_STATE_WRITE_ANNOTATION_PATTERN = re.compile(r"(?m)^\s*#\s*DURABLE_STATE_WRITE\s*:")
+_DURABLE_STATE_ACCESS_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    (
+        "open_soul_or_memory_write",
+        re.compile(
+            r"""\bopen\s*\([^)]*(?:soul/|/soul/|memory/|/memory/|journal/|/journal/)[^)]*(?:,\s*|mode\s*=\s*)['"][^'"]*[wax+][^'"]*['"]""",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "path_soul_or_memory_write",
+        re.compile(
+            r"""\b(?:Path|pathlib\.Path)\s*\([^)]*(?:soul/|/soul/|memory/|/memory/|journal/|/journal/)[^)]*\)\.write_(?:text|bytes)\s*\("""
+            r"""|\b(?:Path|pathlib\.Path)\s*\([^)]*(?:soul/|/soul/|memory/|/memory/|journal/|/journal/)[^)]*\)\.open\s*\([^)]*(?:mode\s*=\s*)?['"][^'"]*[wax+][^'"]*['"]""",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "json_dump_memory_store",
+        re.compile(
+            r"""\bjson\.dump\s*\([\s\S]{0,240}(?:soul/|/soul/|memory/|/memory/)"""
+            r"""|(?:soul/|/soul/|memory/|/memory/)[\s\S]{0,240}\bjson\.dump\s*\(""",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "journal_append",
+        re.compile(
+            r"""\b(?:append|append_text|write_text)\b[\s\S]{0,240}(?:journal/|/journal/)"""
+            r"""|(?:journal/|/journal/)[\s\S]{0,240}\b(?:append|append_text|write_text)\b""",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+_PERSISTENT_STATE_WRITE_TARGET_PATTERN = re.compile(
+    r"soul/|memory/|notes_inbox/|notes_outbox/",
+    re.IGNORECASE,
+)
+_PERSISTENT_STATE_WRITE_OP_PATTERN = re.compile(
+    r"\b(?:open|write|write_text|write_bytes|json\.dump|yaml\.dump|append|append_text|mkdir|copy|copyfile|"
+    r"move|rename|replace|touch)\b",
+    re.IGNORECASE,
+)
+_LEARNED_SKILL_DIRECT_WRITE_PATTERN = re.compile(
+    r"(?:CLAUDE\.md|soul/skills/)[\s\S]{0,240}\b(?:open|write|write_text|write_bytes|json\.dump|append|"
+    r"append_text|copy|copyfile|move|rename|replace|touch)\b"
+    r"|\b(?:open|write|write_text|write_bytes|json\.dump|append|append_text|copy|copyfile|move|rename|"
+    r"replace|touch)\b[\s\S]{0,240}(?:CLAUDE\.md|soul/skills/)",
+    re.IGNORECASE,
+)
+_CRON_OR_SCHEDULE_REGISTRATION_PATTERN = re.compile(
+    r"\b(?:crontab|croniter|schedule\.every|scheduler\.add_job|add_job\s*\(|BackgroundScheduler|"
+    r"BlockingScheduler|sched\.scheduler|at\s+now)\b"
+    r"|/etc/cron(?:tab|\.d|\.daily|\.hourly|\.weekly|\.monthly)?(?:/|\b)",
+    re.IGNORECASE,
+)
+_LAUNCH_AGENT_PLIST_WRITE_PATTERN = re.compile(
+    r"(?:~/Library/LaunchAgents/|/Users/[^/\s'\"`]+/Library/LaunchAgents/)[^\s'\"`]*\.plist"
+    r"[\s\S]{0,240}\b(?:open|write|write_text|write_bytes|json\.dump|copy|copyfile|move|rename|"
+    r"replace|touch)\b"
+    r"|\b(?:open|write|write_text|write_bytes|json\.dump|copy|copyfile|move|rename|replace|touch)\b"
+    r"[\s\S]{0,240}(?:~/Library/LaunchAgents/|/Users/[^/\s'\"`]+/Library/LaunchAgents/)"
+    r"[^\s'\"`]*\.plist",
+    re.IGNORECASE,
+)
+_PERSISTENT_STATE_EXTERNAL_WRITE_PATTERN = re.compile(
+    r"\bopen\s*\([^)]*\b(?:soul|memory|state|journal)\b[^)]*,\s*['\"][^'\"]*[wax][^'\"]*['\"]"
+    r"|\b(?:json|pickle)\.dump\s*\([\s\S]{0,240}\b(?:soul|memory|state|journal)\b"
+    r"|\b(?:soul|memory|state|journal)\b[\s\S]{0,240}\b(?:json|pickle)\.dump\s*\(",
+    re.IGNORECASE,
+)
+_EXTERNAL_INPUT_INGESTION_PATTERN = re.compile(
+    r"\b(?:requests|httpx)\.(?:get|post|put|patch|delete|head|options)\s*\("
+    r"|\burllib(?:\.request)?\.(?:urlopen|Request)\s*\("
+    r"|\baiohttp\.ClientSession\b|\bClientSession\s*\("
+    r"|\bfetch\s*\("
+    r"|\b(?:input|raw_input)\s*\("
+    r"|\bsys\.argv\b|\bargparse\.ArgumentParser\b"
+    r"|\b(?:request|requests?)\.(?:args|form|json|data|files|values|GET|POST)\b"
+    r"|\b(?:metadata|params|kwargs|payload)\.get\s*\(\s*['\"]"
+    r"(?:user_input|external_input|input_text|prompt|query|url|source_url|content|message|text|payload)['\"]"
+    r"|\bdef\s+\w+\s*\([^)]*\b"
+    r"(?:user_input|external_input|input_text|prompt|query|url|source_url|content|message|payload)\b",
+    re.IGNORECASE,
+)
+
+
+def _durable_state_capability_matches(skill_text: str, metadata: dict | None = None) -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, str, int | None]] = set()
+    scan_targets: list[tuple[str, str]] = [("code", skill_text)]
+    if metadata:
+        try:
+            scan_targets.append(("metadata", json.dumps(metadata, ensure_ascii=False, sort_keys=True, default=str)))
+        except (TypeError, ValueError):
+            scan_targets.append(("metadata", str(metadata)))
+    for source_label, text in scan_targets:
+        for match in _DURABLE_STATE_CAPABILITY_PATTERN.finditer(text):
+            line_no = text.count("\n", 0, match.start()) + 1 if source_label == "code" else None
+            key = (source_label, match.group(0).lower(), line_no)
+            if key in seen:
+                continue
+            seen.add(key)
+            item: dict[str, object] = {"pattern": match.group(0), "source": source_label}
+            if line_no is not None:
+                item["line"] = line_no
+            matches.append(item)
+    return matches
+
+
+def _metadata_grants_durable_state_write(metadata: dict | None) -> bool:
+    if not metadata:
+        return False
+
+    def has_grant(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+            return normalized in {"durable_state_write", "durable_state_access", "user_granted_durable_state_write"}
+        if isinstance(value, dict):
+            for key, item in value.items():
+                normalized_key = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+                if normalized_key in {
+                    "durable_state_write",
+                    "durable_state_access",
+                    "allow_durable_state_write",
+                    "user_granted_durable_state_write",
+                } and has_grant(item):
+                    return True
+                if isinstance(item, (str, list, tuple, set, dict)) and has_grant(item):
+                    return True
+        if isinstance(value, (list, tuple, set)):
+            return any(has_grant(item) for item in value)
+        return False
+
+    for key in (
+        "durable_state_write",
+        "durable_state_access",
+        "allow_durable_state_write",
+        "user_granted_durable_state_write",
+        "permissions",
+        "granted_permissions",
+        "user_granted_permissions",
+        "permission_flags",
+    ):
+        if key in metadata and has_grant(metadata.get(key)):
+            return True
+    return False
+
+
+def _durable_state_access_matches(skill_text: str, metadata: dict | None = None) -> list[dict[str, object]]:
+    if _DURABLE_STATE_WRITE_ANNOTATION_PATTERN.search(skill_text) or _metadata_grants_durable_state_write(metadata):
+        return []
+
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, int]] = set()
+    for label, pattern in _DURABLE_STATE_ACCESS_PATTERNS:
+        for match in pattern.finditer(skill_text):
+            line_no = skill_text.count("\n", 0, match.start()) + 1
+            key = (label, line_no)
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append(
+                {
+                    "pattern": label,
+                    "line": line_no,
+                    "text": re.sub(r"\s+", " ", match.group(0)).strip()[:240],
+                }
+            )
+    return matches
+
+
+def _suspicious_persistent_state_matches(skill_text: str) -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, int, str]] = set()
+
+    def add_match(pattern: str, start: int, target: str = "") -> None:
+        line_no = skill_text.count("\n", 0, start) + 1
+        key = (pattern, line_no, target)
+        if key in seen:
+            return
+        seen.add(key)
+        item: dict[str, object] = {"pattern": pattern, "line": line_no}
+        if target:
+            item["target"] = target
+        matches.append(item)
+
+    for target_match in _PERSISTENT_STATE_WRITE_TARGET_PATTERN.finditer(skill_text):
+        window_start = max(0, target_match.start() - 240)
+        window_end = min(len(skill_text), target_match.end() + 240)
+        window = skill_text[window_start:window_end]
+        if "notes_bridge" in window:
+            continue
+        if _PERSISTENT_STATE_WRITE_OP_PATTERN.search(window):
+            add_match("direct_persistent_state_write", target_match.start(), target_match.group(0))
+
+    for pattern_name, pattern in (
+        ("direct_learned_skill_list_write", _LEARNED_SKILL_DIRECT_WRITE_PATTERN),
+        ("cron_or_schedule_registration", _CRON_OR_SCHEDULE_REGISTRATION_PATTERN),
+        ("launch_agent_plist_write", _LAUNCH_AGENT_PLIST_WRITE_PATTERN),
+    ):
+        for match in pattern.finditer(skill_text):
+            add_match(pattern_name, match.start())
+
+    return matches
+
+
+def _persistent_state_external_input_audit(skill_text: str) -> dict[str, object]:
+    def collect(pattern: re.Pattern, kind: str) -> list[dict[str, object]]:
+        matches: list[dict[str, object]] = []
+        seen: set[tuple[str, int, str]] = set()
+        lines = skill_text.splitlines()
+        for match in pattern.finditer(skill_text):
+            line_no = skill_text.count("\n", 0, match.start()) + 1
+            text = lines[line_no - 1].strip() if 0 < line_no <= len(lines) else match.group(0)
+            text = re.sub(r"\s+", " ", text).strip()[:300]
+            key = (kind, line_no, text)
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append({"pattern": kind, "line": line_no, "text": text})
+        return matches
+
+    state_writes = collect(_PERSISTENT_STATE_EXTERNAL_WRITE_PATTERN, "persistent_state_write")
+    external_inputs = collect(_EXTERNAL_INPUT_INGESTION_PATTERN, "external_input_ingestion")
+    if not state_writes and not external_inputs:
+        return {}
+
+    combined = bool(state_writes and external_inputs)
+    return {
+        "detected": True,
+        "category": "persistent_state_write_external_input",
+        "severity": "BLOCK" if combined else "WARN",
+        "reason": "persistent state write + external input",
+        "combined": combined,
+        "state_writes": state_writes,
+        "external_inputs": external_inputs,
+    }
+
+
+def _audit_call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _audit_call_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return ""
+
+
+def _long_running_execution_matches(skill_text: str) -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, int]] = set()
+
+    def add_match(pattern: str, line_no: int) -> None:
+        key = (pattern, line_no)
+        if key in seen:
+            return
+        seen.add(key)
+        matches.append({"pattern": pattern, "line": line_no})
+
+    for pattern_name, pattern in (
+        ("while_true", re.compile(r"(?m)^\s*while\s+True\s*:")),
+        (
+            "asyncio_sleep_loop",
+            re.compile(r"\b(?:while|for|async\s+for)\b.{0,800}\basyncio\.sleep\s*\(", re.DOTALL),
+        ),
+        ("daemon_thread", re.compile(r"\bthreading\.Thread\s*\([^)]*\bdaemon\s*=\s*True\b", re.DOTALL)),
+        (
+            "subprocess_popen_without_timeout",
+            re.compile(r"\b(?:subprocess\.)?Popen\s*\((?![^)]*\btimeout\s*=)", re.DOTALL),
+        ),
+        (
+            "asyncio_task_without_cancellation_handle",
+            re.compile(r"(?m)^\s*(?:asyncio\.(?:create_task|ensure_future)|[\w.]+\.create_task)\s*\("),
+        ),
+    ):
+        for match in pattern.finditer(skill_text):
+            add_match(pattern_name, skill_text.count("\n", 0, match.start()) + 1)
+
+    try:
+        tree = ast.parse(skill_text)
+    except SyntaxError:
+        return matches
+    except Exception:
+        return matches
+
+    parent_by_id: dict[int, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parent_by_id[id(child)] = parent
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.While) and isinstance(node.test, ast.Constant) and node.test.value is True:
+            add_match("while_true", getattr(node, "lineno", 0))
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Call) and _audit_call_name(child.func) == "asyncio.sleep":
+                    add_match("asyncio_sleep_loop", getattr(child, "lineno", getattr(node, "lineno", 0)))
+        if isinstance(node, ast.Call) and _audit_call_name(node.func) == "threading.Thread":
+            for keyword in node.keywords:
+                if (
+                    keyword.arg == "daemon"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value is True
+                ):
+                    add_match("daemon_thread", getattr(node, "lineno", 0))
+        if isinstance(node, ast.Call) and _audit_call_name(node.func) in {"subprocess.Popen", "Popen"}:
+            if not any(keyword.arg == "timeout" for keyword in node.keywords):
+                add_match("subprocess_popen_without_timeout", getattr(node, "lineno", 0))
+        if isinstance(node, ast.Call) and _audit_call_name(node.func) in {
+            "asyncio.create_task",
+            "asyncio.ensure_future",
+            "create_task",
+        }:
+            parent = parent_by_id.get(id(node))
+            if not isinstance(parent, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                add_match("asyncio_task_without_cancellation_handle", getattr(node, "lineno", 0))
+    return matches
+
+
+def _is_tmp_write_target(path_text: str) -> bool:
+    expanded = path_text.strip()
+    return expanded == "/tmp" or expanded.startswith("/tmp/")
+
+
+def _persistent_write_target_matches(skill_text: str) -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, int, str]] = set()
+    patterns: tuple[tuple[str, re.Pattern], ...] = (
+        (
+            "open_write",
+            re.compile(
+                r"""\bopen\s*\(\s*f?['"](?P<path>[^'"]+)['"][^)]*(?:,\s*|mode\s*=\s*)['"][^'"]*[wax+][^'"]*['"]""",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "path_write",
+            re.compile(
+                r"""\b(?:Path|pathlib\.Path)\s*\(\s*f?['"](?P<path>[^'"]+)['"]\s*\)\.write_(?:text|bytes)\s*\(""",
+                re.IGNORECASE,
+            ),
+        ),
+    )
+    for pattern_name, pattern in patterns:
+        for match in pattern.finditer(skill_text):
+            path_text = match.group("path")
+            if _is_tmp_write_target(path_text):
+                continue
+            line_no = skill_text.count("\n", 0, match.start()) + 1
+            key = (pattern_name, line_no, path_text)
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append({"pattern": pattern_name, "line": line_no, "target": path_text})
+    return matches
+
+
 def _mira_root_for_dependency_audit() -> Path:
     return Path(__file__).resolve().parent.parent
 
@@ -3723,6 +4155,104 @@ def _has_boundary_declaration(metadata: dict | None) -> bool:
     return isinstance(boundary, str) and len(boundary.strip()) >= 20
 
 
+def _normalize_capability_boundary_key(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
+
+
+def _capability_boundary_contract_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return "\n".join(str(item) for item in value)
+    if isinstance(value, dict):
+        return "\n".join(f"{key}: {item}" for key, item in value.items())
+    return "" if value is None else str(value)
+
+
+def _is_specific_capability_boundary_content(value: object) -> bool:
+    text = re.sub(r"\s+", " ", _capability_boundary_contract_text(value)).strip()
+    normalized = text.lower().strip(" .:-")
+    if not normalized or normalized in _GENERIC_CAPABILITY_BOUNDARY_VALUES:
+        return False
+    if len(normalized) < 35:
+        return False
+    words = re.findall(r"[a-z][a-z0-9_-]{2,}", normalized)
+    meaningful_words = {
+        word
+        for word in words
+        if word
+        not in {
+            "and",
+            "are",
+            "for",
+            "the",
+            "this",
+            "that",
+            "use",
+            "used",
+            "with",
+            "when",
+            "must",
+            "should",
+            "will",
+        }
+    }
+    return len(meaningful_words) >= 5
+
+
+def _capability_boundary_contract_sections(skill_content: str) -> dict[str, str]:
+    labels_by_normalized = {
+        _normalize_capability_boundary_key(label): label for label, _ in _CAPABILITY_BOUNDARY_CONTRACT_FIELDS
+    }
+    sections: dict[str, list[str]] = {label: [] for label, _ in _CAPABILITY_BOUNDARY_CONTRACT_FIELDS}
+    active_label: str | None = None
+
+    for line in skill_content.splitlines():
+        match = _CAPABILITY_BOUNDARY_CONTRACT_LINE_PATTERN.match(line)
+        if match:
+            normalized_label = _normalize_capability_boundary_key(match.group("label"))
+            matched_label = labels_by_normalized.get(normalized_label)
+            inline_body = match.group("body").strip()
+            if matched_label:
+                active_label = matched_label if line.lstrip().startswith("#") or not inline_body else None
+                if inline_body:
+                    sections[matched_label].append(inline_body)
+            continue
+        if active_label and _MARKDOWN_HEADING_PATTERN.match(line):
+            active_label = None
+            continue
+        if active_label and re.match(r"^[A-Za-z][A-Za-z0-9_ /-]{1,60}:\s*", line):
+            active_label = None
+            continue
+        if active_label:
+            sections[active_label].append(line)
+
+    return {label: "\n".join(lines).strip() for label, lines in sections.items()}
+
+
+def _check_capability_boundary_contract(skill_content: str, metadata: dict | None) -> dict[str, list[str]]:
+    sections = _capability_boundary_contract_sections(skill_content)
+    metadata_values: dict[str, object] = {}
+    if isinstance(metadata, dict):
+        normalized_metadata = {_normalize_capability_boundary_key(key): value for key, value in metadata.items()}
+        for label, aliases in _CAPABILITY_BOUNDARY_CONTRACT_FIELDS:
+            for alias in aliases:
+                if alias in normalized_metadata:
+                    metadata_values[label] = normalized_metadata[alias]
+                    break
+
+    missing: list[str] = []
+    empty: list[str] = []
+    for label, _ in _CAPABILITY_BOUNDARY_CONTRACT_FIELDS:
+        value = metadata_values.get(label, sections.get(label, ""))
+        if value is None or not _capability_boundary_contract_text(value).strip():
+            missing.append(label)
+        elif not _is_specific_capability_boundary_content(value):
+            empty.append(label)
+
+    return {"missing": missing, "empty": empty}
+
+
 def _is_present_epistemic_metadata_value(value: object) -> bool:
     if isinstance(value, str):
         return bool(value.strip())
@@ -3735,6 +4265,36 @@ _REQUIRED_SKILL_SECTION_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
     ("failure_modes_or_when_not_to_use", re.compile(r"\b(failure\s+modes?|when\s+not\s+to\s+use)\b", re.IGNORECASE)),
     ("validation_or_evidence_signals", re.compile(r"\b(validation|evidence)\b", re.IGNORECASE)),
     ("assumptions_or_bias_risks", re.compile(r"\b(assumptions?|bias\s+risks?)\b", re.IGNORECASE)),
+)
+
+_CAPABILITY_BOUNDARY_CONTRACT_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Intended Use", ("intended_use",)),
+    ("Boundaries", ("boundaries",)),
+    ("Verification", ("verification",)),
+    ("Refusal/Escalation", ("refusal_escalation",)),
+)
+_CAPABILITY_BOUNDARY_CONTRACT_LINE_PATTERN = re.compile(
+    r"^\s{0,3}(?:#{1,6}\s*)?"
+    r"(?P<label>Intended Use|Boundaries|Verification|Refusal/Escalation)\s*:?\s*"
+    r"(?P<body>.*)$",
+    re.IGNORECASE,
+)
+_MARKDOWN_HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s+\S")
+_GENERIC_CAPABILITY_BOUNDARY_VALUES: frozenset[str] = frozenset(
+    {
+        "n/a",
+        "na",
+        "none",
+        "todo",
+        "tbd",
+        "placeholder",
+        "not applicable",
+        "use responsibly",
+        "follow policy",
+        "be safe",
+        "as needed",
+        "as appropriate",
+    }
 )
 
 
@@ -4051,6 +4611,17 @@ def _auditor_integrity_ok() -> bool:
 
 _failure_log: list[tuple[datetime, str]] = []
 
+_PERMANENT_SKILL_BLOCKLIST_DEFAULT: frozenset[str] = frozenset({"cross-asset-divergence-detection"})
+_AUTO_BLOCK_CATEGORY_THRESHOLD: int = 3
+_BLOCKED_SKILL_NAME_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    (
+        "verify_before_name_pattern",
+        re.compile(r"^verify-[a-z0-9][a-z0-9-]*-before-[a-z0-9][a-z0-9-]*$", re.IGNORECASE),
+    ),
+    ("done_suffix_name_pattern", re.compile(r".+[-_.\s]done$", re.IGNORECASE)),
+    ("success_suffix_name_pattern", re.compile(r".+[-_.\s]success$", re.IGNORECASE)),
+)
+
 _AUDIT_VERIFICATION_DEPTH = "static-pattern-match"
 _AUDIT_ASSUMPTIONS = [
     "no known-bad URL patterns detected",
@@ -4066,6 +4637,10 @@ _TRUST_ASSUMPTION_BY_CHECK = {
     "obfuscation_pattern": "static_analysis_complete",
     "privilege_escalation_pattern": "os_namespace_isolation",
     "persistent_foothold": "os_namespace_isolation",
+    "DURABLE_STATE_ACCESS": "static_analysis_complete",
+    "SUSPICIOUS_PERSISTENT_STATE": "static_analysis_complete",
+    "durable_state_capability": "static_analysis_complete",
+    "durable_execution_persistent_write": "static_analysis_complete",
     "semantic_manipulation": "static_analysis_complete",
     "DEFERRED_EXFILTRATION": "no_side_channel_exfil",
     "SENSITIVE_FILE_ACCESS": "static_analysis_complete",
@@ -4094,6 +4669,137 @@ def _apply_skill_depth_metadata(skill_name: str, source: str, metadata: dict | N
             skill_name,
         )
     return manifest_source, depth
+
+
+def _permanent_skill_blocklist() -> set[str]:
+    try:
+        from config import PERMANENT_SKILL_BLOCKLIST
+    except Exception:
+        PERMANENT_SKILL_BLOCKLIST = _PERMANENT_SKILL_BLOCKLIST_DEFAULT
+
+    if isinstance(PERMANENT_SKILL_BLOCKLIST, str):
+        values = [PERMANENT_SKILL_BLOCKLIST]
+    elif isinstance(PERMANENT_SKILL_BLOCKLIST, (list, tuple, set, frozenset)):
+        values = PERMANENT_SKILL_BLOCKLIST
+    else:
+        values = _PERMANENT_SKILL_BLOCKLIST_DEFAULT
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
+def _counter_value_for_skill(counter: object, skill_name: str) -> tuple[int, dict[str, object]]:
+    if not isinstance(counter, dict):
+        return 0, {}
+
+    skill_keys = {skill_name, skill_name.lower(), skill_name.lower().replace(" ", "-")}
+    for key, value in counter.items():
+        if str(key).strip() not in skill_keys:
+            continue
+        if isinstance(value, dict):
+            category_counts = {
+                str(category): int(count)
+                for category, count in value.items()
+                if isinstance(count, int) and count > 0
+            }
+            count = max([len(category_counts), *category_counts.values()], default=0)
+            return count, {"skill_counter": category_counts}
+        if isinstance(value, int):
+            return value, {"skill_counter": value}
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return len(value), {"skill_counter": list(value)}
+        return 0, {"skill_counter": value}
+
+    matched_categories: list[str] = []
+    for category, value in counter.items():
+        if isinstance(value, dict):
+            if any(str(key).strip() in skill_keys for key in value):
+                matched_categories.append(str(category))
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            if any(str(item).strip() in skill_keys for item in value):
+                matched_categories.append(str(category))
+    if matched_categories:
+        return len(matched_categories), {"matched_categories": matched_categories}
+
+    category_counts = {
+        str(category): int(count)
+        for category, count in counter.items()
+        if isinstance(count, int) and count > 0
+    }
+    if category_counts:
+        count = max([len(category_counts), *category_counts.values()], default=0)
+        return count, {"category_counter": category_counts}
+    return 0, {}
+
+
+def _skill_attack_category_counter(
+    skill_name: str,
+    metadata: dict | None,
+    attack_category_counts: dict[str, object] | None = None,
+) -> tuple[int, dict[str, object]]:
+    counters: list[object] = [attack_category_counts]
+    if isinstance(metadata, dict):
+        counters.extend(
+            metadata.get(key)
+            for key in (
+                "attack_category_counts",
+                "attack_category_counter",
+                "attack_category_logs",
+                "categories_hit",
+            )
+        )
+    for counter in counters:
+        count, detail = _counter_value_for_skill(counter, skill_name)
+        if count:
+            return count, detail
+    return 0, {}
+
+
+def _deterministic_skill_audit_precheck(
+    skill_name: str,
+    metadata: dict | None = None,
+    attack_category_counts: dict[str, object] | None = None,
+) -> dict:
+    exact_name = str(skill_name or "").strip()
+    precheck = {
+        "passed": True,
+        "gate": None,
+        "threshold": _AUTO_BLOCK_CATEGORY_THRESHOLD,
+    }
+
+    permanent_blocklist = _permanent_skill_blocklist()
+    if exact_name in permanent_blocklist:
+        precheck.update(
+            {
+                "passed": False,
+                "gate": "permanent_blocklist",
+                "matched_name": exact_name,
+            }
+        )
+        return precheck
+
+    for gate, pattern in _BLOCKED_SKILL_NAME_PATTERNS:
+        if pattern.fullmatch(exact_name):
+            precheck.update(
+                {
+                    "passed": False,
+                    "gate": gate,
+                    "matched_pattern": pattern.pattern,
+                    "matched_name": exact_name,
+                }
+            )
+            return precheck
+
+    category_count, counter_detail = _skill_attack_category_counter(skill_name, metadata, attack_category_counts)
+    precheck["attack_category_count"] = category_count
+    if counter_detail:
+        precheck["counter"] = counter_detail
+    if category_count >= _AUTO_BLOCK_CATEGORY_THRESHOLD:
+        precheck.update(
+            {
+                "passed": False,
+                "gate": "attack_category_threshold",
+            }
+        )
+    return precheck
 
 
 def get_skill_provenance(skill_name: str) -> tuple[SkillManifestSource, str]:
@@ -4153,6 +4859,8 @@ _AUDIT_TRUST_LAYER_MARKERS: dict[str, tuple[str, ...]] = {
         "filesystem",
         "file",
         "path",
+        "durable_state",
+        "memory",
         "permission",
         "shared_module",
         "source_path",
@@ -4316,6 +5024,113 @@ def _extract_trust_assumptions(skill_content: str) -> dict[str, bool]:
     return assumptions
 
 
+def _skill_audit_risk_category(categories: list[str]) -> str:
+    category_text = " ".join(str(category).lower() for category in categories)
+    if "unauthorized_network" in category_text or "network_call" in category_text:
+        return "unauthorized_network_call"
+    if "base64_decode" in category_text:
+        return "obfuscated_payload"
+    if "dangerous_code_execution" in category_text or "dangerous_exec" in category_text:
+        return "dangerous_code_execution"
+    if "subprocess_shell" in category_text or "curl_pipe_exec" in category_text:
+        return "dangerous_code_execution"
+    if "obfuscated_payload" in category_text or "obfuscation" in category_text:
+        return "obfuscated_payload"
+    if "privilege_escalation" in category_text:
+        return "privilege_escalation"
+    if (
+        "credential" in category_text
+        or "secret" in category_text
+        or "sensitive_file_access" in category_text
+        or "keychain" in category_text
+    ):
+        return "credential_theft"
+    return str(categories[0]) if categories else "blocked_skill"
+
+
+def _skill_audit_blocked_capability(risk_category: str) -> str:
+    blocked_capabilities = {
+        "unauthorized_network_call": "external network access",
+        "dangerous_code_execution": "arbitrary code or shell execution",
+        "obfuscated_payload": "hidden or encoded payload execution",
+        "privilege_escalation": "local privilege modification",
+        "credential_theft": "credential or sensitive file access",
+    }
+    return blocked_capabilities.get(risk_category, "unsafe skill capability")
+
+
+def _skill_audit_safe_remediation(risk_category: str) -> str:
+    remediations = {
+        "unauthorized_network_call": (
+            "Remove external network fetches, or require explicit user-provided source files "
+            "and a narrow allowlist for any approved domains."
+        ),
+        "dangerous_code_execution": (
+            "Replace arbitrary shell or dynamic code execution with a narrow allowlisted helper."
+        ),
+        "obfuscated_payload": (
+            "Remove encoded, compressed, or dynamically constructed payloads and keep the skill source readable."
+        ),
+        "privilege_escalation": (
+            "Remove sudo, ownership, mode, setuid, or similar privilege-changing operations."
+        ),
+        "credential_theft": (
+            "Remove credential, keychain, token, browser-store, and secret-file access; accept explicit "
+            "user-provided inputs instead."
+        ),
+    }
+    return remediations.get(
+        risk_category,
+        "Remove the blocked capability and resubmit the skill with explicit provenance and boundary metadata.",
+    )
+
+
+def _skill_audit_matched_rule(categories: list[str], extra: dict[str, object]) -> str:
+    for key in (
+        "matched_rule",
+        "matched_pattern",
+        "matched_phrase",
+        "matched_action",
+        "reason",
+        "matched_patterns",
+        "matched_flags",
+        "findings",
+    ):
+        value = extra.get(key)
+        if value:
+            return _skill_audit_pattern_text(value)[:300]
+    return str(categories[0]) if categories else "blocked"
+
+
+def _skill_audit_offending_pattern_type(categories: list[str], extra: dict[str, object]) -> str:
+    if extra.get("matched_pattern") or extra.get("matched_patterns"):
+        return "matched_pattern"
+    if extra.get("matched_phrase"):
+        return "matched_phrase"
+    if extra.get("matched_flags"):
+        return "matched_flag"
+    if extra.get("findings"):
+        return "audit_finding"
+    first_category = str(categories[0]) if categories else "blocked"
+    if first_category.startswith("static_audit:"):
+        return "static_audit"
+    if first_category.startswith("dependency_"):
+        return "dependency_audit"
+    return first_category
+
+
+def _skill_audit_block_report(categories: list[str], extra: dict[str, object]) -> dict[str, str]:
+    risk_category = _skill_audit_risk_category(categories)
+    return {
+        "risk_category": risk_category,
+        "matched_rule": _skill_audit_matched_rule(categories, extra),
+        "offending_pattern_type": _skill_audit_offending_pattern_type(categories, extra),
+        "blocked_capability": _skill_audit_blocked_capability(risk_category),
+        "blocked_reason": str(extra.get("reason") or (categories[0] if categories else "blocked")),
+        "safe_remediation": _skill_audit_safe_remediation(risk_category),
+    }
+
+
 def _audit_result(
     skill_name: str,
     source: str,
@@ -4361,6 +5176,14 @@ def _audit_result(
         "trust_assumptions": _normalize_trust_assumptions(extra.pop("trust_assumptions", None)),
     }
     result.update(extra)
+    if blocked:
+        block_report = _skill_audit_block_report(categories, extra)
+        result["block_report"] = block_report
+        result["risk_category"] = block_report["risk_category"]
+        result["matched_rule"] = block_report["matched_rule"]
+        result["blocked_reason"] = block_report["blocked_reason"]
+        result["blocked_capability"] = block_report["blocked_capability"]
+        result["safe_remediation"] = block_report["safe_remediation"]
     log.info(
         "SKILL_AUDIT boundary_declaration: skill=%s boundary_version=%s boundary_hash=%s checked=%s not_checked=%s in_scope=%s out_of_scope=%s",
         skill_name,
@@ -4390,11 +5213,12 @@ def _audit_result(
     if blocked:
         reason = extra.get("reason") or (categories[0] if categories else "blocked")
         log.warning(
-            "SKILL_AUDIT blocked: skill=%s reason=%s blocked_at_layer=%s categories=%s",
+            "SKILL_AUDIT blocked: skill=%s reason=%s blocked_at_layer=%s categories=%s block_report=%s",
             skill_name,
             reason,
             blocked_at_layer,
             categories,
+            json.dumps(result["block_report"], ensure_ascii=False, sort_keys=True),
         )
     return result
 
@@ -4874,6 +5698,7 @@ def audit_skill(
     caller_tier: Literal["light", "heavy", "super", "system"] = "light",
     caller_agent: str = "unknown",
     invocation_source: str = "unknown",
+    attack_category_counts: dict[str, object] | None = None,
 ) -> dict:
     # These are the layers this audit trusts — attack surface below this line is out of scope.
     AUDIT_TRUST_ASSUMPTIONS = [
@@ -4944,6 +5769,40 @@ def audit_skill(
         ),
     )
     content_sha256 = hashlib.sha256(skill_content.encode("utf-8")).hexdigest()
+    deterministic_precheck = _deterministic_skill_audit_precheck(skill_name, metadata, attack_category_counts)
+    if not deterministic_precheck["passed"]:
+        gate = str(deterministic_precheck["gate"])
+        log.warning(
+            "SKILL_AUDIT deterministic_block: skill=%s gate=%s detail=%s",
+            skill_name,
+            gate,
+            deterministic_precheck,
+        )
+        _alert_skill_audit_blocked(
+            skill_name,
+            [gate],
+            skill_content,
+            source,
+            metadata,
+            str(deterministic_precheck.get("matched_pattern") or deterministic_precheck.get("matched_name") or gate),
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            [gate],
+            [],
+            [],
+            reason=gate,
+            deterministic_gate=gate,
+            deterministic_precheck=deterministic_precheck,
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        _append_skill_audit_trail(skill_name, content_sha256, result)
+        return result
+    _warn_on_unpatched_blocked_patterns(skill_content)
+    _warn_on_prior_skill_block_resubmission(skill_name)
     trust_abuse_match: dict[str, object] | None = None
     for trust_abuse_pattern in TRUST_ABUSE_PATTERNS:
         phrase_match = re.search(re.escape(trust_abuse_pattern), skill_content, re.IGNORECASE)
@@ -5103,6 +5962,9 @@ def audit_skill(
 
     result = _audit_skill_impl(skill_name, skill_content, tags, source, metadata, include_dependencies)
     if isinstance(result, dict) and isinstance(result.get("blocked"), bool):
+        result = dict(result)
+        result.setdefault("deterministic_gate", None)
+        result.setdefault("deterministic_precheck", deterministic_precheck)
         trust_assumptions = _normalize_trust_assumptions(result.get("trust_assumptions"))
         structural_privilege_escalation_matches = _structural_privilege_escalation_matches(skill_content)
         if structural_privilege_escalation_matches:
@@ -5147,6 +6009,46 @@ def audit_skill(
                 skill_name,
                 structural_privilege_escalation_matches,
             )
+        _durable_state_access_patterns = (
+            re.compile(r"""open\s*\([^)]*\bsoul\b[^)]*,\s*['"][waxWAX][+b]*['"]""", re.IGNORECASE),
+            re.compile(r"""json\.dump\s*\([^,)]+,\s*[^\)]*\b(?:soul|memory)\b""", re.IGNORECASE | re.DOTALL),
+            re.compile(r"""open\s*\([^)]*\bjournal\b[^)]*,\s*['"][aA][+b]*['"]""", re.IGNORECASE),
+        )
+        _has_durable_state_write_annotation = bool(re.search(r"\bDURABLE_STATE_WRITE\b", skill_content))
+        if not _has_durable_state_write_annotation:
+            _durable_state_access_matches: list[dict[str, object]] = []
+            for _ds_pat in _durable_state_access_patterns:
+                for _ds_m in _ds_pat.finditer(skill_content):
+                    _ds_line = skill_content.count("\n", 0, _ds_m.start()) + 1
+                    _ds_lines = skill_content.splitlines()
+                    _ds_text = (_ds_lines[_ds_line - 1].strip() if 0 < _ds_line <= len(_ds_lines) else "")[:300]
+                    _durable_state_access_matches.append(
+                        {"pattern": _ds_pat.pattern, "line": _ds_line, "text": _ds_text}
+                    )
+            if _durable_state_access_matches:
+                log.warning(
+                    "SKILL_AUDIT flagged: skill=%s category=DURABLE_STATE_ACCESS "
+                    "reason='Skills requesting write access to soul/ or memory stores'",
+                    skill_name,
+                )
+                result = dict(result)
+                warnings = list(result.get("warnings") or [])
+                if "DURABLE_STATE_ACCESS" not in warnings:
+                    warnings.append("DURABLE_STATE_ACCESS")
+                result["warnings"] = warnings
+                result["requires_manual_review"] = True
+                result["requires_explicit_user_confirmation"] = True
+                audit_flags = dict(result.get("audit_flags") or {})
+                audit_flags["durable_state_access"] = {
+                    "detected": True,
+                    "severity": "FLAGGED",
+                    "reason": "Skills requesting write access to soul/ or memory stores",
+                    "matches": _durable_state_access_matches,
+                    "requires_user_confirmation": True,
+                }
+                result["audit_flags"] = audit_flags
+                result["status"] = "FLAGGED"
+                result["verdict"] = "FLAGGED"
         semantic_url_embedding_matches = [
             label for label, pattern in SEMANTIC_URL_EMBEDDING_PATTERNS if pattern.search(skill_content)
         ]
@@ -5189,6 +6091,36 @@ def audit_skill(
                 "SKILL_AUDIT semantic_channel warn: skill=%s reason='potential-semantic-channel' matches=%r",
                 skill_name,
                 semantic_channel_matches,
+            )
+        _durable_state_match = re.search(
+            r"durable.?state|cross.?session|persistent.?memor",
+            skill_content,
+            re.IGNORECASE,
+        )
+        if _durable_state_match is None and metadata:
+            _durable_state_match = re.search(
+                r"durable.?state|cross.?session|persistent.?memor",
+                json.dumps(metadata),
+                re.IGNORECASE,
+            )
+        if _durable_state_match:
+            result = dict(result)
+            warnings = list(result.get("warnings") or [])
+            if "durable_state_capability" not in warnings:
+                warnings.append("durable_state_capability")
+            result["warnings"] = warnings
+            audit_flags = dict(result.get("audit_flags") or {})
+            audit_flags["durable_state_capability"] = {
+                "detected": True,
+                "severity": "WARNING",
+                "reason": "skill declares durable/cross-session/persistent-memory capability",
+                "match": _durable_state_match.group(0),
+            }
+            result["audit_flags"] = audit_flags
+            log.warning(
+                "SKILL_AUDIT durable_state_capability warn: skill=%s match=%r",
+                skill_name,
+                _durable_state_match.group(0),
             )
         if _diff_warnings:
             result = dict(result)
@@ -5339,6 +6271,48 @@ def audit_skill(
                         verdict="BLOCKED",
                         audit_flags=result.get("audit_flags"),
                     )
+        if not result["blocked"]:
+            _long_running_match = re.search(
+                r"while\s+True|asyncio\.sleep\s*\(|threading\.Thread\b[^\n]*daemon\s*=\s*True",
+                skill_content,
+                re.IGNORECASE,
+            )
+            if _long_running_match:
+                _write_matches = list(re.finditer(
+                    r'open\s*\([^)]*,\s*["\'][waxWAX][+b]*["\']\s*\)|\.write_(?:text|bytes)\s*\(',
+                    skill_content,
+                    re.IGNORECASE,
+                ))
+                _non_tmp_writes = [
+                    m for m in _write_matches
+                    if "/tmp" not in skill_content[max(0, m.start() - 200):m.end() + 200]
+                ]
+                if _non_tmp_writes:
+                    log.warning(
+                        "SKILL_AUDIT blocked: skill=%s category=durable_execution_persistent_write "
+                        "reason='durable execution + persistent write = cross-session attack surface'",
+                        skill_name,
+                    )
+                    _alert_skill_audit_blocked(
+                        skill_name,
+                        ["durable_execution_persistent_write"],
+                        skill_content,
+                        source,
+                        metadata,
+                        "durable execution + persistent write = cross-session attack surface",
+                    )
+                    result = _audit_result(
+                        skill_name,
+                        source,
+                        True,
+                        ["durable_execution_persistent_write"],
+                        list(result.get("warnings") or []),
+                        list(result.get("overreach_warnings") or []),
+                        reason="durable execution + persistent write = cross-session attack surface",
+                        status="BLOCKED",
+                        verdict="BLOCKED",
+                        audit_flags=result.get("audit_flags"),
+                    )
         if not result["blocked"] and _requires_epistemic_audit_metadata(source, metadata, _is_update):
             missing_epistemic_fields = _missing_epistemic_audit_metadata(metadata)
             if missing_epistemic_fields:
@@ -5423,6 +6397,21 @@ def audit_skill(
             result["trust_source"] = trust_source
         if trust_source == "external_url":
             log.warning("Skill trust depends on external party — relationship unverifiable at audit time.")
+        provenance_fragility_reasons = _skill_provenance_fragility_reasons(skill_content)
+        if provenance_fragility_reasons:
+            result = dict(result)
+            warnings = list(result.get("warnings") or [])
+            if "PROVENANCE_FRAGILE" not in warnings:
+                warnings.append("PROVENANCE_FRAGILE")
+            result["warnings"] = warnings
+            log.warning(
+                "SKILL_AUDIT warning: skill=%s label=PROVENANCE_FRAGILE reasons=%s",
+                skill_name,
+                provenance_fragility_reasons,
+            )
+        result = dict(result)
+        result.setdefault("deterministic_gate", None)
+        result.setdefault("deterministic_precheck", deterministic_precheck)
         _append_skill_audit_trail(skill_name, content_sha256, result)
         if not result["blocked"]:
             _increment_daily_skill_import_counter()
@@ -5548,6 +6537,395 @@ def _skill_audit_trail_path() -> Path:
         return Path.home() / "Sandbox" / "Mira" / "logs" / "audit_trail.jsonl"
 
 
+def _audit_lag_warn_seconds() -> int:
+    try:
+        from config import AUDIT_LAG_WARN_SECONDS
+
+        return int(AUDIT_LAG_WARN_SECONDS)
+    except Exception:
+        try:
+            from agents.shared.config import AUDIT_LAG_WARN_SECONDS
+
+            return int(AUDIT_LAG_WARN_SECONDS)
+        except Exception:
+            return 3600
+
+
+def _parse_audit_timestamp(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        text = str(value)
+        if text.endswith("Z"):
+            text = text[:-1]
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except (TypeError, ValueError):
+        return None
+
+
+def _audit_entry_detected_at(entry: dict) -> datetime | None:
+    return _parse_audit_timestamp(entry.get("detected_at") or entry.get("timestamp"))
+
+
+def _audit_entry_blocked_at(entry: dict) -> datetime | None:
+    return _parse_audit_timestamp(entry.get("blocked_at") or entry.get("detected_at") or entry.get("timestamp"))
+
+
+def _audit_entry_is_blocked(entry: dict) -> bool:
+    verdict = str(entry.get("verdict", "")).lower()
+    return bool(entry.get("blocked")) or verdict in {"block", "blocked", "deny", "denied"}
+
+
+def _audit_entry_is_resolution(entry: dict) -> bool:
+    event = str(entry.get("event", "")).lower()
+    return bool(entry.get("resolved_at")) or event in {"resolved", "skill_audit_resolved"}
+
+
+def _skill_audit_lag_alert_hours() -> int:
+    try:
+        from config import SKILL_AUDIT_LAG_ALERT_HOURS
+
+        return int(SKILL_AUDIT_LAG_ALERT_HOURS)
+    except Exception:
+        return 72
+
+
+def _skill_audit_pattern_text(value: object) -> str:
+    if isinstance(value, re.Pattern):
+        return value.pattern
+    if isinstance(value, dict):
+        for key in ("pattern", "matched_pattern", "reason", "category"):
+            text = _skill_audit_pattern_text(value.get(key))
+            if text:
+                return text
+        return ""
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            text = _skill_audit_pattern_text(item)
+            if text:
+                return text
+        return ""
+    return str(value or "").strip()
+
+
+def _audit_result_pattern_matched(audit_result: dict) -> str:
+    for key in ("pattern_matched", "matched_pattern", "pattern", "reason", "matched_patterns", "findings"):
+        text = _skill_audit_pattern_text(audit_result.get(key))
+        if text:
+            return text[:300]
+    checks = _audit_checks_triggered(audit_result)
+    return (checks[0] if checks else "blocked")[:300]
+
+
+def _blocked_pattern_reappears(pattern: str, skill_content: str) -> bool:
+    if not pattern:
+        return False
+    if pattern.lower() in skill_content.lower():
+        return True
+    try:
+        return bool(re.search(pattern, skill_content, re.IGNORECASE))
+    except re.error:
+        return False
+
+
+def _audit_rules_updated_for_pattern_since(pattern: str, blocked_at: datetime) -> bool:
+    try:
+        from config import SOUL_DIR
+
+        soul_dir = SOUL_DIR
+    except Exception:
+        soul_dir = Path(__file__).resolve().parent.parent / "data" / "soul"
+    try:
+        audit_rule_paths = sorted(soul_dir.glob("audit_rules.*"))
+    except OSError:
+        return False
+
+    pattern_lower = pattern.lower()
+    for path in audit_rule_paths:
+        try:
+            modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).replace(tzinfo=None)
+            if modified_at <= blocked_at:
+                continue
+            if pattern_lower in path.read_text(encoding="utf-8", errors="ignore").lower():
+                return True
+        except (OSError, UnicodeDecodeError):
+            continue
+    return False
+
+
+def _warn_on_unpatched_blocked_patterns(skill_content: str) -> None:
+    path = _skill_audit_trail_path()
+    try:
+        if not path.exists():
+            return
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        log.debug("skill audit trail read failed: %s", exc)
+        return
+
+    now = datetime.utcnow()
+    threshold_hours = _skill_audit_lag_alert_hours()
+    warned_patterns: set[str] = set()
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict) or not _audit_entry_is_blocked(entry):
+            continue
+        pattern = _skill_audit_pattern_text(entry.get("pattern_matched"))
+        if not pattern:
+            pattern = _skill_audit_pattern_text(entry.get("checks_triggered"))
+        if not pattern or pattern in warned_patterns or not _blocked_pattern_reappears(pattern, skill_content):
+            continue
+        blocked_at = _audit_entry_blocked_at(entry)
+        if not blocked_at:
+            continue
+        age_hours = int((now - blocked_at).total_seconds() // 3600)
+        if age_hours <= threshold_hours or _audit_rules_updated_for_pattern_since(pattern, blocked_at):
+            continue
+        log.warning("Unpatched blocked pattern %d hours old: %s", age_hours, pattern)
+        warned_patterns.add(pattern)
+
+
+def _latest_blocked_skill_audit_entry(skill_name: str) -> dict | None:
+    skill_key = str(skill_name).lower()
+    try:
+        path = _skill_audit_trail_path()
+        if not path.exists():
+            return None
+        latest: dict | None = None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if str(entry.get("skill_name", "")).lower() == skill_key and _audit_entry_is_blocked(entry):
+                latest = entry
+        return latest
+    except OSError as exc:
+        log.debug("skill audit trail read failed: %s", exc)
+        return None
+
+
+def _read_skill_audit_trail_entries() -> list[dict]:
+    path = _skill_audit_trail_path()
+    try:
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        log.debug("skill audit trail read failed: %s", exc)
+        return []
+
+    entries: list[dict] = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries
+
+
+def _unresolved_audit_blocks(entries: list[dict]) -> list[dict]:
+    pending: list[dict] = []
+    for entry in entries:
+        skill_name = str(entry.get("skill_name", "")).lower()
+        if not skill_name:
+            continue
+        if _audit_entry_is_blocked(entry):
+            pending.append(entry)
+            continue
+        if not _audit_entry_is_resolution(entry):
+            continue
+
+        resolved_blocked_at = _parse_audit_timestamp(entry.get("blocked_at"))
+        for index in range(len(pending) - 1, -1, -1):
+            block = pending[index]
+            if str(block.get("skill_name", "")).lower() != skill_name:
+                continue
+            if resolved_blocked_at is not None:
+                block_blocked_at = _audit_entry_blocked_at(block)
+                if block_blocked_at != resolved_blocked_at:
+                    continue
+            pending.pop(index)
+            break
+    return pending
+
+
+def _latest_unresolved_skill_block(skill_name: str) -> dict | None:
+    skill_key = str(skill_name).lower()
+    for entry in reversed(_unresolved_audit_blocks(_read_skill_audit_trail_entries())):
+        if str(entry.get("skill_name", "")).lower() == skill_key:
+            return entry
+    return None
+
+
+def _audit_resolution_lag_seconds(block_entry: dict, resolved_at: datetime) -> float | None:
+    blocked_at = _audit_entry_blocked_at(block_entry)
+    if blocked_at is None:
+        return None
+    return (resolved_at.replace(tzinfo=None) - blocked_at).total_seconds()
+
+
+def _append_skill_audit_log_entry(entry: dict) -> bool:
+    try:
+        path = _skill_audit_trail_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        fd = os.open(path, flags, 0o600)
+        try:
+            os.write(fd, (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+        return True
+    except OSError as exc:
+        log.debug("skill audit trail write failed: %s", exc)
+        return False
+
+
+def _append_audit_block_log_entry(skill_name: str, audit_result: dict, blocked_at: str) -> None:
+    checks_triggered = _audit_checks_triggered(audit_result)
+    attack_category = str(audit_result.get("risk_category") or (checks_triggered[0] if checks_triggered else "blocked"))
+    record = {
+        "skill_name": skill_name,
+        "attack_category": attack_category,
+        "blocked_at": blocked_at,
+        "rule_version": str(audit_result.get("audit_boundary_hash") or AUDIT_BOUNDARY_HASH),
+    }
+    try:
+        path = _audit_block_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        fd = os.open(path, flags, 0o600)
+        try:
+            os.write(fd, (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+        log.info(
+            "SKILL_AUDIT block_logged: skill=%s attack_category=%s blocked_at=%s rule_version=%s",
+            skill_name,
+            attack_category,
+            blocked_at,
+            record["rule_version"],
+        )
+    except OSError as exc:
+        log.debug("audit_block_log write failed: %s", exc)
+
+
+def _read_audit_block_log_entries() -> list[dict]:
+    path = _audit_block_log_path()
+    try:
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        log.debug("audit_block_log read failed: %s", exc)
+        return []
+
+    entries: list[dict] = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries
+
+
+def _earliest_known_skill_submission_at(skill_name: str) -> datetime | None:
+    skill_key = str(skill_name).lower()
+    earliest: datetime | None = None
+
+    for entry in _read_skill_audit_trail_entries():
+        if str(entry.get("skill_name", "")).lower() != skill_key:
+            continue
+        for key in ("timestamp", "detected_at", "blocked_at"):
+            timestamp = _parse_audit_timestamp(entry.get(key))
+            if timestamp is not None and (earliest is None or timestamp < earliest):
+                earliest = timestamp
+
+    metadata = _skill_audit_metadata(_skill_slug(skill_name))
+    for key in ("first_seen", "audited_at", "last_audit_timestamp"):
+        timestamp = _parse_audit_timestamp(metadata.get(key))
+        if timestamp is not None and (earliest is None or timestamp < earliest):
+            earliest = timestamp
+
+    return earliest
+
+
+def _earliest_audit_block_at(skill_name: str) -> datetime | None:
+    skill_key = str(skill_name).lower()
+    earliest: datetime | None = None
+    for entry in _read_audit_block_log_entries():
+        if str(entry.get("skill_name", "")).lower() != skill_key:
+            continue
+        blocked_at = _parse_audit_timestamp(entry.get("blocked_at"))
+        if blocked_at is not None and (earliest is None or blocked_at < earliest):
+            earliest = blocked_at
+    return earliest
+
+
+def compute_detection_lag(skill_name: str) -> float | None:
+    first_seen_at = _earliest_known_skill_submission_at(skill_name)
+    blocked_at = _earliest_audit_block_at(skill_name)
+    if first_seen_at is None or blocked_at is None:
+        return None
+    return max(0.0, (blocked_at - first_seen_at).total_seconds() / 3600)
+
+
+def compute_mean_detection_lag_hours(days: int = 30) -> float | None:
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    lags: list[float] = []
+    for entry in _read_audit_block_log_entries():
+        skill_name = str(entry.get("skill_name", "")).strip()
+        if not skill_name:
+            continue
+        blocked_at = _parse_audit_timestamp(entry.get("blocked_at"))
+        if blocked_at is None or blocked_at < cutoff:
+            continue
+        first_seen_at = _earliest_known_skill_submission_at(skill_name)
+        if first_seen_at is None:
+            continue
+        lags.append(max(0.0, (blocked_at - first_seen_at).total_seconds() / 3600))
+    return sum(lags) / len(lags) if lags else None
+
+
+def _warn_on_prior_skill_block_resubmission(skill_name: str) -> None:
+    prior_block = _latest_blocked_skill_audit_entry(skill_name)
+    if not prior_block:
+        return
+    detected_at = _audit_entry_detected_at(prior_block)
+    if not detected_at:
+        return
+    lag_seconds = (datetime.utcnow() - detected_at).total_seconds()
+    warn_seconds = _audit_lag_warn_seconds()
+    if lag_seconds < warn_seconds:
+        log.warning(
+            "SKILL_AUDIT resubmission_lag: skill=%s lag_seconds=%.0f threshold_seconds=%d reason=rapid_resubmission",
+            skill_name,
+            lag_seconds,
+            warn_seconds,
+        )
+    elif lag_seconds > 7 * 24 * 60 * 60:
+        log.warning(
+            "SKILL_AUDIT resubmission_lag: skill=%s lag_seconds=%.0f threshold_seconds=%d reason=stale_unresolved_block",
+            skill_name,
+            lag_seconds,
+            7 * 24 * 60 * 60,
+        )
+
+
 def _audit_checks_triggered(audit_result: dict) -> list[str]:
     checks: list[str] = []
     for key in ("categories", "warnings", "overreach_warnings"):
@@ -5587,29 +6965,142 @@ def _skill_trust_source(source: str, metadata: dict | None = None, caller_tier: 
 
 
 def _append_skill_audit_trail(skill_name: str, content_sha256: str, audit_result: dict) -> None:
+    blocked = bool(audit_result["blocked"])
+    now = datetime.utcnow()
+    timestamp = datetime.now(timezone.utc).isoformat()
     entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": timestamp,
         "skill_name": skill_name,
         "content_sha256": content_sha256,
-        "verdict": audit_result.get("verdict") or ("block" if audit_result["blocked"] else "pass"),
+        "verdict": audit_result.get("verdict") or ("block" if blocked else "pass"),
         "checks_triggered": _audit_checks_triggered(audit_result),
         "trust_assumptions": _normalize_trust_assumptions(audit_result.get("trust_assumptions")),
         "trust_source": audit_result.get("trust_source", "local_file"),
         "audited_by": "soul_manager.audit_skill",
     }
-    try:
-        path = _skill_audit_trail_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
-        if hasattr(os, "O_CLOEXEC"):
-            flags |= os.O_CLOEXEC
-        fd = os.open(path, flags, 0o600)
+    if blocked:
+        entry["blocked_at"] = str(audit_result.get("blocked_at") or timestamp)
+        entry["pattern_matched"] = _audit_result_pattern_matched(audit_result)
+        entry["detected_at"] = str(audit_result.get("detected_at") or now.isoformat())
+        _append_audit_block_log_entry(skill_name, audit_result, entry["blocked_at"])
+    else:
+        prior_block = _latest_unresolved_skill_block(skill_name)
+        blocked_at = _audit_entry_blocked_at(prior_block) if prior_block else None
+        if blocked_at:
+            resolved_at = now.isoformat()
+            lag_seconds = (now - blocked_at).total_seconds()
+            entry["blocked_at"] = blocked_at.isoformat()
+            entry["resolved_at"] = resolved_at
+            entry["lag_seconds"] = lag_seconds
+            log.info(
+                "SKILL_AUDIT resolved: skill=%s blocked_at=%s resolved_at=%s lag_seconds=%.0f",
+                skill_name,
+                blocked_at.isoformat(),
+                resolved_at,
+                lag_seconds,
+            )
+    _append_skill_audit_log_entry(entry)
+
+
+def mark_skill_resolved(skill_name: str, resolution_note: str) -> dict | None:
+    block_entry = _latest_unresolved_skill_block(skill_name)
+    if block_entry is None:
+        return None
+
+    resolved_at_dt = datetime.now(timezone.utc)
+    blocked_at = _audit_entry_blocked_at(block_entry)
+    lag_seconds = _audit_resolution_lag_seconds(block_entry, resolved_at_dt)
+    resolution_entry = {
+        "timestamp": resolved_at_dt.isoformat(),
+        "event": "skill_audit_resolved",
+        "skill_name": skill_name,
+        "resolved_at": resolved_at_dt.isoformat(),
+        "resolution_note": str(resolution_note or "").strip(),
+        "blocked_at": blocked_at.isoformat() if blocked_at else None,
+        "lag_seconds": lag_seconds,
+        "content_sha256": block_entry.get("content_sha256"),
+        "checks_triggered": block_entry.get("checks_triggered", []),
+        "pattern_matched": block_entry.get("pattern_matched"),
+        "audited_by": "soul_manager.mark_skill_resolved",
+    }
+    if not _append_skill_audit_log_entry(resolution_entry):
+        return None
+    if lag_seconds is not None:
+        log.info(
+            "SKILL_AUDIT resolved: skill=%s blocked_at=%s resolved_at=%s lag_seconds=%.0f note=%s",
+            skill_name,
+            blocked_at.isoformat() if blocked_at else "",
+            resolved_at_dt.isoformat(),
+            lag_seconds,
+            resolution_entry["resolution_note"],
+        )
+    return resolution_entry
+
+
+def _audit_unresolved_block_summary(entries: list[dict], now: datetime, min_age_hours: int = 72) -> list[dict]:
+    unresolved: list[dict] = []
+    for entry in _unresolved_audit_blocks(entries):
+        blocked_at = _audit_entry_blocked_at(entry)
+        if blocked_at is None:
+            continue
+        age_hours = (now.replace(tzinfo=None) - blocked_at).total_seconds() / 3600
+        if age_hours <= min_age_hours:
+            continue
+        unresolved.append(
+            {
+                "skill_name": entry.get("skill_name", "unknown"),
+                "blocked_at": blocked_at.isoformat(),
+                "age_hours": round(age_hours, 2),
+                "checks_triggered": entry.get("checks_triggered", []),
+                "pattern_matched": entry.get("pattern_matched"),
+                "content_sha256": entry.get("content_sha256"),
+            }
+        )
+    return unresolved
+
+
+def skill_audit_summary(days: int = 7) -> dict:
+    entries = _read_skill_audit_trail_entries()
+    now = datetime.now(timezone.utc)
+    cutoff = now.replace(tzinfo=None) - timedelta(days=days)
+    recent_entries = [
+        entry
+        for entry in entries
+        if (ts := _parse_audit_timestamp(entry.get("timestamp") or entry.get("blocked_at") or entry.get("resolved_at")))
+        and ts >= cutoff
+    ]
+    block_entries = [entry for entry in recent_entries if _audit_entry_is_blocked(entry)]
+    resolution_entries = [entry for entry in recent_entries if _audit_entry_is_resolution(entry)]
+    resolution_lags = []
+    for entry in resolution_entries:
         try:
-            os.write(fd, (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
-        finally:
-            os.close(fd)
-    except OSError as exc:
-        log.debug("skill audit trail write failed: %s", exc)
+            if entry.get("lag_seconds") is not None:
+                resolution_lags.append(float(entry["lag_seconds"]))
+        except (TypeError, ValueError):
+            continue
+
+    unresolved_blocks = _audit_unresolved_block_summary(entries, now, min_age_hours=72)
+    if unresolved_blocks:
+        log.warning(
+            "SKILL_AUDIT unresolved_blocks: count=%d oldest_age_hours=%.2f",
+            len(unresolved_blocks),
+            max(block["age_hours"] for block in unresolved_blocks),
+        )
+    mean_detection_lag_hours = compute_mean_detection_lag_hours(30)
+
+    return {
+        "blocked_count": len(block_entries),
+        "resolved_count": len(resolution_entries),
+        "mean_detection_lag_hours": (
+            round(mean_detection_lag_hours, 3) if mean_detection_lag_hours is not None else None
+        ),
+        "resolution_lag_seconds": {
+            "count": len(resolution_lags),
+            "mean": round(sum(resolution_lags) / len(resolution_lags), 3) if resolution_lags else 0.0,
+            "max": round(max(resolution_lags), 3) if resolution_lags else 0.0,
+        },
+        "unresolved_blocks": unresolved_blocks,
+    }
 
 
 def _source_host(value: str) -> str:
@@ -5989,6 +7480,9 @@ def _audit_skill_impl(
     - obfuscated_payloads
     - privilege_escalation
     - persistent_foothold
+    - DURABLE_STATE_ACCESS
+    - durable_state_capability (WARNING only, requires manual review)
+    - durable_execution_persistent_write
     - DEFERRED_EXFILTRATION
     - SENSITIVE_FILE_ACCESS
     - verification_anchor_injection (WARNING only, requires manual review)
@@ -6068,6 +7562,37 @@ def _audit_skill_impl(
             _sensitive_file_strict_provenance,
         )
     }
+    capability_boundary_contract = _check_capability_boundary_contract(skill_content, metadata)
+    if capability_boundary_contract["missing"] or capability_boundary_contract["empty"]:
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=missing_capability_boundary_contract missing=%s empty_or_generic=%s",
+            skill_name,
+            capability_boundary_contract["missing"],
+            capability_boundary_contract["empty"],
+        )
+        _update_rejection_counts(source, True)
+        _alert_skill_audit_blocked(
+            skill_name,
+            ["missing_capability_boundary_contract"],
+            skill_content,
+            source,
+            metadata,
+            "missing_capability_boundary_contract",
+        )
+        return _audit_result(
+            skill_name,
+            source,
+            True,
+            ["missing_capability_boundary_contract"],
+            [],
+            [],
+            reason="missing_capability_boundary_contract",
+            missing_capability_boundary_contract=capability_boundary_contract["missing"],
+            empty_capability_boundary_contract=capability_boundary_contract["empty"],
+            status="BLOCKED",
+            verdict="BLOCKED",
+            audit_flags=_audit_flags,
+        )
     deferred_exfiltration_matches = _check_deferred_exfiltration(skill_content)
     browser_foothold_matches = _browser_foothold_matches(skill_content)
     if browser_foothold_matches:
@@ -6456,6 +7981,16 @@ def _audit_skill_impl(
     structural_privilege_escalation_matches = _structural_privilege_escalation_matches(dependency_context)
     persistent_foothold_matches = _persistent_foothold_matches(dependency_context)
     has_persistent_foothold = bool(persistent_foothold_matches)
+    durable_state_access_matches = _durable_state_access_matches(skill_content, metadata)
+    has_durable_state_access = bool(durable_state_access_matches)
+    suspicious_persistent_state_matches = _suspicious_persistent_state_matches(skill_content)
+    has_suspicious_persistent_state = bool(suspicious_persistent_state_matches)
+    persistent_state_external_input_audit = _persistent_state_external_input_audit(skill_content)
+    has_persistent_state_external_input = bool(persistent_state_external_input_audit.get("combined"))
+    durable_state_matches = _durable_state_capability_matches(skill_content, metadata)
+    long_running_execution_matches = _long_running_execution_matches(skill_content)
+    persistent_write_target_matches = _persistent_write_target_matches(skill_content)
+    has_durable_execution_persistent_write = bool(long_running_execution_matches and persistent_write_target_matches)
 
     if has_network:
         blocked_categories.append("unauthorized_network_calls")
@@ -6465,6 +8000,23 @@ def _audit_skill_impl(
         blocked_categories.append("obfuscated_payloads")
     if has_privilege_escalation:
         blocked_categories.append("privilege_escalation")
+    if has_durable_state_access:
+        block_reason = "DURABLE_STATE_ACCESS"
+        blocked_categories.append("DURABLE_STATE_ACCESS")
+        _audit_flags["durable_state_access"] = {
+            "detected": True,
+            "severity": "HIGH",
+            "reason": block_reason,
+            "matches": durable_state_access_matches,
+            "requires_user_confirmation": True,
+            "requires_explicit_user_confirmation": True,
+        }
+        log.warning(
+            "SKILL_AUDIT flagged: skill=%s category=DURABLE_STATE_ACCESS reason=%r matches=%s",
+            skill_name,
+            block_reason,
+            durable_state_access_matches,
+        )
     if structural_privilege_escalation_matches:
         warning_categories.append("structural_privilege_escalation")
         _audit_flags["structural_privilege_escalation"] = {
@@ -6518,6 +8070,72 @@ def _audit_skill_impl(
             skill_name,
             _PERSISTENT_FOOTHOLD_REASON,
             persistent_foothold_matches,
+        )
+    if has_suspicious_persistent_state:
+        block_reason = "persistent state access expands the attack window across sessions"
+        blocked_categories.append("SUSPICIOUS_PERSISTENT_STATE")
+        _audit_flags["suspicious_persistent_state"] = {
+            "detected": True,
+            "severity": "HIGH",
+            "reason": block_reason,
+            "matches": suspicious_persistent_state_matches,
+        }
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s category=SUSPICIOUS_PERSISTENT_STATE reason=%r matches=%s",
+            skill_name,
+            block_reason,
+            suspicious_persistent_state_matches,
+        )
+    if persistent_state_external_input_audit:
+        if has_persistent_state_external_input:
+            blocked_categories.append("persistent_state_write_external_input")
+            log.warning(
+                "SKILL_AUDIT blocked: skill=%s category=persistent_state_write_external_input reason=%r state_writes=%s external_inputs=%s",
+                skill_name,
+                persistent_state_external_input_audit["reason"],
+                persistent_state_external_input_audit["state_writes"],
+                persistent_state_external_input_audit["external_inputs"],
+            )
+        else:
+            warning_categories.append("persistent_state_write_external_input")
+            log.warning(
+                "SKILL_AUDIT warning: skill=%s category=persistent_state_write_external_input reason=%r state_writes=%s external_inputs=%s",
+                skill_name,
+                persistent_state_external_input_audit["reason"],
+                persistent_state_external_input_audit["state_writes"],
+                persistent_state_external_input_audit["external_inputs"],
+            )
+        _audit_flags["persistent_state_write_external_input"] = persistent_state_external_input_audit
+    if durable_state_matches:
+        warning_categories.append("durable_state_capability")
+        _audit_flags["durable_state_capability"] = {
+            "detected": True,
+            "severity": "WARNING",
+            "reason": "skill declares durable, cross-session, or persistent memory state capability",
+            "matches": durable_state_matches,
+            "requires_review": True,
+        }
+        log.warning(
+            "SKILL_AUDIT warning: skill=%s category=durable_state_capability severity=WARNING matches=%s",
+            skill_name,
+            durable_state_matches,
+        )
+    if has_durable_execution_persistent_write:
+        block_reason = "durable execution + persistent write = cross-session attack surface"
+        blocked_categories.append("durable_execution_persistent_write")
+        _audit_flags["durable_execution_persistent_write"] = {
+            "detected": True,
+            "severity": "HIGH",
+            "reason": block_reason,
+            "long_running": long_running_execution_matches,
+            "write_targets": persistent_write_target_matches,
+        }
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s category=durable_execution_persistent_write reason=%r long_running=%s write_targets=%s",
+            skill_name,
+            block_reason,
+            long_running_execution_matches,
+            persistent_write_target_matches,
         )
 
     if deferred_exfiltration_matches:
@@ -6967,6 +8585,56 @@ def _audit_skill_impl(
                 "category": "persistent_foothold",
                 "reason": _PERSISTENT_FOOTHOLD_REASON,
                 "pattern": _persistent_foothold_match,
+            }
+        )
+    for _durable_state_access_match in durable_state_access_matches:
+        audit_findings.append(
+            {
+                "severity": "HIGH",
+                "category": "DURABLE_STATE_ACCESS",
+                "reason": "DURABLE_STATE_ACCESS",
+                "pattern": _durable_state_access_match,
+                "requires_user_confirmation": True,
+                "requires_explicit_user_confirmation": True,
+            }
+        )
+    for _suspicious_persistent_state_match in suspicious_persistent_state_matches:
+        audit_findings.append(
+            {
+                "severity": "HIGH",
+                "category": "SUSPICIOUS_PERSISTENT_STATE",
+                "reason": "persistent state access expands the attack window across sessions",
+                "pattern": _suspicious_persistent_state_match,
+            }
+        )
+    if persistent_state_external_input_audit:
+        audit_findings.append(
+            {
+                "severity": persistent_state_external_input_audit["severity"],
+                "category": "persistent_state_write_external_input",
+                "reason": "persistent state write + external input",
+                "combined": persistent_state_external_input_audit["combined"],
+                "state_writes": persistent_state_external_input_audit["state_writes"],
+                "external_inputs": persistent_state_external_input_audit["external_inputs"],
+            }
+        )
+    for _durable_state_match in durable_state_matches:
+        audit_findings.append(
+            {
+                "severity": "WARNING",
+                "category": "durable_state_capability",
+                "reason": "skill declares durable, cross-session, or persistent memory state capability",
+                "pattern": _durable_state_match,
+            }
+        )
+    if has_durable_execution_persistent_write:
+        audit_findings.append(
+            {
+                "severity": "HIGH",
+                "category": "durable_execution_persistent_write",
+                "reason": "durable execution + persistent write = cross-session attack surface",
+                "long_running": long_running_execution_matches,
+                "write_targets": persistent_write_target_matches,
             }
         )
     for _structural_privilege_escalation_match in structural_privilege_escalation_matches:
@@ -7422,8 +9090,12 @@ def _audit_skill_impl(
         or bool(_sensitive_file_access_matches)
         or has_intermediary_without_output
         or bool(structural_privilege_escalation_matches)
+        or bool(durable_state_access_matches)
+        or bool(suspicious_persistent_state_matches)
+        or bool(persistent_state_external_input_audit)
+        or bool(durable_state_matches)
     )
-    requires_explicit_user_confirmation = bool(structural_privilege_escalation_matches)
+    requires_explicit_user_confirmation = bool(structural_privilege_escalation_matches or durable_state_access_matches)
     _ci_text = (skill_name + " " + (metadata or {}).get("description", "") + " " + skill_content).lower()
     _ci_detection_matches = [t for t in DETECTION_VOCAB if t in _ci_text]
     _ci_sensitive_matches = [t for t in SENSITIVE_VOCAB if t in _ci_text]
@@ -7650,6 +9322,31 @@ def _audit_skill_impl(
             "check": "persistent_foothold",
             "proxy_for": "persistent local-privilege hook surviving task completion",
             "passed": not has_persistent_foothold,
+        },
+        {
+            "check": "DURABLE_STATE_ACCESS",
+            "proxy_for": "unauthorized soul, journal, or memory store write access",
+            "passed": not has_durable_state_access,
+        },
+        {
+            "check": "SUSPICIOUS_PERSISTENT_STATE",
+            "proxy_for": "persistent state, memory, learned skill, schedule, or LaunchAgent write path crossing session boundaries",
+            "passed": not has_suspicious_persistent_state,
+        },
+        {
+            "check": "persistent_state_write_external_input",
+            "proxy_for": "persistent state write + external input",
+            "passed": not has_persistent_state_external_input,
+        },
+        {
+            "check": "durable_state_capability",
+            "proxy_for": "durable, cross-session, or persistent memory state capability declaration",
+            "passed": not durable_state_matches,
+        },
+        {
+            "check": "durable_execution_persistent_write",
+            "proxy_for": "long-running execution context combined with filesystem writes outside /tmp",
+            "passed": not has_durable_execution_persistent_write,
         },
         {
             "check": "browser_extension_vector",
@@ -7967,7 +9664,17 @@ def _audit_skill_impl(
         judgment_encapsulation_missing=judgment_encapsulation_warnings,
         judgment_encapsulation_requires_review=judgment_encapsulation_requires_review,
         audit_flags=_audit_flags,
-        **({"reason": "deferred_exfiltration_risk"} if "DEFERRED_EXFILTRATION" in blocked_categories else {}),
+        **(
+            {"reason": "DURABLE_STATE_ACCESS", "status": "FLAGGED", "verdict": "FLAGGED"}
+            if "DURABLE_STATE_ACCESS" in blocked_categories
+            else {"reason": "durable execution + persistent write = cross-session attack surface"}
+            if "durable_execution_persistent_write" in blocked_categories
+            else {"reason": "persistent state write + external input"}
+            if "persistent_state_write_external_input" in blocked_categories
+            else {"reason": "deferred_exfiltration_risk"}
+            if "DEFERRED_EXFILTRATION" in blocked_categories
+            else {}
+        ),
         **sensitive_file_access_denial,
     )
 

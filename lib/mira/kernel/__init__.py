@@ -5,6 +5,7 @@ from __future__ import annotations
 from .causal import (
     BehavioralEffect,
     CausalEvidence,
+    CausalEvidenceLog,
     DecisionRecord,
     MemoryUseTrace,
     classify_causal_evidence,
@@ -39,6 +40,7 @@ from .snapshot import MemorySnapshot, SnapshotBuilder, SnapshotItem, SnapshotMan
 __all__ = [
     "BehavioralEffect",
     "CausalEvidence",
+    "CausalEvidenceLog",
     "DecisionRecord",
     "EvalCalibration",
     "ExperienceLedger",

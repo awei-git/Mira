@@ -11,6 +11,7 @@ from mira.capabilities import PreflightResult, preflight_for_pipeline, run_prefl
 from mira.engine.checkpoint import Checkpoint, CheckpointStore
 from mira.engine.effect_log import EffectLog
 from mira.engine.risk_gate import ApprovalRequest, ApprovalStore, grant_required
+from mira.kernel.causal import CausalEvidence, CausalEvidenceLog
 from mira.kernel.commit import MemoryCommitLog, SecurityGateway
 from mira.kernel.consolidation import ConsolidationResult, MemoryConsolidator
 from mira.kernel.delta import MemoryAction, MemoryDelta
@@ -42,6 +43,7 @@ class PipelineExecutor:
         consolidator: MemoryConsolidator | None = None,
         gateway: SecurityGateway | None = None,
         commit_log: MemoryCommitLog | None = None,
+        causal_evidence_log: CausalEvidenceLog | None = None,
         effect_log: EffectLog | None = None,
         approval_store: ApprovalStore | None = None,
         checkpoint_store: CheckpointStore | None = None,
@@ -54,6 +56,7 @@ class PipelineExecutor:
         self.consolidator = consolidator or MemoryConsolidator()
         self.gateway = gateway or SecurityGateway()
         self.commit_log = commit_log
+        self.causal_evidence_log = causal_evidence_log
         self.effect_log = effect_log
         self.approval_store = approval_store
         self.checkpoint_store = checkpoint_store
@@ -96,6 +99,7 @@ class PipelineExecutor:
         consolidation = self.consolidator.apply_commit(kernel, delta, commit)
         if self.commit_log is not None:
             self.commit_log.append(commit)
+        causal_links = self._persist_causal_evidence(outputs, run_id, pipeline.name)
         record = ExperienceRecord(
             id=run_id,
             pipeline=pipeline.name,
@@ -103,7 +107,7 @@ class PipelineExecutor:
             intent=intent,
             outcome=outputs.get("_outcome", "completed" if failure is None else "failed"),
             delta=delta,
-            causal_links=list(outputs.get("_causal_links", snapshot.causal_links())),
+            causal_links=causal_links,
             confidence=0.8 if failure is None else 0.4,
             memory_class=pipeline.memory_class,
             artifacts=list(outputs.get("_artifacts", [])),
@@ -172,8 +176,41 @@ class PipelineExecutor:
                 continue
             if key == "_memory_actions":
                 outputs.setdefault("_memory_actions", []).extend(value)
+            elif key == "_causal_evidence":
+                outputs.setdefault("_causal_evidence", []).extend(
+                    item.to_dict() if isinstance(item, CausalEvidence) else item for item in value
+                )
             else:
                 outputs[key] = value
+
+    def _persist_causal_evidence(self, outputs: dict[str, Any], run_id: str, pipeline: str) -> list[str]:
+        evidence_items = list(outputs.get("_causal_evidence", []))
+        links: list[str] = []
+        for item in evidence_items:
+            if isinstance(item, CausalEvidence):
+                evidence = item
+            elif isinstance(item, dict):
+                evidence = CausalEvidence.from_dict(item)
+            else:
+                continue
+            if not evidence.run_id or not evidence.pipeline:
+                evidence = CausalEvidence(
+                    memory_id=evidence.memory_id,
+                    level=evidence.level,
+                    reason=evidence.reason,
+                    run_id=evidence.run_id or run_id,
+                    pipeline=evidence.pipeline or pipeline,
+                    trace_ids=evidence.trace_ids,
+                    decision_ids=evidence.decision_ids,
+                    effect_ids=evidence.effect_ids,
+                    ablation_ref=evidence.ablation_ref,
+                    evidence_id=evidence.evidence_id,
+                    timestamp=evidence.timestamp,
+                )
+            if self.causal_evidence_log is not None:
+                self.causal_evidence_log.append(evidence)
+            links.append(evidence.evidence_id)
+        return links
 
     def _execute_step(
         self,
@@ -219,6 +256,10 @@ class PipelineExecutor:
             if effect_key and self.effect_log:
                 self.effect_log.mark_unknown(effect_key, "step raised after execution started")
             raise
+        if "_causal_evidence" in output.payload:
+            output.payload["_causal_evidence"] = [
+                item.to_dict() if isinstance(item, CausalEvidence) else item for item in output.payload["_causal_evidence"]
+            ]
         if effect_key and self.effect_log:
             if output.succeeded:
                 effect_entry = self.effect_log.mark_succeeded(effect_key, output.summary)

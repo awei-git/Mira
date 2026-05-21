@@ -175,11 +175,17 @@ class StrategicNorthStarScorecard:
         return failures
 
 
-def build_operational_eval_bundle(records: list, commits: list, effects: list) -> RunEvalBundle:
+def build_operational_eval_bundle(
+    records: list,
+    commits: list,
+    effects: list,
+    causal_evidence: list | None = None,
+) -> RunEvalBundle:
     total = max(len(records), 1)
     failed = [record for record in records if record.outcome == "failed" or record.delta.what_failed]
     repeated_error = 1.0 - min(len(failed) / total, 1.0)
     causal_memory = sum(1 for record in records if record.causal_links) / total
+    causal_link_validity = _causal_link_validity(records, causal_evidence or [])
     output_quality = sum(1 for record in records if record.outcome not in {"failed", "blocked_preflight"}) / total
     pollution = sum(1 for commit in commits if commit.status in {"quarantined", "rejected"})
     memory_health = 1.0 - min(pollution / max(len(commits), 1), 1.0)
@@ -209,7 +215,7 @@ def build_operational_eval_bundle(records: list, commits: list, effects: list) -
         traceability=traceability,
         critical_memory_pollution=pollution,
         orphan_important_action=unsafe_effects,
-        causal_link_validity=causal_memory if records else 1.0,
+        causal_link_validity=causal_link_validity,
     )
     metrics = [
         EvalMetric("repeated_errors_decrease", repeated_error, repeated_error >= 0.8, f"{len(failed)} failed runs"),
@@ -223,6 +229,26 @@ def build_operational_eval_bundle(records: list, commits: list, effects: list) -
         EvalMetric("traceability", traceability, traceability >= 0.9, "records with trace anchors"),
     ]
     return RunEvalBundle(metrics=metrics, scorecard=scorecard)
+
+
+def _causal_link_validity(records: list, causal_evidence: list) -> float:
+    causal_claims = [(record, link) for record in records for link in record.causal_links]
+    if not causal_claims:
+        return 1.0
+    evidence_ids = {getattr(evidence, "evidence_id", "") for evidence in causal_evidence}
+    valid = sum(1 for record, link in causal_claims if _has_behavioral_effect_evidence(record, str(link), evidence_ids))
+    return valid / len(causal_claims)
+
+
+def _has_behavioral_effect_evidence(record, link: str, evidence_ids: set[str]) -> bool:
+    evidence_refs = [str(ref).lower() for ref in [*record.eval_refs, *record.side_effect_refs]]
+    if link in evidence_ids:
+        return True
+    if link.lower().startswith(("effect:", "behavioral_effect:")):
+        return True
+    return any(
+        ref.startswith(("causal:", "causal_evidence:", "behavioral_effect:", "ablation:")) for ref in evidence_refs
+    )
 
 
 def build_strategic_scorecard(records: list) -> StrategicNorthStarScorecard:

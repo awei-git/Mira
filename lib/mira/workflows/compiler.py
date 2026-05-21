@@ -10,16 +10,23 @@ import yaml
 from mira.engine.pipeline import Pipeline, Step, Trigger
 
 from .actions import action_for
-from .security import WorkflowAuditResult, audit_workflow_pack
+from .security import WorkflowAuditResult, audit_workflow_bundle, write_workflow_audit_artifact
 
 
 class WorkflowCompileError(ValueError):
     pass
 
 
-def compile_workflow_pack(path: Path | str, *, audit: bool = True) -> Pipeline:
+def compile_workflow_pack(
+    path: Path | str,
+    *,
+    audit: bool = True,
+    audit_artifact_dir: Path | str | None = None,
+) -> Pipeline:
     target = Path(path)
-    audit_result: WorkflowAuditResult | None = audit_workflow_pack(target) if audit else None
+    audit_result: WorkflowAuditResult | None = audit_workflow_bundle(target) if audit else None
+    if audit_result and audit_artifact_dir is not None:
+        write_workflow_audit_artifact(audit_result, audit_artifact_dir)
     if audit_result and not audit_result.passed:
         reasons = "; ".join(f"{finding.reason}: {finding.pattern}" for finding in audit_result.findings)
         raise WorkflowCompileError(f"Workflow pack failed security audit: {reasons}")

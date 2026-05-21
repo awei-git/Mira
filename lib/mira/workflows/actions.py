@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from mira.agents.base import StepInput, StepOutput
+from mira.kernel.causal import CausalEvidence
 from mira.kernel.delta import MemoryAction
 from mira.kernel.snapshot import MemorySnapshot
 
@@ -79,15 +80,23 @@ def article_draft(input: StepInput, memory: MemorySnapshot) -> StepOutput:
         "The useful threshold is not autonomy by volume. It is autonomy with receipts.",
     ]
     artifact = _write_artifact(input, "article.md", "\n".join(body) + "\n")
+    payload = {
+        "title": title,
+        "draft": body,
+        "_artifacts": [str(artifact)],
+        "_what_happened": "Drafted an article artifact",
+        "_what_mattered": "The output is inspectable before any public publish step",
+        "_what_changed": "Article workflow now defaults to artifact-first execution",
+    }
+    payload.update(
+        _causal_evidence_payload(
+            input,
+            memory,
+            "prior article workflow context changed this draft into artifact-first V3.1 evidence-spine framing",
+        )
+    )
     return StepOutput(
-        payload={
-            "title": title,
-            "draft": body,
-            "_artifacts": [str(artifact)],
-            "_what_happened": "Drafted an article artifact",
-            "_what_mattered": "The output is inspectable before any public publish step",
-            "_what_changed": "Article workflow now defaults to artifact-first execution",
-        },
+        payload=payload,
         summary="article draft artifact written",
     )
 
@@ -122,22 +131,30 @@ def a2a_experiment(input: StepInput, memory: MemorySnapshot) -> StepOutput:
         )
         + "\n",
     )
+    payload = {
+        "_artifacts": [str(artifact)],
+        "_memory_actions": [
+            MemoryAction(
+                "form_hypothesis",
+                "hypothesis:a2a_trust_manifest",
+                "A2A trust improves when each delegated output ships with a causal evidence manifest.",
+                metadata={"evidence_ref": input.run_id},
+            )
+        ],
+        "_eval_refs": ["strategic:a2a_trust_experiment"],
+        "_what_happened": "Completed an A2A trust experiment artifact",
+        "_what_mattered": "The strategic loop produced a research question, tool idea, and feedback plan",
+        "_what_changed": "Future strategic scorecards can count this as an A2A trust experiment",
+    }
+    payload.update(
+        _causal_evidence_payload(
+            input,
+            memory,
+            "prior A2A trust experiment context changed this run into a manifest-validation follow-up",
+        )
+    )
     return StepOutput(
-        payload={
-            "_artifacts": [str(artifact)],
-            "_memory_actions": [
-                MemoryAction(
-                    "form_hypothesis",
-                    "hypothesis:a2a_trust_manifest",
-                    "A2A trust improves when each delegated output ships with a causal evidence manifest.",
-                    metadata={"evidence_ref": input.run_id},
-                )
-            ],
-            "_eval_refs": ["strategic:a2a_trust_experiment"],
-            "_what_happened": "Completed an A2A trust experiment artifact",
-            "_what_mattered": "The strategic loop produced a research question, tool idea, and feedback plan",
-            "_what_changed": "Future strategic scorecards can count this as an A2A trust experiment",
-        },
+        payload=payload,
         summary="A2A trust experiment artifact written",
     )
 
@@ -163,3 +180,20 @@ def _write_artifact(input: StepInput, filename: str, body: str) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(body, encoding="utf-8")
     return target
+
+
+def _causal_evidence_payload(input: StepInput, memory: MemorySnapshot, reason: str) -> dict:
+    if not memory.causal_context:
+        return {}
+    return {
+        "_causal_evidence": [
+            CausalEvidence(
+                memory_id=memory.causal_context[0],
+                level="L3",
+                reason=reason,
+                run_id=input.run_id,
+                pipeline=input.pipeline,
+                effect_ids=[f"effect:{input.run_id}:{input.step}"],
+            )
+        ]
+    }

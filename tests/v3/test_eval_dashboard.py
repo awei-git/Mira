@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from mira.evals import EvalEvent, EvalHistory, bounded_threshold_adjustment
-from mira.kernel import ExperienceLedger, MemoryKernel
+from mira.kernel import CausalEvidence, CausalEvidenceLog, ExperienceLedger, MemoryKernel
 from mira.kernel.delta import MemoryAction, MemoryDelta
 from mira.kernel.ledger import ExperienceRecord
 from mira.web.dashboard import build_dashboard_snapshot
@@ -43,10 +43,16 @@ def test_dashboard_snapshot_exposes_monitor_counts(tmp_path: Path):
         )
     )
 
-    snapshot = build_dashboard_snapshot(kernel, ledger)
+    causal_evidence = CausalEvidenceLog(tmp_path / "causal.jsonl")
+    causal_evidence.append(CausalEvidence("memory:1", "L3", "changed behavior"))
+    causal_evidence.append(CausalEvidence("memory:2", "L4", "ablation confirmed"))
+
+    snapshot = build_dashboard_snapshot(kernel, ledger, causal_evidence_log=causal_evidence)
 
     assert "communication" in snapshot.active_pipelines
     assert snapshot.skill_traces["article_writing"] == 1.0
     assert snapshot.recent_experience_ids == ["exp_1"]
     assert snapshot.hard_policy_count == 43
     assert snapshot.soft_policy_count == 9
+    assert snapshot.causal_evidence_counts["L3"] == 1
+    assert snapshot.causal_evidence_counts["L4"] == 1

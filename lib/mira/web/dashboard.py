@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from mira.engine.effect_log import OPEN_STATUSES, EffectLog
 from mira.engine.risk_gate import ApprovalStore
 from mira.evals import build_operational_eval_bundle, build_strategic_scorecard
+from mira.kernel.causal import CausalEvidenceLog
 from mira.kernel.commit import MemoryCommitLog
 from mira.kernel.ledger import ExperienceLedger
 from mira.kernel.schema import MemoryKernel
@@ -25,6 +26,7 @@ class DashboardSnapshot:
     soft_policy_count: int
     review_queues: dict[str, list[dict[str, str]]]
     effect_log_ids: list[str]
+    causal_evidence_counts: dict[str, int]
     approval_capacity: dict[str, int]
     operational_scorecard: dict[str, object]
     strategic_scorecard: dict[str, object]
@@ -36,10 +38,12 @@ def build_dashboard_snapshot(
     commit_log: MemoryCommitLog | None = None,
     effect_log: EffectLog | None = None,
     approval_store: ApprovalStore | None = None,
+    causal_evidence_log: CausalEvidenceLog | None = None,
 ) -> DashboardSnapshot:
     all_records = ledger.list(limit=500)
     recent = all_records[-20:]
     commits = commit_log.list(limit=50) if commit_log else []
+    causal_evidence = causal_evidence_log.list(limit=500) if causal_evidence_log else []
     effects = effect_log.list(limit=20) if effect_log else []
     pending_approvals = approval_store.list_requests(status="pending") if approval_store else []
     memory_queue = [
@@ -86,7 +90,7 @@ def build_dashboard_snapshot(
         }
         for request in pending_approvals
     ]
-    operational = build_operational_eval_bundle(all_records, commits, effects).scorecard
+    operational = build_operational_eval_bundle(all_records, commits, effects, causal_evidence).scorecard
     strategic = build_strategic_scorecard(all_records)
     return DashboardSnapshot(
         active_pipelines=sorted(PIPELINE_CATALOG),
@@ -112,6 +116,7 @@ def build_dashboard_snapshot(
             "effect_reconciliation": effect_queue,
         },
         effect_log_ids=[entry.effect_id for entry in effects],
+        causal_evidence_counts=_causal_evidence_counts(causal_evidence),
         approval_capacity={
             "pending": len(pending_approvals),
             "budget": 10,
@@ -130,3 +135,12 @@ def build_dashboard_snapshot(
             "public_feedback_items": strategic.public_feedback_items,
         },
     )
+
+
+def _causal_evidence_counts(causal_evidence: list) -> dict[str, int]:
+    counts = {"L0": 0, "L1": 0, "L2": 0, "L3": 0, "L4": 0}
+    for evidence in causal_evidence:
+        level = getattr(evidence, "level", "")
+        if level in counts:
+            counts[level] += 1
+    return counts

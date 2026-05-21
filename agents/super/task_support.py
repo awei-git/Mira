@@ -530,6 +530,31 @@ def _invoke_registry_handler(
         except TypeError:
             kwargs["thread_memory"] = load_thread_memory(thread_id)
 
+    audit = {
+        "task_id": task_id,
+        "thread_id": thread_id,
+        "sender": sender,
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "tier": tier,
+        "needs_thread_history": needs_thread_history,
+        "has_thread_history": bool(kwargs.get("thread_history")),
+        "needs_thread_memory": needs_thread_memory,
+        "has_thread_memory": bool(kwargs.get("thread_memory")),
+    }
+    if thread_id and needs_thread_history and not kwargs["thread_history"]:
+        log.warning("Handoff thread context missing: %s", audit)
+        event_type = "handoff.context_missing"
+    else:
+        log.debug("Handoff context audit: %s", audit)
+        event_type = "handoff.context_audit"
+    try:
+        from runtime.trace import append_trace
+
+        append_trace(task_id, event_type, audit)
+    except Exception as e:
+        log.debug("Trace append failed for %s: %s", task_id, e)
+
     return handler_fn(workspace, task_id, instruction, sender, thread_id, **kwargs)
 
 

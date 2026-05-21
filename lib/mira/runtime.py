@@ -16,6 +16,7 @@ from mira.engine import ApprovalStore, EffectLog, PipelineExecutor
 from mira.engine.checkpoint import CheckpointStore
 from mira.baselines import capture_all_baselines
 from mira.kernel import ExperienceLedger, MemoryAction, MemoryDelta
+from mira.kernel.causal import CausalEvidenceLog
 from mira.kernel.commit import MemoryCommitLog, MemoryQuarantineStore, SecurityGateway
 from mira.kernel.consolidation import MemoryConsolidator
 from mira.kernel.ledger import ExperienceRecord, new_run_id
@@ -113,6 +114,7 @@ class V3Paths:
     kernel: Path
     ledger: Path
     commits: Path
+    causal_evidence: Path
     effect_log: Path
     eval_history: Path
     approvals: Path
@@ -120,6 +122,7 @@ class V3Paths:
     checkpoints: Path
     snapshots: Path
     artifacts: Path
+    workflow_audits: Path
     baselines: Path
 
 
@@ -137,6 +140,7 @@ def default_v3_paths(root: Path | str | None = None) -> V3Paths:
         kernel=data_dir / "kernel.json",
         ledger=data_dir / "experience_ledger.jsonl",
         commits=data_dir / "memory_commits.jsonl",
+        causal_evidence=data_dir / "causal_evidence.jsonl",
         effect_log=data_dir / "effect_log.jsonl",
         eval_history=data_dir / "eval_history.jsonl",
         approvals=data_dir / "approvals.jsonl",
@@ -144,6 +148,7 @@ def default_v3_paths(root: Path | str | None = None) -> V3Paths:
         checkpoints=data_dir / "checkpoints",
         snapshots=data_dir / "snapshots",
         artifacts=data_dir / "artifacts",
+        workflow_audits=data_dir / "workflow_audits",
         baselines=data_dir / "baselines",
     )
 
@@ -158,6 +163,10 @@ def default_ledger(root: Path | str | None = None) -> ExperienceLedger:
 
 def default_commit_log(root: Path | str | None = None) -> MemoryCommitLog:
     return MemoryCommitLog(default_v3_paths(root).commits)
+
+
+def default_causal_evidence_log(root: Path | str | None = None) -> CausalEvidenceLog:
+    return CausalEvidenceLog(default_v3_paths(root).causal_evidence)
 
 
 def default_quarantine_store(root: Path | str | None = None) -> MemoryQuarantineStore:
@@ -361,12 +370,14 @@ def run_workflow_pack(
         default_kernel_store(root),
         default_ledger(root),
         commit_log=default_commit_log(root),
+        causal_evidence_log=default_causal_evidence_log(root),
         effect_log=default_effect_log(root),
         approval_store=default_approval_store(root),
         checkpoint_store=default_checkpoint_store(root),
         artifact_root=paths.artifacts,
     )
-    return executor.run(compile_workflow_pack(pack_path), payload, intent=intent or f"run {pack_path}", trigger=trigger)
+    pipeline = compile_workflow_pack(pack_path, audit_artifact_dir=paths.workflow_audits)
+    return executor.run(pipeline, payload, intent=intent or f"run {pack_path}", trigger=trigger)
 
 
 def run_named_workflow(
@@ -405,6 +416,7 @@ def run_communication(message: str, *, root: Path | str | None = None) -> str:
         default_kernel_store(root),
         default_ledger(root),
         commit_log=default_commit_log(root),
+        causal_evidence_log=default_causal_evidence_log(root),
         effect_log=default_effect_log(root),
         approval_store=default_approval_store(root),
         checkpoint_store=default_checkpoint_store(root),

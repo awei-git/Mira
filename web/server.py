@@ -950,7 +950,7 @@ def get_v3_dashboard(user_id: str):
     from mira.engine.risk_gate import ApprovalStore
     from mira.engine.effect_log import EffectLog
     from mira.kernel.commit import MemoryCommitLog
-    from mira.runtime import default_ledger, default_v3_paths
+    from mira.runtime import default_causal_evidence_log, default_ledger, default_v3_paths
     from mira.web.dashboard import build_dashboard_snapshot
 
     paths = default_v3_paths()
@@ -961,6 +961,7 @@ def get_v3_dashboard(user_id: str):
         MemoryCommitLog(paths.commits),
         EffectLog(paths.effect_log),
         ApprovalStore(paths.approvals),
+        causal_evidence_log=default_causal_evidence_log(),
     )
     return {
         "dashboard": dashboard.__dict__,
@@ -2342,7 +2343,7 @@ def get_backend_dashboard(user_id: str, request: Request):
     from mira.kernel.commit import MemoryCommitLog
     from mira.kernel.store import JsonKernelStore
     from mira.pipelines import PIPELINE_CATALOG
-    from mira.runtime import default_ledger, default_v3_paths
+    from mira.runtime import default_causal_evidence_log, default_ledger, default_v3_paths
     from mira.web.dashboard import build_dashboard_snapshot
 
     paths = default_v3_paths()
@@ -2351,7 +2352,14 @@ def get_backend_dashboard(user_id: str, request: Request):
     effect_log = EffectLog(paths.effect_log)
     approval_store = ApprovalStore(paths.approvals)
     kernel = JsonKernelStore(paths.kernel).load()
-    snapshot = build_dashboard_snapshot(kernel, ledger, commit_log, effect_log, approval_store)
+    snapshot = build_dashboard_snapshot(
+        kernel,
+        ledger,
+        commit_log,
+        effect_log,
+        approval_store,
+        causal_evidence_log=default_causal_evidence_log(),
+    )
     pipeline_records = ledger.list(limit=500)
     pipeline_commits = commit_log.list(limit=500)
     pipeline_effects = effect_log.list(limit=500)

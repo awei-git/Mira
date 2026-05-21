@@ -16,7 +16,7 @@ from mira.configuration import default_v3_config
 from mira.engine.effect_log import EffectLog
 from mira.kernel.commit import MemoryCommitLog
 from mira.kernel.store import JsonKernelStore
-from mira.runtime import default_ledger, default_v3_paths, run_communication
+from mira.runtime import default_causal_evidence_log, default_ledger, default_v3_paths, run_communication
 from mira.web.dashboard import build_dashboard_snapshot
 
 
@@ -24,7 +24,11 @@ def render_status() -> str:
     paths = default_v3_paths(ROOT)
     kernel = JsonKernelStore(paths.kernel).load()
     snapshot = build_dashboard_snapshot(
-        kernel, default_ledger(ROOT), MemoryCommitLog(paths.commits), EffectLog(paths.effect_log)
+        kernel,
+        default_ledger(ROOT),
+        MemoryCommitLog(paths.commits),
+        EffectLog(paths.effect_log),
+        causal_evidence_log=default_causal_evidence_log(ROOT),
     )
     lines = [
         "Mira V3 Status",
@@ -41,6 +45,7 @@ def render_status() -> str:
         f"Skill traces: {len(snapshot.skill_traces)}",
         f"Policies: {snapshot.hard_policy_count} hard, {snapshot.soft_policy_count} soft",
         f"Review queues: {sum(len(v) for v in snapshot.review_queues.values())}",
+        f"Causal evidence: {sum(snapshot.causal_evidence_counts.values())}",
     ]
     return "\n".join(lines)
 
@@ -62,6 +67,7 @@ def main() -> int:
             default_ledger(ROOT),
             MemoryCommitLog(paths.commits),
             EffectLog(paths.effect_log),
+            causal_evidence_log=default_causal_evidence_log(ROOT),
         )
         print(json.dumps({"dashboard": dashboard.__dict__, "config": default_v3_config().to_dict()}, indent=2))
         return 0

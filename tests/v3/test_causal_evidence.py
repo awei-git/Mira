@@ -1,4 +1,4 @@
-from mira.kernel import BehavioralEffect, DecisionRecord, MemoryUseTrace, classify_causal_evidence
+from mira.kernel import BehavioralEffect, CausalEvidenceLog, DecisionRecord, MemoryUseTrace, classify_causal_evidence
 
 
 def test_causal_evidence_reaches_l4_only_with_ablation_ref():
@@ -53,3 +53,35 @@ def test_causal_evidence_distinguishes_retrieved_from_effective():
     evidence = classify_causal_evidence("note:irrelevant", [trace], [], [])
 
     assert evidence.level == "L1"
+
+
+def test_causal_evidence_log_persists_records(tmp_path):
+    log = CausalEvidenceLog(tmp_path / "causal.jsonl")
+    trace = MemoryUseTrace(
+        memory_id="memory:1",
+        run_id="run_1",
+        pipeline="communication",
+        step="execute",
+        retrieved=True,
+        included=True,
+        cited=True,
+    )
+    decision = DecisionRecord(
+        run_id="run_1",
+        pipeline="communication",
+        step="execute",
+        decision="use concise reply",
+        memory_trace_ids=[trace.trace_id],
+    )
+    effect = BehavioralEffect(
+        memory_id="memory:1",
+        decision_id=decision.decision_id,
+        effect_type="changed_route",
+        counterfactual="would have used default reply prefix",
+    )
+    evidence = classify_causal_evidence("memory:1", [trace], [decision], [effect])
+
+    saved = log.append(evidence)
+
+    assert log.get(saved.evidence_id).memory_id == "memory:1"
+    assert log.list()[0].level == "L3"

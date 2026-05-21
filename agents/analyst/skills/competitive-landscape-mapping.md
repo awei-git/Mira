@@ -50,6 +50,8 @@ Step back from individual competitors and assess:
 - **Network effects** -- does any player benefit from scale in a compounding way?
 - **Rate of disruption** -- how quickly are new entrants changing the game?
 
+For infrastructure-heavy markets, explicitly assess electricity availability, water use, land access, grid interconnect queues, permitting timeline, local political resistance, community trust, and operator/regulator relationships. State whether these constraints are merely costs that capital can overcome or true durable moats that protect advantaged operators.
+
 ## Application
 
 When asked to analyze a competitive landscape:

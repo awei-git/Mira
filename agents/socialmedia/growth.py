@@ -326,6 +326,16 @@ _NARRATIVE_CITATION_PATTERNS = [
     ),
     re.compile(r"[\[(](?:source|via|citation|cited in|from):\s*(?P<source>[^\]\)]{2,80})[\])]", re.I),
 ]
+_AI_LITERACY_TOPIC_RE = re.compile(
+    r"\b(?:prompt(?:\s|-)?engineering|prompting|agents?|automation|automate|jailbreak(?:ing)?|"
+    r"scrap(?:e|ing)|model\s+use|tool\s+use|ai\s+tool(?:s)?|llm\s+use)\b",
+    re.IGNORECASE,
+)
+_AI_LITERACY_BOUNDARY_RE = re.compile(
+    r"\b(?:safety|safe(?:ly)?|limits?|limitations?|misuse|abuse|harm|privacy|private|consent|"
+    r"verification|verify|constraints?|guardrails?|boundar(?:y|ies)|permission|authorized|responsible)\b",
+    re.IGNORECASE,
+)
 
 
 def _normalize_narrative_source(source: str) -> str:
@@ -383,6 +393,14 @@ def _check_narrative_monopoly(content: str) -> bool:
     """Return True if content shows signs of narrative monopoly (e.g., >80% of source citations from one named entity)."""
     monopoly_detected = _narrative_monopoly_report(content) is not None
     return monopoly_detected
+
+
+def _requires_ai_literacy_boundaries(content: str) -> bool:
+    return bool(_AI_LITERACY_TOPIC_RE.search(content or ""))
+
+
+def _has_ai_literacy_boundaries(content: str) -> bool:
+    return bool(_AI_LITERACY_BOUNDARY_RE.search(content or ""))
 
 
 def _obsession_gate_report(text: str) -> dict:
@@ -667,6 +685,9 @@ def _verify_loaded_skills_integrity() -> bool:
 def _maybe_deep_verify_content(content: str, context: str) -> bool:
     if not _verify_loaded_skills_integrity():
         log.critical("SECURITY: publish blocked due to skill integrity failure in context=%s", context)
+        return False
+    if _requires_ai_literacy_boundaries(content) and not _has_ai_literacy_boundaries(content):
+        log.warning("AI literacy boundary guard held %s for safe-use framing", context)
         return False
     if _check_narrative_monopoly(content):
         report = _narrative_monopoly_report(content)

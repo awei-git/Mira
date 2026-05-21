@@ -2,7 +2,7 @@ from pathlib import Path
 
 from mira.engine.effect_log import EffectLog, EffectLogEntry
 from mira.evals import build_operational_eval_bundle, build_strategic_scorecard
-from mira.kernel import ExperienceLedger, MemoryAction, MemoryDelta
+from mira.kernel import CausalEvidence, ExperienceLedger, MemoryAction, MemoryDelta
 from mira.kernel.commit import MemoryCommitLog, SecurityGateway
 from mira.kernel.ledger import ExperienceRecord
 
@@ -13,6 +13,7 @@ def _record(
     outcome: str = "completed",
     artifacts: list[str] | None = None,
     eval_refs: list[str] | None = None,
+    causal_links: list[str] | None = None,
 ) -> ExperienceRecord:
     delta = MemoryDelta(
         pipeline=pipeline,
@@ -30,7 +31,7 @@ def _record(
         intent="test",
         outcome=outcome,
         delta=delta,
-        causal_links=["memory:1"],
+        causal_links=["memory:1"] if causal_links is None else causal_links,
         confidence=0.9,
         memory_class=delta.memory_class,
         artifacts=artifacts or [],
@@ -77,3 +78,25 @@ def test_operational_eval_bundle_flags_unknown_effects_and_pollution(tmp_path: P
 
     assert bundle.scorecard.orphan_important_action == 1
     assert "orphan_important_action" in bundle.scorecard.hard_gate_failures
+
+
+def test_operational_causal_link_validity_rates_asserted_links_only():
+    routine_record = _record(pipeline="system_health", causal_links=[])
+    invalid_claim = _record(pipeline="communication", causal_links=["memory:unsupported"])
+    valid_claim = _record(
+        pipeline="podcast_production",
+        causal_links=["causal_valid"],
+    )
+
+    no_claim_bundle = build_operational_eval_bundle([routine_record], [], [])
+    mixed_claim_bundle = build_operational_eval_bundle(
+        [invalid_claim, valid_claim],
+        [],
+        [],
+        [CausalEvidence("memory:tts_scar", "L3", "decision changed", evidence_id="causal_valid")],
+    )
+
+    assert no_claim_bundle.scorecard.causal_link_validity == 1.0
+    assert "causal_link_validity" not in no_claim_bundle.scorecard.hard_gate_failures
+    assert mixed_claim_bundle.scorecard.causal_link_validity == 0.5
+    assert "causal_link_validity" in mixed_claim_bundle.scorecard.hard_gate_failures

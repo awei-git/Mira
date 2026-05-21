@@ -47,6 +47,8 @@ Before smoothing a draft, classify friction as either productive or consumptive.
 
 - [ ] **FRICTION CHECK**：Identify one specific detail in this draft that you returned to and revised at least twice because it bothered you irrationally — a word choice, a transition, a structural decision. If you cannot identify any such friction point, the draft is at the adequate floor, not the exceptional ceiling. Consider an additional revision pass focused on one detail that nags at you.
 
+- [ ] **AI literacy boundary framing**: When content teaches AI usage, prompt engineering, automation, agent design, or capability transfer, verify that it includes concrete safe-use boundaries, misuse caveats where relevant, and safe-use constraints. Do not finalize content that gives step-by-step enablement for harmful behavior.
+
 ## Speaker Identity Presence (anti-AI layer 2)
 - [ ] STAKE: Does the text answer 'why does Mira specifically care about this topic?' Not generic interest — a specific connection to Mira's experiences, values, or ongoing concerns.
 - [ ] POSITION: Does the text take a clear, specific stance? Flag any 'on the one hand / on the other hand' hedging that avoids committing to a view.
