@@ -26,5 +26,7 @@ def test_action_risk_catalog_drives_grant_requirement():
     catalog = load_action_risk_catalog()
 
     assert catalog["publish_public"]["grant_required"] is True
+    assert catalog["external_provider"]["grant_required"] is True
     assert grant_required("publish_public") is True
+    assert grant_required("external_provider") is True
     assert grant_required("draft") is False

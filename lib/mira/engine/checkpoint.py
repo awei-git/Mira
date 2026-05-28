@@ -14,6 +14,7 @@ class Checkpoint:
     pipeline: str
     step: str
     outputs: dict[str, Any] = field(default_factory=dict)
+    phase: str = "after_step"
 
 
 class CheckpointStore:
@@ -29,4 +30,6 @@ class CheckpointStore:
         target = self.path / f"{run_id}.json"
         if not target.exists():
             return None
-        return Checkpoint(**json.loads(target.read_text(encoding="utf-8")))
+        data = json.loads(target.read_text(encoding="utf-8"))
+        data.setdefault("phase", "after_step")
+        return Checkpoint(**data)

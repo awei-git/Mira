@@ -1,0 +1,24 @@
+name: weekly_growth_report
+memory_class: social
+trigger:
+  type: schedule
+  detail: Monday morning
+priority: 40
+version: 1
+max_duration_s: 900
+checkpoint_every: 1
+involved_skills:
+  - substack_growth_playbook
+  - subscriber_retention_ladder
+steps:
+  - name: snapshot_publication_stats_notes_comments
+    type: memory
+  - name: aggregate_growth_signals
+    type: deterministic
+  - name: retention_ladder_report
+    type: deterministic
+    action: weekly_growth_report
+  - name: action_quality_gate
+    type: eval
+  - name: experience_record_proposal_gateway
+    type: memory

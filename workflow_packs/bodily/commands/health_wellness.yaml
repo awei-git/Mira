@@ -1,0 +1,33 @@
+name: health_wellness
+memory_class: bodily
+trigger:
+  type: schedule
+  detail: morning
+priority: 30
+version: 1
+max_duration_s: 600
+checkpoint_every: 1
+involved_skills:
+  - health_wellness
+risk_actions:
+  write_health_idempotent: health_external
+effect_steps:
+  write_health_idempotent: write_health
+steps:
+  - name: snapshot_health_signals
+    type: memory
+  - name: mark_missing_health_data
+    type: deterministic
+  - name: health_report
+    type: deterministic
+    action: local_report
+  - name: medical_claim_boundary
+    type: policy
+  - name: health_write_preflight
+    type: deterministic
+    action: health_write_guard
+  - name: write_health_idempotent
+    type: deterministic
+    action: health_write_guard
+  - name: experience_record_proposal_gateway
+    type: memory

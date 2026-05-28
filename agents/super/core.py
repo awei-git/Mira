@@ -32,6 +32,13 @@ import pathsetup  # noqa: F401  (side-effect: registers all Mira package dirs)
 import config as mira_config
 import health_monitor
 import soul_manager
+from agents.shared import config as shared_config
+from agents.shared.config import (
+    EXPLORE_MAX_PENDING_TASKS,
+    LAST_OUTPUT_FILE,
+    MAX_UNDELIVERED_OUTPUTS,
+    STALE_THRESHOLDS,
+)
 from logging_util import throttled_warning  # noqa: E402  — used inside _check_invisible_deps
 from notes_bridge import detect_vulnerability_disclosure
 
@@ -50,9 +57,7 @@ from config import (
     WRITINGS_DIR,
     PERF_STATS_FILE,
     PERF_WARN_THRESHOLD,
-    LAST_OUTPUT_FILE,
     FEEDS_DIR,
-    STALE_THRESHOLDS,
     IPHONE_BRIDGE_WARN_LATENCY_MS,
     BRIDGE_STALE_THRESHOLD,
     CALIBRATION_INTERVAL_DAYS,
@@ -79,10 +84,15 @@ try:
 except (ImportError, ModuleNotFoundError):
     Mira = None
     Message = None
-from task_manager import TaskManager, TASKS_DIR, classify_task, get_stuck_tasks
+from task_manager import TaskManager, TASKS_DIR, classify_task, get_stuck_tasks, _resolve_workspace_dir
 from memory.soul import load_soul, format_soul, append_memory, check_prompt_injection
 from llm import claude_think
-from sub_agent import append_pipeline_context_to_system_prompt
+from sub_agent import (
+    DISPATCH_RECEIPT_NAME,
+    append_pipeline_context_to_system_prompt,
+    validate_local_model_native_tools,
+    write_dispatch_receipt,
+)
 from writing_workflow import (
     check_writing_responses,
     advance_project,
@@ -220,7 +230,6 @@ from health import (
 from jobs import (
     _run_inline_scheduled_job,
     _dispatch_pipeline_followups,
-    _dispatch_scheduled_jobs,
     _record_scheduled_job_dispatch,
 )
 from daily_tasks import (
@@ -248,10 +257,204 @@ CLAUDE_API_PING_TIMEOUT_SECONDS = 3
 OFFLINE_FALLBACK_PROMPT = _AGENTS_DIR / "shared" / "prompts" / "offline_fallback.txt"
 _LAST_NETWORK_STATUS: dict | None = None
 
+_TIMING_PHASE_STACK: list[dict[str, float]] = []
+_TIMING_CYCLE_STACK: list[dict[str, float]] = []
+_TIMING_STAGE_STACK: list[dict[str, float]] = []
+_TIMING_PROMPT_MODULES = ("llm",)
+
+
+def _write_timing_phase(phase: str, duration_s: float, category: str) -> None:
+    if not getattr(shared_config, "TIMING_LOG_ENABLED", True):
+        return
+    try:
+        timing_path = Path(getattr(shared_config, "TIMING_LOG_PATH", LOGS_DIR / "timing.jsonl"))
+        timing_path.parent.mkdir(parents=True, exist_ok=True)
+        with timing_path.open("a", encoding="utf-8") as timing_file:
+            timing_file.write(
+                json.dumps(
+                    {
+                        "phase": phase,
+                        "duration_s": round(duration_s, 6),
+                        "category": category,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception as exc:
+        log.debug("Timing phase log write failed: %s", exc)
+
+
+def _start_cycle_timing() -> dict[str, float]:
+    cycle = {"started": time.perf_counter(), "inference_s": 0.0}
+    _TIMING_CYCLE_STACK.append(cycle)
+    return cycle
+
+
+def _finish_cycle_timing(cycle: dict[str, float]) -> dict[str, float]:
+    cycle_total_s = max(0.0, time.perf_counter() - cycle["started"])
+    inference_s = min(cycle_total_s, max(0.0, cycle.get("inference_s", 0.0)))
+    orchestration_s = max(0.0, cycle_total_s - inference_s)
+    if _TIMING_CYCLE_STACK and _TIMING_CYCLE_STACK[-1] is cycle:
+        _TIMING_CYCLE_STACK.pop()
+    elif cycle in _TIMING_CYCLE_STACK:
+        _TIMING_CYCLE_STACK.remove(cycle)
+    return {
+        "cycle_total_s": round(cycle_total_s, 6),
+        "inference_s": round(inference_s, 6),
+        "orchestration_s": round(orchestration_s, 6),
+        "orchestration_pct": round((orchestration_s / cycle_total_s) * 100, 2) if cycle_total_s else 0.0,
+    }
+
+
+def _write_stage_timing(stage: str, llm_ms: int, total_ms: int) -> None:
+    llm_ms = max(0, min(int(llm_ms), int(total_ms)))
+    orchestration_ms = max(0, int(total_ms) - llm_ms)
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "stage": stage,
+        "llm_ms": llm_ms,
+        "orchestration_ms": orchestration_ms,
+        "total_ms": int(total_ms),
+        "llm_ratio": round(llm_ms / total_ms, 4) if total_ms else 0.0,
+        "orchestration_ratio": round(orchestration_ms / total_ms, 4) if total_ms else 0.0,
+    }
+    log.info("STAGE_TIMING %s", json.dumps(record, ensure_ascii=False, sort_keys=True))
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOGS_DIR / "llm_timing.jsonl", "a", encoding="utf-8") as timing_file:
+            timing_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.debug("stage timing log write failed: %s", exc)
+
+
+def _inference_ms_from_result(result) -> int:
+    if isinstance(result, tuple) and len(result) >= 2:
+        return _inference_ms_from_result(result[1])
+    if isinstance(result, dict):
+        value = result.get("inference_ms")
+    else:
+        value = getattr(result, "inference_ms", 0)
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _task_result_value(result):
+    if isinstance(result, tuple) and result:
+        return result[0]
+    return result
+
+
+def _write_task_timing(task_name: str, total_ms: int, inference_ms: int) -> None:
+    total_ms = max(0, int(total_ms))
+    inference_ms = max(0, min(int(inference_ms), total_ms))
+    overhead_ms = max(0, total_ms - inference_ms)
+    overhead_pct = (overhead_ms / total_ms * 100) if total_ms else 0.0
+    line = (
+        f"TIMING task={_normalize_task_distribution_category(task_name)} "
+        f"total_ms={total_ms} inference_ms={inference_ms} "
+        f"overhead_ms={overhead_ms} overhead_pct={overhead_pct:.2f}"
+    )
+    log.info(line)
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOGS_DIR / "task_timing.log", "a", encoding="utf-8") as timing_file:
+            timing_file.write(line + "\n")
+    except OSError as exc:
+        log.debug("task timing log write failed: %s", exc)
+
+
+@contextmanager
+def _timed_stage(stage: str):
+    started = time.perf_counter()
+    timing = {"llm_s": 0.0}
+    _TIMING_STAGE_STACK.append(timing)
+    try:
+        yield
+    finally:
+        total_ms = round((time.perf_counter() - started) * 1000)
+        if _TIMING_STAGE_STACK and _TIMING_STAGE_STACK[-1] is timing:
+            _TIMING_STAGE_STACK.pop()
+        elif timing in _TIMING_STAGE_STACK:
+            _TIMING_STAGE_STACK.remove(timing)
+        _write_stage_timing(stage, round(timing["llm_s"] * 1000), total_ms)
+
+
+@contextmanager
+def _timed_phase(phase: str, category: str):
+    started = time.perf_counter()
+    current = {"llm_s": 0.0}
+    _TIMING_PHASE_STACK.append(current)
+    try:
+        yield
+    finally:
+        elapsed = time.perf_counter() - started
+        _TIMING_PHASE_STACK.pop()
+        if category == "llm":
+            duration_s = elapsed
+            nested_llm_s = elapsed
+            if _TIMING_CYCLE_STACK:
+                _TIMING_CYCLE_STACK[-1]["inference_s"] += elapsed
+            for stage_timing in _TIMING_STAGE_STACK:
+                stage_timing["llm_s"] += elapsed
+        else:
+            duration_s = max(0.0, elapsed - current["llm_s"])
+            nested_llm_s = current["llm_s"]
+        _write_timing_phase(phase, duration_s, category)
+        if _TIMING_PHASE_STACK:
+            _TIMING_PHASE_STACK[-1]["llm_s"] += nested_llm_s
+
+
+@contextmanager
+def _timed_llm_calls(phase: str, *module_names: str):
+    modules = []
+    seen_modules: set[int] = set()
+    for module_name in (*_TIMING_PROMPT_MODULES, *module_names):
+        module = sys.modules.get(module_name)
+        if module is None or id(module) in seen_modules:
+            continue
+        modules.append(module)
+        seen_modules.add(id(module))
+
+    originals = []
+
+    def _wrap_prompt_call(name, fn):
+        def _wrapped(*args, **kwargs):
+            with _timed_phase(f"{phase}.{name}", "llm"):
+                return fn(*args, **kwargs)
+
+        return _wrapped
+
+    for module in modules:
+        for name in _PIPELINE_PROMPT_FUNCTIONS:
+            fn = getattr(module, name, None)
+            if callable(fn):
+                originals.append((module, name, fn))
+                setattr(module, name, _wrap_prompt_call(name, fn))
+
+    try:
+        yield
+    finally:
+        for module, name, fn in reversed(originals):
+            setattr(module, name, fn)
+
+
 _INTENT_CLARIFICATION_REPLY = "What do you want to achieve with this?"
 _SENSITIVE_REDACTED_CONTENT = "[sensitive survival exposure routed local]"
 _TIME_SENSITIVE_REDACTED_CONTENT = "[time-sensitive message routed local]"
 _TIME_SENSITIVE_MIN_MESSAGE_CHARS = 20
+_EXPLORE_QUEUE_DEPTH_STATUSES = {
+    "queued",
+    "pending",
+    "accepted",
+    "in-progress",
+    "in_progress",
+    "dispatched",
+    "running",
+    "working",
+}
 VERIFICATION_INDEPENDENCE = True
 MIN_COMPLETED_TASK_OUTPUT_BYTES = 50
 _ORIGINAL_INTENT_SCORING_GUIDANCE = (
@@ -266,6 +469,95 @@ _ORIGINAL_TASK_MANAGER_DISPATCH = TaskManager.dispatch
 _ORIGINAL_TASK_MANAGER_COLLECT_RESULT = TaskManager._collect_result
 _ORIGINAL_DISPATCH_OR_REQUEUE = _dispatch_or_requeue
 _ORIGINAL_PROJECT_RECORD_TO_BRIDGE = getattr(talk_module, "_project_record_to_bridge", None)
+
+
+def _count_pending_active_tasks() -> int:
+    task_ids = {
+        rec.task_id
+        for rec in TaskManager()._records
+        if normalize_task_status(rec.status) in _EXPLORE_QUEUE_DEPTH_STATUSES
+    }
+
+    if getattr(mira_config, "CONTROL_RUNTIME_DB_ENABLED", False):
+        try:
+            from control.db import schema_name, transaction
+            from db.connection import dict_cursor
+
+            with transaction() as conn:
+                with dict_cursor(conn) as cur:
+                    cur.execute(
+                        f"""
+                        SELECT id
+                        FROM {schema_name()}.tasks
+                        WHERE status = ANY(%s)
+                        """,
+                        (list(_EXPLORE_QUEUE_DEPTH_STATUSES),),
+                    )
+                    task_ids.update(str(row["id"]) for row in cur.fetchall() if row.get("id"))
+        except Exception as exc:
+            log.debug("Control DB queue depth check failed: %s", exc)
+
+    return len(task_ids)
+
+
+def _count_undelivered_outputs() -> int:
+    cutoff = time.time() - 3600
+    outbox = Path(__file__).resolve().parent / "notes_outbox"
+    try:
+        return sum(1 for path in outbox.iterdir() if path.is_file() and path.stat().st_mtime < cutoff)
+    except OSError:
+        return 0
+
+
+def _dispatch_scheduled_jobs(session_new: list[dict]):
+    for job in sorted(get_jobs(), key=lambda item: item.priority):
+        target_user_ids = get_known_user_ids() if getattr(job, "per_user", False) else [None]
+        for target_user_id in target_user_ids:
+            payload = evaluate_job_payload(job, user_id=target_user_id)
+            if not payload:
+                continue
+
+            if job.name == "explore":
+                backlog_count = _count_undelivered_outputs()
+                if backlog_count >= MAX_UNDELIVERED_OUTPUTS:
+                    log.info("explore skipped: delivery backlog %d items", backlog_count)
+                    continue
+
+                queue_depth = _count_pending_active_tasks()
+                if queue_depth >= EXPLORE_MAX_PENDING_TASKS:
+                    log.info("explore skipped: queue depth %d >= threshold", queue_depth)
+                    continue
+
+            if job.inline:
+                try:
+                    with _timed_phase(f"agent_dispatch.{job.name}.inline", "tool"):
+                        _run_inline_scheduled_job(job, payload)
+                    _record_scheduled_job_dispatch(job, payload, user_id=target_user_id)
+                except Exception as e:
+                    log.error("%s failed: %s", job.name, e)
+                continue
+
+            bg_name, cmd = build_job_dispatch(
+                job,
+                payload,
+                python_executable=sys.executable,
+                core_path=str(Path(__file__).resolve().parent / "core.py"),
+                user_id=target_user_id,
+            )
+            with _timed_phase(f"agent_dispatch.{job.name}", "tool"):
+                dispatched = _dispatch_background(bg_name, cmd, group=job.blocking_group)
+            if dispatched is False:
+                continue
+            _record_scheduled_job_dispatch(job, payload, user_id=target_user_id)
+
+            session_meta = build_job_session_record(job, payload)
+            if session_meta:
+                detail = session_meta.get("detail", "")
+                if target_user_id:
+                    detail = f"{target_user_id}:{detail}" if detail else target_user_id
+                session_new.append(session_record(session_meta["action"], detail))
+
+
 _EVALUATION_ACTION_RE = re.compile(
     r"\b(evaluate|evaluation|assess|assessment|score|scoring|review|audit|verify|confirm)\b", re.IGNORECASE
 )
@@ -578,6 +870,55 @@ def _task_dispatch_category(msg) -> str:
     return "general"
 
 
+def _explicit_task_dispatch_agent(msg) -> str | None:
+    metadata = getattr(msg, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    for key in ("routing_agent", "target_agent", "agent", "agent_type", "task_category", "category"):
+        value = getattr(msg, key, None) or metadata.get(key)
+        if value:
+            return _normalize_task_distribution_category(value)
+
+    allowed_agents = getattr(msg, "allowed_agents", None) or metadata.get("allowed_agents")
+    if isinstance(allowed_agents, str):
+        allowed_agents = [allowed_agents]
+    if isinstance(allowed_agents, list) and len(allowed_agents) == 1 and allowed_agents[0]:
+        agent_name = _normalize_task_distribution_category(allowed_agents[0])
+        if agent_name != "general":
+            return agent_name
+    return None
+
+
+def _agent_config(agent_name: str):
+    registry = getattr(shared_config, "AGENT_REGISTRY", {})
+    if not isinstance(registry, dict):
+        return None
+    agent_config = registry.get(agent_name)
+    return agent_config if isinstance(agent_config, dict) else None
+
+
+def _agent_requires_local_llm(agent_name: str) -> bool:
+    agent_config = _agent_config(agent_name)
+    permissions = agent_config.get("permissions") if agent_config else None
+    return isinstance(permissions, dict) and bool(permissions.get("local_llm_only"))
+
+
+def _apply_tier_model_map_for_dispatch(msg) -> None:
+    if getattr(msg, "model_restriction", None):
+        return
+    agent_name = _explicit_task_dispatch_agent(msg)
+    if not agent_name or _agent_requires_local_llm(agent_name):
+        return
+    try:
+        from agent_registry import get_registry
+
+        agent = get_registry().get_manifest(agent_name)
+    except Exception:
+        agent = None
+    if agent is None:
+        return
+    msg.model_restriction = shared_config.TIER_MODEL_MAP[agent.tier]
+
+
 def _task_distribution_cutoff_dates(today: datetime.date, days: int) -> set[str]:
     return {(today - timedelta(days=offset)).isoformat() for offset in range(days)}
 
@@ -755,14 +1096,28 @@ def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
         skip_audit = False
 
     start = time.monotonic()
+    task_start = None
+    task_name = _task_dispatch_category(msg)
+    inference_ms = 0
     task_id = ""
     outcome = "error"
     try:
         _attach_original_intent(msg)
+        _apply_tier_model_map_for_dispatch(msg)
         if not skip_audit:
             _record_agent_permissions_audit(msg)
             _log_worker_dispatch_authorization(msg)
-        task_id = _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
+            receipt_workspace = _resolve_workspace_dir(Path(workspace_dir), str(getattr(msg, "id", "") or ""))
+            write_dispatch_receipt(
+                str(getattr(msg, "id", "") or ""),
+                task_name,
+                str(getattr(msg, "content", "") or ""),
+                receipt_workspace,
+            )
+        task_start = time.perf_counter()
+        dispatch_result = _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
+        inference_ms = _inference_ms_from_result(dispatch_result)
+        task_id = _task_result_value(dispatch_result)
         outcome = "success" if task_id else "error"
         return task_id
     except (TimeoutError, subprocess.TimeoutExpired):
@@ -772,6 +1127,10 @@ def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
         outcome = "error"
         raise
     finally:
+        if task_start is not None:
+            task_end = time.perf_counter()
+            total_ms = round((task_end - task_start) * 1000)
+            _write_task_timing(task_name, total_ms, inference_ms)
         if not skip_audit:
             duration_ms = int((time.monotonic() - start) * 1000)
             _record_agent_invocation_audit(msg, task_id, duration_ms, outcome)
@@ -1594,7 +1953,8 @@ def do_talk():
     _install_clear_intent_gate()
     _install_survival_dispatch_guard()
     talk_module.MAX_TASKS_PER_CYCLE = MAX_TASKS_PER_CYCLE
-    if not _claude_api_reachable():
+    legacy_mode = not bool(getattr(talk_module, "CONTROL_RUNTIME_DB_ENABLED", True))
+    if not legacy_mode and not _claude_api_reachable():
         return _do_talk_offline_fallback()
     return _do_talk()
 
@@ -1775,6 +2135,17 @@ def _check_recent_completed_task_content_integrity() -> None:
         )
         return
 
+    receipt_path = Path(record.workspace) / DISPATCH_RECEIPT_NAME
+    if not receipt_path.exists():
+        log.warning(
+            "OPERATIONAL_AUDIT content_integrity task_id=%s status=%s receipt_path=%s "
+            "suspect=missing_dispatch_receipt",
+            record.task_id,
+            record.status,
+            receipt_path,
+        )
+        return
+
     output_path = Path(record.workspace) / "output.md"
     try:
         output_size = os.path.getsize(output_path)
@@ -1836,6 +2207,36 @@ def _record_network_status_in_heartbeat(network_status: dict) -> None:
         tmp.rename(heartbeat)
     except OSError as exc:
         log.debug("network status heartbeat write failed: %s", exc)
+
+
+def _record_blocked_skill_backlog_in_heartbeat() -> None:
+    heartbeat = MIRA_DIR / "heartbeat.json"
+    if not heartbeat.exists():
+        log.debug("blocked skill backlog heartbeat write skipped: missing heartbeat file")
+        return
+
+    data = _load_heartbeat_data(heartbeat)
+    if data is None:
+        log.debug("blocked skill backlog heartbeat write skipped: unreadable heartbeat file")
+        return
+
+    try:
+        blocked_count = soul_manager.get_blocked_skill_count()
+    except Exception as exc:
+        log.debug("blocked skill backlog count failed: %s", exc)
+        return
+
+    data["blocked_skills_backlog"] = blocked_count
+    if blocked_count > 5:
+        data["blocked_skills_alert"] = True
+    else:
+        data.pop("blocked_skills_alert", None)
+    try:
+        tmp = heartbeat.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.rename(heartbeat)
+    except OSError as exc:
+        log.debug("blocked skill backlog heartbeat write failed: %s", exc)
 
 
 def _check_network_connectivity_audit() -> None:
@@ -2361,6 +2762,8 @@ def check_background_dependencies() -> list[dict]:
 
     for source_name, path in _background_dependency_dirs():
         try:
+            if source_name == "icloud_bridge_inbox" and path.is_dir() and not any(path.iterdir()):
+                continue
             mtime = path.stat().st_mtime
         except OSError as exc:
             log.debug("Background dependency stat failed for %s: %s", path, exc)
@@ -2993,6 +3396,7 @@ def cmd_run():
     import time as _time
 
     _cycle_start = _time.monotonic()
+    _cycle_timing = _start_cycle_timing()
     _cycle_wall_start = datetime.now(timezone.utc)
     log.info("=== Mira Agent wake ===")
     _update_coattention(
@@ -3035,16 +3439,21 @@ def cmd_run():
     except OSError as _sfe:
         log.debug("security_flags read failed: %s", _sfe)
 
+    _stale_path = LOGS_DIR / "pipeline_stale.json"
     _stale_components = _check_stale_pipelines()
     if _stale_components:
         try:
-            _stale_path = LOGS_DIR / "pipeline_stale.json"
             _stale_path.write_text(
                 json.dumps({"stale": _stale_components, "checked_at": time.time()}),
                 encoding="utf-8",
             )
         except Exception as _se:
             log.debug("pipeline_stale write failed: %s", _se)
+    elif _stale_path.exists():
+        try:
+            _stale_path.unlink()
+        except OSError as _se:
+            log.debug("pipeline_stale clear failed: %s", _se)
 
     try:
         from notes_bridge import check_bridge_staleness
@@ -3110,15 +3519,16 @@ def cmd_run():
 
     # Mira first (lightweight, fast) — CRITICAL PATH
     _t0 = _time.monotonic()
-    _llm_t0 = time.perf_counter()
+    _talk_llm_s0 = _cycle_timing["inference_s"]
     _talk_ok = True
     log_authorization_event("talk", "iphone_bridge", "high", bypassed_check=False)
     try:
-        do_talk()
+        with _timed_phase("inbox_processing", "orchestration"), _timed_llm_calls("inbox_processing"):
+            do_talk()
     except Exception as e:
         log.error("Mira failed: %s", e)
         _talk_ok = False
-    _talk_llm_ms = round((time.perf_counter() - _llm_t0) * 1000)
+    _talk_llm_ms = round((_cycle_timing["inference_s"] - _talk_llm_s0) * 1000)
     _model_wait_ms += _talk_llm_ms
     _talk_dur = _time.monotonic() - _t0
     _phase_times["talk"] = round(_talk_dur * 1000)
@@ -3148,10 +3558,14 @@ def cmd_run():
     except Exception as _ile:
         log.debug("interface_latency write failed: %s", _ile)
 
+    _record_blocked_skill_backlog_in_heartbeat()
+
     if _LAST_NETWORK_STATUS is not None:
         _record_network_status_in_heartbeat(_LAST_NETWORK_STATUS)
 
     if should_shutdown():
+        _cycle_timing_record = _finish_cycle_timing(_cycle_timing)
+        log.info("CYCLE_TIMING %s", json.dumps(_cycle_timing_record, sort_keys=True))
         log.info("Shutdown requested — exiting after talk phase")
         return
 
@@ -3161,16 +3575,25 @@ def cmd_run():
         # Auto-advance writing projects stuck in plan_ready (no more Notes approval)
         _t0 = _time.monotonic()
         _write_ok = True
+        _writer_advanced = 0
+        _write_llm_s0 = _cycle_timing["inference_s"]
         try:
-            with _sub_agent_pipeline_context("writer"):
-                _run_canonical_writing_pipeline()
+            with _timed_stage("write"):
+                with (
+                    _sub_agent_pipeline_context("writer"),
+                    _timed_phase("pipeline_step.writing", "orchestration"),
+                    _timed_llm_calls("pipeline_step.writing"),
+                ):
+                    _writer_advanced = _run_canonical_writing_pipeline()
         except Exception as e:
             log.error("Writing response check failed: %s", e)
             _write_ok = False
+        _model_wait_ms += round((_cycle_timing["inference_s"] - _write_llm_s0) * 1000)
         _write_dur = _time.monotonic() - _t0
         _phase_times["writing_responses"] = round(_write_dur * 1000)
         _record_perf_stat("writer", "writing_pipeline", _write_dur, _write_ok)
-        _write_last_output("writer")
+        if _write_ok and _writer_advanced:
+            _write_last_output("writer")
 
         # Sync Mira's own status + read all app feeds
         _t0 = _time.monotonic()
@@ -3200,8 +3623,9 @@ def cmd_run():
     # --- Pipeline chaining: trigger follow-up jobs for completed ones ---
     if _completed_bg:
         _t0 = _time.monotonic()
-        _dispatch_pipeline_followups(_completed_bg, _session_new)
-        update_joint_attention(_joint_attention_topic_from_completed_background(_completed_bg))
+        with _timed_phase("pipeline_step.followups", "orchestration"):
+            _dispatch_pipeline_followups(_completed_bg, _session_new)
+            update_joint_attention(_joint_attention_topic_from_completed_background(_completed_bg))
         _phase_times["pipeline_chain"] = round((_time.monotonic() - _t0) * 1000)
 
     # Reap stale PID files (hourly) — prevents stuck tasks
@@ -3211,10 +3635,11 @@ def cmd_run():
 
     # --- Publishing pipeline: publish -> podcast -> sweep ---
     _t0 = _time.monotonic()
-    log_authorization_event("pending_publish", "internal", "normal", bypassed_check=False)
-    _check_pending_publish()
-    _check_pending_podcast()
-    _sweep_publish_pipeline()
+    with _timed_phase("publish", "tool"):
+        log_authorization_event("pending_publish", "internal", "normal", bypassed_check=False)
+        _check_pending_publish()
+        _check_pending_podcast()
+        _sweep_publish_pipeline()
     _phase_times["pending_publish"] = round((_time.monotonic() - _t0) * 1000)
 
     # --- All heavy work below runs through the declarative scheduler ---
@@ -3225,7 +3650,8 @@ def cmd_run():
         periodic_blind_spot_check()
     except Exception as e:
         log.debug("blind spot check failed: %s", e)
-    _dispatch_scheduled_jobs(_session_new)
+    with _timed_phase("agent_dispatch", "tool"):
+        _dispatch_scheduled_jobs(_session_new)
 
     # Weekly health report — Monday morning
     if _should_health_weekly_report():
@@ -3283,7 +3709,9 @@ def cmd_run():
         save_session_context(_session_ctx + _session_new)
 
     _cycle_ms = round((_time.monotonic() - _cycle_start) * 1000)
+    _cycle_timing_record = _finish_cycle_timing(_cycle_timing)
     _orch_ms = sum(_phase_times.values())
+    log.info("CYCLE_TIMING %s", json.dumps(_cycle_timing_record, sort_keys=True))
     log.info(
         "TIMING cycle=%ds orchestration=%dms model_wait=%dms phases=%s",
         round(_cycle_ms / 1000),
@@ -3302,6 +3730,7 @@ def cmd_run():
                         "cycle_ms": _cycle_ms,
                         "orchestration_ms": _orch_ms,
                         "model_wait_ms": _model_wait_ms,
+                        **_cycle_timing_record,
                         "phases": _phase_times,
                     }
                 )
@@ -3343,28 +3772,35 @@ def cmd_run():
 
     try:
         _phase_log = LOGS_DIR / "task_phase_timing.jsonl"
+        _pagg = {"dispatch_ms": 0, "inference_ms": 0, "tools_ms": 0, "total_ms": 0, "n": 0}
         if _phase_log.exists():
             _phase_lines = _phase_log.read_text(encoding="utf-8").splitlines()[-50:]
-            _pagg = {"dispatch_ms": 0, "inference_ms": 0, "tools_ms": 0, "total_ms": 0, "n": 0}
             for _pl in _phase_lines:
                 try:
                     _pr = json.loads(_pl)
+                    _pr_ts = _pr.get("ts")
+                    if not _pr_ts:
+                        continue
+                    _pr_dt = datetime.fromisoformat(str(_pr_ts).replace("Z", "+00:00"))
+                    if _pr_dt.tzinfo is None:
+                        _pr_dt = _pr_dt.replace(tzinfo=timezone.utc)
+                    if _pr_dt < _cycle_wall_start:
+                        continue
                     _pagg["dispatch_ms"] += _pr.get("phase_dispatch_ms", 0)
                     _pagg["inference_ms"] += _pr.get("phase_inference_ms", 0)
                     _pagg["tools_ms"] += _pr.get("phase_tools_ms", 0)
                     _pagg["total_ms"] += _pr.get("total_ms", 0)
                     _pagg["n"] += 1
-                except (json.JSONDecodeError, KeyError):
+                except (json.JSONDecodeError, KeyError, ValueError):
                     continue
-            if _pagg["n"]:
-                log.info(
-                    "PHASE_TOTALS tasks=%d dispatch_ms=%d inference_ms=%d tools_ms=%d total_ms=%d",
-                    _pagg["n"],
-                    _pagg["dispatch_ms"],
-                    _pagg["inference_ms"],
-                    _pagg["tools_ms"],
-                    _pagg["total_ms"],
-                )
+        log.info(
+            "PHASE_TOTALS tasks=%d dispatch_ms=%d inference_ms=%d tools_ms=%d total_ms=%d",
+            _pagg["n"],
+            _pagg["dispatch_ms"],
+            _pagg["inference_ms"],
+            _pagg["tools_ms"],
+            _pagg["total_ms"],
+        )
     except Exception as _pae:
         log.debug("Phase totals logging failed: %s", _pae)
     log.info("=== Mira Agent sleep ===")
@@ -3884,23 +4320,75 @@ def _check_review_trust_inflation() -> None:
     log.warning("REVIEW_TRUST_INFLATION streak=%d threshold=%d — %s", streak, threshold, message)
 
 
-def _check_stale_pipelines() -> list[str]:
+def _check_stale_pipelines() -> list[dict]:
     _now = time.time()
     _data = _read_last_outputs()
-    _stale: list[str] = []
+    _stale: list[dict] = []
     for _component, _threshold in STALE_THRESHOLDS.items():
         _last = _data.get(_component)
         if _last is None:
             continue
-        _gap = _now - float(_last)
+        try:
+            _gap = _now - float(_last)
+        except (TypeError, ValueError):
+            continue
         if _gap > _threshold:
             log.warning(
                 "%s has produced no output in %ds — possible silent marginalization",
                 _component,
                 int(_gap),
             )
-            _stale.append(_component)
+            _stale.append(
+                {
+                    "component": _component,
+                    "gap_seconds": int(_gap),
+                    "threshold_seconds": int(_threshold),
+                }
+            )
     return _stale
+
+
+def _append_stale_pipelines_to_journal(stale_components: list[dict], user_id: str = "ang") -> None:
+    if not stale_components:
+        return
+    try:
+        from user_paths import user_journal_dir
+    except Exception as exc:
+        log.debug("stale pipeline journal append unavailable: %s", exc)
+        return
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    journal_path = user_journal_dir(user_id) / f"{today}.md"
+    marker = "<!-- stale-pipeline-output -->"
+    try:
+        existing = journal_path.read_text(encoding="utf-8") if journal_path.exists() else ""
+    except OSError as exc:
+        log.debug("stale pipeline journal read failed: %s", exc)
+        return
+    if marker in existing:
+        return
+
+    lines = [marker, "## Pipeline output warnings"]
+    for stale in stale_components:
+        component = str(stale.get("component", "")).strip()
+        if not component:
+            continue
+        gap = stale.get("gap_seconds")
+        if gap is None:
+            lines.append(f"- WARNING: {component} has produced no output — possible silent marginalization")
+        else:
+            lines.append(
+                f"- WARNING: {component} has produced no output in {int(gap)}s — possible silent marginalization"
+            )
+    if len(lines) == 2:
+        return
+
+    try:
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(journal_path, "a", encoding="utf-8") as _jf:
+            _jf.write("\n\n" + "\n".join(lines) + "\n")
+    except OSError as exc:
+        log.debug("stale pipeline journal write failed: %s", exc)
 
 
 def _dispatch_distribution_snapshot() -> None:
@@ -3973,6 +4461,72 @@ def _dispatch_distribution_snapshot() -> None:
         )
     except OSError as _e:
         log.debug("Dispatch history write failed: %s", _e)
+
+
+def _weekly_orchestration_fraction_snapshot() -> None:
+    from statistics import median
+
+    phase_log = LOGS_DIR / "task_phase_timing.jsonl"
+    if not phase_log.exists():
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    by_task_type: dict[str, list[float]] = {}
+    all_values: list[float] = []
+    try:
+        with open(phase_log, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                    ts = record.get("ts")
+                    if not ts:
+                        continue
+                    record_dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                    if record_dt.tzinfo is None:
+                        record_dt = record_dt.replace(tzinfo=timezone.utc)
+                    if record_dt < cutoff:
+                        continue
+                    fraction = float(record["orchestration_fraction"])
+                    if fraction < 0 or fraction > 1:
+                        continue
+                    task_type = str(record.get("task_type") or record.get("agent") or "unknown").strip() or "unknown"
+                    by_task_type.setdefault(task_type, []).append(fraction)
+                    all_values.append(fraction)
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    continue
+    except OSError as exc:
+        log.debug("Orchestration fraction weekly read failed: %s", exc)
+        return
+
+    if not all_values:
+        return
+
+    task_types = {
+        task_type: {
+            "median_orchestration_fraction": round(median(values), 4),
+            "samples": len(values),
+        }
+        for task_type, values in sorted(by_task_type.items())
+        if values
+    }
+    snapshot = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "window_days": 7,
+        "median_orchestration_fraction": round(median(all_values), 4),
+        "samples": len(all_values),
+        "task_types": task_types,
+    }
+    log.info("ORCHESTRATION_FRACTION_WEEKLY %s", json.dumps(snapshot, ensure_ascii=False))
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        (LOGS_DIR / "orchestration_fraction_weekly.json").write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        log.debug("Orchestration fraction weekly write failed: %s", exc)
 
 
 def _append_task_latency_to_journal() -> None:
@@ -4188,6 +4742,7 @@ def main():
     # Validate configuration — log errors but don't crash
     if not validate_config():
         log.warning("Config validation failed — some features may not work")
+    validate_local_model_native_tools(logger=log)
 
     try:
         from agent_registry import get_registry
@@ -4199,6 +4754,9 @@ def main():
 
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
     _log_skill_depth_advisories(command)
+    _stale_components: list[dict] = []
+    if command in {"explore", "reflect", "journal", "autowrite-run", "writing-pipeline"}:
+        _stale_components = _check_stale_pipelines()
 
     # Set usage agent context for token tracking
     from llm import set_usage_agent
@@ -4232,26 +4790,47 @@ def main():
             log.info("%s", exc)
             return
     elif command == "talk":
-        do_talk()
+        with _timed_phase("inbox_processing", "orchestration"), _timed_llm_calls("inbox_processing"):
+            do_talk()
     elif command == "explore":
         sources = flags.get("sources", "").split(",") if flags.get("sources") else None
         slot = flags.get("slot", "")
-        do_explore(source_names=sources, slot_name=slot)
+        with _timed_stage("explore"):
+            with _timed_phase("explore_fetch", "orchestration"), _timed_llm_calls("explore_fetch"):
+                do_explore(source_names=sources, slot_name=slot)
         update_joint_attention(
             f"explore briefing knowledge garden: {slot}" if slot else "explore briefing knowledge garden"
         )
         _write_last_output("explorer")
     elif command == "reflect":
-        do_reflect(user_id=flags.get("user", "ang"))
-        _send_joint_observation(user_id=flags.get("user", "ang"))
-        _append_joint_attention_landscape_to_journal(user_id=flags.get("user", "ang"), create_if_missing=False)
+        user_id = flags.get("user", "ang")
+        with _timed_stage("reflect"):
+            with _timed_phase("reflect", "orchestration"), _timed_llm_calls("reflect"):
+                do_reflect(user_id=user_id)
+            try:
+                _unaudited = check_audit_coverage()
+                if _unaudited:
+                    log.warning(
+                        "SKILL_AUDIT_COVERAGE: %d skill file(s) have no audit record: %s",
+                        len(_unaudited),
+                        ", ".join(_unaudited),
+                    )
+            except Exception as e:
+                log.error("Skill audit coverage check failed: %s", e)
+        _send_joint_observation(user_id=user_id)
+        _append_joint_attention_landscape_to_journal(user_id=user_id, create_if_missing=False)
         _dispatch_distribution_snapshot()
+        _weekly_orchestration_fraction_snapshot()
         _write_last_output("reflect")
     elif command == "journal":
-        do_journal(user_id=flags.get("user", "ang"))
+        user_id = flags.get("user", "ang")
+        with _timed_stage("journal"):
+            with _timed_phase("journal", "orchestration"), _timed_llm_calls("journal"):
+                do_journal(user_id=user_id)
         update_joint_attention("today's journal as a knowledge-garden page")
-        _append_joint_attention_landscape_to_journal(user_id=flags.get("user", "ang"))
+        _append_joint_attention_landscape_to_journal(user_id=user_id)
         _append_task_latency_to_journal()
+        _append_stale_pipelines_to_journal(_stale_components, user_id=user_id)
         _write_last_output("journal")
     elif command == "research-log":
         do_research_log(user_id=flags.get("user", "ang"))
@@ -4280,11 +4859,15 @@ def main():
         idea = flags.get("idea", "")
         run_autowrite_pipeline(task_id, title, writing_type, idea)
         update_joint_attention(f"writing project: {title}")
+        _write_last_output("writer")
     elif command == "writing-pipeline":
-        advanced = _run_canonical_writing_pipeline()
+        with _timed_stage("write"):
+            with _timed_phase("pipeline_step.writing", "orchestration"), _timed_llm_calls("pipeline_step.writing"):
+                advanced = _run_canonical_writing_pipeline()
         log.info("Canonical writing pipeline advanced %d project(s)", advanced)
         if advanced:
             update_joint_attention("the active writing-project knowledge garden")
+            _write_last_output("writer")
     elif command == "check-comments":
         do_check_comments()
     elif command == "growth-cycle":

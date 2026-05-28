@@ -1,5 +1,6 @@
 """Shared configuration compatibility module."""
 
+import os
 from importlib import util as _importlib_util
 from pathlib import Path as _Path
 
@@ -17,11 +18,28 @@ for _name in dir(_lib_config):
     if not _name.startswith("__"):
         globals()[_name] = getattr(_lib_config, _name)
 
+
+class ConfigError(RuntimeError):
+    pass
+
+
 MIRA_ROOT = _lib_config.MIRA_ROOT
 AGENT_AUDIT_LOG = MIRA_ROOT / "logs" / "agent_audit.jsonl"
 TOKEN_USAGE_LOG = MIRA_ROOT / "logs/token_usage.jsonl"
 TOKEN_USAGE_LOG_PATH = TOKEN_USAGE_LOG
 TOKEN_LOG_ENABLED = getattr(_lib_config, "TOKEN_LOG_ENABLED", True)
+TIMING_LOG_ENABLED = True
+TIMING_LOG_PATH = MIRA_ROOT / "logs" / "timing.jsonl"
+LOCAL_MODEL_ENDPOINT_ALLOWLIST = list(
+    getattr(_lib_config, "LOCAL_MODEL_ENDPOINT_ALLOWLIST", _cfg.get("local_model_endpoint_allowlist", []))
+    or ["localhost", "127.0.0.1", "::1"]
+)
+MIRA_ALLOW_MODEL_NATIVE_TOOLS = False
+MODEL_NATIVE_TOOL_DENYLIST = {"shell", "edit_file", "filesystem", "python", "exec"}
+TIER_MODEL_MAP = {
+    "light": os.getenv("MODEL_LIGHT", "claude-sonnet-4-6"),
+    "heavy": os.getenv("MODEL_HEAVY", "claude-sonnet-4-6"),
+}
 # Optional local fallback placeholder for future offline/resilience routing.
 # LOCAL_FALLBACK_MODEL = None  # path to local .gguf or MLX model for offline/resilience (future use)
 AGENT_REGISTRY = {
@@ -176,6 +194,10 @@ OBSESSION_GATE_TIMEOUT_HOURS = 24
 SKILL_YIELD_FILE = MIRA_ROOT / "logs" / "skill_yield.json"
 MIN_DIFF_REVIEW_SECONDS = 30
 LOG_RETENTION_DAYS = int(getattr(_lib_config, "LOG_RETENTION_DAYS", 30))
+LAST_OUTPUT_FILE = MIRA_ROOT / "logs" / "last_output.json"
+STALE_THRESHOLDS: dict[str, int] = dict(
+    getattr(_lib_config, "STALE_THRESHOLDS", {"writer": 172800, "explorer": 21600, "reflect": 691200})
+)
 CALIBRATION_INTERVAL_DAYS = 7
 CALIBRATION_SAMPLE_SIZE = 4
 CODER_REQUIRE_HUMAN_REVIEW = True
@@ -188,6 +210,7 @@ CODER_SKEPTICAL_REVIEW = CODER["skeptical_review"]
 BLIND_SPOT_LOOKBACK_DAYS = 30
 BLIND_SPOT_SILENCE_THRESHOLD_DAYS = 3
 MAX_TASKS_PER_CYCLE = getattr(_lib_config, "MAX_TASKS_PER_CYCLE", 5)
+MAX_UNDELIVERED_OUTPUTS = int(getattr(_lib_config, "MAX_UNDELIVERED_OUTPUTS", 5))
 MAX_SKILL_IMPORTS_PER_DAY = getattr(_lib_config, "MAX_SKILL_IMPORTS_PER_DAY", 20)
 MAX_SKILLS_PER_AGENT = getattr(_lib_config, "MAX_SKILLS_PER_AGENT", 12)
 EVALUATOR_MIN_ISSUE_SEVERITY = getattr(_lib_config, "EVALUATOR_MIN_ISSUE_SEVERITY", "medium")
@@ -204,6 +227,17 @@ TRUSTED_SKILL_SOURCES = list(getattr(_lib_config, "TRUSTED_SKILL_SOURCES", []))
 MAX_REFLECTION_PASSES = getattr(_lib_config, "MAX_REFLECTION_PASSES", 5)
 RAW_WRITING_MODE_ALLOWED = True
 WRITER_DE_AI_STRICTNESS = getattr(_lib_config, "WRITER_DE_AI_STRICTNESS", "strict")
+SUSPENDED_METRICS: list[str] = list(
+    getattr(_lib_config, "SUSPENDED_METRICS", ["reading_volume", "hallucination_rate", "emotional_range"])
+)
+DISABLED_RUBRICS: set[str] = set(
+    getattr(
+        _lib_config,
+        "DISABLED_RUBRICS",
+        {"reading_volume", "hallucination_rate", "emotional_range", "rubric_calibration"},
+    )
+)
+MISCALIBRATION_FLAG_THRESHOLD: int = int(getattr(_lib_config, "MISCALIBRATION_FLAG_THRESHOLD", 3))
 WRITER_OBSESSION_MODE = False
 ALLOW_VULNERABLE_VOICE = False
 SURVIVAL_SKILL_SOURCES = []
@@ -243,7 +277,10 @@ SENSITIVE_FORCE_LOCAL = getattr(_lib_config, "SENSITIVE_FORCE_LOCAL", True)
 SENSITIVITY_HOURS_START = getattr(_lib_config, "SENSITIVITY_HOURS_START", 23)
 SENSITIVITY_HOURS_END = getattr(_lib_config, "SENSITIVITY_HOURS_END", 6)
 SENSITIVITY_ROUTE_TO_LOCAL = getattr(_lib_config, "SENSITIVITY_ROUTE_TO_LOCAL", True)
+EXPLORE_MAX_PENDING_TASKS: int = int(getattr(_lib_config, "EXPLORE_MAX_PENDING_TASKS", 4))
 EXPLORE_SOURCE_DIVERSITY_MIN_ENTITIES = 5
+EXPLORE_SOURCE_ENTROPY_THRESHOLD = 0.6
+EXPLORE_SOURCE_WINDOW = 16
 EXPLORER_NARRATIVE_SOURCE_MIN_TYPES = 3
 EXPLORER_CORPORATE_PR_MAX_RATIO = 0.4
 FEED_SOURCE_TRUST = {

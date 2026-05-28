@@ -29,5 +29,6 @@ def test_yesterdays_experience_causally_changes_next_run(tmp_path: Path):
     assert second.outputs["execute"]["reply"].startswith("Short answer:")
     evidence = causal_evidence.get(second.record.causal_links[0])
     assert evidence.memory_id == first.record.id
-    assert evidence.level == "L3"
+    assert evidence.level == "L4"
+    assert evidence.ablation_ref
     assert "WA prefers concise output" in second.snapshot.hints[0]

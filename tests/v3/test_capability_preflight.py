@@ -1,4 +1,4 @@
-from mira.capabilities import preflight_for_pipeline, run_preflight
+from mira.capabilities import Capability, preflight_for_pipeline, run_preflight
 
 
 def test_legacy_preflight_contract_still_blocks_required_missing():
@@ -15,6 +15,16 @@ def test_registry_preflight_can_degrade_to_draft_only():
     assert result.degraded is True
     assert result.degradation == "draft_only"
     assert result.fallback_plan["substack"] == "write_output_folder"
+    assert result.missing_optional == ["twitter"]
+    assert "substack: write_output_folder" in result.degradation_notes
+    assert "twitter: skip_social_promo" in result.degradation_notes
+    substack = next(check for check in result.checks if check.name == "substack")
+    assert isinstance(substack, Capability)
+    assert substack.connector == "substack"
+    assert substack.status == "degraded"
+    assert substack.scopes == ["publish"]
+    assert substack.risk_tier == "publish"
+    assert substack.last_checked_at.tzinfo is not None
 
 
 def test_registry_preflight_blocks_when_required_connector_has_no_fallback():

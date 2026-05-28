@@ -33,7 +33,7 @@ try:
     from notes_bridge import detect_sensitive_content
 except (ImportError, ModuleNotFoundError):
     detect_sensitive_content = None
-from task_manager import TaskManager, TASKS_DIR
+from task_manager import TaskManager, TASKS_DIR, UNRESOLVED_TASK_WARN_THRESHOLD
 from memory.soul import check_prompt_injection
 from execution.runtime_contract import normalize_task_status
 from locks.advisory import AdvisoryLockTimeout, LOCK_DISPATCH_LOOP, advisory_lock
@@ -502,15 +502,32 @@ def _format_status(task_mgr) -> str:
             ago = (now - last).total_seconds()
             lines.append(f"上次完成: {_format_elapsed(ago)}前")
 
+    warning = _format_unresolved_warning(status)
+    if warning:
+        lines.append(warning)
+
     return "\n".join(lines)
+
+
+def _format_unresolved_warning(status: dict) -> str:
+    inventory = status.get("unresolved_inventory") or {}
+    count = int(inventory.get("count") or 0)
+    if count <= UNRESOLVED_TASK_WARN_THRESHOLD:
+        return ""
+    by_status = inventory.get("by_status") or {}
+    parts = [f"{name}={by_status[name]}" for name in sorted(by_status) if by_status[name]]
+    detail = f" ({', '.join(parts)})" if parts else ""
+    return f"未处理任务: {count}{detail}"
 
 
 def _status_footer(task_mgr) -> str:
     """Compact status line appended to every reply."""
     status = task_mgr.get_status_summary()
+    warning = _format_unresolved_warning(status)
+    suffix = f" · {warning}" if warning else ""
     if status["busy"]:
-        return f"\n\n---\nAgent: 忙碌 ({status['active_count']}个任务)"
-    return "\n\n---\nAgent: 空闲"
+        return f"\n\n---\nAgent: 忙碌 ({status['active_count']}个任务){suffix}"
+    return f"\n\n---\nAgent: 空闲{suffix}"
 
 
 _TASK_TERMINAL_STATUSES = {

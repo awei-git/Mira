@@ -4,7 +4,13 @@ draft:
   grant_required: false
 write_internal:
   grant_required: false
+external_provider:
+  grant_required: true
 publish_public:
+  grant_required: true
+financial_external:
+  grant_required: true
+health_external:
   grant_required: true
 code_config:
   grant_required: true

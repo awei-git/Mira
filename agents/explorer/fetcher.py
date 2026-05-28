@@ -4,6 +4,7 @@ import email.utils
 import importlib.util
 import json
 import logging
+import math
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -19,6 +20,7 @@ log = logging.getLogger("mira")
 
 USER_AGENT = "MiraAgent/1.0 (research bot)"
 SOURCE_DAILY_COUNTS_FILE = FEEDS_DIR / "source_daily_counts.json"
+SOURCE_ENTROPY_LOG_FILE = FEEDS_DIR / "source_entropy_log.json"
 SOURCE_COUNT_WINDOW_DAYS = 30
 DEFAULT_FEED_SOURCE_TRUST = 0.5
 
@@ -28,8 +30,12 @@ if _shared_config_spec is not None and _shared_config_spec.loader is not None:
     _shared_config = importlib.util.module_from_spec(_shared_config_spec)
     _shared_config_spec.loader.exec_module(_shared_config)
     FEED_SOURCE_TRUST = getattr(_shared_config, "FEED_SOURCE_TRUST", {})
+    EXPLORE_SOURCE_ENTROPY_THRESHOLD = getattr(_shared_config, "EXPLORE_SOURCE_ENTROPY_THRESHOLD", 0.6)
+    EXPLORE_SOURCE_WINDOW = getattr(_shared_config, "EXPLORE_SOURCE_WINDOW", 16)
 else:
     FEED_SOURCE_TRUST = {}
+    EXPLORE_SOURCE_ENTROPY_THRESHOLD = 0.6
+    EXPLORE_SOURCE_WINDOW = 16
 
 
 def _source_trust_weight(source: str | None, source_key: str | None = None) -> float:
@@ -545,6 +551,70 @@ def fetch_rss(feeds: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def _load_source_entropy_log() -> list[list[str]]:
+    if not SOURCE_ENTROPY_LOG_FILE.exists():
+        return []
+    try:
+        data = json.loads(SOURCE_ENTROPY_LOG_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [e for e in data if isinstance(e, list)]
+        return []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _append_source_entropy_log(sources: list[str]) -> None:
+    log_data = _load_source_entropy_log()
+    log_data.append(list(sources))
+    log_data = log_data[-EXPLORE_SOURCE_WINDOW:]
+    try:
+        SOURCE_ENTROPY_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SOURCE_ENTROPY_LOG_FILE.with_suffix(SOURCE_ENTROPY_LOG_FILE.suffix + ".tmp")
+        tmp.write_text(json.dumps(log_data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(SOURCE_ENTROPY_LOG_FILE)
+    except OSError as e:
+        log.warning("Could not write source entropy log: %s", e)
+
+
+def _compute_source_entropy(log_data: list[list[str]]) -> float:
+    counts: dict[str, int] = {}
+    for entry in log_data:
+        for source in entry:
+            counts[source] = counts.get(source, 0) + 1
+    total = sum(counts.values())
+    if total == 0 or len(counts) < 2:
+        return 1.0
+    entropy = -sum((c / total) * math.log2(c / total) for c in counts.values())
+    max_entropy = math.log2(len(counts))
+    return entropy / max_entropy if max_entropy > 0 else 1.0
+
+
+def _balance_sources(sources: list[str], log_data: list[list[str]], entropy: float) -> list[str]:
+    if entropy >= EXPLORE_SOURCE_ENTROPY_THRESHOLD or not log_data:
+        return sources
+    counts: dict[str, int] = {}
+    for entry in log_data:
+        for s in entry:
+            counts[s] = counts.get(s, 0) + 1
+    if not counts:
+        return sources
+    in_sources = [s for s in sources if s in counts]
+    if not in_sources:
+        return sources
+    most_fetched = max(in_sources, key=lambda s: counts[s])
+    adjusted = [s for s in sources if s != most_fetched]
+    least_fetched = min(counts, key=lambda s: counts[s])
+    if least_fetched not in adjusted:
+        adjusted.append(least_fetched)
+    log.info(
+        "Entropy %.3f < threshold %.3f: deprioritized '%s'",
+        entropy,
+        EXPLORE_SOURCE_ENTROPY_THRESHOLD,
+        most_fetched,
+    )
+    return adjusted
+
+
 def fetch_sources(source_names: list[str]) -> list[dict]:
     """Fetch from specific named sources. Names: arxiv, reddit, huggingface, hacker_news, rss, or RSS feed names."""
     sources = load_sources()
@@ -708,6 +778,11 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
 
 def fetch_all() -> list[dict]:
     """Fetch from all configured sources. Returns combined list of items."""
-    return fetch_sources(
-        ["arxiv", "reddit", "huggingface", "github_trending", "hackernews", "lobsters", "devto", "rss"]
-    )
+    all_sources = ["arxiv", "reddit", "huggingface", "github_trending", "hackernews", "lobsters", "devto", "rss"]
+    entropy_log = _load_source_entropy_log()
+    entropy = _compute_source_entropy(entropy_log)
+    log.info("Source diversity entropy (window=%d): %.3f", EXPLORE_SOURCE_WINDOW, entropy)
+    selected = _balance_sources(all_sources, entropy_log, entropy)
+    items = fetch_sources(selected)
+    _append_source_entropy_log(selected)
+    return items

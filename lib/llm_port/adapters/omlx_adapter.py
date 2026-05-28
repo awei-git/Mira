@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import urllib.error
 import urllib.request
 
-from config import OMLX_API_ENDPOINT, OMLX_DEFAULT_MODEL
+from config import (
+    LOCAL_LLM_NATIVE_TOOLS_ALLOWED,
+    OMLX_API_ENDPOINT,
+    OMLX_DEFAULT_MODEL,
+    OMLX_DISABLE_SERVER_TOOLS,
+)
 
 from ..types import LLMRequest, LLMResponse
+
+log = logging.getLogger("mira")
 
 
 class OMLXAdapter:
@@ -15,6 +23,14 @@ class OMLXAdapter:
     name = "omlx"
 
     def complete(self, request: LLMRequest) -> LLMResponse:
+        if not LOCAL_LLM_NATIVE_TOOLS_ALLOWED:
+            forbidden = {"tools", "tool_choice", "functions", "function_call", "shell", "edit_file"}
+            if forbidden.intersection(request.metadata):
+                raise RuntimeError(
+                    "Refused local LLM request with native tool metadata; "
+                    "tools must be brokered outside the model server."
+                )
+
         model = str(request.metadata.get("model") or OMLX_DEFAULT_MODEL)
         endpoint = _chat_completions_endpoint(OMLX_API_ENDPOINT)
         body = {
@@ -22,6 +38,9 @@ class OMLXAdapter:
             "messages": [{"role": message.role, "content": message.content} for message in request.messages],
             "temperature": request.metadata.get("temperature", 0),
         }
+        if OMLX_DISABLE_SERVER_TOOLS:
+            body["tools"] = []
+            body["tool_choice"] = "none"
         if request.max_tokens is not None:
             body["max_tokens"] = request.max_tokens
         http_req = urllib.request.Request(
@@ -36,6 +55,13 @@ class OMLXAdapter:
         except urllib.error.URLError as exc:
             raise RuntimeError(f"oMLX request failed: {exc}") from exc
         choices = raw.get("choices") or []
+        if OMLX_DISABLE_SERVER_TOOLS:
+            for choice in choices:
+                if isinstance(choice, dict):
+                    message = choice.get("message") or {}
+                    if isinstance(message, dict) and ("tool_calls" in message or "function_call" in message):
+                        log.error("Rejected oMLX response containing server-side tool call")
+                        raise RuntimeError("Rejected oMLX response containing server-side tool call")
         text = ""
         if choices and isinstance(choices[0], dict):
             message = choices[0].get("message") or {}

@@ -1,0 +1,23 @@
+name: daily_journal
+memory_class: epistemic
+trigger:
+  type: schedule
+  detail: 21:00-23:00
+priority: 30
+version: 1
+max_duration_s: 600
+checkpoint_every: 1
+involved_skills:
+  - daily_journal
+steps:
+  - name: snapshot_day_experiences
+    type: memory
+  - name: summarize_recorded_events
+    type: deterministic
+  - name: journal_report
+    type: deterministic
+    action: local_report
+  - name: identity_claim_gate
+    type: policy
+  - name: experience_record_proposal_gateway
+    type: memory

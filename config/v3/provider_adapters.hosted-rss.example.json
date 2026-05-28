@@ -1,0 +1,13 @@
+{
+  "provider_effect_adapters": {
+    "rss": {
+      "bearer_token_env": "MIRA_RSS_ADAPTER_TOKEN",
+      "endpoint_template_env": "MIRA_RSS_ADAPTER_ENDPOINT",
+      "method": "POST",
+      "payload_path": [
+        "data"
+      ],
+      "type": "hosted_rss_http"
+    }
+  }
+}

@@ -530,6 +530,55 @@ def _invoke_registry_handler(
         except TypeError:
             kwargs["thread_memory"] = load_thread_memory(thread_id)
 
+    state_inputs_requested = []
+    state_inputs_present = []
+    if needs_thread_history:
+        state_inputs_requested.append("thread_history")
+        if kwargs.get("thread_history"):
+            state_inputs_present.append("thread_history")
+    if needs_thread_memory:
+        state_inputs_requested.append("thread_memory")
+        if kwargs.get("thread_memory"):
+            state_inputs_present.append("thread_memory")
+
+    try:
+        from agent_registry import get_registry
+
+        registry = get_registry()
+        declared_permissions = registry.get_permissions(agent_id) if agent_id else []
+        allowed_tools = registry.get_allowed_tools(agent_id) if agent_id else None
+    except Exception as e:
+        log.debug("Handoff receipt metadata lookup failed for %s: %s", agent_id, e)
+        declared_permissions = []
+        allowed_tools = None
+
+    receipt = {
+        "receipt_version": 1,
+        "timestamp": _utc_iso(),
+        "task_id": task_id,
+        "thread_id": thread_id,
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "tier": tier,
+        "declared_permissions": declared_permissions,
+        "allowed_tools": allowed_tools,
+        "state_inputs_requested": state_inputs_requested,
+        "state_inputs_present": state_inputs_present,
+        "workspace_path": str(workspace),
+    }
+    try:
+        with open(workspace / "handoff_receipts.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(receipt, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.debug("Handoff receipt write failed for %s: %s", task_id, e)
+
+    try:
+        from runtime.trace import append_trace
+
+        append_trace(task_id, "handoff.receipt", receipt)
+    except Exception as e:
+        log.debug("Trace append failed for %s: %s", task_id, e)
+
     audit = {
         "task_id": task_id,
         "thread_id": thread_id,

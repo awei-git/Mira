@@ -20,6 +20,7 @@ steps:
     action: briefing_fetch_sources
   - name: dedup_trust_classification
     type: deterministic
+    action: briefing_dedup_trust_classification
   - name: write_briefing_trust_labeled
     type: deterministic
     action: briefing_write

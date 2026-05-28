@@ -1137,6 +1137,7 @@ def _codex_cli_observations(logs_dir: Path, days: int = 30) -> dict[str, dict]:
 
 
 _SUCCESS_OUTCOMES = {"green", "ok", "done", "applied", "success", "succeeded", "completed", "verified"}
+_SUCCESS_OUTPUT_STATUSES = {"approved", "published", "ready", "done", "success", "observed"}
 _RUNNING_JOB_STATUSES = {"running", "started", "active"}
 _QUEUED_JOB_STATUSES = {"pending", "queued", "scheduled"}
 _MODEL_CATALOG_CHECKED_AT = "2026-05-15"
@@ -2036,6 +2037,16 @@ def _step_label(step_name: str) -> str:
     return _STEP_LABELS.get(step_name, step_name.replace("_", " "))
 
 
+_PIPELINE_EFFECT_ATTENTION_STATUSES = {"executing", "started", "unknown", "failed", "reconciled_failed"}
+
+
+def _latest_effects_by_idempotency_key(effects: list) -> list:
+    latest: dict[str, object] = {}
+    for effect in effects:
+        latest[getattr(effect, "idempotency_key", getattr(effect, "effect_id", ""))] = effect
+    return list(latest.values())
+
+
 def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jobs: dict, config: dict) -> list[dict]:
     from mira.runtime import pipeline_for_background_job
 
@@ -2085,14 +2096,15 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
             latest_output if latest_output_status.startswith("blocked") or latest_output.get("error") else {}
         )
         output_blockers = [latest_output_blocker] if latest_output_blocker else []
-        if latest_output_status in {"approved", "published", "ready", "done", "success"} and latest_output.get(
-            "updated_at"
-        ):
+        if latest_output_status in _SUCCESS_OUTPUT_STATUSES and latest_output.get("updated_at"):
             last_success_at = (
                 max(last_success_at, str(latest_output["updated_at"]))
                 if last_success_at
                 else str(latest_output["updated_at"])
             )
+        last_run_at = latest_record.timestamp.isoformat() if latest_record else latest_done_job_at
+        if not last_run_at and latest_output_status in _SUCCESS_OUTPUT_STATUSES:
+            last_run_at = last_success_at
         manual_only = pipeline.trigger.type == "manual" and not latest_record and not last_success_at
         if latest_record:
             failure_messages = _dashboard_failure_messages(latest_record.delta.what_failed)
@@ -2100,8 +2112,8 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
                 errors.extend(failure_messages or [latest_record.outcome])
         if latest_commit and latest_commit.status in {"quarantined", "rejected", "requires_human"}:
             errors.extend(f.reason for f in latest_commit.findings)
-        for effect in recent_effects[-3:]:
-            if effect.status not in {"done", "applied", "ok", "success"}:
+        for effect in _latest_effects_by_idempotency_key(recent_effects)[-3:]:
+            if effect.status in _PIPELINE_EFFECT_ATTENTION_STATUSES:
                 errors.append(f"{effect.action} {effect.status}")
         if errors:
             status = "red" if any("failed" in e.lower() or "reject" in e.lower() for e in errors) else "yellow"
@@ -2209,7 +2221,7 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
             hinted_model, model_source = _step_model_hint(name, step.name, configured_model)
             step_model = hinted_model
             model_recorded = False
-            observed_at = latest_record.timestamp.isoformat() if latest_record else latest_done_job_at
+            observed_at = last_run_at
             if step_status == "blue":
                 observed_at = ""
             steps.append(
@@ -2286,7 +2298,7 @@ def _pipeline_status_rows(user_id: str, pipelines, records, commits, effects, jo
                 "trigger": f"{pipeline.trigger.type}: {pipeline.trigger.detail}",
                 "priority": pipeline.priority,
                 "version": pipeline.version,
-                "last_run": latest_record.timestamp.isoformat() if latest_record else latest_done_job_at,
+                "last_run": last_run_at,
                 "last_success_at": last_success_at,
                 "last_success_outcome": (
                     latest_success_record.outcome if latest_success_record else ("done" if latest_done_job_at else "")
@@ -3463,18 +3475,13 @@ async def events(user_id: str, request: Request, last_event_id: int = 0):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return (WEB_DIR / "backend-dashboard.html").read_text(encoding="utf-8")
+    return (WEB_DIR / "index.html").read_text(encoding="utf-8")
 
 
 @app.get("/backend", response_class=HTMLResponse)
 @app.get("/backend/{page}", response_class=HTMLResponse)
 def backend_dashboard(page: str = "pipelines"):
     return (WEB_DIR / "backend-dashboard.html").read_text(encoding="utf-8")
-
-
-@app.get("/chat", response_class=HTMLResponse)
-def chat():
-    return (WEB_DIR / "index.html").read_text(encoding="utf-8")
 
 
 @app.get("/mira-icon.png")

@@ -92,6 +92,8 @@ HISTORY_FILE = TASKS_DIR / "history.jsonl"
 TIMING_STATS_FILE = TASKS_DIR / "timing_stats.jsonl"
 ROUTING_AUDIT_FILE = LOGS_DIR / "routing_audit.jsonl"
 _STUCK_TASK_STATES = {"accepted", "in-progress", "in_progress", "dispatched", "running", "working"}
+UNRESOLVED_TASK_STATUSES = {"failed", "timeout", "blocked", "completed_unverified"}
+UNRESOLVED_TASK_WARN_THRESHOLD = 3
 
 # Path to the worker script (same directory as this file)
 WORKER_SCRIPT = Path(__file__).resolve().parent / "task_worker.py"
@@ -873,6 +875,55 @@ class TaskManager:
         summary.txt is a meta-description; only use as fallback when no output.md.
         """
         ws = Path(rec.workspace)
+        result_data = None
+        result_file = ws / "result.json"
+        if result_file.exists():
+            try:
+                data = json.loads(result_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    result_data = data
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        def _verification_receipt(content: str, *, output_exists: bool) -> str:
+            status = normalize_task_status(rec.status)
+            outcome_unverified = (
+                isinstance(result_data, dict) and result_data.get("outcome_verified") is False and output_exists
+            )
+            if status != "completed_unverified" and not outcome_unverified:
+                return content
+
+            if isinstance(result_data, dict):
+                verification = result_data.get("verification")
+                if not isinstance(verification, dict):
+                    verification = {}
+                next_action = str(result_data.get("next_action") or "").strip()
+            else:
+                verification = rec.verification if isinstance(rec.verification, dict) else {}
+                next_action = ""
+
+            proxy_checked = str(verification.get("proxy_checked") or "none").strip() or "none"
+            evidence_gap = str(
+                verification.get("summary") or rec.summary or "outcome verification was not available"
+            ).strip()
+            assumptions = verification.get("unverified_assumptions") or []
+            if isinstance(assumptions, list):
+                assumptions_text = ", ".join(str(item).strip() for item in assumptions if str(item).strip())
+            else:
+                assumptions_text = str(assumptions).strip()
+            assumptions_text = assumptions_text or "none"
+            next_action = next_action or "none"
+
+            receipt = "\n".join(
+                [
+                    "Verification: unverified",
+                    f"Checked: {proxy_checked}",
+                    f"Evidence gap: {evidence_gap}",
+                    f"Unverified assumptions: {assumptions_text}",
+                    f"Next action: {next_action}",
+                ]
+            )
+            return f"{receipt}\n\n{content}"
 
         # Build a relative path from bridge root (for iOS file links)
         bridge_root = MIRA_DIR
@@ -886,18 +937,19 @@ class TaskManager:
             content = output_file.read_text(encoding="utf-8").strip()
             if content:
                 if len(content) <= 4000:
-                    return content
-                return (
+                    return _verification_receipt(content, output_exists=True)
+                truncated = (
                     content[:3000] + f"\n\n... (全文太长，已截断)\n\n"
                     f"完整内容: [{rel_ws / 'output.md'}](file://{rel_ws / 'output.md'})"
                 )
+                return _verification_receipt(truncated, output_exists=True)
 
         # No output.md — try summary.txt
         summary_file = ws / "summary.txt"
         if summary_file.exists():
             summary = summary_file.read_text(encoding="utf-8").strip()
             if summary:
-                return summary
+                return _verification_receipt(summary, output_exists=False)
 
         return rec.summary or "任务完成，但没有产生输出。"
 
@@ -964,6 +1016,53 @@ class TaskManager:
         """Number of currently running tasks."""
         return sum(1 for r in self._records if r.status in ("dispatched", "running"))
 
+    def get_unresolved_inventory(self, max_items=5) -> dict:
+        """Return a compact inventory of terminal records that still need attention."""
+        try:
+            limit = max(0, int(max_items))
+        except (TypeError, ValueError):
+            limit = 5
+
+        unresolved = []
+        for rec in self._records:
+            status = normalize_task_status(rec.status)
+            if status not in UNRESOLVED_TASK_STATUSES:
+                continue
+            agent_type = rec.task_type or (rec.tags[0] if rec.tags else "") or "unknown"
+            failure_class = rec.failure_class or "unknown"
+            unresolved.append((rec, status, agent_type, failure_class))
+
+        by_status: dict[str, int] = {}
+        by_agent_type: dict[str, int] = {}
+        by_failure_class: dict[str, int] = {}
+        oldest_completed_at = ""
+        for rec, status, agent_type, failure_class in unresolved:
+            by_status[status] = by_status.get(status, 0) + 1
+            by_agent_type[agent_type] = by_agent_type.get(agent_type, 0) + 1
+            by_failure_class[failure_class] = by_failure_class.get(failure_class, 0) + 1
+            if rec.completed_at and (not oldest_completed_at or rec.completed_at < oldest_completed_at):
+                oldest_completed_at = rec.completed_at
+
+        unresolved.sort(key=lambda item: item[0].completed_at or item[0].started_at or "")
+        return {
+            "count": len(unresolved),
+            "by_status": by_status,
+            "by_agent_type": by_agent_type,
+            "by_failure_class": by_failure_class,
+            "oldest_completed_at": oldest_completed_at,
+            "tasks": [
+                {
+                    "task_id": rec.task_id,
+                    "status": status,
+                    "agent_type": agent_type,
+                    "failure_class": failure_class,
+                    "completed_at": rec.completed_at,
+                    "summary": rec.summary,
+                }
+                for rec, status, agent_type, failure_class in unresolved[:limit]
+            ],
+        }
+
     def get_status_summary(self) -> dict:
         """Return agent status summary for heartbeat/display.
 
@@ -972,6 +1071,7 @@ class TaskManager:
             active_count: int — number of running tasks
             active_tasks: list — preview of active task content
             last_completed: str — timestamp of most recent completion
+            unresolved_inventory: dict — unresolved terminal task inventory
         """
         active = [r for r in self._records if r.status in ("dispatched", "running")]
         completed = [r for r in self._records if r.completed_at]
@@ -1012,6 +1112,7 @@ class TaskManager:
                 for r in active
             ],
             "last_completed": completed[0].completed_at if completed else "",
+            "unresolved_inventory": self.get_unresolved_inventory(),
         }
 
     # ------------------------------------------------------------------

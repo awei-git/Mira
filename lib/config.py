@@ -331,6 +331,9 @@ OMLX_PORT = _omlx_cfg.get("port", 8800)
 OMLX_DEFAULT_MODEL = _omlx_cfg.get("default_model", "gemma-4-31b-it-4bit")
 OMLX_FALLBACK_MODEL = _omlx_cfg.get("fallback_model", "gemma-4-31b-it-4bit")
 OMLX_EMBED_MODEL = _omlx_cfg.get("embed_model", "nomicai-modernbert-embed-base-4bit")
+OMLX_DISABLE_SERVER_TOOLS = _omlx_cfg.get("disable_server_tools", True)
+OMLX_ALLOW_NATIVE_TOOLS = bool(_omlx_cfg.get("allow_native_tools", False))
+OMLX_ALLOW_NONLOCAL_HOST = bool(_omlx_cfg.get("allow_nonlocal_host", False))
 
 # Legacy aliases — kept only for external callers; prefer OMLX_* names.
 OLLAMA_HOST = OMLX_HOST
@@ -353,6 +356,12 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Local model servers may only request tools through Mira's capability broker,
+# not execute shell/edit_file natively.
+LOCAL_LLM_NATIVE_TOOLS_ALLOWED = _env_bool(
+    "MIRA_LOCAL_LLM_NATIVE_TOOLS_ALLOWED",
+    bool(_cfg.get("local_llm_native_tools_allowed", False)),
+)
 CONTROL_DATABASE_URL = os.environ.get("CONTROL_DATABASE_URL") or _control_cfg.get("database_url") or DATABASE_URL
 CONTROL_DB_SCHEMA = os.environ.get("CONTROL_DB_SCHEMA") or str(
     _control_cfg.get("schema", "mira_control") or "mira_control"
@@ -725,6 +734,14 @@ EXPLORE_ACTIVE_START = _parse_times([_sched.get("explore_start", "08:00")])[0]
 EXPLORE_ACTIVE_END = _parse_times([_sched.get("explore_end", "23:00")])[0]
 # Max explores per day (safety valve)
 EXPLORE_MAX_PER_DAY = _sched.get("explore_max_per_day", 8)
+_explorer_expected_gap_seconds = max(
+    int(EXPLORE_COOLDOWN_MINUTES) * 60 * 2,
+    20 * 60 * 60,
+)
+STALE_THRESHOLDS["explorer"] = max(
+    int(STALE_THRESHOLDS.get("explorer", 0)),
+    int(_explorer_expected_gap_seconds),
+)
 
 REFLECT_DAY = _sched.get("reflect_day", 6)
 REFLECT_TIME = _parse_times([_sched.get("reflect_time", "10:00")])[0]
@@ -803,6 +820,7 @@ BROWSER_NETWORKIDLE_TIMEOUT_MS = _timeouts.get("browser_networkidle_ms", 10000)
 BROWSER_DOMCONTENTLOADED_TIMEOUT_MS = _timeouts.get("browser_domcontentloaded_ms", 5000)
 BROWSER_SCROLL_WAIT_MS = _timeouts.get("browser_scroll_wait_ms", 500)
 BROWSER_TYPING_DELAY_MS = _timeouts.get("browser_typing_delay_ms", 50)
+SURFER_ALLOW_BROWSER_LOCAL_AI = bool(_cfg.get("surfer", {}).get("allow_browser_local_ai", False))
 
 # ---------------------------------------------------------------------------
 # API model IDs (from secrets.yml api_models: section; config.yml is legacy fallback)

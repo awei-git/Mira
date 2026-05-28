@@ -237,6 +237,59 @@ def test_integration_config_scan_reports_missing_bluesky(monkeypatch):
     ]
 
 
+def test_manifest_scan_ignores_hidden_runtime_directories(tmp_path, monkeypatch):
+    import self_audit
+
+    agents_dir = tmp_path / "agents"
+    (agents_dir / ".bg_pids").mkdir(parents=True)
+    real_agent = agents_dir / "demo"
+    real_agent.mkdir()
+    (real_agent / "manifest.json").write_text(
+        '{"name":"demo","description":"Demo","entry_point":"handler.py:handle"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(self_audit, "_AGENTS_DIR", agents_dir)
+
+    assert self_audit.check_manifests() == []
+
+
+def test_publish_manifest_error_classifier_separates_parked_and_active_states():
+    import self_audit
+
+    assert (
+        self_audit._publish_manifest_error_finding(  # noqa: SLF001
+            "skipped",
+            {"status": "skip", "error": "old config error"},
+        )
+        is None
+    )
+
+    parked = self_audit._publish_manifest_error_finding(  # noqa: SLF001
+        "blocked",
+        {"status": "blocked_writer_gate", "title": "Needs Gate", "error": "writer gate missing"},
+    )
+    stale = self_audit._publish_manifest_error_finding(  # noqa: SLF001
+        "published",
+        {
+            "status": "published",
+            "title": "Already Live",
+            "substack_url": "https://example.substack.com/p/already-live",
+            "error": "old transient error",
+        },
+    )
+    active = self_audit._publish_manifest_error_finding(  # noqa: SLF001
+        "active",
+        {"status": "blocked_publish_error", "title": "Needs Review", "error": "missing published URL"},
+    )
+
+    assert parked["type"] == "parked_publish_item"
+    assert parked["severity"] == "warning"
+    assert stale["type"] == "stale_publish_manifest_error"
+    assert stale["severity"] == "warning"
+    assert active["type"] == "pipeline_error"
+    assert active["severity"] == "critical"
+
+
 def test_execute_self_audit_low_risk_rejects_non_mechanical():
     import backlog_executor
 

@@ -20,6 +20,7 @@ MemoryActionType = Literal[
     "archive",
     "escalate",
     "create_scar",
+    "update_failure_signature",
     "update_skill_trace",
     "form_hypothesis",
     "update_hypothesis",

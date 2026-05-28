@@ -416,6 +416,39 @@ def test_backend_dashboard_uses_podcast_artifacts_as_pipeline_evidence(monkeypat
     assert tts_step["model_recorded"] is False
 
 
+def test_backend_dashboard_counts_observed_output_as_pipeline_evidence(monkeypatch):
+    from mira.pipelines import PIPELINE_CATALOG
+
+    monkeypatch.setattr(
+        server,
+        "_pipeline_outputs",
+        lambda user_id, pipeline_name, recent_records=None: [
+            {
+                "title": "background health log",
+                "status": "observed",
+                "updated_at": "2026-05-27T02:07:24+00:00",
+                "href": "",
+                "error": "",
+            }
+        ],
+    )
+
+    rows = server._pipeline_status_rows(
+        "ang",
+        {"system_health": PIPELINE_CATALOG["system_health"]},
+        [],
+        [],
+        [],
+        {"jobs": [{"name": "restore-dry-run", "enabled": True, "status": "pending"}]},
+        {"models": []},
+    )
+
+    assert rows[0]["status"] == "green"
+    assert rows[0]["status_text"] == "success"
+    assert rows[0]["last_run"] == "2026-05-27T02:07:24+00:00"
+    assert rows[0]["last_success_at"] == "2026-05-27T02:07:24+00:00"
+
+
 def test_backend_dashboard_links_research_outputs(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(server, "_ICLOUD_ARTIFACTS", tmp_path)
     project = tmp_path / "ang" / "research" / "research_2026-05-16"
@@ -490,6 +523,51 @@ def test_backend_dashboard_does_not_invent_step_usage_from_pipeline_aggregate():
     assert draft_step["model"] == "claude-sonnet-4-6"
     assert draft_step["model_recorded"] is False
     assert draft_step["model_source"] == "agent policy"
+
+
+def test_backend_dashboard_uses_latest_effect_status_for_pipeline_attention(monkeypatch, tmp_path: Path):
+    from mira.engine.effect_log import EffectLog
+    from mira.pipelines import PIPELINE_CATALOG
+
+    monkeypatch.setattr(server, "_ICLOUD_ARTIFACTS", tmp_path / "artifacts")
+    effects = EffectLog(tmp_path / "effects.jsonl")
+    effects.plan(
+        idempotency_key="article:publish:1",
+        run_id="run_1",
+        pipeline="article_creation",
+        action="publish_substack",
+        target="article-1",
+    )
+    effects.mark_executing("article:publish:1")
+    effects.plan(
+        idempotency_key="article:publish:1",
+        run_id="run_1",
+        pipeline="article_creation",
+        action="publish_substack",
+        target="article-1",
+        detail="staged publish side effect",
+    )
+    effects.plan(
+        idempotency_key="article:publish:1",
+        run_id="run_1",
+        pipeline="article_creation",
+        action="publish_substack",
+        target="article-1",
+        detail="latest staged publish side effect",
+    )
+
+    rows = server._pipeline_status_rows(
+        "ang",
+        {"article_creation": PIPELINE_CATALOG["article_creation"]},
+        [],
+        [],
+        effects.list(),
+        {"jobs": []},
+        {"models": []},
+    )
+
+    assert rows[0]["error"] == ""
+    assert rows[0]["status_text"] != "publish_substack executing"
 
 
 def test_book_reading_pipeline_labels_match_actual_refinement_flow():

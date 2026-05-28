@@ -1,0 +1,22 @@
+{
+  "provider_effect_adapters": {
+    "health": {
+      "manifest_path_env": "MIRA_HEALTH_PROVIDER_STATE_PATH",
+      "preview_filename": "health_write_preview.json",
+      "provider": "health",
+      "type": "local_provider_state"
+    },
+    "market": {
+      "manifest_path_env": "MIRA_MARKET_PROVIDER_STATE_PATH",
+      "preview_filename": "market_alert_preview.json",
+      "provider": "market",
+      "type": "local_provider_state"
+    },
+    "social": {
+      "manifest_path_env": "MIRA_SOCIAL_PROVIDER_STATE_PATH",
+      "preview_filename": "social_publish_preview.json",
+      "provider": "social",
+      "type": "local_provider_state"
+    }
+  }
+}

@@ -137,3 +137,13 @@ def test_trim_chat_result_keeps_two_short_sentences():
 def test_topic_too_dry_rejects_jargon_title():
     assert daily._topic_too_dry("The structural failure of AI handoff protocol as authority laundering")
     assert not daily._topic_too_dry("一个 agent 到底什么时候才算真的可靠？")
+
+
+def test_topic_repeats_recently_catches_recent_blood_oxygen_loop():
+    history = [
+        {"date": "2026-05-24", "topic": "运动时低血氧到底是身体信号还是传感器噪声？"},
+        {"date": "2026-05-25", "topic": "冲刺血氧读数有没有资格被下游 agent 当事实？"},
+    ]
+
+    assert daily._topic_repeats_recently("如果血氧读数不能交代现场噪声，它凭什么被采信？", history)
+    assert not daily._topic_repeats_recently("Mira 今天哪里把活动误认成了进展？", history)

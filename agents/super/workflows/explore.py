@@ -3,6 +3,7 @@
 Extracted from core.py — pure extraction, no logic changes.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -44,7 +45,8 @@ from fetcher import fetch_all
 from briefing_writer import apply_source_diversity_note, annotate_epistemic_metadata, detect_survivorship_bias
 from feed_monitor import FEED_STATS_FILE, check_feed_health, update_feed_stats
 from yield_monitor import record_skill_yield, warn_on_zero_skill_yield
-from prompts import explore_prompt, deep_dive_prompt, internalize_prompt
+from prompts import explore_prompt, deep_dive_prompt, internalize_prompt, LENSES
+from soul_manager import audit_all_skills, time_since_last_skill_audit
 
 from workflows.helpers import (
     _format_feed_items,
@@ -77,6 +79,22 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     from core import load_state, save_state
 
     run_id = f"explore-{datetime.utcnow().strftime('%Y%m%dT%H%M%S%fZ')}-{slot_name or 'default'}"
+    state = load_state()
+    if time_since_last_skill_audit(state) > 86400:
+        try:
+            shared_soul_dir = _AGENTS_DIR / "shared" / "soul"
+            skill_audit = audit_all_skills(shared_soul_dir)
+            disabled = _disable_failed_soul_skills(shared_soul_dir, skill_audit.get("failed", []))
+            now = datetime.now()
+            state["last_skill_audit"] = now.isoformat()
+            state["last_skill_audit_result"] = {
+                "passed": len(skill_audit.get("passed", [])),
+                "failed": len(skill_audit.get("failed", [])),
+                "disabled": disabled,
+            }
+            save_state(state)
+        except Exception as e:
+            log.warning("Skill audit sweep failed (non-fatal): %s", e)
     warn_on_zero_skill_yield()
     log.info("Starting explore cycle (sources=%s, slot=%s)", source_names or "all", slot_name or "default")
 
@@ -101,22 +119,36 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
         log.warning("Explorer feed health blind spot: %s", alert.get("message", alert))
     if not items:
         log.info("No items fetched, skipping explore")
+        diagnostic = _format_empty_fetch_diagnostic(source_names, slot_name, feed_health_alerts, fetched_at)
+        today = datetime.now().strftime("%Y-%m-%d")
+        suffix = f"_{slot_name}" if slot_name else ""
+        diagnostic_name = f"{today}{suffix}_source_check.md"
+        try:
+            BRIEFINGS_DIR.mkdir(parents=True, exist_ok=True)
+            (BRIEFINGS_DIR / diagnostic_name).write_text(diagnostic, encoding="utf-8")
+            mira_briefings = ARTIFACTS_DIR / "briefings"
+            mira_briefings.mkdir(parents=True, exist_ok=True)
+            (mira_briefings / diagnostic_name).write_text(diagnostic, encoding="utf-8")
+        except OSError as e:
+            log.warning("Failed to write empty explore diagnostic: %s", e)
+        try:
+            src_label = slot_name.replace("_", " / ") if slot_name else ", ".join(source_names or ["all"])
+            _append_to_daily_feed(
+                "explore",
+                f"Explore source check: {src_label}",
+                diagnostic,
+                source=src_label,
+                tags=["explore", "source-health"],
+            )
+        except Exception as e:
+            log.warning("Failed to append empty explore diagnostic to digest: %s", e)
         # Still update state so this group gets rotated and we don't
         # keep picking the same empty group forever
         now = datetime.now()
         state = load_state()
-        state["last_explore"] = now.isoformat()
-        if source_names:
-            for i, group in enumerate(EXPLORE_SOURCE_GROUPS):
-                if set(source_names) == set(group):
-                    recent = state.get("explore_recent_groups", [])
-                    if i in recent:
-                        recent.remove(i)
-                    recent.append(i)
-                    state["explore_recent_groups"] = recent[-len(EXPLORE_SOURCE_GROUPS) :]
-                    break
+        _update_explore_state_for_sources(state, source_names, slot_name, now, increment_count=True)
         save_state(state)
-        record_skill_yield(run_id, skills_extracted=0, briefing_produced=False)
+        record_skill_yield(run_id, skills_extracted=0, briefing_produced=True)
         return
 
     soul = load_soul()
@@ -166,7 +198,12 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     recent_topics = _extract_recent_briefing_topics(days=5)
 
     # 3. Ask Claude to filter and rank
-    prompt = explore_prompt(soul_ctx, feed_text, source_slot=slot_name, recent_topics=recent_topics)
+    _date_str = datetime.now().strftime("%Y-%m-%d")
+    _lens_key = int(hashlib.sha256(f"{_date_str}{slot_name or 'default'}".encode()).hexdigest(), 16)
+    analytical_lens = LENSES[_lens_key % len(LENSES)]
+    prompt = explore_prompt(
+        soul_ctx, feed_text, source_slot=slot_name, recent_topics=recent_topics, analytical_lens=analytical_lens
+    )
     briefing = claude_think(prompt, timeout=180)
 
     if not briefing:
@@ -258,25 +295,114 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
 
     # Mark this explore as done and update tracking
     now = datetime.now()
-    today = now.strftime("%Y-%m-%d")
     state = load_state()
+    _update_explore_state_for_sources(state, source_names, slot_name, now, increment_count=True)
+    save_state(state)
+
+
+def _format_empty_fetch_diagnostic(
+    source_names: list[str] | None,
+    slot_name: str,
+    feed_health_alerts: list[dict],
+    fetched_at: str,
+) -> str:
+    source_label = ", ".join(source_names or ["all configured sources"])
+    slot_label = slot_name or "default"
+    lines = [
+        "# Explore source check",
+        "",
+        f"- Slot: {slot_label}",
+        f"- Sources checked: {source_label}",
+        f"- Fetched at: {fetched_at}",
+        "- Result: no feed items were fetched, so Mira did not ask the LLM to synthesize a briefing.",
+        "",
+        "## What this means",
+        "This is a source-coverage failure or upstream silence signal, not evidence that nothing interesting happened.",
+    ]
+    if feed_health_alerts:
+        lines.extend(["", "## Feed health warnings"])
+        for alert in feed_health_alerts:
+            message = str(alert.get("message", alert)).strip()
+            if message:
+                lines.append(f"- {message}")
+    else:
+        lines.extend(
+            [
+                "",
+                "## Feed health warnings",
+                "- No rolling feed-health warning crossed the alert threshold yet.",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Next action",
+            "Rotate to the next source group on the next explore attempt and keep this diagnostic visible in the daily digest.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _disable_failed_soul_skills(soul_dir: Path, failed: list) -> list[str]:
+    skills_dir = soul_dir / "skills"
+    disabled: list[str] = []
+    try:
+        skills_root = skills_dir.resolve()
+    except OSError:
+        skills_root = skills_dir
+
+    for item in failed:
+        rel_path = str(item.get("path") if isinstance(item, dict) else item).strip()
+        if not rel_path:
+            continue
+        skill_path = skills_dir / rel_path
+        try:
+            resolved_path = skill_path.resolve()
+            resolved_path.relative_to(skills_root)
+        except (OSError, ValueError):
+            log.warning("Skill audit sweep disable skipped for invalid path: %s", rel_path)
+            continue
+        if not skill_path.exists() or skill_path.name.endswith(".disabled"):
+            continue
+        disabled_path = skill_path.with_name(f"{skill_path.name}.disabled")
+        if disabled_path.exists():
+            stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            disabled_path = skill_path.with_name(f"{skill_path.name}.{stamp}.disabled")
+        try:
+            skill_path.rename(disabled_path)
+        except OSError as e:
+            log.warning("Skill audit sweep could not disable %s: %s", rel_path, e)
+            continue
+        disabled_rel = str(disabled_path.relative_to(skills_dir))
+        disabled.append(disabled_rel)
+        log.warning("Skill audit sweep disabled %s as %s", rel_path, disabled_rel)
+    return disabled
+
+
+def _update_explore_state_for_sources(
+    state: dict,
+    source_names: list[str] | None,
+    slot_name: str,
+    now: datetime,
+    *,
+    increment_count: bool,
+) -> None:
+    today = now.strftime("%Y-%m-%d")
     state["last_explore"] = now.isoformat()
-    state[f"explore_count_{today}"] = state.get(f"explore_count_{today}", 0) + 1
+    if increment_count:
+        state[f"explore_count_{today}"] = state.get(f"explore_count_{today}", 0) + 1
     if slot_name:
         state[f"explored_{today}_{slot_name}"] = now.isoformat()
-    # Track which source group was used (for LRU selection)
-    if source_names:
-        # Find matching group index
-        for i, group in enumerate(EXPLORE_SOURCE_GROUPS):
-            if set(source_names) == set(group):
-                recent = state.get("explore_recent_groups", [])
-                if i in recent:
-                    recent.remove(i)
-                recent.append(i)
-                # Keep only last N entries
-                state["explore_recent_groups"] = recent[-len(EXPLORE_SOURCE_GROUPS) :]
-                break
-    save_state(state)
+    if not source_names:
+        return
+    for i, group in enumerate(EXPLORE_SOURCE_GROUPS):
+        if set(source_names) == set(group):
+            recent = state.get("explore_recent_groups", [])
+            if i in recent:
+                recent.remove(i)
+            recent.append(i)
+            state["explore_recent_groups"] = recent[-len(EXPLORE_SOURCE_GROUPS) :]
+            break
 
 
 def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None) -> int:
@@ -318,8 +444,8 @@ def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None) ->
         desc = skill_match.group(2).strip()
         content = skill_match.group(3).strip()
         source_item = (url_to_item or {}).get(dive.get("url", ""), {})
-        published_ts = source_item.get("published_ts")
-        if published_ts:
+        published_ts = source_item.get("published_timestamp", source_item.get("published_ts"))
+        if published_ts is not None:
             discovery_lag_seconds = int(_time.time() - published_ts)
             if content.startswith("---"):
                 end = content.find("\n---", 3)
@@ -328,7 +454,10 @@ def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None) ->
             else:
                 content = f"---\ndiscovery_lag_s: {discovery_lag_seconds}\n---\n\n{content}"
             feed_source = source_item.get("source", dive.get("url", "?"))
-            log.info("skill_ingested skill=%s source=%s lag_s=%d", name, feed_source, discovery_lag_seconds)
+            log.info(
+                "skill_ingested",
+                extra={"skill": name, "source": feed_source, "lag_s": discovery_lag_seconds},
+            )
             try:
                 from core import load_state, save_state
 

@@ -66,6 +66,7 @@ Available actions (output ONE as JSON):
 
 {"action": "evaluate", "code": "document.querySelector(...).textContent"}
   Run JavaScript and get the result.
+  Do not use browser built-in AI, Gemini Nano, or WebGPU inference. Route private/local inference through Mira's secret/oMLX path.
 
 {"action": "extract", "instruction": "what to extract from the current page"}
   Extract specific information from the current page text.

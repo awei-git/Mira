@@ -10,6 +10,7 @@ Usage:
 import argparse
 import ast
 import atexit
+import functools
 import json
 import logging
 import random
@@ -80,11 +81,14 @@ from llm import (
     set_model_policy,
     _log_efficiency,
 )
+import llm as _llm_module
 from sub_agent import (
     REASONING_REWRITE_PROMPT,
+    SubAgentFormatError,
     extract_reasoning_payload,
     require_reasoning_in_instruction,
     task_log_tokens_from_counts,
+    _validate_result,
 )
 
 # Handler functions extracted to handlers_legacy.py (imported after all helpers
@@ -92,6 +96,38 @@ from sub_agent import (
 
 
 log = logging.getLogger("task_worker")
+
+_llm_timing_state = threading.local()
+
+
+def _reset_llm_timing():
+    _llm_timing_state.llm_time = 0.0
+
+
+def _get_llm_time() -> float:
+    return float(getattr(_llm_timing_state, "llm_time", 0.0) or 0.0)
+
+
+def _wrap_llm_api_call(fn):
+    if getattr(fn, "_mira_timed_llm_call", False):
+        return fn
+
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        start = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _llm_timing_state.llm_time = _get_llm_time() + (time.perf_counter() - start)
+
+    wrapped._mira_timed_llm_call = True
+    return wrapped
+
+
+claude_act = _wrap_llm_api_call(claude_act)
+claude_think = _wrap_llm_api_call(claude_think)
+_llm_module.claude_act = claude_act
+_llm_module.claude_think = claude_think
 
 # Thread-safe task context — replaces bare globals
 import threading as _threading
@@ -906,7 +942,7 @@ from task_support import (
     _is_approval,
     _is_rejection,
     _execute_pending_publish,
-    _invoke_registry_handler,
+    _invoke_registry_handler as _base_invoke_registry_handler,
     _invoke_registry_preflight,
 )
 
@@ -1359,6 +1395,66 @@ def _write_result(
 
 _task_result_module._write_result = _write_result
 
+
+def _log_sub_agent_format_error(exc: SubAgentFormatError) -> None:
+    entry = {
+        "timestamp": _utc_iso(),
+        "type": "SubAgentFormatError",
+        "agent": exc.agent_name,
+        "missing_fields": exc.missing_keys,
+        "message": str(exc),
+    }
+    try:
+        with Path("/tmp/mira-crash.log").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as log_exc:
+        log.warning("Failed to write sub-agent format error to crash log: %s", log_exc)
+
+
+def _invoke_registry_handler(
+    handler_fn,
+    workspace: Path,
+    task_id: str,
+    instruction: str,
+    sender: str,
+    thread_id: str,
+    tier: str,
+    user_id: str = "ang",
+    agent_id: str = None,
+):
+    try:
+        result = _base_invoke_registry_handler(
+            handler_fn,
+            workspace,
+            task_id,
+            instruction,
+            sender,
+            thread_id,
+            tier,
+            user_id=user_id,
+            agent_id=agent_id,
+        )
+        if isinstance(result, dict):
+            _validate_result(result, agent_id or result.get("agent") or "unknown")
+        return result
+    except SubAgentFormatError as exc:
+        _log_sub_agent_format_error(exc)
+        fields = ", ".join(exc.missing_keys) or "unknown"
+        message = f"{exc.agent_name} returned malformed result: missing or invalid required field(s): {fields}"
+        log.error("SUB_AGENT_FORMAT_ERROR task_id=%s agent=%s missing=%s", task_id, exc.agent_name, fields)
+        _write_result(
+            workspace,
+            task_id,
+            "error",
+            message,
+            agent=exc.agent_name,
+            failure_class="sub_agent_format_error",
+        )
+        return ""
+
+
+_task_support_module._invoke_registry_handler = _invoke_registry_handler
+
 from plan_executor import (
     _execute_plan as _base_execute_plan,
     _execute_plan_steps as _base_execute_plan_steps,
@@ -1591,6 +1687,7 @@ def main():
     atexit.register(heartbeat.stop)
     task_start = time.time()
     _perf_start = time.perf_counter()
+    _reset_llm_timing()
 
     # Read message
     try:
@@ -1600,6 +1697,7 @@ def main():
         _write_result(workspace, args.task_id, "error", f"Failed to read message: {e}")
         sys.exit(1)
 
+    task_name = str(msg_data.get("title") or msg_data.get("name") or msg_data.get("id") or args.task_id)
     msg_content = msg_data.get("content", "")
     msg_sender = msg_data.get("sender", "unknown")
     thread_id = args.thread_id or msg_data.get("thread_id", "")
@@ -1808,6 +1906,7 @@ def main():
     _think_duration = time.time() - _think_start
     _perf_inference_ms = round((time.perf_counter() - _perf_inference_t0) * 1000)
     task_agent = plan[0].get("agent", "unknown") if plan else "unknown"
+    task_tier = str(plan[0].get("tier") or "") if plan else ""
     log.info(
         "PHASE_TIMING task_id=%s agent=%s phase=think configured_timeout_s=%d actual_duration_s=%.2f",
         args.task_id,
@@ -1854,7 +1953,6 @@ def main():
         log.info("Worker exiting (paused_horizon_limit: %s steps > %d)", len(plan), _horizon_limit)
         return
     _act_duration = time.time() - _act_start
-    _perf_tools_ms = round((time.perf_counter() - _perf_tools_t0) * 1000)
     log.info(
         "PHASE_TIMING task_id=%s agent=%s phase=act configured_timeout_s=%d actual_duration_s=%.2f",
         args.task_id,
@@ -1876,7 +1974,7 @@ def main():
             pass
     _efficiency = _out_tok / max(1, _result_words)
     _heavy_agents = {"writer", "researcher", "podcast", "socialmedia"}
-    _tier = "heavy" if task_agent in _heavy_agents else "light"
+    _tier = task_tier or ("heavy" if task_agent in _heavy_agents else "light")
     _budget = TOKEN_BUDGET_WARN_HEAVY if _tier == "heavy" else TOKEN_BUDGET_WARN_LIGHT
     _total_tok = _in_tok + _out_tok
     log.info(
@@ -1966,10 +2064,21 @@ def main():
     except Exception as _e:
         log.debug("Failed to write token_usage to result.json: %s", _e)
 
-    _perf_total_ms = round((time.perf_counter() - _perf_start) * 1000)
+    _perf_tools_ms = round((time.perf_counter() - _perf_tools_t0) * 1000)
+    _total_time = time.perf_counter() - _perf_start
+    _llm_time = _get_llm_time()
+    _orchestration_fraction = 1 - (_llm_time / _total_time) if _total_time > 0 else 0.0
+    _perf_total_ms = round(_total_time * 1000)
     _phase_record = {
         "task_id": args.task_id,
+        "task_name": task_name,
+        "task_type": task_type,
         "agent": task_agent,
+        "agent_tier": _tier,
+        "token_count": _total_tok,
+        "llm_time_s": round(_llm_time, 3),
+        "total_time_s": round(_total_time, 3),
+        "orchestration_fraction": round(_orchestration_fraction, 4),
         "phase_dispatch_ms": _perf_dispatch_ms,
         "phase_inference_ms": _perf_inference_ms,
         "phase_tools_ms": _perf_tools_ms,

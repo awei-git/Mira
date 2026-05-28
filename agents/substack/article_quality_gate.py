@@ -22,7 +22,7 @@ FORBIDDEN_TITLE_PATTERNS = (
     r"^a\s+theory\s+of\s+",
     r"^an\s+essay\s+on\s+",
     r"^[a-z ]{3,24}$",
-    r"\bnot\s+\w+,\s+but\s+\w+",
+    r"\bnot\s+\w+[,;]?\s+but\s+\w+",
 )
 
 GENERIC_TITLE_WORDS = {

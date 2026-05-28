@@ -271,10 +271,71 @@ def _load_topic_state(user_id: str = "ang") -> dict:
     return data if data.get("date") == today else {}
 
 
+def _load_topic_file(user_id: str = "ang") -> dict:
+    path = _daily_thought_topic_file(user_id)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _save_topic_state(state: dict, user_id: str = "ang") -> None:
     path = _daily_thought_topic_file(user_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(path, json.dumps(state, ensure_ascii=False, indent=2))
+
+
+def _topic_history_for_prompt(history: list[dict], limit: int = 5) -> str:
+    lines = []
+    for item in history[-limit:]:
+        date = str(item.get("date") or "")
+        topic = str(item.get("topic") or "")
+        if topic:
+            lines.append(f"- {date}: {topic}")
+    return "\n".join(lines)
+
+
+def _topic_signature(topic: str) -> set[str]:
+    lower = (topic or "").lower()
+    stop = {
+        "about",
+        "after",
+        "agent",
+        "because",
+        "between",
+        "could",
+        "daily",
+        "from",
+        "have",
+        "into",
+        "mira",
+        "should",
+        "that",
+        "the",
+        "this",
+        "what",
+        "when",
+        "where",
+        "with",
+        "would",
+    }
+    words = {w for w in re.findall(r"[a-zA-Z][a-zA-Z-]{3,}", lower) if w not in stop}
+    cjk_terms = {term for term in ("血氧", "健康", "传感器", "agent", "trust", "书评", "explorer") if term in lower}
+    return words | cjk_terms
+
+
+def _topic_repeats_recently(topic: str, history: list[dict], lookback: int = 3) -> bool:
+    signature = _topic_signature(topic)
+    if not signature:
+        return False
+    for item in history[-lookback:]:
+        prior_signature = _topic_signature(str(item.get("topic") or ""))
+        if signature & prior_signature:
+            return True
+    return False
 
 
 def _recent_user_context(user_id: str = "ang", limit: int = 8) -> str:
@@ -381,6 +442,21 @@ def _choose_daily_thought_topic(
     user_id: str = "ang",
 ) -> dict:
     user_context = _recent_user_context(user_id=user_id)
+    previous_state = _load_topic_file(user_id=user_id)
+    history = list(previous_state.get("history") or [])
+    previous_topic = str(previous_state.get("topic") or "")
+    previous_date = str(previous_state.get("date") or "")
+    today = datetime.now().strftime("%Y-%m-%d")
+    if previous_topic and previous_date and previous_date != today:
+        previous_entry = {
+            "date": previous_date,
+            "topic": previous_topic,
+            "source": previous_state.get("source", ""),
+        }
+        if not history or history[-1].get("date") != previous_date or history[-1].get("topic") != previous_topic:
+            history.append(previous_entry)
+    history = history[-14:]
+    recent_topics = _topic_history_for_prompt(history)
     prompt = f"""{soul_ctx[:300]}
 
 Pick ONE question Mira actually wants to talk about today. It should feel like a real conversational hook, not a report topic.
@@ -404,6 +480,9 @@ Recent briefing:
 Recent Mira thoughts:
 {thought_ctx or "(none)"}
 
+Recent topics already used. Do not repeat these unless the user explicitly asks:
+{recent_topics or "(none)"}
+
 Return ONLY JSON:
 {{
   "question": "a sharp, discussable question in Mira's natural language",
@@ -419,14 +498,30 @@ Return ONLY JSON:
     if chosen and _topic_too_dry(chosen.get("topic", "")):
         log.info("Daily thought topic rejected as too dry: %s", chosen.get("topic", ""))
         chosen = {}
+    if chosen and _topic_repeats_recently(chosen.get("topic", ""), history):
+        log.info("Daily thought topic rejected as repetitive: %s", chosen.get("topic", ""))
+        chosen = {}
     if not chosen:
-        chosen = _fallback_thought_topic(user_id, user_context, thought_ctx)
-    today = datetime.now().strftime("%Y-%m-%d")
+        chosen = _fallback_thought_topic(user_id, user_context, "")
+        if _topic_repeats_recently(chosen.get("topic", ""), history):
+            chosen = {
+                "topic": "Mira 今天哪里把活动误认成了进展？",
+                "seed": "我应该先看系统自己的失败，而不是继续榨一个已经讲过太多次的话题。",
+                "focus_questions": [
+                    "Which output looked alive but was not useful?",
+                    "What should Mira stop repeating tomorrow?",
+                ],
+                "source": "anti_repeat_fallback",
+            }
     state = {
         **chosen,
         "date": today,
         "created_at": datetime.now().isoformat(),
         "message_count": 0,
+        "history": [
+            *history,
+            {"date": today, "topic": chosen.get("topic", ""), "source": chosen.get("source", "")},
+        ][-14:],
     }
     _save_topic_state(state, user_id=user_id)
     return state
@@ -1111,11 +1206,6 @@ def do_book_review():
     log.info("Starting daily book review")
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Mark as done early to avoid re-trigger
-    state = load_state()
-    state[f"book_review_{today}"] = datetime.now().isoformat()
-    save_state(state)
-
     try:
         import subprocess as _sp
 
@@ -1131,6 +1221,7 @@ def do_book_review():
         stderr_tail = (result.stderr or "").strip()[-800:]
         if result.returncode != 0:
             log.error("Book review failed (rc=%d): %s", result.returncode, stderr_tail)
+            return
         else:
             log.info("Book review exit 0")
             if stderr_tail:
@@ -1139,6 +1230,32 @@ def do_book_review():
                 log.info("Book review log tail: %s", stderr_tail)
     except Exception as e:
         log.error("Book review exception: %s", e)
+        return
+
+    today_compact = today.replace("-", "")
+    produced = False
+    try:
+        from bridge import Mira as _Mira
+
+        bridge = _Mira(MIRA_DIR)
+        items_dir = MIRA_DIR / "users" / "ang" / "items"
+        produced = any(items_dir.glob(f"book_day*_{today_compact}.json"))
+        if not produced:
+            # Future bridge implementations may not be file-backed; keep a
+            # direct bridge check as a compatibility fallback.
+            produced = any(bridge.item_exists(f"book_day{day}_{today_compact}") for day in range(1, 8))
+    except Exception as e:
+        log.warning("Book review output verification failed: %s", e)
+
+    if not produced:
+        log.error("Book review subprocess exited 0 but no book_day output was produced for %s", today)
+        return
+
+    state = load_state()
+    state[f"book_review_{today}"] = datetime.now().isoformat()
+    state[f"book_review_{today}_actor"] = "reader/daily_book_review"
+    save_state(state)
+    log.info("Book review verified and marked complete for %s", today)
 
 
 # ---------------------------------------------------------------------------

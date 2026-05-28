@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 from mira.capabilities import run_preflight
 from mira.engine.effect_log import EffectLog, EffectLogEntry
@@ -18,7 +19,13 @@ from mira.kernel import (
 from mira.kernel.commit import MemoryCommitLog
 from mira.kernel.consolidation import MemoryConsolidator
 from mira.kernel.ledger import ExperienceLedger
-from mira.runtime import default_commit_log, default_ledger, record_experience
+from mira.runtime import (
+    default_commit_log,
+    default_kernel_store,
+    default_ledger,
+    record_experience,
+    record_task_completion,
+)
 
 
 def test_gateway_blocks_direct_kernel_pollution():
@@ -66,6 +73,72 @@ def test_record_experience_writes_ledger_and_gateway_commit(tmp_path: Path):
     assert records[0].memory_delta_proposal_id == record.delta.proposal_id
     assert records[0].memory_commit_id == commits[0].commit_id
     assert commits[0].status == "applied"
+
+
+def test_failed_task_completion_updates_failure_signature(tmp_path: Path):
+    record_task_completion(
+        task_id="comm_preflight",
+        status="failed",
+        summary="preflight failed: missing auth token",
+        tags=["communication"],
+        root=tmp_path,
+    )
+
+    kernel = default_kernel_store(tmp_path).load()
+    commits = default_commit_log(tmp_path).list()
+
+    assert commits[0].status == "applied"
+    assert any(action.type == "update_failure_signature" for action in commits[0].committed_actions)
+    assert len(kernel.failure_signatures) == 1
+    assert kernel.failure_signatures[0].pattern == "communication:preflight_failed"
+    assert kernel.failure_signatures[0].occurrences == 1
+    assert kernel.failure_signatures[0].failure_rate == 1.0
+
+
+def test_task_completion_gates_do_not_write_failure_memory(tmp_path: Path):
+    approval = record_task_completion(
+        task_id="publish_confirm",
+        status="needs-input",
+        summary="Confirm publish?",
+        tags=["communication"],
+        root=tmp_path,
+    )
+    preflight = record_task_completion(
+        task_id="blocked_secret",
+        status="failed",
+        summary="PREFLIGHT BLOCKED [secret]: missing file",
+        tags=["communication"],
+        root=tmp_path,
+    )
+
+    kernel = default_kernel_store(tmp_path).load()
+    commits = default_commit_log(tmp_path).list()
+
+    assert approval.outcome == "approval_required"
+    assert preflight.outcome == "blocked_preflight"
+    assert all(action.type != "create_scar" for commit in commits for action in commit.committed_actions)
+    assert all(action.type != "update_failure_signature" for commit in commits for action in commit.committed_actions)
+    assert kernel.scars == []
+    assert kernel.failure_signatures == []
+
+
+def test_post_hooks_skip_v3_experience_write_under_pytest(monkeypatch):
+    super_dir = Path(__file__).resolve().parents[2] / "agents" / "super"
+    if str(super_dir) not in sys.path:
+        sys.path.insert(0, str(super_dir))
+    import post_hooks
+    import mira.runtime as runtime
+
+    calls = []
+
+    def fake_record_task_completion(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/v3/test_v31_governance.py::test")
+    monkeypatch.setattr(runtime, "record_task_completion", fake_record_task_completion)
+
+    assert post_hooks._run_v3_experience_write("task126", "failed", "fixture failure", ["communication"]) is False
+    assert calls == []
 
 
 def test_no_kernel_change_proposal_records_noop_commit(tmp_path: Path):
@@ -129,6 +202,7 @@ def test_snapshot_builder_attaches_manifest(tmp_path: Path):
     )
 
     assert snapshot.manifest.hash
+    assert snapshot.manifest.profile == "communication"
     assert snapshot.manifest.total_tokens > 0
 
 

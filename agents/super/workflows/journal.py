@@ -97,6 +97,37 @@ def _format_daily_shared_memory(user_id: str) -> str:
     )
 
 
+def _format_mira_day_home_digest(today: str, journal_content: str, spark_count: int = 0) -> str:
+    """Convert the private journal artifact into a phone-readable home digest."""
+    text = re.sub(r"^#\s+Journal\s+\S+\s*", "", journal_content.strip())
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    body_paragraphs = [p for p in paragraphs if not p.startswith("## ") and not p.startswith("<!--")]
+
+    lead = body_paragraphs[0] if body_paragraphs else text[:700].strip()
+    if len(lead) > 900:
+        lead = lead[:900].rstrip() + "..."
+
+    question = ""
+    for paragraph in reversed(body_paragraphs):
+        if "？" in paragraph or "?" in paragraph or "想跟你聊" in paragraph:
+            question = paragraph
+            break
+    if question and len(question) > 420:
+        question = question[:420].rstrip() + "..."
+
+    lines = [
+        f"# Mira's Day {today}",
+        "",
+        "## 今天值得看",
+        lead or "今天没有形成足够清晰的主线。",
+    ]
+    if question and question != lead:
+        lines.extend(["", "## 想问你的事", question])
+    if spark_count:
+        lines.extend(["", "## 今日思考素材", f"- {spark_count} 条 sparks 已被合并进今天的判断。"])
+    return "\n".join(lines)
+
+
 @traced("journal", agent="super", budget_seconds=180)
 def do_journal(user_id: str = "ang"):
     """Write a daily journal entry: what happened, what was learned, self-reflection.
@@ -270,28 +301,53 @@ def do_journal(user_id: str = "ang"):
     except Exception as e:
         log.warning("Failed to gather social media stats for journal: %s", e)
 
-    # Security alerts: blocked skill attempts in the past 24h
+    # Security alerts: unresolved blocked skill backlog
     security_alerts = ""
     try:
         incidents_path = LOGS_DIR / "security_incidents.jsonl"
         if incidents_path.exists():
-            cutoff = datetime.now().timestamp() - 86400
-            alerts = []
+            incidents_by_skill: dict[str, dict] = {}
             for line in incidents_path.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     rec = json.loads(line)
-                    ts = datetime.fromisoformat(rec["timestamp"].rstrip("Z"))
-                    if ts.timestamp() >= cutoff and rec.get("blocked"):
-                        alerts.append(rec)
+                    status = str(rec.get("status", "open")).lower()
+                    if not rec.get("blocked") or status != "open":
+                        continue
+                    skill_name = rec.get("skill_name") or "unknown"
+                    ts_raw = rec.get("timestamp") or ""
+                    try:
+                        ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp()
+                    except Exception:
+                        ts = 0.0
+                    existing = incidents_by_skill.get(skill_name)
+                    if not existing:
+                        incidents_by_skill[skill_name] = {
+                            "count": 1,
+                            "oldest_timestamp": ts_raw,
+                            "oldest_ts": ts,
+                            "newest_ts": ts,
+                            "newest_failure_reason": rec.get("failure_reason") or "blocked",
+                        }
+                        continue
+                    existing["count"] += 1
+                    if ts < existing["oldest_ts"]:
+                        existing["oldest_ts"] = ts
+                        existing["oldest_timestamp"] = ts_raw
+                    if ts >= existing["newest_ts"]:
+                        existing["newest_ts"] = ts
+                        existing["newest_failure_reason"] = rec.get("failure_reason") or "blocked"
                 except Exception:
                     pass
-            if alerts:
-                alert_lines = [f"- **{a['skill_name']}**: {a['failure_reason']}" for a in alerts]
+            if incidents_by_skill:
+                alert_lines = [
+                    f"- **{skill_name}**: {incident['count']} open, newest: {incident['newest_failure_reason']}, oldest: {incident['oldest_timestamp']}"
+                    for skill_name, incident in sorted(incidents_by_skill.items())
+                ]
                 security_alerts = "## Security Alerts\n" + "\n".join(alert_lines)
-                log.warning("Journal: %d blocked skill incident(s) in past 24h", len(alerts))
+                log.warning("Journal: %d skill(s) with unresolved blocked incidents", len(incidents_by_skill))
     except Exception as e:
         log.warning("Failed to read security incidents for journal: %s", e)
 
@@ -312,6 +368,7 @@ def do_journal(user_id: str = "ang"):
     if garden_section:
         journal_content = f"{journal_content}\n\n{garden_section}"
     atomic_write(journal_path, journal_content)
+    mira_day_content = _format_mira_day_home_digest(today, journal_content, spark_count=len(spark_entries))
     log.info("Journal saved: %s", journal_path.name)
 
     # Mark done in state RIGHT AFTER the file is saved, not at the end of the
@@ -350,7 +407,7 @@ def do_journal(user_id: str = "ang"):
                 {
                     "id": f"{abs(hash(item_id + today)) % 0xFFFFFFFF:08x}",
                     "sender": "agent",
-                    "content": journal_content,
+                    "content": mira_day_content,
                     "timestamp": existing["updated_at"],
                     "kind": "text",
                 }
@@ -358,7 +415,7 @@ def do_journal(user_id: str = "ang"):
             bridge._write_item(existing)
             bridge._update_manifest(existing)
         else:
-            bridge.create_feed(item_id, title, journal_content, tags=["mira", "journal", "digest"])
+            bridge.create_feed(item_id, title, mira_day_content, tags=["mira", "journal", "digest"])
         # Archive the now-redundant "Mira's Day Summary" legacy item if present
         if bridge.item_exists(legacy_id):
             try:

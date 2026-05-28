@@ -112,6 +112,14 @@ INCENTIVE_STRUCTURE_CHECK = (
     "INCENTIVE-SATURATED if all available sources share aligned commercial motivation."
 )
 
+LENSES = [
+    "structural: map the underlying forces or constraints that make this development possible or inevitable.",
+    "temporal: focus on what has changed since the last time this topic appeared — what has accelerated, stalled, or reversed.",
+    "adversarial: lead with what this development makes harder or destroys.",
+    "comparative: anchor the story in contrast — what does this displace, outperform, or contradict?",
+    "first-principles: strip the jargon and rebuild from the simplest true statement about what is actually happening.",
+]
+
 
 def _get_scheduled_jobs_context() -> str:
     """Get scheduled jobs summary for prompt injection. Fails silently."""
@@ -238,9 +246,12 @@ Use the language that matches the request — if the user wrote in Chinese, resp
 """
 
 
-def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "", recent_topics: str = "") -> str:
+def explore_prompt(
+    soul_context: str, feed_items: str, source_slot: str = "", recent_topics: str = "", analytical_lens: str = ""
+) -> str:
     """Prompt for filtering and ranking feed items."""
     slot_note = f"\n（本次探索主题：{source_slot}）\n" if source_slot else ""
+    lens_note = f"\n**本次视角**: {analytical_lens}\n" if analytical_lens else ""
     dedup_note = ""
     if recent_topics:
         dedup_note = f"""
@@ -279,7 +290,7 @@ def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "", re
 - "对了这两个其实有关系：如果小模型的 CoT 也是演的，那本地 agent 的可靠性就更成问题了"
 
 ## 内容
-
+{lens_note}
 1. 挑 5-7 个最有意思的，用你自己的话讲核心想法
 2. 每条附上链接，但融在话里面，不要单独一行列出来
 3. **源头激励预检**：在综合之前，先对每个来源问一句：这个来源的生产级激励是什么？是学术、独立新闻/个人、商业/厂商、SEO 流量、赞助内容，还是未知？给每个来源一个单行 incentive tag，只能用 `[academic]`、`[independent]`、`[commercial/vendor]`、`[SEO-optimized]`、`[sponsored]`、`[unknown]`。不要只看有没有标广告；要判断内容-广告融合是否可能影响了它选择写什么、不写什么。
@@ -1073,7 +1084,7 @@ Review round: {round_num}
 
 For each criterion: score (1-10), why (1-2 sentences), specific improvement suggestion.
 
-Also assess **Confidence Calibration** (not a scored criterion — reported separately): penalize (1) facts asserted without a verifiable source when one is expected, and (2) omission of uncertainty markers ("likely", "unclear", "I cannot verify") on claims that are genuinely uncertain.
+Also assess **Confidence Calibration** (weight: 10% — reported separately): penalize (1) facts asserted without a verifiable source or explicit retrieval when one is expected, and (2) omission of uncertainty markers ("likely", "unclear", "I cannot verify") on claims that are genuinely uncertain.
 
 Also assess these Substack quality gates:
 - **Reader Hook**: title + first two sentences would make a stranger keep reading.

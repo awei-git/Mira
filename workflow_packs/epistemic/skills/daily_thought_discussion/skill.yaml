@@ -1,0 +1,9 @@
+name: daily_thought_discussion
+description: Stage a daily thought discussion prompt with assumptions and objections.
+inputs:
+  - recent_questions
+  - memory_snapshot
+outputs:
+  - daily_thought_discussion.md
+  - assumptions
+  - objections

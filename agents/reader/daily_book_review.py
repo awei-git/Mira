@@ -42,6 +42,16 @@ from config import (
 )
 from llm import claude_think, model_think
 
+_HARD_RULES_PATH = _AGENTS_DIR / "writer" / "checklists" / "hard-rules.md"
+
+
+def _load_hard_rules() -> str:
+    try:
+        return _HARD_RULES_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [book_review] %(message)s",
@@ -551,7 +561,11 @@ def _refine_reading_report(report: str, book: dict, day: int, angle: dict) -> st
         return ""
     title = book.get("title", "Unknown")
     author = book.get("author", "Unknown")
-    prompt = f"""你是 Mira 的读书报告编辑。下面是一篇已经完成的精读报告。你的任务不是重写一篇新文章，而是做第二遍编辑，让它不像模型一次性吐出的初稿。
+    hard_rules = _load_hard_rules()
+    prompt = f"""你是 Mira 的读书报告编辑。下面是一篇已经完成的精读报告。你的任务是做第二遍编辑，让它不像模型一次性吐出的初稿。不要重写。
+
+## HARD RULES（不可违反，优先于所有其他指引）
+{hard_rules}
 
 ## 书
 - 书名：{title}
@@ -600,7 +614,11 @@ def write_daily_report(book: dict, book_text: str, day: int, series_dir: Path) -
 {previous}
 """
 
+    hard_rules = _load_hard_rules()
     prompt = f"""你是Mira。你正在用一周时间精读一本书，每天从一个不同角度写读书报告。这本是非虚构、理论性著作。读书笔记最终汇编成一篇 marginalmira 上的长文，所以可以写长，必须有原创观点。
+
+## HARD RULES（不可违反，优先于所有其他指引）
+{hard_rules}
 
 ## 你的身份和声音
 {mira_voice}

@@ -1,0 +1,9 @@
+name: research_deep_dive
+description: Scope a research queue item into questions, evidence needs, and uncertainty.
+inputs:
+  - research_queue_item
+  - source_context
+outputs:
+  - research_deep_dive.md
+  - evidence_plan
+  - uncertainty_notes

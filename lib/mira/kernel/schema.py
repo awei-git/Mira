@@ -23,7 +23,7 @@ def to_jsonable(value: Any) -> Any:
         return value.isoformat()
     if is_dataclass(value):
         return {k: to_jsonable(v) for k, v in asdict(value).items()}
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [to_jsonable(v) for v in value]
     if isinstance(value, dict):
         return {str(k): to_jsonable(v) for k, v in value.items()}
@@ -131,9 +131,18 @@ class Hypothesis:
     evidence_against: list[str] = field(default_factory=list)
     start_date: datetime = field(default_factory=utc_now)
     status: HypothesisStatus = "testing"
+    baseline_window: str = ""
+    test_window: str = ""
+    min_n: int = 1
+    current_metric: str = ""
+    rollback_plan: str = ""
     hypothesis_id: str = ""
 
     def __post_init__(self) -> None:
+        try:
+            self.min_n = max(1, int(self.min_n or 1))
+        except (TypeError, ValueError):
+            self.min_n = 1
         if not self.hypothesis_id:
             self.hypothesis_id = "hypothesis:" + self.claim.lower().replace(" ", "_")[:80]
 
@@ -170,6 +179,16 @@ class Thread:
 
 
 @dataclass
+class ArchivedMemory:
+    item_id: str
+    source: str
+    summary: str
+    archived_at: datetime = field(default_factory=utc_now)
+    run_id: str = ""
+    effect_id: str = ""
+
+
+@dataclass
 class MemoryKernel:
     identity: Identity = field(default_factory=Identity)
     worldview: Worldview = field(default_factory=Worldview)
@@ -185,6 +204,7 @@ class MemoryKernel:
     interests: Interests = field(default_factory=Interests)
     active_threads: list[Thread] = field(default_factory=list)
     pending_hypotheses: list[Hypothesis] = field(default_factory=list)
+    archived_memories: list[ArchivedMemory] = field(default_factory=list)
 
     def skill_trace(self, skill_name: str) -> SkillTrace:
         for trace in self.skill_traces:
@@ -224,6 +244,10 @@ class MemoryKernel:
             Hypothesis(**{**h, "start_date": parse_dt(h.get("start_date"))}) for h in data.get("pending_hypotheses", [])
         ]
         kernel.active_threads = [Thread(**t) for t in data.get("active_threads", [])]
+        kernel.archived_memories = [
+            ArchivedMemory(**{**item, "archived_at": parse_dt(item.get("archived_at"))})
+            for item in data.get("archived_memories", [])
+        ]
         kernel.commitments = [
             Commitment(
                 description=c["description"],

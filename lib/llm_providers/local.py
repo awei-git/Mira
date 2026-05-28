@@ -30,12 +30,33 @@ def _trip_omlx_circuit(reason: str, cooldown_seconds: int = 180) -> None:
 
 def _omlx_call(model_id: str, prompt: str, system: str = "", timeout: int = 300) -> str:
     """Call local oMLX (OpenAI-compatible) for privacy-sensitive tasks. Never leaves localhost."""
-    from config import OMLX_HOST, OMLX_PORT
+    from config import (
+        LOCAL_LLM_NATIVE_TOOLS_ALLOWED,
+        OMLX_ALLOW_NONLOCAL_HOST,
+        OMLX_DISABLE_SERVER_TOOLS,
+        OMLX_HOST,
+        OMLX_PORT,
+    )
     from llm import _estimate_tokens, _log_usage
 
     if _omlx_circuit_open():
         log.warning("oMLX circuit open; skipping local generation")
         return ""
+
+    if not OMLX_ALLOW_NONLOCAL_HOST and OMLX_HOST not in {"127.0.0.1", "localhost", "::1"}:
+        reason = f"non-local OMLX_HOST configured: {OMLX_HOST}"
+        log.error("Refusing oMLX call: %s", reason)
+        _trip_omlx_circuit(reason)
+        return ""
+
+    native_tools_forbidden = OMLX_DISABLE_SERVER_TOOLS or not LOCAL_LLM_NATIVE_TOOLS_ALLOWED
+    mira_side_broker_present = False
+    if LOCAL_LLM_NATIVE_TOOLS_ALLOWED and not mira_side_broker_present:
+        log.warning(
+            "LOCAL_LLM_NATIVE_TOOLS_ALLOWED is true, but _omlx_call has no Mira-side "
+            "tool broker; keeping local server native tools disabled"
+        )
+        native_tools_forbidden = True
 
     endpoint = f"http://{OMLX_HOST}:{OMLX_PORT}/v1/chat/completions"
 
@@ -52,6 +73,9 @@ def _omlx_call(model_id: str, prompt: str, system: str = "", timeout: int = 300)
         "max_tokens": 2048,
         "temperature": 0.7,
     }
+    if native_tools_forbidden:
+        payload["tools"] = []
+        payload["tool_choice"] = "none"
     body = json.dumps(payload).encode("utf-8")
 
     req = urllib.request.Request(
@@ -63,7 +87,15 @@ def _omlx_call(model_id: str, prompt: str, system: str = "", timeout: int = 300)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            content = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            message = choice.get("message", {})
+            if native_tools_forbidden and (
+                choice.get("finish_reason") == "tool_calls" or message.get("tool_calls") or message.get("function_call")
+            ):
+                log.error("Security error: rejected oMLX response containing tool call")
+                _trip_omlx_circuit("local server attempted tool call")
+                return ""
+            content = message.get("content") or ""
             model_used = data.get("model", model_id)
             log.info("oMLX call: %s → %d chars", model_used, len(content))
             usage = data.get("usage", {})

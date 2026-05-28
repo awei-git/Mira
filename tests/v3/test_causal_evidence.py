@@ -1,4 +1,11 @@
-from mira.kernel import BehavioralEffect, CausalEvidenceLog, DecisionRecord, MemoryUseTrace, classify_causal_evidence
+from mira.kernel import (
+    BehavioralEffect,
+    CausalEvidenceLog,
+    DecisionRecord,
+    MemoryUseTrace,
+    classify_causal_evidence,
+    confirm_ablation_evidence,
+)
 
 
 def test_causal_evidence_reaches_l4_only_with_ablation_ref():
@@ -85,3 +92,28 @@ def test_causal_evidence_log_persists_records(tmp_path):
 
     assert log.get(saved.evidence_id).memory_id == "memory:1"
     assert log.list()[0].level == "L3"
+
+
+def test_confirm_ablation_evidence_requires_changed_counterfactual():
+    unchanged = confirm_ablation_evidence(
+        memory_id="memory:1",
+        run_id="run_1",
+        pipeline="a2a_trust_experiment",
+        normal_decision="use manifest validator",
+        counterfactual_decision="use manifest validator",
+        effect_ids=["effect:1"],
+    )
+    changed = confirm_ablation_evidence(
+        memory_id="memory:1",
+        run_id="run_2",
+        pipeline="a2a_trust_experiment",
+        normal_decision="use manifest validator",
+        counterfactual_decision="ask baseline trust question",
+        effect_ids=["effect:2"],
+    )
+
+    assert unchanged.level == "L3"
+    assert unchanged.ablation_ref is None
+    assert changed.level == "L4"
+    assert changed.ablation_ref.startswith("ablation_")
+    assert changed.effect_ids == ["effect:2"]

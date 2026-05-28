@@ -15,6 +15,7 @@ ROLLING_WINDOW = 10
 MIN_BASELINE_SAMPLES = 5
 MAX_SAMPLES_PER_FEED = 200
 SILENCE_INTERVAL_MULTIPLIER = 3
+MIN_SILENCE_EXPECTED_INTERVAL_SECONDS = 3600
 
 
 def _load_stats(path: Path) -> dict[str, list[dict]]:
@@ -166,6 +167,8 @@ def check_feed_health(stats_path) -> list[dict]:
 
         expected_interval = _mean_interval_seconds(baseline + [latest])
         if expected_interval is None:
+            continue
+        if expected_interval < MIN_SILENCE_EXPECTED_INTERVAL_SECONDS:
             continue
         last_active = next((entry for entry in reversed(parsed_entries) if entry["item_count"] > 0), None)
         if last_active is None:

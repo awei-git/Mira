@@ -1,0 +1,8 @@
+name: commenting_craft
+description: Draft social replies that add genuine value without self-promotion.
+inputs:
+  - thread_context
+  - memory_snapshot
+outputs:
+  - social_reactive_reply.md
+  - quality_notes

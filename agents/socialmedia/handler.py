@@ -8,6 +8,7 @@ Usage from task_worker:
 """
 
 import hashlib
+import inspect
 import json
 import logging
 import re
@@ -117,6 +118,26 @@ _SYSTEM_ERROR_SIGNATURE_RE = re.compile(
 )
 _MIN_PUBLISH_CHARS = 1
 _PREFLIGHT_CACHE = ".socialmedia_preflight.json"
+
+
+def _publish_to_substack_with_audit(publish_to_substack, *, title, subtitle, article_text, workspace, audit_context):
+    kwargs = {
+        "title": title,
+        "subtitle": subtitle,
+        "article_text": article_text,
+        "workspace": workspace,
+    }
+    try:
+        parameters = inspect.signature(publish_to_substack).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_audit_context = "audit_context" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+    if accepts_audit_context:
+        kwargs["audit_context"] = audit_context
+    return publish_to_substack(**kwargs)
+
 
 EVIDENCE_FLOOR_RATIO = 0.2
 
@@ -300,10 +321,12 @@ def _content_smells_like_hallucination(text: str) -> tuple[bool, list[str]]:
         reasons.append(f"Many named references ({proper_nouns}) without any verifiable source")
 
     # 4. Overly neat structural parallelism (de-AI smell that also signals fabricated coherence)
-    parallelism = re.findall(r"(not\s+\w+\s+but\s+\w+|不是\w+而是\w+)", text, re.IGNORECASE)
-    if len(parallelism) >= 3:
+    parallelism = re.findall(
+        r"(not\s+\w+\s+but\s+\w+|不是[^。！？；\n]{1,40}而是[^。！？；\n]{1,40})", text, re.IGNORECASE
+    )
+    if parallelism:
         reasons.append(
-            f"Excessive structural parallelism ({len(parallelism)} instances) — possible fabricated coherence"
+            f"HARD BAN: '不是X而是Y'/'not X but Y' parallelism ({len(parallelism)} instances) — must rewrite all"
         )
 
     return (len(reasons) > 0, reasons)
@@ -513,7 +536,8 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
             "logged": True,
         }
         log.info("Auto-publishing manual request '%s' to Substack", title)
-        result = publish_to_substack(
+        result = _publish_to_substack_with_audit(
+            publish_to_substack,
             title=title,
             subtitle=subtitle,
             article_text=article_text,

@@ -1,0 +1,23 @@
+name: incident_response
+memory_class: operational
+trigger:
+  type: monitor
+  detail: system health exposed
+priority: 5
+version: 1
+max_duration_s: 600
+checkpoint_every: 1
+involved_skills:
+  - incident_response
+steps:
+  - name: snapshot_health_failures_and_dlq
+    type: memory
+  - name: classify_incident_severity
+    type: deterministic
+  - name: incident_report
+    type: deterministic
+    action: local_report
+  - name: remediation_risk_gate
+    type: policy
+  - name: experience_record_proposal_gateway
+    type: memory

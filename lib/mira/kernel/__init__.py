@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from .causal import (
+    AblationCheck,
     BehavioralEffect,
     CausalEvidence,
     CausalEvidenceLog,
+    CausalTrace,
     DecisionRecord,
     MemoryUseTrace,
+    build_causal_traces,
     classify_causal_evidence,
+    confirm_ablation_evidence,
     derive_causal_links,
 )
 from .commit import (
@@ -22,6 +26,7 @@ from .commit import (
 from .delta import MemoryAction, MemoryDelta, MemoryDeltaProposal
 from .ledger import ExperienceLedger, ExperienceRecord
 from .schema import (
+    ArchivedMemory,
     EvalCalibration,
     FailureSignature,
     Hypothesis,
@@ -39,8 +44,11 @@ from .snapshot import MemorySnapshot, SnapshotBuilder, SnapshotItem, SnapshotMan
 
 __all__ = [
     "BehavioralEffect",
+    "AblationCheck",
+    "ArchivedMemory",
     "CausalEvidence",
     "CausalEvidenceLog",
+    "CausalTrace",
     "DecisionRecord",
     "EvalCalibration",
     "ExperienceLedger",
@@ -70,6 +78,8 @@ __all__ = [
     "SnapshotManifest",
     "ValidationFinding",
     "Worldview",
+    "build_causal_traces",
     "classify_causal_evidence",
+    "confirm_ablation_evidence",
     "derive_causal_links",
 ]

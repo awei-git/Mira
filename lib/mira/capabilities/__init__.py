@@ -1,6 +1,7 @@
 """Capability preflight helpers for V3.1."""
 
 from .preflight import (
+    Capability,
     CapabilityCheck,
     CapabilityRegistry,
     ConnectorRequirement,
@@ -10,6 +11,7 @@ from .preflight import (
 )
 
 __all__ = [
+    "Capability",
     "CapabilityCheck",
     "CapabilityRegistry",
     "ConnectorRequirement",

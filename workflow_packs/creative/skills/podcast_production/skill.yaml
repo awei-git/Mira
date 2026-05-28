@@ -1,0 +1,9 @@
+name: podcast_production
+description: Stage podcast scripts, TTS routing, and quality checks before public RSS side effects.
+inputs:
+  - article_artifact
+  - memory_snapshot
+outputs:
+  - podcast_plan.md
+  - tts_route
+  - quality_notes

@@ -1,0 +1,11 @@
+{
+  "provider_effect_adapters": {
+    "rss": {
+      "channel_description": "Mira generated podcast feed",
+      "channel_link": "https://mira.local/podcast",
+      "channel_title": "Mira Podcast",
+      "feed_path_env": "MIRA_RSS_FEED_PATH",
+      "type": "local_rss_feed"
+    }
+  }
+}

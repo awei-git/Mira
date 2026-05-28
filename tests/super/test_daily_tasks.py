@@ -50,3 +50,18 @@ def test_self_evolve_verifier_uses_data_proposals(monkeypatch, tmp_path):
     monkeypatch.setattr(daily_tasks, "DATA_DIR", data_dir)
 
     assert daily_tasks._verify_self_evolve({"self_evolve_2026-05-01": "done"}, "2026-05-01")
+
+
+def test_book_review_verifier_requires_real_output(monkeypatch, tmp_path):
+    bridge_dir = tmp_path / "bridge"
+    artifacts_dir = tmp_path / "artifacts"
+    items_dir = bridge_dir / "users" / "ang" / "items"
+    items_dir.mkdir(parents=True)
+    monkeypatch.setattr(daily_tasks, "MIRA_DIR", bridge_dir)
+    monkeypatch.setattr(daily_tasks, "ARTIFACTS_DIR", artifacts_dir)
+
+    assert not daily_tasks._verify_book_review({"book_review_2026-05-01": "done"}, "2026-05-01")
+
+    (items_dir / "book_day2_20260501.json").write_text("{}", encoding="utf-8")
+
+    assert daily_tasks._verify_book_review({}, "2026-05-01")

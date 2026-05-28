@@ -1,0 +1,10 @@
+name: memory_consolidation
+description: Review stale, duplicate, or suspicious memory before compaction or archival.
+inputs:
+  - memory_snapshot
+  - experience_ledger
+outputs:
+  - memory_maintenance.md
+  - memory_compaction_preview.json
+  - review_findings
+  - queue_recommendations

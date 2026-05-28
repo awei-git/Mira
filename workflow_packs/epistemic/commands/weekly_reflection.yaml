@@ -1,0 +1,23 @@
+name: weekly_reflection
+memory_class: epistemic
+trigger:
+  type: schedule
+  detail: Sunday
+priority: 30
+version: 1
+max_duration_s: 900
+checkpoint_every: 1
+involved_skills:
+  - weekly_reflection
+steps:
+  - name: snapshot_weekly_deltas_scars_hypotheses
+    type: memory
+  - name: compare_weekly_changes
+    type: deterministic
+  - name: reflection_report
+    type: deterministic
+    action: local_report
+  - name: delta_quality_gate
+    type: eval
+  - name: experience_record_proposal_gateway
+    type: memory

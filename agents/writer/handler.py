@@ -37,6 +37,7 @@ except ImportError:
 
 log = logging.getLogger("writer_agent")
 
+_HARD_RULES_PATH = Path(__file__).resolve().parent / "checklists" / "hard-rules.md"
 _ANTI_AI_PATH = Path(__file__).resolve().parent / "checklists" / "anti-ai.md"
 _OBSESSION_CONSTRAINTS_PATH = Path(__file__).resolve().parent / "checklists" / "obsession_constraints.md"
 _REFLECTIVE_SELF_CRITIQUE_PATH = Path(__file__).resolve().parent / "checklists" / "self-edit.md"
@@ -126,6 +127,63 @@ _GENERIC_AI_ESSAY_SHELLS = (
     "this article explores",
     "it could be argued",
     "in conclusion",
+    "it's worth noting",
+    "interestingly",
+    "delve into",
+    "unpack",
+    "navigate",
+    "nuanced",
+    "multifaceted",
+    "fundamentally",
+    "essentially",
+    "ultimately",
+    "complex tapestry",
+    "this raises important questions",
+    "in today's rapidly",
+    "in an era of",
+    "in the realm of",
+)
+_BANNED_CHINESE_PHRASES = (
+    "不是",
+    "这是",
+    "值得一提",
+    "引人深思",
+    "令人感慨",
+    "深刻揭示",
+    "不可忽视",
+    "从某种意义上说",
+    "在某种程度上",
+    "的本质是",
+    "所谓",
+    "这提醒我们",
+    "这说明了",
+    "在当今社会",
+    "众所周知",
+    "尤显重要",
+    "发人深省",
+    "让我们看到",
+    "意外的撞上",
+    "意外地撞上",
+    "最聪明",
+    "停一会",
+    "停一下",
+    "打动",
+    "不舒服",
+    "不安",
+    "反复读",
+    "令人不安",
+)
+_BANNED_CHINESE_PATTERNS = (
+    re.compile(r"[一-鿿]+越来越[一-鿿]+[，,][一-鿿]+越来越[一-鿿]+"),
+    re.compile(r"太[^。！？；\n]{1,12}(?:了|啦|啊|呀)"),
+    re.compile(r"[一-鿿]{1,6}了(?:很久|好久|半天)"),
+    re.compile(r"最(?:先|早)[^。！？；\n]{0,16}我"),
+)
+_BANNED_FAKE_TRANSITIONS = (
+    "this is where it gets interesting",
+    "let me ",
+    "let's ",
+    "让我们",
 )
 _FRICTION_FEEDBACK_RE = re.compile(
     r"\b(?:bothered by|can't stand|cannot stand|this keeps happening|the quality is so bad)\b|"
@@ -310,6 +368,14 @@ def _is_voice_preserving_genre(source_genre: str | None) -> bool:
     genres = getattr(_writer_config, "VOICE_PRESERVING_GENRES", ())
     normalized_genres = {_normalize_source_genre(genre) for genre in genres}
     return bool(source_genre and source_genre in normalized_genres)
+
+
+def _load_hard_rules() -> str:
+    try:
+        return _HARD_RULES_PATH.read_text(encoding="utf-8")
+    except OSError:
+        log.warning("hard-rules.md not found at %s", _HARD_RULES_PATH)
+        return ""
 
 
 def _load_anti_ai() -> str:
@@ -599,9 +665,8 @@ def scan_anti_ai_patterns(text: str, *, anti_ai_mode: AntiAiMode = "strict") -> 
 
     if paragraphs:
         em_dash_count = text.count("—")
-        em_dash_average = em_dash_count / len(paragraphs)
-        if anti_ai_mode == "strict" and em_dash_average > 2:
-            score += em_dash_average - 2
+        if em_dash_count:
+            score += em_dash_count
             for index, (start, end, paragraph) in enumerate(paragraphs):
                 count = paragraph.count("—")
                 if count:
@@ -615,26 +680,9 @@ def scan_anti_ai_patterns(text: str, *, anti_ai_mode: AntiAiMode = "strict") -> 
                             "text": paragraph[:160],
                         }
                     )
-        elif anti_ai_mode == "relaxed":
-            for index, (start, end, paragraph) in enumerate(paragraphs):
-                count = paragraph.count("—")
-                if count > 5:
-                    score += count - 5
-                    flagged_spans.append(
-                        {
-                            "type": "em_dash_density",
-                            "paragraph": index,
-                            "start": start,
-                            "end": end,
-                            "count": count,
-                            "text": paragraph[:160],
-                        }
-                    )
 
     for pattern in _PARALLELISM_PATTERNS:
         matches = list(pattern.finditer(text))
-        if anti_ai_mode == "relaxed" and pattern.pattern.startswith("不是"):
-            matches = matches[1:]
         for match in matches:
             score += 1.0
             flagged_spans.append(
@@ -667,6 +715,55 @@ def scan_anti_ai_patterns(text: str, *, anti_ai_mode: AntiAiMode = "strict") -> 
                     }
                 )
 
+    lower = text.lower()
+    for phrase in _BANNED_CHINESE_PHRASES:
+        for match in re.finditer(re.escape(phrase), text):
+            score += 1.5
+            flagged_spans.append(
+                {
+                    "type": "banned_chinese_phrase",
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": phrase,
+                }
+            )
+
+    for pattern in _BANNED_CHINESE_PATTERNS:
+        for match in pattern.finditer(text):
+            score += 1.5
+            flagged_spans.append(
+                {
+                    "type": "banned_chinese_pattern",
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": match.group(0)[:80],
+                }
+            )
+
+    for phrase in _GENERIC_AI_ESSAY_SHELLS:
+        for match in re.finditer(re.escape(phrase), lower):
+            score += 1.5
+            flagged_spans.append(
+                {
+                    "type": "banned_english_phrase",
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": phrase,
+                }
+            )
+
+    for phrase in _BANNED_FAKE_TRANSITIONS:
+        for match in re.finditer(re.escape(phrase), lower):
+            score += 1.0
+            flagged_spans.append(
+                {
+                    "type": "banned_fake_transition",
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": phrase,
+                }
+            )
+
     return {
         "score": round(score, 3),
         "threshold": _ANTI_AI_SCAN_THRESHOLD,
@@ -680,7 +777,7 @@ def scan_obsession_constraints(text: str) -> dict:
 
     for index, (start, end, paragraph) in enumerate(paragraphs):
         em_dash_count = paragraph.count("—")
-        if em_dash_count > 1:
+        if em_dash_count:
             violations.append(
                 {
                     "trigger": "em_dash_overuse",
@@ -828,22 +925,29 @@ def _de_ai_section(text: str, *, tier: str, timeout: int, anti_ai_mode: AntiAiMo
     if not text or len(text.strip()) < 80:
         return text
     voice = _load_substack_voice()
+    hard_rules = _load_hard_rules()
     strict_rules = (
-        "1. Em-dash overuse: max one em dash per paragraph. Prefer commas, periods, or sentence restructuring.\n"
-        "2. Repetitive 'not X but Y' / 'the real question is...' reversals. Rewrite most of them.\n"
-        "3. Abstract concept labels such as 'structural', 'architecture of', 'fundamentally'. Make them concrete.\n"
+        "1. HARD BAN: zero em dashes. Rewrite every '—' with commas, periods, or sentence restructuring.\n"
+        "2. HARD BAN: zero '不是' and zero '这是'. Rewrite every instance.\n"
+        "3. HARD BAN: zero '不是X而是Y' / 'not X but Y' parallelism. Rewrite every instance.\n"
+        "4. HARD BAN: zero '打动', '不舒服', '不安', '反复读', fake long pauses such as '停了很久', and generic '太X了' intensifiers.\n"
+        "5. Abstract concept labels such as 'structural', 'architecture of', 'fundamentally'. Make them concrete.\n"
     )
     relaxed_rules = (
         "1. Preserve raw, vulnerable, unpolished draft energy where it helps the piece.\n"
-        "2. Allow up to five em dashes per paragraph; edit only beyond that or when punctuation obscures meaning.\n"
-        "3. Allow one 'not X but Y' / '不是X而是Y' contrast per article when it carries real judgment.\n"
-        "4. Allow structural abstract nouns when they carry the author's thought; do not force a mandatory concrete rewrite.\n"
+        "2. HARD BAN: zero em dashes. Rewrite every '—' with commas, periods, or sentence restructuring.\n"
+        "3. HARD BAN: zero '不是' and zero '这是'. Rewrite every instance.\n"
+        "4. HARD BAN: zero '不是X而是Y' / 'not X but Y' parallelism. Rewrite every instance.\n"
+        "5. HARD BAN: zero '打动', '不舒服', '不安', '反复读', fake long pauses such as '停了很久', and generic '太X了' intensifiers.\n"
+        "6. Allow structural abstract nouns when they carry the author's thought; do not force a mandatory concrete rewrite.\n"
+        "7. Add natural Chinese sentence particles such as '呢', '吗', '吧', '呀', or '啊' where a sentence genuinely sounds too flat.\n"
     )
     mode_rules = strict_rules if anti_ai_mode == "strict" else relaxed_rules
     prompt = (
         "You are Mira's final Substack editor.\n\n"
         "Edit, do not rewrite. Preserve concrete references, names, judgments, reading reactions, "
         "emotional register, section order, and factual claims.\n\n"
+        f"## HARD RULES (non-negotiable, apply before all other guidance)\n{hard_rules}\n\n"
         "Voice guide:\n"
         f"{voice[:5000]}\n\n"
         "Friction triage before smoothing:\n"

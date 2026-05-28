@@ -111,6 +111,25 @@ def _verify_self_evolve(state, today):
     return any(proposals_dir.glob(f"{today}_*.json"))
 
 
+def _verify_book_review(state, today):
+    """Book review verifier: require a real daily report, not only a state flag."""
+    today_compact = today.replace("-", "")
+    if any((MIRA_DIR / "users" / DEFAULT_DAILY_USER_ID / "items").glob(f"book_day*_{today_compact}.json")):
+        return True
+
+    books_dir = ARTIFACTS_DIR / "books"
+    if books_dir.exists():
+        for report in books_dir.glob("*/day*.md"):
+            try:
+                modified = datetime.fromtimestamp(report.stat().st_mtime).strftime("%Y-%m-%d")
+            except OSError:
+                continue
+            if modified == today and report.stat().st_size > 2000:
+                return True
+
+    return False
+
+
 _DAILY_TASK_CONTRACTS = {
     "zhesi": {
         "dispatch": ("zhesi", ["zhesi"]),
@@ -140,6 +159,12 @@ _DAILY_TASK_CONTRACTS = {
         "window": (21, 23),
         "verify": _verify_journal,
         "label": "日记",
+    },
+    "book_review": {
+        "dispatch": ("book-review", ["book-review"]),
+        "window": (9, 15),
+        "verify": _verify_book_review,
+        "label": "每日书评",
     },
     "analyst_pre": {
         "dispatch": ("analyst-0700", ["analyst", "--slot", "0700"]),

@@ -1,0 +1,23 @@
+name: book_reading_notes
+memory_class: creative
+trigger:
+  type: event
+  detail: book added
+priority: 40
+version: 1
+max_duration_s: 900
+checkpoint_every: 1
+involved_skills:
+  - book_reading_notes
+steps:
+  - name: snapshot_book_queue_prior_notes
+    type: memory
+  - name: extract_claims_and_counterclaims
+    type: deterministic
+  - name: reading_notes_report
+    type: deterministic
+    action: local_report
+  - name: notes_quality_gate
+    type: eval
+  - name: experience_record_proposal_gateway
+    type: memory

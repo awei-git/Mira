@@ -37,6 +37,9 @@ _HUMAN_ATTENTION_INCREMENT = 0.25
 _MIRA_ATTENTION_INCREMENT = 0.15
 _VECTOR_WEIGHT = 0.7
 _KEYWORD_WEIGHT = 0.3
+_DEFAULT_TRUST_CONFIDENCE = "unverified"
+_TRUST_CONFIDENCE_VALUES = {"verified", "unverified", "stale"}
+_DEFAULT_STALE_AFTER_DAYS = 7
 
 _HUMAN_ATTENTION_SOURCE_TYPES = {
     "conversation",
@@ -144,6 +147,67 @@ def _decayed_joint_attention(score: float | None, last_attention, created_at=Non
     return float(score) * decay
 
 
+def _normalize_trust_confidence(trust_confidence: str | None) -> str:
+    if trust_confidence is None:
+        return _DEFAULT_TRUST_CONFIDENCE
+    if trust_confidence in _TRUST_CONFIDENCE_VALUES:
+        return trust_confidence
+    log.warning("Invalid trust_confidence %r; defaulting to unverified", trust_confidence)
+    return _DEFAULT_TRUST_CONFIDENCE
+
+
+def _is_stale_memory(created_at, stale_after_days: int | None = _DEFAULT_STALE_AFTER_DAYS) -> bool:
+    if stale_after_days is None or not created_at:
+        return False
+    try:
+        age_days = (datetime.now() - created_at.replace(tzinfo=None)).total_seconds() / 86400
+    except AttributeError:
+        try:
+            parsed = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+            age_days = (datetime.now() - parsed.replace(tzinfo=None)).total_seconds() / 86400
+        except (TypeError, ValueError):
+            return False
+    return age_days > stale_after_days
+
+
+def _effective_trust_confidence(
+    trust_confidence: str | None,
+    created_at,
+    stale_after_days: int | None = _DEFAULT_STALE_AFTER_DAYS,
+) -> str:
+    if _is_stale_memory(created_at, stale_after_days):
+        return "stale"
+    return _normalize_trust_confidence(trust_confidence)
+
+
+def _log_recall_binding(row: dict, consequential_action: bool | str = False) -> None:
+    trust_confidence = _normalize_trust_confidence(row.get("trust_confidence"))
+    binding = "verified against current state" if trust_confidence == "verified" else "taken on face value"
+    if consequential_action and trust_confidence in {"unverified", "stale"}:
+        action = (
+            consequential_action
+            if isinstance(consequential_action, str) and consequential_action.strip()
+            else "consequential action"
+        )
+        log.warning(
+            "Memory recall binding %s for %s: trust_confidence=%s table=%s id=%s source=%s",
+            binding,
+            action,
+            trust_confidence,
+            row.get("table", ""),
+            row.get("id", ""),
+            row.get("source_id", ""),
+        )
+    else:
+        log.debug(
+            "Memory recall binding %s: trust_confidence=%s table=%s id=%s",
+            binding,
+            trust_confidence,
+            row.get("table", ""),
+            row.get("id", ""),
+        )
+
+
 class MemoryStore:
     """Unified memory interface backed by PostgreSQL + pgvector.
 
@@ -182,6 +246,7 @@ class MemoryStore:
 
             run_migrations()
             self._ensure_joint_attention_columns()
+            self._ensure_trust_confidence_columns()
             self._migrated = True
         except Exception as e:
             log.warning("Auto-migration failed (non-fatal): %s", e)
@@ -192,6 +257,14 @@ class MemoryStore:
         for tbl in ("episodic_memory", "semantic_memory"):
             self._execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS joint_attention_score FLOAT DEFAULT 0.0")
             self._execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS joint_attention_updated_at TIMESTAMPTZ")
+
+    def _ensure_trust_confidence_columns(self):
+        """Add recall trust metadata to existing memory tables."""
+        for tbl in ("episodic_memory", "semantic_memory", "thought_stream"):
+            self._execute(
+                f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS trust_confidence VARCHAR(20) "
+                "NOT NULL DEFAULT 'unverified'"
+            )
 
     def _get_conn(self):
         """Get a connection from the pool with auto-reconnect."""
@@ -263,6 +336,7 @@ class MemoryStore:
         summary: str = "",
         table: str = "episodic",
         user_id: str = "ang",
+        trust_confidence: str = _DEFAULT_TRUST_CONFIDENCE,
     ) -> int | None:
         """Store a memory with vector embedding.
 
@@ -275,6 +349,7 @@ class MemoryStore:
             tags: Optional tags for filtering.
             summary: Optional LLM-generated summary.
             table: "episodic" or "thought" (for thought_stream).
+            trust_confidence: Recall trust marker: verified, unverified, or stale.
 
         Returns: The row ID, or None on failure.
         """
@@ -283,6 +358,7 @@ class MemoryStore:
             if not emb:
                 log.warning("Empty embedding for remember(); storing without vector")
 
+            trust_confidence = _normalize_trust_confidence(trust_confidence)
             emb_literal = f"[{','.join(str(x) for x in emb)}]" if emb else None
             joint_attention_score = _joint_attention_increment(source_type, table)
             joint_attention_updated_at = datetime.now() if joint_attention_score else None
@@ -292,8 +368,8 @@ class MemoryStore:
                     """INSERT INTO episodic_memory
                        (user_id, source_type, source_id, title, content, summary,
                         embedding, tags, importance, joint_attention_score,
-                        joint_attention_updated_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s, %s, %s)
+                        joint_attention_updated_at, trust_confidence)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s, %s, %s, %s)
                        RETURNING id""",
                     (
                         user_id,
@@ -307,16 +383,26 @@ class MemoryStore:
                         importance,
                         joint_attention_score,
                         joint_attention_updated_at,
+                        trust_confidence,
                     ),
                     fetch=True,
                 )
             elif table == "thought":
                 row = self._execute(
                     """INSERT INTO thought_stream
-                       (user_id, thought_type, content, embedding, source_context, tags)
-                       VALUES (%s, %s, %s, %s::vector, %s, %s)
+                       (user_id, thought_type, content, embedding, source_context,
+                        tags, trust_confidence)
+                       VALUES (%s, %s, %s, %s::vector, %s, %s, %s)
                        RETURNING id""",
-                    (user_id, source_type, content, emb_literal, source_id, tags or []),
+                    (
+                        user_id,
+                        source_type,
+                        content,
+                        emb_literal,
+                        source_id,
+                        tags or [],
+                        trust_confidence,
+                    ),
                     fetch=True,
                 )
             else:
@@ -356,6 +442,8 @@ class MemoryStore:
         table: str | None = None,
         include_decay: bool = True,
         user_id: str = "ang",
+        stale_after_days: int | None = _DEFAULT_STALE_AFTER_DAYS,
+        consequential_action: bool | str = False,
     ) -> list[dict]:
         """Hybrid semantic + keyword search across memory tables.
 
@@ -378,7 +466,14 @@ class MemoryStore:
         for tbl in tables_to_search:
             try:
                 rows = self._search_table(
-                    tbl, query, query_emb, source_filter, include_decay, user_id, top_k * 2
+                    tbl,
+                    query,
+                    query_emb,
+                    source_filter,
+                    include_decay,
+                    user_id,
+                    top_k * 2,
+                    stale_after_days=stale_after_days,
                 )  # fetch extra, merge later
                 results.extend(rows)
             except Exception as e:
@@ -397,6 +492,7 @@ class MemoryStore:
                 break
 
         for r in deduped:
+            _log_recall_binding(r, consequential_action)
             self.reinforce_joint_attention(r["id"], r.get("table", ""), actor="mira")
 
         return deduped
@@ -464,6 +560,7 @@ class MemoryStore:
         include_decay: bool,
         user_id: str,
         limit: int,
+        stale_after_days: int | None = _DEFAULT_STALE_AFTER_DAYS,
     ) -> list[dict]:
         """Search a single table with hybrid scoring."""
         # Build WHERE clause
@@ -479,13 +576,13 @@ class MemoryStore:
         if table == "episodic_memory":
             sql = f"""SELECT id, source_type, source_id, title, content,
                              embedding, importance, joint_attention_score,
-                             joint_attention_updated_at, created_at
+                             joint_attention_updated_at, trust_confidence, created_at
                       FROM episodic_memory {where_sql}
                       ORDER BY created_at DESC LIMIT %s"""
         elif table == "semantic_memory":
             sql = f"""SELECT id, source_type, source_path, '' as title, content,
                              embedding, importance, joint_attention_score,
-                             joint_attention_updated_at, created_at
+                             joint_attention_updated_at, trust_confidence, created_at
                       FROM semantic_memory {where_sql}
                       ORDER BY updated_at DESC LIMIT %s"""
         else:
@@ -510,6 +607,7 @@ class MemoryStore:
                 importance,
                 joint_attention_score,
                 joint_attention_updated_at,
+                trust_confidence,
                 created_at,
             ) = row
 
@@ -555,6 +653,7 @@ class MemoryStore:
                     "title": title,
                     "score": score,
                     "joint_attention_score": effective_joint_attention,
+                    "trust_confidence": _effective_trust_confidence(trust_confidence, created_at, stale_after_days),
                     "created_at": created_at,
                 }
             )
@@ -742,8 +841,8 @@ class MemoryStore:
                     """INSERT INTO semantic_memory
                        (user_id, source_type, source_path, chunk_index, content,
                         content_hash, embedding, joint_attention_score,
-                        joint_attention_updated_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s)""",
+                        joint_attention_updated_at, trust_confidence)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s, %s)""",
                     (
                         user_id,
                         stype,
@@ -754,6 +853,7 @@ class MemoryStore:
                         emb_literal,
                         joint_attention_score,
                         joint_attention_updated_at,
+                        _DEFAULT_TRUST_CONFIDENCE,
                     ),
                 )
                 count += 1
@@ -774,19 +874,30 @@ class MemoryStore:
         source_context: str = "",
         tags: list[str] | None = None,
         user_id: str = "ang",
+        trust_confidence: str = _DEFAULT_TRUST_CONFIDENCE,
     ) -> int | None:
         """Store a thought in the thought_stream table."""
         try:
+            trust_confidence = _normalize_trust_confidence(trust_confidence)
             emb = _embed_texts([content[:2000]])[0]
             emb_literal = f"[{','.join(str(x) for x in emb)}]" if emb else None
 
             row = self._execute(
                 """INSERT INTO thought_stream
                    (user_id, thought_type, content, embedding, parent_id,
-                    source_context, tags)
-                   VALUES (%s, %s, %s, %s::vector, %s, %s, %s)
+                    source_context, tags, trust_confidence)
+                   VALUES (%s, %s, %s, %s::vector, %s, %s, %s, %s)
                    RETURNING id""",
-                (user_id, thought_type, content, emb_literal, parent_id, source_context, tags or []),
+                (
+                    user_id,
+                    thought_type,
+                    content,
+                    emb_literal,
+                    parent_id,
+                    source_context,
+                    tags or [],
+                    trust_confidence,
+                ),
                 fetch=True,
             )
             return row[0][0] if row else None
@@ -801,6 +912,8 @@ class MemoryStore:
         min_maturity: float = 0.0,
         thought_type: str | None = None,
         user_id: str = "ang",
+        stale_after_days: int | None = _DEFAULT_STALE_AFTER_DAYS,
+        consequential_action: bool | str = False,
     ) -> list[dict]:
         """Recall relevant thoughts from thought_stream."""
         try:
@@ -819,7 +932,8 @@ class MemoryStore:
 
         rows = self._execute(
             f"""SELECT id, thought_type, content, embedding, parent_id,
-                       source_context, maturity, access_count, tags, created_at
+                       source_context, maturity, access_count, tags,
+                       trust_confidence, created_at
                 FROM thought_stream {where_sql}
                 ORDER BY created_at DESC LIMIT %s""",
             tuple(params),
@@ -830,7 +944,19 @@ class MemoryStore:
 
         scored = []
         for row in rows:
-            (tid, ttype, content, emb_raw, parent_id, src_ctx, maturity, access_count, tags, created_at) = row
+            (
+                tid,
+                ttype,
+                content,
+                emb_raw,
+                parent_id,
+                src_ctx,
+                maturity,
+                access_count,
+                tags,
+                trust_confidence,
+                created_at,
+            ) = row
 
             vec_score = 0.0
             if query_emb and emb_raw:
@@ -853,13 +979,18 @@ class MemoryStore:
                     "parent_id": parent_id,
                     "maturity": maturity,
                     "score": score,
+                    "trust_confidence": _effective_trust_confidence(trust_confidence, created_at, stale_after_days),
                     "created_at": created_at,
                     "tags": tags or [],
                 }
             )
 
         scored.sort(key=lambda r: r["score"], reverse=True)
-        return scored[:top_k]
+        results = scored[:top_k]
+        for r in results:
+            r["table"] = "thought_stream"
+            _log_recall_binding(r, consequential_action)
+        return results
 
     def mature_thought(self, thought_id: int, increment: float = 0.2) -> float:
         """Increase maturity of a thought. Returns new maturity."""

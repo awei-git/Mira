@@ -188,6 +188,13 @@ class AgentRegistry:
             return None
         return manifest.allowed_tools
 
+    def get_permissions(self, name: str) -> list[str]:
+        """Return declared permission scopes for an agent."""
+        manifest = self._manifests.get(name)
+        if not manifest:
+            return []
+        return manifest.permissions or []
+
     def get_capability_class(self, name: str) -> str:
         manifest = self._manifests.get(name)
         return manifest.capability_class if manifest else resolve_capability_class(name)

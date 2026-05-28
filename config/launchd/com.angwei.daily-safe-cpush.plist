@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.angwei.daily-safe-cpush</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/angwei/Sandbox/Mira/scripts/daily_safe_cpush.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/angwei/Sandbox/Mira</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>21</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/angwei/Library/Logs/daily-safe-cpush/stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/angwei/Library/Logs/daily-safe-cpush/stderr.log</string>
+</dict>
+</plist>
