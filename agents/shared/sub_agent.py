@@ -1,8 +1,10 @@
 """Shared response contract for dispatched sub-agents."""
 
+import functools
 import json
 import logging
 import re
+import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -48,12 +50,211 @@ INJECTION_TRIGGER_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 )
 
 
+def resolve_claude_think_timeout(tier: str | None, timeout: int | None = None) -> int:
+    from config import CLAUDE_TIMEOUT_THINK
+
+    try:
+        from config import CLAUDE_TIMEOUT_THINK_HEAVY
+    except ImportError:
+        CLAUDE_TIMEOUT_THINK_HEAVY = 300
+
+    default_timeout = int(CLAUDE_TIMEOUT_THINK)
+    if str(tier or "").strip().lower() == "heavy" and (timeout is None or int(timeout) == default_timeout):
+        return int(CLAUDE_TIMEOUT_THINK_HEAVY)
+    if timeout is None:
+        return default_timeout
+    return int(timeout)
+
+
+def apply_claude_think_timeout_policy() -> None:
+    try:
+        import llm
+    except Exception:
+        return
+
+    original = getattr(llm, "claude_think", None)
+    if not callable(original) or getattr(original, "_mira_timeout_policy_wrapped", False):
+        return
+
+    @functools.wraps(original)
+    def claude_think_with_tier_timeout(
+        prompt: str,
+        timeout: int | None = None,
+        tier: str = "light",
+        max_tokens: int | None = None,
+    ) -> str:
+        return original(
+            prompt,
+            timeout=resolve_claude_think_timeout(tier, timeout),
+            tier=tier,
+            max_tokens=max_tokens,
+        )
+
+    claude_think_with_tier_timeout._mira_timeout_policy_wrapped = True
+    llm.claude_think = claude_think_with_tier_timeout
+
+
+apply_claude_think_timeout_policy()
+
+
 class SubAgentFormatError(Exception):
     def __init__(self, agent_name: str, missing_keys: list[str]):
         self.agent_name = str(agent_name or "unknown")
         self.missing_keys = list(missing_keys)
         fields = ", ".join(self.missing_keys) or "unknown"
         super().__init__(f"{self.agent_name} returned malformed result; missing or invalid fields: {fields}")
+
+
+class SecurityError(Exception):
+    def __init__(self, pattern: str):
+        self.pattern = pattern
+        super().__init__(f"Skill text blocked by security scan: matched pattern {pattern!r}")
+
+
+_SKILL_SECURITY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\bimport\s+requests\b",
+        r"\bimport\s+socket\b",
+        r"\bimport\s+subprocess\b",
+        r"\bimport\s+urllib\b",
+        r"\bos\.system\s*\(",
+        r"\bsubprocess\.",
+        r"\beval\s*\(",
+        r"\bexec\s*\(",
+        r"\b__import__\s*\(",
+    )
+)
+
+
+def quick_security_scan(skill_text: str) -> None:
+    """Secondary pattern-based check; does not replace the auditor approval."""
+    text = str(skill_text or "")
+    for pattern in _SKILL_SECURITY_PATTERNS:
+        if pattern.search(text):
+            raise SecurityError(pattern.pattern)
+
+
+_EVALUATOR_PLACEHOLDER_STRINGS: frozenset[str] = frozenset(
+    {"n/a", "na", "none", "no issues", "no issue", "not applicable", "null", "nil", "todo", "tbd"}
+)
+_EVALUATOR_BOUNDED_SCORE_KEYS: frozenset[str] = frozenset(
+    {
+        "score",
+        "task_success",
+        "success_rate",
+        "guard_fire_rate",
+        "overall_success_rate",
+        "outcome_coverage",
+        "crash_rate",
+        "routing_accuracy",
+        "timeout_rate",
+        "error_rate",
+        "scaffolding_rejection_rate",
+        "proxy_false_positive_ratio",
+    }
+)
+
+
+def _iter_nested_values(value, path: tuple[str, ...] = ()):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from _iter_nested_values(child, (*path, str(key)))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from _iter_nested_values(child, (*path, str(index)))
+    else:
+        yield path, value
+
+
+def _nested_value(value, path: tuple[str, ...]):
+    current = value
+    for part in path:
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list):
+            try:
+                current = current[int(part)]
+            except (ValueError, IndexError):
+                return None
+        else:
+            return None
+    return current
+
+
+def _evaluator_score_range(path: tuple[str, ...], score_ranges: dict[str, tuple[float, float]]):
+    dotted = ".".join(path)
+    key = path[-1] if path else ""
+    if dotted in score_ranges:
+        return score_ranges[dotted]
+    if key in score_ranges:
+        return score_ranges[key]
+    if key in _EVALUATOR_BOUNDED_SCORE_KEYS:
+        return 0.0, 1.0
+    if key.endswith("_rate") and not key.endswith("_per_hour"):
+        return 0.0, 1.0
+    if key.endswith("_ratio") or key.endswith("_coverage") or key.endswith("_score"):
+        return 0.0, 1.0
+    return None
+
+
+def _token_count(value: str) -> int:
+    return len(re.findall(r"\b\w+\b", value))
+
+
+def _is_placeholder_string(value: str) -> bool:
+    normalized = re.sub(r"\s+", " ", value.strip().lower()).strip(" .:-_*")
+    return normalized in _EVALUATOR_PLACEHOLDER_STRINGS
+
+
+def evaluator_output_sanity_failures(
+    payload: dict,
+    *,
+    required_string_paths: tuple[tuple[str, ...], ...] = (),
+    min_string_tokens: int = 4,
+    min_agent_score_std_dev: float = 0.001,
+    score_ranges: dict[str, tuple[float, float]] | None = None,
+) -> list[str]:
+    failures: list[str] = []
+    ranges = score_ranges or {}
+
+    for path, value in _iter_nested_values(payload):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        declared_range = _evaluator_score_range(path, ranges)
+        if declared_range is None:
+            continue
+        low, high = declared_range
+        if not low <= float(value) <= high:
+            failures.append(f"{'.'.join(path)}={value!r} outside declared range [{low}, {high}]")
+
+    agent_scores: list[float] = []
+    agents = payload.get("agents") if isinstance(payload, dict) else None
+    if isinstance(agents, dict):
+        for agent_name, card in agents.items():
+            if not isinstance(card, dict) or card.get("task_count", 0) <= 0:
+                continue
+            score = card.get("success_rate")
+            if isinstance(score, bool) or not isinstance(score, (int, float)):
+                continue
+            agent_scores.append(float(score))
+        if len(agent_scores) >= 3:
+            mean = sum(agent_scores) / len(agent_scores)
+            variance = sum((score - mean) ** 2 for score in agent_scores) / len(agent_scores)
+            std_dev = variance**0.5
+            if std_dev < min_agent_score_std_dev:
+                failures.append(
+                    f"agent success_rate variance too low: std_dev={std_dev:.6f}, "
+                    f"threshold={min_agent_score_std_dev}"
+                )
+
+    for path in required_string_paths:
+        value = _nested_value(payload, path)
+        label = ".".join(path)
+        if not isinstance(value, str) or _is_placeholder_string(value) or _token_count(value) < min_string_tokens:
+            failures.append(f"{label} is empty, placeholder, or below {min_string_tokens} tokens")
+
+    return failures
 
 
 def _validate_result(result: dict, agent_name: str) -> None:
@@ -159,6 +360,31 @@ def append_pipeline_context_to_system_prompt(system_prompt: str, pipeline_contex
     return f"{text.rstrip()}\n\n{pipeline_block}".strip()
 
 
+def append_original_request_to_instruction(instruction: str, original_request: str | None = None) -> str:
+    text = str(instruction or "")
+    raw_request = str(original_request or "").strip()
+    if not raw_request or "Original user request (pre-orchestrator):" in text:
+        return text.strip()
+    return f"{text.rstrip()}\n\nOriginal user request (pre-orchestrator): {raw_request}".strip()
+
+
+@functools.lru_cache(maxsize=1)
+def _original_request_from_worker_payload() -> str:
+    try:
+        index = sys.argv.index("--msg-file")
+        msg_file = Path(sys.argv[index + 1])
+        payload = json.loads(msg_file.read_text(encoding="utf-8"))
+    except (ValueError, IndexError, OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("original_request", "raw_input"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def assert_local_only_agent_model(
     agent: str | None, model_name: str | None = None, endpoint: str | None = None, logger=None
 ) -> str:
@@ -183,6 +409,12 @@ def assert_local_only_agent_model(
 
 def require_reasoning_in_instruction(instruction: str, pipeline_context: dict | None = None) -> str:
     text = str(instruction or "")
+    original_request = None
+    if isinstance(pipeline_context, dict):
+        original_request = pipeline_context.get("original_request")
+    if original_request is None:
+        original_request = _original_request_from_worker_payload()
+    text = append_original_request_to_instruction(text, original_request)
     if '"reasoning"' not in text or '"output"' not in text or "Response Contract" not in text:
         text = f"{text.rstrip()}\n\n{REASONING_RESPONSE_REQUIREMENT}".strip()
     return append_pipeline_context_to_system_prompt(text, pipeline_context)
@@ -280,6 +512,58 @@ def log_token_usage(agent_name: str, task_type: str, model_id: str | None, respo
 record_token_usage = log_token_usage
 
 
+def audit_action(agent_name, action_type, target, justification) -> dict | None:
+    justification_text = str(justification or "").strip() or "unjustified"
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "agent": str(agent_name or "unknown"),
+        "action": str(action_type or "unknown"),
+        "target": str(target or ""),
+        "justification": justification_text,
+    }
+    try:
+        from config import AUDIT_LOG_PATH, MIRA_ROOT
+
+        log_path = Path(AUDIT_LOG_PATH)
+        if not log_path.is_absolute():
+            log_path = MIRA_ROOT / log_path
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, ValueError):
+        return None
+    return record
+
+
+def _agent_tier(agent_name: str | None) -> str:
+    agent = str(agent_name or "").strip().lower()
+    try:
+        from config import AGENT_REGISTRY
+    except Exception:
+        return ""
+    agent_config = AGENT_REGISTRY.get(agent) if isinstance(AGENT_REGISTRY, dict) else None
+    if not isinstance(agent_config, dict):
+        return ""
+    return str(agent_config.get("tier") or "").strip().lower()
+
+
+def _audit_enabled_for_agent(agent_name: str | None, tier: str | None = None) -> bool:
+    try:
+        from config import AGENT_AUDIT_MODE
+    except Exception:
+        AGENT_AUDIT_MODE = True
+    if not bool(AGENT_AUDIT_MODE):
+        return False
+    resolved_tier = str(tier or "").strip().lower() or _agent_tier(agent_name)
+    return resolved_tier == "heavy"
+
+
+def _audit_heavy_action(agent_name, tier, action_type, target, justification) -> dict | None:
+    if not _audit_enabled_for_agent(agent_name, tier):
+        return None
+    return audit_action(agent_name, action_type, target, justification)
+
+
 def result_with_inference_timing(result, inference_ms: int):
     inference_ms = max(0, int(inference_ms))
     if isinstance(result, dict):
@@ -287,6 +571,19 @@ def result_with_inference_timing(result, inference_ms: int):
         timed_result["inference_ms"] = inference_ms
         return timed_result
     return result, inference_ms
+
+
+def _log_model_drift(response) -> None:
+    actual_model = _response_value(response, "model")
+    log.debug("model_actual=%s", actual_model)
+    if actual_model is None:
+        return
+    try:
+        from config import CLAUDE_SONNET_MODEL as expected_model
+    except Exception:
+        return
+    if actual_model != expected_model:
+        log.warning("model_mismatch expected=%s actual=%s", expected_model, actual_model)
 
 
 def timed_llm_api_call(
@@ -300,8 +597,16 @@ def timed_llm_api_call(
     if timing is None:
         timing = {"inference_ms": 0}
     llm_start = time.perf_counter()
+    _audit_heavy_action(
+        kwargs.get("agent_id") or kwargs.get("agent_name") or kwargs.get("agent"),
+        kwargs.get("tier"),
+        "network",
+        getattr(call, "__name__", "llm_api_call"),
+        kwargs.get("audit_justification") or kwargs.get("justification") or "",
+    )
     try:
         result = call(*args, **kwargs)
+        _log_model_drift(result)
     finally:
         finished = time.perf_counter()
         task_start = llm_start if total_start is None else total_start
@@ -384,6 +689,13 @@ def write_dispatch_receipt(
         "reversible": bool(reversible),
     }
     workspace.mkdir(parents=True, exist_ok=True)
+    _audit_heavy_action(
+        agent_name,
+        None,
+        "file_write",
+        str(workspace / DISPATCH_RECEIPT_NAME),
+        task_description,
+    )
     (workspace / DISPATCH_RECEIPT_NAME).write_text(
         json.dumps(receipt, ensure_ascii=False, indent=2),
         encoding="utf-8",

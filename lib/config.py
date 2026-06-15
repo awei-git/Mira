@@ -150,6 +150,7 @@ SOURCES_FILE = MIRA_ROOT / "sources.json"
 
 # Calibration / drift monitoring defaults (used by super agent)
 CALIBRATION_INTERVAL_DAYS = 7
+EVAL_WINDOW_DAYS = 7
 CALIBRATION_SAMPLE_SIZE = 4
 BLIND_SPOT_LOOKBACK_DAYS = 30
 BLIND_SPOT_SILENCE_THRESHOLD_DAYS = 3
@@ -798,6 +799,7 @@ MAX_MEMORY_LINES = _limits.get("max_memory_lines", 200)
 # ---------------------------------------------------------------------------
 _timeouts = _cfg.get("timeouts", {})
 CLAUDE_TIMEOUT_THINK = _timeouts.get("claude_think", 120)
+CLAUDE_TIMEOUT_THINK_HEAVY = int(os.getenv("CLAUDE_TIMEOUT_THINK_HEAVY", _timeouts.get("claude_think_heavy", 300)))
 CLAUDE_TIMEOUT_PLAN = _timeouts.get("claude_plan", 300)
 CLAUDE_TIMEOUT_ACT = _timeouts.get("claude_act", 600)
 WRITER_CLAUDE_TIMEOUT = _timeouts.get("writer_claude", 1200)
@@ -887,6 +889,14 @@ PUBLISH_WINDOW_MINUTES = _rate_limits.get("publish_window_minutes", 30)
 PUBLISH_COOLDOWN_PER_TYPE = _rate_limits.get(
     "publish_cooldown_per_type",
     {"article": 1440, "note": 120, "comment": 30, "tweet": 60},
+)
+_socialmedia_cfg = _cfg.get("socialmedia", {})
+REQUIRE_EXPLICIT_COMMUNICATION_INTENT = bool(_socialmedia_cfg.get("require_explicit_communication_intent", True))
+APPROVED_AUTONOMOUS_COMMUNICATION_SOURCES = set(
+    _socialmedia_cfg.get(
+        "approved_autonomous_communication_sources",
+        ["scheduled_growth", "authorized_substack_workflow"],
+    )
 )
 SELF_EVOLVE_MAX_PER_DAY = _rate_limits.get("self_evolve_max_per_day", 1)
 IPHONE_BRIDGE_WARN_LATENCY_MS = _rate_limits.get("iphone_bridge_warn_latency_ms", 45000)
