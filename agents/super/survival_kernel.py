@@ -196,10 +196,19 @@ def preflight() -> tuple[bool, str]:
     return True, ""
 
 
+def _cycle_env() -> dict:
+    """Match the old launcher: clear nested-session detection so core.py and its
+    sub-agents don't mistake the supervisor for a nested Claude Code session."""
+    env = dict(os.environ)
+    for k in ("CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE", "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"):
+        env.pop(k, None)
+    return env
+
+
 def run_cycle() -> dict:
     """Run one `core.py run` cycle, time-boxed; SIGKILL the whole group on hang."""
     t0 = time.monotonic()
-    proc = subprocess.Popen([PYTHON, "core.py", "run"], cwd=str(CORE_DIR), start_new_session=True)
+    proc = subprocess.Popen([PYTHON, "core.py", "run"], cwd=str(CORE_DIR), start_new_session=True, env=_cycle_env())
     try:
         rc = proc.wait(timeout=CYCLE_BUDGET)
         return {"exit_code": rc, "duration_s": round(time.monotonic() - t0, 1), "killed": False}
