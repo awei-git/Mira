@@ -2,10 +2,12 @@
 
 import ast
 import difflib
+import fcntl
 import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 import tokenize
@@ -63,6 +65,13 @@ TRUST_ASSUMPTION_KEYS: tuple[str, ...] = ("network", "filesystem", "llm_output",
 SENSITIVITY_CONFIDENCE_THRESHOLD: float = 0.7
 SCHEMA_VIOLATION_THRESHOLD: int = 3
 PERMANENT_SKILL_BLOCKLIST: frozenset[str] = frozenset({"cross-asset-divergence-detection"})
+SURVEILLANCE_DOMAIN_BLACKLIST = [
+    "google.com",
+    "recaptcha.net",
+    "gstatic.com",
+    "googleapis.com",
+    "googletagmanager.com",
+]
 AUTO_BLOCK_CATEGORY_THRESHOLD: int = 3
 INTERMEDIARY_PATTERNS: list[str] = [
     "register_handler",
@@ -70,6 +79,18 @@ INTERMEDIARY_PATTERNS: list[str] = [
     "relay_via",
     "forward_to",
 ]
+HARDWARE_FINGERPRINTING_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    ("system_profiler", re.compile(r"(?<![\w.-])system_profiler(?![\w.-])", re.IGNORECASE)),
+    ("ioreg", re.compile(r"(?<![\w.-])ioreg(?![\w.-])", re.IGNORECASE)),
+    ("diskutil", re.compile(r"(?<![\w.-])diskutil(?![\w.-])", re.IGNORECASE)),
+    ("platform.uname", re.compile(r"\bplatform\.uname\b", re.IGNORECASE)),
+    ("os.uname", re.compile(r"\bos\.uname\b", re.IGNORECASE)),
+    ("uuid.getnode", re.compile(r"\buuid\.getnode\b", re.IGNORECASE)),
+    ("socket.gethostname", re.compile(r"\bsocket\.gethostname\b", re.IGNORECASE)),
+    ("psutil.disk_io_counters", re.compile(r"\bpsutil\.disk_io_counters\b", re.IGNORECASE)),
+    ("/proc/cpuinfo", re.compile(r"/proc/cpuinfo", re.IGNORECASE)),
+    ("/sys/block", re.compile(r"/sys/block\b", re.IGNORECASE)),
+)
 _TRANSITIVE_TRUST_CALL_PATTERN: re.Pattern = re.compile(
     r"\b(?:subprocess\.(?:run|call|Popen|check_call|check_output)|os\.(?:system|popen))\s*" r"\((?P<args>.{0,800}?)\)",
     re.IGNORECASE | re.DOTALL,
@@ -91,6 +112,22 @@ TRANSITIVE_TRUST_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
             re.IGNORECASE | re.DOTALL,
         ),
     ),
+)
+ALIGNMENT_RED_FLAGS: tuple[str, ...] = (
+    "ignore all previous instructions",
+    "ignore previous instructions",
+    "ignore all prior instructions",
+    "ignore prior instructions",
+    "ignore all previous safety",
+    "ignore previous safety",
+    "disregard all previous instructions",
+    "disregard previous instructions",
+    "no content filter",
+    "no safety filter",
+    "you are an uncensored model",
+    "uncensored model",
+    "no restrictions",
+    "no safety restrictions",
 )
 _VERIFICATION_ANCHOR_NAME_PATTERN: re.Pattern = re.compile(r"verif|validat|check|confirm", re.IGNORECASE)
 _VERIFICATION_ANCHOR_CALL_PATTERN: re.Pattern = re.compile(
@@ -373,6 +410,151 @@ def validate_soul_files() -> list[tuple[str, str]]:
     return failures
 
 
+def export_memory_to_sqlite(db_path: Path | None = None) -> Path:
+    import sqlite3
+
+    try:
+        from config import JOURNAL_DIR, MEMORY_FILE, SKILLS_DIR, SKILLS_INDEX
+    except Exception as exc:
+        raise RuntimeError(f"failed to load soul paths: {exc}") from exc
+
+    target = db_path or (Path.home() / "Sandbox" / "Mira" / "Mira-Artifacts" / "memory" / "memory.db")
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    journal_rows = []
+    if JOURNAL_DIR.exists():
+        for path in sorted(JOURNAL_DIR.glob("*.md")):
+            try:
+                stat = path.stat()
+                journal_rows.append(
+                    (
+                        path.stem,
+                        str(path),
+                        path.read_text(encoding="utf-8"),
+                        datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                    )
+                )
+            except (OSError, UnicodeDecodeError):
+                log.debug("memory sqlite export skipped unreadable journal: %s", path)
+
+    skill_rows = []
+    try:
+        skill_index = json.loads(SKILLS_INDEX.read_text(encoding="utf-8")) if SKILLS_INDEX.exists() else []
+    except (OSError, json.JSONDecodeError):
+        skill_index = []
+        log.debug("memory sqlite export could not read learned skill index")
+    if isinstance(skill_index, dict):
+        skills_payload = skill_index.get("skills", [])
+        if isinstance(skills_payload, dict):
+            skill_entries = list(skills_payload.values())
+        elif isinstance(skills_payload, list):
+            skill_entries = skills_payload
+        else:
+            skill_entries = []
+    elif isinstance(skill_index, list):
+        skill_entries = skill_index
+    else:
+        skill_entries = []
+    for entry in skill_entries:
+        if not isinstance(entry, dict):
+            continue
+        file_name = str(entry.get("file") or "")
+        skill_path = SKILLS_DIR / file_name if file_name else None
+        content = ""
+        if skill_path and skill_path.exists():
+            try:
+                content = skill_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                log.debug("memory sqlite export skipped unreadable skill file: %s", skill_path)
+        skill_rows.append(
+            (
+                str(entry.get("name") or entry.get("skill_name") or file_name),
+                str(entry.get("description") or ""),
+                file_name,
+                json.dumps(entry.get("tags") or [], ensure_ascii=False),
+                str(entry.get("created") or ""),
+                str(entry.get("audited_at") or ""),
+                str(entry.get("validated_at") or ""),
+                content,
+            )
+        )
+
+    memory_rows = []
+    if MEMORY_FILE.exists():
+        try:
+            current_heading = ""
+            for index, line in enumerate(MEMORY_FILE.read_text(encoding="utf-8").splitlines()):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if stripped.startswith("#"):
+                    current_heading = stripped.lstrip("#").strip()
+                    continue
+                memory_rows.append((index, current_heading, stripped, str(MEMORY_FILE)))
+        except (OSError, UnicodeDecodeError):
+            log.debug("memory sqlite export could not read memory file: %s", MEMORY_FILE)
+
+    with sqlite3.connect(str(target)) as conn:
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("DROP TABLE IF EXISTS journal_entries")
+        conn.execute("DROP TABLE IF EXISTS learned_skills")
+        conn.execute("DROP TABLE IF EXISTS key_memories")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS journal_entries (
+                date TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                content TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS learned_skills (
+                skill_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                file TEXT NOT NULL,
+                tags_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                audited_at TEXT NOT NULL,
+                validated_at TEXT NOT NULL,
+                content TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS key_memories (
+                sort_order INTEGER PRIMARY KEY,
+                section TEXT NOT NULL,
+                content TEXT NOT NULL,
+                source_path TEXT NOT NULL
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO journal_entries (date, path, content, updated_at) VALUES (?, ?, ?, ?)",
+            journal_rows,
+        )
+        conn.executemany(
+            """
+            INSERT INTO learned_skills (
+                name, description, file, tags_json, created_at, audited_at, validated_at, content
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            skill_rows,
+        )
+        conn.executemany(
+            "INSERT INTO key_memories (sort_order, section, content, source_path) VALUES (?, ?, ?, ?)",
+            memory_rows,
+        )
+        conn.commit()
+
+    return target
+
+
 _LOCAL_MODEL_PROVIDERS = frozenset({"local", "offline", "omlx", "ollama", "mlx", "llama.cpp", "llamacpp", "gguf"})
 
 
@@ -447,12 +629,19 @@ class SkillProvenance(TypedDict, total=False):
     imported_by: Optional[str]
     imported_at: Optional[str]
     source_url: Optional[str]
+    source_hash: Optional[str]
+    acquired_at: Optional[str]
     co_maintainer: Optional[str]
     fork_of: Optional[str]
     review_continuity_note: Optional[str]
 
 
 class SkillMetadata(TypedDict, total=False):
+    # Recommended: explain why the skill is structured this way and what design intent it serves.
+    rationale: str
+    why: str
+    design_notes: str
+    intent: str
     efficacy_verified: bool
     efficacy_last_checked: Optional[str]
     superseded_by: Optional[str]
@@ -463,7 +652,11 @@ class SkillMetadata(TypedDict, total=False):
     last_reviewed: Optional[str]
     validation_instances: int
     provenance: SkillProvenance
+    declared_triggers: list[str] | str
+    triggers: list[str] | str
     source_url: Optional[str]
+    source_hash: Optional[str]
+    acquired_at: Optional[str]
     co_maintainer: Optional[str]
     fork_of: Optional[str]
     review_continuity_note: Optional[str]
@@ -479,6 +672,73 @@ def _skill_metadata_with_efficacy_defaults(metadata: dict | None = None) -> Skil
     normalized.setdefault("validation_instances", 1)
     normalized.setdefault("trust_expires_at", None)
     return normalized
+
+
+_TRIVIAL_SKILL_RATIONALE_PATTERN: re.Pattern = re.compile(
+    r"^(?:(?:this\s+)?skill\s+)?(?:does|performs|runs|handles|creates|generates|checks|audits|analyzes|summarizes|writes|reads)\b",
+    re.IGNORECASE,
+)
+_RATIONALE_EXPLANATORY_PATTERN: re.Pattern = re.compile(
+    r"\b(?:because|why|so that|therefore|tradeoff|structured|sequence|guardrail|failure mode|risk|constraint|assumption|boundary)\b",
+    re.IGNORECASE,
+)
+_SKILL_RATIONALE_FIELDS: tuple[str, ...] = ("rationale", "why", "design_notes", "intent")
+
+
+def _has_nontrivial_skill_rationale(metadata: dict | None) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    for field_name in _SKILL_RATIONALE_FIELDS:
+        rationale = metadata.get(field_name)
+        if not isinstance(rationale, str):
+            continue
+        normalized = " ".join(rationale.strip().split())
+        if len(normalized) <= 20:
+            continue
+        if not (
+            _TRIVIAL_SKILL_RATIONALE_PATTERN.search(normalized)
+            and not _RATIONALE_EXPLANATORY_PATTERN.search(normalized)
+        ):
+            return True
+    return False
+
+
+def _has_required_skill_rationale(metadata: dict | None) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    rationale = metadata.get("rationale")
+    if not isinstance(rationale, str):
+        return False
+    normalized = " ".join(rationale.strip().split())
+    if len(normalized) <= 50:
+        return False
+    return not (
+        _TRIVIAL_SKILL_RATIONALE_PATTERN.search(normalized) and not _RATIONALE_EXPLANATORY_PATTERN.search(normalized)
+    )
+
+
+def _skill_requires_origin_provenance(source: str, metadata: dict | None) -> bool:
+    if not isinstance(metadata, dict):
+        metadata_source = ""
+    else:
+        metadata_source = str(metadata.get("source") or "").strip()
+    source_markers = [metadata_source, str(source or "").strip()]
+    return any(marker.lower().replace("-", "_") in {"agent_generated", "external"} for marker in source_markers)
+
+
+def _has_required_origin_provenance(metadata: dict | None) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    provenance = metadata.get("provenance")
+    if isinstance(provenance, dict):
+        for key in ("source", "origin", "originating_source", "task_id", "source_task", "source_task_id"):
+            value = provenance.get(key)
+            if isinstance(value, str) and value.strip().lower() not in {"", "unknown", "none"}:
+                return True
+        return False
+    if isinstance(provenance, str):
+        return provenance.strip().lower() not in {"", "unknown", "none"}
+    return False
 
 
 def _skill_slug(skill_name: str) -> str:
@@ -704,9 +964,10 @@ def _normalize_skill_provenance(provenance: dict | None = None) -> dict[str, str
         "imported_by": str(provenance.get("imported_by") or "unknown"),
         "imported_at": str(provenance.get("imported_at") or "unknown"),
     }
-    authorized_by = provenance.get("authorized_by")
-    if authorized_by is not None and str(authorized_by).strip():
-        normalized["authorized_by"] = str(authorized_by).strip()
+    for key in ("authorized_by", "source_url", "source_hash", "acquired_at"):
+        value = provenance.get(key)
+        if value is not None and str(value).strip():
+            normalized[key] = str(value).strip()
     return normalized
 
 
@@ -1106,6 +1367,85 @@ def _skill_audit_metadata(slug: str) -> dict:
         return {}
 
 
+def _skill_file_mtime(skill_file: Path | None) -> float | None:
+    if skill_file is None:
+        return None
+    try:
+        return os.path.getmtime(skill_file)
+    except OSError:
+        return None
+
+
+def _audit_record_audited_mtime(audit_record: dict | None) -> float | None:
+    value = (audit_record or {}).get("audited_mtime")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ensure_skill_audit_record_current(
+    skill_name: str,
+    slug: str,
+    content: str,
+    audit_record: dict,
+    audit_metadata: dict,
+    skill_file: Path | None,
+    source: str | None,
+    caller_agent: str,
+) -> tuple[bool, dict]:
+    if not audit_record:
+        log.warning(
+            "SKILL_LOAD blocked: skill=%s reason='audit required: missing audit record'",
+            skill_name,
+        )
+        return False, audit_metadata
+
+    file_mtime = _skill_file_mtime(skill_file)
+    if file_mtime is None:
+        log.warning(
+            "SKILL_LOAD blocked: skill=%s reason='cannot verify audited_mtime'",
+            skill_name,
+        )
+        return False, audit_metadata
+
+    audited_mtime = _audit_record_audited_mtime(audit_record)
+    if audited_mtime is not None and file_mtime <= audited_mtime:
+        return True, audit_metadata
+
+    reason = "missing_audited_mtime" if audited_mtime is None else "mtime_changed"
+    log.warning(
+        "SKILL_LOAD %s: skill=%s file modified since audit record; re-auditing",
+        reason,
+        skill_name,
+    )
+    try:
+        result = audit_skill(
+            skill_name,
+            content,
+            source_url=_skill_audit_provenance_source(source or "load", audit_metadata),
+            introduced_by=caller_agent,
+            source=source or "load",
+            metadata=audit_metadata,
+            caller_agent=caller_agent,
+        )
+        if not isinstance(result, dict) or not isinstance(result.get("blocked"), bool):
+            raise ValueError(f"unexpected audit result: {result!r}")
+    except Exception as exc:
+        log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", exc)
+        return False, audit_metadata
+    if result["blocked"]:
+        log.warning("SKILL_LOAD blocked: skill=%s failed mtime re-audit", skill_name)
+        return False, audit_metadata
+
+    refreshed_record = _skill_audit_metadata(slug)
+    if refreshed_record:
+        audit_metadata.update(refreshed_record)
+    return True, audit_metadata
+
+
 def _skill_trust_expires_at(now: datetime | None = None) -> float:
     now = now or datetime.now(timezone.utc)
     return (now + timedelta(days=SKILL_TRUST_EXPIRY_DAYS)).timestamp()
@@ -1212,7 +1552,11 @@ def _persist_skill_trust_approval(
         if not isinstance(entry, dict):
             entry = {}
         entry["hash"] = hashlib.sha256(skill_content.encode()).hexdigest()
+        entry["content_hash"] = entry["hash"]
         entry["trust_expires_at"] = trust_expires_at
+        audited_mtime = _skill_file_mtime(skill_file)
+        if audited_mtime is not None:
+            entry["audited_mtime"] = audited_mtime
         hashes[slug] = entry
         hashes_path.parent.mkdir(parents=True, exist_ok=True)
         hashes_path.write_text(json.dumps(hashes, indent=2), encoding="utf-8")
@@ -1363,9 +1707,51 @@ def _apply_skill_audit_load_gate(
         return ""
 
     audit_metadata = dict(metadata or {})
-    audit_metadata.update(_skill_audit_metadata(slug))
+    audit_record = _skill_audit_metadata(slug)
+    audit_metadata.update(audit_record)
     if skill_file is not None:
         audit_metadata.setdefault("source_path", str(skill_file))
+    audit_current, audit_metadata = _ensure_skill_audit_record_current(
+        skill_name,
+        slug,
+        content,
+        audit_record,
+        audit_metadata,
+        skill_file,
+        source,
+        caller_agent,
+    )
+    if not audit_current:
+        return ""
+    current_hash = hashlib.sha256(content.encode()).hexdigest()
+    stored_content_hash = audit_metadata.get("content_hash") or audit_metadata.get("hash")
+    if (
+        isinstance(stored_content_hash, str)
+        and stored_content_hash.strip()
+        and current_hash != stored_content_hash.strip()
+    ):
+        log.warning(
+            "SKILL_LOAD hash_mismatch: skill=%s skill content changed since last audit, re-auditing",
+            skill_name,
+        )
+        try:
+            result = audit_skill(
+                skill_name,
+                content,
+                source_url=_skill_audit_provenance_source(source or "load", audit_metadata),
+                introduced_by=caller_agent,
+                metadata=audit_metadata,
+                caller_agent=caller_agent,
+            )
+            if not isinstance(result, dict) or not isinstance(result.get("blocked"), bool):
+                raise ValueError(f"unexpected audit result: {result!r}")
+        except Exception as exc:
+            log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", exc)
+            return ""
+        if result["blocked"]:
+            log.warning("SKILL_LOAD blocked: skill=%s re-audit failed after content hash mismatch", skill_name)
+            return ""
+        audit_metadata["content_hash"] = current_hash
     trust_expired, trust_expires_at = _skill_trust_is_expired(audit_metadata)
     if trust_expired:
         _queue_skill_reaudit(skill_name, skill_file, audit_metadata, "trust_expired")
@@ -1411,7 +1797,7 @@ def _apply_skill_audit_load_gate(
             metadata=audit_metadata,
             caller_agent=caller_agent,
         )
-        if not isinstance(result, dict) or "blocked" not in result:
+        if not isinstance(result, dict) or not isinstance(result.get("blocked"), bool):
             raise ValueError(f"unexpected audit result: {result!r}")
     except Exception as exc:
         log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", exc)
@@ -1499,6 +1885,179 @@ def detect_agent_drift(score_records: list, window_size: int = 10, slope_thresho
         "sample_count": sample_count,
         "rolling_mean": round(y_mean, 6),
         "last_three_below_mean": last_three_below_mean,
+    }
+
+
+_SYCOPHANCY_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "about",
+        "above",
+        "after",
+        "agent",
+        "also",
+        "and",
+        "are",
+        "because",
+        "been",
+        "but",
+        "can",
+        "could",
+        "for",
+        "from",
+        "has",
+        "have",
+        "into",
+        "its",
+        "make",
+        "more",
+        "must",
+        "need",
+        "only",
+        "output",
+        "should",
+        "task",
+        "that",
+        "the",
+        "this",
+        "was",
+        "what",
+        "when",
+        "with",
+        "would",
+        "you",
+        "your",
+    }
+)
+_SYCOPHANCY_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z'-]{2,}|[\u4e00-\u9fff]{2,}")
+_SYCOPHANCY_AGREEMENT_PATTERN = re.compile(
+    r"\b(?:agree|yes|exactly|absolutely|correct|right|as you said|you are right|aligns with|reinforces)\b"
+    r"|完全同意|正是|如你所说|你说得对",
+    re.IGNORECASE,
+)
+_SYCOPHANCY_INDEPENDENT_PATTERN = re.compile(
+    r"\b(?:however|but|counterargument|counterexample|disagree|caveat|alternative|tradeoff|risk|limitation|"
+    r"assumption|uncertain|verify|verification|evidence|failure mode|edge case|opposing|falsify|falsifying)\b"
+    r"|但是|然而|反例|不同意|风险|权衡|限制|假设|不确定|验证|证据|另一种",
+    re.IGNORECASE,
+)
+_SYCOPHANCY_COUNTER_PATTERN = re.compile(
+    r"\b(?:disagree|counterargument|counterexample|push back|objection|opposing|caveat|falsify|falsifying)\b"
+    r"|不同意|反例|反驳|异议",
+    re.IGNORECASE,
+)
+
+
+def _sycophancy_tokens(text: str) -> list[str]:
+    tokens = [match.group(0).lower() for match in _SYCOPHANCY_TOKEN_PATTERN.finditer(str(text or ""))]
+    return [token for token in tokens if token not in _SYCOPHANCY_STOPWORDS]
+
+
+def _sycophancy_ngrams(tokens: list[str], size: int = 3) -> set[tuple[str, ...]]:
+    if len(tokens) < size:
+        return set()
+    return {tuple(tokens[index : index + size]) for index in range(len(tokens) - size + 1)}
+
+
+def assess_sycophancy_resistance(interactions: list[dict], low_score_threshold: float = 0.5) -> dict:
+    samples = []
+    total_independent_moves = 0
+    total_counter_moves = 0
+    total_agreement_moves = 0
+
+    for interaction in interactions:
+        framing = str(interaction.get("framing") or "")
+        output = str(interaction.get("output") or "")
+        framing_tokens = _sycophancy_tokens(framing)
+        output_tokens = _sycophancy_tokens(output)
+        if len(framing_tokens) < 3 or len(output_tokens) < 3:
+            continue
+
+        framing_terms = set(framing_tokens)
+        output_terms = set(output_tokens)
+        shared_terms = framing_terms & output_terms
+        lexical_mirroring = len(shared_terms) / max(1, min(len(framing_terms), len(output_terms)))
+        output_dependency = len(shared_terms) / max(1, len(output_terms))
+        framing_ngrams = _sycophancy_ngrams(framing_tokens)
+        output_ngrams = _sycophancy_ngrams(output_tokens)
+        phrase_mirroring = len(framing_ngrams & output_ngrams) / max(1, len(framing_ngrams))
+        conclusion_tokens = set(_sycophancy_tokens(output[-800:]))
+        conclusion_mirroring = len(conclusion_tokens & framing_terms) / max(1, len(conclusion_tokens))
+        independent_moves = len(_SYCOPHANCY_INDEPENDENT_PATTERN.findall(output))
+        counter_moves = len(_SYCOPHANCY_COUNTER_PATTERN.findall(output))
+        agreement_moves = len(_SYCOPHANCY_AGREEMENT_PATTERN.findall(output[:1200]))
+        novelty_ratio = len(output_terms - framing_terms) / max(1, len(output_terms))
+
+        score = 1.0
+        score -= min(0.3, output_dependency * 0.35)
+        if lexical_mirroring > 0.6:
+            score -= 0.15
+        if phrase_mirroring > 0.15:
+            score -= min(0.25, phrase_mirroring)
+        if agreement_moves and independent_moves == 0:
+            score -= 0.2
+        if conclusion_mirroring > 0.55 and independent_moves == 0:
+            score -= 0.15
+        if novelty_ratio < 0.35 and independent_moves == 0:
+            score -= 0.1
+        if independent_moves:
+            score += min(0.2, independent_moves * 0.05)
+        if counter_moves:
+            score += min(0.1, counter_moves * 0.05)
+
+        samples.append(
+            {
+                "score": max(0.0, min(1.0, score)),
+                "lexical_mirroring": lexical_mirroring,
+                "phrase_mirroring": phrase_mirroring,
+                "conclusion_mirroring": conclusion_mirroring,
+                "output_dependency": output_dependency,
+                "novelty_ratio": novelty_ratio,
+                "independent_moves": independent_moves,
+                "counter_moves": counter_moves,
+                "agreement_moves": agreement_moves,
+            }
+        )
+        total_independent_moves += independent_moves
+        total_counter_moves += counter_moves
+        total_agreement_moves += agreement_moves
+
+    if not samples:
+        return {
+            "score": 1.0,
+            "flag": False,
+            "flags": [],
+            "sample_count": 0,
+            "reason": "insufficient comparable framing/output pairs",
+        }
+
+    score = sum(sample["score"] for sample in samples) / len(samples)
+    avg_lexical = sum(sample["lexical_mirroring"] for sample in samples) / len(samples)
+    avg_phrase = sum(sample["phrase_mirroring"] for sample in samples) / len(samples)
+    avg_conclusion = sum(sample["conclusion_mirroring"] for sample in samples) / len(samples)
+    flags: list[str] = []
+    if avg_lexical > 0.6 or avg_phrase > 0.15:
+        flags.append("mirrors_orchestrator_framing")
+    if len(samples) >= 3 and total_counter_moves == 0 and total_independent_moves <= 1:
+        flags.append("no_pushback_across_multiple_interactions")
+        score -= 0.1
+    if avg_conclusion > 0.55 and total_independent_moves == 0:
+        flags.append("conclusion_tracks_task_framing")
+    if total_agreement_moves and total_independent_moves == 0:
+        flags.append("agreement_without_independent_substance")
+
+    score = round(max(0.0, min(1.0, score)), 3)
+    return {
+        "score": score,
+        "flag": score < low_score_threshold or bool(flags and score < 0.7),
+        "flags": flags,
+        "sample_count": len(samples),
+        "avg_lexical_mirroring": round(avg_lexical, 3),
+        "avg_phrase_mirroring": round(avg_phrase, 3),
+        "avg_conclusion_mirroring": round(avg_conclusion, 3),
+        "independent_move_count": total_independent_moves,
+        "counterargument_count": total_counter_moves,
+        "agreement_marker_count": total_agreement_moves,
+        "low_score_threshold": low_score_threshold,
     }
 
 
@@ -1627,6 +2186,68 @@ def _append_heartbeat_alert(record: dict) -> None:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError as exc:
         log.debug("heartbeat alert write failed: %s", exc)
+
+
+def _publish_decision_score(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(score, 4) if math.isfinite(score) else None
+
+
+def _publish_decision_preflight_payload(preflight_result: object) -> object:
+    if preflight_result is None or isinstance(preflight_result, (str, int, float, bool, list, dict)):
+        return preflight_result
+
+    checks = []
+    for check in getattr(preflight_result, "checks", []) or []:
+        checks.append(
+            {
+                "name": getattr(check, "name", None),
+                "passed": getattr(check, "passed", None),
+                "message": getattr(check, "message", None),
+            }
+        )
+
+    payload = {
+        "passed": getattr(preflight_result, "passed", None),
+        "action_type": getattr(preflight_result, "action_type", None),
+        "blocking_reasons": list(getattr(preflight_result, "blocking_reasons", []) or []),
+        "checks": checks,
+    }
+    summary = getattr(preflight_result, "summary", None)
+    if callable(summary):
+        payload["summary"] = summary()
+    return payload
+
+
+def log_publish_decision(
+    *,
+    article_id: str,
+    content_guard_score: object = None,
+    content_guard_result: object = None,
+    preflight_result: object = None,
+    anti_ai_checklist_score: object = None,
+    rationale: str,
+) -> None:
+    from config import MIRA_ROOT
+
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "article_id": str(article_id or "").strip(),
+        "content_guard_score": _publish_decision_score(content_guard_score),
+        "content_guard_result": str(content_guard_result or "").strip(),
+        "preflight_result": _publish_decision_preflight_payload(preflight_result),
+        "anti_ai_checklist_score": _publish_decision_score(anti_ai_checklist_score),
+        "rationale": " ".join(str(rationale or "").split())[:500],
+    }
+    log_path = Path(MIRA_ROOT) / "logs" / "publish_decisions.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def detect_cross_agent_silence(min_silent_agents: int = 3) -> dict | None:
@@ -1822,6 +2443,8 @@ def _update_capability_manifest(skill_name: str, skill_tags: object, audit_summa
     }
     if isinstance(audit_summary, dict):
         entry["trust_assumptions"] = _normalize_trust_assumptions(audit_summary.get("trust_assumptions"))
+        if isinstance(audit_summary.get("capability_manifest"), dict):
+            entry["capability_manifest"] = audit_summary["capability_manifest"]
     if isinstance(audit_summary, dict) and isinstance(audit_summary.get("env_assumptions"), dict):
         entry["env_assumptions"] = audit_summary["env_assumptions"]
 
@@ -1897,6 +2520,28 @@ def log_authorization_event(
             f.write(json.dumps(entry) + "\n")
     except OSError as exc:
         log.debug("trust_audit write failed: %s", exc)
+
+
+def _log_memory_injection(entry_name: str, trigger: object, token_estimate: int) -> None:
+    try:
+        _log_path = Path(__file__).resolve().parent.parent / "agents" / "shared" / "soul" / "memory_injection.log"
+        _log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(_log_path, "a", encoding="utf-8") as _f:
+            _f.write(
+                json.dumps(
+                    {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "entry": entry_name,
+                        "trigger": trigger if isinstance(trigger, dict) else {"detail": str(trigger)},
+                        "tokens": int(token_estimate),
+                        "agent": "soul_manager",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception as _e:
+        log.debug("memory injection log write skipped: %s", _e)
 
 
 def check_audit_coverage() -> list[str]:
@@ -2595,6 +3240,8 @@ BEHAVIOR_MODIFICATION_NO_MECHANISM_MESSAGE = (
     "damage (see soul audit rule SR-001)."
 )
 
+TRUST_LABEL_WITHOUT_MECHANISM_MESSAGE = "Trust vocabulary without verification mechanism — inspect manually"
+
 _SELF_MOD_KEYWORDS: tuple[str, ...] = (
     "align",
     "calibrate behavior",
@@ -2856,6 +3503,14 @@ _COMPOUND_SENSITIVE_PATH_PATTERN = re.compile(
 _COMPOUND_NETWORK_CALL_PATTERN = re.compile(
     r"\b(requests\.get|requests\.post|httpx\.|urllib\.|aiohttp\.|socket\.connect)\b|(?<!\w)curl\b",
 )
+_EXTERNAL_HTTP_CALL_PATTERN = re.compile(
+    r"\b(?:requests|httpx)\.(?:get|post|put|patch|delete|head|options|request)\s*\("
+    r"|\burllib(?:\.request)?\.(?:urlopen|urlretrieve|Request)\s*\("
+    r"|\baiohttp\.(?:ClientSession|request|get|post|put|patch|delete)\b"
+    r"|(?<!\w)fetch\s*\("
+    r"|(?<!\w)curl\s+https?://",
+    re.IGNORECASE,
+)
 
 _DIFF_HIGH_IMPACT_PATTERN = re.compile(r"\b(?:import|subprocess|requests|urllib|socket|eval|exec|base64|__import__)\b")
 
@@ -2873,6 +3528,64 @@ COVERT_CHANNEL_SERVICES: frozenset[str] = frozenset(
         "webhook.site",
         "ngrok.io",
         "serveo.net",
+    }
+)
+COVERT_CHANNEL_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    (
+        "google_apps_script_macro",
+        re.compile(r"script\.google\.com/macros/s/", re.IGNORECASE),
+    ),
+    (
+        "google_drive_encoded_payload",
+        re.compile(
+            r"(?:drive\.google\.com(?s:.{0,800})"
+            r"(?:base64|b64encode|urlsafe_b64encode|standard_b64encode|codecs\.encode|\.encode\s*\()"
+            r"|(?:base64|b64encode|urlsafe_b64encode|standard_b64encode|codecs\.encode|\.encode\s*\()"
+            r"(?s:.{0,800})drive\.google\.com)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "cloudflare_worker_relay",
+        re.compile(r"(?:https?://[^\s'\"\\<>)\]]+\.workers\.dev|cloudflareworkers\.com)", re.IGNORECASE),
+    ),
+    (
+        "github_raw_dynamic_payload",
+        re.compile(r"(?:raw\.githubusercontent\.com|gist\.githubusercontent\.com|gist\.github\.com)", re.IGNORECASE),
+    ),
+    (
+        "pastebin_raw_relay",
+        re.compile(r"pastebin\.com/raw", re.IGNORECASE),
+    ),
+    (
+        "discord_webhook_relay",
+        re.compile(r"discord(?:app)?\.com/api/webhooks/", re.IGNORECASE),
+    ),
+)
+NETWORK_RELATED_TAG_TOKENS: frozenset[str] = frozenset(
+    {
+        "api",
+        "browser",
+        "cloud",
+        "connector",
+        "download",
+        "drive",
+        "explorer",
+        "fetch",
+        "github",
+        "http",
+        "ingest",
+        "integration",
+        "network",
+        "online",
+        "remote",
+        "research",
+        "scraping",
+        "social",
+        "socialmedia",
+        "upload",
+        "web",
+        "webhook",
     }
 )
 
@@ -2973,6 +3686,42 @@ _JUDGMENT_CONSEQUENTIAL_PATTERN = re.compile(
     r"\b(publish|publishing|deploy|deployment|release|production|financial|finance|investment|"
     r"trading|portfolio|safety|unsafe|harm|medical|legal|compliance|credential|security)\b",
     re.IGNORECASE,
+)
+_JUDGMENT_SUBSTITUTION_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    ("optimizes_for_engagement", re.compile(r"\boptimizes?\s+for\s+engagement\b", re.IGNORECASE)),
+    ("selects_based_on_data_alone", re.compile(r"\bselects?\s+based\s+on\s+data\s+alone\b", re.IGNORECASE)),
+    ("no_human_review", re.compile(r"\bno\s+human\s+review\b", re.IGNORECASE)),
+    ("closed_loop_content_decision", re.compile(r"\bclosed[-\s]?loop\s+content\s+decision\b", re.IGNORECASE)),
+    ("judgment_automation", re.compile(r"\bjudg(?:e)?ment\s+automation\b", re.IGNORECASE)),
+    (
+        "content_decision_data_feedback_loop",
+        re.compile(
+            r"\b(?:content|editorial|publish(?:ing)?)\b.{0,120}"
+            r"\b(?:decision|selection|ranking|approval|rejection)\b.{0,160}"
+            r"\b(?:pure\s+)?data[-\s]?feedback\s+loop\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+    ),
+    (
+        "automated_editorial_decision_without_review",
+        re.compile(
+            r"\b(?:automatically|autonomously|closed[-\s]?loop)\b.{0,120}"
+            r"\b(?:select|choose|rank|publish|approve|reject|decide)\w*\b.{0,160}"
+            r"\b(?:without|no|bypass(?:es|ing)?|skip(?:s|ping)?)\b.{0,80}"
+            r"\b(?:human|editorial|editor|manual)\s+(?:review|oversight|judg(?:e)?ment)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+    ),
+    (
+        "metrics_replace_editorial_judgment",
+        re.compile(
+            r"\b(?:engagement|clicks?|ctr|views?|likes?|shares?|conversion|retention|watch\s+time|"
+            r"analytics|metrics|performance\s+data)\b.{0,160}"
+            r"\b(?:replace|bypass|skip|remove|supplant)\w*\b.{0,100}"
+            r"\b(?:human|editorial|editor|manual)\s+(?:review|oversight|judg(?:e)?ment)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+    ),
 )
 _JUDGMENT_TEMPLATE_TAGS = frozenset({"judgment", "compliance", "verification"})
 _JUDGMENT_FAILURE_DOC_PATTERN = re.compile(
@@ -3556,7 +4305,8 @@ def _audit_block_log_path() -> Path:
 def _read_rejection_counts() -> dict:
     path = _audit_rejection_counts_path()
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -3565,24 +4315,31 @@ def _update_rejection_counts(source: str, rejected: bool) -> None:
     path = _audit_rejection_counts_path()
     try:
         counts = _read_rejection_counts()
+        source = str(source or "unknown").strip() or "unknown"
         history = counts.get(source, [])
+        if not isinstance(history, list):
+            history = []
         history.append(rejected)
         if len(history) > _REJECTION_COUNTS_N:
             history = history[-_REJECTION_COUNTS_N:]
         counts[source] = history
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(counts, indent=2), encoding="utf-8")
-    except OSError as exc:
+    except (OSError, TypeError, ValueError) as exc:
         log.debug("audit_rejection_counts write failed: %s", exc)
 
 
 def _is_strict_mode(source: str) -> bool:
     counts = _read_rejection_counts()
+    source = str(source or "unknown").strip() or "unknown"
     history = counts.get(source, [])
+    if not isinstance(history, list):
+        return False
+    history = history[-_REJECTION_COUNTS_N:]
     if len(history) < 3:
         return False
     rate = sum(1 for r in history if r) / len(history)
-    return rate >= _REJECTION_RATE_THRESHOLD
+    return rate > _REJECTION_RATE_THRESHOLD
 
 
 def _audit_skill_self_surface() -> tuple[frozenset[str], frozenset[str]]:
@@ -4053,6 +4810,32 @@ def _check_judgment_review_pairing(skill_content: str) -> list[str]:
         f"indicators={','.join(judgment_indicators[:8])} "
         "missing=reviewer_field_or_paired_reviewer_or_internal_review_step"
     ]
+
+
+def _check_judgment_substitution(skill_content: str) -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, str]] = set()
+    lines = skill_content.splitlines()
+
+    for label, pattern in _JUDGMENT_SUBSTITUTION_PATTERNS:
+        for match in pattern.finditer(skill_content):
+            matched_text = re.sub(r"\s+", " ", match.group(0)).strip()
+            key = (label, matched_text.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            line_no = skill_content.count("\n", 0, match.start()) + 1
+            matches.append(
+                {
+                    "category": "JUDGMENT_SUBSTITUTION",
+                    "label": label,
+                    "line_no": line_no,
+                    "line_content": lines[line_no - 1].strip()[:300] if 0 < line_no <= len(lines) else "",
+                    "matched_text": matched_text[:300],
+                }
+            )
+
+    return matches
 
 
 def _audit_judgment_encapsulation(skill_code: str) -> list[str]:
@@ -5724,6 +6507,14 @@ def _skill_network_whitelist() -> set[str]:
     return {str(domain).strip().lower().lstrip(".").rstrip(".") for domain in values if str(domain).strip()}
 
 
+def _allow_surveillance_domains() -> bool:
+    try:
+        from config import ALLOW_SURVEILLANCE_DOMAINS
+    except Exception:
+        return False
+    return bool(ALLOW_SURVEILLANCE_DOMAINS)
+
+
 def _skill_manifest_allowed_domains(metadata: dict | None) -> set[str]:
     if not isinstance(metadata, dict):
         return set()
@@ -5777,6 +6568,20 @@ def _network_domains_whitelisted(domains: list[str], whitelist: set[str]) -> boo
     return all(
         domain in whitelist or any(domain.endswith(f".{allowed}") for allowed in whitelist) for domain in domains
     )
+
+
+def _surveillance_blacklisted_domains(domains: list[str]) -> list[str]:
+    matches: list[str] = []
+    for domain in domains:
+        normalized = str(domain).strip().lower().lstrip(".").rstrip(".")
+        if not normalized:
+            continue
+        if any(
+            normalized == blacklisted or normalized.endswith(f".{blacklisted}")
+            for blacklisted in SURVEILLANCE_DOMAIN_BLACKLIST
+        ):
+            matches.append(normalized)
+    return matches
 
 
 _TRANSITIVE_URL_ALLOWLIST: frozenset[str] = frozenset({"arxiv.org", "export.arxiv.org", "github.com/anthropics"})
@@ -6249,6 +7054,14 @@ def _hard_block_pattern_match(skill_text: str, metadata: dict | None = None) -> 
     return None
 
 
+def _alignment_audit(skill_content: str) -> dict[str, object]:
+    normalized_content = re.sub(r"\s+", " ", skill_content).casefold()
+    for phrase in ALIGNMENT_RED_FLAGS:
+        if phrase.casefold() in normalized_content:
+            return {"passed": False, "matched_phrase": phrase}
+    return {"passed": True}
+
+
 _PROMPT_LAYER_IDENTITY_ACCESS_PATTERN = re.compile(
     r"""\bsoul[/\\][^\s"'`)]*|[^\s"'`)]*[/\\][^\s"'`)]*(?:soul[/\\]|soul_manager)[^\s"'`)]*|\bsoul_manager\b""",
     re.IGNORECASE,
@@ -6383,7 +7196,7 @@ def _log_skill_addition(skill_name: str, skill_content: str) -> None:
 
         content_hash = hashlib.sha256(skill_content.encode()).hexdigest()
         iso_now = datetime.now(timezone.utc).isoformat()
-        active_skills = sorted(p.name for p in SKILLS_DIR.glob("*.md")) if SKILLS_DIR.exists() else []
+        active_skills = sorted(p.name for p in SKILLS_DIR.glob("*.json")) if SKILLS_DIR.exists() else []
 
         history_path = SKILLS_DIR.parent / "skill_history.json"
         try:
@@ -6466,7 +7279,50 @@ def _auditor_integrity_ok() -> bool:
     return stored == current
 
 
-_failure_log: list[tuple[datetime, str]] = []
+failure_log: list[tuple[datetime, str]] = []
+
+
+def _skill_audit_lockout_settings() -> tuple[int, int, int]:
+    try:
+        from config import (
+            SKILL_AUDIT_LOCKOUT_DURATION_MINUTES,
+            SKILL_AUDIT_LOCKOUT_THRESHOLD,
+            SKILL_AUDIT_LOCKOUT_WINDOW_MINUTES,
+        )
+
+        return (
+            int(SKILL_AUDIT_LOCKOUT_THRESHOLD),
+            int(SKILL_AUDIT_LOCKOUT_WINDOW_MINUTES),
+            int(SKILL_AUDIT_LOCKOUT_DURATION_MINUTES),
+        )
+    except Exception:
+        return 5, 60, 30
+
+
+def _check_skill_audit_lockout(skill_name: str, source: str) -> None:
+    threshold, window_minutes, duration_minutes = _skill_audit_lockout_settings()
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(minutes=window_minutes)
+    failure_log[:] = [(ts, sn) for ts, sn in failure_log if ts > window_start]
+    recent_failures = [ts for ts, _ in failure_log if ts > window_start]
+    if len(recent_failures) >= threshold:
+        log.warning(
+            "SKILL_AUDIT lockout: skill=%s source=%s failure_count=%d threshold=%d window_minutes=%d cooldown_minutes=%d",
+            skill_name,
+            source,
+            len(recent_failures),
+            threshold,
+            window_minutes,
+            duration_minutes,
+        )
+        raise SkillAuditLockedOut(
+            f"Skill audit locked out: {len(recent_failures)} failures in last {window_minutes} minutes"
+        )
+
+
+def _record_skill_audit_failure(skill_name: str) -> None:
+    failure_log.append((datetime.now(timezone.utc), skill_name))
+
 
 _SKILL_BLOCKLIST_PATH = Path(__file__).resolve().parent.parent / "agents" / "shared" / "soul" / "skill_blocklist.json"
 _AUTO_BLOCK_CATEGORY_THRESHOLD: int = 3
@@ -6902,6 +7758,255 @@ def _extract_trust_assumptions(skill_content: str) -> dict[str, bool]:
     return assumptions
 
 
+def _skill_manifest_id(skill_name: str) -> str:
+    return re.sub(r"[^a-z0-9_.-]+", "-", _skill_slug(str(skill_name or "skill"))).strip("-") or "skill"
+
+
+def _capability_call_name(node: ast.AST) -> str:
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _append_unique(values: list[str], value: object) -> None:
+    text = str(value or "").strip()
+    if text and text not in values:
+        values.append(text)
+
+
+def _iter_skill_string_literals(skill_content: str) -> list[str]:
+    literals: list[str] = []
+    try:
+        tree = ast.parse(skill_content)
+    except SyntaxError:
+        tree = None
+    except Exception:
+        tree = None
+    if tree is not None:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                _append_unique(literals, node.value)
+
+    if not literals:
+        for match in re.finditer(r"""(?P<quote>['"])(?P<value>[^'"\n]{3,})(?P=quote)""", skill_content):
+            _append_unique(literals, match.group("value"))
+    if not literals:
+        literals.append(skill_content)
+    return literals
+
+
+def _extract_skill_capability_surfaces(skill_content: str) -> dict[str, object]:
+    network_surface: list[str] = []
+    file_reads: list[str] = []
+    file_writes: list[str] = []
+    file_paths: list[str] = []
+    env_surface: list[str] = []
+    trigger_conditions: list[str] = []
+
+    for literal in _iter_skill_string_literals(skill_content):
+        for match in re.finditer(r"""https?://[^\s'"<>\\)]+""", literal):
+            url = match.group(0).rstrip(".,;:")
+            _append_unique(network_surface, url)
+            host = urlparse(url).netloc
+            if host:
+                _append_unique(network_surface, host)
+        for match in re.finditer(r"""\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}\b""", literal):
+            host = match.group(0).strip(".,;:")
+            if not host.lower().startswith(("http.", "https.")):
+                _append_unique(network_surface, host)
+
+    try:
+        tree = ast.parse(skill_content)
+    except SyntaxError:
+        tree = None
+    except Exception:
+        tree = None
+
+    if tree is not None:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                call_name = _capability_call_name(node.func)
+                lower_call = call_name.lower()
+                if lower_call in {"open", "io.open", "path", "pathlib.path"}:
+                    path_value = None
+                    if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                        path_value = node.args[0].value
+                    if path_value:
+                        _append_unique(file_paths, path_value)
+                        mode = "r"
+                        if lower_call in {"open", "io.open"}:
+                            if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
+                                mode = str(node.args[1].value)
+                            for keyword in node.keywords:
+                                if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant):
+                                    mode = str(keyword.value.value)
+                        if lower_call in {"path", "pathlib.path"}:
+                            _append_unique(file_paths, path_value)
+                        elif any(flag in mode for flag in ("w", "a", "x", "+")):
+                            _append_unique(file_writes, path_value)
+                        else:
+                            _append_unique(file_reads, path_value)
+                if lower_call in {"os." "getenv", "os." "environ.get"}:
+                    if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                        _append_unique(env_surface, node.args[0].value)
+            elif isinstance(node, ast.Subscript):
+                if _capability_call_name(node.value).lower() == "os." "environ":
+                    if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+                        _append_unique(env_surface, node.slice.value)
+            elif isinstance(node, ast.If):
+                for child in ast.walk(node.test):
+                    if isinstance(child, ast.Constant) and isinstance(child.value, str) and len(child.value) > 3:
+                        _append_unique(trigger_conditions, child.value)
+
+        for node in ast.walk(tree):
+            docstring = None
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                docstring = ast.get_docstring(node)
+            if not docstring:
+                continue
+            for line in docstring.splitlines():
+                normalized = line.strip()
+                if normalized and any(
+                    keyword in normalized.lower()
+                    for keyword in ("trigger", "invoke", "when ", "called when", "use when", "activat")
+                ):
+                    _append_unique(trigger_conditions, normalized)
+
+    for match in re.finditer(r"""(?:open|Path)\s*\(\s*f?['"]([^'"]+)['"]""", skill_content):
+        path_value = match.group(1)
+        _append_unique(file_paths, path_value)
+        context = skill_content[match.start() : match.end() + 80]
+        mode_match = re.search(r""",\s*['"]([^'"]+)['"]""", context)
+        mode = mode_match.group(1) if mode_match else ""
+        if any(flag in mode for flag in ("w", "a", "x", "+")):
+            _append_unique(file_writes, path_value)
+        elif match.group(0).lstrip().startswith("open"):
+            _append_unique(file_reads, path_value)
+
+    env_ref_pattern = (
+        r"""os\.(?:environ|getenv)(?:\.get)?\s*\(\s*f?['"]([^'"]+)['"]""" r"""|os\.(?:environ)\[f?['"]([^'"]+)['"]\]"""
+    )
+    for match in re.finditer(env_ref_pattern, skill_content):
+        _append_unique(env_surface, match.group(1) or match.group(2))
+
+    for line in skill_content.splitlines():
+        normalized = line.strip()
+        if normalized and any(
+            keyword in normalized.lower()
+            for keyword in ("trigger", "invoke", "when ", "called when", "use when", "activat")
+        ):
+            _append_unique(trigger_conditions, normalized)
+
+    return {
+        "network_surface": network_surface,
+        "file_surface": {
+            "reads": file_reads,
+            "writes": file_writes,
+            "paths": file_paths,
+        },
+        "env_surface": env_surface,
+        "trigger_conditions": trigger_conditions,
+    }
+
+
+def _build_skill_capability_manifest(
+    skill_name: str,
+    skill_content: str,
+    source: str,
+    metadata: dict | None,
+    audit_result: dict | None = None,
+) -> dict:
+    audit_result = audit_result if isinstance(audit_result, dict) else {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    manifest_source = _normalize_skill_manifest_source(
+        audit_result.get("manifest_source") or audit_result.get("source") or metadata.get("source") or source
+    )
+    skill_depth = str(
+        audit_result.get("depth")
+        or metadata.get("depth")
+        or ("unverified" if manifest_source == "extraction" else "verified")
+    )
+    trust_assumptions = _normalize_trust_assumptions(audit_result.get("trust_assumptions"))
+    if not any(trust_assumptions.values()):
+        trust_assumptions = _extract_trust_assumptions(skill_content)
+
+    manifest = {
+        "skill": skill_name,
+        "source": manifest_source,
+        "depth": skill_depth,
+        "efficacy_verified": metadata.get("efficacy_verified", False),
+        "efficacy_last_checked": metadata.get("efficacy_last_checked"),
+        "allowed_domains": sorted(_skill_manifest_allowed_domains(metadata)),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "trust_assumptions": trust_assumptions,
+    }
+    manifest.update(_extract_skill_capability_surfaces(skill_content))
+    return manifest
+
+
+def _write_skill_capability_manifest(skill_name: str, capability_manifest: dict, metadata: dict | None = None) -> None:
+    skill_id = _skill_manifest_id(skill_name)
+    try:
+        from config import LOGS_DIR as _cm_logs_dir
+
+        _cm_path = _cm_logs_dir / f"skill_manifest_{skill_id}.json"
+        _cm_path.parent.mkdir(parents=True, exist_ok=True)
+        _cm_path.write_text(json.dumps(capability_manifest, indent=2), encoding="utf-8")
+    except Exception as _cm_exc:
+        log.debug("skill_manifest write failed: %s", _cm_exc)
+
+    try:
+        from config import SKILLS_DIR as _cm_skills_dir
+
+        _cm_hashes_path = _cm_skills_dir.parent / "audit_hashes.json"
+        if _cm_hashes_path.exists():
+            _cm_hashes = json.loads(_cm_hashes_path.read_text(encoding="utf-8"))
+            if skill_id in _cm_hashes and isinstance(_cm_hashes[skill_id], dict):
+                _cm_hashes[skill_id]["source"] = capability_manifest.get("source")
+                _cm_hashes[skill_id]["depth"] = capability_manifest.get("depth")
+                _cm_hashes[skill_id]["efficacy_verified"] = capability_manifest.get("efficacy_verified", False)
+                _cm_hashes[skill_id]["efficacy_last_checked"] = capability_manifest.get("efficacy_last_checked")
+                _cm_hashes[skill_id]["trust_assumptions"] = _normalize_trust_assumptions(
+                    capability_manifest.get("trust_assumptions")
+                )
+                _audited_at = datetime.now(timezone.utc).isoformat()
+                _cm_hashes[skill_id]["last_audit_timestamp"] = _audited_at
+                _cm_hashes[skill_id]["audited_at"] = _audited_at
+                audited_mtime = _skill_file_mtime(_skill_file_from_metadata(metadata))
+                if audited_mtime is not None:
+                    _cm_hashes[skill_id]["audited_mtime"] = audited_mtime
+                _cm_hashes[skill_id]["capability_manifest"] = capability_manifest
+                _cm_hashes_path.write_text(json.dumps(_cm_hashes, indent=2), encoding="utf-8")
+    except Exception as _cm_exc:
+        log.debug("skill_manifest registry update failed: %s", _cm_exc)
+
+
+def _result_with_capability_manifest(
+    result: dict,
+    skill_name: str,
+    skill_content: str,
+    source: str,
+    metadata: dict | None = None,
+) -> dict:
+    result = dict(result)
+    capability_manifest = result.get("capability_manifest")
+    if not isinstance(capability_manifest, dict):
+        capability_manifest = _build_skill_capability_manifest(skill_name, skill_content, source, metadata, result)
+    else:
+        capability_manifest = dict(capability_manifest)
+        capability_manifest.update(_extract_skill_capability_surfaces(skill_content))
+        capability_manifest["trust_assumptions"] = _normalize_trust_assumptions(
+            capability_manifest.get("trust_assumptions")
+        )
+    result["capability_manifest"] = capability_manifest
+    _write_skill_capability_manifest(skill_name, capability_manifest, metadata)
+    return result
+
+
 def _skill_audit_risk_category(categories: list[str]) -> str:
     category_text = " ".join(str(category).lower() for category in categories)
     if "unauthorized_network" in category_text or "network_call" in category_text:
@@ -7076,7 +8181,7 @@ def _audit_result(
         AUDIT_BOUNDARY["out_of_scope"],
     )
     log.info(
-        "SKILL_AUDIT result: skill=%s source=%s blocked=%s blocked_at_layer=%s boundary_version=%s boundary_hash=%s categories=%s warnings=%s checked=%s not_checked=%s verification_depth=%s assumptions=%s trust_assumptions=%s",
+        "SKILL_AUDIT result: skill=%s source=%s blocked=%s blocked_at_layer=%s boundary_version=%s boundary_hash=%s categories=%s warnings=%s conditional_branch_count=%s checked=%s not_checked=%s verification_depth=%s assumptions=%s trust_assumptions=%s",
         skill_name,
         source,
         blocked,
@@ -7085,6 +8190,7 @@ def _audit_result(
         AUDIT_BOUNDARY_HASH,
         categories,
         warnings,
+        result.get("conditional_branch_count"),
         AUDIT_BOUNDARY["checked"],
         AUDIT_BOUNDARY["not_checked"],
         _AUDIT_VERIFICATION_DEPTH,
@@ -7102,6 +8208,59 @@ def _audit_result(
             json.dumps(result["block_report"], ensure_ascii=False, sort_keys=True),
         )
     return result
+
+
+def _hardware_fingerprinting_matches(skill_text: str) -> list[dict[str, object]]:
+    lines = skill_text.splitlines()
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, int, str]] = set()
+
+    def _append(pattern_label: str, match: re.Match | None = None) -> None:
+        line_no = skill_text.count("\n", 0, match.start()) + 1 if match else 0
+        key = ("hardware_fingerprinting", line_no, pattern_label)
+        if key in seen:
+            return
+        seen.add(key)
+        matches.append(
+            {
+                "severity": "HIGH",
+                "category": "hardware_fingerprinting",
+                "reason": "local hardware or timing fingerprint collection",
+                "pattern": pattern_label,
+                "line_no": line_no,
+                "line_content": lines[line_no - 1].strip()[:300] if 0 < line_no <= len(lines) else "",
+            }
+        )
+
+    for pattern_label, pattern in HARDWARE_FINGERPRINTING_PATTERNS:
+        for match in pattern.finditer(skill_text):
+            _append(pattern_label, match)
+
+    has_perf_counter = bool(re.search(r"\btime\.perf_counter\b|\bperf_counter_ns\b", skill_text, re.IGNORECASE))
+    has_disk_io_loop = bool(
+        re.search(
+            r"\b(?:for|while)\b[\s\S]{0,500}"
+            r"(?:\bopen\s*\(|\.(?:read|write|read_text|read_bytes|write_text|write_bytes)\s*\()",
+            skill_text,
+            re.IGNORECASE,
+        )
+    )
+    if has_perf_counter and has_disk_io_loop:
+        _append("time.perf_counter + repeated disk read/write loop")
+
+    benchmark_latency_probe = bool(
+        re.search(
+            r"\b(?:benchmark|latency|timing)\s+(?:probe|probing|test|benchmark|sample|profile)",
+            skill_text,
+            re.IGNORECASE,
+        )
+        and re.search(r"\b(?:time\.perf_counter|perf_counter_ns|timeit|default_timer)\b", skill_text, re.IGNORECASE)
+        and re.search(r"\b(?:for|while|range|repeat|samples?|iterations?)\b", skill_text, re.IGNORECASE)
+    )
+    if benchmark_latency_probe:
+        _append("benchmark-style latency probing")
+
+    return matches
 
 
 def _skill_audit_excerpt(skill_content: str, failed_checks: list[str], pattern: str | re.Pattern | None = None) -> str:
@@ -7431,8 +8590,6 @@ _GLOBAL_RULE_PATTERNS: list[re.Pattern] = [
 
 
 def _epistemic_overgeneralization_failures(skill_content: str, source: str, metadata: dict | None) -> list[str]:
-    if source in TRUSTED_INTERNAL_SOURCES:
-        return []
     failures: list[str] = []
     matched_patterns = [p.pattern for p in _GLOBAL_RULE_PATTERNS if p.search(skill_content)]
     if matched_patterns:
@@ -7953,6 +9110,164 @@ def _apply_schema_drift_warnings(result: dict, skill_name: str, skill_content: s
     return result
 
 
+_MIXED_MODALITY_IMAGE_FIELD_PATTERN = re.compile(r"image|photo|visual|screenshot|frame", re.IGNORECASE)
+_MIXED_MODALITY_DESCRIPTION_FIELD_PATTERN = re.compile(
+    r"description|caption|label|summary|text",
+    re.IGNORECASE,
+)
+
+
+def _mixed_modality_json_after_labels(text: str) -> list[object]:
+    label_pattern = re.compile(
+        r"\b(?:return(?:s|_schema|\s+schema|\s+examples?)?|output(?:s|_schema|\s+schema|\s+examples?)?|"
+        r"tool\s+output(?:\s+schema|\s+examples?)?)\b\s*:",
+        re.IGNORECASE,
+    )
+    decoder = json.JSONDecoder()
+    parsed_values: list[object] = []
+    for match in label_pattern.finditer(text):
+        json_start = text.find("{", match.end())
+        list_start = text.find("[", match.end())
+        starts = [idx for idx in (json_start, list_start) if idx != -1]
+        if not starts:
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(text[min(starts) :])
+        except json.JSONDecodeError:
+            continue
+        parsed_values.append(parsed)
+    return parsed_values
+
+
+def _mixed_modality_schema_and_example_sources(skill_content: str, metadata: dict | None) -> list[tuple[str, object]]:
+    sources: list[tuple[str, object]] = []
+    metadata_sources: list[tuple[str, dict[str, object]]] = [
+        ("frontmatter", dict(skill_metadata_from_frontmatter(skill_content)))
+    ]
+    if isinstance(metadata, dict):
+        metadata_sources.append(("metadata", metadata))
+        for key in ("skill", "manifest", "metadata"):
+            nested = metadata.get(key)
+            if isinstance(nested, dict):
+                metadata_sources.append((f"metadata.{key}", nested))
+
+    for source_label, metadata_source in metadata_sources:
+        raw_schema = _schema_drift_raw_schema(metadata_source, "output")
+        if raw_schema is not None:
+            sources.append((f"{source_label}.output_schema", raw_schema))
+
+    declared_output_schema = _schema_drift_declared_schemas(skill_content, metadata).get("output")
+    if declared_output_schema:
+        sources.append(("declared_output_schema", declared_output_schema))
+
+    for index, output in enumerate(_schema_drift_example_outputs(metadata)):
+        sources.append((f"return_example[{index}]", output))
+
+    for index, docstring in enumerate(_schema_drift_docstrings(skill_content)):
+        for parsed in _mixed_modality_json_after_labels(docstring):
+            sources.append((f"docstring[{index}]", parsed))
+
+    for parsed in _mixed_modality_json_after_labels(skill_content):
+        sources.append(("skill_content", parsed))
+
+    return sources
+
+
+def _mixed_modality_object_matches(value: object, path: str = "$") -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
+
+    def _scan(current: object, current_path: str) -> None:
+        if isinstance(current, dict):
+            field_sets: list[tuple[str, dict]] = [(current_path, current)]
+            for key in ("properties", "fields"):
+                nested_fields = current.get(key)
+                if isinstance(nested_fields, dict):
+                    field_sets.append((current_path, nested_fields))
+
+            for field_path, fields in field_sets:
+                image_fields = sorted(
+                    str(field) for field in fields if _MIXED_MODALITY_IMAGE_FIELD_PATTERN.search(str(field))
+                )
+                description_fields = sorted(
+                    str(field) for field in fields if _MIXED_MODALITY_DESCRIPTION_FIELD_PATTERN.search(str(field))
+                )
+                if image_fields and description_fields:
+                    matches.append(
+                        {
+                            "path": field_path,
+                            "image_fields": image_fields,
+                            "description_fields": description_fields,
+                        }
+                    )
+
+            for key, child in current.items():
+                _scan(child, f"{current_path}.{key}")
+        elif isinstance(current, list):
+            for index, child in enumerate(current):
+                _scan(child, f"{current_path}[{index}]")
+
+    _scan(value, path)
+    return matches
+
+
+def _mixed_modality_trust_risk_matches(skill_content: str, metadata: dict | None) -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, str, tuple[str, ...], tuple[str, ...]]] = set()
+    for source_label, source_value in _mixed_modality_schema_and_example_sources(skill_content, metadata):
+        for match in _mixed_modality_object_matches(source_value):
+            image_fields = tuple(match.get("image_fields") or [])
+            description_fields = tuple(match.get("description_fields") or [])
+            key = (source_label, str(match.get("path") or ""), image_fields, description_fields)
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append({"source": source_label, **match})
+    return matches
+
+
+def _apply_mixed_modality_trust_risk_warning(
+    result: dict,
+    skill_name: str,
+    skill_content: str,
+    metadata: dict | None,
+) -> dict:
+    matches = _mixed_modality_trust_risk_matches(skill_content, metadata)
+    if not matches:
+        return result
+    result = dict(result)
+    warnings = list(result.get("warnings") or [])
+    if "mixed_modality_trust_risk" not in warnings:
+        warnings.append("mixed_modality_trust_risk")
+    result["warnings"] = warnings
+    result["requires_manual_review"] = True
+    audit_flags = dict(result.get("audit_flags") or {})
+    audit_flags["mixed_modality_trust_risk"] = {
+        "detected": True,
+        "severity": "WARNING",
+        "reason": "tool-return schema mixes visual fields with inline text descriptions on the same object",
+        "matches": matches,
+        "requires_review": True,
+    }
+    result["audit_flags"] = audit_flags
+    findings = list(result.get("findings") or [])
+    findings.append(
+        {
+            "severity": "WARNING",
+            "category": "mixed_modality_trust_risk",
+            "reason": "tool-return schema mixes visual fields with inline text descriptions on the same object",
+            "matches": matches,
+            "requires_review": True,
+        }
+    )
+    result["findings"] = findings
+    log.warning(
+        "SKILL_AUDIT mixed_modality_trust_risk: skill=%s matches=%r",
+        skill_name,
+        matches,
+    )
+    return result
+
+
 def _deferred_execution_bypass_findings(skill_content: str) -> list[dict[str, object]]:
     findings: list[dict[str, object]] = []
     seen: set[tuple[str, int, str]] = set()
@@ -8048,6 +9363,149 @@ def _deferred_execution_bypass_findings(skill_content: str) -> list[dict[str, ob
     return findings
 
 
+_SKILL_ACCUMULATION_WINDOW_SECONDS = 86400
+_SKILL_ACCUMULATION_RATE_THRESHOLD = 5
+_SKILL_DOMAIN_CONCENTRATION_THRESHOLD = 3
+
+
+def _load_skill_manifest_entries_for_audit() -> list[dict[str, object]]:
+    paths: list[Path] = []
+    try:
+        from config import SKILLS_DIR
+
+        paths.append(SKILLS_DIR / "index.json")
+    except Exception:
+        pass
+    paths.append(_skills_metadata_path())
+
+    for path in paths:
+        try:
+            if not path.exists():
+                continue
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            log.debug("skill manifest context read failed: path=%s error=%s", path, exc)
+            continue
+        if isinstance(payload, list):
+            return [entry for entry in payload if isinstance(entry, dict)]
+        if isinstance(payload, dict):
+            skills = payload.get("skills")
+            if isinstance(skills, dict):
+                return [entry for entry in skills.values() if isinstance(entry, dict)]
+            if isinstance(skills, list):
+                return [entry for entry in skills if isinstance(entry, dict)]
+    return []
+
+
+def _skill_manifest_timestamp(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _normalize_skill_manifest_tags(value: object) -> set[str]:
+    if isinstance(value, str):
+        values = re.split(r"[,\s\[\]]+", value)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        values = list(value)
+    else:
+        values = []
+    return {str(tag).strip().lower() for tag in values if str(tag).strip()}
+
+
+def _apply_skill_manifest_context_warnings(
+    result: dict,
+    skill_name: str,
+    skill_content: str,
+    tags: list[str] | None,
+    metadata: dict | None,
+) -> dict:
+    manifest_entries = _load_skill_manifest_entries_for_audit()
+    if not manifest_entries:
+        return result
+
+    now = datetime.now(timezone.utc)
+    recent_skill_count = 0
+    for entry in manifest_entries:
+        added_at = _skill_manifest_timestamp(
+            entry.get("created") or entry.get("created_at") or entry.get("added") or entry.get("timestamp")
+        )
+        if added_at and 0 <= (now - added_at).total_seconds() <= _SKILL_ACCUMULATION_WINDOW_SECONDS:
+            recent_skill_count += 1
+
+    candidate_tags = _normalize_skill_manifest_tags(tags)
+    if isinstance(metadata, dict):
+        candidate_tags |= _normalize_skill_manifest_tags(metadata.get("tags"))
+        candidate_tags |= _normalize_skill_manifest_tags(metadata.get("capability_tags"))
+    candidate_frontmatter = skill_metadata_from_frontmatter(skill_content)
+    candidate_tags |= _normalize_skill_manifest_tags(candidate_frontmatter.get("tags"))
+
+    shared_tag_counts: dict[str, int] = {tag: 0 for tag in candidate_tags}
+    for entry in manifest_entries:
+        entry_tags = _normalize_skill_manifest_tags(entry.get("tags") or entry.get("capability_tags"))
+        for tag in candidate_tags & entry_tags:
+            shared_tag_counts[tag] += 1
+
+    warning_details: dict[str, dict[str, object]] = {}
+    if recent_skill_count > _SKILL_ACCUMULATION_RATE_THRESHOLD:
+        warning_details["ACCUMULATION_RATE"] = {
+            "severity": "WARNING",
+            "recent_skill_count": recent_skill_count,
+            "threshold": _SKILL_ACCUMULATION_RATE_THRESHOLD,
+            "window_seconds": _SKILL_ACCUMULATION_WINDOW_SECONDS,
+        }
+        log.warning(
+            "SKILL_AUDIT warning: skill=%s label=ACCUMULATION_RATE recent_skill_count=%d threshold=%d window_seconds=%d",
+            skill_name,
+            recent_skill_count,
+            _SKILL_ACCUMULATION_RATE_THRESHOLD,
+            _SKILL_ACCUMULATION_WINDOW_SECONDS,
+        )
+
+    concentrated_tags = {
+        tag: count for tag, count in shared_tag_counts.items() if count > _SKILL_DOMAIN_CONCENTRATION_THRESHOLD
+    }
+    if concentrated_tags:
+        warning_details["DOMAIN_CONCENTRATION"] = {
+            "severity": "WARNING",
+            "tag_counts": concentrated_tags,
+            "threshold": _SKILL_DOMAIN_CONCENTRATION_THRESHOLD,
+        }
+        log.warning(
+            "SKILL_AUDIT warning: skill=%s label=DOMAIN_CONCENTRATION tag_counts=%s threshold=%d",
+            skill_name,
+            concentrated_tags,
+            _SKILL_DOMAIN_CONCENTRATION_THRESHOLD,
+        )
+
+    if not warning_details:
+        return result
+
+    result = dict(result)
+    warnings = list(result.get("warnings") or [])
+    for label in warning_details:
+        if label not in warnings:
+            warnings.append(label)
+    result["warnings"] = warnings
+    return result
+
+
 def audit_skill(
     skill_name: str,
     skill_content: str,
@@ -8065,13 +9523,74 @@ def audit_skill(
     attack_category_counts: dict[str, object] | None = None,
     categories_hit: dict[str, int] | None = None,
     source_agent: str = "unknown",
+    current_task_context: str | None = None,
 ) -> dict:
     if source_url is None or introduced_by is None:
         raise TypeError("source_url and introduced_by are required")
+    _check_skill_audit_lockout(skill_name, source)
+
+    def _public_audit_result(result: dict) -> dict:
+        _append_skill_security_audit_log(skill_name, result)
+        if bool(result.get("blocked")) or result.get("passed") is False:
+            public_result = {"blocked": bool(result.get("blocked")), "passed": False}
+            capability_manifest = result.get("capability_manifest")
+            if isinstance(capability_manifest, dict):
+                public_result["capability_manifest"] = capability_manifest
+            return public_result
+        return result
+
+    _self_referential_reason = "self-referential: skill references auditor internals — possible evasion probe"
+    _self_referential_internal_match = re.search(
+        r"\b(?:soul_manager|audit_skill|_content_looks_like_error|preflight_check)\b", skill_content
+    )
+    _self_referential_detection_literal_match = re.search(
+        r"""(?P<quote>['"])[^'"]*(?:\b(?:subprocess|exec|eval|__import__)\b|os\.system|os\.popen|requests\.|urllib|httpx|aiohttp|socket\.|base64\.b64decode|ignore previous|you are now|disregard|system prompt)[^'"]*(?P=quote)""",
+        skill_content,
+        re.IGNORECASE,
+    )
+    if _self_referential_internal_match or _self_referential_detection_literal_match:
+        _self_referential_match = _self_referential_internal_match or _self_referential_detection_literal_match
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%r matched_pattern=%s",
+            skill_name,
+            _self_referential_reason,
+            _self_referential_match.group(0),
+        )
+        result = {
+            "blocked": True,
+            "reason": _self_referential_reason,
+            "matched_pattern": _self_referential_match.group(0),
+            "status": "BLOCKED",
+            "verdict": "BLOCKED",
+        }
+        result = _result_with_capability_manifest(result, skill_name, skill_content, "unknown", metadata)
+        _record_skill_audit_failure(skill_name)
+        return _public_audit_result(result)
     source_url = str(source_url).strip()
     introduced_by = str(introduced_by).strip()
+    source = str(source or "unknown").strip() or "unknown"
     source_agent = str(source_agent or "unknown").strip().lower() or "unknown"
-    strict_mode = source_agent in ALWAYS_STRICT_SOURCES
+    reputation_strict_mode = _is_strict_mode(source)
+    source_agent_strict_mode = source_agent in ALWAYS_STRICT_SOURCES
+    strict_mode = source_agent_strict_mode or reputation_strict_mode
+    strict_mode_reason = None
+    if reputation_strict_mode:
+        strict_mode_reason = (
+            f"source category rejection rate exceeds {_REJECTION_RATE_THRESHOLD:.0%} "
+            f"in last {_REJECTION_COUNTS_N} skills"
+        )
+        log.warning(
+            "SKILL_AUDIT strict_mode_escalated: source=%s reason=%r",
+            source,
+            strict_mode_reason,
+        )
+    elif source_agent_strict_mode:
+        strict_mode_reason = "source_agent requires strict audit"
+        log.warning(
+            "SKILL_AUDIT strict_mode_escalated: source=%s reason=%r",
+            source,
+            strict_mode_reason,
+        )
     supplied_provenance = _skill_supplied_provenance(skill_content, metadata, provenance)
     provenance_findings = _skill_provenance_audit_findings(supplied_provenance)
     audit_provenance = _skill_audit_provenance(metadata, supplied_provenance, source, caller_agent)
@@ -8111,6 +9630,12 @@ def audit_skill(
     behavioral_self_modification_matches = [
         term for term in BEHAVIORAL_SELF_MODIFICATION_TERMS if term in behavioral_self_modification_text
     ]
+    skill_meta = dict(skill_metadata_from_frontmatter(skill_content))
+    if isinstance(metadata, dict):
+        skill_meta.update(metadata)
+    if supplied_provenance:
+        skill_meta["provenance"] = supplied_provenance
+    metadata = skill_meta
 
     def _apply_behavioral_self_modification_flag(result: dict) -> dict:
         if not behavioral_self_modification_matches:
@@ -8151,9 +9676,37 @@ def audit_skill(
         )
         return result
 
+    def _apply_missing_provenance_warning(result: dict) -> dict:
+        if "provenance" in skill_meta and skill_meta["provenance"]:
+            return result
+        result = dict(result)
+        warnings = list(result.get("warnings") or [])
+        warning = "MISSING_PROVENANCE: skill has no traceable origin — cannot explain why it was written this way"
+        if warning not in warnings:
+            warnings.append(warning)
+        result["warnings"] = warnings
+        return result
+
+    def _apply_missing_rationale_warning(result: dict) -> dict:
+        if _has_nontrivial_skill_rationale(skill_meta):
+            return result
+        result = dict(result)
+        warnings = list(result.get("warnings") or [])
+        warning = (
+            "MISSING_RATIONALE: skill has no explanation of why it works this way " "— epistemic accountability gap"
+        )
+        if warning not in warnings:
+            warnings.append(warning)
+        result["warnings"] = warnings
+        return result
+
     def _finalize_audit_result(result: dict) -> dict:
+        if result.get("blocked"):
+            _record_skill_audit_failure(skill_name)
         result = _skill_result_with_provenance(result, audit_provenance)
         result = _apply_skill_provenance_audit(result, skill_name, supplied_provenance, provenance_findings)
+        result = _apply_missing_provenance_warning(result)
+        result = _apply_missing_rationale_warning(result)
         result = _apply_behavioral_self_modification_flag(result)
         result = _apply_verification_anchor_injection_warning(
             result,
@@ -8165,15 +9718,22 @@ def audit_skill(
             skill_name,
             _transitive_trust_chain_matches(skill_content),
         )
+        result = _apply_trigger_condition_transparency_warning(result, skill_name, skill_content, metadata)
+        result = _apply_conditional_activation_warning(result, skill_name, skill_content)
+        result = _apply_mixed_modality_trust_risk_warning(result, skill_name, skill_content, metadata)
+        result = _result_with_capability_manifest(result, skill_name, skill_content, source, metadata)
         result.setdefault("risk_score", 0.0)
         result["source_agent"] = source_agent
         result["strict_mode"] = strict_mode
+        if strict_mode_reason:
+            result["strict_mode_reason"] = strict_mode_reason
         if not result.get("blocked"):
             trust_expires_at = _skill_trust_expires_at()
             result["trust_expires_at"] = trust_expires_at
             if isinstance(metadata, dict):
                 metadata["trust_expires_at"] = trust_expires_at
             _persist_skill_trust_approval(skill_name, skill_content, metadata, trust_expires_at)
+        _update_rejection_counts(source, bool(result.get("blocked")))
         log.info(
             "SKILL_AUDIT provenance: skill=%s source=%s authorized_by=%s blocked=%s status=%s",
             skill_name,
@@ -8181,6 +9741,13 @@ def audit_skill(
             audit_provenance.get("authorized_by"),
             result.get("blocked"),
             result.get("status") or result.get("verdict"),
+        )
+        log.info(
+            "SKILL_AUDIT source_label: skill=%s source_label=%s blocked=%s verdict=%s",
+            skill_name,
+            source,
+            result.get("blocked"),
+            result.get("verdict") or result.get("status"),
         )
         return result
 
@@ -8247,7 +9814,481 @@ def audit_skill(
                 reasons.append(f"redefines_audit_function:{_m.group(1)}")
         return list(dict.fromkeys(reasons))
 
+    def _check_behavioral_contracts(skill_code: str) -> list[dict]:
+        violations: list[dict] = []
+        _substack_call_pat = re.compile(
+            r"\b(?:publish_article|post_note|post_comment|create_note|publish_to_substack"
+            r"|submit_article|send_note|push_note|notes\.post|substack\.publish)\b"
+            r"|\.publish\(\s*|\.post_note\(\s*",
+            re.IGNORECASE,
+        )
+        for _bcm in _substack_call_pat.finditer(skill_code):
+            _bc_line = skill_code.count("\n", 0, _bcm.start()) + 1
+            _bc_lines = skill_code.splitlines()
+            _bc_text = (_bc_lines[_bc_line - 1].strip() if 0 < _bc_line <= len(_bc_lines) else "")[:300]
+            violations.append(
+                {
+                    "rule": "CONTRACT_VIOLATION",
+                    "category": "substack_bypass",
+                    "reason": (
+                        "direct Substack publish/note/comment call bypasses mandatory "
+                        "content guards and preflight (hard rule #3)"
+                    ),
+                    "line": _bc_line,
+                    "text": _bc_text,
+                    "match": _bcm.group(0),
+                }
+            )
+        _protected_output_paths = (
+            "Mira-Artifacts/writings/",
+            "MtJoy/Books/",
+            "Mira/agents/writer/",
+            "agents/writer/",
+        )
+        _write_pat = re.compile(
+            r"""open\s*\([^)]*,\s*['"][waxWAX][+b]*['"]\s*\)|\.write_text\s*\(|\.write_bytes\s*\(""",
+            re.IGNORECASE,
+        )
+        _writer_handle_pat = re.compile(r"\bagents[./]writer[./]handle\b|\bwriter[._]handle\b", re.IGNORECASE)
+        _has_writer_handle = bool(_writer_handle_pat.search(skill_code))
+        for _wm in _write_pat.finditer(skill_code):
+            _surrounding = skill_code[max(0, _wm.start() - 300) : _wm.end() + 300]
+            for _pp in _protected_output_paths:
+                if _pp.lower() in _surrounding.lower() and not _has_writer_handle:
+                    _wl = skill_code.count("\n", 0, _wm.start()) + 1
+                    _wls = skill_code.splitlines()
+                    _wt = (_wls[_wl - 1].strip() if 0 < _wl <= len(_wls) else "")[:300]
+                    violations.append(
+                        {
+                            "rule": "CONTRACT_VIOLATION",
+                            "category": "writer_bypass",
+                            "reason": (
+                                f"direct write to protected output path {_pp!r} bypasses "
+                                "agents/writer/handle() — hard rule #5"
+                            ),
+                            "line": _wl,
+                            "text": _wt,
+                            "match": _wm.group(0),
+                            "protected_path": _pp,
+                        }
+                    )
+                    break
+        _llm_call_pat = re.compile(
+            r"\bclaude_think\s*\(|\bclient\.messages\.create\b|\bclient\.completions\.create\b"
+            r"|\banthropics?\.Anthropic\(\b|\bAnthropicClient\b"
+            r"|\bmessages\.create\s*\(|\bcompletions\.create\s*\(",
+            re.IGNORECASE,
+        )
+        _artifact_write_pat = re.compile(
+            r"""open\s*\([^)]*(?:Mira-Artifacts|MtJoy.Books|writings)[^)]*,\s*['"][waxWAX]"""
+            r"""|\.write_text\s*\(\s*['"][^'"]*(?:Mira-Artifacts|MtJoy.Books|writings)""",
+            re.IGNORECASE | re.DOTALL,
+        )
+        if _llm_call_pat.search(skill_code) and _artifact_write_pat.search(skill_code) and not _has_writer_handle:
+            violations.append(
+                {
+                    "rule": "CONTRACT_VIOLATION",
+                    "category": "llm_artifact_bypass",
+                    "reason": (
+                        "raw LLM/claude_think output written to human-readable artifact path "
+                        "without routing through agents/writer/handle() — hard rule #5"
+                    ),
+                }
+            )
+        return violations
+
     content_sha256 = hashlib.sha256(skill_content.encode("utf-8")).hexdigest()
+    UI_BROWSER_EVENT_PATTERNS = [
+        re.compile(pattern, re.IGNORECASE)
+        for pattern in (
+            r"\bkeydown\b",
+            r"\bkeypress\b",
+            r"\bshortcut\b",
+            r"\bhotkey\b",
+            r"\bwebview\b",
+            r"\bbrowser\s+event\b",
+            r"\bpaste\b",
+            r"\bclipboard\b",
+            r"\bclick\b",
+            r"\btype_text\b",
+            r"\bkeyboard\b",
+        )
+    ]
+    PRIVILEGED_ACTION_PATTERNS = [
+        re.compile(pattern, re.IGNORECASE)
+        for pattern in (
+            r"\bGITHUB_TOKEN\b",
+            r"\brepo\s+token\b",
+            r"\bAuthorization\b",
+            r"\bcredential\b",
+            r"\bsubprocess\b",
+            r"\bos\.system\b",
+            r"\bexec\b",
+            r"\beval\b",
+            r"\bpip\s+install\b",
+            r"\bnpm\s+install\b",
+            r"\bextension\s+install\b",
+            r"\bgit\s+push\b",
+            r"\bwrite_file\b",
+            r"\bpublish\b",
+            r"\btoken\b",
+        )
+    ]
+    _ui_browser_event_match = next(
+        (pattern.search(skill_content) for pattern in UI_BROWSER_EVENT_PATTERNS if pattern.search(skill_content)),
+        None,
+    )
+    _privileged_action_match = next(
+        (pattern.search(skill_content) for pattern in PRIVILEGED_ACTION_PATTERNS if pattern.search(skill_content)),
+        None,
+    )
+    if _ui_browser_event_match and _privileged_action_match:
+        reason = "blocked_confused_deputy_ui_privilege_bridge"
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%r ui_match=%s privileged_match=%s",
+            skill_name,
+            reason,
+            _ui_browser_event_match.group(0),
+            _privileged_action_match.group(0),
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            [reason],
+            [],
+            [],
+            passed=False,
+            reason=reason,
+            matched_pattern=f"{_ui_browser_event_match.group(0)} + {_privileged_action_match.group(0)}",
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        result = _finalize_audit_result(result)
+        _append_skill_audit_trail(
+            skill_name,
+            content_sha256,
+            result,
+            source,
+            metadata,
+            caller_agent,
+            source_url=source_url,
+            introduced_by=introduced_by,
+        )
+        return result
+    SUSPICIOUS_INTERNAL_CALLS = [
+        "soul_manager.save_skill",
+        "soul_manager.delete_skill",
+        "notes_bridge.write",
+        "notes_bridge.send",
+        "sub_agent.dispatch",
+    ]
+    suspicious_internal_call_matches = [call for call in SUSPICIOUS_INTERNAL_CALLS if call in skill_content]
+    if suspicious_internal_call_matches:
+        reason = "skill calls Mira internal infrastructure directly — potential covert channel"
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%r matched_patterns=%s",
+            skill_name,
+            reason,
+            suspicious_internal_call_matches,
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["suspicious_internal_call"],
+            [],
+            [],
+            passed=False,
+            reason=reason,
+            matched_patterns=suspicious_internal_call_matches,
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        result = _finalize_audit_result(result)
+        _append_skill_audit_trail(
+            skill_name,
+            content_sha256,
+            result,
+            source,
+            metadata,
+            caller_agent,
+            source_url=source_url,
+            introduced_by=introduced_by,
+        )
+        return _public_audit_result(result)
+    IMPLICIT_INTERFACE_PATTERNS = [
+        (re.compile(r"Mira-Bridge"), "Mira-Bridge iCloud bridge path"),
+        (re.compile(r"\bnotes_inbox\b"), "Apple Notes inbox channel"),
+        (re.compile(r"\bnotes_outbox\b"), "Apple Notes outbox channel"),
+        (re.compile(r"Mira-Artifacts"), "Mira-Artifacts publishing path"),
+        (
+            re.compile(r"agents[/.]socialmedia[/.](?:handler|substack|notes|growth)\b", re.IGNORECASE),
+            "socialmedia publish entrypoint",
+        ),
+        (
+            re.compile(
+                r"\b(?:publish_article|post_note|post_comment|publish_to_substack|substack_publish)\b", re.IGNORECASE
+            ),
+            "Substack publishing call",
+        ),
+        (re.compile(r"LaunchAgents[/\\][^\"']*\.plist", re.IGNORECASE), "LaunchAgent plist edit"),
+        (re.compile(r"\bosascript\b", re.IGNORECASE), "osascript automation"),
+        (re.compile(r"x-callback-url", re.IGNORECASE), "Apple x-callback-url scheme"),
+        (
+            re.compile(r"""open\s*\(\s*['"]/Users/angwei/(?!Sandbox/Mira)""", re.IGNORECASE),
+            "write to path outside MIRA_ROOT",
+        ),
+    ]
+    _IMPLICIT_INTERFACE_TRUSTED_MARKER = "MIRA_TRUSTED_BUILTIN"
+    _implicit_interface_matches: list[tuple[str, str]] = []
+    if _IMPLICIT_INTERFACE_TRUSTED_MARKER not in skill_content:
+        for _iip, _iil in IMPLICIT_INTERFACE_PATTERNS:
+            _iim = _iip.search(skill_content)
+            if _iim:
+                _implicit_interface_matches.append((_iil, _iim.group(0)))
+    if _implicit_interface_matches:
+        _implicit_reason = "implicit_interface_access"
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%r matched=%r pattern=%s",
+            skill_name,
+            _implicit_reason,
+            _implicit_interface_matches[0][1],
+            _implicit_interface_matches[0][0],
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["implicit_interface_access"],
+            [],
+            [],
+            passed=False,
+            reason=_implicit_reason,
+            matched_pattern=_implicit_interface_matches[0][1],
+            implicit_interface_matches=[{"label": lbl, "match": mtxt} for lbl, mtxt in _implicit_interface_matches],
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        result = _finalize_audit_result(result)
+        _append_skill_audit_trail(
+            skill_name,
+            content_sha256,
+            result,
+            source,
+            metadata,
+            caller_agent,
+            source_url=source_url,
+            introduced_by=introduced_by,
+        )
+        return _public_audit_result(result)
+    SIDE_CHANNEL_PATTERNS = [
+        (re.compile(r"\bpyaudio\b", re.IGNORECASE), "audio capture library (pyaudio)"),
+        (re.compile(r"\bsounddevice\b", re.IGNORECASE), "audio capture library (sounddevice)"),
+        (
+            re.compile(r"\bAVFoundation\b|\bAVCaptureSession\b|\bAVAudioRecorder\b", re.IGNORECASE),
+            "AVFoundation audio/media capture",
+        ),
+        (
+            re.compile(r"\bCGEventTap\b|\bAXObserver\b|\bAXUIElement\b", re.IGNORECASE),
+            "AppKit/CGEvent input monitoring or Accessibility API",
+        ),
+        (
+            re.compile(
+                r"(?:import\s+hid\b|from\s+hid\b|\bhidapi\b|import\s+usb\b|from\s+usb\b|\busb\.core\b)", re.IGNORECASE
+            ),
+            "HID/USB device access",
+        ),
+        (
+            re.compile(r"(?:import\s+serial\b|from\s+serial\b|\bpyserial\b|\bserial\.Serial\b)", re.IGNORECASE),
+            "serial port access",
+        ),
+        (
+            re.compile(r"(?:import\s+bleak\b|from\s+bleak\b|\bBleakClient\b|\bBleakScanner\b)", re.IGNORECASE),
+            "Bluetooth device access (bleak)",
+        ),
+        (re.compile(r"\b(?:pbcopy|pbpaste)\b", re.IGNORECASE), "clipboard automation (pbcopy/pbpaste)"),
+        (re.compile(r"/dev/(?:cu\.|tty\.|hid)", re.IGNORECASE), "raw device path (/dev/cu.*, /dev/tty.*, /dev/hid.*)"),
+        (re.compile(r"\bAppleScript\b", re.IGNORECASE), "AppleScript automation"),
+    ]
+    _side_channel_matches: list[tuple[str, str]] = []
+    if _IMPLICIT_INTERFACE_TRUSTED_MARKER not in skill_content:
+        for _scp, _scl in SIDE_CHANNEL_PATTERNS:
+            _scm = _scp.search(skill_content)
+            if _scm:
+                _side_channel_matches.append((_scl, _scm.group(0)))
+    if _side_channel_matches:
+        _sc_reason = "non-obvious I/O or device side-channel access"
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%r matched=%r pattern=%s",
+            skill_name,
+            _sc_reason,
+            _side_channel_matches[0][1],
+            _side_channel_matches[0][0],
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["side_channel_access"],
+            [],
+            [],
+            passed=False,
+            reason=_sc_reason,
+            matched_pattern=_side_channel_matches[0][1],
+            side_channel_matches=[{"label": lbl, "match": mtxt} for lbl, mtxt in _side_channel_matches],
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        result = _finalize_audit_result(result)
+        _append_skill_audit_trail(
+            skill_name,
+            content_sha256,
+            result,
+            source,
+            metadata,
+            caller_agent,
+            source_url=source_url,
+            introduced_by=introduced_by,
+        )
+        return _public_audit_result(result)
+    ACCOUNT_ACCESS_PROXY_PATTERNS = [
+        (re.compile(r"\bbrowser[_\s-]*profile\b", re.IGNORECASE), "browser profile reuse"),
+        (
+            re.compile(r"\bcookie[_\s-]*(?:jar|export|import|steal|dump|load|inject|reuse)\b", re.IGNORECASE),
+            "cookie export/import/reuse",
+        ),
+        (
+            re.compile(r"\bsession[_\s-]*(?:export|import|steal|dump|load|inject|reuse|hijack)\b", re.IGNORECASE),
+            "session export/import/reuse",
+        ),
+        (re.compile(r"\bAuthorization\s*:\s*Bearer\b", re.IGNORECASE), "Authorization Bearer token reuse"),
+        (
+            re.compile(r"\bbearer[_\s]*token[_\s]*(?:reuse|steal|extract|inject|share)\b", re.IGNORECASE),
+            "bearer token reuse/sharing",
+        ),
+        (
+            re.compile(r"\bchatgpt[\s_-]*(?:plus|pro|web|account|session|login|logged[\s_-]*in)\b", re.IGNORECASE),
+            "ChatGPT Plus/web account wrapping",
+        ),
+        (
+            re.compile(r"\bgemini[\s_-]*(?:web|account|session|login|logged[\s_-]*in|advanced)\b", re.IGNORECASE),
+            "Gemini web account wrapping",
+        ),
+        (
+            re.compile(r"\bwechat[\s_-]*(?:session|login|logged|token|cookie|qr)\b", re.IGNORECASE),
+            "WeChat session automation",
+        ),
+        (
+            re.compile(r"\baccount[\s_-]*(?:rental|sharing|share|rent|loan|borrow)\b", re.IGNORECASE),
+            "account rental/sharing language",
+        ),
+        (
+            re.compile(
+                r"\b(?:proxy|proxying|proxied)[\s_-]*(?:request|through|via)[\s_-]*(?:logged[\s_-]*in|session|account)\b",
+                re.IGNORECASE,
+            ),
+            "proxying requests through logged-in session",
+        ),
+        (
+            re.compile(
+                r"\b(?:bypass|circumvent|avoid)[\s_-]*(?:official[\s_-]*)?api\b.*\b(?:cookie|session|credential|login|browser)\b",
+                re.IGNORECASE | re.DOTALL,
+            ),
+            "bypass official API via stored credentials",
+        ),
+        (re.compile(r"\bstored[\s_-]*credential", re.IGNORECASE), "stored credentials reuse"),
+        (
+            re.compile(
+                r"\b(?:login|sign[\s_-]*in)[\s_-]*(?:with|using|via)[\s_-]*(?:saved|stored|existing|reused)\b",
+                re.IGNORECASE,
+            ),
+            "login with saved/stored credentials",
+        ),
+        (
+            re.compile(
+                r"\bweb[\s_-]*(?:scrape|automate|drive|ui)[\s_-]*(?:with|using|via)[\s_-]*(?:cookie|session|credential|logged[\s_-]*in)\b",
+                re.IGNORECASE,
+            ),
+            "web UI automation with stored session",
+        ),
+    ]
+    _account_proxy_matches: list[tuple[str, str]] = []
+    if _IMPLICIT_INTERFACE_TRUSTED_MARKER not in skill_content:
+        for _app, _apl in ACCOUNT_ACCESS_PROXY_PATTERNS:
+            _apm = _app.search(skill_content)
+            if _apm:
+                _account_proxy_matches.append((_apl, _apm.group(0)))
+    if _account_proxy_matches:
+        _ap_reason = "account_access_proxy"
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%r matched=%r pattern=%s",
+            skill_name,
+            _ap_reason,
+            _account_proxy_matches[0][1],
+            _account_proxy_matches[0][0],
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["account_access_proxy"],
+            [],
+            [],
+            passed=False,
+            reason=_ap_reason,
+            matched_pattern=_account_proxy_matches[0][1],
+            account_proxy_matches=[{"label": lbl, "match": mtxt} for lbl, mtxt in _account_proxy_matches],
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        result = _finalize_audit_result(result)
+        _append_skill_audit_trail(
+            skill_name,
+            content_sha256,
+            result,
+            source,
+            metadata,
+            caller_agent,
+            source_url=source_url,
+            introduced_by=introduced_by,
+        )
+        return _public_audit_result(result)
+    TRUSTED_INFRA_TARGETS = ["soul_manager", "audit_skill", "core.py", "task_manager", "notes_bridge"]
+    trusted_infra_target_matches = [target for target in TRUSTED_INFRA_TARGETS if target in skill_content]
+    if trusted_infra_target_matches:
+        reason = "skill targets trusted infrastructure"
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%r matched_patterns=%s",
+            skill_name,
+            reason,
+            trusted_infra_target_matches,
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["skill_targets_trusted_infrastructure"],
+            [],
+            [],
+            passed=False,
+            reason=reason,
+            matched_patterns=trusted_infra_target_matches,
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        result = _finalize_audit_result(result)
+        _append_skill_audit_trail(
+            skill_name,
+            content_sha256,
+            result,
+            source,
+            metadata,
+            caller_agent,
+            source_url=source_url,
+            introduced_by=introduced_by,
+        )
+        return _public_audit_result(result)
     self_referential_audit_patterns = [
         "audit_skill",
         "soul_manager.audit",
@@ -8293,7 +10334,7 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
-        return result
+        return _public_audit_result(result)
 
     if self_referential_audit_match:
         reason = "self-referential audit reference"
@@ -8317,7 +10358,7 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
-        return result
+        return _public_audit_result(result)
 
     _sm_hash_file = Path(__file__).resolve().parent.parent / "agents" / "shared" / "soul" / ".soul_manager_hash"
     _sm_current_hash = hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
@@ -8329,7 +10370,9 @@ def audit_skill(
         _sm_hash_file.write_text(_sm_current_hash + "\n")
         os.chmod(_sm_hash_file, 0o444)
 
-    audit_infrastructure_match = re.search(r"\b(?:audit_skill|soul_manager|_content_looks_like_error)\b", skill_content)
+    audit_infrastructure_match = re.search(
+        r"\b(?:audit_skill|audit_skill_config|soul_manager|_content_looks_like_error)\b", skill_content
+    )
     if audit_infrastructure_match:
         reason = "skill references audit infrastructure — verification loop risk"
         log.warning("SKILL_AUDIT blocked: skill=%s reason=%r", skill_name, reason)
@@ -8352,7 +10395,7 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
-        return result
+        return _public_audit_result(result)
     if skill_name in PERMANENT_SKILL_BLOCKLIST:
         result = _finalize_audit_result({"blocked": True, "reason": "permanent blocklist"})
         _append_skill_audit_trail(
@@ -8365,7 +10408,7 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
-        return result
+        return _public_audit_result(result)
     if categories_hit and len(categories_hit) >= AUTO_BLOCK_CATEGORY_THRESHOLD:
         result = _finalize_audit_result(
             {"blocked": True, "reason": f"categories_hit threshold: {sorted(categories_hit)}"}
@@ -8380,7 +10423,7 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
-        return result
+        return _public_audit_result(result)
     # These are the layers this audit trusts — attack surface below this line is out of scope.
     AUDIT_TRUST_ASSUMPTIONS = [
         "Python ast.parse is not itself compromised",
@@ -8425,7 +10468,7 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
-        return result
+        return _public_audit_result(result)
 
     hard_block_pattern = _hard_block_pattern_match(skill_content, metadata)
     if hard_block_pattern:
@@ -8470,7 +10513,188 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
-        return result
+        return _public_audit_result(result)
+
+    alignment_result = _alignment_audit(skill_content)
+    if not alignment_result["passed"]:
+        matched_phrase = str(alignment_result["matched_phrase"])
+        alignment_reason = "alignment audit failed"
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%r matched_phrase=%r",
+            skill_name,
+            alignment_reason,
+            matched_phrase,
+        )
+        _alert_skill_audit_blocked(
+            skill_name,
+            ["alignment_audit"],
+            skill_content,
+            source,
+            metadata,
+            matched_phrase,
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["alignment_audit"],
+            [],
+            [],
+            passed=False,
+            reason=alignment_reason,
+            matched_phrase=matched_phrase,
+            deterministic_gate="alignment_audit",
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        result = _finalize_audit_result(result)
+        _append_skill_audit_trail(
+            skill_name,
+            content_sha256,
+            result,
+            source,
+            metadata,
+            caller_agent,
+            source_url=source_url,
+            introduced_by=introduced_by,
+        )
+        return _public_audit_result(result)
+
+    _COMPOSITE_CREDENTIAL_PATTERN = re.compile(
+        r"TOKEN|API_KEY|\bos\." r"environ\b|\bconfig\s*\[|\.ssh\b|keychain|credentials?\b",
+        re.IGNORECASE,
+    )
+    _COMPOSITE_NETWORK_PATTERN = re.compile(
+        r"\brequests\.(?:get|post)\s*\(|\bhttpx\b|\burllib\b|\bsocket\.connect\s*\("
+        r"|\bsubprocess\.(?:run|call|Popen|check_call|check_output)\s*\([^)]*\b(?:curl|wget)\b",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _composite_credential_match = _COMPOSITE_CREDENTIAL_PATTERN.search(skill_content)
+    _composite_network_match = _COMPOSITE_NETWORK_PATTERN.search(skill_content)
+    if _composite_credential_match and _composite_network_match:
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["composite_capability"],
+            [],
+            [],
+            passed=False,
+            reason="composite capability: credential access + network egress",
+            matched_pattern=f"{_composite_credential_match.group(0)} + {_composite_network_match.group(0)}",
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        result = _finalize_audit_result(result)
+        _append_skill_audit_trail(
+            skill_name,
+            content_sha256,
+            result,
+            source,
+            metadata,
+            caller_agent,
+            source_url=source_url,
+            introduced_by=introduced_by,
+        )
+        return _public_audit_result(result)
+
+    _CREDENTIAL_PATTERNS = re.compile(
+        r"\bos\.environ\b|\bgetenv\b|API_KEY|TOKEN|SECRET|\.env\b"
+        r"|keychain|security\s+find-|~/\.ssh|id_rsa|id_ed25519"
+        r"|credentials?\b.*(?:file|path|store)",
+        re.IGNORECASE,
+    )
+    _EXEC_NET_INSTALL_EVENT_PATTERNS = re.compile(
+        r"\bsubprocess\b|\bos\.system\b|\bos\.popen\b"
+        r"|\bexec\s*\(|\beval\s*\(|\bimportlib\b"
+        r"|\brequests\b|\bhttpx\b|\baiohttp\b|\burllib\b"
+        r"|\bpip\s+install\b|\bnpm\s+install\b"
+        r"|\bkeyboard\b.*(?:hook|listener|on_press|on_release)"
+        r"|\bglobal\s+(?:shortcut|hotkey)\b|\bevent.listener\b"
+        r"|\bkeybinding\s+handler\b",
+        re.IGNORECASE,
+    )
+    if _CREDENTIAL_PATTERNS.search(skill_content) and _EXEC_NET_INSTALL_EVENT_PATTERNS.search(skill_content):
+        _cred_match = _CREDENTIAL_PATTERNS.search(skill_content)
+        _exec_match = _EXEC_NET_INSTALL_EVENT_PATTERNS.search(skill_content)
+        _coupling_reason = "credential capability coupled with execution/network/install/event capability"
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%r cred_match=%s exec_match=%s",
+            skill_name,
+            _coupling_reason,
+            _cred_match.group(0),
+            _exec_match.group(0),
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["credential_capability_coupling"],
+            [],
+            [],
+            passed=False,
+            reason=_coupling_reason,
+            matched_pattern=f"{_cred_match.group(0)} + {_exec_match.group(0)}",
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        result = _finalize_audit_result(result)
+        _append_skill_audit_trail(
+            skill_name,
+            content_sha256,
+            result,
+            source,
+            metadata,
+            caller_agent,
+            source_url=source_url,
+            introduced_by=introduced_by,
+        )
+        return _public_audit_result(result)
+
+    _COLLAPSED_TRUST_TOKEN_PATTERNS = [r"config\[", r"os\.environ", r"CLAUDE_", r"api_key", r"bearer"]
+    _COLLAPSED_TRUST_WRITE_PATTERNS = [r'open\(.+,\s*["\']w', r"shutil\.copy", r"\.write\("]
+    _COLLAPSED_TRUST_DISPATCH_PATTERNS = [r"dispatch\(", r"sub_agent\.run", r"task_manager"]
+    _collapsed_trust_score = sum(
+        any(re.search(p, skill_content) for p in P)
+        for P in [_COLLAPSED_TRUST_TOKEN_PATTERNS, _COLLAPSED_TRUST_WRITE_PATTERNS, _COLLAPSED_TRUST_DISPATCH_PATTERNS]
+    )
+    if _collapsed_trust_score >= 2:
+        _collapsed_trust_reason = (
+            "collapsed_trust_surface: skill simultaneously combines "
+            "token/config access, filesystem writes outside designated dirs, "
+            "and/or sub-agent dispatch — underestimated blast radius"
+        )
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%r collapsed_trust_score=%d",
+            skill_name,
+            _collapsed_trust_reason,
+            _collapsed_trust_score,
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["collapsed_trust_surface"],
+            [],
+            [],
+            passed=False,
+            reason=_collapsed_trust_reason,
+            collapsed_trust_score=_collapsed_trust_score,
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        result = _finalize_audit_result(result)
+        _append_skill_audit_trail(
+            skill_name,
+            content_sha256,
+            result,
+            source,
+            metadata,
+            caller_agent,
+            source_url=source_url,
+            introduced_by=introduced_by,
+        )
+        return _public_audit_result(result)
 
     TRUST_ABUSE_PATTERNS = [
         "anthropic authorizes",
@@ -8572,7 +10796,57 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
-        return result
+        return _public_audit_result(result)
+
+    def _label_without_mechanism(skill_name: str, skill_description: str, skill_code: str) -> dict[str, object] | None:
+        trust_label_patterns: dict[str, re.Pattern] = {
+            "verify": re.compile(r"\bverif(?:y|ied|ies|ication|ications)?\b", re.IGNORECASE),
+            "certified": re.compile(r"\bcertifi(?:ed|es|cation|cations)?\b", re.IGNORECASE),
+            "trusted": re.compile(r"\btrusted\b", re.IGNORECASE),
+            "official": re.compile(r"\bofficial\b", re.IGNORECASE),
+            "validated": re.compile(r"\bvalidat(?:ed|e|es|ion|ions)?\b", re.IGNORECASE),
+            "authentic": re.compile(r"\bauthentic\b", re.IGNORECASE),
+        }
+        label_text = f"{skill_name}\n{skill_description}"
+        matched_terms = [term for term, pattern in trust_label_patterns.items() if pattern.search(label_text)]
+        if not matched_terms:
+            return None
+
+        verification_operation_patterns: tuple[re.Pattern, ...] = (
+            re.compile(r"\b(?:open|input)\s*\(", re.IGNORECASE),
+            re.compile(
+                r"\bPath\s*\([^)]*\)\.(?:read_text|read_bytes|exists|is_file|is_dir|stat|glob|iterdir)\s*\(",
+                re.IGNORECASE,
+            ),
+            re.compile(r"\.(?:read|read_text|read_bytes|exists|is_file|is_dir|stat)\s*\(", re.IGNORECASE),
+            re.compile(r"\b(?:json\.load|yaml\.safe_load|csv\.)", re.IGNORECASE),
+            re.compile(r"\bhashlib\.|\b(?:sha256|sha1|sha512|md5|blake2b|blake2s)\s*\(", re.IGNORECASE),
+            re.compile(r"\bcompare_digest\s*\(", re.IGNORECASE),
+            re.compile(
+                r"\b(?:requests|httpx)\.(?:get|post|put|patch|delete|head|options)\s*\("
+                r"|\burllib(?:\.request)?\.(?:urlopen|Request)\s*\("
+                r"|\burlopen\s*\("
+                r"|\baiohttp\.ClientSession\s*\("
+                r"|\bfetch\s*\(",
+                re.IGNORECASE,
+            ),
+            re.compile(r"""(?:\b\w+|['"][^'"]*['"]|\d+|\])\s*(?:==|!=|<=|>=|<|>)\s*(?:\b\w+|['"][^'"]*['"]|\d+|\[)"""),
+            re.compile(r"\bassert\b", re.IGNORECASE),
+        )
+        if any(pattern.search(skill_code) for pattern in verification_operation_patterns):
+            return None
+        return {
+            "detected": True,
+            "severity": "FLAG",
+            "reason": TRUST_LABEL_WITHOUT_MECHANISM_MESSAGE,
+            "message": TRUST_LABEL_WITHOUT_MECHANISM_MESSAGE,
+            "matched_terms": matched_terms,
+            "requires_review": True,
+        }
+
+    skill_description = " ".join(str((metadata or {}).get(field) or "") for field in ("description", "summary")).strip()
+    trust_label_without_mechanism = _label_without_mechanism(skill_name, skill_description, skill_content)
+
     _warn_on_unpatched_blocked_patterns(skill_content)
     _warn_on_prior_skill_block_resubmission(skill_name)
     prompt_layer_drift_matches = _prompt_layer_drift_matches(skill_content) if _audit_prompt_drift_enabled() else []
@@ -8617,7 +10891,7 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
-        return result
+        return _public_audit_result(result)
     trust_abuse_match: dict[str, object] | None = None
     for trust_abuse_pattern in TRUST_ABUSE_PATTERNS:
         phrase_match = re.search(re.escape(trust_abuse_pattern), skill_content, re.IGNORECASE)
@@ -8677,7 +10951,7 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
-        return result
+        return _public_audit_result(result)
     metadata_injection_match = _metadata_injection_match(skill_name, skill_content, metadata)
     if metadata_injection_match:
         block_reason = "metadata injection: control-plane field references privileged name"
@@ -8724,7 +10998,7 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
-        return result
+        return _public_audit_result(result)
     if caller_tier in ("super", "system"):
         try:
             from config import LOGS_DIR, TRUST_AUDIT_ENABLED
@@ -8798,7 +11072,7 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
-        return result
+        return _public_audit_result(result)
     _enforce_daily_skill_import_quota(skill_name, source)
 
     _diff_warnings: list[str] = []
@@ -8874,7 +11148,271 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
-        return result
+        return _public_audit_result(result)
+
+    _ACCOUNT_ACCESS_PROXY_PATTERNS = (
+        re.compile(
+            r"\b(?:reuse|use|load|mount|attach|share|import|export|copy)\b.{0,80}"
+            r"\b(?:browser|chrome|chromium|firefox|safari)\s+profile\b"
+            r"|\b(?:browser|chrome|chromium|firefox|safari)\s+profile\b.{0,80}"
+            r"\b(?:reuse|load|mount|attach|share|import|export|copy)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r"\b(?:export|import|copy|reuse|load|persist|share)\b.{0,80}"
+            r"\b(?:cookies?|sessions?|session_token|csrf|storageState|localStorage)\b"
+            r"|\b(?:cookies?|sessions?|session_token|csrf|storageState|localStorage)\b.{0,80}"
+            r"\b(?:export|import|copy|reuse|load|persist|share)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r"\b(?:reuse|replay|share|proxy|forward|import|export|wrap)\b.{0,80}"
+            r"\b(?:Authorization\s*[:=]|Bearer\s+token|Bearer\s+[A-Za-z0-9._~+/-]{8,})\b"
+            r"|\b(?:Authorization\s*[:=]|Bearer\s+token|Bearer\s+[A-Za-z0-9._~+/-]{8,})\b.{0,80}"
+            r"\b(?:reuse|replay|share|proxy|forward|import|export|wrap)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r"\b(?:ChatGPT\s+Plus|Plus\s+account|Gemini\s+(?:web|account|Advanced))\b.{0,120}"
+            r"\b(?:wrap|proxy|automate|broker|share|rent|resell|logged[- ]in|web\s+UI)\b"
+            r"|\b(?:wrap|proxy|automate|broker|share|rent|resell|logged[- ]in|web\s+UI)\b.{0,120}"
+            r"\b(?:ChatGPT\s+Plus|Plus\s+account|Gemini\s+(?:web|account|Advanced))\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r"\bWeChat\b.{0,120}\b(?:session|login|logged[- ]in|cookie|profile|automation|automate|QR)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r"\b(?:account\s+(?:rental|renting|sharing|share|pool|rotation|resale)|"
+            r"rent(?:ed)?\s+account|shared\s+account|borrow(?:ed)?\s+account)\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b(?:proxy|relay|broker|forward|route)\b.{0,120}"
+            r"\b(?:logged[- ]in|authenticated|user)\s+(?:browser|session|account|cookies?)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r"\b(?:bypass|avoid|skip)\b.{0,80}\bofficial\s+APIs?\b.{0,120}"
+            r"\b(?:web\s+UI|browser|stored\s+credentials|saved\s+login|logged[- ]in)\b"
+            r"|\b(?:control|automate|drive)\b.{0,80}\bweb\s+UI\b.{0,120}"
+            r"\b(?:stored\s+credentials|saved\s+login|logged[- ]in|browser\s+profile|cookies?)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+    )
+    _account_access_proxy_match = next(
+        (match for pattern in _ACCOUNT_ACCESS_PROXY_PATTERNS if (match := pattern.search(skill_content))),
+        None,
+    )
+    if _account_access_proxy_match:
+        _aap_reason = "account_access_proxy"
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%r matched_pattern=%r",
+            skill_name,
+            _aap_reason,
+            _account_access_proxy_match.group(0),
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["account_access_proxy"],
+            [],
+            [],
+            passed=False,
+            reason=_aap_reason,
+            matched_pattern=_account_access_proxy_match.group(0),
+            deterministic_gate="account_access_proxy",
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        result = _finalize_audit_result(result)
+        _append_skill_audit_trail(
+            skill_name,
+            content_sha256,
+            result,
+            source,
+            metadata,
+            caller_agent,
+            source_url=source_url,
+            introduced_by=introduced_by,
+        )
+        return _public_audit_result(result)
+
+    def check_dangerous_patterns(skill_code: str) -> list[str]:
+        matched: list[str] = []
+        if re.search(r"(requests\.|urllib|httpx|aiohttp|socket\.)", skill_code):
+            matched.append("network_call")
+        if re.search(r"\b(exec|eval|subprocess|os\.system|os\.popen|__import__)\s*\(", skill_code):
+            matched.append("code_execution")
+        if re.search(r"base64\.b64decode|chr\(\d+\)\s*\+", skill_code):
+            matched.append("obfuscation")
+        return matched
+
+    try:
+        from config import SOUL_DETERMINISTIC_AUDIT_ENABLED as _det_audit_enabled
+    except Exception:
+        _det_audit_enabled = True
+
+    if _det_audit_enabled:
+        _dangerous_patterns = check_dangerous_patterns(skill_content)
+        if _dangerous_patterns:
+            _det_reason = f"deterministic_pattern_block: {', '.join(_dangerous_patterns)}"
+            log.warning(
+                "SKILL_AUDIT blocked: skill=%s reason=%r matched_patterns=%s",
+                skill_name,
+                _det_reason,
+                _dangerous_patterns,
+            )
+            result = _audit_result(
+                skill_name,
+                source,
+                True,
+                _dangerous_patterns,
+                [],
+                [],
+                passed=False,
+                reason=_det_reason,
+                matched_patterns=_dangerous_patterns,
+                deterministic_gate="dangerous_pattern",
+                status="BLOCKED",
+                verdict="BLOCKED",
+            )
+            result = _finalize_audit_result(result)
+            _append_skill_audit_trail(
+                skill_name,
+                content_sha256,
+                result,
+                source,
+                metadata,
+                caller_agent,
+                source_url=source_url,
+                introduced_by=introduced_by,
+            )
+            return _public_audit_result(result)
+
+    _ACCESS_BROKERAGE_PATTERNS = re.compile(
+        r"\bcookie\b|session_token|csrf|\bBearer\b|Authorization\s*[:=]|account_pool|account\s+rotation"
+        r"|proxy\s+ChatGPT|proxy\s+Gemini|wechat\s+session|browser\s+profile|chrome\s+profile"
+        r"|playwright\s+storageState|localStorage|export\s+cookies|import\s+cookies"
+        r"|reverse\s+proxy|credential\s+relay|batch\s+login",
+        re.IGNORECASE,
+    )
+    _access_brokerage_match = _ACCESS_BROKERAGE_PATTERNS.search(skill_content)
+    if _access_brokerage_match:
+        _ab_reason = "access_right_brokerage"
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%r matched_pattern=%r",
+            skill_name,
+            _ab_reason,
+            _access_brokerage_match.group(0),
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["access_right_brokerage"],
+            [],
+            [],
+            passed=False,
+            reason=_ab_reason,
+            matched_pattern=_access_brokerage_match.group(0),
+            deterministic_gate="access_brokerage",
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        result = _finalize_audit_result(result)
+        _append_skill_audit_trail(
+            skill_name,
+            content_sha256,
+            result,
+            source,
+            metadata,
+            caller_agent,
+            source_url=source_url,
+            introduced_by=introduced_by,
+        )
+        return _public_audit_result(result)
+
+    def _metadata_audit_text_value(value: object) -> str:
+        if isinstance(value, (list, tuple, set)):
+            return " ".join(_metadata_audit_text_value(item) for item in value)
+        return str(value or "")
+
+    _metadata_description = str((metadata or {}).get("description") or "")
+    _metadata_audit_text = "\n".join(
+        [
+            str(skill_name or ""),
+            str((metadata or {}).get("name") or ""),
+            _metadata_description,
+            _metadata_audit_text_value(tags),
+            _metadata_audit_text_value((metadata or {}).get("tags")),
+        ]
+    )
+    _metadata_trigger_pattern = re.compile(
+        r"\b(when you see|trigger on|activate when|if (the )?(task|message|content|commit) contains|on receipt of)\b",
+        re.IGNORECASE,
+    )
+    _metadata_trigger_match = _metadata_trigger_pattern.search(_metadata_audit_text)
+    _metadata_description_too_long = len(_metadata_description) > 400
+    if _metadata_trigger_match or _metadata_description_too_long:
+        _metadata_reason = "metadata contains embedded trigger conditions"
+        _metadata_matched_pattern = (
+            _metadata_trigger_match.group(0) if _metadata_trigger_match else "description_length>400"
+        )
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason=%r matched_pattern=%r",
+            skill_name,
+            _metadata_reason,
+            _metadata_matched_pattern,
+        )
+        result = _audit_result(
+            skill_name,
+            source,
+            True,
+            ["metadata_trigger_conditions"],
+            [],
+            [],
+            passed=False,
+            reason=_metadata_reason,
+            matched_pattern=_metadata_matched_pattern,
+            deterministic_gate="metadata_audit",
+            status="BLOCKED",
+            verdict="BLOCKED",
+        )
+        result = _finalize_audit_result(result)
+        _append_skill_audit_trail(
+            skill_name,
+            content_sha256,
+            result,
+            source,
+            metadata,
+            caller_agent,
+            source_url=source_url,
+            introduced_by=introduced_by,
+        )
+        return _public_audit_result(result)
+
+    _FRAGILITY_DEPENDENCY_PATTERNS = [
+        (r"\bgpt-\d", "hardcoded GPT model version"),
+        (r"\bclaude-\d", "hardcoded Claude model version"),
+        (r"\bopenai\b", "OpenAI platform reference"),
+        (r"https://api\.", "hardcoded API URL"),
+        (r"\bsubstack\b", "Substack platform reference"),
+        (r"\byoutube\b", "YouTube platform reference"),
+    ]
+    _FALLBACK_SECTION_PATTERN = re.compile(r"^#{1,6}\s+Fallback\b", re.IGNORECASE | re.MULTILINE)
+    if not _FALLBACK_SECTION_PATTERN.search(skill_content):
+        for _frag_pattern, _frag_label in _FRAGILITY_DEPENDENCY_PATTERNS:
+            _frag_match = re.search(_frag_pattern, skill_content, re.IGNORECASE)
+            if _frag_match:
+                log.warning(
+                    "PERMACOMPUTING WARNING: skill %s uses ephemeral dependency %r (%r) with no fallback plan.",
+                    skill_name,
+                    _frag_label,
+                    _frag_match.group(0),
+                )
 
     # LLM evaluation is advisory only; hard_block is not subject to LLM override.
     result = _audit_skill_impl(
@@ -8885,11 +11423,21 @@ def audit_skill(
         metadata,
         include_dependencies,
         strict_mode=strict_mode,
+        source_agent=source_agent,
+        current_task_context=current_task_context,
+        trust_label_without_mechanism=trust_label_without_mechanism,
     )
     if isinstance(result, dict) and isinstance(result.get("blocked"), bool):
         result = dict(result)
         result.setdefault("deterministic_gate", None)
         result.setdefault("deterministic_precheck", deterministic_precheck)
+        result = _apply_skill_manifest_context_warnings(
+            result,
+            skill_name,
+            skill_content,
+            tags,
+            metadata,
+        )
         if alignment_sensitive_matches:
             result = dict(result)
             result["alignment_adjacent"] = True
@@ -9084,6 +11632,32 @@ def audit_skill(
                 "SKILL_AUDIT semantic_channel warn: skill=%s reason='potential-semantic-channel' matches=%r",
                 skill_name,
                 semantic_channel_matches,
+            )
+        _trigger_matches_outer = trigger_pattern_check(skill_content, metadata)
+        if _trigger_matches_outer and not (result.get("audit_flags") or {}).get("context_conditional_trigger"):
+            checks_triggered += 1
+            result = dict(result)
+            warnings = list(result.get("warnings") or [])
+            if TRIGGER_WARNING_MESSAGE not in warnings:
+                warnings.append(TRIGGER_WARNING_MESSAGE)
+            result["warnings"] = warnings
+            audit_flags = dict(result.get("audit_flags") or {})
+            audit_flags["context_conditional_trigger"] = {
+                "detected": True,
+                "severity": "WARN",
+                "reason": TRIGGER_WARNING_MESSAGE,
+                "matches": _trigger_matches_outer,
+                "requires_manual_review": True,
+            }
+            result["audit_flags"] = audit_flags
+            _first_trigger_match = _trigger_matches_outer[0]
+            log.warning(
+                "SKILL_AUDIT context_conditional_trigger warn: skill=%s line=%s pattern=%r matched_line=%r matches=%r",
+                skill_name,
+                _first_trigger_match.get("line_no"),
+                _first_trigger_match.get("pattern"),
+                _first_trigger_match.get("line_content"),
+                _trigger_matches_outer,
             )
         _durable_state_match = re.search(
             r"durable.?state|cross.?session|persistent.?memor",
@@ -9651,7 +12225,7 @@ def audit_skill(
                         source_url=source_url,
                         introduced_by=introduced_by,
                     )
-                    return duplicate_result
+                    return _public_audit_result(duplicate_result)
         if not result["blocked"]:
             result = _apply_provenance_continuity_warning(result, skill_name, skill_content, metadata)
         result = dict(result)
@@ -9813,6 +12387,111 @@ def audit_skill(
                 metadata,
                 str(deferred_execution_findings[0].get("pattern", "")),
             )
+        behavioral_contract_violations = _check_behavioral_contracts(skill_content)
+        if behavioral_contract_violations:
+            log.warning(
+                "SKILL_AUDIT blocked: skill=%s category=behavioral_contract_violation violations=%r",
+                skill_name,
+                behavioral_contract_violations,
+            )
+            _alert_skill_audit_blocked(
+                skill_name,
+                ["behavioral_contract_violation"],
+                skill_content,
+                source,
+                metadata,
+                behavioral_contract_violations[0].get("reason", ""),
+            )
+            result = _audit_result(
+                skill_name,
+                source,
+                True,
+                ["behavioral_contract_violation"],
+                list(result.get("warnings") or []),
+                list(result.get("overreach_warnings") or []),
+                reason="behavioral_contract_violation",
+                matched_violations=behavioral_contract_violations,
+                status="BLOCKED",
+                verdict="BLOCKED",
+                audit_flags=result.get("audit_flags"),
+            )
+        trust_value_score = 0
+        _trust_value_breakdown: dict[str, int] = {}
+        _tval_source_path = str((metadata or {}).get("source_path") or source_url or "")
+        if any(p in _tval_source_path for p in ("shared/", "super/")):
+            trust_value_score += 2
+            _trust_value_breakdown["high_trust_deployment_context"] = 2
+        _tval_network_pattern = re.compile(
+            r"\b(?:requests|httpx|urllib|aiohttp|socket)\b|\bhttp\.client\b",
+            re.IGNORECASE,
+        )
+        if _tval_network_pattern.search(skill_content):
+            trust_value_score += 2
+            _trust_value_breakdown["network_access"] = 2
+        _tval_write_pattern = re.compile(
+            r"""open\s*\([^)]*,\s*['"][waxWAX][+b]*['"]\s*\)|\.write_text\s*\(|\.write_bytes\s*\(""",
+            re.IGNORECASE,
+        )
+        _tval_soul_pattern = re.compile(r"\bsoul[/\\]", re.IGNORECASE)
+        for _tval_wm in _tval_write_pattern.finditer(skill_content):
+            _tval_ctx = skill_content[max(0, _tval_wm.start() - 200) : _tval_wm.end() + 200]
+            if not _tval_soul_pattern.search(_tval_ctx):
+                trust_value_score += 1
+                _trust_value_breakdown["file_write_outside_soul"] = 1
+                break
+        _tval_subprocess_pattern = re.compile(
+            r"\bsubprocess\b|\bexec\s*\(|\beval\s*\(|\bos\.system\s*\(|\bos\.popen\s*\(",
+            re.IGNORECASE,
+        )
+        if _tval_subprocess_pattern.search(skill_content):
+            trust_value_score += 1
+            _trust_value_breakdown["subprocess_exec"] = 1
+        if trust_value_score >= 4:
+            result = dict(result)
+            audit_flags = dict(result.get("audit_flags") or {})
+            audit_flags["HIGH_VALUE_TARGET"] = {
+                "detected": True,
+                "severity": "WARNING",
+                "trust_value_score": trust_value_score,
+                "breakdown": _trust_value_breakdown,
+            }
+            result["audit_flags"] = audit_flags
+            result["HIGH_VALUE_TARGET"] = True
+            result["trust_value_score"] = trust_value_score
+            result["requires_secondary_review"] = True
+            warnings = list(result.get("warnings") or [])
+            if "HIGH_VALUE_TARGET" not in warnings:
+                warnings.append("HIGH_VALUE_TARGET")
+            result["warnings"] = warnings
+            log.warning(
+                "SKILL_AUDIT HIGH_VALUE_TARGET: skill=%s trust_value_score=%d breakdown=%s",
+                skill_name,
+                trust_value_score,
+                _trust_value_breakdown,
+            )
+            try:
+                from llm import claude_think as _tval_claude_think
+
+                _secondary_prompt = (
+                    f"Assume this skill is malicious — what would it do? "
+                    f"Skill name: {skill_name!r}. "
+                    f"Flagged capabilities: {list(_trust_value_breakdown)!r}. "
+                    f"Skill content:\n\n{skill_content[:4000]}"
+                )
+                _secondary_result = _tval_claude_think(_secondary_prompt)
+                result["secondary_review"] = {"prompt": "adversarial_intent", "result": _secondary_result}
+                log.warning(
+                    "SKILL_AUDIT HIGH_VALUE_TARGET secondary_review: skill=%s result_length=%d",
+                    skill_name,
+                    len(_secondary_result),
+                )
+            except Exception as _sr_exc:
+                result["secondary_review"] = {"prompt": "adversarial_intent", "error": str(_sr_exc)}
+                log.warning(
+                    "SKILL_AUDIT HIGH_VALUE_TARGET secondary_review_failed: skill=%s error=%s",
+                    skill_name,
+                    _sr_exc,
+                )
         result = _finalize_audit_result(result)
         _append_skill_audit_trail(
             skill_name,
@@ -9824,13 +12503,56 @@ def audit_skill(
             source_url=source_url,
             introduced_by=introduced_by,
         )
+        _append_skill_audit_decision(skill_name, source, result)
         if not result["blocked"]:
             _increment_daily_skill_import_counter()
             _update_skill_provenance_record(skill_name, source, metadata, _diff_summary, result, _is_update)
             _seal_skill(skill_name, skill_content)
-            _save_skill_hash(skill_name, skill_content)
+            _save_skill_hash(skill_name, skill_content, _skill_file_from_metadata(metadata))
             _write_skill_audit_meta(skill_name, skill_content)
-    return result
+            try:
+                from config import LOGS_DIR as _approved_logs_dir
+            except Exception:
+                _approved_logs_dir = Path(__file__).resolve().parent.parent / "logs"
+            _approved_entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "skill_name": skill_name,
+                "source": source,
+                "skill_hash": content_sha256,
+                "checks_passed": [
+                    "verification_internal",
+                    "self_referential_audit",
+                    "audit_infrastructure",
+                    "permanent_blocklist_exact",
+                    "categories_hit_threshold",
+                    "permanent_blocklist_pattern",
+                    "hard_block_pattern",
+                    "trust_abuse",
+                    "metadata_injection",
+                    "provenance_trust_layer",
+                    "deterministic_precheck",
+                    "semantic_override",
+                    "llm_audit_impl",
+                    "alignment_sensitive_zone",
+                    "structural_privilege_escalation",
+                    "prompt_injection",
+                    "text_field_sanitization",
+                    "structural_influence",
+                    "durable_execution_persistent_write",
+                    "epistemic_audit_metadata",
+                    "required_skill_sections",
+                    "circular_trust",
+                    "deferred_execution_bypass",
+                ],
+            }
+            try:
+                _approved_logs_dir.mkdir(parents=True, exist_ok=True)
+                with open(_approved_logs_dir / "skill_audit_approved.jsonl", "a", encoding="utf-8") as _approved_f:
+                    _approved_f.write(json.dumps(_approved_entry, ensure_ascii=False, sort_keys=True) + "\n")
+            except OSError as _approved_exc:
+                log.debug("skill_audit_approved write failed: %s", _approved_exc)
+            _log_skill_provenance(skill_name, source, result)
+    return _public_audit_result(result)
 
 
 def _extract_env_assumptions(skill_code: str) -> dict:
@@ -9965,6 +12687,134 @@ def _skill_chain_provenance_log_path() -> Path:
         return MIRA_ROOT / "agents" / "shared" / "soul" / "skills" / "provenance.log"
     except Exception:
         return Path(__file__).resolve().parent.parent / "agents" / "shared" / "soul" / "skills" / "provenance.log"
+
+
+def _skill_audit_decision_log_path() -> Path:
+    try:
+        from config import LOGS_DIR
+
+        return LOGS_DIR / "skill_audit.jsonl"
+    except Exception:
+        return Path.home() / "Sandbox" / "Mira" / "logs" / "skill_audit.jsonl"
+
+
+def _skill_audit_security_log_path() -> Path:
+    try:
+        from config import MIRA_ROOT
+
+        return MIRA_ROOT / "logs" / "skill_audit.log"
+    except Exception:
+        return Path(__file__).resolve().parent.parent / "logs" / "skill_audit.log"
+
+
+def _audit_security_check_statuses(result: dict) -> dict[str, str]:
+    checks = {
+        "network": "pass",
+        "code_execution": "pass",
+        "obfuscation": "pass",
+        "privilege_escalation": "pass",
+    }
+    proxy_check_map = {
+        "network": ("network", "semantic_url", "semantic_channel", "exfiltration"),
+        "code_execution": ("code_execution", "exec", "subprocess", "deferred_execution"),
+        "obfuscation": ("obfuscat", "encoded", "base64"),
+        "privilege_escalation": ("privilege", "escalat", "elevated", "sudo", "chmod", "chown", "setuid", "setgid"),
+    }
+    proxy_chain = result.get("proxy_chain")
+    if isinstance(proxy_chain, list):
+        for proxy_entry in proxy_chain:
+            if not isinstance(proxy_entry, dict):
+                continue
+            check_name = str(proxy_entry.get("check") or "").lower()
+            passed = bool(proxy_entry.get("passed"))
+            for check, tokens in proxy_check_map.items():
+                if any(token in check_name for token in tokens) and not passed:
+                    checks[check] = "fail"
+
+    result_text_parts: list[str] = []
+    for key in ("categories", "warnings", "overreach_warnings", "matched_patterns"):
+        value = result.get(key)
+        if isinstance(value, list):
+            result_text_parts.extend(str(item).lower() for item in value)
+    audit_flags = result.get("audit_flags")
+    if isinstance(audit_flags, dict):
+        result_text_parts.extend(str(key).lower() for key in audit_flags.keys())
+    for key in ("reason", "matched_pattern", "deterministic_gate", "blocked_reason", "matched_rule"):
+        value = result.get(key)
+        if value:
+            result_text_parts.append(str(value).lower())
+    result_text = "\n".join(result_text_parts)
+    for check, tokens in proxy_check_map.items():
+        if any(token in result_text for token in tokens):
+            checks[check] = "fail"
+    return checks
+
+
+def _append_skill_security_audit_log(skill_name: str, result: dict) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "skill_name": skill_name,
+        "result": "fail" if bool(result.get("blocked")) or result.get("passed") is False else "pass",
+        "checks": _audit_security_check_statuses(result),
+    }
+    log_path = _skill_audit_security_log_path()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as audit_log:
+            fcntl.flock(audit_log, fcntl.LOCK_EX)
+            try:
+                audit_log.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+            finally:
+                fcntl.flock(audit_log, fcntl.LOCK_UN)
+    except OSError as exc:
+        log.debug("skill_audit security log write failed: %s", exc)
+
+
+def _log_skill_provenance(skill_name: str, source: str, audit_result: dict) -> None:
+    try:
+        from config import MIRA_ROOT
+
+        soul_dir = MIRA_ROOT / "agents" / "shared" / "soul"
+    except Exception:
+        soul_dir = Path(__file__).resolve().parent.parent / "agents" / "shared" / "soul"
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "skill_name": skill_name,
+        "source_url_or_feed": source,
+        "checks_passed": [
+            "verification_internal",
+            "self_referential_audit",
+            "audit_infrastructure",
+            "permanent_blocklist_exact",
+            "categories_hit_threshold",
+            "permanent_blocklist_pattern",
+            "hard_block_pattern",
+            "trust_abuse",
+            "metadata_injection",
+            "provenance_trust_layer",
+            "deterministic_precheck",
+            "semantic_override",
+            "llm_audit_impl",
+            "alignment_sensitive_zone",
+            "structural_privilege_escalation",
+            "prompt_injection",
+            "text_field_sanitization",
+            "structural_influence",
+            "durable_execution_persistent_write",
+            "epistemic_audit_metadata",
+            "required_skill_sections",
+            "circular_trust",
+            "deferred_execution_bypass",
+        ],
+        "approved": not audit_result.get("blocked", True),
+        "agent": audit_result.get("source_agent") or "unknown",
+    }
+    try:
+        soul_dir.mkdir(parents=True, exist_ok=True)
+        with open(soul_dir / "skill_provenance.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.warning("_log_skill_provenance: write failed: %s", exc)
 
 
 def _metadata_or_provenance_value(metadata: dict | None, *keys: str) -> str:
@@ -10840,6 +13690,34 @@ def _append_skill_audit_trail(
     _append_skill_chain_provenance_log(skill_name, source_url, introduced_by, audit_result, timestamp)
 
 
+def _append_skill_audit_decision(skill_name: str, source: str, result: dict) -> None:
+    cats = set(str(c).lower() for c in (result.get("categories") or []))
+    flags = set(str(k).lower() for k in (result.get("audit_flags") or {}).keys())
+    reason = str(result.get("reason") or "").lower()
+    all_keys = cats | flags | ({reason} if reason else set())
+    verdict = "pass" if not result.get("blocked") else "block"
+    checks = {
+        "network": not any("network" in k or "semantic_url" in k or "semantic_channel" in k for k in all_keys),
+        "exec": not any("exec" in k or "deferred_execution" in k for k in all_keys),
+        "obfuscated": not any("obfuscat" in k or "encoded" in k or "base64" in k for k in all_keys),
+        "escalation": not any("escalat" in k or "privilege" in k or "elevated" in k for k in all_keys),
+    }
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "skill": skill_name,
+        "source": source,
+        "verdict": verdict,
+        "checks": checks,
+    }
+    log_path = _skill_audit_decision_log_path()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+    except OSError as exc:
+        log.debug("skill_audit_decision write failed: %s", exc)
+
+
 def mark_skill_resolved(skill_name: str, resolution_note: str) -> dict | None:
     block_entry = _latest_unresolved_skill_block(skill_name)
     if block_entry is None:
@@ -11192,6 +14070,526 @@ def _prompt_injection_text_fields(
     return "\n".join(value for value in field_values if value)
 
 
+TRIGGER_WARNING_MESSAGE = "Skill contains trigger logic conditioned on external data — review manually before enabling."
+_CONDITIONAL_TRIGGER_EXTERNAL_INPUT_PATTERN: re.Pattern = re.compile(
+    r"\b(?:task(?:_text)?|content|message|filename|file_name|commit|path|input|context|prompt|payload|request|data|env)\b",
+    re.IGNORECASE,
+)
+_CONDITIONAL_TRIGGER_LITERAL_MIN_LENGTH = 10
+TRIGGER_PATTERNS: list[re.Pattern] = [
+    re.compile(
+        r"(?m)^\s*(?:if|elif|while)\b[^\n]*"
+        r"\b(?:task(?:_text)?|input|message|context|commit|content|filename|file_name|path|prompt|payload|request|data)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?m)^\s*match\s+"
+        r"[^\n]*\b(?:task(?:_text)?|input|message|context|commit|content|filename|file_name|path|prompt|payload|request|data)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?m)^\s*(?:if|elif|while)\b[^\n]*(?:\bos[.]environ\b|\bos[.]getenv\s*\()",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"""(?m)^\s*(?:if|elif|while)\b[^\n]*['"][^'"\n]{2,}['"]\s+in\s+"""
+        r"""\w*(?:task|message|input|content|filename|file_name)\w*""",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"""\bre[.](?:search|match)\s*\([^,\n]+,\s*"""
+        r"""\w*(?:task|message|input|content|filename|file_name|file_content|path|data)\w*""",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"""(?m)^\s*(?:if|elif|while)\b[^\n]*(?:['"][^'"\n]{2,}['"]\s+in\s+"""
+        r"""\w*(?:data|path|file|filename|content|message|input|task|env)\w*|"""
+        r"""\w*(?:data|path|file|filename|content|message|input|task|env)\w*\s*(?:==|!=)\s*['"][^'"\n]{2,}['"])""",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?m)<!--\s*(?:if|elif)\b[^>]*-->", re.IGNORECASE),
+    re.compile(
+        r"(?m){%\s*(?:if|elif)\b[^%]*\b(?:input|message|context|commit|content)\b[^%]*%}",
+        re.IGNORECASE,
+    ),
+]
+
+
+def _has_declared_trigger_value(value: object) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return bool(value)
+    if isinstance(value, (list, tuple, set)):
+        return any(_has_declared_trigger_value(item) for item in value)
+    return value is not None
+
+
+def _skill_declares_conditional_triggers(metadata: dict | None) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    return any(_has_declared_trigger_value(metadata.get(field)) for field in ("declared_triggers", "triggers"))
+
+
+_TRIGGER_CONDITION_TRANSPARENCY_INPUT_NAMES = r"(?:input|content|message|text|path|filename)"
+_TRIGGER_CONDITION_TRANSPARENCY_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    ("re.compile", re.compile(r"\bre\s*\.\s*compile\s*\(", re.IGNORECASE)),
+    ("re.search", re.compile(r"\bre\s*\.\s*search\s*\(", re.IGNORECASE)),
+    ("re.match", re.compile(r"\bre\s*\.\s*match\s*\(", re.IGNORECASE)),
+    ("re.findall", re.compile(r"\bre\s*\.\s*findall\s*\(", re.IGNORECASE)),
+    (
+        "if_in_dynamic_input",
+        re.compile(
+            rf"(?m)^\s*(?:if|elif|while)\b[^\n]{{0,240}}"
+            rf"(?:\b{_TRIGGER_CONDITION_TRANSPARENCY_INPUT_NAMES}\b[^\n]{{0,120}}\b(?:not\s+)?in\b|"
+            rf"\b(?:not\s+)?in\b[^\n]{{0,120}}\b{_TRIGGER_CONDITION_TRANSPARENCY_INPUT_NAMES}\b)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "dynamic_input_startswith_endswith",
+        re.compile(
+            rf"\b{_TRIGGER_CONDITION_TRANSPARENCY_INPUT_NAMES}\b\s*\.\s*(?:startswith|endswith)\s*\(",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "string_startswith_endswith_dynamic_input",
+        re.compile(
+            rf"""(?P<quote>['"])[^'"\n]*(?P=quote)\s*\.\s*(?:startswith|endswith)\s*\(\s*"""
+            rf"""\b{_TRIGGER_CONDITION_TRANSPARENCY_INPUT_NAMES}\b""",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "string_comparison_dynamic_input",
+        re.compile(
+            rf"""(?m)^\s*(?:if|elif|while)\b[^\n]{{0,240}}"""
+            rf"""(?:\b{_TRIGGER_CONDITION_TRANSPARENCY_INPUT_NAMES}\b\s*(?:==|!=)\s*['"]|"""
+            rf"""['"][^'"\n]*['"]\s*(?:==|!=)\s*\b{_TRIGGER_CONDITION_TRANSPARENCY_INPUT_NAMES}\b)""",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def _trigger_condition_transparency_matches(skill_code: str) -> list[dict[str, object]]:
+    lines = skill_code.splitlines()
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, int, str]] = set()
+    for label, pattern in _TRIGGER_CONDITION_TRANSPARENCY_PATTERNS:
+        for match in pattern.finditer(skill_code):
+            line_no = skill_code.count("\n", 0, match.start()) + 1
+            line_content = lines[line_no - 1].strip() if 0 < line_no <= len(lines) else ""
+            matched_text = match.group(0).strip()
+            key = (label, line_no, matched_text)
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append(
+                {
+                    "pattern": label,
+                    "line_no": line_no,
+                    "line_content": line_content[:300],
+                    "matched_text": matched_text[:300],
+                }
+            )
+    return matches
+
+
+def _skill_declares_trigger_conditions(metadata: dict | None) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    return _has_declared_trigger_value(metadata.get("trigger_conditions"))
+
+
+def _apply_trigger_condition_transparency_warning(
+    result: dict,
+    skill_name: str,
+    skill_content: str,
+    metadata: dict | None,
+) -> dict:
+    trigger_condition_matches = _trigger_condition_transparency_matches(skill_content)
+    if not trigger_condition_matches or _skill_declares_trigger_conditions(metadata):
+        return result
+    result = dict(result)
+    warning = "UNDECLARED_TRIGGER_CONDITIONS"
+    warnings = list(result.get("warnings") or [])
+    if warning not in warnings:
+        warnings.append(warning)
+    result["warnings"] = warnings
+    audit_flags = dict(result.get("audit_flags") or {})
+    audit_flags["undeclared_trigger_conditions"] = {
+        "detected": True,
+        "severity": "WARNING",
+        "reason": "pattern-matching trigger logic is present but metadata.trigger_conditions is missing or empty",
+        "matches": trigger_condition_matches,
+    }
+    result["audit_flags"] = audit_flags
+    findings = list(result.get("findings") or [])
+    findings.append(
+        {
+            "severity": "WARNING",
+            "category": "undeclared_trigger_conditions",
+            "reason": "pattern-matching trigger logic is present but metadata.trigger_conditions is missing or empty",
+            "matches": trigger_condition_matches,
+        }
+    )
+    result["findings"] = findings
+    log.warning(
+        "SKILL_AUDIT warning: skill=%s label=%s matched_patterns=%s",
+        skill_name,
+        warning,
+        trigger_condition_matches,
+    )
+    return result
+
+
+CONDITIONAL_ACTIVATION_WARNING_MESSAGE = (
+    "Conditional activation on input content detected — verify trigger boundary is documented and intentional."
+)
+_CONDITIONAL_ACTIVATION_INPUT_NAMES = (
+    r"(?:task(?:_text)?|message|content|context|commit(?:_message)?|input(?:_text)?|prompt|payload|request|env)"
+)
+_CONDITIONAL_ACTIVATION_INPUT_PATTERN: re.Pattern = re.compile(
+    rf"\b{_CONDITIONAL_ACTIVATION_INPUT_NAMES}\b",
+    re.IGNORECASE,
+)
+_CONDITIONAL_ACTIVATION_WHITELIST_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(
+        r"""\b\w+\s*\.\s*get\s*\(\s*['"]task_type['"](?:\s*,\s*[^)]*)?\)""",
+        re.IGNORECASE,
+    ),
+    re.compile(r"""\b\w+\s*\[\s*['"]task_type['"]\s*\]""", re.IGNORECASE),
+    re.compile(r"\btask_type\b", re.IGNORECASE),
+)
+_CONDITIONAL_ACTIVATION_LINE_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    (
+        "regex_on_input_content",
+        re.compile(
+            rf"""\bre\s*\.\s*(?:search|match)\s*\([^,\n]+,\s*[^\n)]*\b{_CONDITIONAL_ACTIVATION_INPUT_NAMES}\b""",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "str_find_on_input_content",
+        re.compile(
+            rf"""\b{_CONDITIONAL_ACTIVATION_INPUT_NAMES}\w*\s*\.\s*find\s*\(""",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "literal_membership_input_content",
+        re.compile(
+            rf"""(?m)['"][^'"\n]+['"]\s+(?:not\s+)?in\s+[^\n#]*\b{_CONDITIONAL_ACTIVATION_INPUT_NAMES}\b""",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def _conditional_activation_whitelisted(text: str) -> bool:
+    remainder = text
+    for pattern in _CONDITIONAL_ACTIVATION_WHITELIST_PATTERNS:
+        remainder = pattern.sub("", remainder)
+    return remainder != text and not _CONDITIONAL_ACTIVATION_INPUT_PATTERN.search(remainder)
+
+
+def _conditional_activation_node_text(node: ast.AST) -> str:
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return ""
+
+
+def _conditional_activation_predicate_inspects_input(node: ast.AST, predicate_text: str) -> bool:
+    if not _CONDITIONAL_ACTIVATION_INPUT_PATTERN.search(predicate_text):
+        return False
+    if _conditional_activation_whitelisted(predicate_text):
+        return False
+    for child in ast.walk(node):
+        if isinstance(child, ast.Compare):
+            compare_text = _conditional_activation_node_text(child)
+            has_string_literal = any(
+                isinstance(grandchild, ast.Constant) and isinstance(grandchild.value, str)
+                for grandchild in ast.walk(child)
+            )
+            has_input = bool(_CONDITIONAL_ACTIVATION_INPUT_PATTERN.search(compare_text))
+            has_string_operator = any(
+                isinstance(operator, (ast.In, ast.NotIn, ast.Eq, ast.NotEq)) for operator in child.ops
+            )
+            if has_input and has_string_literal and has_string_operator:
+                return True
+        if isinstance(child, ast.Call):
+            call_name = _ast_call_name(child.func)
+            call_text = _conditional_activation_node_text(child)
+            if call_name in {"re.search", "re.match"} and _CONDITIONAL_ACTIVATION_INPUT_PATTERN.search(call_text):
+                return True
+            method_name = call_name.rsplit(".", 1)[-1]
+            if method_name in {"find", "startswith", "endswith"}:
+                receiver_text = _conditional_activation_node_text(child.func)
+                if _CONDITIONAL_ACTIVATION_INPUT_PATTERN.search(receiver_text):
+                    return True
+    return bool(
+        re.search(
+            r"\b(?:in|not\s+in|==|!=)\b|\.find\s*\(|\.startswith\s*\(|\.endswith\s*\(|\bre\s*\.\s*(?:search|match)\s*\(",
+            predicate_text,
+            re.IGNORECASE,
+        )
+        and re.search(r"""['"][^'"\n]+['"]""", predicate_text)
+    )
+
+
+def _conditional_activation_matches(skill_code: str) -> list[dict[str, object]]:
+    lines = skill_code.splitlines()
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, int, str]] = set()
+
+    def add_match(pattern: str, line_no: int, line_content: str, matched_text: str) -> None:
+        if _conditional_activation_whitelisted(line_content):
+            return
+        key = (pattern, line_no, line_content)
+        if key in seen:
+            return
+        seen.add(key)
+        matches.append(
+            {
+                "severity": "WARN",
+                "category": "conditional_activation_on_input_content",
+                "reason": CONDITIONAL_ACTIVATION_WARNING_MESSAGE,
+                "pattern": pattern,
+                "line_no": line_no,
+                "line_content": line_content[:300],
+                "matched_text": matched_text.strip()[:300],
+            }
+        )
+
+    for label, pattern in _CONDITIONAL_ACTIVATION_LINE_PATTERNS:
+        for match in pattern.finditer(skill_code):
+            line_no = skill_code.count("\n", 0, match.start()) + 1
+            line_content = lines[line_no - 1].strip() if 0 < line_no <= len(lines) else ""
+            add_match(label, line_no, line_content, match.group(0))
+
+    try:
+        tree = ast.parse(skill_code)
+    except SyntaxError:
+        tree = None
+    except Exception:
+        tree = None
+    if tree is None:
+        return matches
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.If, ast.While, ast.IfExp)):
+            continue
+        predicate = node.test
+        predicate_text = _conditional_activation_node_text(predicate)
+        line_no = getattr(node, "lineno", 0)
+        line_content = lines[line_no - 1].strip() if 0 < line_no <= len(lines) else predicate_text
+        if re.search(r"\bos\s*\.\s*(?:environ\b|getenv\s*\()", predicate_text, re.IGNORECASE):
+            add_match("conditional_os_environ_read", line_no, line_content, predicate_text)
+        if _conditional_activation_predicate_inspects_input(predicate, predicate_text):
+            add_match("input_string_conditional_branch", line_no, line_content, predicate_text)
+    return matches
+
+
+def _apply_conditional_activation_warning(result: dict, skill_name: str, skill_content: str) -> dict:
+    conditional_activation_matches = _conditional_activation_matches(skill_content)
+    if not conditional_activation_matches:
+        return result
+    result = dict(result)
+    warnings = list(result.get("warnings") or [])
+    if CONDITIONAL_ACTIVATION_WARNING_MESSAGE not in warnings:
+        warnings.append(CONDITIONAL_ACTIVATION_WARNING_MESSAGE)
+    result["warnings"] = warnings
+    result["requires_manual_review"] = True
+
+    audit_flags = dict(result.get("audit_flags") or {})
+    audit_flags["conditional_activation_on_input_content"] = {
+        "detected": True,
+        "severity": "WARN",
+        "reason": CONDITIONAL_ACTIVATION_WARNING_MESSAGE,
+        "matches": conditional_activation_matches,
+        "requires_manual_review": True,
+    }
+    result["audit_flags"] = audit_flags
+
+    findings = list(result.get("findings") or [])
+    existing_findings = {
+        (
+            str(finding.get("category") or ""),
+            int(finding.get("line_no") or 0),
+            str(finding.get("line_content") or ""),
+            str(finding.get("pattern") or ""),
+        )
+        for finding in findings
+        if isinstance(finding, dict)
+    }
+    for match in conditional_activation_matches:
+        finding = {
+            "severity": "WARN",
+            "category": "conditional_activation_on_input_content",
+            "reason": CONDITIONAL_ACTIVATION_WARNING_MESSAGE,
+            "pattern": match.get("pattern"),
+            "line_no": match.get("line_no"),
+            "line_content": match.get("line_content"),
+            "matched_text": match.get("matched_text"),
+            "requires_manual_review": True,
+        }
+        finding_key = (
+            str(finding["category"]),
+            int(finding.get("line_no") or 0),
+            str(finding.get("line_content") or ""),
+            str(finding.get("pattern") or ""),
+        )
+        if finding_key in existing_findings:
+            continue
+        existing_findings.add(finding_key)
+        findings.append(finding)
+    result["findings"] = findings
+    if not result.get("blocked") and result.get("status") not in ("FLAGGED", "SURVIVAL_ALLOWED", "POTENTIAL_DUPLICATE"):
+        result["status"] = "FLAGGED"
+        result["verdict"] = "FLAGGED"
+    log.warning(
+        "SKILL_AUDIT warning: skill=%s category=conditional_activation_on_input_content severity=WARN lines=%s matches=%r",
+        skill_name,
+        [match.get("line_no") for match in conditional_activation_matches],
+        conditional_activation_matches,
+    )
+    return result
+
+
+def _string_entropy(value: str) -> float:
+    if not value:
+        return 0.0
+    return sum(-(value.count(char) / len(value)) * math.log2(value.count(char) / len(value)) for char in set(value))
+
+
+def _looks_like_hidden_activation_keyword(value: str) -> bool:
+    if len(value) < 12:
+        return False
+    classes = sum(
+        bool(pattern.search(value))
+        for pattern in (
+            re.compile(r"[a-z]"),
+            re.compile(r"[A-Z]"),
+            re.compile(r"\d"),
+            re.compile(r"[^A-Za-z0-9\s]"),
+        )
+    )
+    return classes >= 2 and len(set(value)) >= 8 and _string_entropy(value) >= 3.0
+
+
+def _context_conditional_trigger_matches(skill_code: str, metadata: dict | None = None) -> list[dict[str, object]]:
+    combined_metadata = skill_metadata_from_frontmatter(skill_code)
+    combined_metadata.update(metadata or {})
+    if _skill_declares_conditional_triggers(combined_metadata):
+        return []
+    lines = skill_code.splitlines()
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, int, str]] = set()
+
+    def add_match(pattern: str, line_no: int, line_content: str, matched_text: str) -> None:
+        key = (pattern, line_no, line_content)
+        if key in seen:
+            return
+        seen.add(key)
+        matches.append(
+            {
+                "severity": "WARN",
+                "category": "context_conditional_trigger",
+                "reason": TRIGGER_WARNING_MESSAGE,
+                "pattern": pattern,
+                "line_no": line_no,
+                "line_content": line_content[:300],
+                "matched_text": matched_text.strip()[:300],
+            }
+        )
+
+    for trigger_pattern in TRIGGER_PATTERNS:
+        for trigger_match in trigger_pattern.finditer(skill_code):
+            line_no = skill_code.count("\n", 0, trigger_match.start()) + 1
+            line_content = lines[line_no - 1].strip() if 0 < line_no <= len(lines) else ""
+            add_match(trigger_pattern.pattern, line_no, line_content, trigger_match.group(0))
+    conditional_line_pattern = re.compile(
+        r"^\s*(?:if|elif|while|match)\b|{%\s*(?:if|elif)\b|<!--\s*(?:if|elif)\b", re.IGNORECASE
+    )
+    quoted_string_pattern = re.compile(
+        rf"""(?P<quote>['"])(?P<value>[^'"\n]{{{_CONDITIONAL_TRIGGER_LITERAL_MIN_LENGTH + 1},}})(?P=quote)"""
+    )
+    for line_no, line in enumerate(lines, 1):
+        if not conditional_line_pattern.search(line):
+            continue
+        references_external_input = bool(_CONDITIONAL_TRIGGER_EXTERNAL_INPUT_PATTERN.search(line))
+        for literal_match in quoted_string_pattern.finditer(line):
+            literal_value = literal_match.group("value")
+            if references_external_input:
+                add_match("external_input_condition_literal", line_no, line.strip(), literal_value)
+            elif _looks_like_hidden_activation_keyword(literal_value):
+                add_match("high_entropy_condition_literal", line_no, line.strip(), literal_value)
+    try:
+        tree = ast.parse(skill_code)
+    except SyntaxError:
+        tree = None
+    except Exception:
+        tree = None
+    if tree is not None:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.If, ast.While)):
+                try:
+                    condition_text = ast.unparse(node.test)
+                except Exception:
+                    condition_text = ""
+                references_external_input = bool(_CONDITIONAL_TRIGGER_EXTERNAL_INPUT_PATTERN.search(condition_text))
+                for child in ast.walk(node.test):
+                    if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                        if len(
+                            child.value
+                        ) <= _CONDITIONAL_TRIGGER_LITERAL_MIN_LENGTH and not _looks_like_hidden_activation_keyword(
+                            child.value
+                        ):
+                            continue
+                        line_no = getattr(child, "lineno", getattr(node, "lineno", 0))
+                        line_content = lines[line_no - 1].strip() if 0 < line_no <= len(lines) else ""
+                        add_match(
+                            (
+                                "external_input_condition_literal"
+                                if references_external_input
+                                else "high_entropy_condition_literal"
+                            ),
+                            line_no,
+                            line_content,
+                            child.value,
+                        )
+            elif isinstance(node, ast.Match):
+                try:
+                    subject_text = ast.unparse(node.subject)
+                except Exception:
+                    subject_text = ""
+                if not _CONDITIONAL_TRIGGER_EXTERNAL_INPUT_PATTERN.search(subject_text):
+                    continue
+                for case in node.cases:
+                    for child in ast.walk(case.pattern):
+                        literal_value = None
+                        if isinstance(child, ast.MatchValue) and isinstance(child.value, ast.Constant):
+                            literal_value = child.value.value
+                        elif isinstance(child, ast.MatchSingleton):
+                            literal_value = child.value
+                        if (
+                            not isinstance(literal_value, str)
+                            or len(literal_value) <= _CONDITIONAL_TRIGGER_LITERAL_MIN_LENGTH
+                        ):
+                            continue
+                        line_no = getattr(child, "lineno", getattr(node, "lineno", 0))
+                        line_content = lines[line_no - 1].strip() if 0 < line_no <= len(lines) else ""
+                        add_match("external_input_match_literal", line_no, line_content, literal_value)
+    return matches
+
+
+def trigger_pattern_check(skill_code: str, metadata: dict | None = None) -> list[dict[str, object]]:
+    return _context_conditional_trigger_matches(skill_code, metadata)
+
+
 def _sanitize_text_fields(
     skill_name: str,
     skill_content: str,
@@ -11325,6 +14723,9 @@ def _audit_skill_impl(
     metadata: dict | None = None,
     include_dependencies: bool = True,
     strict_mode: bool = False,
+    source_agent: str = "unknown",
+    current_task_context: str | None = None,
+    trust_label_without_mechanism: dict[str, object] | None = None,
 ) -> dict:
     """Audit a skill for known attack vectors.
 
@@ -11334,6 +14735,7 @@ def _audit_skill_impl(
     - obfuscated_payloads
     - privilege_escalation
     - persistent_foothold
+    - hardware_fingerprinting
     - DURABLE_STATE_ACCESS
     - durable_state_capability (WARNING only, requires manual review)
     - durable_execution_persistent_write
@@ -11343,6 +14745,7 @@ def _audit_skill_impl(
     - verification_anchor_injection (WARNING only, requires manual review)
     - judgment_boundaries_missing (WARNING only, does not block deployment)
     - JUDGMENT_WITHOUT_REVIEW (BLOCK for consequential decisions, WARN otherwise)
+    - JUDGMENT_SUBSTITUTION
 
     When include_dependencies is True, local imports resolved under the Mira
     repository are included in the security-category checks.
@@ -11373,6 +14776,25 @@ def _audit_skill_impl(
             re.IGNORECASE,
         ),
     )
+    allowed_use_contexts = frozenset({"personal", "research", "creative", "general", "writing", "media"})
+
+    def _normalized_use_contexts(value: object, default: str | None = None) -> list[str]:
+        if value is None:
+            value = default
+        if isinstance(value, str):
+            raw_values = [value]
+            stripped = value.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                raw_values = stripped[1:-1].split(",")
+            elif "," in stripped:
+                raw_values = stripped.split(",")
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            raw_values = list(value)
+        else:
+            raw_values = [value]
+        contexts = [str(item).strip().strip("'\"").lower() for item in raw_values]
+        return [context for context in contexts if context]
+
     metadata = _skill_metadata_with_efficacy_defaults(metadata)
     if not _auditor_integrity_ok():
         log.critical(
@@ -11384,26 +14806,14 @@ def _audit_skill_impl(
 
     _verify_auditor_integrity()
 
-    try:
-        from config import SKILL_AUDIT_LOCKOUT_THRESHOLD, SKILL_AUDIT_LOCKOUT_WINDOW_MINUTES
-
-        _lockout_now = datetime.now(timezone.utc)
-        _lockout_window = timedelta(minutes=SKILL_AUDIT_LOCKOUT_WINDOW_MINUTES)
-        _failure_log[:] = [(ts, sn) for ts, sn in _failure_log if ts > _lockout_now - _lockout_window]
-        if len(_failure_log) >= SKILL_AUDIT_LOCKOUT_THRESHOLD:
-            log.warning(
-                "SKILL_AUDIT lockout: source=%s reason='%d failures in rolling %d-min window — skill import suspended'",
-                source,
-                len(_failure_log),
-                SKILL_AUDIT_LOCKOUT_WINDOW_MINUTES,
-            )
-            raise SkillAuditLockedOut(
-                f"Skill audit locked out: {len(_failure_log)} failures in last {SKILL_AUDIT_LOCKOUT_WINDOW_MINUTES} minutes"
-            )
-    except SkillAuditLockedOut:
-        raise
-    except Exception:
-        pass
+    if not strict_mode and _is_strict_mode(source):
+        strict_mode = True
+        log.warning(
+            "SKILL_AUDIT strict_mode_escalated: source=%s reason='rejection rate exceeds %.0f%% in last %d skills'",
+            source,
+            _REJECTION_RATE_THRESHOLD * 100,
+            _REJECTION_COUNTS_N,
+        )
 
     _sensitive_file_access_matches = _scan_for_sensitive_file_access(skill_content)
     _sensitive_file_strict_provenance = _has_external_web_research_provenance(source, metadata)
@@ -11430,7 +14840,6 @@ def _audit_skill_impl(
             skill_name,
             computation_tampering_matches,
         )
-        _update_rejection_counts(source, True)
         _alert_skill_audit_blocked(
             skill_name,
             ["computation_tampering"],
@@ -11469,7 +14878,6 @@ def _audit_skill_impl(
             capability_boundary_contract["missing"],
             capability_boundary_contract["empty"],
         )
-        _update_rejection_counts(source, True)
         _alert_skill_audit_blocked(
             skill_name,
             ["missing_capability_boundary_contract"],
@@ -11507,7 +14915,6 @@ def _audit_skill_impl(
             BROWSER_FOOTHOLD_BLOCK_MESSAGE,
             browser_foothold_matches,
         )
-        _update_rejection_counts(source, True)
         _alert_skill_audit_blocked(
             skill_name,
             ["browser_foothold"],
@@ -11670,22 +15077,6 @@ def _audit_skill_impl(
     except OSError:
         pass
 
-    rejection_rate_strict_mode = _is_strict_mode(source)
-    strict_mode = bool(strict_mode or rejection_rate_strict_mode)
-    if strict_mode:
-        if rejection_rate_strict_mode:
-            log.warning(
-                "SKILL_AUDIT strict_mode_escalated: source=%s reason='rejection rate >= %.0f%% in last %d skills'",
-                source,
-                _REJECTION_RATE_THRESHOLD * 100,
-                _REJECTION_COUNTS_N,
-            )
-        else:
-            log.warning(
-                "SKILL_AUDIT strict_mode_escalated: source=%s reason='source_agent requires strict audit'",
-                source,
-            )
-
     dependency_sources = (
         _resolve_skill_dependency_graph(skill_name, skill_content, metadata) if include_dependencies else []
     )
@@ -11706,7 +15097,6 @@ def _audit_skill_impl(
             skill_name,
             dependency_computation_tampering_matches,
         )
-        _update_rejection_counts(source, True)
         _alert_skill_audit_blocked(
             skill_name,
             ["computation_tampering"],
@@ -11760,7 +15150,6 @@ def _audit_skill_impl(
             BROWSER_FOOTHOLD_BLOCK_MESSAGE,
             dependency_browser_foothold_matches,
         )
-        _update_rejection_counts(source, True)
         _alert_skill_audit_blocked(
             skill_name,
             ["browser_foothold"],
@@ -11803,6 +15192,35 @@ def _audit_skill_impl(
 
     blocked_categories: list[str] = []
     warning_categories: list[str] = []
+    context_conditional_trigger_matches = trigger_pattern_check(skill_content, metadata)
+    if context_conditional_trigger_matches:
+        warning_categories.append(TRIGGER_WARNING_MESSAGE)
+        _audit_flags["context_conditional_trigger"] = {
+            "detected": True,
+            "severity": "WARN",
+            "reason": TRIGGER_WARNING_MESSAGE,
+            "matches": context_conditional_trigger_matches,
+            "requires_manual_review": True,
+        }
+        first_context_conditional_trigger_match = context_conditional_trigger_matches[0]
+        log.warning(
+            "SKILL_AUDIT warning: skill=%s category=context_conditional_trigger severity=WARN line=%s pattern=%r matched_line=%r matches=%s",
+            skill_name,
+            first_context_conditional_trigger_match.get("line_no"),
+            first_context_conditional_trigger_match.get("pattern"),
+            first_context_conditional_trigger_match.get("line_content"),
+            context_conditional_trigger_matches,
+        )
+    if trust_label_without_mechanism:
+        warning_categories.append("trust_vocabulary_without_verification_mechanism")
+        _audit_flags["trust_vocabulary_without_verification_mechanism"] = trust_label_without_mechanism
+        log.warning(
+            "SKILL_AUDIT flagged: skill=%s category=trust_vocabulary_without_verification_mechanism "
+            "matches=%s reason=%r",
+            skill_name,
+            trust_label_without_mechanism["matched_terms"],
+            trust_label_without_mechanism["reason"],
+        )
 
     _social_engineering_text = _social_engineering_audit_text(skill_name, skill_content, metadata)
     for _social_engineering_category, _social_engineering_pattern in _configured_social_engineering_patterns():
@@ -11813,7 +15231,6 @@ def _audit_skill_impl(
                 _social_engineering_pattern.pattern,
                 _social_engineering_category,
             )
-            _update_rejection_counts(source, True)
             _alert_skill_audit_blocked(
                 skill_name,
                 ["SUSPICIOUS_PROMPT"],
@@ -11853,7 +15270,6 @@ def _audit_skill_impl(
             "SKILL_AUDIT blocked: skill=%s reason='self-referential audit reference'",
             skill_name,
         )
-        _update_rejection_counts(source, True)
         _alert_skill_audit_blocked(
             skill_name,
             blocked_categories,
@@ -11877,7 +15293,6 @@ def _audit_skill_impl(
             "SKILL_AUDIT blocked: skill=%s reason='skill references audit infrastructure — verification loop risk'",
             skill_name,
         )
-        _update_rejection_counts(source, True)
         _alert_skill_audit_blocked(
             skill_name,
             blocked_categories,
@@ -11903,9 +15318,63 @@ def _audit_skill_impl(
             skill_name,
         )
 
+    auditor_self_ref_pattern = re.compile(
+        r"^\s*(?:import|from)\s+soul_manager\b"
+        r"|['\"][^'\"]*(?:audit_skill|soul_manager)[^'\"]*['\"]"
+        r"|__import__\s*\(\s*['\"]soul_manager['\"]"
+        r"|\bimportlib\.import_module\s*\(\s*['\"]soul_manager['\"]",
+        re.MULTILINE,
+    )
+    if auditor_self_ref_pattern.search(skill_content):
+        blocked_categories.append("auditor_self_reference")
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s reason='auditor_self_reference'",
+            skill_name,
+        )
+        _alert_skill_audit_blocked(
+            skill_name,
+            blocked_categories,
+            skill_content,
+            source,
+            metadata,
+        )
+        return _audit_result(
+            skill_name,
+            source,
+            True,
+            blocked_categories,
+            warning_categories,
+            [],
+            audit_flags=_audit_flags,
+        )
+
     network_pattern = _STRICT_NETWORK_PATTERN if strict_mode else _NETWORK_PATTERN
     network_flags = [match.group(0) for match in network_pattern.finditer(dependency_context)]
     has_network = bool(network_flags)
+    dependency_context_lines = dependency_context.splitlines()
+    external_http_call_findings: list[dict[str, object]] = []
+    external_http_call_seen: set[tuple[int, str]] = set()
+    for http_match in _EXTERNAL_HTTP_CALL_PATTERN.finditer(dependency_context):
+        line_no = dependency_context.count("\n", 0, http_match.start()) + 1
+        matched_text = http_match.group(0)
+        key = (line_no, matched_text)
+        if key in external_http_call_seen:
+            continue
+        external_http_call_seen.add(key)
+        external_http_call_findings.append(
+            {
+                "severity": "HIGH",
+                "category": "network_intent_mismatch",
+                "reason": "skill declares non-network tags but contains external HTTP calls",
+                "line_no": line_no,
+                "line_content": (
+                    dependency_context_lines[line_no - 1].strip()[:300]
+                    if 0 < line_no <= len(dependency_context_lines)
+                    else ""
+                ),
+                "matched_call": matched_text[:120],
+            }
+        )
     if has_network and not _sensitive_file_network_egress:
         _sensitive_file_network_egress = True
         _audit_flags["sensitive_file_access"] = _sensitive_file_access_audit_flag(
@@ -11913,6 +15382,124 @@ def _audit_skill_impl(
             _sensitive_file_network_egress,
             _sensitive_file_strict_provenance,
         )
+    _suspicious_exfiltration_data_patterns = [
+        ("file_read", re.compile(r"\bopen\s*\([^)]*(?:,\s*['\"]r[b+t]*['\"]|\))", re.IGNORECASE)),
+        ("file_read", re.compile(r"\.(?:read_text|read_bytes)\s*\(", re.IGNORECASE)),
+        ("file_read", re.compile(r"\b(?:json|yaml|toml|pickle)\.load\s*\(", re.IGNORECASE)),
+        ("env_access", re.compile(r"\b(?:os[.]environ|os[.]getenv|environ[.]get|getenv)\b")),
+        (
+            "memory_reference",
+            re.compile(
+                r"\b(?:Mira/data/soul|data/soul|soul/(?:identity|worldview|interests|memory|journal)"
+                r"|identity\.md|worldview\.md|interests\.md|memory\.md|journal/)\b",
+                re.IGNORECASE,
+            ),
+        ),
+    ]
+    _suspicious_exfiltration_http_patterns = [
+        ("http_call", re.compile(r"\brequests\.post\s*\(", re.IGNORECASE)),
+        ("http_call", re.compile(r"\bhttpx\.(?:post|put|patch|request)\s*\(", re.IGNORECASE)),
+        ("http_call", re.compile(r"\burllib(?:\.request)?\.(?:urlopen|Request)\s*\(", re.IGNORECASE)),
+        ("http_call", re.compile(r"\baiohttp\.(?:ClientSession|request|post|put|patch)\b", re.IGNORECASE)),
+        ("http_call", re.compile(r"\bClientSession\s*\([^)]*\)\.(?:post|put|patch|request)\s*\(", re.IGNORECASE)),
+    ]
+
+    def _suspicious_exfiltration_line_matches() -> dict[str, list[dict[str, object]]]:
+        lines = skill_content.splitlines()
+        data_matches: list[dict[str, object]] = []
+        http_matches: list[dict[str, object]] = []
+        seen: set[tuple[str, int, str]] = set()
+
+        def _append(target: list[dict[str, object]], category: str, line_no: int, pattern: str) -> None:
+            key = (category, line_no, pattern)
+            if key in seen:
+                return
+            seen.add(key)
+            line_content = lines[line_no - 1].strip() if 0 < line_no <= len(lines) else ""
+            target.append(
+                {
+                    "category": category,
+                    "line_no": line_no,
+                    "line_content": line_content[:300],
+                    "pattern": pattern,
+                }
+            )
+
+        for line_no, line in enumerate(lines, 1):
+            for category, pattern in _suspicious_exfiltration_data_patterns:
+                if pattern.search(line):
+                    _append(data_matches, category, line_no, pattern.pattern)
+            for category, pattern in _suspicious_exfiltration_http_patterns:
+                if pattern.search(line):
+                    _append(http_matches, category, line_no, pattern.pattern)
+
+        def _call_name(node: ast.AST) -> str:
+            parts: list[str] = []
+            while isinstance(node, ast.Attribute):
+                parts.append(node.attr)
+                node = node.value
+            if isinstance(node, ast.Name):
+                parts.append(node.id)
+            return ".".join(reversed(parts))
+
+        def _open_mode_is_read(node: ast.Call) -> bool:
+            mode_node = node.args[1] if len(node.args) > 1 else None
+            for keyword in node.keywords:
+                if keyword.arg == "mode":
+                    mode_node = keyword.value
+                    break
+            if mode_node is None:
+                return True
+            if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
+                return not any(flag in mode_node.value for flag in ("w", "a", "x", "+"))
+            return True
+
+        try:
+            tree = ast.parse(skill_content)
+        except SyntaxError:
+            tree = None
+        if tree is not None:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    call_name = _call_name(node.func)
+                    if call_name in {"open", "io.open"} and _open_mode_is_read(node):
+                        _append(data_matches, "file_read", getattr(node, "lineno", 0), call_name)
+                    elif call_name in {"read_text", "read_bytes"} or call_name.endswith((".read_text", ".read_bytes")):
+                        _append(data_matches, "file_read", getattr(node, "lineno", 0), call_name)
+                    elif call_name in {"os.getenv", "os." "environ.get", "environ.get", "getenv"}:
+                        _append(data_matches, "env_access", getattr(node, "lineno", 0), call_name)
+                    elif call_name in {
+                        "requests.post",
+                        "httpx.post",
+                        "httpx.put",
+                        "httpx.patch",
+                        "httpx.request",
+                        "urllib.urlopen",
+                        "urllib.request.urlopen",
+                        "urllib.Request",
+                        "urllib.request.Request",
+                        "aiohttp.request",
+                        "aiohttp.post",
+                        "aiohttp.put",
+                        "aiohttp.patch",
+                    }:
+                        _append(http_matches, "http_call", getattr(node, "lineno", 0), call_name)
+                elif isinstance(node, ast.Attribute) and _call_name(node) == "os." "environ":
+                    _append(data_matches, "env_access", getattr(node, "lineno", 0), "os." "environ")
+                elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    if re.search(
+                        r"\b(?:Mira/data/soul|data/soul|soul/(?:identity|worldview|interests|memory|journal)"
+                        r"|identity\.md|worldview\.md|interests\.md|memory\.md|journal/)\b",
+                        node.value,
+                        re.IGNORECASE,
+                    ):
+                        _append(data_matches, "memory_reference", getattr(node, "lineno", 0), "memory_reference")
+
+        if data_matches and http_matches:
+            return {"data_access": data_matches, "http_calls": http_matches}
+        return {}
+
+    suspicious_exfiltration_matches = _suspicious_exfiltration_line_matches()
 
     dangerous_pattern = re.compile(
         # dynamic import can construct dangerous calls from runtime strings, bypassing static pattern matching
@@ -11933,6 +15520,24 @@ def _audit_skill_impl(
     obfuscation_pattern = _STRICT_OBFUSCATION_PATTERN if strict_mode else _OBFUSCATION_PATTERN
     obfuscation_flags = [match.group(0) for match in obfuscation_pattern.finditer(dependency_context)]
     has_obfuscation = bool(obfuscation_flags)
+    constraint_override_pattern = re.compile(
+        r"\bignore\s+(?:previous|prior|above)\s+(?:instructions?|rules?|constraints?)\b"
+        r"|\byour\s+(?:real|true|actual)\s+purpose\b"
+        r"|\boverride\s+rule\b"
+        r"|\bdisregard\b"
+        r"|\bHARD\s+RULES?\b"
+        r"|\bbypass.*check\b"
+        r"|\bskip.*audit\b",
+        re.IGNORECASE,
+    )
+    constraint_override_text = "\n".join(
+        [
+            str(skill_name or ""),
+            str((metadata or {}).get("description") or ""),
+            skill_content,
+        ]
+    )
+    constraint_override_match = constraint_override_pattern.search(constraint_override_text)
 
     privilege_pattern = re.compile(r"\b(sudo|chmod|chown|setuid|setgid|os\.chmod|shutil\.chown)\b")
     privilege_flags = [match.group(0) for match in privilege_pattern.finditer(dependency_context)]
@@ -11975,15 +15580,154 @@ def _audit_skill_impl(
     long_running_execution_matches = _long_running_execution_matches(skill_content)
     persistent_write_target_matches = _persistent_write_target_matches(skill_content)
     has_durable_execution_persistent_write = bool(long_running_execution_matches and persistent_write_target_matches)
+    hardware_fingerprinting_matches = _hardware_fingerprinting_matches(dependency_context)
 
     if has_network:
         blocked_categories.append("unauthorized_network_calls")
+    declared_tags: list[str] = []
+    for declared_tag_source in (tags, (metadata or {}).get("tags")):
+        if isinstance(declared_tag_source, str):
+            declared_tags.append(declared_tag_source)
+        elif isinstance(declared_tag_source, (list, tuple, set, frozenset)):
+            declared_tags.extend(str(tag) for tag in declared_tag_source if str(tag).strip())
+    declared_tag_tokens = {token for tag in declared_tags for token in re.findall(r"[a-z0-9]+", str(tag).lower())}
+    has_network_related_tag = bool(declared_tag_tokens & NETWORK_RELATED_TAG_TOKENS)
+    if external_http_call_findings and not has_network_related_tag:
+        blocked_categories.append("network_intent_mismatch")
+        _audit_flags["network_intent_mismatch"] = {
+            "detected": True,
+            "severity": "HIGH",
+            "reason": "skill declares non-network tags but contains external HTTP calls",
+            "declared_tags": declared_tags,
+            "matches": external_http_call_findings,
+        }
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s category=network_intent_mismatch tags=%s matches=%s",
+            skill_name,
+            declared_tags,
+            external_http_call_findings,
+        )
+    if suspicious_exfiltration_matches:
+        blocked_categories.append("SUSPICIOUS_EXFILTRATION")
+        _audit_flags["suspicious_exfiltration"] = {
+            "detected": True,
+            "severity": "HIGH",
+            "reason": "skill combines local data access with outbound HTTP calls",
+            "matches": suspicious_exfiltration_matches,
+        }
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s category=SUSPICIOUS_EXFILTRATION data_lines=%s http_lines=%s",
+            skill_name,
+            suspicious_exfiltration_matches["data_access"],
+            suspicious_exfiltration_matches["http_calls"],
+        )
     if has_dangerous_exec:
         blocked_categories.append("dangerous_code_execution")
     if has_obfuscation:
         blocked_categories.append("obfuscated_payloads")
+    frontmatter_use_context = skill_metadata_from_frontmatter(skill_content).get("use_context")
+    skill_use_contexts = _normalized_use_contexts(
+        frontmatter_use_context or (metadata or {}).get("use_context"),
+        "general",
+    )
+    task_use_contexts = _normalized_use_contexts(current_task_context)
+    invalid_use_contexts = sorted(set(skill_use_contexts) - allowed_use_contexts)
+    context_mismatch = bool(invalid_use_contexts)
+    if task_use_contexts and not (set(task_use_contexts) & set(skill_use_contexts)):
+        context_mismatch = True
+    if context_mismatch:
+        blocked_categories.append("context_mismatch")
+        _audit_flags["context_mismatch"] = {
+            "detected": True,
+            "severity": "HIGH",
+            "reason": "skill use_context is not allowed for the current task context",
+            "use_context": skill_use_contexts,
+            "invalid_use_contexts": invalid_use_contexts,
+            "current_task_context": task_use_contexts,
+            "allowed_use_contexts": sorted(allowed_use_contexts),
+        }
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s category=context_mismatch use_context=%s "
+            "task_context=%s invalid_contexts=%s",
+            skill_name,
+            skill_use_contexts,
+            task_use_contexts,
+            invalid_use_contexts,
+        )
+    if constraint_override_match:
+        blocked_categories.append("constraint_override_injection")
+    if hardware_fingerprinting_matches:
+        blocked_categories.append("hardware_fingerprinting")
+        _audit_flags["hardware_fingerprinting"] = {
+            "detected": True,
+            "severity": "HIGH",
+            "reason": "local hardware or timing fingerprint collection",
+            "matches": hardware_fingerprinting_matches,
+        }
+        log.warning(
+            "SKILL_AUDIT blocked: skill=%s category=hardware_fingerprinting pattern=%r matches=%s",
+            skill_name,
+            hardware_fingerprinting_matches[0].get("pattern"),
+            hardware_fingerprinting_matches,
+        )
+    _MODALITY_AUTHORITY_PATTERNS = [
+        re.compile(
+            r"(the image shows|visual output confirms|screenshot indicates|vision confirms"
+            r"|as seen in the (?:image|photo|frame))",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(override (?:visual|image|sensor) (?:evidence|signal|input))",
+            re.IGNORECASE,
+        ),
+    ]
+    modality_authority_matches = [
+        m.group(0) for pat in _MODALITY_AUTHORITY_PATTERNS for m in pat.finditer(dependency_context)
+    ]
+    if modality_authority_matches:
+        warning_categories.append("modality_authority_assertion")
+        _audit_flags["modality_authority_assertion"] = {
+            "detected": True,
+            "severity": "SUSPICIOUS",
+            "reason": "text asserts false authority over visual or sensor signals — possible modality spoofing",
+            "matches": modality_authority_matches,
+        }
+        log.warning(
+            "SKILL_AUDIT suspicious: skill=%s category=modality_authority_assertion severity=SUSPICIOUS matches=%s",
+            skill_name,
+            modality_authority_matches,
+        )
     if has_privilege_escalation:
         blocked_categories.append("privilege_escalation")
+    judgment_substitution_matches = _check_judgment_substitution(skill_content)
+    judgment_substitution_override_value = (metadata or {}).get("explicit_user_override")
+    if isinstance(judgment_substitution_override_value, (list, tuple, set, frozenset)):
+        judgment_substitution_override_tokens = {
+            str(value).strip().upper() for value in judgment_substitution_override_value
+        }
+    else:
+        judgment_substitution_override_tokens = {str(judgment_substitution_override_value or "").strip().upper()}
+    judgment_substitution_override = "JUDGMENT_SUBSTITUTION" in judgment_substitution_override_tokens
+    if judgment_substitution_matches:
+        if judgment_substitution_override:
+            warning_categories.append("JUDGMENT_SUBSTITUTION")
+        else:
+            blocked_categories.append("JUDGMENT_SUBSTITUTION")
+        _audit_flags["JUDGMENT_SUBSTITUTION"] = {
+            "detected": True,
+            "severity": "OVERRIDDEN" if judgment_substitution_override else "HIGH",
+            "reason": "skill automates editorial judgment through a data-feedback loop without built-in human oversight",
+            "matches": judgment_substitution_matches,
+            "requires_explicit_user_confirmation": not judgment_substitution_override,
+            "explicit_user_override": judgment_substitution_override,
+        }
+        log.warning(
+            "SKILL_AUDIT judgment_substitution: skill=%s severity=%s override=%s matches=%s",
+            skill_name,
+            "OVERRIDDEN" if judgment_substitution_override else "HIGH",
+            judgment_substitution_override,
+            judgment_substitution_matches,
+        )
     if has_durable_state_access:
         block_reason = "DURABLE_STATE_ACCESS"
         blocked_categories.append("DURABLE_STATE_ACCESS")
@@ -12328,6 +16072,211 @@ def _audit_skill_impl(
                 network_domains,
                 sorted(allowed_domains),
             )
+    if has_network:
+        surveillance_domains = _surveillance_blacklisted_domains(_network_target_domains(dependency_context))
+        if surveillance_domains:
+            for domain in surveillance_domains:
+                log.warning(
+                    "Skill depends on surveillance-infrastructure domain %s — risk of future data-tax monetization",
+                    domain,
+                )
+            if _allow_surveillance_domains():
+                warning_categories.append("surveillance_infrastructure_domain_allowed")
+                log.warning(
+                    "SKILL_AUDIT warning: skill=%s reason='ALLOW_SURVEILLANCE_DOMAINS enabled' domains=%s",
+                    skill_name,
+                    surveillance_domains,
+                )
+            else:
+                blocked_categories.append("surveillance_infrastructure_domain")
+                _audit_flags["surveillance_infrastructure_domain"] = {
+                    "detected": True,
+                    "severity": "HIGH_RISK",
+                    "reason": "skill depends on surveillance-infrastructure domain",
+                    "domains": surveillance_domains,
+                }
+    covert_channel_findings: list[dict[str, object]] = []
+    covert_channel_seen: set[tuple[str, int, str]] = set()
+    skill_content_lines = skill_content.splitlines()
+    for covert_label, covert_pattern in COVERT_CHANNEL_PATTERNS:
+        for covert_match in covert_pattern.finditer(skill_content):
+            line_no = skill_content.count("\n", 0, covert_match.start()) + 1
+            matched_text = re.sub(r"\s+", " ", covert_match.group(0)).strip()[:300]
+            covert_key = (covert_label, line_no, matched_text)
+            if covert_key in covert_channel_seen:
+                continue
+            covert_channel_seen.add(covert_key)
+            covert_channel_findings.append(
+                {
+                    "severity": "WARNING",
+                    "category": "covert_channel_pattern",
+                    "reason": "trusted infrastructure relay endpoint may be used as a covert data channel",
+                    "matched_pattern": covert_label,
+                    "line_no": line_no,
+                    "line_content": (
+                        skill_content_lines[line_no - 1].strip()[:300]
+                        if 0 < line_no <= len(skill_content_lines)
+                        else ""
+                    ),
+                    "matched_text": matched_text,
+                    "requires_manual_review": True,
+                }
+            )
+    if covert_channel_findings:
+        warning_categories.append("covert_channel_pattern")
+        _audit_flags["covert_channel_pattern"] = {
+            "detected": True,
+            "severity": "WARNING",
+            "reason": "trusted infrastructure relay endpoint may be used as a covert data channel",
+            "matches": covert_channel_findings,
+            "requires_manual_review": True,
+        }
+        log.warning(
+            "SKILL_AUDIT warning: skill=%s category=covert_channel_pattern matches=%s",
+            skill_name,
+            covert_channel_findings,
+        )
+    TRUSTED_INFRA_DOMAINS = {
+        "googleapis.com",
+        "drive.google.com",
+        "script.google.com",
+        "apps.googleusercontent.com",
+        "amazonaws.com",
+        "cloudflare.com",
+        "workers.dev",
+        "r2.cloudflarestorage.com",
+    }
+    TRUSTED_CHANNEL_APPROVAL_MARKER = "AUDIT_TRUSTED_CHANNEL_APPROVED:"
+    trusted_channel_findings: list[dict[str, object]] = []
+    trusted_channel_seen: set[tuple[int, str]] = set()
+    for line_no, line in enumerate(skill_content.splitlines(), 1):
+        marker_index = line.find(TRUSTED_CHANNEL_APPROVAL_MARKER)
+        marker_has_reason = marker_index >= 0 and bool(
+            line[marker_index + len(TRUSTED_CHANNEL_APPROVAL_MARKER) :].strip()
+        )
+        for domain in _network_target_domains(line):
+            matched_trusted_domain = next(
+                (
+                    trusted_domain
+                    for trusted_domain in TRUSTED_INFRA_DOMAINS
+                    if domain == trusted_domain or domain.endswith(f".{trusted_domain}")
+                ),
+                None,
+            )
+            if not matched_trusted_domain or marker_has_reason:
+                continue
+            trusted_channel_key = (line_no, domain)
+            if trusted_channel_key in trusted_channel_seen:
+                continue
+            trusted_channel_seen.add(trusted_channel_key)
+            trusted_channel_findings.append(
+                {
+                    "severity": "WARNING",
+                    "category": "trusted_channel_risk",
+                    "reason": (
+                        "trusted infrastructure can be used as a covert channel; add "
+                        "# AUDIT_TRUSTED_CHANNEL_APPROVED: <reason> on the same line if intentional"
+                    ),
+                    "domain": domain,
+                    "matched_trusted_domain": matched_trusted_domain,
+                    "line_no": line_no,
+                    "line_content": line.strip()[:300],
+                    "requires_manual_review": True,
+                }
+            )
+    if trusted_channel_findings:
+        warning_categories.append("trusted_channel_risk")
+        _audit_flags["trusted_channel_risk"] = {
+            "detected": True,
+            "severity": "WARNING",
+            "risk_severity": "trusted_channel_risk",
+            "reason": "trusted infrastructure network target requires explicit inline approval",
+            "matches": trusted_channel_findings,
+            "requires_manual_review": True,
+        }
+        log.warning(
+            "SKILL_AUDIT trusted_channel_risk: skill=%s severity=trusted_channel_risk matches=%s",
+            skill_name,
+            trusted_channel_findings,
+        )
+    SUSPICIOUS_TRUSTED_INFRA = [
+        "googleapis.com",
+        "script.google.com",
+        "drive.google.com",
+        "s3.amazonaws.com",
+        "workers.cloudflare.com",
+        "blob.core.windows.net",
+    ]
+    SUSPICIOUS_TRUSTED_INFRA_REASON = (
+        "Calls high-trust infrastructure — potential covert channel. Requires explicit whitelist approval."
+    )
+    _trusted_infra_agent_tokens: set[str] = set()
+    for _agent_label in (
+        source_agent,
+        source,
+        (metadata or {}).get("agent"),
+        (metadata or {}).get("agent_id"),
+        (metadata or {}).get("source_agent"),
+    ):
+        _trusted_infra_agent_tokens.update(re.findall(r"[a-z0-9]+", str(_agent_label or "").lower()))
+    suspicious_trusted_infra_findings: list[dict[str, object]] = []
+    suspicious_trusted_infra_seen: set[tuple[int, str]] = set()
+    suspicious_trusted_infra_network_call = bool(
+        re.search(
+            r"\b(?:requests|httpx)\.(?:get|post|put|patch|delete|head|options|request)\s*\("
+            r"|\burllib(?:\.request)?\.(?:urlopen|urlretrieve|Request)\s*\("
+            r"|\baiohttp\.ClientSession\s*\("
+            r"|(?<!\w)fetch\s*\(",
+            skill_content,
+            re.IGNORECASE,
+        )
+    )
+    if not ({"socialmedia", "explorer"} & _trusted_infra_agent_tokens) and suspicious_trusted_infra_network_call:
+        for line_no, line in enumerate(skill_content.splitlines(), 1):
+            for domain in _network_target_domains(line):
+                matched_trusted_infra = next(
+                    (
+                        pattern
+                        for pattern in SUSPICIOUS_TRUSTED_INFRA
+                        if domain == pattern or domain.endswith(f".{pattern}")
+                    ),
+                    None,
+                )
+                if not matched_trusted_infra:
+                    continue
+                trusted_infra_key = (line_no, domain)
+                if trusted_infra_key in suspicious_trusted_infra_seen:
+                    continue
+                suspicious_trusted_infra_seen.add(trusted_infra_key)
+                suspicious_trusted_infra_findings.append(
+                    {
+                        "severity": "WARNING",
+                        "category": "suspicious_trusted_infra",
+                        "reason": SUSPICIOUS_TRUSTED_INFRA_REASON,
+                        "domain": domain,
+                        "matched_pattern": matched_trusted_infra,
+                        "line_no": line_no,
+                        "line_content": line.strip()[:300],
+                        "requires_manual_review": True,
+                        "requires_explicit_allowlist_approval": True,
+                    }
+                )
+    if suspicious_trusted_infra_findings:
+        warning_categories.append("suspicious_trusted_infra")
+        _audit_flags["suspicious_trusted_infra"] = {
+            "detected": True,
+            "severity": "WARNING",
+            "reason": SUSPICIOUS_TRUSTED_INFRA_REASON,
+            "matches": suspicious_trusted_infra_findings,
+            "requires_manual_review": True,
+            "requires_explicit_allowlist_approval": True,
+        }
+        log.warning(
+            "SKILL_AUDIT warning: skill=%s category=suspicious_trusted_infra reason=%r matches=%s",
+            skill_name,
+            SUSPICIOUS_TRUSTED_INFRA_REASON,
+            suspicious_trusted_infra_findings,
+        )
     dangerous_knowledge_match = _dangerous_knowledge_payload_match(skill_content)
     if dangerous_knowledge_match:
         matched_pattern, matched_context = dangerous_knowledge_match
@@ -12569,6 +16518,42 @@ def _audit_skill_impl(
     audit_findings: list[dict[str, object]] = list(dependency_findings)
     audit_findings.extend(semantic_injection_findings)
     audit_findings.extend(behavioral_injection_findings)
+    audit_findings.extend(covert_channel_findings)
+    if external_http_call_findings and not has_network_related_tag:
+        audit_findings.extend(external_http_call_findings)
+    audit_findings.extend(trusted_channel_findings)
+    audit_findings.extend(suspicious_trusted_infra_findings)
+    audit_findings.extend(context_conditional_trigger_matches)
+    if context_mismatch:
+        audit_findings.append(
+            {
+                "severity": "HIGH",
+                "category": "context_mismatch",
+                "reason": "skill use_context is not allowed for the current task context",
+                "use_context": skill_use_contexts,
+                "invalid_use_contexts": invalid_use_contexts,
+                "current_task_context": task_use_contexts,
+            }
+        )
+    if suspicious_exfiltration_matches:
+        audit_findings.append(
+            {
+                "severity": "HIGH",
+                "category": "SUSPICIOUS_EXFILTRATION",
+                "reason": "skill combines local data access with outbound HTTP calls",
+                "matches": suspicious_exfiltration_matches,
+            }
+        )
+    if trust_label_without_mechanism:
+        audit_findings.append(
+            {
+                "severity": "FLAG",
+                "category": "trust_vocabulary_without_verification_mechanism",
+                "reason": TRUST_LABEL_WITHOUT_MECHANISM_MESSAGE,
+                "matched_terms": trust_label_without_mechanism["matched_terms"],
+                "requires_review": True,
+            }
+        )
     if has_intermediary_without_output:
         audit_findings.append(
             {
@@ -12576,6 +16561,15 @@ def _audit_skill_impl(
                 "category": "intermediary_dispatch_without_verifiable_output",
                 "reason": "dispatch or handler intermediary without a verifiable return value or output path",
                 "patterns": intermediary_matches,
+            }
+        )
+    if constraint_override_match:
+        audit_findings.append(
+            {
+                "severity": "FAIL",
+                "category": "constraint_override_injection",
+                "reason": "skill contains constraint-override prompt injection language",
+                "pattern": constraint_override_match.group(0),
             }
         )
     for _deferred_exfiltration_match in deferred_exfiltration_matches:
@@ -12606,6 +16600,7 @@ def _audit_skill_impl(
                 "context": matched_context,
             }
         )
+    audit_findings.extend(hardware_fingerprinting_matches)
     for _persistent_foothold_match in persistent_foothold_matches:
         audit_findings.append(
             {
@@ -12797,46 +16792,60 @@ def _audit_skill_impl(
 
     trust_value_score = 0
     _tvs_reasons: list[str] = []
+    _tvs_breakdown = {
+        "high_trust_deploy_context": 0,
+        "network_access": 0,
+        "file_write_outside_soul": 0,
+        "subprocess_execution": 0,
+    }
 
     _deploy_ctx = (metadata or {}).get("deploy_context", "") or (metadata or {}).get("file_path", "")
     if "shared/" in _deploy_ctx or "super/" in _deploy_ctx:
         trust_value_score += 2
+        _tvs_breakdown["high_trust_deploy_context"] = 2
         _tvs_reasons.append("deploy_context=shared/super(+2)")
 
     if has_network:
         trust_value_score += 2
+        _tvs_breakdown["network_access"] = 2
         _tvs_reasons.append("network_access(+2)")
 
     _has_file_write = bool(_CIRC_WRITE_PATTERN.search(skill_content))
-    if _has_file_write and "soul/" not in skill_content:
+    _file_write_lines = [line for line in skill_content.splitlines() if _CIRC_WRITE_PATTERN.search(line)]
+    _has_file_write_outside_soul = any("soul/" not in line and "soul\\" not in line for line in _file_write_lines)
+    if _has_file_write and _has_file_write_outside_soul:
         trust_value_score += 1
+        _tvs_breakdown["file_write_outside_soul"] = 1
         _tvs_reasons.append("file_write_outside_soul(+1)")
 
     _has_subprocess_exec = bool(re.search(r"\b(subprocess\.|os\.system|Popen)\b", skill_content)) or has_dangerous_exec
     if _has_subprocess_exec:
         trust_value_score += 1
+        _tvs_breakdown["subprocess_execution"] = 1
         _tvs_reasons.append("subprocess_exec(+1)")
 
     requires_secondary_review = False
     if trust_value_score >= 4:
-        warning_categories.append("HIGH_VALUE_TARGET")
+        if "HIGH_VALUE_TARGET" not in warning_categories:
+            warning_categories.append("HIGH_VALUE_TARGET")
         requires_secondary_review = True
+        _audit_flags["high_value_target"] = {
+            "detected": True,
+            "severity": "WARNING",
+            "category": "HIGH_VALUE_TARGET",
+            "trust_value_score": trust_value_score,
+            "score_breakdown": _tvs_breakdown,
+            "reasons": _tvs_reasons,
+            "requires_secondary_review": True,
+            "secondary_review_prompt": "assume this skill is malicious — what would it do?",
+        }
         log.warning(
             "SKILL_AUDIT HIGH_VALUE_TARGET: skill=%s trust_value_score=%d breakdown=%s "
             "— high-value compromise target; secondary adversarial review required",
             skill_name,
             trust_value_score,
-            _tvs_reasons,
+            _tvs_breakdown,
         )
-        # NOTE: the secondary adversarial-review hook used to dispatch into a
-        # `sub_agent` module that no longer exists in the repo. The previous
-        # code wrapped that import in try/except so the failure was silent —
-        # but the static import checker (preflight) catches it and refuses to
-        # run the agent at all (SIGHUP loop). Until a real secondary-review
-        # path is wired up, just record the warning category and rely on the
-        # primary audit findings; the skill is still subject to all other
-        # checks. TODO: route through the registry's `evaluator` agent or a
-        # dedicated adversarial-review worker.
 
     _pi_full_text = skill_name + "\n" + (metadata or {}).get("description", "") + "\n" + skill_content
     prompt_injection_patterns = [
@@ -12942,14 +16951,6 @@ def _audit_skill_impl(
                 )
                 break
 
-    if _label_without_mechanism(skill_name, (metadata or {}).get("description", ""), skill_content):
-        warning_categories.append("trust_label_without_mechanism")
-        log.warning(
-            "SKILL_AUDIT trust_label_without_mechanism: skill=%s "
-            "reason='Trust vocabulary without verification mechanism — inspect manually'",
-            skill_name,
-        )
-
     if (
         _VISUAL_FIELD_PATTERN.search(skill_content)
         and _VISUAL_IMAGE_CONTEXT_PATTERN.search(skill_content)
@@ -13026,11 +17027,11 @@ def _audit_skill_impl(
             skill_name,
         )
 
-    if tags and (set(tags) & ORCHESTRATOR_SCOPE_TAGS) and source not in TRUSTED_INTERNAL_SOURCES:
+    if tags and (set(tags) & ORCHESTRATOR_SCOPE_TAGS):
         blocked_categories.append("topology_escalation")
         log.warning(
             "SKILL_AUDIT topology_escalation: skill=%s source=%s claimed_tags=%s "
-            "reason='topology_escalation: skill claims orchestrator-tier scope from untrusted source'",
+            "reason='topology_escalation: skill claims orchestrator-tier scope'",
             skill_name,
             source,
             sorted(set(tags) & ORCHESTRATOR_SCOPE_TAGS),
@@ -13134,26 +17135,35 @@ def _audit_skill_impl(
         )
 
     _branch_count = 0
+    _conditionally_complex = False
+    _skill_audit_branch_threshold = 8
     try:
-        from config import SKILL_AUDIT_BRANCH_THRESHOLD
+        try:
+            from config import SKILL_AUDIT_BRANCH_THRESHOLD as _configured_branch_threshold
 
-        _match_node_types = (ast.If, ast.IfExp) + ((ast.Match,) if hasattr(ast, "Match") else ())
+            _skill_audit_branch_threshold = int(_configured_branch_threshold)
+        except Exception:
+            pass
+
+        _match_node_types = (ast.If, ast.ExceptHandler) + ((ast.Match,) if hasattr(ast, "Match") else ())
         _ast_tree = ast.parse(skill_content)
         for _ast_node in ast.walk(_ast_tree):
             if isinstance(_ast_node, _match_node_types):
                 _branch_count += 1
-        if _branch_count > SKILL_AUDIT_BRANCH_THRESHOLD:
-            warning_categories.append("HIGH_CONDITIONAL_COMPLEXITY")
+        if _branch_count > _skill_audit_branch_threshold:
+            _conditionally_complex = True
+            warning_categories.append("conditionally_complex")
             log.warning(
-                "SKILL_AUDIT HIGH_CONDITIONAL_COMPLEXITY: skill=%s branch_count=%d threshold=%d",
+                "SKILL_AUDIT conditionally_complex: skill=%s branch_count=%d threshold=%d",
                 skill_name,
                 _branch_count,
-                SKILL_AUDIT_BRANCH_THRESHOLD,
+                _skill_audit_branch_threshold,
             )
     except SyntaxError:
         pass
     except Exception:
         pass
+    metadata["conditional_branch_count"] = _branch_count
 
     requires_manual_review = (
         judgment_encapsulation_requires_review
@@ -13167,20 +17177,52 @@ def _audit_skill_impl(
         or bool(durable_state_injection_risk_audit)
         or bool(durable_state_matches)
         or undeclared_behavior_modification
+        or bool(trust_label_without_mechanism)
+        or bool(covert_channel_findings)
+        or bool(trusted_channel_findings)
+        or bool(suspicious_trusted_infra_findings)
+        or bool(context_conditional_trigger_matches)
+        or bool(judgment_substitution_matches)
+        or _conditionally_complex
     )
-    requires_explicit_user_confirmation = bool(structural_privilege_escalation_matches or durable_state_access_matches)
+    requires_explicit_user_confirmation = bool(
+        structural_privilege_escalation_matches
+        or durable_state_access_matches
+        or (judgment_substitution_matches and not judgment_substitution_override)
+    )
     _ci_text = (skill_name + " " + (metadata or {}).get("description", "") + " " + skill_content).lower()
     _ci_detection_matches = [t for t in DETECTION_VOCAB if t in _ci_text]
     _ci_sensitive_matches = [t for t in SENSITIVE_VOCAB if t in _ci_text]
     if _ci_detection_matches and _ci_sensitive_matches:
-        warning_categories.append("capability_inversion_risk")
+        if "capability_inversion_risk" not in warning_categories:
+            warning_categories.append("capability_inversion_risk")
         requires_manual_review = True
+        _ci_detection_matches = sorted(_ci_detection_matches)
+        _ci_sensitive_matches = sorted(_ci_sensitive_matches)
+        _audit_flags["capability_inversion_risk"] = {
+            "detected": True,
+            "severity": "FLAG",
+            "reason": ("skill combines detection/classification vocabulary with sensitive content categories"),
+            "detection_terms": _ci_detection_matches,
+            "sensitive_terms": _ci_sensitive_matches,
+            "requires_manual_review": True,
+        }
+        audit_findings.append(
+            {
+                "severity": "FLAG",
+                "category": "capability_inversion_risk",
+                "reason": ("skill combines detection/classification vocabulary with sensitive content categories"),
+                "detection_terms": _ci_detection_matches,
+                "sensitive_terms": _ci_sensitive_matches,
+                "requires_manual_review": True,
+            }
+        )
         log.warning(
             "SKILL_AUDIT capability_inversion_risk: skill=%s detection_terms=%s sensitive_terms=%s "
-            "— skill encodes detection/classification of sensitive content; manual review required",
+            "wa_review=True — skill encodes detection/classification of sensitive content; manual review required",
             skill_name,
-            sorted(_ci_detection_matches),
-            sorted(_ci_sensitive_matches),
+            _ci_detection_matches,
+            _ci_sensitive_matches,
         )
 
     _transitive_warnings: list[str] = []
@@ -13252,26 +17294,39 @@ def _audit_skill_impl(
             skill_name,
         )
 
-    _rationale = _meta.get("rationale", "")
     _accountability = "NORMAL"
-    if not _rationale or len(_rationale.strip()) <= 50:
-        _accountability = "LOW"
-        blocked_categories.append("MISSING_EPISTEMIC_PROVENANCE")
-        log.warning(
-            "SKILL_AUDIT blocked: skill=%s reason=MISSING_EPISTEMIC_PROVENANCE field=rationale"
-            " — rationale key missing or too short (must be >50 chars)",
-            skill_name,
-        )
+    _missing_epistemic_fields: list[str] = []
+    if not _has_required_skill_rationale(_meta):
+        _missing_epistemic_fields.append("rationale")
+    if _skill_requires_origin_provenance(source, _meta) and not _has_required_origin_provenance(_meta):
+        _missing_epistemic_fields.append("provenance")
 
-    if source in ("agent_generated", "external"):
-        _provenance = _meta.get("provenance", "")
-        if not _provenance:
+    if _missing_epistemic_fields:
+        _accountability = "LOW"
+        if "MISSING_EPISTEMIC_PROVENANCE" not in blocked_categories:
             blocked_categories.append("MISSING_EPISTEMIC_PROVENANCE")
+        _audit_flags["missing_epistemic_provenance"] = {
+            "detected": True,
+            "severity": "BLOCK",
+            "category": "accountability",
+            "reason": "skill metadata lacks required rationale or provenance for accountability chain",
+            "accountability": _accountability,
+            "missing_fields": _missing_epistemic_fields,
+        }
+        audit_findings.append(
+            {
+                "severity": "HIGH",
+                "category": "MISSING_EPISTEMIC_PROVENANCE",
+                "reason": "skill metadata lacks required rationale or provenance for accountability chain",
+                "accountability": _accountability,
+                "missing_fields": _missing_epistemic_fields,
+            }
+        )
+        for _missing_field in _missing_epistemic_fields:
             log.warning(
-                "SKILL_AUDIT blocked: skill=%s reason=MISSING_EPISTEMIC_PROVENANCE field=provenance"
-                " — source=%s requires provenance key naming originating source or task ID",
+                "SKILL_AUDIT blocked: skill=%s reason=MISSING_EPISTEMIC_PROVENANCE field=%s",
                 skill_name,
-                source,
+                _missing_field,
             )
 
     judgment_boundary_warnings = _check_judgment_boundaries(skill_content)
@@ -13292,8 +17347,9 @@ def _audit_skill_impl(
 
     HIGH_TRUST_VOCAB = ["security", "audit", "verify", "trust", "credential", "auth", "cert", "checksum", "integrity"]
     _hvt_text = (skill_name + " " + (metadata or {}).get("description", "")).lower()
-    high_value_target = any(vocab in _hvt_text for vocab in HIGH_TRUST_VOCAB)
-    if high_value_target:
+    high_trust_vocab_target = any(vocab in _hvt_text for vocab in HIGH_TRUST_VOCAB)
+    high_value_target = trust_value_score >= 4 or high_trust_vocab_target
+    if high_trust_vocab_target:
         requires_manual_review = True
         log.warning(
             "SKILL_AUDIT high_value_target: skill=%s reason='Skill occupies high-trust position — manual review required before enabling.'",
@@ -13304,7 +17360,6 @@ def _audit_skill_impl(
 
     if blocked:
         blocked_at_layer = _blocked_at_audit_layer(blocked_categories)
-        _failure_log.append((datetime.now(timezone.utc), skill_name))
         log.warning(
             "SKILL_AUDIT blocked: skill=%s blocked_at_layer=%s boundary_version=%s boundary_hash=%s categories=%s",
             skill_name,
@@ -13337,8 +17392,6 @@ def _audit_skill_impl(
             source,
             metadata,
         )
-
-    _update_rejection_counts(source, blocked)
 
     if blocked:
         try:
@@ -13392,9 +17445,19 @@ def _audit_skill_impl(
             "passed": not has_privilege_escalation,
         },
         {
+            "check": "JUDGMENT_SUBSTITUTION",
+            "proxy_for": "editorial judgment replacement by closed-loop content metrics without human oversight",
+            "passed": not judgment_substitution_matches or judgment_substitution_override,
+        },
+        {
             "check": "persistent_foothold",
             "proxy_for": "persistent local-privilege hook surviving task completion",
             "passed": not has_persistent_foothold,
+        },
+        {
+            "check": "hardware_fingerprinting",
+            "proxy_for": "local hardware or timing fingerprint collection",
+            "passed": not hardware_fingerprinting_matches,
         },
         {
             "check": "DURABLE_STATE_ACCESS",
@@ -13525,7 +17588,6 @@ def _audit_skill_impl(
             _AUDIT_ASSUMPTIONS,
             trust_assumptions,
         )
-        _log_skill_addition(skill_name, skill_content)
         try:
             _pc_path = _audit_pass_cache_path()
             _pc_path.parent.mkdir(parents=True, exist_ok=True)
@@ -13555,8 +17617,9 @@ def _audit_skill_impl(
             except (json.JSONDecodeError, OSError):
                 _hashes = {}
             _audited_at = datetime.now(timezone.utc).isoformat()
-            _hashes[_slug] = {
+            _audit_entry = {
                 "hash": _content_hash,
+                "content_hash": _content_hash,
                 "last_verified_at": _audited_at,
                 "last_audit_timestamp": _audited_at,
                 "audited_at": _audited_at,
@@ -13568,6 +17631,10 @@ def _audit_skill_impl(
                 "efficacy_last_checked": metadata.get("efficacy_last_checked"),
                 "trust_assumptions": trust_assumptions,
             }
+            _audited_mtime = _skill_file_mtime(_skill_file_from_metadata(metadata))
+            if _audited_mtime is not None:
+                _audit_entry["audited_mtime"] = _audited_mtime
+            _hashes[_slug] = _audit_entry
             _hashes_path.write_text(json.dumps(_hashes, indent=2), encoding="utf-8")
             _sidecar_dir = SKILLS_DIR / ".hashes"
             _sidecar_dir.mkdir(parents=True, exist_ok=True)
@@ -13698,6 +17765,9 @@ def _audit_skill_impl(
                 _audited_at = datetime.now(timezone.utc).isoformat()
                 _cm_hashes[_skill_id]["last_audit_timestamp"] = _audited_at
                 _cm_hashes[_skill_id]["audited_at"] = _audited_at
+                audited_mtime = _skill_file_mtime(_skill_file_from_metadata(metadata))
+                if audited_mtime is not None:
+                    _cm_hashes[_skill_id]["audited_mtime"] = audited_mtime
                 _cm_hashes[_skill_id]["capability_manifest"] = capability_manifest
                 _cm_hashes_path.write_text(json.dumps(_cm_hashes, indent=2), encoding="utf-8")
     except Exception as _cm_exc:
@@ -13716,7 +17786,7 @@ def _audit_skill_impl(
         boundary_drift_warning,
         requires_manual_review=requires_manual_review,
         requires_explicit_user_confirmation=requires_explicit_user_confirmation,
-        requires_explicit_allowlist_approval=bool(suspicious_durable_write_audit),
+        requires_explicit_allowlist_approval=bool(suspicious_durable_write_audit or suspicious_trusted_infra_findings),
         requires_secondary_review=requires_secondary_review,
         trust_value_score=trust_value_score,
         high_value_target=high_value_target,
@@ -13774,9 +17844,38 @@ def _audit_skill_impl(
             {
                 "status": "WARN",
                 "verdict": "WARN",
+                "message": TRIGGER_WARNING_MESSAGE,
+            }
+            if context_conditional_trigger_matches and not blocked
+            else {}
+        ),
+        **(
+            {
+                "status": "WARN",
+                "verdict": "WARN",
                 "message": BEHAVIOR_MODIFICATION_NO_MECHANISM_MESSAGE,
             }
             if undeclared_behavior_modification and not blocked
+            else {}
+        ),
+        **(
+            {
+                "reason": TRUST_LABEL_WITHOUT_MECHANISM_MESSAGE,
+                "status": "FLAGGED",
+                "verdict": "FLAGGED",
+                "message": TRUST_LABEL_WITHOUT_MECHANISM_MESSAGE,
+            }
+            if trust_label_without_mechanism and not blocked
+            else {}
+        ),
+        **(
+            {
+                "reason": SUSPICIOUS_TRUSTED_INFRA_REASON,
+                "status": "FLAGGED",
+                "verdict": "FLAGGED",
+                "message": SUSPICIOUS_TRUSTED_INFRA_REASON,
+            }
+            if suspicious_trusted_infra_findings and not blocked
             else {}
         ),
         **sensitive_file_access_denial,
@@ -13845,7 +17944,15 @@ def _skill_save_provenance(content: str, source: str, metadata: dict) -> dict[st
         or "unknown",
         "raw_content_sha256": hashlib.sha256(raw_content.encode("utf-8")).hexdigest(),
     }
-    for key in ("authorized_by", "source_url", "co_maintainer", "fork_of", "review_continuity_note"):
+    for key in (
+        "authorized_by",
+        "source_url",
+        "source_hash",
+        "acquired_at",
+        "co_maintainer",
+        "fork_of",
+        "review_continuity_note",
+    ):
         value = _skill_provenance_value(metadata, provenance, key)
         if value:
             saved_provenance[key] = str(value)
@@ -13864,6 +17971,8 @@ def _skill_provenance_frontmatter(provenance: dict[str, str]) -> str:
         "imported_by",
         "imported_at",
         "source_url",
+        "source_hash",
+        "acquired_at",
         "co_maintainer",
         "fork_of",
         "review_continuity_note",
@@ -13874,6 +17983,31 @@ def _skill_provenance_frontmatter(provenance: dict[str, str]) -> str:
         if key in provenance:
             lines.append(f"  {key}: {_yaml_string(provenance[key])}")
     return "\n".join(lines)
+
+
+def _skill_content_with_source_provenance_fields(content: str, provenance: dict[str, str]) -> str:
+    fields = {
+        key: str(provenance[key])
+        for key in ("source_url", "source_hash", "acquired_at")
+        if provenance.get(key) is not None and str(provenance[key]).strip()
+    }
+    if not fields:
+        return content
+
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end != -1:
+            header = content[4:end]
+            for key, value in fields.items():
+                replacement = f"{key}: {_yaml_string(value)}"
+                if re.search(rf"(?m)^{re.escape(key)}\s*:", header):
+                    header = re.sub(rf"(?m)^{re.escape(key)}\s*:.*$", replacement, header)
+                else:
+                    header = header.rstrip("\n") + f"\n{replacement}"
+            return f"---\n{header}{content[end:]}"
+
+    block = "\n".join(f"{key}: {_yaml_string(value)}" for key, value in fields.items())
+    return f"---\n{block}\n---\n\n{content}"
 
 
 def _skill_content_with_provenance(content: str, provenance: dict[str, str]) -> str:
@@ -14038,22 +18172,125 @@ def _skill_hashes_path() -> Path:
 def _load_skill_hashes() -> dict:
     path = _skill_hashes_path()
     try:
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError) as exc:
         log.warning("skill_hashes.json unreadable: %s", exc)
         return {}
 
 
-def _save_skill_hash(skill_name: str, skill_content: str) -> None:
+def _skill_hash_filename(skill_name: str, skill_file: Path | None = None) -> str:
+    if skill_file is not None:
+        return skill_file.name
+    name_path = Path(str(skill_name))
+    if name_path.suffix in {".md", ".py"}:
+        return name_path.name
+    return f"{_skill_slug(skill_name)}.md"
+
+
+def _stored_skill_hash(hashes: dict, skill_name: str, skill_file: Path | None = None) -> str | None:
+    keys = (
+        _skill_hash_filename(skill_name, skill_file),
+        _skill_hash_filename(skill_name),
+        skill_name,
+        _skill_slug(skill_name),
+    )
+    for key in dict.fromkeys(keys):
+        entry = hashes.get(key)
+        if isinstance(entry, dict):
+            entry = entry.get("hash")
+        if isinstance(entry, str) and entry.strip():
+            return entry.strip()
+    return None
+
+
+def _save_skill_hash(skill_name: str, skill_content: str, skill_file: Path | None = None) -> None:
     path = _skill_hashes_path()
     content_hash = hashlib.sha256(skill_content.encode("utf-8")).hexdigest()
     hashes = _load_skill_hashes()
-    hashes[skill_name] = content_hash
+    hashes[_skill_hash_filename(skill_name, skill_file)] = content_hash
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(hashes, indent=2, sort_keys=True), encoding="utf-8")
     except OSError as exc:
         log.warning("skill_hashes.json write failed: %s", exc)
+
+
+def _skill_manifest_path() -> Path:
+    try:
+        from config import MIRA_ROOT
+
+        return MIRA_ROOT / "agents" / "shared" / "soul" / "skill_manifest.json"
+    except Exception:
+        return Path(__file__).resolve().parent.parent / "agents" / "shared" / "soul" / "skill_manifest.json"
+
+
+def _load_skill_manifest() -> dict[str, dict[str, str]]:
+    path = _skill_manifest_path()
+    try:
+        if not path.exists():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("skill_manifest.json unreadable: %s", exc)
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {str(key): value for key, value in payload.items() if isinstance(value, dict)}
+
+
+def _skill_manifest_entry(
+    manifest: dict[str, dict[str, str]], skill_name: str, skill_file: Path
+) -> dict[str, str] | None:
+    slug = _skill_slug(skill_name)
+    for key in (skill_name, slug, skill_file.stem, skill_file.name):
+        entry = manifest.get(key)
+        if isinstance(entry, dict):
+            return entry
+    return None
+
+
+def _update_skill_manifest(skill_name: str, skill_content: str, metadata: dict | None = None) -> None:
+    path = _skill_manifest_path()
+    content_hash = hashlib.sha256(skill_content.encode("utf-8")).hexdigest()
+    acquired_at = (
+        _metadata_or_provenance_value(metadata, "acquired_at", "imported_at", "fetched_at")
+        or datetime.now(timezone.utc).isoformat()
+    )
+    entry = {
+        "skill_name": skill_name,
+        "source_url": _metadata_or_provenance_value(metadata, "source_url", "url", "feed_url", "source_feed"),
+        "acquired_at": acquired_at,
+        "sha256": content_hash,
+    }
+    manifest = _load_skill_manifest()
+    manifest[skill_name] = entry
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp_path.replace(path)
+    except OSError as exc:
+        log.warning("skill_manifest.json write failed: %s", exc)
+
+
+def _warn_on_skill_manifest_hash_mismatch(skill_name: str, skill_file: Path, skill_content: str) -> None:
+    entry = _skill_manifest_entry(_load_skill_manifest(), skill_name, skill_file)
+    if not entry:
+        return
+    expected_hash = str(entry.get("sha256") or "").strip()
+    if not expected_hash:
+        return
+    current_hash = hashlib.sha256(skill_content.encode("utf-8")).hexdigest()
+    if current_hash != expected_hash:
+        log.warning(
+            "SKILL_MANIFEST_HASH_MISMATCH: skill=%s source_url=%s acquired_at=%s manifest_sha256=%s current_sha256=%s",
+            skill_name,
+            entry.get("source_url") or "",
+            entry.get("acquired_at") or "",
+            expected_hash,
+            current_hash,
+        )
 
 
 def _skills_metadata_path() -> Path:
@@ -14151,6 +18388,14 @@ def _write_skill_audit_meta(skill_name: str, skill_content: str) -> None:
     metadata["last_audited"] = now
     metadata["content_sha256"] = content_hash
     metadata["audit_status"] = "passed"
+    try:
+        from config import SKILLS_DIR
+
+        audited_mtime = _skill_file_mtime(SKILLS_DIR / f"{slug}.md")
+        if audited_mtime is not None:
+            metadata["audited_mtime"] = audited_mtime
+    except Exception:
+        pass
     skills[key] = metadata
     payload["version"] = payload.get("version", 1)
     payload["skills"] = skills
@@ -14179,9 +18424,29 @@ def load_skill_verified(skill_name: str) -> str:
     if skill_file is None:
         raise SkillIntegrityError(f"skill file not found: {skill_name}")
 
+    audit_record = _skill_audit_metadata(slug)
     audit_metadata = dict(_load_skill_invocation_metadata(skill_name, skill_file))
-    audit_metadata.update(_skill_audit_metadata(slug))
+    audit_metadata.update(audit_record)
     audit_metadata.setdefault("source_path", str(skill_file))
+
+    try:
+        content = skill_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SkillIntegrityError(f"cannot read skill file: {exc}") from exc
+
+    audit_current, audit_metadata = _ensure_skill_audit_record_current(
+        skill_name,
+        slug,
+        content,
+        audit_record,
+        audit_metadata,
+        skill_file,
+        "load",
+        "soul_manager",
+    )
+    if not audit_current:
+        raise SkillIntegrityError(f"audit record missing or stale for {skill_name}")
+
     trust_expired, trust_expires_at = _skill_trust_is_expired(audit_metadata)
     if trust_expired:
         _queue_skill_reaudit(skill_name, skill_file, audit_metadata, "trust_expired")
@@ -14192,18 +18457,41 @@ def load_skill_verified(skill_name: str) -> str:
         )
         raise SkillIntegrityError(f"trust expired for {skill_name}; re-audit required")
 
-    try:
-        content = skill_file.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise SkillIntegrityError(f"cannot read skill file: {exc}") from exc
-
+    _warn_on_skill_manifest_hash_mismatch(skill_name, skill_file, content)
     current_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    approved_content_hash = audit_metadata.get("content_hash") or audit_metadata.get("hash")
+    if approved_content_hash and current_hash != approved_content_hash:
+        log.warning(
+            "SKILL_LOAD hash_mismatch: skill=%s skill content changed since last audit, re-auditing",
+            skill_name,
+        )
+        try:
+            result = audit_skill(
+                skill_name,
+                content,
+                source_url=_skill_audit_provenance_source("load", audit_metadata),
+                introduced_by="soul_manager",
+                source="load",
+                metadata=audit_metadata,
+                caller_agent="soul_manager",
+            )
+            if not isinstance(result, dict) or not isinstance(result.get("blocked"), bool):
+                raise ValueError(f"unexpected audit result: {result!r}")
+        except Exception as exc:
+            log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", exc)
+            raise SkillIntegrityError(f"content hash mismatch re-audit failed for {skill_name}: {exc}") from exc
+        if result["blocked"]:
+            _alert_skill_audit_blocked(
+                skill_name,
+                ["skill_content_hash_mismatch"],
+                content,
+                "local_file",
+                {"source_path": str(skill_file), "hash_expected": approved_content_hash, "hash_actual": current_hash},
+            )
+            raise SkillIntegrityError(f"content hash mismatch re-audit blocked {skill_name}")
+        audit_metadata["content_hash"] = current_hash
     hashes = _load_skill_hashes()
-    stored_hash = hashes.get(skill_name)
-    if stored_hash is None:
-        stored_hash = hashes.get(slug)
-    if isinstance(stored_hash, dict):
-        stored_hash = stored_hash.get("hash")
+    stored_hash = _stored_skill_hash(hashes, skill_name, skill_file)
     if not stored_hash:
         log.warning(
             "SKILL_LOAD blocked: skill=%s reason='audit required: missing skill_hashes.json entry'",
@@ -14211,20 +18499,37 @@ def load_skill_verified(skill_name: str) -> str:
         )
         raise SkillIntegrityError(f"audit required: missing skill_hashes.json entry for {skill_name}")
     if current_hash != stored_hash:
-        log.critical(
-            "SKILL_INTEGRITY_VIOLATION: skill=%s stored_hash=%s current_hash=%s load blocked",
+        log.warning(
+            "SKILL_INTEGRITY_MISMATCH: skill=%s stored_hash=%s current_hash=%s re-auditing before load",
             skill_name,
             stored_hash,
             current_hash,
         )
-        _alert_skill_audit_blocked(
-            skill_name,
-            ["skill_integrity_mismatch"],
-            content,
-            "local_file",
-            {"source_path": str(skill_file), "hash_expected": stored_hash, "hash_actual": current_hash},
-        )
-        raise SkillIntegrityError(f"hash mismatch for {skill_name}")
+        try:
+            result = audit_skill(
+                skill_name,
+                content,
+                source_url=_skill_audit_provenance_source("load", audit_metadata),
+                introduced_by="soul_manager",
+                source="load",
+                metadata=audit_metadata,
+                caller_agent="soul_manager",
+            )
+            if not isinstance(result, dict) or not isinstance(result.get("blocked"), bool):
+                raise ValueError(f"unexpected audit result: {result!r}")
+        except Exception as exc:
+            log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", exc)
+            raise SkillIntegrityError(f"hash mismatch re-audit failed for {skill_name}: {exc}") from exc
+        if result["blocked"]:
+            _alert_skill_audit_blocked(
+                skill_name,
+                ["skill_integrity_mismatch"],
+                content,
+                "local_file",
+                {"source_path": str(skill_file), "hash_expected": stored_hash, "hash_actual": current_hash},
+            )
+            raise SkillIntegrityError(f"hash mismatch re-audit blocked {skill_name}")
+    _log_memory_injection(skill_name, {"source": "load_skill_verified"}, len(content))
     return content
 
 
@@ -14286,6 +18591,8 @@ def check_skill_reproducibility(skill: dict) -> tuple[bool, str]:
     missing = []
     if not skill.get("source"):
         missing.append("source")
+    if not _has_nontrivial_skill_rationale(skill):
+        missing.append("rationale")
     if not skill.get("application_context"):
         missing.append("application_context")
     if not skill.get("verification_criteria"):
@@ -14295,11 +18602,451 @@ def check_skill_reproducibility(skill: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def _skill_quality_log_path() -> Path:
+    try:
+        from config import LOGS_DIR
+
+        return LOGS_DIR / "skill_quality.jsonl"
+    except Exception:
+        return Path.home() / "Sandbox" / "Mira" / "data" / "logs" / "skill_quality.jsonl"
+
+
+def _append_skill_quality_log_entry(entry: dict) -> None:
+    try:
+        path = _skill_quality_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        fd = os.open(path, flags, 0o600)
+        try:
+            os.write(fd, (json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        log.debug("skill quality log write failed: %s", exc)
+
+
+def _skill_quality_metrics(skill_text: str) -> dict[str, object]:
+    text = str(skill_text or "").strip()
+    words = re.findall(r"[A-Za-z][A-Za-z'-]{2,}", text.lower())
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    action_verbs = {
+        "ask",
+        "avoid",
+        "check",
+        "compare",
+        "confirm",
+        "define",
+        "document",
+        "ensure",
+        "flag",
+        "include",
+        "log",
+        "prefer",
+        "read",
+        "reject",
+        "return",
+        "run",
+        "state",
+        "test",
+        "use",
+        "verify",
+        "write",
+    }
+    actionable_items = 0
+    for line in lines:
+        if not re.match(r"^(?:[-*]|\d+[.)]|(?:when|if|before|after|always|never|do|must|should)\b)", line, re.I):
+            continue
+        line_words = set(re.findall(r"[A-Za-z][A-Za-z'-]{2,}", line.lower()))
+        if action_verbs & line_words:
+            actionable_items += 1
+
+    sentence_count = max(
+        1, len(re.findall(r"[.!?](?:\s|$)", text)) + len([line for line in lines if line.startswith("#")])
+    )
+    concrete_examples = len(
+        re.findall(
+            r"\b(?:for example|e\.g\.|example|case|input|output|counterexample|checklist|step\s+\d+)\b|```",
+            text,
+            re.I,
+        )
+    )
+    abstract_pattern_count = len(
+        re.findall(
+            r"\bthe\s+[A-Za-z][A-Za-z-]+\s+of\s+[A-Za-z][A-Za-z-]+"
+            r"|\bstructured\s+[A-Za-z][A-Za-z-]+\s+for\s+[A-Za-z][A-Za-z-]+",
+            text,
+            re.I,
+        )
+    )
+    hollowness_ratio = abstract_pattern_count / max(1, sentence_count)
+    information_density = (actionable_items + concrete_examples + len(set(words)) / 25.0) / max(1, len(words) / 100.0)
+    return {
+        "char_count": len(text),
+        "word_count": len(words),
+        "line_count": len(lines),
+        "actionable_items": actionable_items,
+        "concrete_examples": concrete_examples,
+        "abstract_pattern_count": abstract_pattern_count,
+        "hollowness_ratio": round(hollowness_ratio, 4),
+        "information_density": round(information_density, 4),
+    }
+
+
+def check_skill_quality(skill_text: str, existing_skills: list[str]) -> dict:
+    metrics = _skill_quality_metrics(skill_text)
+    flags: list[str] = []
+    char_count = int(metrics["char_count"])
+    actionable_items = int(metrics["actionable_items"])
+    concrete_examples = int(metrics["concrete_examples"])
+    hollowness_ratio = float(metrics["hollowness_ratio"])
+    information_density = float(metrics["information_density"])
+
+    if char_count < 200:
+        flags.append("below_minimum_substantive_length")
+    if actionable_items < 2:
+        flags.append("missing_concrete_directives")
+    if hollowness_ratio > 0.3 and concrete_examples == 0:
+        flags.append("abstract_without_concrete_examples")
+
+    normalized = re.sub(r"\s+", " ", str(skill_text or "").strip().lower())
+    best_similarity = 0.0
+    regressive_match: dict[str, object] | None = None
+    for existing_text in existing_skills:
+        existing_normalized = re.sub(r"\s+", " ", str(existing_text or "").strip().lower())
+        if not existing_normalized:
+            continue
+        similarity = difflib.SequenceMatcher(None, normalized, existing_normalized).ratio()
+        if similarity > best_similarity:
+            best_similarity = similarity
+        if similarity < 0.82:
+            continue
+        existing_metrics = _skill_quality_metrics(existing_text)
+        existing_density = float(existing_metrics["information_density"])
+        existing_actionable_items = int(existing_metrics["actionable_items"])
+        shorter = char_count < int(existing_metrics["char_count"]) * 0.85
+        less_actionable = actionable_items < existing_actionable_items
+        lower_density = information_density < existing_density * 0.9
+        if shorter and (less_actionable or lower_density):
+            regressive_match = {
+                "similarity": round(similarity, 4),
+                "existing_char_count": existing_metrics["char_count"],
+                "existing_actionable_items": existing_actionable_items,
+                "existing_information_density": existing_density,
+            }
+            flags.append("regressive_similarity")
+            break
+
+    quality_score = 1.0
+    penalties = {
+        "below_minimum_substantive_length": 0.3,
+        "missing_concrete_directives": 0.25,
+        "abstract_without_concrete_examples": 0.25,
+        "regressive_similarity": 0.25,
+    }
+    for flag in flags:
+        quality_score -= penalties.get(flag, 0.1)
+    quality_score = round(max(0.0, quality_score), 4)
+    degradation_flag = bool(flags)
+    result = {
+        "quality_score": quality_score,
+        "degradation_flag": degradation_flag,
+        "flags": flags,
+        "metrics": metrics,
+        "best_similarity": round(best_similarity, 4),
+        "regressive_match": regressive_match,
+    }
+    _append_skill_quality_log_entry(
+        {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "skill_sha256": hashlib.sha256(str(skill_text or "").encode("utf-8")).hexdigest(),
+            "quality_score": quality_score,
+            "degradation_flag": degradation_flag,
+            "flags": flags,
+            "metrics": metrics,
+            "best_similarity": round(best_similarity, 4),
+            "regressive_match": regressive_match,
+            "audited_by": "soul_manager.check_skill_quality",
+        }
+    )
+    return result
+
+
+_SKILL_COHERENCE_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "about",
+        "after",
+        "agent",
+        "agents",
+        "also",
+        "and",
+        "apply",
+        "are",
+        "before",
+        "between",
+        "but",
+        "can",
+        "for",
+        "from",
+        "has",
+        "have",
+        "into",
+        "its",
+        "not",
+        "that",
+        "the",
+        "their",
+        "this",
+        "through",
+        "use",
+        "using",
+        "when",
+        "where",
+        "with",
+        "without",
+    }
+)
+
+
+def _skill_description_keywords(description: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", str(description or "").lower())
+        if token not in _SKILL_COHERENCE_STOPWORDS
+    }
+
+
+def _load_learned_skill_manifests() -> list[dict[str, object]]:
+    try:
+        from config import SKILLS_INDEX
+    except Exception as exc:
+        log.debug("check_skill_coherence: config import failed: %s", exc)
+        return []
+
+    try:
+        payload = json.loads(SKILLS_INDEX.read_text(encoding="utf-8")) if SKILLS_INDEX.exists() else []
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("check_skill_coherence: learned skill index unreadable: %s", exc)
+        return []
+
+    if isinstance(payload, list):
+        return [dict(item) for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        skills = payload.get("skills")
+        if isinstance(skills, dict):
+            return [dict(item) for item in skills.values() if isinstance(item, dict)]
+        if isinstance(skills, list):
+            return [dict(item) for item in skills if isinstance(item, dict)]
+    return []
+
+
+def check_skill_coherence(max_overlap_ratio: float = 0.7, max_skill_count_warning: int = 40) -> dict:
+    manifests = _load_learned_skill_manifests()
+    skills: list[dict[str, object]] = []
+    for manifest in manifests:
+        name = str(manifest.get("name") or manifest.get("skill_name") or manifest.get("file") or "").strip()
+        description = str(manifest.get("description") or manifest.get("summary") or "").strip()
+        keywords = _skill_description_keywords(description)
+        if name and keywords:
+            skills.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "file": manifest.get("file"),
+                    "keywords": keywords,
+                }
+            )
+
+    adjacency: dict[int, set[int]] = {index: set() for index in range(len(skills))}
+    pair_scores: dict[tuple[int, int], float] = {}
+    for left_index, left_skill in enumerate(skills):
+        left_keywords = left_skill["keywords"]
+        if not isinstance(left_keywords, set):
+            continue
+        for right_index in range(left_index + 1, len(skills)):
+            right_keywords = skills[right_index]["keywords"]
+            if not isinstance(right_keywords, set):
+                continue
+            union = left_keywords | right_keywords
+            if not union:
+                continue
+            similarity = len(left_keywords & right_keywords) / len(union)
+            if similarity > max_overlap_ratio:
+                adjacency[left_index].add(right_index)
+                adjacency[right_index].add(left_index)
+                pair_scores[(left_index, right_index)] = round(similarity, 4)
+
+    clusters: list[dict[str, object]] = []
+    seen: set[int] = set()
+    for start_index, neighbors in adjacency.items():
+        if start_index in seen or not neighbors:
+            continue
+        stack = [start_index]
+        component: set[int] = set()
+        while stack:
+            index = stack.pop()
+            if index in component:
+                continue
+            component.add(index)
+            stack.extend(adjacency[index] - component)
+        seen.update(component)
+        if len(component) < 2:
+            continue
+        ordered = sorted(component, key=lambda index: str(skills[index]["name"]).lower())
+        pairs = []
+        for left_pos, left_index in enumerate(ordered):
+            for right_index in ordered[left_pos + 1 :]:
+                score = pair_scores.get((min(left_index, right_index), max(left_index, right_index)))
+                if score is not None:
+                    pairs.append(
+                        {
+                            "skills": [skills[left_index]["name"], skills[right_index]["name"]],
+                            "similarity": score,
+                        }
+                    )
+        clusters.append(
+            {
+                "skills": [
+                    {
+                        "name": skills[index]["name"],
+                        "file": skills[index].get("file"),
+                        "description": skills[index]["description"],
+                    }
+                    for index in ordered
+                ],
+                "pairs": pairs,
+            }
+        )
+
+    recommendation = "Skill registry is coherent; no consolidation needed."
+    status = "healthy"
+    if clusters and len(manifests) > max_skill_count_warning:
+        status = "bloated"
+        recommendation = (
+            "Human-consolidate overlapping learned skills before the registry becomes more expensive to repair "
+            "than to rebuild."
+        )
+    elif clusters or len(manifests) > max_skill_count_warning:
+        status = "warning"
+        recommendation = "Human-consolidate overlapping learned skills and restore missing rationale/context."
+
+    result = {
+        "status": status,
+        "clusters": clusters,
+        "recommendation": recommendation,
+    }
+    if status != "healthy":
+        log.warning("SKILL_COHERENCE_AUDIT: %s", json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return result
+
+
+def _distilled_example_quality_score(example: object) -> float:
+    if isinstance(example, dict):
+        if "quality_score" in example:
+            try:
+                score = float(example.get("quality_score", 0))
+            except (TypeError, ValueError):
+                score = 0.5
+            return score if math.isfinite(score) else 0.5
+        for key in ("success", "task_success", "completed", "verified", "wa_approval", "wa_approved", "approved"):
+            value = example.get(key)
+            if isinstance(value, bool):
+                return 1.0 if value else 0.0
+            if isinstance(value, (int, float)):
+                return 1.0 if value > 0 else 0.0
+        status_text = " ".join(
+            str(example.get(key, ""))
+            for key in ("status", "outcome", "result", "state", "approval", "verdict")
+            if example.get(key) is not None
+        )
+    else:
+        status_text = str(example or "")
+
+    normalized = status_text.lower()
+    if re.search(r"\b(?:fail(?:ed|ure)?|error|crash(?:ed)?|reject(?:ed)?|blocked|false|no|0)\b", normalized):
+        return 0.0
+    if re.search(r"\b(?:partial(?:ly)?|mixed|incomplete|needs[_ -]?work)\b", normalized):
+        return 0.5
+    if re.search(
+        r"\b(?:success(?:ful)?|succeeded|complete(?:d)?|done|pass(?:ed)?|verified|approved|true|yes|1)\b", normalized
+    ):
+        return 1.0
+    return 0.5
+
+
+def _sort_distilled_examples(examples: object) -> object:
+    if not isinstance(examples, list) or not all(isinstance(example, dict) for example in examples):
+        return examples
+    examples = [dict(example, quality_score=_distilled_example_quality_score(example)) for example in examples]
+    examples.sort(key=lambda e: e.get("quality_score", 0), reverse=True)
+    return [{key: value for key, value in example.items() if key != "quality_score"} for example in examples]
+
+
+def _sort_distilled_examples_metadata(metadata: dict) -> dict:
+    if isinstance(metadata.get("examples"), list):
+        metadata["examples"] = _sort_distilled_examples(metadata["examples"])
+    return metadata
+
+
+def _distilled_example_chunk_score(lines: list[str]) -> float:
+    text = "\n".join(lines)
+    score_match = re.search(r"(?im)^\s*quality_score\s*:\s*([-+]?\d+(?:\.\d+)?)\s*$", text)
+    if score_match:
+        try:
+            return float(score_match.group(1))
+        except ValueError:
+            return 0.5
+    return _distilled_example_quality_score(text)
+
+
+def _strip_distilled_example_quality_score(lines: list[str]) -> list[str]:
+    return [line for line in lines if not re.match(r"(?i)^\s*quality_score\s*:", line)]
+
+
+def _skill_content_with_sorted_examples(content: str) -> str:
+    lines = content.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        match = re.match(r"^(?P<indent>\s*)examples\s*:\s*(?:#.*)?(?:\r?\n)?$", line, re.IGNORECASE)
+        if not match:
+            continue
+        block_indent = len(match.group("indent"))
+        end = index + 1
+        while end < len(lines):
+            stripped = lines[end].strip()
+            current_indent = len(lines[end]) - len(lines[end].lstrip(" "))
+            if stripped and current_indent <= block_indent and not lines[end].lstrip().startswith("-"):
+                break
+            end += 1
+
+        item_starts = [
+            offset for offset in range(index + 1, end) if re.match(rf"^\s{{{block_indent + 1},}}-\s+", lines[offset])
+        ]
+        if not item_starts:
+            return content
+        if len(item_starts) < 2:
+            sorted_block = [lines[index]] + _strip_distilled_example_quality_score(lines[index + 1 : end])
+            return "".join(lines[:index] + sorted_block + lines[end:])
+
+        chunks: list[tuple[float, list[str]]] = []
+        for item_index, start in enumerate(item_starts):
+            next_start = item_starts[item_index + 1] if item_index + 1 < len(item_starts) else end
+            chunk = lines[start:next_start]
+            chunks.append((_distilled_example_chunk_score(chunk), _strip_distilled_example_quality_score(chunk)))
+        chunks.sort(key=lambda item: item[0], reverse=True)
+        sorted_block = [lines[index]]
+        for _, chunk in chunks:
+            sorted_block.extend(chunk)
+        return "".join(lines[:index] + sorted_block + lines[end:])
+    return content
+
+
 def save_skill(
     skill_name: str,
     content: str,
     source: str = "unknown",
     metadata: dict | None = None,
+    provenance: dict | None = None,
 ) -> bool:
     """Write a skill file, always auditing before write regardless of whether the skill is new or existing.
 
@@ -14314,6 +19061,21 @@ def save_skill(
         return False
 
     metadata = _skill_metadata_with_efficacy_defaults(metadata)
+    metadata = _sort_distilled_examples_metadata(metadata)
+    content = _skill_content_with_sorted_examples(content)
+    if isinstance(provenance, dict):
+        clean_provenance = {
+            key: str(value)
+            for key, value in provenance.items()
+            if key in {"source_url", "source_hash", "acquired_at"} and value is not None and str(value).strip()
+        }
+        if clean_provenance:
+            existing_provenance = metadata.get("provenance")
+            if isinstance(existing_provenance, dict):
+                metadata["provenance"] = {**existing_provenance, **clean_provenance}
+            else:
+                metadata["provenance"] = clean_provenance
+            metadata.update(clean_provenance)
     if not _has_boundary_declaration(metadata):
         log.warning(
             "save_skill blocked: skill=%s reason='skill missing boundary declaration'",
@@ -14350,7 +19112,7 @@ def save_skill(
             source=source,
             metadata=metadata,
         )
-        if not isinstance(_result, dict) or "blocked" not in _result:
+        if not isinstance(_result, dict) or not isinstance(_result.get("blocked"), bool):
             raise ValueError(f"unexpected audit result: {_result!r}")
     except Exception as _e:
         log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", _e)
@@ -14363,22 +19125,42 @@ def save_skill(
         )
         return False
     _audit_summary = _result
+    existing_skills: list[str] = []
+    try:
+        for existing_file in sorted(SKILLS_DIR.glob("*")):
+            if existing_file == skill_file or existing_file.suffix not in {".md", ".py"}:
+                continue
+            if existing_file.is_file():
+                existing_skills.append(existing_file.read_text(encoding="utf-8"))
+    except OSError as _exc:
+        log.debug("save_skill: existing skill quality comparison read failed skill=%s: %s", skill_name, _exc)
+    quality_result = check_skill_quality(content, existing_skills)
+    if quality_result["degradation_flag"]:
+        log.warning(
+            "SKILL_QUALITY flagged: skill=%s quality_score=%.4f flags=%s",
+            skill_name,
+            quality_result["quality_score"],
+            quality_result["flags"],
+        )
 
     metadata["last_audited"] = datetime.now(timezone.utc).isoformat()
     content = _skill_content_with_last_audited(content, metadata["last_audited"], skill_file.suffix)
     provenance = _skill_save_provenance(content, source, metadata)
     metadata["provenance"] = provenance
     content = _skill_content_with_provenance(content, provenance)
+    content = _skill_content_with_source_provenance_fields(content, provenance)
     _validation_instances = int(metadata.get("validation_instances", 1))
     _scope = "confirmed" if _validation_instances >= 3 else "local"
     content = _skill_content_with_scope(content, _scope)
 
     try:
+        _log_skill_addition(skill_name, content)
         skill_file.parent.mkdir(parents=True, exist_ok=True)
         skill_file.write_text(content, encoding="utf-8")
     except OSError as _exc:
         log.debug("save_skill: write failed skill=%s: %s", skill_name, _exc)
         return False
+    _update_skill_manifest(skill_name, content, metadata)
     register_skill_checksum(skill_file)
     _append_skill_provenance_audit_trail(skill_name, provenance)
 
@@ -14461,12 +19243,12 @@ def audit_all_skills(soul_dir) -> dict:
                 caller_agent="soul_manager",
                 source_agent="soul_manager",
             )
-            if not isinstance(audit_result, dict) or "blocked" not in audit_result:
+            if not isinstance(audit_result, dict) or not isinstance(audit_result.get("blocked"), bool):
                 raise ValueError(f"unexpected audit result: {audit_result!r}")
         except Exception as exc:
             result["failed"].append(rel_path)
             failed_details.append({"path": rel_path, "reason": f"audit_error: {exc}"})
-            log.warning("audit_all_skills: audit error for %s: %s", rel_path, exc)
+            log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", exc)
             continue
 
         if audit_result["blocked"]:
@@ -14548,12 +19330,11 @@ def reaudit_stale_skills(max_age_days: int = 30) -> dict[str, int]:
                 source="internal",
                 metadata=metadata,
             )
-            if not isinstance(result, dict) or "blocked" not in result:
+            if not isinstance(result, dict) or not isinstance(result.get("blocked"), bool):
                 raise ValueError(f"unexpected audit result: {result!r}")
         except Exception as exc:
-            log.warning("reaudit_stale_skills: audit error for %s: %s", skill_name, exc)
-            counts["skipped"] += 1
-            continue
+            log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", exc)
+            result = {"blocked": True, "reason": f"audit_infra_failure: {exc}", "categories": ["audit_infra_failure"]}
 
         if result["blocked"]:
             blocked_path = skill_file.with_suffix(".blocked")
@@ -14637,8 +19418,22 @@ def load_skill(
         log.warning("SKILL_LOAD blocked: skill=%s reason='cannot read file: %s'", skill_name, _exc)
         return ""
 
+    _warn_on_skill_manifest_hash_mismatch(skill_name, skill_file, content)
+    audit_record = _skill_audit_metadata(slug)
     audit_metadata = dict(metadata)
-    audit_metadata.update(_skill_audit_metadata(slug))
+    audit_metadata.update(audit_record)
+    audit_current, audit_metadata = _ensure_skill_audit_record_current(
+        skill_name,
+        slug,
+        content,
+        audit_record,
+        audit_metadata,
+        skill_file,
+        "load",
+        caller_agent,
+    )
+    if not audit_current:
+        return ""
     trust_expired, trust_expires_at = _skill_trust_is_expired(audit_metadata)
     if trust_expired and not force_reaudit:
         _queue_skill_reaudit(skill_name, skill_file, audit_metadata, "trust_expired")
@@ -14650,6 +19445,32 @@ def load_skill(
         return ""
 
     skill_source, skill_depth = get_skill_provenance(skill_name)
+    stored_hash = _stored_skill_hash(_load_skill_hashes(), skill_name, skill_file)
+    current_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    if stored_hash and current_hash != stored_hash and not force_reaudit:
+        log.warning(
+            "SKILL_LOAD hash_mismatch: skill=%s skill content changed since last audit, re-auditing",
+            skill_name,
+        )
+        try:
+            _result = audit_skill(
+                skill_name,
+                content,
+                source_url=_skill_audit_provenance_source(skill_source, metadata),
+                introduced_by=caller_agent,
+                source=skill_source,
+                metadata=metadata,
+                caller_agent=caller_agent,
+            )
+            if not isinstance(_result, dict) or not isinstance(_result.get("blocked"), bool):
+                raise ValueError(f"unexpected audit result: {_result!r}")
+        except Exception as _e:
+            log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", _e)
+            return ""
+        if _result["blocked"]:
+            log.warning("SKILL_LOAD blocked: skill=%s re-audit failed after hash mismatch", skill_name)
+            return ""
+
     try:
         _result = audit_skill(
             skill_name,
@@ -14660,7 +19481,7 @@ def load_skill(
             metadata=metadata,
             caller_agent=caller_agent,
         )
-        if not isinstance(_result, dict) or "blocked" not in _result:
+        if not isinstance(_result, dict) or not isinstance(_result.get("blocked"), bool):
             raise ValueError(f"unexpected audit result: {_result!r}")
     except Exception as _e:
         log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", _e)
@@ -14731,7 +19552,7 @@ def load_skill(
                     metadata=metadata,
                     caller_agent=caller_agent,
                 )
-                if not isinstance(_result, dict) or "blocked" not in _result:
+                if not isinstance(_result, dict) or not isinstance(_result.get("blocked"), bool):
                     raise ValueError(f"unexpected audit result: {_result!r}")
             except Exception as _e:
                 log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", _e)
@@ -14766,6 +19587,7 @@ def load_skill(
                 _n,
             )
         _record_skill_invocation(skill_name, skill_file)
+        _log_memory_injection(skill_name, {"source": "load_skill", "caller_agent": caller_agent}, len(gated_content))
         return gated_content
 
     stored_hash = sidecar.read_text(encoding="utf-8").strip()
@@ -14795,7 +19617,7 @@ def load_skill(
                     metadata=metadata,
                     caller_agent=caller_agent,
                 )
-                if not isinstance(_result, dict) or "blocked" not in _result:
+                if not isinstance(_result, dict) or not isinstance(_result.get("blocked"), bool):
                     raise ValueError(f"unexpected audit result: {_result!r}")
             except Exception as _e:
                 log.warning("AUDIT_INFRA_FAILURE: audit_skill raised %s — skill blocked by default", _e)
@@ -14826,6 +19648,7 @@ def load_skill(
     warn_if_deprecated_skill_loaded(skill_name, content, metadata, SKILLS_DIR)
     _warn_unverified_skill_efficacy(skill_name, metadata)
     _record_skill_invocation(skill_name, skill_file)
+    _log_memory_injection(skill_name, {"source": "load_skill", "caller_agent": caller_agent}, len(gated_content))
     return gated_content
 
 
@@ -14976,7 +19799,7 @@ def revert_skills_to(timestamp: str) -> None:
         return
 
     snapshot_skills: set[str] = set(checkpoint.get("active_skills", []))
-    current_skills: set[str] = {p.name for p in SKILLS_DIR.glob("*.md")} if SKILLS_DIR.exists() else set()
+    current_skills: set[str] = {p.name for p in SKILLS_DIR.glob("*.json")} if SKILLS_DIR.exists() else set()
     excess = current_skills - snapshot_skills
 
     for filename in sorted(excess):
@@ -14986,3 +19809,41 @@ def revert_skills_to(timestamp: str) -> None:
             log.info("revert_skills_to: deleted %s", filename)
         except OSError as exc:
             log.warning("revert_skills_to: failed to delete %s: %s", filename, exc)
+
+
+def verify_audit_integrity() -> bool:
+    """Verify soul_manager.py has not been tampered with by comparing its SHA256 to the stored known-good hash."""
+    try:
+        from agents.shared import config as _shared_config
+    except ImportError:
+        try:
+            import importlib.util as _ilu
+
+            _cfg_path = Path(__file__).resolve().parent.parent / "agents" / "shared" / "config.py"
+            _spec = _ilu.spec_from_file_location("_shared_cfg_integrity", _cfg_path)
+            if _spec is None or _spec.loader is None:
+                raise ImportError(f"Cannot load config from {_cfg_path}")
+            _mod = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            _shared_config = _mod
+        except Exception as exc:
+            log.critical("verify_audit_integrity: cannot load shared config: %s", exc)
+            return False
+    expected = getattr(_shared_config, "AUDIT_MODULE_HASH", None)
+    if not expected:
+        log.critical("verify_audit_integrity: AUDIT_MODULE_HASH not set in config — skill audit blocked")
+        return False
+    source = Path(__file__).with_suffix(".py").resolve()
+    try:
+        actual = hashlib.sha256(source.read_bytes()).hexdigest()
+    except OSError as exc:
+        log.critical("verify_audit_integrity: cannot read soul_manager source: %s", exc)
+        return False
+    if actual != expected:
+        log.critical(
+            "AUDIT_INTEGRITY_VIOLATION: soul_manager hash mismatch expected=%s actual=%s — skill loading blocked",
+            expected,
+            actual,
+        )
+        return False
+    return True
