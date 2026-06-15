@@ -49,3 +49,10 @@ def test_scan_blocks_generic_tai_intensifier():
     flagged = _flagged_texts("这个判断太顺手了。")
 
     assert any("太顺手了" in item for item in flagged)
+
+
+def test_scan_blocks_new_style_bans():
+    flagged = _flagged_texts("这里的问题最硬，也最精准。")
+
+    assert "最硬" in flagged
+    assert "精准" in flagged

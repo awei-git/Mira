@@ -51,6 +51,7 @@ from config import (
     SKILL_STUDY_COOLDOWN_HOURS,
     SKILL_STUDY_TIME,
     LOG_RETENTION_DAYS,
+    DATA_DIR,
 )
 
 
@@ -588,6 +589,22 @@ def should_daily_report() -> bool:
         return False
     state = _load_state()
     return not state.get(f"daily_report_{now.strftime('%Y-%m-%d')}")
+
+
+def should_kol_digest() -> bool:
+    """Run the known-KOL digest once per morning, independent of explorer."""
+    now = datetime.now()
+    if not (7 <= now.hour < 11):
+        return False
+    today = now.strftime("%Y-%m-%d")
+    state_path = DATA_DIR / "kol" / "state.json"
+    try:
+        import json
+
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        state = {}
+    return not str(state.get("last_kol_digest", "")).startswith(today)
 
 
 def _should_health_check() -> bool:

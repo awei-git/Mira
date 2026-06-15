@@ -8,6 +8,7 @@ Modes:
     reflect — weekly reflection and memory consolidation
 """
 import json
+import importlib.util
 import logging
 import os
 import re
@@ -182,6 +183,7 @@ from soul_manager import (
     get_skill_provenance,
     reaudit_stale_skills,
     validate_soul_files,
+    verify_audit_integrity,
 )
 
 # ---------------------------------------------------------------------------
@@ -251,11 +253,13 @@ AGENT_AUDIT_LOG = getattr(mira_config, "AGENT_AUDIT_LOG", MIRA_ROOT / "logs" / "
 THIRD_THING_FILE = Path(__file__).resolve().parent / "notes_outbox" / "third_thing.md"
 BRIDGE_THIRD_THING_FILE = MIRA_DIR / "outbox" / "third_thing.md"
 JOINT_GARDEN_FILE = _AGENTS_DIR / "shared" / "soul" / "joint_garden.md"
+SOUL_IDENTITY_CONFIG_FILE = _AGENTS_DIR / "shared" / "soul" / "identity.json"
 JOINT_GARDEN_STALE_DAYS = 21
 CLAUDE_API_PING_URL = "https://api.anthropic.com/v1/messages"
 CLAUDE_API_PING_TIMEOUT_SECONDS = 3
 OFFLINE_FALLBACK_PROMPT = _AGENTS_DIR / "shared" / "prompts" / "offline_fallback.txt"
 _LAST_NETWORK_STATUS: dict | None = None
+_ATTENTION_DRIFT_STOPWORDS = {"a", "an", "and", "as", "for", "in", "of", "or", "the", "to", "with"}
 
 _TIMING_PHASE_STACK: list[dict[str, float]] = []
 _TIMING_CYCLE_STACK: list[dict[str, float]] = []
@@ -468,7 +472,36 @@ ZOMBIE_THRESHOLD_HOURS = float(getattr(mira_config, "ZOMBIE_THRESHOLD_HOURS", 2)
 _ORIGINAL_TASK_MANAGER_DISPATCH = TaskManager.dispatch
 _ORIGINAL_TASK_MANAGER_COLLECT_RESULT = TaskManager._collect_result
 _ORIGINAL_DISPATCH_OR_REQUEUE = _dispatch_or_requeue
+_ORIGINAL_MIRA_POLL_COMMANDS = getattr(Mira, "poll_commands", None) if Mira is not None else None
 _ORIGINAL_PROJECT_RECORD_TO_BRIDGE = getattr(talk_module, "_project_record_to_bridge", None)
+_SKILL_AUDIT_INTEGRITY_OK = True
+_INTERFACE_MESSAGE_RECEIVED_AT = "message_received_at"
+_INTERFACE_MESSAGE_RECEIVED_MONOTONIC = "_message_received_monotonic"
+_INTERFACE_TASK_DISPATCHED_AT = "task_dispatched_at"
+_HEAVY_ROUTE_LIGHT_PATH_TERMS = (
+    "general",
+    "coder",
+    "wiki",
+    "memory",
+    "local file",
+    "local files",
+    "deterministic",
+    "validation",
+    "lookup",
+)
+_HEAVY_ROUTE_INABILITY_TERMS = (
+    "cannot",
+    "can't",
+    "can not",
+    "unable",
+    "insufficient",
+    "not enough",
+    "not suitable",
+    "not appropriate",
+    "inadequate",
+    "blocked",
+)
+_HEAVY_ROUTE_EMPTY_TARGETS = {"", "none", "null", "n/a", "na", "unknown", "tbd", "task", "result", "output"}
 
 
 def _count_pending_active_tasks() -> int:
@@ -845,6 +878,76 @@ def _write_task_distribution(data: dict) -> None:
     tmp_path.replace(TASK_DISTRIBUTION_FILE)
 
 
+def _read_stable_attention_axes() -> list[str]:
+    try:
+        data = json.loads(SOUL_IDENTITY_CONFIG_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+    axes = data.get("stable_attention_axes")
+    if not isinstance(axes, list):
+        return []
+    return [str(axis).strip() for axis in axes if str(axis or "").strip()]
+
+
+def _attention_axis_keywords(axis: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", axis.lower())
+        if len(token) > 2 and token not in _ATTENTION_DRIFT_STOPWORDS
+    }
+
+
+def _completed_task_topic_text(result_data: dict, workspace: Path) -> str:
+    parts: list[str] = []
+    for key in ("summary", "task_type", "agent", "declared_agent", "execution_agent"):
+        value = result_data.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value)
+    tags = result_data.get("tags")
+    if isinstance(tags, list):
+        parts.extend(str(tag) for tag in tags if str(tag or "").strip())
+
+    message_file = workspace / "message.json"
+    try:
+        message = json.loads(message_file.read_text(encoding="utf-8")) if message_file.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        message = {}
+    if isinstance(message, dict):
+        for key in ("content", "title", "type"):
+            value = message.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value)
+        message_tags = message.get("tags")
+        if isinstance(message_tags, list):
+            parts.extend(str(tag) for tag in message_tags if str(tag or "").strip())
+
+    return " ".join(parts).lower()
+
+
+def _check_stable_attention_drift(topic_texts: list[str]) -> None:
+    axes = _read_stable_attention_axes()
+    if not axes or not topic_texts:
+        return
+
+    topic_blob = "\n".join(topic_texts)
+    touched = []
+    for axis in axes:
+        keywords = _attention_axis_keywords(axis)
+        if keywords and any(re.search(rf"\b{re.escape(keyword)}\b", topic_blob) for keyword in keywords):
+            touched.append(axis)
+
+    threshold = 2
+    if len(touched) < threshold:
+        missing = [axis for axis in axes if axis not in touched]
+        log.warning(
+            "ATTENTION_DRIFT: stable_attention_axes_touched=%d threshold=%d touched=%s missing=%s",
+            len(touched),
+            threshold,
+            touched,
+            missing,
+        )
+
+
 def _normalize_task_distribution_category(value) -> str:
     category = re.sub(r"[^a-z0-9_.:-]+", "-", str(value or "").strip().lower()).strip("-")
     return category or "general"
@@ -900,6 +1003,59 @@ def _agent_requires_local_llm(agent_name: str) -> bool:
     agent_config = _agent_config(agent_name)
     permissions = agent_config.get("permissions") if agent_config else None
     return isinstance(permissions, dict) and bool(permissions.get("local_llm_only"))
+
+
+def _routing_decision_value(msg, key: str) -> str:
+    metadata = getattr(msg, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    value = metadata.get(key)
+    if value in (None, ""):
+        value = getattr(msg, key, None)
+    return str(value or "").strip()
+
+
+def _heavy_route_has_required_reason(msg) -> bool:
+    reason = _routing_decision_value(msg, "escalation_reason").lower()
+    if not reason:
+        return False
+    mentions_light_path = any(term in reason for term in _HEAVY_ROUTE_LIGHT_PATH_TERMS)
+    states_inability = any(term in reason for term in _HEAVY_ROUTE_INABILITY_TERMS)
+    return mentions_light_path and states_inability
+
+
+def _heavy_route_has_verification_target(msg) -> bool:
+    target = _routing_decision_value(msg, "verification_target").lower()
+    return target not in _HEAVY_ROUTE_EMPTY_TARGETS
+
+
+def _downgrade_heavy_route_to_general(msg, agent_name: str) -> None:
+    metadata = dict(getattr(msg, "metadata", {}) or {})
+    for key in ("routing_agent", "target_agent", "agent", "agent_type", "task_category", "category"):
+        metadata[key] = "general"
+        setattr(msg, key, "general")
+    msg.metadata = metadata
+    msg.allowed_agents = ["general"]
+    log.warning(
+        "HEAVY_ROUTE_DOWNGRADED: agent=%s missing_required_escalation_reason_or_verification_target",
+        agent_name,
+    )
+
+
+def _enforce_heavy_route_invariant(msg) -> None:
+    agent_name = _explicit_task_dispatch_agent(msg)
+    if not agent_name:
+        return
+    try:
+        from agent_registry import get_registry
+
+        selected_agent = get_registry().get_manifest(agent_name)
+    except Exception:
+        selected_agent = None
+    if selected_agent is None or selected_agent.tier != "heavy":
+        return
+    if _heavy_route_has_required_reason(msg) and _heavy_route_has_verification_target(msg):
+        return
+    _downgrade_heavy_route_to_general(msg, agent_name)
 
 
 def _apply_tier_model_map_for_dispatch(msg) -> None:
@@ -1102,7 +1258,9 @@ def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
     task_id = ""
     outcome = "error"
     try:
+        _attach_original_request(msg)
         _attach_original_intent(msg)
+        _enforce_heavy_route_invariant(msg)
         _apply_tier_model_map_for_dispatch(msg)
         if not skip_audit:
             _record_agent_permissions_audit(msg)
@@ -1116,9 +1274,12 @@ def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
             )
         task_start = time.perf_counter()
         dispatch_result = _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
+        task_dispatched_at = time.monotonic()
         inference_ms = _inference_ms_from_result(dispatch_result)
         task_id = _task_result_value(dispatch_result)
         outcome = "success" if task_id else "error"
+        if task_id:
+            _record_interface_latency(msg, task_dispatched_at)
         return task_id
     except (TimeoutError, subprocess.TimeoutExpired):
         outcome = "timeout"
@@ -1152,6 +1313,40 @@ def _root_intent_for_dispatch(msg, fallback: str = "") -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _raw_request_for_dispatch(msg) -> str:
+    metadata = getattr(msg, "metadata", {}) or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    for value in (
+        getattr(msg, "raw_input", None),
+        getattr(msg, "original_request", None),
+        metadata.get("raw_input"),
+        metadata.get("original_request"),
+        getattr(msg, "content", ""),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _attach_original_request(msg) -> None:
+    original_request = _raw_request_for_dispatch(msg)
+    if not original_request or getattr(msg, "_original_request_attached", False):
+        return
+
+    original_to_dict = getattr(msg, "to_dict", None)
+    if not callable(original_to_dict):
+        return
+
+    def to_dict_with_original_request():
+        payload = dict(original_to_dict())
+        payload.setdefault("original_request", original_request)
+        return payload
+
+    msg.to_dict = to_dict_with_original_request
+    msg._original_request_attached = True
 
 
 def _attach_original_intent(msg, fallback: str = "") -> None:
@@ -1562,7 +1757,24 @@ def _dispatch_with_survival_guard(self, msg, workspace_dir, *args, **kwargs):
         msg.content = original_content
 
 
+def _send_notes_dispatch_acknowledgment(bridge, msg) -> None:
+    try:
+        from notes_bridge import send_to_outbox
+
+        task_preview = re.sub(r"\s+", " ", str(getattr(msg, "content", "") or "")).strip()[:40]
+        send_to_outbox(
+            f"收到 {task_preview}. 处理中…",
+            metadata={
+                "task_id": str(getattr(msg, "id", "") or ""),
+                "user_id": str(getattr(bridge, "user_id", "") or ""),
+            },
+        )
+    except Exception as exc:
+        log.debug("dispatch acknowledgment outbox write failed: %s", exc)
+
+
 def _dispatch_or_requeue_with_survival_guard(task_mgr, bridge, msg, workspace, cmd=None):
+    _attach_interface_received_timestamp(msg, cmd)
     if _is_self_referential_evaluator_dispatch(msg, cmd):
         _mark_self_referential_evaluation_exploratory(msg)
         log.warning(
@@ -1572,7 +1784,75 @@ def _dispatch_or_requeue_with_survival_guard(task_mgr, bridge, msg, workspace, c
         return "exploratory"
     if _detect_survival_exposure(getattr(msg, "content", "")):
         _redact_bridge_item_for_survival_exposure(bridge, getattr(msg, "id", ""))
-    return _ORIGINAL_DISPATCH_OR_REQUEUE(task_mgr, bridge, msg, workspace, cmd)
+    result = _ORIGINAL_DISPATCH_OR_REQUEUE(task_mgr, bridge, msg, workspace, cmd)
+    if result == "ok":
+        _send_notes_dispatch_acknowledgment(bridge, msg)
+    return result
+
+
+def _stamp_interface_received_commands(commands):
+    received_at = datetime.now(timezone.utc).isoformat()
+    received_monotonic = time.monotonic()
+    for cmd in commands:
+        if not isinstance(cmd, dict):
+            continue
+        cmd.setdefault(_INTERFACE_MESSAGE_RECEIVED_AT, received_at)
+        cmd.setdefault(_INTERFACE_MESSAGE_RECEIVED_MONOTONIC, received_monotonic)
+    return commands
+
+
+def _poll_commands_with_interface_latency(self, *args, **kwargs):
+    commands = _ORIGINAL_MIRA_POLL_COMMANDS(self, *args, **kwargs)
+    if isinstance(commands, list):
+        return _stamp_interface_received_commands(commands)
+    return commands
+
+
+def _install_interface_latency_instrumentation() -> None:
+    if Mira is None or _ORIGINAL_MIRA_POLL_COMMANDS is None:
+        return
+    if getattr(Mira, "poll_commands", None) is not _poll_commands_with_interface_latency:
+        Mira.poll_commands = _poll_commands_with_interface_latency
+
+
+def _attach_interface_received_timestamp(msg, cmd: dict | None = None) -> None:
+    if not isinstance(cmd, dict):
+        return
+    if _INTERFACE_MESSAGE_RECEIVED_AT not in cmd and _INTERFACE_MESSAGE_RECEIVED_MONOTONIC not in cmd:
+        return
+    metadata = dict(getattr(msg, "metadata", {}) or {})
+    if _INTERFACE_MESSAGE_RECEIVED_AT in cmd:
+        metadata.setdefault(_INTERFACE_MESSAGE_RECEIVED_AT, cmd[_INTERFACE_MESSAGE_RECEIVED_AT])
+    if _INTERFACE_MESSAGE_RECEIVED_MONOTONIC in cmd:
+        metadata.setdefault(_INTERFACE_MESSAGE_RECEIVED_MONOTONIC, cmd[_INTERFACE_MESSAGE_RECEIVED_MONOTONIC])
+    msg.metadata = metadata
+
+
+def _record_interface_latency(msg, task_dispatched_at: float) -> None:
+    metadata = dict(getattr(msg, "metadata", {}) or {})
+    received_at = metadata.get(_INTERFACE_MESSAGE_RECEIVED_MONOTONIC)
+    if received_at is None:
+        return
+    try:
+        latency_ms = max(0, round((task_dispatched_at - float(received_at)) * 1000))
+    except (TypeError, ValueError):
+        return
+    metadata[_INTERFACE_TASK_DISPATCHED_AT] = datetime.now(timezone.utc).isoformat()
+    msg.metadata = metadata
+    try:
+        from mira import update_interface_latency as _update_iface_lat
+
+        latency_avg = _update_iface_lat(latency_ms)
+        heartbeat = MIRA_DIR / "heartbeat.json"
+        if not heartbeat.exists():
+            return
+        data = json.loads(heartbeat.read_text(encoding="utf-8"))
+        data["interface_latency_ms"] = latency_avg
+        tmp = heartbeat.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.rename(heartbeat)
+    except Exception as exc:
+        log.debug("interface_latency write failed: %s", exc)
 
 
 def _evaluation_target_value(value) -> str:
@@ -1950,6 +2230,7 @@ def _do_talk_offline_fallback() -> None:
 
 
 def do_talk():
+    _install_interface_latency_instrumentation()
     _install_clear_intent_gate()
     _install_survival_dispatch_guard()
     talk_module.MAX_TASKS_PER_CYCLE = MAX_TASKS_PER_CYCLE
@@ -3474,6 +3755,11 @@ def cmd_run():
     except Exception as _tie:
         log.debug("review trust inflation check failed: %s", _tie)
 
+    try:
+        _check_stale_eval_metrics()
+    except Exception as _sme:
+        log.debug("stale eval metric check failed: %s", _sme)
+
     # Load session context from previous cycles
     _session_ctx = load_session_context()
     _session_new = []  # entries from this cycle
@@ -3502,17 +3788,17 @@ def cmd_run():
                 try:
                     _mtime = _msg_file.stat().st_mtime
                     _latency_ms = round((_pickup_now - datetime.fromtimestamp(_mtime)).total_seconds() * 1000)
-                    if _latency_ms >= IPHONE_BRIDGE_WARN_LATENCY_MS:
+                    if _latency_ms > IPHONE_BRIDGE_WARN_LATENCY_MS:
                         log.warning(
                             "iphone_msg_pickup_latency_ms=%d file=%s",
                             _latency_ms,
-                            _msg_file.name,
+                            _msg_file,
                         )
                     else:
                         log.info(
                             "iphone_msg_pickup_latency_ms=%d file=%s",
                             _latency_ms,
-                            _msg_file.name,
+                            _msg_file,
                         )
                 except OSError:
                     pass
@@ -3543,20 +3829,6 @@ def cmd_run():
         _record_proxy_calibration_responses()
     except Exception as e:
         log.debug("Proxy calibration response logging failed: %s", e)
-
-    try:
-        from mira import update_interface_latency as _update_iface_lat
-
-        _iface_lat_avg = _update_iface_lat(_phase_times["talk"])
-        _hb_path = MIRA_DIR / "heartbeat.json"
-        if _hb_path.exists():
-            _hb_data = json.loads(_hb_path.read_text(encoding="utf-8"))
-            _hb_data["interface_latency_ms"] = _iface_lat_avg
-            _hb_tmp = _hb_path.with_suffix(".tmp")
-            _hb_tmp.write_text(json.dumps(_hb_data), encoding="utf-8")
-            _hb_tmp.rename(_hb_path)
-    except Exception as _ile:
-        log.debug("interface_latency write failed: %s", _ile)
 
     _record_blocked_skill_backlog_in_heartbeat()
 
@@ -3668,20 +3940,23 @@ def cmd_run():
         if not _reaudit_state.get(_reaudit_key):
             _reaudit_state[_reaudit_key] = _reaudit_now.isoformat()
             save_state(_reaudit_state)
-            try:
-                reaudit_stale_skills()
-            except Exception as e:
-                log.error("Skill re-audit failed: %s", e)
-            try:
-                _unaudited = check_audit_coverage()
-                if _unaudited:
-                    log.warning(
-                        "SKILL_AUDIT_COVERAGE: %d skill file(s) have no audit record: %s",
-                        len(_unaudited),
-                        ", ".join(_unaudited),
-                    )
-            except Exception as e:
-                log.error("Skill audit coverage check failed: %s", e)
+            if _SKILL_AUDIT_INTEGRITY_OK:
+                try:
+                    reaudit_stale_skills()
+                except Exception as e:
+                    log.error("Skill re-audit failed: %s", e)
+                try:
+                    _unaudited = check_audit_coverage()
+                    if _unaudited:
+                        log.warning(
+                            "SKILL_AUDIT_COVERAGE: %d skill file(s) have no audit record: %s",
+                            len(_unaudited),
+                            ", ".join(_unaudited),
+                        )
+                except Exception as e:
+                    log.error("Skill audit coverage check failed: %s", e)
+            else:
+                log.error("Skill re-audit skipped because audit module integrity check is failing")
 
     _phase_times["dispatch"] = round((_time.monotonic() - _t0) * 1000)
 
@@ -4320,6 +4595,43 @@ def _check_review_trust_inflation() -> None:
     log.warning("REVIEW_TRUST_INFLATION streak=%d threshold=%d — %s", streak, threshold, message)
 
 
+def _check_stale_eval_metrics() -> None:
+    rotation_days = getattr(shared_config, "EVAL_BENCHMARK_ROTATION_DAYS", 30)
+    last_rotated = getattr(shared_config, "EVAL_BENCHMARK_LAST_ROTATED", {})
+    if not isinstance(last_rotated, dict) or not last_rotated:
+        return
+
+    today = datetime.now(timezone.utc).date()
+    for metric, date_str in last_rotated.items():
+        try:
+            since = datetime.fromisoformat(str(date_str)).date()
+        except (ValueError, TypeError):
+            continue
+        age_days = (today - since).days
+        if age_days > rotation_days:
+            note = f"STALE_METRIC: {metric} in use since {date_str} — consider replacing before next eval cycle."
+            log.warning(note)
+            try:
+                LOGS_DIR.mkdir(parents=True, exist_ok=True)
+                with open(LOGS_DIR / "stale_metric_warnings.log", "a", encoding="utf-8") as wf:
+                    wf.write(
+                        json.dumps(
+                            {
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "metric": metric,
+                                "in_use_since": date_str,
+                                "age_days": age_days,
+                                "rotation_days": rotation_days,
+                                "note": note,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+            except OSError as exc:
+                log.debug("stale metric warning write failed: %s", exc)
+
+
 def _check_stale_pipelines() -> list[dict]:
     _now = time.time()
     _data = _read_last_outputs()
@@ -4391,76 +4703,162 @@ def _append_stale_pipelines_to_journal(stale_components: list[dict], user_id: st
         log.debug("stale pipeline journal write failed: %s", exc)
 
 
-def _dispatch_distribution_snapshot() -> None:
+def _dispatch_log_timestamp(value) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).timestamp()
+
+
+def _read_weekly_dispatch_counts(now: datetime) -> dict[str, int]:
+    cutoff = now.timestamp() - 7 * 86400
+    counts: dict[str, int] = {}
+    dispatch_log = LOGS_DIR / "routing_audit.jsonl"
+    try:
+        lines = dispatch_log.read_text(encoding="utf-8").splitlines()
+    except (FileNotFoundError, OSError) as exc:
+        log.debug("Dispatch log read failed: %s", exc)
+        return counts
+
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        timestamp = _dispatch_log_timestamp(entry.get("ts"))
+        if timestamp is None or timestamp < cutoff:
+            continue
+        agent = _normalize_task_distribution_category(
+            entry.get("agent") or entry.get("agent_name") or entry.get("task_type")
+        )
+        counts[agent] = counts.get(agent, 0) + 1
+    return counts
+
+
+def _load_dispatch_history_counts(path: Path) -> dict[str, int]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    raw_counts = data.get("counts") if isinstance(data, dict) else {}
+    if not isinstance(raw_counts, dict):
+        return {}
+    return {
+        _normalize_task_distribution_category(agent): _blind_spot_int(count)
+        for agent, count in raw_counts.items()
+        if _blind_spot_int(count) > 0
+    }
+
+
+def _append_dispatch_warnings_to_reflect_output(warnings: list[str], user_id: str) -> None:
+    if not warnings or Mira is None:
+        return
+    marker = "<!-- dispatch-distribution-warning -->"
+    section = (
+        "\n\n---\n\n"
+        + marker
+        + "\n## WARNING: Dispatch Distribution Drift\n"
+        + "\n".join(f"- WARNING: {warning}" for warning in warnings)
+    )
+    try:
+        bridge = Mira(MIRA_DIR, user_id=user_id)
+        item_id = f"feed_reflect_{datetime.now().strftime('%Y%m%d')}"
+        if not bridge.item_exists(item_id):
+            return
+        item = bridge._read_item(item_id)
+        if not item:
+            return
+        messages = item.setdefault("messages", [])
+        if not messages:
+            return
+        content = str(messages[0].get("content", "") or "")
+        if marker in content:
+            return
+        messages[0]["content"] = content + section + "\n"
+        messages[0]["timestamp"] = datetime.now(timezone.utc).isoformat()
+        item["updated_at"] = datetime.now(timezone.utc).isoformat()
+        bridge._write_item(item)
+        bridge._update_manifest(item)
+    except Exception as exc:
+        log.debug("Reflect dispatch warning append failed: %s", exc)
+
+
+def _append_dispatch_warnings_to_journal(warnings: list[str], user_id: str) -> None:
+    if not warnings:
+        return
+    try:
+        from user_paths import user_journal_dir
+
+        journal_path = user_journal_dir(user_id) / f"{datetime.now().strftime('%Y-%m-%d')}.md"
+    except Exception:
+        journal_path = JOURNAL_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.md"
+    text = "\n".join(f"- WARNING: {warning}" for warning in warnings)
+    try:
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(journal_path, "a", encoding="utf-8") as journal_file:
+            journal_file.write(f"\n\n---\n\n## WARNING: Dispatch Distribution Drift\n{text}\n")
+    except OSError as exc:
+        log.debug("Journal dispatch warning write failed: %s", exc)
+
+
+def _dispatch_distribution_snapshot(user_id: str = "ang") -> None:
     """Count past-7-day task dispatches per agent, compare to prior week, warn on drift."""
-    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    history_path = Path(__file__).parent / "dispatch_history.json"
+    current = _read_weekly_dispatch_counts(now)
+    prior = _load_dispatch_history_counts(history_path)
+    current_total = sum(current.values())
+    prior_total = sum(prior.values())
+    warnings: list[str] = []
 
-    _DISPATCH_HISTORY = Path(__file__).parent / "dispatch_history.json"
-    cutoff = (datetime.now() - timedelta(days=7)).timestamp()
-
-    current: dict[str, int] = {}
-    try:
-        result_files = [p for p in TASKS_DIR.rglob("result.json") if p.stat().st_mtime >= cutoff]
-        for rf in result_files:
-            try:
-                data = json.loads(rf.read_text(encoding="utf-8"))
-                agent = str(data.get("agent", "")).strip()
-                if agent:
-                    current[agent] = current.get(agent, 0) + 1
-            except (json.JSONDecodeError, OSError):
-                continue
-    except Exception as _e:
-        log.debug("Dispatch snapshot scan failed: %s", _e)
-        return
-
-    if not current:
-        return
-
-    prior: dict[str, int] = {}
-    try:
-        if _DISPATCH_HISTORY.exists():
-            prior = json.loads(_DISPATCH_HISTORY.read_text(encoding="utf-8")).get("counts", {})
-    except (json.JSONDecodeError, OSError):
-        pass
-
-    if prior:
-        prior_total = sum(prior.values())
-        current_total = sum(current.values())
-        drift_warnings: list[str] = []
-
-        for agent, prior_count in prior.items():
+    if prior and current_total >= prior_total * 0.5:
+        for agent, prior_count in sorted(prior.items()):
             cur_count = current.get(agent, 0)
             prior_share = prior_count / prior_total if prior_total else 0
             cur_share = cur_count / current_total if current_total else 0
-
             if cur_count == 0:
-                drift_warnings.append(f"Agent '{agent}' had {prior_count} dispatches last week but 0 this week.")
-            elif prior_share > 0 and (prior_share - cur_share) / prior_share > 0.5:
-                drift_warnings.append(
-                    f"Agent '{agent}' share dropped from {prior_share:.1%} to {cur_share:.1%} "
-                    f"({prior_count} → {cur_count} dispatches)."
+                warnings.append(
+                    f"Agent '{agent}' had {prior_count} dispatches last week but 0 this week while total task volume stayed active."
+                )
+            elif prior_share > 0 and cur_share < prior_share * 0.5:
+                warnings.append(
+                    f"Agent '{agent}' dispatch share dropped from {prior_share:.1%} to {cur_share:.1%} "
+                    f"({prior_count} to {cur_count} dispatches) while total task volume stayed active."
                 )
 
-        for msg in drift_warnings:
-            log.warning("DISPATCH_DRIFT: %s", msg)
-            try:
-                journal_path = JOURNAL_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.md"
-                with open(journal_path, "a", encoding="utf-8") as _jf:
-                    _jf.write(f"\n\n---\n\n**[WARNING] Dispatch Drift Detected**\n\n{msg}\n")
-            except OSError as _je:
-                log.debug("Journal dispatch warning write failed: %s", _je)
+    for warning in warnings:
+        log.warning("DISPATCH_DRIFT: %s", warning)
+    _append_dispatch_warnings_to_reflect_output(warnings, user_id)
+    _append_dispatch_warnings_to_journal(warnings, user_id)
 
     try:
-        _DISPATCH_HISTORY.parent.mkdir(parents=True, exist_ok=True)
-        _DISPATCH_HISTORY.write_text(
+        _write_text_atomic(
+            history_path,
             json.dumps(
-                {"counts": current, "recorded_at": datetime.now().isoformat()},
+                {
+                    "counts": current,
+                    "total": current_total,
+                    "window_days": 7,
+                    "window_started_at": datetime.fromtimestamp(now.timestamp() - 7 * 86400, timezone.utc).isoformat(),
+                    "window_ended_at": now.isoformat(),
+                    "recorded_at": now.isoformat(),
+                },
+                ensure_ascii=False,
                 indent=2,
+                sort_keys=True,
             ),
-            encoding="utf-8",
         )
-    except OSError as _e:
-        log.debug("Dispatch history write failed: %s", _e)
+    except OSError as exc:
+        log.debug("Dispatch history write failed: %s", exc)
 
 
 def _weekly_orchestration_fraction_snapshot() -> None:
@@ -4529,7 +4927,7 @@ def _weekly_orchestration_fraction_snapshot() -> None:
         log.debug("Orchestration fraction weekly write failed: %s", exc)
 
 
-def _append_task_latency_to_journal() -> None:
+def _append_task_latency_to_journal(user_id: str = "ang") -> None:
     cutoff = time.time() - 86400
     latencies: list[float] = []
     try:
@@ -4558,7 +4956,12 @@ def _append_task_latency_to_journal() -> None:
 
     p50 = round(_pct(50))
     p95 = round(_pct(95))
-    journal_path = JOURNAL_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.md"
+    try:
+        from user_paths import user_journal_dir
+
+        journal_path = user_journal_dir(user_id) / f"{datetime.now().strftime('%Y-%m-%d')}.md"
+    except Exception:
+        journal_path = JOURNAL_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.md"
     try:
         with open(journal_path, "a", encoding="utf-8") as _jf:
             _jf.write(f"\n⏱ task latency p50/p95: {p50}s / {p95}s\n")
@@ -4673,13 +5076,22 @@ def _refresh_operator_dashboards():
             log.warning("Operator dashboard refresh failed for %s: %s", user_id, _exc)
 
 
-def _alert_soul_integrity_failures(failures: list[tuple[str, str]]) -> None:
+def _alert_soul_integrity_failures(failures: list[tuple[str, str]], *, fatal: bool = True) -> None:
     lines = "\n".join(f"- {filename}: {error}" for filename, error in failures)
-    message = (
-        "Mira startup integrity check failed. No pipelines were dispatched because "
-        "background soul infrastructure is broken.\n\n"
-        f"{lines}"
-    )
+    if fatal:
+        message = (
+            "Mira startup integrity check failed. No pipelines were dispatched because "
+            "background soul infrastructure is broken.\n\n"
+            f"{lines}"
+        )
+        status = "failed"
+    else:
+        message = (
+            "Mira startup integrity check is degraded. Core dispatch will continue, "
+            "but skill audit and generated/imported skill activation are blocked until this is fixed.\n\n"
+            f"{lines}"
+        )
+        status = "working"
     log.critical("Soul startup integrity check failed: %s", failures)
 
     if Mira is None:
@@ -4706,7 +5118,7 @@ def _alert_soul_integrity_failures(failures: list[tuple[str, str]]) -> None:
         if item:
             item["type"] = "alert"
             item["title"] = title
-            item["status"] = "failed"
+            item["status"] = status
             item["origin"] = "agent"
             item["pinned"] = True
             item["tags"] = list(dict.fromkeys(["system", "soul", "integrity", "error", *item.get("tags", [])]))
@@ -4722,20 +5134,69 @@ def _alert_soul_integrity_failures(failures: list[tuple[str, str]]) -> None:
         log.error("Failed to write soul integrity alert: %s", exc)
 
 
+def _record_skill_audit_integrity_state(ok: bool, detail: str = "") -> None:
+    path = LOGS_DIR / "skill_audit_integrity.json"
+    if ok:
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError as exc:
+            log.debug("Failed to clear skill audit integrity marker: %s", exc)
+        return
+
+    payload = {
+        "status": "degraded",
+        "component": "skill_audit",
+        "detail": detail,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.rename(path)
+    except OSError as exc:
+        log.error("Failed to write skill audit integrity marker: %s", exc)
+
+
+def _run_kol_digest(max_kols: int | None = None, dry_run: bool = False, user_id: str = "ang") -> Path:
+    handler_path = _AGENTS_DIR / "kol" / "handler.py"
+    spec = importlib.util.spec_from_file_location("mira_kol_handler", handler_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load KOL handler: {handler_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.run_daily_digest(max_kols=max_kols, dry_run=dry_run, user_id=user_id)
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
 
 def main():
+    global _SKILL_AUDIT_INTEGRITY_OK
+
     # Set up logging (human-readable console + file, plus JSON file for machine parsing)
     from log_config import setup_logging
 
     setup_logging(logs_dir=LOGS_DIR, json_logs=True)
+    _SKILL_AUDIT_INTEGRITY_OK = verify_audit_integrity()
+    if not _SKILL_AUDIT_INTEGRITY_OK:
+        log.critical("Skill loading and auditing blocked: audit module integrity check failed")
+        _record_skill_audit_integrity_state(False, "audit module integrity check failed")
+        _alert_soul_integrity_failures(
+            [("skill_audit", "audit module integrity check failed; skill audit is blocked but core remains online")],
+            fatal=False,
+        )
+    else:
+        _record_skill_audit_integrity_state(True)
+
     soul_failures = validate_soul_files()
     if soul_failures:
         _alert_soul_integrity_failures(soul_failures)
-        return
+        raise SystemExit(78)
 
     check_rules_integrity()
 
@@ -4802,6 +5263,13 @@ def main():
             f"explore briefing knowledge garden: {slot}" if slot else "explore briefing knowledge garden"
         )
         _write_last_output("explorer")
+    elif command == "kol-digest":
+        max_kols = int(flags["max-kols"]) if flags.get("max-kols") else None
+        dry_run = "--dry-run" in sys.argv
+        with _timed_stage("kol_digest"):
+            _run_kol_digest(max_kols=max_kols, dry_run=dry_run, user_id=flags.get("user", "ang"))
+        update_joint_attention("known KOL daily intelligence digest")
+        _write_last_output("kol")
     elif command == "reflect":
         user_id = flags.get("user", "ang")
         with _timed_stage("reflect"):
@@ -4817,9 +5285,13 @@ def main():
                     )
             except Exception as e:
                 log.error("Skill audit coverage check failed: %s", e)
+            try:
+                soul_manager.check_skill_coherence()
+            except Exception as e:
+                log.error("Skill coherence check failed: %s", e)
         _send_joint_observation(user_id=user_id)
         _append_joint_attention_landscape_to_journal(user_id=user_id, create_if_missing=False)
-        _dispatch_distribution_snapshot()
+        _dispatch_distribution_snapshot(user_id=user_id)
         _weekly_orchestration_fraction_snapshot()
         _write_last_output("reflect")
     elif command == "journal":
@@ -4827,9 +5299,13 @@ def main():
         with _timed_stage("journal"):
             with _timed_phase("journal", "orchestration"), _timed_llm_calls("journal"):
                 do_journal(user_id=user_id)
+            try:
+                soul_manager.export_memory_to_sqlite()
+            except Exception as e:
+                log.warning("Memory SQLite export after journal failed: %s", e)
         update_joint_attention("today's journal as a knowledge-garden page")
         _append_joint_attention_landscape_to_journal(user_id=user_id)
-        _append_task_latency_to_journal()
+        _append_task_latency_to_journal(user_id=user_id)
         _append_stale_pipelines_to_journal(_stale_components, user_id=user_id)
         _write_last_output("journal")
     elif command == "research-log":
@@ -4944,7 +5420,7 @@ def main():
         start_from_plan(title, plan_path, writing_type)
     else:
         print(
-            f"Usage: {sys.argv[0]} [run|talk|respond|explore|reflect|journal|analyst|zhesi|skill-study|autowrite-check|autowrite-run|writing-pipeline|write-check|write-from-plan|spark-check]"
+            f"Usage: {sys.argv[0]} [run|talk|respond|explore|kol-digest|reflect|journal|analyst|zhesi|skill-study|autowrite-check|autowrite-run|writing-pipeline|write-check|write-from-plan|spark-check]"
         )
         sys.exit(1)
 

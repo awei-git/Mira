@@ -165,12 +165,14 @@ _BANNED_CHINESE_PHRASES = (
     "意外的撞上",
     "意外地撞上",
     "最聪明",
+    "最硬",
     "停一会",
     "停一下",
     "打动",
     "不舒服",
     "不安",
     "反复读",
+    "精准",
     "令人不安",
 )
 _BANNED_CHINESE_PATTERNS = (
@@ -184,6 +186,10 @@ _BANNED_FAKE_TRANSITIONS = (
     "let me ",
     "let's ",
     "让我们",
+)
+_CONFIDENCE_SCORE_RE = re.compile(
+    r"\[(?:C|confidence)[:\s]*[1-5]\b|\bconfidence[:\s]+[1-5]\b",
+    re.IGNORECASE,
 )
 _FRICTION_FEEDBACK_RE = re.compile(
     r"\b(?:bothered by|can't stand|cannot stand|this keeps happening|the quality is so bad)\b|"
@@ -525,6 +531,10 @@ def _assess_obsession_gap(output: str, *, content: str, metadata: dict | None) -
     else:
         artifact_metadata.pop("ceiling_note", None)
     return artifact_metadata
+
+
+def _has_confidence_scores(text: str) -> bool:
+    return bool(_CONFIDENCE_SCORE_RE.search(text))
 
 
 def _obsession_gap_check(text: str) -> bool:
@@ -1049,6 +1059,38 @@ def de_ai_pass(
     if result != original_text:
         _append_anti_ai_pattern_log(_article_slug(article_slug), pattern_counts)
     return result
+
+
+def _certainty_calibration_pass(text: str, *, tier: str = "light", timeout: int = 120) -> str:
+    if _has_confidence_scores(text):
+        return text
+    prompt = (
+        "You are Mira's certainty-calibration editor.\n\n"
+        "For each factual claim in the draft, rate your confidence on a 1–5 scale and add a compact "
+        "inline annotation in the form [C:N] immediately after the claim. "
+        "For claims rated ≤3, rephrase with hedging such as 'may', 'likely', or 'the evidence suggests'. "
+        "For claims rated ≤2, prepend a short disclaimer such as 'I'm not fully sure, but…' or flag "
+        "explicitly for human verification. Preserve all other content, structure, and language.\n\n"
+        "Output only the edited markdown. No preface, no explanation.\n\n"
+        "# Draft\n\n"
+        f"{text}"
+    )
+    try:
+        edited = claude_think(prompt, timeout=timeout, tier=tier)
+    except Exception as e:
+        log.warning("certainty_calibration_pass: LLM call failed (%s) — returning original", e)
+        return text
+    if not edited:
+        return text
+    cleaned = _clean_llm_metadata_response(edited)
+    if len(cleaned) < len(text) * 0.5:
+        log.warning(
+            "certainty_calibration_pass: output too short (%d < 50%% of %d) — returning original",
+            len(cleaned),
+            len(text),
+        )
+        return text
+    return cleaned
 
 
 def _obsession_friction_points(report: str) -> list[dict[str, str]]:
@@ -2057,6 +2099,9 @@ def _handle_quick_write(
                 anti_ai_mode=anti_ai_mode,
                 article_slug=title,
             )
+        if not _has_confidence_scores(final_text):
+            log.info("certainty_calibration: no confidence scores found; running calibration pass")
+            final_text = _certainty_calibration_pass(final_text, tier="light", timeout=120)
     metadata = _assess_obsession_gap(final_text, content=content, metadata=metadata)
     if _obsession_gap_check(final_text):
         metadata["needs_obsession"] = True
@@ -2178,6 +2223,9 @@ def _handle_full_write(
                     anti_ai_mode=anti_ai_mode,
                     article_slug=project_dir.name,
                 )
+            if not _has_confidence_scores(edited):
+                log.info("certainty_calibration: no confidence scores found; running calibration pass")
+                edited = _certainty_calibration_pass(edited, tier="light", timeout=120)
         metadata = _assess_obsession_gap(edited, content=content, metadata=metadata)
         if _obsession_gap_check(edited):
             metadata["needs_obsession"] = True

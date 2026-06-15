@@ -28,7 +28,7 @@ if str(_AGENTS_DIR / "general") not in sys.path:
 if str(_AGENTS_DIR / "shared") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
-from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR
+from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR, AUTO_PODCAST_ENABLED
 from agent_registry import get_registry
 from persona.persona_context import get_persona_context
 from memory.soul import load_soul, format_soul, recall_context
@@ -1243,13 +1243,18 @@ def _handle_autowrite_approval(workspace: Path, task_id: str):
                 workspace=str(article_dir),
                 final_md=str(final),
                 item_id=task_id,
-                auto_podcast=meta.get("auto_podcast", True),
+                auto_podcast=meta.get("auto_podcast", AUTO_PODCAST_ENABLED),
+            )
+            followup = (
+                "发完自动生成 podcast。"
+                if meta.get("auto_podcast", AUTO_PODCAST_ENABLED)
+                else "podcast 自动生成已关闭。"
             )
             _write_result(
                 workspace,
                 task_id,
                 "done",
-                f"已批准发布 '{title}'。冷却期到了自动发，发完自动生成 podcast。",
+                f"已批准发布 '{title}'。冷却期到了自动发，{followup}",
             )
             log.info("Autowrite '%s' approved via metadata -> manifest (final=%s)", title, final)
             return
@@ -1353,13 +1358,14 @@ def _handle_autowrite_approval(workspace: Path, task_id: str):
         workspace=str(article_dir or final.parent),
         final_md=str(final),
         item_id=task_id,
-        auto_podcast=True,
+        auto_podcast=AUTO_PODCAST_ENABLED,
     )
 
+    followup = "发完自动生成 podcast。" if AUTO_PODCAST_ENABLED else "podcast 自动生成已关闭。"
     _write_result(
         workspace,
         task_id,
         "done",
-        f"\u5df2\u6279\u51c6\u53d1\u5e03 '{title}'\u3002\u51b7\u5374\u671f\u5230\u4e86\u81ea\u52a8\u53d1\uff0c\u53d1\u5b8c\u81ea\u52a8\u751f\u6210 podcast\u3002",
+        f"\u5df2\u6279\u51c6\u53d1\u5e03 '{title}'\u3002\u51b7\u5374\u671f\u5230\u4e86\u81ea\u52a8\u53d1\uff0c{followup}",
     )
     log.info("Autowrite '%s' approved -> manifest (final=%s)", title, final)

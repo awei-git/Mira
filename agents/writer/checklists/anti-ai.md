@@ -2,6 +2,10 @@
 
 每篇文章完成后逐项检查。本清单适用于所有文体。
 
+## 首要锚点
+
+- [ ] **长破折号**：**HARD BAN**。`—` / `——` 是最常见的 AI 味触发器；先扫它，任何模式下都必须改写。
+
 ## PERSONA CONSISTENCY CHECK
 
 - [ ] Determine whether the output contains personal opinions, self-referential statements, or emotional reactions.
@@ -16,7 +20,6 @@ Strict mode is the publish boundary. Relaxed mode is the thinking space — what
 
 When `anti_ai_strictness` is `relaxed`, the de-AI pass keeps the base quality guards but softens style suppression:
 
-- [ ] **长破折号**：**HARD BAN**。`—` / `——` 零容忍，任何模式下都必须改写。
 - [ ] **不是X而是Y**：**HARD BAN**。零容忍。任何 `不是X而是Y` 对位结构必须改写，无论模式。2026-05-23 WA 指令。
 - [ ] **不是 / 这是**：**HARD BAN**。零容忍。单独出现也必须改写，不只拦截 `不是X而是Y`。
 - [ ] **结构性抽象名词**：`维度`, `张力`, `结构性`, `叙事`, `框架`, `语境` 等抽象词可以保留，不强制改写；只有空泛、遮蔽具体判断时才改。
@@ -43,7 +46,7 @@ Before smoothing a draft, classify friction as either productive or consumptive.
   - `不仅[^。！？；\n]{1,40}而且[^。！？；\n]{1,40}`
 
 - [ ] **硬禁词与句式**：命中以下词或模式必须标记并优先改写。
-  - `不是`, `这是`, `打动`, `不舒服`, `不安`, `反复读`
+  - `不是`, `这是`, `打动`, `不舒服`, `不安`, `反复读`, `最硬`, `精准`
   - `太[^。！？；\n]{1,12}[了啦啊呀]`
   - `[一-鿿]{1,6}了(?:很久|好久|半天)`
   - `最(?:先|早)[^。！？；\n]{0,16}我`
@@ -55,6 +58,8 @@ Before smoothing a draft, classify friction as either productive or consumptive.
 - [ ] **FRICTION CHECK**：Identify one specific detail in this draft that you returned to and revised at least twice because it bothered you irrationally — a word choice, a transition, a structural decision. If you cannot identify any such friction point, the draft is at the adequate floor, not the exceptional ceiling. Consider an additional revision pass focused on one detail that nags at you.
 
 - [ ] **AI literacy boundary framing**: When content teaches AI usage, prompt engineering, automation, agent design, or capability transfer, verify that it includes concrete safe-use boundaries, misuse caveats where relevant, and safe-use constraints. Do not finalize content that gives step-by-step enablement for harmful behavior.
+
+- [ ] **HALLUCINATION DOMAIN CHECK**: Does the text make claims about laws/statutes, specific historical events, or code functions/APIs? If yes, each claim must have a verified source citation.
 
 ## Speaker Identity Presence (anti-AI layer 2)
 - [ ] STAKE: Does the text answer 'why does Mira specifically care about this topic?' Not generic interest — a specific connection to Mira's experiences, values, or ongoing concerns.
@@ -88,7 +93,7 @@ Before smoothing a draft, classify friction as either productive or consumptive.
   - **HARD BAN**：`不是X而是Y` 零容忍，100%改写，任何模式下都不允许保留
   - **HARD BAN**：`不是` 和 `这是` 单独出现也不允许保留
 
-- [ ] **假情绪与假停顿**：有没有 `打动`, `不舒服`, `不安`, `反复读`, `停了很久`, `想了很久`, `太X了`, `最先打动我的` 这类懒句？
+- [ ] **假情绪与假停顿**：有没有 `打动`, `不舒服`, `不安`, `反复读`, `最硬`, `精准`, `停了很久`, `想了很久`, `太X了`, `最先打动我的` 这类懒句？
   - 全部改成具体观察、动作、证据或问题；不要用情绪标签替代判断
 
 - [ ] **语气词自然度**：中文疑问句和口语句是否有自然尾巴？
@@ -223,6 +228,8 @@ For any output categorized as an opinion piece, essay, review, or personal note 
 - [ ] Does a confident sentence smuggle in a date, statistic, source relationship, or causal claim that has not been checked?
 - [ ] Are plausible examples being used as evidence when they are only illustrative?
 - [ ] Does the draft make uncertainty sound settled because the prose is smooth?
+- [ ] **Uncertainty audit**: for every factual claim in the output, rate confidence (high/medium/low). Low-confidence claims must carry explicit uncertainty signals or be removed. Never state a low-confidence claim as if it were certain.
+- [ ] **Certainty calibration**: For each factual claim, self‑rate your confidence on a 1–5 scale. If the rating is ≤3, rephrase with hedging (e.g., 'may', 'likely', 'the evidence suggests'). If ≤2, also prepend a short disclaimer such as 'I'm not fully sure, but…' or explicitly flag for human verification. The writer must show the confidence scores (e.g., as a compact inline annotation) so the reviewer can audit them.
 - [ ] If the audit finds a verification-needed claim, revise by sourcing it, hedging it, or removing the specific claim rather than polishing around it.
 
 ## Unfaithful Coherence Check (anti-plausible-hallucination)
@@ -305,3 +312,9 @@ Before smoothing any roughness, the reviewer must classify whether the friction 
 - [ ] Preserve friction when it creates voice, specificity, embodied texture, conceptual tension, or intentional rhythm.
 - [ ] Remove friction when it is only unclear scaffolding, repetitive setup, formatting toil, generic abstraction, overlong transitions, or cognitive load unrelated to meaning.
 - [ ] Name one productive friction preserved and one waste friction removed.
+
+## Epistemic Audit
+
+- [ ] For every substantive factual claim, annotate epistemic source as [V] verified-by-source, [P] parametric-memory (LLM internal knowledge, unverified), or [I] inferred/reasoned.
+- [ ] If the piece contains >3 [P] claims in a domain where WA is not an expert, flag the domain explicitly: '⚠️ Domain: [topic] — WA cannot independently verify claims in this section.'
+- [ ] Append a 2-3 line 'Epistemic Note' to the draft summarizing: what's solidly verified, what's parametric and should be fact-checked, and any domain-expertise gaps.

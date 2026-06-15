@@ -113,6 +113,19 @@ BACKGROUND_JOBS: list[JobSpec] = [
         description="Fetch feeds and generate briefings",
     ),
     JobSpec(
+        name="kol-digest",
+        command=["kol-digest"],
+        trigger="time_window",
+        trigger_name="should_kol_digest",
+        window_start=7,
+        window_end=11,
+        priority=12,
+        blocking_group="heavy",
+        bg_name_pattern="kol-digest",
+        session_action="kol_digest",
+        description="Monitor known KOL publications, podcasts, and web-indexed X",
+    ),
+    JobSpec(
         name="writing-pipeline",
         command=["writing-pipeline"],
         trigger="conditional",  # always runs, internal logic decides

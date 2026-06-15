@@ -179,6 +179,34 @@ def emit_security_alert(message: str, metadata: dict | None = None) -> str | Non
         return None
 
 
+def send_to_outbox(content: str, metadata: dict | None = None) -> str | None:
+    """Write a message into the monitored notes outbox."""
+    try:
+        from config import MIRA_DIR
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        message_id = f"outbox_{time.time_ns()}"
+        outbox = os.path.join(os.fspath(MIRA_DIR), "outbox")
+        os.makedirs(outbox, exist_ok=True)
+        payload = {
+            "id": message_id,
+            "sender": "agent",
+            "timestamp": timestamp,
+            "content": content,
+            "type": "message",
+            "thread_id": message_id,
+            "priority": "normal",
+            "metadata": metadata or {},
+        }
+        path = os.path.join(outbox, f"{message_id}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return path
+    except Exception as exc:
+        log.warning("notes outbox write failed: %s", exc)
+        return None
+
+
 def check_bridge_staleness(bridge_root, threshold_minutes=10) -> tuple[bool, float]:
     """Return bridge staleness and heartbeat age in minutes.
 

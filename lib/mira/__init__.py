@@ -18,6 +18,7 @@ BACKGROUND_STALENESS_THRESHOLD_HOURS = 4
 _SCAFFOLDING_AUDIT_LOG = Path(config.MIRA_ROOT) / "logs" / "scaffolding_audit.jsonl"
 _SCAFFOLD_REJECTIONS_DIR = Path(config.MIRA_ROOT) / "logs" / "scaffold_rejections"
 _INTERFACE_LATENCY_FILE = Path(config.MIRA_ROOT) / "logs" / "interface_latency.json"
+_MEMORY_INJECTION_LOG = Path(config.MIRA_ROOT) / "agents" / "shared" / "soul" / "memory_injection_log.jsonl"
 _log = logging.getLogger("scaffolding_audit")
 
 
@@ -89,11 +90,33 @@ def write_scaffold_rejection(
         _log.warning("scaffold_rejection write failed: %s", exc)
 
 
+def log_memory_injection(task_id: str, keys: list[str], reason: str) -> None:
+    keys = [str(key).strip() for key in keys if str(key).strip()]
+    if not keys:
+        return
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "task_id": task_id,
+        "keys": keys,
+        "reason": reason,
+    }
+    try:
+        _MEMORY_INJECTION_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _MEMORY_INJECTION_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        lines = _MEMORY_INJECTION_LOG.read_text(encoding="utf-8").splitlines()
+        if len(lines) > 1000:
+            _MEMORY_INJECTION_LOG.write_text("\n".join(lines[-1000:]) + "\n", encoding="utf-8")
+    except Exception as exc:
+        _log.warning("memory_injection_log write failed: %s", exc)
+
+
 __all__ = [
     "BACKGROUND_STALENESS_THRESHOLD_HOURS",
     "agents",
     "engine",
     "kernel",
+    "log_memory_injection",
     "log_scaffolding_audit",
     "policies",
     "pipelines",

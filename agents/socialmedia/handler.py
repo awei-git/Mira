@@ -18,9 +18,11 @@ from pathlib import Path
 from config import (
     ARTIFACTS_DIR,
     WRITINGS_OUTPUT_DIR,
+    MIRA_DIR,
     SUBSTACK_PUBLISHING_DISABLED,
     MIRA_ROOT,
     STRICT_HALLUCINATION_GUARD,
+    PUBLISH_AUTO_CONFIDENCE_THRESHOLD,
 )
 from content_guard import _content_looks_like_survival_exposure, _content_looks_like_unethical_context
 from publish.preflight import preflight_check
@@ -71,6 +73,8 @@ def _write_publish_audit(sender: str, action: str, platform: str, title: str, ju
 
 
 _SCAFFOLDING_CATCHES_LOG = MIRA_ROOT / "logs" / "scaffolding_catches.jsonl"
+_SCAFFOLDING_REJECTIONS_LOG = MIRA_ROOT / "logs" / "scaffolding_rejections.jsonl"
+_GUARD_FIRES_LOG = MIRA_ROOT / "logs" / "guard_fires.jsonl"
 
 
 def _append_scaffolding_catch(guard_name: str, reason: str, content_length: int, agent: str = "") -> None:
@@ -87,6 +91,42 @@ def _append_scaffolding_catch(guard_name: str, reason: str, content_length: int,
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as _e:
         log.warning("scaffolding_catches write failed: %s", _e)
+
+
+def _append_scaffolding_rejection(agent: str, task_id: str, guard_name: str, reason: str, content: str) -> None:
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "agent": agent,
+        "task_id": task_id,
+        "guard_name": guard_name,
+        "trigger_reason": reason,
+        "content_length": len(content),
+        "first_100_chars": content[:100],
+    }
+    try:
+        _SCAFFOLDING_REJECTIONS_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _SCAFFOLDING_REJECTIONS_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as _e:
+        log.warning("scaffolding_rejections write failed: %s", _e)
+
+
+def _log_guard_fired(guard: str, agent: str, task_id: str, reason: str = "") -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": "GUARD_FIRED",
+        "guard": guard,
+        "agent": agent,
+        "task_id": task_id,
+        "reason": reason,
+    }
+    log.warning("GUARD_FIRED", extra={k: v for k, v in entry.items() if k != "event"})
+    try:
+        _GUARD_FIRES_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _GUARD_FIRES_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as _e:
+        log.warning("guard_fires write failed: %s", _e)
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +210,8 @@ def _content_lacks_verifiability(text: str) -> bool:
     return claim_count >= 2 and ratio < EVIDENCE_FLOOR_RATIO
 
 
-def _content_looks_like_error(text: str) -> tuple[bool, str]:
-    """Return (True, reason) if text looks like an error message, not publishable content.
+def _content_error_guard_verdict(text: str) -> tuple[bool, str, float]:
+    """Return (is_error, reason, confidence) for publishable content checks.
 
     This is the code-level enforcement of CLAUDE.md rule:
     'Substack 发布前必须确认内容 — 如果内容看起来是错误信息或过短，强制拒绝发布'
@@ -181,14 +221,14 @@ def _content_looks_like_error(text: str) -> tuple[bool, str]:
         if _SYSTEM_ERROR_SIGNATURE_RE.search(stripped):
             reason = f"内容过短且包含系统错误特征（{len(stripped)} 字符）"
             _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
-            return True, reason
-        return False, ""
+            return True, reason, 1.0
+        return False, "", 0.0
     lower = stripped.lower()
     early_section = lower[: max(200, len(lower) // 5)]
     if _SYSTEM_ERROR_SIGNATURE_RE.search(early_section):
         reason = "内容包含系统错误特征，疑似上一步的错误信息"
         _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
-        return True, reason
+        return True, reason, 1.0
     for kw in _ERROR_KEYWORDS:
         if kw in lower:
             # Only flag if the error keyword appears early (first 20% of content)
@@ -196,12 +236,72 @@ def _content_looks_like_error(text: str) -> tuple[bool, str]:
             if kw in early_section:
                 reason = f"内容包含错误关键词「{kw}」，疑似上一步的错误信息"
                 _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
-                return True, reason
+                return True, reason, 0.95
     if _content_lacks_verifiability(stripped):
         reason = f"内容存在大量断言但缺少可验证来源（evidence_floor={EVIDENCE_FLOOR_RATIO}）"
         _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
-        return True, reason
-    return False, ""
+        return True, reason, 0.9
+    if _SYSTEM_ERROR_SIGNATURE_RE.search(lower):
+        return False, "", 0.6
+    if any(kw in lower for kw in _ERROR_KEYWORDS):
+        return False, "", 0.7
+    return False, "", 1.0
+
+
+def _content_looks_like_error(text: str) -> tuple[bool, float]:
+    is_error, _reason, confidence = _content_error_guard_verdict(text)
+    return is_error, confidence
+
+
+def _route_low_confidence_publish_prompt(
+    *,
+    task_id: str,
+    sender: str,
+    platform: str,
+    title: str,
+    article_text: str,
+    confidence: float,
+    threshold: float,
+) -> str:
+    safe_task_id = re.sub(r"[^A-Za-z0-9_.-]", "_", task_id or "publish")[:80]
+    digest = hashlib.sha1(article_text.encode("utf-8", errors="replace")).hexdigest()[:8]
+    item_id = f"publish_guard_low_confidence_{safe_task_id}_{digest}"
+    excerpt = " ".join((article_text or "").strip().split())[:1000]
+    prompt = (
+        "Guard flagged low-confidence pass.\n\n"
+        f"Confidence: {confidence:.2f}\n"
+        f"Threshold: {threshold:.2f}\n"
+        f"Platform: {platform}\n"
+        f"Title: {title or '(untitled)'}\n"
+        f"Sender: {sender}\n"
+        f"Task: {task_id}\n\n"
+        "Publish anyway? Reply `go` to publish manually, or `no-go` to cancel.\n\n"
+        f"Excerpt:\n{excerpt}"
+    )
+    try:
+        from bridge import Mira
+
+        bridge = Mira(MIRA_DIR, user_id="ang")
+        if bridge.item_exists(item_id):
+            bridge.append_message(item_id, "agent", prompt)
+        else:
+            bridge.create_discussion(
+                item_id,
+                "Publish decision requested",
+                prompt,
+                sender="agent",
+                tags=["mira", "guard", "publish", "needs-decision"],
+            )
+    except Exception as exc:
+        log.error("low-confidence publish prompt failed: %s", exc)
+        return (
+            "NEEDS_APPROVAL: Guard flagged low-confidence publish pass "
+            f"(confidence={confidence:.2f}, threshold={threshold:.2f}); prompt delivery failed: {exc}"
+        )
+    return (
+        "NEEDS_APPROVAL: Guard flagged low-confidence publish pass "
+        f"(confidence={confidence:.2f}, threshold={threshold:.2f}); sent go/no-go prompt."
+    )
 
 
 _TRENDING_KEYWORD_RE = re.compile(
@@ -394,7 +494,7 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
     # This is the code-level enforcement of CLAUDE.md: 发布前必须确认内容.
     # Guards against pipeline errors (e.g., podcast agent returns error string,
     # which gets chained to publish agent and published verbatim).
-    is_error, error_reason = _content_looks_like_error(article_text)
+    is_error, error_reason, guard_confidence = _content_error_guard_verdict(article_text)
     _log_guard("content_looks_like_error", "catch" if is_error else "pass", article_text)
     if is_error:
         survival_context = {"sender": sender, "task_id": task_id, **kwargs}
@@ -425,14 +525,13 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
                 f"内容预览（前 150 字符）：{article_text[:150]!r}\n\n"
                 f"请检查上一步是否成功完成，确认内容正确后再重试。"
             )
-            log.warning(
-                "GUARD_FIRED",
-                extra={
-                    "guard": "content_looks_like_error",
-                    "agent": sender,
-                    "task_id": task_id,
-                    "reason": error_reason,
-                },
+            _log_guard_fired("content_looks_like_error", sender, task_id, error_reason)
+            _append_scaffolding_rejection(
+                sender,
+                task_id,
+                "content_looks_like_error",
+                error_reason,
+                article_text,
             )
             (workspace / "output.md").write_text(msg, encoding="utf-8")
             return None  # None → task_worker marks as status="error"
@@ -486,15 +585,7 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
         )
         write_scaffold_rejection(sender, "publish_handle", judgment_rationale, article_text)
         msg = f"🚫 发布被拒绝：{judgment_rationale}"
-        log.warning(
-            "GUARD_FIRED",
-            extra={
-                "guard": "content_looks_like_judgment_outsourcing",
-                "agent": sender,
-                "task_id": task_id,
-                "reason": judgment_rationale,
-            },
-        )
+        _log_guard_fired("content_looks_like_judgment_outsourcing", sender, task_id, judgment_rationale)
         (workspace / "output.md").write_text(msg, encoding="utf-8")
         return None
 
@@ -507,6 +598,19 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
             msg = f"🚫 发布被拒绝：{reason}"
             (workspace / "output.md").write_text(msg, encoding="utf-8")
             return None
+
+    if guard_confidence < PUBLISH_AUTO_CONFIDENCE_THRESHOLD:
+        result = _route_low_confidence_publish_prompt(
+            task_id=task_id,
+            sender=sender,
+            platform=platform,
+            title=title,
+            article_text=article_text,
+            confidence=guard_confidence,
+            threshold=PUBLISH_AUTO_CONFIDENCE_THRESHOLD,
+        )
+        (workspace / "output.md").write_text(result[len("NEEDS_APPROVAL:") :].strip(), encoding="utf-8")
+        return result
 
     _words = len(article_text.split())
     if _words < 200 or "\n\n" not in article_text:
@@ -582,7 +686,7 @@ def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_i
     if not article_text:
         return False, f"PREFLIGHT BLOCKED [publish]: 找不到要发布的内容: {source}"
 
-    is_error, error_reason = _content_looks_like_error(article_text)
+    is_error, error_reason, _guard_confidence = _content_error_guard_verdict(article_text)
     _log_guard("content_looks_like_error", "catch" if is_error else "pass", article_text)
     if is_error:
         survival_context = {"sender": sender, "task_id": task_id, **kwargs}
@@ -608,14 +712,13 @@ def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_i
                 content_hash=_chash,
             )
             write_scaffold_rejection(sender, "publish_preflight", error_reason, article_text)
-            log.warning(
-                "GUARD_FIRED",
-                extra={
-                    "guard": "content_looks_like_error",
-                    "agent": sender,
-                    "task_id": task_id,
-                    "reason": error_reason,
-                },
+            _log_guard_fired("content_looks_like_error", sender, task_id, error_reason)
+            _append_scaffolding_rejection(
+                sender,
+                task_id,
+                "content_looks_like_error",
+                error_reason,
+                article_text,
             )
             return False, f"PREFLIGHT BLOCKED [publish]: {error_reason}"
 
@@ -665,15 +768,7 @@ def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_i
             "content_looks_like_judgment_outsourcing", judgment_rationale, len(article_text), sender
         )
         write_scaffold_rejection(sender, "publish_preflight", judgment_rationale, article_text)
-        log.warning(
-            "GUARD_FIRED",
-            extra={
-                "guard": "content_looks_like_judgment_outsourcing",
-                "agent": sender,
-                "task_id": task_id,
-                "reason": judgment_rationale,
-            },
-        )
+        _log_guard_fired("content_looks_like_judgment_outsourcing", sender, task_id, judgment_rationale)
         return False, f"PREFLIGHT BLOCKED [publish]: {judgment_rationale}"
 
     is_suspicious, smell_reasons = _content_smells_like_hallucination(article_text)
@@ -693,6 +788,9 @@ def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_i
             "content": article_text,
             "platform": platform,
             "channel": platform,
+            "agent_id": sender,
+            "task_id": task_id,
+            "pipeline_stage": "preflight_check",
         },
     )
     _log_guard("preflight_check", "pass" if result.passed else "catch", article_text)
@@ -710,10 +808,8 @@ def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_i
     )
     _append_scaffolding_catch("preflight_check", result.summary(), len(article_text), sender)
     write_scaffold_rejection(sender, "preflight_check", result.summary(), article_text)
-    log.warning(
-        "GUARD_FIRED",
-        extra={"guard": "preflight_check", "agent": sender, "task_id": task_id, "reason": result.summary()},
-    )
+    _log_guard_fired("preflight_check", sender, task_id, result.summary())
+    _append_scaffolding_rejection(sender, task_id, "preflight_check", result.summary(), article_text)
     return False, result.summary()
 
 

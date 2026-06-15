@@ -130,6 +130,20 @@ def _verify_book_review(state, today):
     return False
 
 
+def _verify_kol_digest(state, today):
+    """KOL digest verifier: require its own state marker plus daily report."""
+    _ = state
+    kol_state_path = DATA_DIR / "kol" / "state.json"
+    try:
+        kol_state = json.loads(kol_state_path.read_text(encoding="utf-8")) if kol_state_path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        kol_state = {}
+    if not kol_state.get("last_kol_digest", "").startswith(today):
+        return False
+    report = DATA_DIR / "kol" / "daily" / f"{today}.md"
+    return report.exists() and report.stat().st_size > 800
+
+
 _DAILY_TASK_CONTRACTS = {
     "zhesi": {
         "dispatch": ("zhesi", ["zhesi"]),
@@ -189,6 +203,12 @@ _DAILY_TASK_CONTRACTS = {
         "window": (8, 11),
         "verify": _verify_state_key("growth_snapshot"),
         "label": "增长快照",
+    },
+    "kol_digest": {
+        "dispatch": ("kol-digest", ["kol-digest"]),
+        "window": (7, 11),
+        "verify": _verify_kol_digest,
+        "label": "KOL日报",
     },
 }
 

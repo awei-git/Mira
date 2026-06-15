@@ -68,6 +68,13 @@ ICLOUD_BOOKS = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDo
 ICLOUD_MIRA_BOOKS = ICLOUD_BOOKS / "Mira"
 USER_AGENT = "MiraAgent/1.0 (daily-reader)"
 MAX_HISTORY = 200
+
+# marginalmira publishing retired 2026-05-29 (WA): keep reading the books and
+# writing the daily notes to disk/bridge, but stop publishing the weekly
+# compilation to the marginalmira Substack. This is the single chokepoint —
+# every dispatch path (day-7 auto, self-repair, manual backfill CLI) routes
+# through compile_and_publish_week(), which now early-returns on this flag.
+MARGINALMIRA_PUBLISHING_DISABLED = True
 MAX_TEXT_CHARS = 300_000
 MIN_REPORT_CHARS = (
     4000  # gate against broken LLM output. Real target is 8000+ via prompt; gate stays soft so a 5k essay isn't lost.
@@ -1006,6 +1013,13 @@ def compile_and_publish_week(state: dict, *, force: bool = False) -> str | None:
 
     Returns the published URL (str) on success, None on failure/skip.
     """
+    if MARGINALMIRA_PUBLISHING_DISABLED:
+        log.info(
+            "marginalmira publishing disabled — week '%s' compiled-and-read but not published",
+            state.get("week_id", ""),
+        )
+        return None
+
     week_id = state.get("week_id", "")
     book = state.get("book", {})
     series_dir = Path(state.get("series_dir", ""))
@@ -1266,8 +1280,10 @@ def main() -> int:
 
     log.info("=== Day %d complete ===", day_num)
 
-    # --- If Day 7 just finished, compile + publish to marginalmira ---
-    if day_num == 7 and 7 in state.get("completed_days", []):
+    # --- If Day 7 just finished, compile the week (publishing retired 2026-05-29) ---
+    # marginalmira publishing is disabled; the daily notes are already written to
+    # disk + delivered to bridge above, so the book read continues regardless.
+    if day_num == 7 and 7 in state.get("completed_days", []) and not MARGINALMIRA_PUBLISHING_DISABLED:
         try:
             compile_and_publish_week(state)
         except Exception as e:

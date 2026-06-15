@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import health_monitor
 
 
@@ -72,3 +74,53 @@ def test_harvest_all_consumes_dead_pid_once(monkeypatch, tmp_path):
     assert outcomes == ["autowrite-check"]
     assert not pid_file.exists()
     assert health_monitor.harvest_all() == []
+
+
+def test_record_outcome_ignores_traceback_before_dispatch(monkeypatch, tmp_path):
+    health_file = tmp_path / "bg_health.json"
+    pid_dir = tmp_path / "pids"
+    log_dir = tmp_path / "logs"
+    pid_dir.mkdir()
+    log_dir.mkdir()
+    log_file = log_dir / "bg-autowrite-check.log"
+    log_file.write_text("old run\nTraceback (most recent call last):\nImportError: old\n", encoding="utf-8")
+
+    monkeypatch.setattr(health_monitor, "_HEALTH_FILE", health_file)
+    monkeypatch.setattr(health_monitor, "_BG_PID_DIR", pid_dir)
+    monkeypatch.setattr(health_monitor, "_LOGS_DIR", log_dir)
+    monkeypatch.setattr(health_monitor, "_maybe_alert", lambda *args, **kwargs: None)
+
+    health_monitor.record_dispatch("autowrite-check", 12345)
+    with log_file.open("a", encoding="utf-8") as f:
+        f.write("new run completed successfully\n")
+
+    assert health_monitor.record_outcome("autowrite-check") is True
+    data = json.loads(health_file.read_text(encoding="utf-8"))
+    proc = data["processes"]["autowrite-check"]
+    assert proc["consecutive_failures"] == 0
+    assert proc["last_failure_reason"] == ""
+
+
+def test_record_outcome_counts_traceback_after_dispatch(monkeypatch, tmp_path):
+    health_file = tmp_path / "bg_health.json"
+    pid_dir = tmp_path / "pids"
+    log_dir = tmp_path / "logs"
+    pid_dir.mkdir()
+    log_dir.mkdir()
+    log_file = log_dir / "bg-reflect.log"
+    log_file.write_text("old successful run\n", encoding="utf-8")
+
+    monkeypatch.setattr(health_monitor, "_HEALTH_FILE", health_file)
+    monkeypatch.setattr(health_monitor, "_BG_PID_DIR", pid_dir)
+    monkeypatch.setattr(health_monitor, "_LOGS_DIR", log_dir)
+    monkeypatch.setattr(health_monitor, "_maybe_alert", lambda *args, **kwargs: None)
+
+    health_monitor.record_dispatch("reflect", 12345)
+    with log_file.open("a", encoding="utf-8") as f:
+        f.write("Traceback (most recent call last):\nRuntimeError: current failure\n")
+
+    assert health_monitor.record_outcome("reflect") is False
+    data = json.loads(health_file.read_text(encoding="utf-8"))
+    proc = data["processes"]["reflect"]
+    assert proc["consecutive_failures"] == 1
+    assert proc["last_failure_reason"]

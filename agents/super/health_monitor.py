@@ -74,6 +74,11 @@ def record_dispatch(name: str, pid: int):
     proc = health["processes"].setdefault(name, {})
     proc["last_dispatch"] = datetime.now().isoformat()
     proc["last_pid"] = pid
+    log_file = _LOGS_DIR / f"bg-{name}.log"
+    try:
+        proc["log_size_at_dispatch"] = log_file.stat().st_size
+    except OSError:
+        proc["log_size_at_dispatch"] = 0
 
     today = datetime.now().strftime("%Y-%m-%d")
     daily = health.setdefault("daily_stats", {}).setdefault(today, {})
@@ -120,10 +125,22 @@ def record_outcome(name: str):
     if log_file.exists():
         try:
             size = log_file.stat().st_size
+            try:
+                dispatch_offset = int(proc.get("log_size_at_dispatch", 0) or 0)
+            except (TypeError, ValueError):
+                dispatch_offset = 0
+            if dispatch_offset < 0 or dispatch_offset > size:
+                dispatch_offset = 0
+
             with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                if size > 2048:
-                    f.seek(size - 2048)
-                    f.readline()  # skip partial line
+                if dispatch_offset > 0:
+                    read_from = max(dispatch_offset, size - 65536)
+                else:
+                    read_from = max(0, size - 2048)
+                if read_from > 0:
+                    f.seek(read_from)
+                    if read_from != dispatch_offset:
+                        f.readline()  # skip partial line
                 tail = f.read()
 
             # Only unhandled exceptions (Traceback) count as real failures

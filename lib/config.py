@@ -593,6 +593,8 @@ _publishing_cfg = _cfg.get("publishing", {})
 SUBSTACK_PUBLISHING_DISABLED = _publishing_cfg.get("substack_disabled", False)
 STRICT_HALLUCINATION_GUARD = _publishing_cfg.get("strict_hallucination_guard", False)
 CONTENT_GUARD_SURVIVAL_MODE = _publishing_cfg.get("content_guard_survival_mode", True)
+X_PROMOTION_ENABLED = bool(_publishing_cfg.get("x_promotion_enabled", False))
+AUTO_PODCAST_ENABLED = bool(_publishing_cfg.get("auto_podcast_enabled", False))
 
 # Writing workflow
 MIN_REVIEW_ROUNDS = 5
@@ -1002,6 +1004,126 @@ SUSPENDED_METRICS: list[str] = ["reading_volume", "hallucination_rate", "emotion
 DISABLED_RUBRICS: set[str] = {"reading_volume", "hallucination_rate", "emotional_range", "rubric_calibration"}
 MISCALIBRATION_FLAG_THRESHOLD: int = _thresholds.get("miscalibration_flag_threshold", 3)
 SCAFFOLDING_CATCH_RATE_WINDOW_HOURS: int = _limits.get("scaffolding_catch_rate_window_hours", 24)
+
+
+class ConfigError(RuntimeError):
+    """Raised when a runtime policy is violated."""
+
+
+# Compatibility exports used by subprocesses that import the canonical
+# lib/config.py directly instead of agents/shared/config.py.
+TOKEN_USAGE_LOG = TOKEN_USAGE_LOG_PATH
+AUDIT_LOG_PATH = LOGS_DIR / "action_audit.jsonl"
+AGENT_AUDIT_LOG = LOGS_DIR / "agent_audit.jsonl"
+AGENT_AUDIT_MODE = True
+LOCAL_MODEL_ENDPOINT_ALLOWLIST = list(
+    _cfg.get("local_model_endpoint_allowlist", ["localhost", "127.0.0.1", "::1"]) or ["localhost", "127.0.0.1", "::1"]
+)
+
+AGENT_REGISTRY = {
+    name: {
+        "tier": "light",
+        "permissions": {
+            "network": "none",
+            "filesystem": [str(MIRA_ROOT)],
+            "local_llm_only": False,
+        },
+    }
+    for name in ALL_AGENTS
+}
+for _agent_name in ("writer", "analyst", "researcher", "podcast"):
+    AGENT_REGISTRY[_agent_name]["tier"] = "heavy"
+for _agent_name in ("general", "explorer", "analyst", "researcher", "podcast", "socialmedia", "surfer"):
+    AGENT_REGISTRY[_agent_name]["permissions"]["network"] = "any"
+for _agent_name in ("secret", "health"):
+    AGENT_REGISTRY[_agent_name]["permissions"]["local_llm_only"] = True
+AGENT_REGISTRY.update(
+    {
+        "substack": {
+            "tier": "heavy",
+            "permissions": {
+                "network": ["substack.com"],
+                "filesystem": [str(MIRA_ROOT)],
+                "local_llm_only": False,
+            },
+        },
+        "super": {
+            "tier": "light",
+            "permissions": {
+                "network": "none",
+                "filesystem": [str(MIRA_ROOT)],
+                "local_llm_only": False,
+            },
+        },
+    }
+)
+
+PUBLISH_AUTO_CONFIDENCE_THRESHOLD = float(_publishing_cfg.get("auto_confidence_threshold", 0.8))
+PUBLISH_OBSESSION_GATE_ENABLED = bool(_publishing_cfg.get("obsession_gate_enabled", False))
+OBSESSION_GATE_TIMEOUT_HOURS = int(_publishing_cfg.get("obsession_gate_timeout_hours", 24))
+CALIBRATION_PROMPT_SAMPLE_SIZE = int(_thresholds.get("calibration_prompt_sample_size", CALIBRATION_SAMPLE_SIZE))
+MAX_ATTRIBUTION_DEPTH = int(_limits.get("max_attribution_depth", 2))
+VERIFICATION_SPOT_CHECK_RATE = float(_limits.get("verification_spot_check_rate", 0.15))
+PROXY_AUDIT_SAMPLE_RATE = float(_limits.get("proxy_audit_sample_rate", 0.10))
+PROXY_DRIFT_THRESHOLD = float(_thresholds.get("proxy_drift_threshold", 0.20))
+REVIEW_TRUST_INFLATION_THRESHOLD = int(_thresholds.get("review_trust_inflation_threshold", 8))
+SCAFFOLDING_REJECTION_THRESHOLD = float(_thresholds.get("scaffolding_rejection_threshold", 0.20))
+SILENT_COMPLETION_MIN_RATIO = float(_thresholds.get("silent_completion_min_ratio", 0.30))
+SILENT_COMPLETION_HEDGE_PHRASES = list(
+    _thresholds.get(
+        "silent_completion_hedge_phrases",
+        ["unfortunately", "couldn't complete", "i don't know", "unable to", "failed to"],
+    )
+)
+
+SOCIAL_MAX_COMMENTS_PER_DAY = int(_rate_limits.get("social_max_comments_per_day", 5))
+SOCIAL_MAX_NOTES_PER_DAY = int(_rate_limits.get("social_max_notes_per_day", NOTES_MAX_PER_DAY))
+DEEP_VERIFY_PROBABILITY = float(_thresholds.get("deep_verify_probability", 0.15))
+DEEP_VERIFY_COOLDOWN_MINUTES = int(_thresholds.get("deep_verify_cooldown_minutes", 120))
+ANTI_AI_FLOOR_THRESHOLD = float(_thresholds.get("anti_ai_floor_threshold", 0.20))
+NARRATIVE_MONOPOLY_SOURCES = tuple(_socialmedia_cfg.get("narrative_monopoly_sources", ()))
+NARRATIVE_MONOPOLY_THRESHOLD = float(_socialmedia_cfg.get("narrative_monopoly_threshold", 0.80))
+
+SKILL_YIELD_FILE = LOGS_DIR / "skill_yield.json"
+SOUL_DETERMINISTIC_AUDIT_ENABLED = bool(_limits.get("soul_deterministic_audit_enabled", True))
+AUDIT_LAG_WARN_SECONDS = int(_limits.get("audit_lag_warn_seconds", 3600))
+AUDIT_LAG_ALERT_HOURS = int(_limits.get("audit_lag_alert_hours", SKILL_AUDIT_LAG_ALERT_HOURS))
+AUDIT_PROMPT_DRIFT = bool(_limits.get("audit_prompt_drift", True))
+SKILL_NETWORK_WHITELIST = list(_limits.get("skill_network_whitelist", []))
+TRUSTED_SKILL_SOURCES = list(_limits.get("trusted_skill_sources", []))
+ALLOW_SURVEILLANCE_DOMAINS = bool(_limits.get("allow_surveillance_domains", False))
+
+EXPERIENCE_DIR = SOUL_DIR / "experiences"
+LESSON_DIR = SOUL_DIR / "lessons"
+VARIANT_DIR = SOUL_DIR / "variants"
+ENABLE_TRAJECTORY_V2 = bool(_cfg.get("enable_trajectory_v2", True))
+TRAJECTORY_FILE = SOUL_DIR / "trajectories.jsonl"
+TOOL_STATS_FILE = SOUL_DIR / "tool_stats.json"
+REWARD_WEIGHTS = {
+    "likes": 2.0,
+    "comments": 5.0,
+    "restacks": 3.0,
+    "views": 0.01,
+    "wa_positive": 10.0,
+    "wa_negative": -15.0,
+    "wa_repeated_failure": -25.0,
+    "success": 1.0,
+    "failure": -3.0,
+    "timeout": -2.0,
+    "tool_success_rate": 2.5,
+    "outcome_verified": 3.0,
+    "substack_new_subs_24h": 2.0,
+    "reader_feedback_positive": 3.0,
+    "reader_feedback_negative": -4.0,
+    "time_cost_penalty": -1.0,
+    "crash_penalty": -5.0,
+}
+
+
+def load_secrets() -> dict:
+    """Return cached secret configuration without logging values."""
+    return dict(_secrets_cfg) if isinstance(_secrets_cfg, dict) else {}
+
 
 # ---------------------------------------------------------------------------
 # Token / output limits (from config.yml token_limits: section)

@@ -112,6 +112,12 @@ INCENTIVE_STRUCTURE_CHECK = (
     "INCENTIVE-SATURATED if all available sources share aligned commercial motivation."
 )
 
+COUNTEREXAMPLE_ABSORPTION_CHECK = (
+    "For each major framework, institution, expert claim, model, or trend narrative, ask: (1) what observation "
+    "would falsify or materially weaken it, (2) has the system changed after past failures or counterexamples, "
+    "(3) if no update mechanism is visible, label it as brittle rather than merely true/false."
+)
+
 LENSES = [
     "structural: map the underlying forces or constraints that make this development possible or inevitable.",
     "temporal: focus on what has changed since the last time this topic appeared — what has accelerated, stalled, or reversed.",
@@ -297,11 +303,12 @@ def explore_prompt(
 4. 综合时把这些 tag 融进正文引用里，例如：`HuggingFace blog [commercial/vendor] — 性能说法可能也在服务产品定位`。商业/厂商、SEO、赞助来源的 claim 不要丢掉，但要当作可能被生产侧目标塑形的材料来加权和标注。
 5. **AI 影响力声明标注**：对于涉及 AI 对人类、就业、社会影响的声明，在该声明末尾附加一行动机标注（英文，方括号内）。格式：`[source motivation: <independent academic | platform vendor | VC-backed lab | regulator | no clear stake>]`。若声明结论结构性地有利于来源方（例如平台供应商声称"AI 不会取代你"，或 VC 支持的实验室放大存在性风险以助于融资），补充标注 `[aligned incentive]`；若结论与来源方利益相悖，补充标注 `[against incentive — higher credibility]`；若来源方立场不明，标注 `[unknown stake]`。此标注不过滤声明——它帮助下游消费者（写手、分析师）校准可信度。
 6. **Incentive-structure check**：{INCENTIVE_STRUCTURE_CHECK}
-7. **模板压力自检**：在确定 5-7 条之前，先问：如果今天不是按“口语聊天 + 5-7 个有意思的东西 + 最想深挖一条”这个格式写，哪些 item 会变得更重要？如果有一条因为不够好聊、跨不进叙事、或不适合“有意思”口吻而被压低，但它会改变主人对外部世界的判断或行动，把它纳入简报，并在这条旁边加一个短的行内标记，例如 `[模板压力修正：这条不够好聊，但会影响判断/行动]`；不要另起单独小节。如果自检没有改变选题，保持原选择，也不要添加任何模板压力标记。不要为了形式多样而硬塞。
-8. 有能学到的技法就顺嘴提，没有就不提，不要硬凑
-9. 条与条之间自然过渡，不要每条都是独立段落
-10. 标一条最想深挖的，说清楚为什么
-11. 最后一句你的真实感想
+7. **Counterexample absorption check**：{COUNTEREXAMPLE_ABSORPTION_CHECK}
+8. **模板压力自检**：在确定 5-7 条之前，先问：如果今天不是按“口语聊天 + 5-7 个有意思的东西 + 最想深挖一条”这个格式写，哪些 item 会变得更重要？如果有一条因为不够好聊、跨不进叙事、或不适合“有意思”口吻而被压低，但它会改变主人对外部世界的判断或行动，把它纳入简报，并在这条旁边加一个短的行内标记，例如 `[模板压力修正：这条不够好聊，但会影响判断/行动]`；不要另起单独小节。如果自检没有改变选题，保持原选择，也不要添加任何模板压力标记。不要为了形式多样而硬塞。
+9. 有能学到的技法就顺嘴提，没有就不提，不要硬凑
+10. 条与条之间自然过渡，不要每条都是独立段落
+11. 标一条最想深挖的，说清楚为什么
+12. 最后一句你的真实感想
 
 ## 互动推荐（如果有的话）
 
@@ -1036,6 +1043,10 @@ Context:
 ---
 {substack_guidance}
 
+Before drafting, complete this in one sentence: The single non-obvious claim this piece makes is: [CLAIM]. Do not proceed until this is concrete and falsifiable.
+
+Draft the piece such that every paragraph either supports, complicates, or develops [CLAIM].
+
 Write the COMPLETE piece following the plan. Rules:
 - Follow the plan's structure, specifications, and description closely
 - For Substack projects, write the title, subtitle, section headers, and body in English even if source notes are Chinese
@@ -1096,6 +1107,8 @@ Then provide:
 - **Top 3 strengths**
 - **Top 3 weaknesses**
 - **Specific revision instructions** (quote text, suggest changes)
+
+You MUST identify at least 2 specific weaknesses. If you believe the draft is strong, still enumerate which 2 dimensions are weakest and why. A review that lists no weaknesses will be rejected and re-run. If you find nothing to critique, explain why each standard dimension (argument, structure, evidence, prose) is adequate.
 
 Format scores as:
 SCORES:

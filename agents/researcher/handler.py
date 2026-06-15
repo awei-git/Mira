@@ -44,6 +44,19 @@ MAX_WALL_CLOCK = RESEARCHER_MAX_WALL_CLOCK
 MAX_SOURCES_PER_QUESTION = RESEARCHER_MAX_SOURCES
 
 
+def _skill_prompt_order_key(skill: dict) -> tuple[float, str, float]:
+    try:
+        quality_score = float(skill.get("score", 0) or 0)
+    except (TypeError, ValueError):
+        quality_score = 0.0
+    skill_file = _SKILLS_DIR / str(skill.get("file", ""))
+    try:
+        recency = skill_file.stat().st_mtime
+    except OSError:
+        recency = 0.0
+    return quality_score, str(skill.get("created", "") or skill.get("updated_at", "")), recency
+
+
 def _load_skills(tags: list[str] | None = None) -> str:
     """Load skill summaries, optionally filtered by tags."""
     if not _SKILLS_INDEX.exists():
@@ -52,6 +65,7 @@ def _load_skills(tags: list[str] | None = None) -> str:
     if tags:
         tag_set = set(tags)
         index = [s for s in index if tag_set & set(s.get("tags", []))]
+    index = sorted(index, key=_skill_prompt_order_key, reverse=True)
     return "\n".join(f"- **{s['name']}**: {s['description']}" for s in index)
 
 

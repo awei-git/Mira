@@ -1,6 +1,7 @@
 """Fetch content from web sources: arxiv, Reddit, HuggingFace, GitHub, HN, Lobsters, RSS."""
 
 import email.utils
+import hashlib
 import importlib.util
 import json
 import logging
@@ -199,6 +200,16 @@ def _http_get(url: str, timeout: int = 15) -> str:
         return resp.read().decode("utf-8", errors="replace")
 
 
+def _source_hash(raw_content) -> str:
+    if isinstance(raw_content, bytes):
+        text = raw_content.decode("utf-8", errors="replace")
+    elif isinstance(raw_content, str):
+        text = raw_content
+    else:
+        text = json.dumps(raw_content, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Arxiv
 # ---------------------------------------------------------------------------
@@ -228,6 +239,7 @@ def fetch_arxiv(categories: list[str], max_results: int = 10) -> list[dict]:
     try:
         root = ET.fromstring(xml_text)
         for entry in root.findall("atom:entry", ns):
+            raw_entry = ET.tostring(entry, encoding="unicode")
             title = entry.findtext("atom:title", "", ns).strip().replace("\n", " ")
             summary = entry.findtext("atom:summary", "", ns).strip()[:300]
             link = ""
@@ -244,6 +256,7 @@ def fetch_arxiv(categories: list[str], max_results: int = 10) -> list[dict]:
                 "title": title,
                 "summary": summary,
                 "url": link,
+                "raw_source_hash": _source_hash(raw_entry),
             }
             if published_ts is not None:
                 item["published_ts"] = published_ts
@@ -281,6 +294,7 @@ def fetch_reddit(subreddits: list[str], limit: int = 10) -> list[dict]:
                     "summary": (d.get("selftext", "") or "")[:300],
                     "url": f"https://reddit.com{d.get('permalink', '')}",
                     "score": d.get("score", 0),
+                    "raw_source_hash": _source_hash(d),
                 }
             )
 
@@ -310,6 +324,7 @@ def fetch_hf_papers() -> list[dict]:
                 "title": p.get("title", ""),
                 "summary": (p.get("summary", "") or "")[:300],
                 "url": f"https://huggingface.co/papers/{p.get('id', '')}",
+                "raw_source_hash": _source_hash(paper),
             }
         )
 
@@ -357,6 +372,7 @@ def fetch_github_trending(days_back: int = 7, language: str | None = None, per_p
                 "summary": desc,
                 "url": r["html_url"],
                 "stars": stars,
+                "raw_source_hash": _source_hash(r),
             }
         )
     return items
@@ -389,6 +405,7 @@ def fetch_hackernews(count: int = 30, min_points: int = 0) -> list[dict]:
                 "url": h.get("url") or f"https://news.ycombinator.com/item?id={h['objectID']}",
                 "score": h.get("points", 0),
                 "hn_url": f"https://news.ycombinator.com/item?id={h['objectID']}",
+                "raw_source_hash": _source_hash(h),
             }
         )
     return items
@@ -416,6 +433,7 @@ def fetch_web_search(query: str, max_results: int = 10) -> list[dict]:
                 "summary": r.snippet[:300],
                 "url": r.url,
                 "query": query,
+                "raw_source_hash": _source_hash({"title": r.title, "snippet": r.snippet, "url": r.url, "query": query}),
             }
             for r in results
         ]
@@ -448,6 +466,7 @@ def fetch_lobsters(count: int = 25) -> list[dict]:
                 "summary": f"[{tags}] Score: {s.get('score', 0)} | Comments: {s.get('comment_count', 0)}",
                 "url": s.get("url") or s.get("short_id_url", ""),
                 "score": s.get("score", 0),
+                "raw_source_hash": _source_hash(s),
             }
         )
     return items
@@ -477,6 +496,7 @@ def fetch_devto(per_page: int = 20, top_days: int = 7) -> list[dict]:
                 "url": a.get("url", ""),
                 "score": a.get("positive_reactions_count", 0),
                 "tags": ", ".join(a.get("tag_list", [])),
+                "raw_source_hash": _source_hash(a),
             }
         )
     return items
@@ -507,11 +527,13 @@ def fetch_rss(feeds: list[dict]) -> list[dict]:
             # Try RSS 2.0 format
             feed_items = []
             for item in root.findall(".//item")[:10]:
+                raw_item = ET.tostring(item, encoding="unicode")
                 rss_item: dict = {
                     "source": name,
                     "title": (item.findtext("title") or "").strip(),
                     "summary": (item.findtext("description") or "").strip()[:300],
                     "url": (item.findtext("link") or "").strip(),
+                    "raw_source_hash": _source_hash(raw_item),
                 }
                 pub_ts = _parse_ts_to_unix((item.findtext("pubDate") or "").strip())
                 if pub_ts is not None:
@@ -521,6 +543,7 @@ def fetch_rss(feeds: list[dict]) -> list[dict]:
             if not feed_items:
                 ns = {"atom": "http://www.w3.org/2005/Atom"}
                 for entry in root.findall("atom:entry", ns)[:10]:
+                    raw_entry = ET.tostring(entry, encoding="unicode")
                     link = ""
                     for lnk in entry.findall("atom:link", ns):
                         link = lnk.get("href", "")
@@ -530,6 +553,7 @@ def fetch_rss(feeds: list[dict]) -> list[dict]:
                         "title": (entry.findtext("atom:title", "", ns) or "").strip(),
                         "summary": (entry.findtext("atom:summary", "", ns) or "").strip()[:300],
                         "url": link,
+                        "raw_source_hash": _source_hash(raw_entry),
                     }
                     atom_ts = _parse_ts_to_unix(
                         (

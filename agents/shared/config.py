@@ -13,6 +13,7 @@ _lib_config = _importlib_util.module_from_spec(_spec)
 _spec.loader.exec_module(_lib_config)
 
 _cfg = getattr(_lib_config, "_cfg", {})
+_timeouts_cfg = _cfg.get("timeouts", {}) if isinstance(_cfg, dict) else {}
 
 for _name in dir(_lib_config):
     if not _name.startswith("__"):
@@ -24,6 +25,8 @@ class ConfigError(RuntimeError):
 
 
 MIRA_ROOT = _lib_config.MIRA_ROOT
+AGENT_AUDIT_MODE: bool = True
+AUDIT_LOG_PATH: str = "logs/action_audit.jsonl"
 AGENT_AUDIT_LOG = MIRA_ROOT / "logs" / "agent_audit.jsonl"
 TOKEN_USAGE_LOG = MIRA_ROOT / "logs/token_usage.jsonl"
 TOKEN_USAGE_LOG_PATH = TOKEN_USAGE_LOG
@@ -36,10 +39,19 @@ LOCAL_MODEL_ENDPOINT_ALLOWLIST = list(
 )
 MIRA_ALLOW_MODEL_NATIVE_TOOLS = False
 MODEL_NATIVE_TOOL_DENYLIST = {"shell", "edit_file", "filesystem", "python", "exec"}
+EXTRACTION_FALLBACK_POLICY = getattr(_lib_config, "EXTRACTION_FALLBACK_POLICY", "deterministic_first")
+HANDOFF_VERIFY_MIN_SIZE_BYTES = 50
+HANDOFF_VERIFY_ERROR_PATTERNS = ["I cannot", "I am unable", "Error:", "Traceback", "failed to"]
 TIER_MODEL_MAP = {
     "light": os.getenv("MODEL_LIGHT", "claude-sonnet-4-6"),
     "heavy": os.getenv("MODEL_HEAVY", "claude-sonnet-4-6"),
 }
+CLAUDE_TIMEOUT_THINK_HEAVY = int(
+    os.getenv(
+        "CLAUDE_TIMEOUT_THINK_HEAVY",
+        getattr(_lib_config, "CLAUDE_TIMEOUT_THINK_HEAVY", _timeouts_cfg.get("claude_think_heavy", 300)),
+    )
+)
 # Optional local fallback placeholder for future offline/resilience routing.
 # LOCAL_FALLBACK_MODEL = None  # path to local .gguf or MLX model for offline/resilience (future use)
 AGENT_REGISTRY = {
@@ -201,25 +213,45 @@ STALE_THRESHOLDS: dict[str, int] = dict(
 CALIBRATION_INTERVAL_DAYS = 7
 CALIBRATION_SAMPLE_SIZE = 4
 CODER_REQUIRE_HUMAN_REVIEW = True
+_publishing_cfg = _cfg.get("publishing", {}) if isinstance(_cfg, dict) else {}
+try:
+    PUBLISH_AUTO_CONFIDENCE_THRESHOLD = float(
+        os.getenv(
+            "PUBLISH_AUTO_CONFIDENCE_THRESHOLD",
+            _publishing_cfg.get("auto_confidence_threshold", 0.8),
+        )
+    )
+except (TypeError, ValueError):
+    PUBLISH_AUTO_CONFIDENCE_THRESHOLD = 0.8
 _coder_cfg = _cfg.get("coder", {}) if isinstance(_cfg, dict) else {}
 CODER = {
     "skeptical_review": bool(_coder_cfg.get("skeptical_review", False)),
     "rationale": "Epistemic mode separation keeps code generation and adversarial audit in separate passes.",
 }
 CODER_SKEPTICAL_REVIEW = CODER["skeptical_review"]
+# Human auditors lose track of logic beyond ~200 added lines per task (audit-capacity cliff).
+MAX_AI_CODE_LINES_PER_TASK: int = int(os.getenv("MAX_AI_CODE_LINES_PER_TASK", 200))
 BLIND_SPOT_LOOKBACK_DAYS = 30
 BLIND_SPOT_SILENCE_THRESHOLD_DAYS = 3
 MAX_TASKS_PER_CYCLE = getattr(_lib_config, "MAX_TASKS_PER_CYCLE", 5)
 MAX_UNDELIVERED_OUTPUTS = int(getattr(_lib_config, "MAX_UNDELIVERED_OUTPUTS", 5))
+IPHONE_BRIDGE_WARN_LATENCY_MS = int(getattr(_lib_config, "IPHONE_BRIDGE_WARN_LATENCY_MS", 45000))
+MAX_ATTRIBUTION_DEPTH = int(getattr(_lib_config, "MAX_ATTRIBUTION_DEPTH", 2))
 MAX_SKILL_IMPORTS_PER_DAY = getattr(_lib_config, "MAX_SKILL_IMPORTS_PER_DAY", 20)
 MAX_SKILLS_PER_AGENT = getattr(_lib_config, "MAX_SKILLS_PER_AGENT", 12)
+SKILL_EXAMPLE_ORDER: str = getattr(_lib_config, "SKILL_EXAMPLE_ORDER", "relevance_first")
 EVALUATOR_MIN_ISSUE_SEVERITY = getattr(_lib_config, "EVALUATOR_MIN_ISSUE_SEVERITY", "medium")
 DEEP_VERIFY_PROBABILITY = 0.15
 DEEP_VERIFY_COOLDOWN_MINUTES = 120
+ANTI_AI_FLOOR_THRESHOLD: float = float(os.getenv("ANTI_AI_FLOOR_THRESHOLD", 0.2))
 SKILL_EFFICACY_WARNING = getattr(_lib_config, "SKILL_EFFICACY_WARNING", True)
 SKILL_TRUST_TTL_DAYS = getattr(_lib_config, "SKILL_TRUST_TTL_DAYS", 7)
 SKILL_AUDIT_TTL_DAYS = getattr(_lib_config, "SKILL_AUDIT_TTL_DAYS", SKILL_TRUST_TTL_DAYS)
 SKILL_AUDIT_STRICT_MODE = getattr(_lib_config, "SKILL_AUDIT_STRICT_MODE", False)
+SKILL_AUDIT_LOCKOUT_THRESHOLD = getattr(_lib_config, "SKILL_AUDIT_LOCKOUT_THRESHOLD", 5)
+SKILL_AUDIT_LOCKOUT_WINDOW_MINUTES = getattr(_lib_config, "SKILL_AUDIT_LOCKOUT_WINDOW_MINUTES", 60)
+SKILL_AUDIT_LOCKOUT_DURATION_MINUTES = getattr(_lib_config, "SKILL_AUDIT_LOCKOUT_DURATION_MINUTES", 30)
+SOUL_DETERMINISTIC_AUDIT_ENABLED = getattr(_lib_config, "SOUL_DETERMINISTIC_AUDIT_ENABLED", True)
 AUDIT_LAG_WARN_SECONDS = getattr(_lib_config, "AUDIT_LAG_WARN_SECONDS", 3600)
 SKILL_NETWORK_WHITELIST = list(getattr(_lib_config, "SKILL_NETWORK_WHITELIST", []))
 SKILL_KNOWLEDGE_BLOCKLIST = list(getattr(_lib_config, "SKILL_KNOWLEDGE_BLOCKLIST", []))
@@ -238,6 +270,7 @@ DISABLED_RUBRICS: set[str] = set(
     )
 )
 MISCALIBRATION_FLAG_THRESHOLD: int = int(getattr(_lib_config, "MISCALIBRATION_FLAG_THRESHOLD", 3))
+SCAFFOLDING_CATCH_RATE_WINDOW_HOURS: int = int(getattr(_lib_config, "SCAFFOLDING_CATCH_RATE_WINDOW_HOURS", 24))
 WRITER_OBSESSION_MODE = False
 ALLOW_VULNERABLE_VOICE = False
 SURVIVAL_SKILL_SOURCES = []
@@ -281,6 +314,7 @@ EXPLORE_MAX_PENDING_TASKS: int = int(getattr(_lib_config, "EXPLORE_MAX_PENDING_T
 EXPLORE_SOURCE_DIVERSITY_MIN_ENTITIES = 5
 EXPLORE_SOURCE_ENTROPY_THRESHOLD = 0.6
 EXPLORE_SOURCE_WINDOW = 16
+EXPLORER_BRIEFING_FORMAT = os.getenv("EXPLORER_BRIEFING_FORMAT", "digest")
 EXPLORER_NARRATIVE_SOURCE_MIN_TYPES = 3
 EXPLORER_CORPORATE_PR_MAX_RATIO = 0.4
 FEED_SOURCE_TRUST = {
@@ -313,3 +347,17 @@ EPISTEMIC_CONFIDENCE_THRESHOLD = "medium"
 PUBLISH_MAX_PER_WINDOW: int = 2
 PUBLISH_WINDOW_MINUTES: int = 30
 PUBLISH_COOLDOWN_PER_TYPE = {"article": 1440, "note": 120, "comment": 30, "tweet": 60}
+SOCIAL_MAX_COMMENTS_PER_DAY: int = int(getattr(_lib_config, "SOCIAL_MAX_COMMENTS_PER_DAY", 5))
+SOCIAL_MAX_NOTES_PER_DAY: int = int(getattr(_lib_config, "SOCIAL_MAX_NOTES_PER_DAY", 3))
+EVAL_BENCHMARK_ROTATION_DAYS = 30
+EVAL_WINDOW_DAYS = 7
+EVAL_BENCHMARK_LAST_ROTATED: dict[str, str] = {}
+SILENT_COMPLETION_MIN_RATIO = 0.3
+SILENT_COMPLETION_HEDGE_PHRASES = [
+    "unfortunately",
+    "couldn't complete",
+    "i don't know",
+    "unable to",
+    "failed to",
+]
+AUDIT_MODULE_HASH: str = "630f4d95cc4166cf161a8cb4248117e217209a4e5977956cc77ab8f08ea5b0d2"  # pragma: allowlist secret

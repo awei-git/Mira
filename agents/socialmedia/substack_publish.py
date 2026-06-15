@@ -12,9 +12,50 @@ import time
 import urllib.parse
 import urllib.request
 import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger("publisher.substack")
+
+
+def _log_guard(guard_name: str, result: str, content: str) -> None:
+    try:
+        from config import MIRA_ROOT
+
+        log_path = MIRA_ROOT / "logs" / "guards.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "guard": guard_name,
+            "result": result,
+            "content_len": len(content),
+            "content_prefix": content[:64],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        with open(log_path, "a", encoding="utf-8") as _f:
+            _f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as _e:
+        log.debug("guards log failed: %s", _e)
+
+
+def _log_guard_fired(guard: str, agent: str, task_id: str, reason: str) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": "GUARD_FIRED",
+        "guard": guard,
+        "agent": agent,
+        "task_id": task_id,
+        "reason": reason,
+    }
+    log.warning("GUARD_FIRED", extra={k: v for k, v in entry.items() if k != "event"})
+    try:
+        from config import MIRA_ROOT
+
+        log_path = MIRA_ROOT / "logs" / "guard_fires.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as _f:
+            _f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as _e:
+        log.warning("guard_fires write failed: %s", _e)
 
 
 def _log_scaffolding_rejection(agent: str, task_id: str, guard_name: str, content: str) -> None:
@@ -170,6 +211,7 @@ def publish_to_substack(
 
     _write_publish_audit("publish_article", "substack", title, audit_context)
 
+    _pf_result = None
     # Preflight check
     try:
         from publish.preflight import preflight_check
@@ -181,11 +223,16 @@ def publish_to_substack(
                 "title": title,
                 "content": article_text,
                 "platform": "substack",
+                "agent_id": "publisher",
+                "task_id": title[:60],
+                "pipeline_stage": "preflight_check",
             },
         )
+        _pf_result = pf
+        _log_guard("preflight_check", "pass" if pf.passed else "catch", article_text)
         if not pf.passed:
             msg = f"Preflight blocked publish: {'; '.join(pf.blocking_reasons)}"
-            log.error(msg)
+            _log_guard_fired("preflight_check", "publisher", title[:60], "; ".join(pf.blocking_reasons))
             _log_scaffolding_rejection("publisher", title, "preflight_check", article_text)
             return msg
     except ImportError:
@@ -322,15 +369,7 @@ def publish_to_substack(
                     f"{_minutes_since:.0f} 分钟，最小间隔为 "
                     f"{MIN_MINUTES_BETWEEN_PUBLISHES} 分钟。"
                 )
-                log.warning(
-                    "GUARD_FIRED",
-                    extra={
-                        "guard": "cooldown_minutes",
-                        "agent": "publisher",
-                        "task_id": title[:60],
-                        "reason": f"minutes_since={_minutes_since:.0f}",
-                    },
-                )
+                _log_guard_fired("cooldown_minutes", "publisher", title[:60], f"minutes_since={_minutes_since:.0f}")
                 _log_scaffolding_rejection("publisher", title, "cooldown", article_text)
                 return msg
 
@@ -339,15 +378,7 @@ def publish_to_substack(
                     f"发布被拦截：距上次发布仅 {_days_since} 天，"
                     f"冷却期为 {PUBLISH_COOLDOWN_DAYS} 天。请等待后再发布。"
                 )
-                log.warning(
-                    "GUARD_FIRED",
-                    extra={
-                        "guard": "cooldown_date",
-                        "agent": "publisher",
-                        "task_id": title[:60],
-                        "reason": f"days_since={_days_since}",
-                    },
-                )
+                _log_guard_fired("cooldown_date", "publisher", title[:60], f"days_since={_days_since}")
                 _log_scaffolding_rejection("publisher", title, "cooldown", article_text)
                 return msg
 
@@ -597,6 +628,26 @@ Output ONLY the subtitle, nothing else."""
         "Cookie": f"substack.sid={cookie}",
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     }
+
+    try:
+        import sys as _sys_sm
+
+        _sm_dir = Path(__file__).resolve().parent.parent.parent / "lib"
+        if str(_sm_dir) not in _sys_sm.path:
+            _sys_sm.path.insert(0, str(_sm_dir))
+        from soul_manager import log_publish_decision
+
+        log_publish_decision(
+            article_id=title[:60],
+            preflight_result=_pf_result,
+            rationale=(
+                f"All guards passed for '{title}': preflight "
+                f"{'pass' if _pf_result and getattr(_pf_result, 'passed', False) else 'skipped'}, "
+                f"cooldown clear, quality gate pass. Publishing to {subdomain}.substack.com."
+            ),
+        )
+    except Exception as _lpd_e:
+        log.warning("log_publish_decision failed (non-fatal): %s", _lpd_e)
 
     try:
         # Create the draft with full content

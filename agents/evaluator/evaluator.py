@@ -7,17 +7,19 @@ import logging
 import re
 import statistics
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 _MIRA_ROOT = Path(__file__).resolve().parent.parent.parent
 _LIB = _MIRA_ROOT / "lib"
+_SUPER = _MIRA_ROOT / "agents" / "super"
 _SOCIALMEDIA = _MIRA_ROOT / "agents" / "socialmedia"
-if str(_LIB) not in sys.path:
-    sys.path.insert(0, str(_LIB))
-if str(_SOCIALMEDIA) not in sys.path:
-    sys.path.insert(0, str(_SOCIALMEDIA))
+for _path in (str(_SOCIALMEDIA), str(_SUPER), str(_LIB)):
+    while _path in sys.path:
+        sys.path.remove(_path)
+    sys.path.insert(0, _path)
 
 from bridge import Mira  # noqa: E402
 from config import ARTIFACTS_DIR, LOGS_DIR, MIRA_DIR, MIRA_ROOT  # noqa: E402
@@ -26,6 +28,8 @@ from llm import claude_think  # noqa: E402
 log = logging.getLogger("evaluator_agent")
 
 _DRIFT_LOG_FILE = _MIRA_ROOT / "agents" / "shared" / "soul" / "drift_log.json"
+_HOLDOUT_TASKS_FILE = Path(__file__).with_name("holdout_tasks.json")
+_HOLDOUT_BASELINE_FILE = _HOLDOUT_TASKS_FILE.with_suffix(".baseline.json")
 _DRIFT_HISTORY_LIMIT = 30
 _EXPLORATORY_ESTIMATE_LABEL = "[EXPLORATORY ESTIMATE]"
 _EXPLORATORY_ESTIMATE_DISCLAIMER = (
@@ -62,6 +66,260 @@ def _load_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def _load_holdout_tasks(path: Path = _HOLDOUT_TASKS_FILE) -> list[dict[str, Any]]:
+    data = _load_json(path)
+    tasks = data.get("tasks") if isinstance(data, dict) else data
+    if not isinstance(tasks, list):
+        return []
+    return [task for task in tasks if isinstance(task, dict) and task.get("id") and task.get("prompt")]
+
+
+def _baseline_task_entry(baseline: Any, task_id: str) -> dict[str, Any]:
+    if not isinstance(baseline, dict):
+        return {}
+    tasks = baseline.get("tasks", baseline)
+    if not isinstance(tasks, dict):
+        return {}
+    entry = tasks.get(task_id, {})
+    if isinstance(entry, dict):
+        return entry
+    if isinstance(entry, (int, float)):
+        return {"score": float(entry)}
+    return {}
+
+
+def _score_holdout_result(task: dict[str, Any], output: str) -> tuple[float, list[str]]:
+    criteria = task.get("criteria") if isinstance(task.get("criteria"), dict) else {}
+    text = (output or "").strip()
+    lowered = text.lower()
+    checks: list[bool] = []
+    failures: list[str] = []
+
+    required_terms = [str(term).lower() for term in criteria.get("required_terms", []) if str(term).strip()]
+    for term in required_terms:
+        passed = term in lowered
+        checks.append(passed)
+        if not passed:
+            failures.append(f"missing required term: {term}")
+
+    forbidden_terms = [str(term).lower() for term in criteria.get("forbidden_terms", []) if str(term).strip()]
+    for term in forbidden_terms:
+        passed = term not in lowered
+        checks.append(passed)
+        if not passed:
+            failures.append(f"contained forbidden term: {term}")
+
+    regexes = [str(pattern) for pattern in criteria.get("expected_regex", []) if str(pattern).strip()]
+    for pattern in regexes:
+        try:
+            passed = re.search(pattern, text, re.IGNORECASE | re.DOTALL) is not None
+        except re.error:
+            passed = False
+        checks.append(passed)
+        if not passed:
+            failures.append(f"missing expected regex: {pattern}")
+
+    min_length = criteria.get("min_length")
+    if isinstance(min_length, (int, float)) and min_length > 0:
+        passed = len(text) >= min_length
+        checks.append(passed)
+        if not passed:
+            failures.append(f"output too short: {len(text)} < {int(min_length)}")
+
+    if not checks:
+        return (1.0 if len(text) >= 80 else 0.0), ([] if len(text) >= 80 else ["output too short"])
+    return round(sum(1 for passed in checks if passed) / len(checks), 3), failures
+
+
+def _dispatch_holdout_task(task: dict[str, Any]) -> str:
+    from agent_registry import get_registry
+    from task_support import _invoke_registry_handler
+
+    agent = str(task.get("agent") or "general")
+    task_id = f"holdout-{task['id']}"
+    thread_id = f"holdout-{task['id']}"
+    with tempfile.TemporaryDirectory(prefix="mira_holdout_") as tmp:
+        workspace = Path(tmp)
+        handler = get_registry().load_handler(agent)
+        result = _invoke_registry_handler(
+            handler,
+            workspace,
+            task_id,
+            str(task["prompt"]),
+            "evaluator_holdout",
+            thread_id,
+            tier=str(task.get("tier") or "light"),
+            agent_id=agent,
+        )
+        output_path = workspace / "output.md"
+        if output_path.exists():
+            return output_path.read_text(encoding="utf-8", errors="replace")
+        return result if isinstance(result, str) else ""
+
+
+def _load_current_aggregate_metrics(days: int = 7) -> dict[str, Any]:
+    try:
+        import importlib.util
+
+        handler_path = Path(__file__).with_name("handler.py")
+        spec = importlib.util.spec_from_file_location("_mira_evaluator_handler_for_holdout", handler_path)
+        if spec is None or spec.loader is None:
+            return {}
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assessment = module.score_all(days=days)
+        aggregate = assessment.get("aggregate", {}) if isinstance(assessment, dict) else {}
+        return aggregate if isinstance(aggregate, dict) else {}
+    except Exception as exc:
+        log.debug("Could not load current aggregate metrics for holdout drift: %s", exc)
+        return {}
+
+
+def _aggregate_metrics_improved(current: dict[str, Any], baseline: Any) -> bool:
+    if not isinstance(current, dict) or not isinstance(baseline, dict):
+        return False
+    baseline_aggregate = baseline.get("aggregate") or baseline.get("aggregate_baseline") or {}
+    if not isinstance(baseline_aggregate, dict):
+        return False
+
+    improving_keys = ("overall_success_rate", "task_success", "success_rate")
+    for key in improving_keys:
+        try:
+            if float(current.get(key)) > float(baseline_aggregate.get(key)):
+                return True
+        except (TypeError, ValueError):
+            continue
+
+    inverse_keys = ("crash_rate", "error_rate", "timeout_rate")
+    for key in inverse_keys:
+        try:
+            if float(current.get(key)) < float(baseline_aggregate.get(key)):
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _insert_drift_alert(report: str, drift: dict[str, Any]) -> str:
+    alerts = drift.get("alerts", []) if isinstance(drift, dict) else []
+    if not alerts:
+        return report
+
+    lines = ["", "## DRIFT_ALERT", "Holdout performance degraded while aggregate metrics improved."]
+    for alert in alerts:
+        lines.append(
+            f"- {alert['task_id']}: score {alert['score']:.0%}, "
+            f"baseline {alert['baseline_score']:.0%}, threshold {alert['threshold']:.0%}"
+        )
+    return report.rstrip() + "\n" + "\n".join(lines)
+
+
+def check_drift(
+    *,
+    tasks_path: Path = _HOLDOUT_TASKS_FILE,
+    baseline_path: Path = _HOLDOUT_BASELINE_FILE,
+    aggregate_metrics: dict[str, Any] | None = None,
+    days: int = 7,
+) -> dict[str, Any]:
+    tasks = _load_holdout_tasks(tasks_path)
+    baseline = _load_json(baseline_path)
+    current_aggregate = aggregate_metrics if aggregate_metrics is not None else _load_current_aggregate_metrics(days)
+    aggregate_improved = _aggregate_metrics_improved(current_aggregate or {}, baseline)
+
+    results: list[dict[str, Any]] = []
+    alerts: list[dict[str, Any]] = []
+    for task in tasks:
+        task_id = str(task["id"])
+        try:
+            output = _dispatch_holdout_task(task)
+            score, failures = _score_holdout_result(task, output)
+            error = ""
+        except Exception as exc:
+            output = ""
+            score = 0.0
+            failures = [str(exc)]
+            error = str(exc)
+
+        baseline_entry = _baseline_task_entry(baseline, task_id)
+        baseline_score = baseline_entry.get("score")
+        try:
+            baseline_score = float(baseline_score)
+        except (TypeError, ValueError):
+            baseline_score = None
+
+        threshold = task.get("threshold", baseline_entry.get("threshold", task.get("min_score", 0.75)))
+        try:
+            threshold = float(threshold)
+        except (TypeError, ValueError):
+            threshold = 0.75
+
+        drop_threshold = task.get("drop_threshold", baseline_entry.get("drop_threshold", 0.1))
+        try:
+            drop_threshold = float(drop_threshold)
+        except (TypeError, ValueError):
+            drop_threshold = 0.1
+
+        degraded = score < threshold
+        if baseline_score is not None:
+            degraded = degraded or score < (baseline_score - drop_threshold)
+
+        item = {
+            "task_id": task_id,
+            "agent": task.get("agent", "general"),
+            "score": score,
+            "baseline_score": baseline_score,
+            "threshold": threshold,
+            "failures": failures,
+            "output_preview": output[:500],
+        }
+        if error:
+            item["error"] = error
+        results.append(item)
+
+        if aggregate_improved and degraded:
+            alerts.append(
+                {
+                    "type": "DRIFT_ALERT",
+                    "task_id": task_id,
+                    "score": score,
+                    "baseline_score": baseline_score if baseline_score is not None else threshold,
+                    "threshold": threshold,
+                    "failures": failures,
+                }
+            )
+
+    return {
+        "type": "holdout_drift_check",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "tasks_path": str(tasks_path),
+        "baseline_path": str(baseline_path),
+        "aggregate_improved": aggregate_improved,
+        "results": results,
+        "alerts": alerts,
+    }
+
+
+def evaluate(workspace: Path | None = None, days: int = 7, content: str = "") -> str:
+    import importlib.util
+
+    workspace = workspace or (ARTIFACTS_DIR / "evaluator")
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    handler_path = Path(__file__).with_name("handler.py")
+    spec = importlib.util.spec_from_file_location("_mira_evaluator_handler", handler_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load evaluator handler: {handler_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    request = content or f"days={days}"
+    report = module.handle(workspace, "evaluator_holdout_report", request, "evaluator", "evaluator_holdout")
+    drift = check_drift(days=days)
+    report = _insert_drift_alert(report or "", drift)
+    (workspace / "output.md").write_text(report, encoding="utf-8")
+    return report
 
 
 def _score_value(entry: Any) -> float | None:
@@ -498,3 +756,24 @@ def detect_proxy_drift(num_samples: int = 3) -> list[dict[str, Any]]:
         log.info("Proxy drift check: no drift detected across %d article(s)", len(articles))
 
     return flagged
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Evaluator monitoring helpers")
+    parser.add_argument("--holdout", action="store_true", help="run holdout drift evaluation on demand")
+    parser.add_argument("--days", type=int, default=7, help="assessment window for aggregate metrics")
+    args = parser.parse_args(argv)
+
+    if args.holdout:
+        result = check_drift(days=args.days)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    print(evaluate(days=args.days))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

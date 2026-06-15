@@ -59,6 +59,7 @@ from config import (
     TOKEN_BUDGET_WARN_HEAVY,
     MAX_TASK_HORIZON_STEPS,
     MAX_TASK_HORIZON_STEPS_HEAVY,
+    MAX_ATTRIBUTION_DEPTH,
     record_phase_duration,
 )
 from execution.runtime_contract import derive_workflow_id, normalize_task_status
@@ -108,6 +109,113 @@ def _get_llm_time() -> float:
     return float(getattr(_llm_timing_state, "llm_time", 0.0) or 0.0)
 
 
+_receipt_state = threading.local()
+
+
+def _reset_task_receipt(started_at: str) -> None:
+    _receipt_state.started_at = started_at
+    _receipt_state.agent_id = ""
+    _receipt_state.skills_invoked = []
+    _receipt_state.external_actions = []
+
+
+def _set_receipt_agent(agent_id: str | None) -> None:
+    if agent_id:
+        _receipt_state.agent_id = str(agent_id)
+
+
+def _record_skill_invocation(skill_name: str | None) -> None:
+    name = str(skill_name or "").strip()
+    if not name:
+        return
+    skills = getattr(_receipt_state, "skills_invoked", None)
+    if skills is None:
+        return
+    if name not in skills:
+        skills.append(name)
+
+
+def _record_external_action(action_type: str, target: str | None) -> None:
+    action_type = str(action_type or "").strip()
+    target = str(target or "").strip()
+    if not action_type or not target:
+        return
+    actions = getattr(_receipt_state, "external_actions", None)
+    if actions is None:
+        return
+    action = {"type": action_type, "target": target}
+    if action not in actions:
+        actions.append(action)
+
+
+def _receipt_status_from_result(workspace: Path) -> tuple[str, str, dict]:
+    result_path = workspace / "result.json"
+    if not result_path.exists():
+        return "unknown", "", {}
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return "unknown", "", {}
+    status = str(result.get("status") or "unknown")
+    agent_id = str(result.get("agent") or result.get("execution_agent") or "")
+    return status, agent_id, result
+
+
+def _receipt_actions_from_result(result: dict) -> list[dict]:
+    actions: list[dict] = []
+    for artifact in result.get("artifacts_produced", []) if isinstance(result, dict) else []:
+        if not isinstance(artifact, dict):
+            continue
+        if artifact.get("type") == "file" and artifact.get("path"):
+            actions.append({"type": "file_write", "target": str(artifact["path"])})
+
+    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    artifact_type = str(verification.get("artifact_type") or "").strip().lower()
+    verification_method = str(result.get("verification_method") or "").strip().lower()
+    tags = {str(tag).strip().lower() for tag in result.get("tags", []) if tag}
+    if artifact_type == "publish" or "publish" in tags or verification_method == "publish_url_confirmed":
+        target = str(verification.get("target") or "").strip()
+        if not target:
+            urls = re.findall(r"https?://[^\s)>\]\"']+", str(result.get("summary") or ""))
+            target = urls[0].rstrip(".,") if urls else "Substack"
+        actions.append({"type": "publish", "target": target})
+    return actions
+
+
+def _write_task_receipt(
+    workspace: Path,
+    task_id: str,
+    *,
+    agent_id: str | None = None,
+    started_at: str | None = None,
+    exit_status: str | None = None,
+) -> None:
+    result_status, result_agent, result = _receipt_status_from_result(workspace)
+    receipt_agent = str(agent_id or getattr(_receipt_state, "agent_id", "") or result_agent or "unknown")
+    completed_at = _utc_iso()
+    actions = list(getattr(_receipt_state, "external_actions", []) or [])
+    for action in _receipt_actions_from_result(result):
+        if action not in actions:
+            actions.append(action)
+    receipt = {
+        "timestamp": completed_at,
+        "task_id": str(task_id),
+        "agent_id": receipt_agent,
+        "started_at": started_at or getattr(_receipt_state, "started_at", "") or completed_at,
+        "completed_at": completed_at,
+        "exit_status": str(exit_status or result_status),
+        "skills_invoked": list(getattr(_receipt_state, "skills_invoked", []) or []),
+        "external_actions": actions,
+    }
+    try:
+        path = workspace / "receipt.json"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        log.debug("Failed to write receipt for %s: %s", task_id, exc)
+
+
 def _wrap_llm_api_call(fn):
     if getattr(fn, "_mira_timed_llm_call", False):
         return fn
@@ -115,6 +223,7 @@ def _wrap_llm_api_call(fn):
     @functools.wraps(fn)
     def wrapped(*args, **kwargs):
         start = time.perf_counter()
+        _record_external_action("api_call", fn.__name__)
         try:
             return fn(*args, **kwargs)
         finally:
@@ -162,6 +271,14 @@ def _set_active_workflow(workflow_id: str):
     global _ACTIVE_WORKFLOW_ID
     _ctx.workflow_id = workflow_id or ""
     _ACTIVE_WORKFLOW_ID = _ctx.workflow_id
+
+
+def _get_active_workflow_intent() -> str:
+    return getattr(_ctx, "workflow_intent", "")
+
+
+def _set_active_workflow_intent(intent: str):
+    _ctx.workflow_intent = intent or ""
 
 
 def _items_dir(user_id: str | None = None) -> Path:
@@ -232,6 +349,9 @@ def _load_super_skills(task_content: str = "") -> str:
                 judgment_audit["tags"],
             )
             continue
+        skill_name = entry.get("name") or entry.get("file", "")
+        _record_skill_invocation(skill_name)
+        _record_external_action("skill_execution", skill_name)
         sections.append(skill_text)
     return "\n\n---\n\n".join(sections)
 
@@ -937,11 +1057,11 @@ from task_support import (
     _enrich_plan_with_runtime_policy,
     _result_metadata,
     _safe_general_fallback,
-    try_extract_skill,
+    try_extract_skill as _base_try_extract_skill,
     _register_runtime_tools_created,
     _is_approval,
     _is_rejection,
-    _execute_pending_publish,
+    _execute_pending_publish as _base_execute_pending_publish,
     _invoke_registry_handler as _base_invoke_registry_handler,
     _invoke_registry_preflight,
 )
@@ -1001,6 +1121,9 @@ def _add_tokens_to_last_exec_log_entry(workspace: Path, tokens: dict) -> None:
             return
         entry = json.loads(lines[-1])
         entry["tokens"] = tokens
+        workflow_intent = _get_active_workflow_intent()
+        if workflow_intent:
+            entry["workflow_intent"] = workflow_intent[:500]
         lines[-1] = json.dumps(entry, ensure_ascii=False)
         log_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except (json.JSONDecodeError, OSError):
@@ -1041,6 +1164,20 @@ def _write_token_usage_record(agent_name: str, model: str, input_tokens: int, ou
 
 import task_support as _task_support_module
 
+
+def try_extract_skill(task_summary: str, msg_content: str) -> None:
+    _record_skill_invocation("try_extract_skill")
+    _record_external_action("skill_execution", "try_extract_skill")
+    return _base_try_extract_skill(task_summary, msg_content)
+
+
+def _execute_pending_publish(pending_pub_file: Path, workspace: Path, task_id: str, thread_id: str):
+    _record_external_action("publish", str(pending_pub_file))
+    return _base_execute_pending_publish(pending_pub_file, workspace, task_id, thread_id)
+
+
+_task_support_module.try_extract_skill = try_extract_skill
+_task_support_module._execute_pending_publish = _execute_pending_publish
 _task_support_module._append_exec_log = _append_exec_log
 
 
@@ -1051,6 +1188,50 @@ _SUBAGENT_TRUST_STATUS_VALUES = {"complete", "verified"}
 def _warn_self_verify_attempt(task_id: str, labels: list[str]) -> None:
     if labels:
         log.warning("Agent attempted self-verify on task %s - discarding flag(s): %s", task_id, ", ".join(labels))
+
+
+def _audit_content_guard(publish_result: dict) -> None:
+    failures = []
+    for key in ("content_guard_passed", "preflight_passed"):
+        if key not in publish_result:
+            failures.append(f"{key}=missing")
+        elif publish_result.get(key) is not True:
+            failures.append(f"{key}={publish_result.get(key)!r}")
+    if failures:
+        raise ValueError(
+            "Publish safety checkpoint failed: "
+            + ", ".join(failures)
+            + ". Publish tasks cannot complete until content guard and preflight pass."
+        )
+
+
+def _is_publish_completion_result(result: dict) -> bool:
+    status = normalize_task_status(str(result.get("status", "")))
+    if status not in ("done", "verified", "completed", "completed_unverified"):
+        return False
+    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    tags = {str(tag).strip().lower() for tag in result.get("tags", []) if tag}
+    return (
+        "publish" in tags
+        or str(result.get("task_type") or "").strip().lower() == "publish"
+        or str(result.get("agent") or "").strip().lower() == "socialmedia"
+        or str(verification.get("artifact_type") or "").strip().lower() == "publish"
+    )
+
+
+def _apply_publish_content_guard_audit(payload: dict, task_id: str) -> dict:
+    result = dict(payload or {})
+    if not _is_publish_completion_result(result):
+        return result
+    try:
+        _audit_content_guard(result)
+    except ValueError as exc:
+        log.warning("PUBLISH_CONTENT_GUARD_AUDIT_FAILED task_id=%s reason=%s", task_id, exc)
+        result["status"] = "failed"
+        result["summary"] = str(exc)
+        result["failure_class"] = result.get("failure_class") or "content_guard_failed"
+        result["next_action"] = result.get("next_action") or "inspect-publish-guard"
+    return result
 
 
 def _unpack_response(resp: dict, task_id: str = "") -> dict:
@@ -1095,7 +1276,25 @@ def _canonicalize_result_payload(workspace: Path, payload: dict, **kwargs) -> di
         )
         _warn_self_verify_attempt(task_id, labels)
         kwargs["status"] = "done"
-    return _task_result_canonicalize_result_payload(workspace, _unpack_response(payload, task_id), **kwargs)
+    unpacked = _unpack_response(payload, task_id)
+    candidate = dict(unpacked)
+    candidate["status"] = str(kwargs.get("status") or candidate.get("status") or "")
+    candidate["summary"] = str(kwargs.get("summary") or candidate.get("summary") or "")
+    if kwargs.get("tags") is not None:
+        candidate["tags"] = kwargs.get("tags")
+    if kwargs.get("agent") is not None:
+        candidate["agent"] = kwargs.get("agent")
+    if kwargs.get("metadata") is not None and isinstance(kwargs.get("metadata"), dict):
+        candidate.update({k: v for k, v in kwargs["metadata"].items() if k not in candidate})
+    if kwargs.get("verification") is not None:
+        candidate["verification"] = kwargs.get("verification")
+    audited = _apply_publish_content_guard_audit(candidate, task_id)
+    if audited.get("status") == "failed" and candidate.get("status") != "failed":
+        kwargs["status"] = "failed"
+        kwargs["summary"] = str(audited.get("summary") or "")
+        kwargs["failure_class"] = str(audited.get("failure_class") or "content_guard_failed")
+        kwargs["next_action"] = str(audited.get("next_action") or "inspect-publish-guard")
+    return _task_result_canonicalize_result_payload(workspace, audited, **kwargs)
 
 
 import task_result as _task_result_module
@@ -1282,6 +1481,12 @@ def _ensure_result_reasoning(
         return status, summary, None
 
     response_text = _read_result_response_text(workspace, summary)
+    raw_response_path = workspace / "raw_response.md"
+    if response_text and not raw_response_path.exists():
+        try:
+            raw_response_path.write_text(response_text, encoding="utf-8")
+        except OSError as exc:
+            log.debug("Could not store raw_response.md for %s: %s", task_id, exc)
     payload = extract_reasoning_payload(response_text)
     if payload is None and response_text:
         try:
@@ -1310,6 +1515,100 @@ def _ensure_result_reasoning(
             summary = output_text[:1000]
     log.info("TASK_REASONING task_id=%s agent=%s reasoning=%s", task_id, agent or "", reasoning[:500])
     return status, summary, reasoning
+
+
+def check_silent_completion(prompt: str, output: str, metadata: dict) -> None:
+    try:
+        from config import SILENT_COMPLETION_MIN_RATIO, SILENT_COMPLETION_HEDGE_PHRASES
+
+        min_ratio = float(SILENT_COMPLETION_MIN_RATIO)
+        hedge_phrases = list(SILENT_COMPLETION_HEDGE_PHRASES)
+    except (ImportError, AttributeError, TypeError, ValueError):
+        min_ratio = 0.3
+        hedge_phrases = ["unfortunately", "couldn't complete", "i don't know", "unable to", "failed to"]
+    min_length = max(200, int(len(prompt) * min_ratio))
+    output_text = output or ""
+    if len(output_text) < min_length:
+        metadata["silent_completion_suspected"] = True
+        metadata["reason"] = f"output_too_short: {len(output_text)} < {min_length}"
+        return
+    output_lower = output_text.lower()
+    for phrase in hedge_phrases:
+        if phrase.lower() in output_lower:
+            metadata["silent_completion_suspected"] = True
+            metadata["reason"] = f"hedge_phrase: {phrase}"
+            return
+
+
+_ATTRIBUTION_DEPTH_LIMIT_SENTINEL = "attribution depth limit reached"
+
+
+def _load_step_states_for_attribution(workspace: Path) -> list[dict]:
+    state_path = workspace / "step_states.json"
+    if not state_path.exists():
+        return []
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    steps = data.get("steps") if isinstance(data, dict) else None
+    if not isinstance(steps, list):
+        return []
+    return [step for step in steps if isinstance(step, dict)]
+
+
+def _trace_upstream_failure_attribution(steps: list[dict], step_index: int, depth: int = 0) -> dict:
+    if depth >= MAX_ATTRIBUTION_DEPTH:
+        return {
+            "status": _ATTRIBUTION_DEPTH_LIMIT_SENTINEL,
+            "depth": depth,
+        }
+
+    upstream_index = step_index - 1
+    if upstream_index < 0 or upstream_index >= len(steps):
+        return {
+            "status": "no upstream output",
+            "depth": depth,
+        }
+
+    upstream = steps[upstream_index]
+    attribution = {
+        "step_index": upstream_index,
+        "step_id": str(upstream.get("step_id") or f"step-{upstream_index + 1:02d}"),
+        "agent": str(upstream.get("execution_agent") or upstream.get("declared_agent") or ""),
+        "status": str(upstream.get("status") or ""),
+        "output_summary": str(upstream.get("output_summary") or "")[:500],
+        "depth": depth,
+    }
+    attribution["upstream"] = _trace_upstream_failure_attribution(steps, upstream_index, depth + 1)
+    return attribution
+
+
+def _record_failure_attribution(workspace: Path, status: str) -> None:
+    if normalize_task_status(status) not in ("failed", "blocked"):
+        return
+    result_path = workspace / "result.json"
+    if not result_path.exists():
+        return
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+
+    step_index = result.get("step_index")
+    if not isinstance(step_index, int):
+        return
+    steps = _load_step_states_for_attribution(workspace)
+    if not steps:
+        return
+
+    result["failure_attribution"] = _trace_upstream_failure_attribution(steps, step_index, 0)
+    tmp = result_path.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.rename(result_path)
+    except OSError:
+        return
 
 
 def _write_result(
@@ -1363,6 +1662,12 @@ def _write_result(
                 f"{verification_result['depth']}: {verification_result['details']}"
             ).strip()
 
+    if normalize_task_status(status) in ("done", "verified", "completed", "completed_unverified"):
+        if metadata is None:
+            metadata = {}
+        _sc_prompt = str(metadata.get("prompt", "") or metadata.get("instruction", "") or "")
+        check_silent_completion(_sc_prompt, summary, metadata)
+
     _base_write_result(
         workspace,
         task_id,
@@ -1375,6 +1680,18 @@ def _write_result(
         failure_class=failure_class,
         next_action=next_action,
     )
+    _record_failure_attribution(workspace, status)
+    raw_response_path = workspace / "raw_response.md"
+    if raw_response_path.exists():
+        result_path = workspace / "result.json"
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            result["raw_response_path"] = "raw_response.md"
+            tmp = result_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.rename(result_path)
+        except (json.JSONDecodeError, OSError) as exc:
+            log.debug("Raw response result update skipped for %s: %s", task_id, exc)
     if reasoning:
         _store_reasoning_result(workspace, reasoning)
     if verification_result is not None:
@@ -1422,6 +1739,8 @@ def _invoke_registry_handler(
     user_id: str = "ang",
     agent_id: str = None,
 ):
+    _set_receipt_agent(agent_id)
+    _record_external_action("skill_execution", agent_id or getattr(handler_fn, "__name__", "handler"))
     try:
         result = _base_invoke_registry_handler(
             handler_fn,
@@ -1672,6 +1991,17 @@ def main():
     # Set up logging to workspace
     workspace = Path(args.workspace)
     workspace.mkdir(parents=True, exist_ok=True)
+    receipt_started_at = _utc_iso()
+    _reset_task_receipt(receipt_started_at)
+
+    def _finish_task(exit_status: str | None = None, agent_id: str | None = None) -> None:
+        _write_task_receipt(
+            workspace,
+            args.task_id,
+            agent_id=agent_id,
+            started_at=receipt_started_at,
+            exit_status=exit_status,
+        )
 
     logging.basicConfig(
         level=logging.INFO,
@@ -1695,10 +2025,12 @@ def main():
     except Exception as e:
         log.error("Failed to read message: %s", e)
         _write_result(workspace, args.task_id, "error", f"Failed to read message: {e}")
+        _finish_task("error")
         sys.exit(1)
 
     task_name = str(msg_data.get("title") or msg_data.get("name") or msg_data.get("id") or args.task_id)
     msg_content = msg_data.get("content", "")
+    _set_active_workflow_intent(msg_content)
     msg_sender = msg_data.get("sender", "unknown")
     thread_id = args.thread_id or msg_data.get("thread_id", "")
     workflow_id = derive_workflow_id(
@@ -1753,6 +2085,7 @@ def main():
                 workflow_id=workflow_id,
             )
             log.info("Worker exiting")
+            _finish_task()
             return
         except (json.JSONDecodeError, OSError) as e:
             log.warning("Failed to load pending plan, re-planning: %s", e)
@@ -1761,6 +2094,7 @@ def main():
     if thread_id.startswith("comment_"):
         _handle_article_comment(workspace, args.task_id, thread_id, msg_content, msg_sender)
         log.info("Worker exiting (comment)")
+        _finish_task()
         return
 
     # --- Check for in-progress video session (stateful multi-round) ---
@@ -1769,6 +2103,7 @@ def main():
         log.info("Resuming video session (video_state.json found)")
         _handle_video(workspace, args.task_id, msg_content, msg_sender, thread_id)
         log.info("Worker exiting (video)")
+        _finish_task(agent_id="video")
         return
 
     # --- Check for in-progress photo session (stateful multi-round) ---
@@ -1777,6 +2112,7 @@ def main():
         log.info("Resuming photo session (photo_state.json found)")
         _handle_photo(workspace, args.task_id, msg_content, msg_sender, thread_id)
         log.info("Worker exiting (photo)")
+        _finish_task(agent_id="photo")
         return
 
     # --- Check for approval (user confirms a pending action) ---
@@ -1785,6 +2121,7 @@ def main():
         if args.task_id.startswith("autowrite_"):
             _handle_autowrite_approval(workspace, args.task_id)
             log.info("Worker exiting (autowrite approval → pending publish)")
+            _finish_task(agent_id="writer")
             return
 
         pending_plan_file = workspace / "pending_plan.json"
@@ -1812,6 +2149,7 @@ def main():
                 log.warning("Failed to load pending plan on approval: %s", e)
                 _write_result(workspace, args.task_id, "error", f"Could not resume: {e}")
             log.info("Worker exiting (approval)")
+            _finish_task()
             return
 
     # --- Load full task data for thread context ---
@@ -1833,6 +2171,7 @@ def main():
         response = _handle_edit_artifact(task_data, workspace, args.task_id, msg_content, msg_sender, thread_id)
         if response:
             log.info("Worker exiting (edit)")
+            _finish_task()
             return
         log.warning("Edit handler returned empty, falling through to task planning")
 
@@ -1844,6 +2183,7 @@ def main():
         _emit_status(args.task_id, "Reading market context...", "chart.line.uptrend.xyaxis")
         _handle_analyst(workspace, args.task_id, msg_content, msg_sender, thread_id, tier="heavy")
         log.info("Worker exiting (market feed reply fast-path)")
+        _finish_task(agent_id="analyst")
         return
 
     # --- Fast-path for conversational discussions and conversational feeds
@@ -1861,6 +2201,7 @@ def main():
             tier="light",
         )
         log.info("Worker exiting (discussion fast-path)")
+        _finish_task(agent_id="discussion")
         return
 
     # --- Fixed startup: read progress from prior runs for this exact task ---
@@ -1873,6 +2214,7 @@ def main():
         _emit_status(args.task_id, "Private mode...", "lock.shield")
         _handle_secret(workspace, args.task_id, msg_content, msg_sender, thread_id)
         log.info("Worker exiting (secret — no cloud, no persist)")
+        _finish_task(agent_id="secret")
         return
 
     # --- Proactive recall: search memory for relevant prior context ---
@@ -1906,6 +2248,7 @@ def main():
     _think_duration = time.time() - _think_start
     _perf_inference_ms = round((time.perf_counter() - _perf_inference_t0) * 1000)
     task_agent = plan[0].get("agent", "unknown") if plan else "unknown"
+    _set_receipt_agent(task_agent)
     task_tier = str(plan[0].get("tier") or "") if plan else ""
     log.info(
         "PHASE_TIMING task_id=%s agent=%s phase=think configured_timeout_s=%d actual_duration_s=%.2f",
@@ -1951,6 +2294,7 @@ def main():
         _emit_status(args.task_id, _checkpoint_msg, "pause.circle")
         _write_result(workspace, args.task_id, "paused_horizon_limit", _checkpoint_msg)
         log.info("Worker exiting (paused_horizon_limit: %s steps > %d)", len(plan), _horizon_limit)
+        _finish_task("paused_horizon_limit", agent_id=_horizon_agent)
         return
     _act_duration = time.time() - _act_start
     log.info(
@@ -2092,6 +2436,7 @@ def main():
             _pf.write(json.dumps({**_phase_record, "ts": _utc_iso()}, ensure_ascii=False) + "\n")
     except Exception as _pe:
         log.debug("Phase timing log write failed: %s", _pe)
+    _finish_task(agent_id=task_agent)
     log.info("Worker exiting")
 
 

@@ -23,7 +23,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import (
-    COMMENTS_MAX_PER_DAY,
     COMMENTS_MIN_POSTS_REQUIRED,
     GROWTH_MAX_FOLLOWS_PER_CYCLE,
     GROWTH_DISCOVERY_COOLDOWN_DAYS,
@@ -32,13 +31,28 @@ from config import (
     PUBLISH_COOLDOWN_PER_TYPE,
     PUBLISH_MAX_PER_WINDOW,
     PUBLISH_WINDOW_MINUTES,
+    SOCIAL_MAX_COMMENTS_PER_DAY,
+    SOCIAL_MAX_NOTES_PER_DAY,
+    X_PROMOTION_ENABLED,
 )
+from mira import _content_has_trust_positioning_claim
+
+try:
+    from config import APPROVED_AUTONOMOUS_COMMUNICATION_SOURCES, REQUIRE_EXPLICIT_COMMUNICATION_INTENT
+except ImportError:
+    APPROVED_AUTONOMOUS_COMMUNICATION_SOURCES = {"scheduled_growth", "authorized_substack_workflow"}
+    REQUIRE_EXPLICIT_COMMUNICATION_INTENT = True
 
 try:
     from config import DEEP_VERIFY_COOLDOWN_MINUTES, DEEP_VERIFY_PROBABILITY
 except ImportError:
     DEEP_VERIFY_PROBABILITY = 0.15
     DEEP_VERIFY_COOLDOWN_MINUTES = 120
+
+try:
+    from config import ANTI_AI_FLOOR_THRESHOLD
+except ImportError:
+    ANTI_AI_FLOOR_THRESHOLD = 0.2
 
 try:
     from config import NARRATIVE_MONOPOLY_SOURCES as _CONFIG_NARRATIVE_MONOPOLY_SOURCES
@@ -138,6 +152,7 @@ def _security_preamble() -> str:
 
 
 _DEEP_VERIFY_LOG = MIRA_ROOT / "logs" / "trust_inflation" / "deep_verify.log"
+_ANTI_AI_SCORES_LOG = MIRA_ROOT / "data" / "anti_ai_scores.jsonl"
 _DEEP_VERIFY_SCORE_THRESHOLD = 2
 _EMERGENCY_SHORT_CONTENT_RE = re.compile(r"\b(help|urgent|sos|emergency|dying|crisis)\b", re.IGNORECASE)
 GRIEF_CRISIS_USER_COOLDOWN_HOURS = 72
@@ -637,6 +652,69 @@ def _log_deep_verify_result(context: str, content: str, audit: dict) -> None:
         log.warning("deep_verify log write failed: %s", e)
 
 
+def track_anti_ai_score(article_id: str, violation_count: int) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "article_id": article_id,
+        "violation_count": violation_count,
+    }
+    try:
+        _ANTI_AI_SCORES_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _ANTI_AI_SCORES_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning("anti_ai_scores log write failed: %s", e)
+
+
+def check_goodhart_drift() -> bool:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    records = []
+    try:
+        if not _ANTI_AI_SCORES_LOG.exists():
+            return True
+        with _ANTI_AI_SCORES_LOG.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    ts = datetime.fromisoformat(rec["timestamp"])
+                    if ts >= cutoff:
+                        records.append(rec["violation_count"])
+                except (json.JSONDecodeError, KeyError, ValueError):
+                    continue
+    except Exception as e:
+        log.warning("check_goodhart_drift read failed: %s", e)
+        return True
+
+    if not records:
+        return True
+
+    avg = sum(records) / len(records)
+    if avg < ANTI_AI_FLOOR_THRESHOLD:
+        log.warning(
+            "Goodhart drift detected: 30-day avg anti-AI violations=%.3f below floor=%.3f "
+            "(%d samples) — possible metric-targeting degradation. Flagging for manual review.",
+            avg,
+            ANTI_AI_FLOOR_THRESHOLD,
+            len(records),
+        )
+        try:
+            state = _load_state()
+            state["goodhart_drift_flag"] = {
+                "flagged_at": datetime.now(timezone.utc).isoformat(),
+                "avg_violations_30d": round(avg, 4),
+                "floor_threshold": ANTI_AI_FLOOR_THRESHOLD,
+                "sample_size": len(records),
+            }
+            _save_state(state)
+        except Exception as e:
+            log.warning("goodhart_drift flag write failed: %s", e)
+        return False
+    return True
+
+
 def _should_run_deep_verify() -> bool:
     state = _load_state()
     last = state.get("last_deep_verify_at", "")
@@ -686,6 +764,9 @@ def _maybe_deep_verify_content(content: str, context: str) -> bool:
     if not _verify_loaded_skills_integrity():
         log.critical("SECURITY: publish blocked due to skill integrity failure in context=%s", context)
         return False
+    if _content_has_trust_positioning_claim(content):
+        log.warning("Trust-positioning claim guard held %s for anti-AI editorial pass", context)
+        return False
     if _requires_ai_literacy_boundaries(content) and not _has_ai_literacy_boundaries(content):
         log.warning("AI literacy boundary guard held %s for safe-use framing", context)
         return False
@@ -718,8 +799,109 @@ def _is_grief_or_crisis(text: str) -> bool:
     return bool(_GRIEF_OR_CRISIS_RE.search(text))
 
 
+SOCIAL_MAX_CHARS = 800
+
+_SOCIAL_UNHEDGED_SUPERLATIVE_RE = re.compile(
+    r"\b(?:best|always|never|proven)\b",
+    re.IGNORECASE,
+)
+
+
+class SocialContextError(Exception):
+    pass
+
+
+class PreflightFailure(dict):
+    def __bool__(self) -> bool:
+        return False
+
+
+_OUTBOUND_COMMUNICATION_ACTIONS = {"comment", "reply", "note", "tweet"}
+_EXPLICIT_USER_COMMUNICATION_SOURCES = {"user", "user_request", "manual", "operator"}
+_COMMUNICATION_INTENT_FAILURE_REASON = "missing_explicit_communication_intent"
+
+
+def _communication_intent_tokens(value) -> set[str]:
+    if value is True:
+        return {"explicit"}
+    if isinstance(value, str):
+        return {value.strip().lower()} if value.strip() else set()
+    if isinstance(value, (list, tuple, set)):
+        return {str(v).strip().lower() for v in value if str(v).strip()}
+    return set()
+
+
+def _has_explicit_communication_intent(action: str, metadata: dict | None) -> bool:
+    if not REQUIRE_EXPLICIT_COMMUNICATION_INTENT or action not in _OUTBOUND_COMMUNICATION_ACTIONS:
+        return True
+    if not isinstance(metadata, dict):
+        return False
+
+    task_source = str(metadata.get("task_source") or "").strip()
+    intent_tokens = _communication_intent_tokens(metadata.get("communication_intent"))
+    if not task_source or not intent_tokens:
+        return False
+
+    normalized_source = task_source.lower()
+    allowed_intents = {
+        "explicit",
+        action,
+        f"{action}s",
+        f"publish_{action}",
+        f"post_{action}",
+        "social_communication",
+        "outbound_social_communication",
+    }
+    if not intent_tokens.intersection(allowed_intents):
+        return False
+
+    return (
+        normalized_source in _EXPLICIT_USER_COMMUNICATION_SOURCES
+        or task_source in APPROVED_AUTONOMOUS_COMMUNICATION_SOURCES
+    )
+
+
+def _communication_intent_preflight(action: str, metadata: dict | None) -> PreflightFailure | None:
+    if _has_explicit_communication_intent(action, metadata):
+        return None
+    task_source = metadata.get("task_source") if isinstance(metadata, dict) else None
+    log.warning(
+        "Communication preflight blocked %s: %s (task_source=%s)",
+        action,
+        _COMMUNICATION_INTENT_FAILURE_REASON,
+        task_source or "",
+    )
+    return PreflightFailure(
+        {
+            "status": "preflight_failed",
+            "reason": _COMMUNICATION_INTENT_FAILURE_REASON,
+            "action": action,
+        }
+    )
+
+
+def social_context_check(content: str) -> None:
+    """Raise SocialContextError if content fails social-plane governance checks.
+
+    Social actions (comments, notes) carry brand-safety and public-narrative
+    liability that owned-content publishing does not. Two failure modes:
+    - Content exceeds SOCIAL_MAX_CHARS: likely an article accidentally routed here.
+    - Unhedged superlatives ('best', 'always', 'never', 'proven'): fine in a
+      private article, brand liability in a public social act.
+    """
+    if len(content or "") > SOCIAL_MAX_CHARS:
+        raise SocialContextError(
+            f"content length {len(content)} > SOCIAL_MAX_CHARS={SOCIAL_MAX_CHARS}; "
+            "likely an article routed to a social path"
+        )
+    m = _SOCIAL_UNHEDGED_SUPERLATIVE_RE.search(content or "")
+    if m:
+        raise SocialContextError(f"unhedged superlative '{m.group()}' creates brand liability in a public social act")
+
+
 # Comment posting limits
-MAX_COMMENTS_PER_DAY = COMMENTS_MAX_PER_DAY
+MAX_COMMENTS_PER_DAY = SOCIAL_MAX_COMMENTS_PER_DAY
+MAX_NOTES_PER_DAY = SOCIAL_MAX_NOTES_PER_DAY
 MIN_POSTS_TO_ENABLE_COMMENTING = COMMENTS_MIN_POSTS_REQUIRED
 COMMENT_COOLDOWN_HOURS = 0  # No cooldown between comments
 RELATIONSHIP_COMMENT_WEEKLY_SOFT_CAP = 18
@@ -1004,6 +1186,27 @@ def _record_publish_time(content_type: str, state: dict | None = None, now: date
         _save_state(state)
 
 
+def _can_post_note_today() -> bool:
+    state = _load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+    daily_count = state.get(f"notes_{today}", 0)
+    if daily_count >= MAX_NOTES_PER_DAY:
+        log.warning("Daily note limit reached: %d/%d", daily_count, MAX_NOTES_PER_DAY)
+        return False
+    return True
+
+
+def _record_note_daily_count(state: dict | None = None, now: datetime | None = None):
+    save = state is None
+    if state is None:
+        state = _load_state()
+    now = now or datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    state[f"notes_{today}"] = state.get(f"notes_{today}", 0) + 1
+    if save:
+        _save_state(state)
+
+
 def _grief_crisis_user_key(user: str | int | None) -> str:
     return re.sub(r"\s+", " ", str(user or "unknown").strip().lower()) or "unknown"
 
@@ -1101,7 +1304,7 @@ def can_comment_now() -> bool:
     # Daily limit
     daily_count = state.get(f"comments_{today}", 0)
     if daily_count >= MAX_COMMENTS_PER_DAY:
-        log.info("Daily comment limit reached: %d/%d", daily_count, MAX_COMMENTS_PER_DAY)
+        log.warning("Daily comment limit reached: %d/%d", daily_count, MAX_COMMENTS_PER_DAY)
         return False
 
     # Cooldown
@@ -1182,7 +1385,12 @@ def _is_substack_domain(url: str) -> bool:
     return host.endswith(".substack.com")
 
 
-def post_comment_on_article(post_url: str, comment_text: str, pattern: str | None = None) -> dict | None:
+def post_comment_on_article(
+    post_url: str,
+    comment_text: str,
+    pattern: str | None = None,
+    metadata: dict | None = None,
+) -> dict | None:
     """Post a comment with rate limiting and recording.
 
     pattern: optional tag for which commenting move this used (e.g.
@@ -1194,6 +1402,10 @@ def post_comment_on_article(post_url: str, comment_text: str, pattern: str | Non
     if not can_comment_now():
         return None
 
+    preflight = _communication_intent_preflight("comment", metadata)
+    if preflight is not None:
+        return preflight
+
     # Check blacklist before wasting an API call
     if post_url in _get_failed_urls():
         log.info("Skipping blacklisted URL: %s", post_url)
@@ -1201,6 +1413,12 @@ def post_comment_on_article(post_url: str, comment_text: str, pattern: str | Non
 
     if not _is_substack_domain(post_url):
         log.info("Skipping comment on custom domain (cookie won't work): %s", post_url)
+        return None
+
+    try:
+        social_context_check(comment_text)
+    except SocialContextError as e:
+        log.warning("social_context_check blocked comment on %s: %s", post_url, e)
         return None
 
     if not _maybe_deep_verify_content(comment_text, "substack_comment"):
@@ -1345,9 +1563,19 @@ def get_comment_stats() -> dict:
 # ---------------------------------------------------------------------------
 
 
-def post_note(text: str) -> dict | None:
+def post_note(text: str, metadata: dict | None = None) -> dict | None:
     """Post a Substack Note. Delegates to notes.py."""
+    if not _can_post_note_today():
+        return None
     if not _check_publish_cooldown("note"):
+        return None
+    preflight = _communication_intent_preflight("note", metadata)
+    if preflight is not None:
+        return preflight
+    try:
+        social_context_check(text)
+    except SocialContextError as e:
+        log.warning("social_context_check blocked note: %s", e)
         return None
     if not _maybe_deep_verify_content(text, "substack_note"):
         return None
@@ -1361,7 +1589,14 @@ def post_note(text: str) -> dict | None:
     }
     result = _post_note(text, audit_context=audit_context)
     if result:
-        _record_publish_time("note")
+        state = _load_state()
+        now = datetime.now()
+        _record_note_daily_count(state=state, now=now)
+        _record_publish_time("note", state=state, now=now)
+        _save_state(state)
+        _article_id = str(result.get("id", "")) if isinstance(result, dict) else "note"
+        track_anti_ai_score(_article_id or "note", 0)
+        check_goodhart_drift()
     return result
 
 
@@ -1977,7 +2212,12 @@ SKIP"""
             pattern = "other"
 
         chosen = picks[idx]
-        result = post_comment_on_article(chosen["url"], comment_text, pattern=pattern)
+        result = post_comment_on_article(
+            chosen["url"],
+            comment_text,
+            pattern=pattern,
+            metadata={"task_source": "scheduled_growth", "communication_intent": "comment"},
+        )
         if result:
             posted += 1
             log.info("Proactive comment posted on %s: %s", chosen["url"], comment_text[:80])
@@ -1996,7 +2236,7 @@ SKIP"""
 # Proactive Note commenting — reply to others' Notes in the feed
 # ---------------------------------------------------------------------------
 
-MAX_NOTE_REPLIES_PER_DAY = 10
+MAX_NOTE_REPLIES_PER_DAY = MAX_NOTES_PER_DAY
 
 
 def _can_reply_to_notes_today() -> bool:
@@ -2005,7 +2245,9 @@ def _can_reply_to_notes_today() -> bool:
     today = datetime.now().strftime("%Y-%m-%d")
     count = state.get(f"note_replies_{today}", 0)
     if count >= MAX_NOTE_REPLIES_PER_DAY:
-        log.info("Daily note reply limit reached: %d/%d", count, MAX_NOTE_REPLIES_PER_DAY)
+        log.warning("Daily note reply limit reached: %d/%d", count, MAX_NOTE_REPLIES_PER_DAY)
+        return False
+    if not _can_post_note_today():
         return False
     return True
 
@@ -2017,6 +2259,7 @@ def _record_note_reply(note_id: int, author_name: str, reply_text: str):
     today = now.strftime("%Y-%m-%d")
 
     state[f"note_replies_{today}"] = state.get(f"note_replies_{today}", 0) + 1
+    _record_note_daily_count(state=state, now=now)
 
     history = state.get("note_reply_history", [])
     history.append(
@@ -2182,6 +2425,12 @@ SKIP"""
     chosen = candidates[idx]
     if not _maybe_deep_verify_content(reply_text, "substack_note_reply"):
         return
+    preflight = _communication_intent_preflight(
+        "reply",
+        {"task_source": "scheduled_growth", "communication_intent": "reply"},
+    )
+    if preflight is not None:
+        return
     result = reply_to_note(chosen["id"], reply_text)
     if result:
         _record_note_reply(chosen["id"], chosen["author_name"], reply_text)
@@ -2217,9 +2466,15 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None, briefing_text:
     try:
         from notes import run_notes_cycle
 
-        notes_summary = run_notes_cycle(briefing_text, soul_context)
-        if notes_summary.get("queue_posted"):
-            log.info("Notes cycle: posted 1 note, %d remaining", notes_summary.get("queue_remaining", 0))
+        if _can_post_note_today():
+            notes_summary = run_notes_cycle(briefing_text, soul_context)
+            if notes_summary.get("queue_posted"):
+                state = _load_state()
+                now = datetime.now()
+                _record_note_daily_count(state=state, now=now)
+                _record_publish_time("note", state=state, now=now)
+                _save_state(state)
+                log.info("Notes cycle: posted 1 note, %d remaining", notes_summary.get("queue_remaining", 0))
     except Exception as e:
         log.error("Notes cycle failed: %s", e)
 
@@ -2250,7 +2505,14 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None, briefing_text:
             url = suggestion.get("url", "")
             draft = suggestion.get("comment_draft", "")
             if url and draft:
-                result = post_comment_on_article(url, draft)
+                result = post_comment_on_article(
+                    url,
+                    draft,
+                    metadata={
+                        "task_source": suggestion.get("task_source"),
+                        "communication_intent": suggestion.get("communication_intent"),
+                    },
+                )
                 if result:
                     log.info("Posted briefing comment on %s", url)
 
@@ -2273,18 +2535,21 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None, briefing_text:
     except Exception as e:
         log.error("Proactive note comment failed: %s", e)
 
-    # X/Twitter — tweet about new articles + engage (mentions, quotes)
-    try:
-        _twitter_promotion(soul_context)
-    except Exception as e:
-        log.error("Twitter promotion failed: %s", e)
+    if X_PROMOTION_ENABLED:
+        # X/Twitter — tweet about new articles + engage (mentions, quotes)
+        try:
+            _twitter_promotion(soul_context)
+        except Exception as e:
+            log.error("Twitter promotion failed: %s", e)
 
-    try:
-        from twitter import run_twitter_engagement
+        try:
+            from twitter import run_twitter_engagement
 
-        run_twitter_engagement(soul_context)
-    except Exception as e:
-        log.error("Twitter engagement failed: %s", e)
+            run_twitter_engagement(soul_context)
+        except Exception as e:
+            log.error("Twitter engagement failed: %s", e)
+    else:
+        log.info("Skipping X/Twitter promotion and engagement; publishing.x_promotion_enabled=false")
 
     # Per-comment metric poll — fetches likes/replies/author_reply for open
     # records and attributes new followers to the threads they engaged on.
@@ -2297,6 +2562,16 @@ def run_growth_cycle(briefing_comments: list[dict] | None = None, briefing_text:
         attribute_follows(lookback_days=14)
     except Exception as e:
         log.error("comment_metrics pipeline failed: %s", e)
+
+    # Poll engagement on Mira's own Notes (cooldown-gated, bounded). Records
+    # real likes/restacks/replies so the growth snapshot and publication stats
+    # reflect which note formats actually land instead of defaulting to 0.
+    try:
+        from notes import poll_own_notes
+
+        poll_own_notes()
+    except Exception as e:
+        log.error("poll_own_notes failed: %s", e)
 
 
 def _twitter_promotion(soul_context: str = ""):

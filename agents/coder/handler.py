@@ -34,12 +34,14 @@ try:
     CODER_REQUIRE_HUMAN_REVIEW = getattr(_config, "CODER_REQUIRE_HUMAN_REVIEW", True)
     MIN_DIFF_REVIEW_SECONDS = getattr(_config, "MIN_DIFF_REVIEW_SECONDS", 30)
     CODER_SKEPTICAL_REVIEW = getattr(_config, "CODER_SKEPTICAL_REVIEW", False)
+    MAX_AI_CODE_LINES_PER_TASK = getattr(_config, "MAX_AI_CODE_LINES_PER_TASK", 200)
 except ImportError:
     from config import MIRA_DIR, TASKS_DIR, _cfg
 
     CODER_REQUIRE_HUMAN_REVIEW = True
     MIN_DIFF_REVIEW_SECONDS = 30
     CODER_SKEPTICAL_REVIEW = False
+    MAX_AI_CODE_LINES_PER_TASK = 200
 from diff_trust_guard import score_diff_surface_quality
 from memory.soul import load_soul, format_soul, load_skills_for_task
 from llm import claude_act, claude_think
@@ -1040,6 +1042,33 @@ The first proposed fix did not pass a separate audit. Revise the fix using this 
         )
     _record_diff_presented(thread_id, task_id, workspace, result)
 
+    _ai_line_count = _count_added_lines(_workspace_review_diff(review_snapshot, modified_review_snapshot))
+    if _ai_line_count > MAX_AI_CODE_LINES_PER_TASK:
+        _exceedance_msg = (
+            f"AI_CODE_LINES_EXCEEDED: task {task_id} generated {_ai_line_count} added lines "
+            f"(threshold: {MAX_AI_CODE_LINES_PER_TASK}). "
+            "Split into sub-tasks under the threshold for adequate human review."
+        )
+        log.warning(_exceedance_msg)
+        _ai_lines_log = _MIRA_ROOT / "logs" / "coder_ai_lines.jsonl"
+        try:
+            _ai_lines_log.parent.mkdir(parents=True, exist_ok=True)
+            with _ai_lines_log.open("a", encoding="utf-8") as _lf:
+                _lf.write(
+                    json.dumps(
+                        {
+                            "task_id": task_id,
+                            "added_lines": _ai_line_count,
+                            "threshold": MAX_AI_CODE_LINES_PER_TASK,
+                            "ts": time.time(),
+                        }
+                    )
+                    + "\n"
+                )
+        except OSError as _le:
+            log.warning("Could not write AI lines log: %s", _le)
+        result = f"⚠️  {_exceedance_msg}\n\n{result}"
+
     bug_report_warning = _validate_bug_report_fields(result, task_id)
     if bug_report_warning:
         result = result.rstrip() + bug_report_warning
@@ -1160,6 +1189,10 @@ def _restore_python_files(workspace: Path, before_snapshot: dict[Path, bytes]) -
             file_path.unlink()
         except OSError as e:
             log.error("Failed to remove invalid new file %s after validation failure: %s", file_path, e)
+
+
+def _count_added_lines(diff_text: str) -> int:
+    return sum(1 for line in (diff_text or "").splitlines() if line.startswith("+") and not line.startswith("+++"))
 
 
 def _write_failed_result(workspace: Path, task_id: str, message: str) -> None:

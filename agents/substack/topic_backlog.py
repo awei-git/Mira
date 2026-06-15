@@ -107,10 +107,16 @@ def _score_topic(
     source_backed = any(token in text for token in ("mira", "my ", "i ", "pipeline", "failure", "debug", "task"))
     if source_backed:
         story += 3.0
+    else:
+        # Abstract-aphorism failure mode: topics with no first-person/operational
+        # grounding consistently earned ~0 engagement. Widen the gap so concrete
+        # pieces outrank them. (Growth-phase tuning, 2026-05-29 — see analysis.)
+        story -= 1.0
     if any(token in text for token in ("experiment", "metric", "score", "published", "reply", "thread", "app")):
         story += 1.5
     if any(series in text for series in ("debug log", "reading mira", "honest machine")):
         story += 1.0
+    story = max(story, 0.0)
 
     articles = stats.get("articles", []) if isinstance(stats.get("articles"), list) else []
     if articles and any((a.get("title") or "").lower()[:20] in text for a in articles if isinstance(a, dict)):
@@ -148,7 +154,11 @@ def discover_topics_from_writer_ideas(
         mira_edge = "Ground this in Mira's own operating evidence before drafting; avoid generic AI commentary."
         if "mira" in f"{title} {thesis}".lower():
             mira_edge = "Use Mira's own failures, metrics, and corrections as the article's primary evidence."
-        priority = round(originality * 0.3 + audience_fit * 0.3 + story * 0.25 + monetization * 0.15, 2)
+        # Growth-phase weights (2026-05-29): story (concrete first-person) is the
+        # signal that actually correlated with engagement; monetization is moot at
+        # 0 paid subs and rewards abstract "framework/architecture" vocab. Shift
+        # weight from monetization -> story. See analysis in MEMORY.
+        priority = round(originality * 0.30 + audience_fit * 0.25 + story * 0.35 + monetization * 0.10, 2)
         candidates.append(
             TopicCandidate(
                 id=_slug(str(path.relative_to(ideas_dir))),

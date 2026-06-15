@@ -113,6 +113,27 @@ _AI_FUTURE_EFFECT_PATTERN = re.compile(
 )
 _URL_PATTERN = re.compile(r"https?://[^\s)\]>]+")
 _PROVENANCE_LABEL_PATTERN = re.compile(r"^\s*(?:[-*]\s*)?\[(?:HARD|SOFT):[^\]]+\]", re.IGNORECASE)
+BENCHMARK_COMPARISON_WARNING = "Note: benchmark comparisons may not be valid — split methods differ or unspecified."
+BENCHMARK_RESULT_SCHEMA = {
+    "paper": "string",
+    "model": "string",
+    "benchmark": "string",
+    "metric": "string",
+    "value": "string",
+    "split_method": "iid_random (IID random split)|temporal (temporal/sliding-window split)|task_held_out|cross_dataset|unreported",
+}
+_BENCHMARK_SPLIT_METHOD_PATTERN = re.compile(r'"?\bsplit_method\b"?\s*:\s*"?([^"\n,}\]]+)', re.IGNORECASE)
+_BENCHMARK_RESULT_HEADING_PATTERN = re.compile(r"\bbenchmark_(?:result|claim)s?\b", re.IGNORECASE)
+_BENCHMARK_CLAIM_PATTERN = re.compile(
+    r"\b(?:achieves?|scores?|reaches?|gets?|beats?|outperforms?|accuracy|f1|auc|bleu|mmlu|swe-bench|benchmark)\b"
+    r".{0,120}\b\d+(?:\.\d+)?\s*%?",
+    re.IGNORECASE,
+)
+_TEMPORAL_SPLIT_PATTERN = re.compile(
+    r"\b(?:temporal split|time-based split|chronological split|sequential split)\b",
+    re.IGNORECASE,
+)
+_BENCHMARK_SPLIT_FLAG_PATTERN = re.compile(r"\[split:(?:temporal|unspecified)\]", re.IGNORECASE)
 
 SOFT_SIGNAL_SOURCES = ["github.com/trending", "huggingface.co/trending", "reddit.com"]
 HARD_SIGNAL_SOURCES = ["arxiv.org", "paperswithcode.com/sota"]
@@ -635,11 +656,85 @@ def _format_source_type_counts(counts: dict) -> str:
     return ", ".join(f"{source_type}={count}" for source_type, count in sorted(counts.items()))
 
 
+def _benchmark_claim_context(line: str, feed_items: list) -> str:
+    context = [line]
+    for item in feed_items:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip()
+        url = str(item.get("url", "")).strip()
+        if (title and title in line) or (url and url in line):
+            context.append(
+                " ".join(str(item.get(field, "")) for field in ("source", "title", "summary", "description", "query"))
+            )
+            break
+    return " ".join(context)
+
+
+def _benchmark_split_flag(text: str) -> str:
+    if _TEMPORAL_SPLIT_PATTERN.search(text):
+        return "[split:temporal]"
+    return "[split:unspecified]"
+
+
+def _annotate_benchmark_claim_splits(briefing: str, feed_items: list) -> str:
+    lines = []
+    for line in briefing.splitlines():
+        if _BENCHMARK_CLAIM_PATTERN.search(line) and not _BENCHMARK_SPLIT_FLAG_PATTERN.search(line):
+            split_flag = _benchmark_split_flag(_benchmark_claim_context(line, feed_items))
+            line = f"{line} {split_flag}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _normalize_split_method(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+    if not normalized:
+        return "unreported"
+    if normalized in {"iid", "iid_random", "random", "random_split", "random_iid", "iid_random_split"}:
+        return "iid_random"
+    if normalized in {"temporal", "temporal_split", "time", "time_based", "time_based_split", "sliding_window"}:
+        return "temporal"
+    if normalized in {
+        "task_held_out",
+        "task_held_out_split",
+        "task_heldout",
+        "held_out_task",
+        "heldout_task",
+        "task_holdout",
+    }:
+        return "task_held_out"
+    if normalized in {"cross_dataset", "cross_dataset_split", "dataset_held_out", "held_out_dataset"}:
+        return "cross_dataset"
+    if normalized in {"unreported", "not_reported", "unspecified", "unknown", "not_specified"}:
+        return "unreported"
+    return normalized
+
+
+def _benchmark_split_method_audit(briefing: str) -> dict:
+    methods = [
+        _normalize_split_method(match.group(1).strip(" '\"`"))
+        for match in _BENCHMARK_SPLIT_METHOD_PATTERN.finditer(briefing)
+    ]
+    benchmark_claims = _BENCHMARK_CLAIM_PATTERN.findall(briefing)
+    has_benchmark_aggregation = (
+        len(methods) > 1 or len(benchmark_claims) > 1 or bool(_BENCHMARK_RESULT_HEADING_PATTERN.search(briefing))
+    )
+    if not has_benchmark_aggregation:
+        return {"flagged": False, "methods": methods}
+
+    unique_methods = set(methods)
+    flagged = not methods or "unreported" in unique_methods or len(unique_methods) > 1
+    return {"flagged": flagged, "methods": methods}
+
+
 def apply_source_diversity_note(briefing: str, feed_items: list) -> str:
     briefing = _annotate_signal_provenance(briefing, feed_items)
+    briefing = _annotate_benchmark_claim_splits(briefing, feed_items)
     audit = _audit_source_diversity(feed_items)
     narrative_audit = _audit_narrative_source_diversity(briefing, feed_items)
     selection_bias_audit = screen_selection_bias(briefing, feed_items)
+    benchmark_audit = _benchmark_split_method_audit(briefing)
     epistemic_audit = detect_survivorship_bias(briefing)
     notes = []
 
@@ -692,6 +787,9 @@ def apply_source_diversity_note(briefing: str, feed_items: list) -> str:
             "Epistemic integrity check: this content may lean on survivorship-biased evidence. "
             "Treat practical claims as hypotheses unless base rates or independent corroboration are present."
         )
+
+    if benchmark_audit["flagged"] and BENCHMARK_COMPARISON_WARNING not in briefing:
+        notes.append(BENCHMARK_COMPARISON_WARNING)
 
     if not notes:
         return annotate_epistemic_metadata(briefing, epistemic_audit)

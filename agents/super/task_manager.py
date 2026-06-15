@@ -19,6 +19,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+_MIRA_ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[2]
+if str(_MIRA_ROOT_FOR_IMPORTS) not in sys.path:
+    sys.path.insert(0, str(_MIRA_ROOT_FOR_IMPORTS))
+_SHARED_DIR_FOR_IMPORTS = _MIRA_ROOT_FOR_IMPORTS / "agents" / "shared"
+if str(_SHARED_DIR_FOR_IMPORTS) not in sys.path:
+    sys.path.insert(0, str(_SHARED_DIR_FOR_IMPORTS))
+
+from agents.shared.mira import verify_task_handoff
 from config import (
     CONTROL_RUNTIME_DB_ENABLED,
     LOGS_DIR,
@@ -260,14 +268,17 @@ def _patch_metadata(workspace: Path, patch: dict) -> None:
         pass
 
 
-def _write_completion_metadata(workspace: Path) -> None:
-    completed_ts = datetime.now(timezone.utc).timestamp()
+def _write_completion_metadata(workspace: Path, completed_at=None) -> None:
+    parsed_completed_at = _parse_task_timestamp(completed_at)
+    completed_ts = (
+        parsed_completed_at.timestamp() if parsed_completed_at is not None else datetime.now(timezone.utc).timestamp()
+    )
     patch = {"completed_at": completed_ts}
     meta_file = workspace / "metadata.json"
     try:
         if meta_file.exists():
             queued_at = json.loads(meta_file.read_text(encoding="utf-8")).get("queued_at")
-            if queued_at:
+            if queued_at is not None:
                 patch["latency_s"] = round(completed_ts - float(queued_at), 1)
     except (OSError, json.JSONDecodeError, TypeError):
         pass
@@ -453,6 +464,55 @@ class TaskManager:
         """Check if all concurrent task slots are occupied."""
         return self.get_active_count() >= MAX_CONCURRENT_TASKS
 
+    def _record_for_task_id(self, task_id: str) -> TaskRecord | None:
+        for rec in self._records:
+            if rec.task_id == task_id:
+                return rec
+        return None
+
+    def _verify_handoff_before_dispatch(self, consumer_task_id: str, task_chain: list[str]) -> bool:
+        if not task_chain:
+            return True
+
+        producer_task_id = task_chain[-1]
+        producer = self._record_for_task_id(producer_task_id)
+        output_path = Path(producer.workspace) / "output.md" if producer and producer.workspace else None
+        if output_path is None:
+            reason = f"producer task record missing or has no workspace: {producer_task_id}"
+            ok = False
+        else:
+            ok, reason = verify_task_handoff(str(output_path))
+
+        if ok:
+            return True
+
+        log.warning(
+            "Blocked task handoff producer=%s consumer=%s output=%s reason=%s",
+            producer_task_id,
+            consumer_task_id,
+            output_path or "",
+            reason,
+        )
+        if producer is not None:
+            producer.status = "blocked"
+            producer.failure_class = "handoff_verification_failed"
+            producer.summary = f"Handoff verification failed before {consumer_task_id}: {reason}"
+            producer.completed_at = producer.completed_at or _utc_iso()
+            if producer.workspace:
+                _write_completion_metadata(Path(producer.workspace), producer.completed_at)
+            self._append_trace(
+                producer,
+                "handoff.blocked",
+                {
+                    "consumer_task_id": consumer_task_id,
+                    "output_path": str(output_path or ""),
+                    "reason": reason,
+                },
+            )
+            self._mirror_record(producer, event_type="task.handoff_blocked")
+            self._save_status()
+        return False
+
     def dispatch(
         self,
         msg,
@@ -485,6 +545,9 @@ class TaskManager:
                 chain_str,
             )
             raise TaskDepthExceeded(f"Subtask depth {depth} reached limit {MAX_SUBTASK_DEPTH}. Chain: {chain_str}")
+
+        if not self._verify_handoff_before_dispatch(msg.id, chain):
+            return ""
 
         if self.is_busy():
             log.info(
@@ -719,6 +782,7 @@ class TaskManager:
                                     rec.status = "timeout"
                                     rec.completed_at = _utc_iso()
                                     rec.summary = "Task killed by user after timeout"
+                                    _write_completion_metadata(Path(rec.workspace), rec.completed_at)
                                     completed.append(rec)
                                     self._mirror_record(rec, event_type="task.timeout")
                                 # If user said 'wait', just let it keep running
@@ -779,7 +843,7 @@ class TaskManager:
                         "verification_method": rec.verification_method,
                     },
                 )
-                _write_completion_metadata(ws)
+                _write_completion_metadata(ws, rec.completed_at)
                 return True
             except (json.JSONDecodeError, OSError) as e:
                 log.error("Failed to read result for task %s: %s", rec.task_id, e)
@@ -795,7 +859,7 @@ class TaskManager:
                 "task.legacy_output_collected",
                 {"status": rec.status, "summary": rec.summary},
             )
-            _write_completion_metadata(ws)
+            _write_completion_metadata(ws, rec.completed_at)
             return True
 
         # Process died without producing output — check stderr for crash info
@@ -822,7 +886,7 @@ class TaskManager:
             "task.worker_crashed",
             {"status": rec.status, "summary": rec.summary, "failure_class": rec.failure_class},
         )
-        _write_completion_metadata(ws)
+        _write_completion_metadata(ws, rec.completed_at)
         return False
 
     def _kill_task(self, rec: TaskRecord):
@@ -1005,6 +1069,8 @@ class TaskManager:
             rec.completed_at = _utc_iso()
             rec.summary = reason
             rec.failure_class = "cancelled"
+            if rec.workspace:
+                _write_completion_metadata(Path(rec.workspace), rec.completed_at)
             self._save_status()
             self._append_history([rec])
             self._mirror_record(rec, event_type="task.cancelled")

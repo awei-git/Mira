@@ -18,6 +18,7 @@ _PATHS = [
     str(_MIRA_ROOT / "agents" / "super"),
     str(_MIRA_ROOT / "agents" / "writer"),
     str(_MIRA_ROOT / "agents" / "explorer"),
+    str(_MIRA_ROOT / "agents" / "kol"),
     str(_MIRA_ROOT / "agents" / "socialmedia"),
     str(_MIRA_ROOT / "agents" / "podcast"),
     str(_MIRA_ROOT / "agents" / "video"),

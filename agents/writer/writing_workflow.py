@@ -524,6 +524,18 @@ def _write_drafts(soul_ctx: str, plan: str, idea: str, vd: Path, writers: list[s
 # ---------------------------------------------------------------------------
 
 
+def _count_review_weakness_items(review: str) -> int:
+    if not review:
+        return 0
+    numbered_items = re.findall(r"(?m)^\s*\d+[.)]\s+\S+", review)
+    critique_sentences = re.findall(
+        r"[^.!?\n]*(?:weak|lacks|unclear|missing|should|but)[^.!?\n]*[.!?]?",
+        review,
+        flags=re.IGNORECASE,
+    )
+    return len(numbered_items) + sum(1 for sentence in critique_sentences if sentence.strip())
+
+
 def _review_cycle(vd: Path, drafts: dict[str, str], criteria: dict, reviewers: list[str]) -> str:
     """Run MIN_REVIEW_ROUNDS of review/revise. Returns final draft."""
     reviews_dir = vd / "reviews"
@@ -540,11 +552,23 @@ def _review_cycle(vd: Path, drafts: dict[str, str], criteria: dict, reviewers: l
 
         def _do_review(rv: str) -> tuple[str, str, float]:
             style = MODELS.get(rv, {}).get("style", "")
-            review = model_think(
-                review_draft_prompt(draft_text, criteria, rnd, prev, style),
-                model_name=rv,
-                timeout=300,
-            )
+            review = ""
+            for retry in range(3):
+                injected_note = ""
+                if retry:
+                    injected_note = "\n\nYour previous review identified fewer than 2 specific weaknesses. Dig deeper."
+                review = (
+                    model_think(
+                        review_draft_prompt(draft_text, criteria, rnd, prev + injected_note, style),
+                        model_name=rv,
+                        timeout=300,
+                    )
+                    or ""
+                )
+                if _count_review_weakness_items(review) >= 2:
+                    break
+                if retry < 2:
+                    log.warning("Review from %s in round %d had fewer than 2 weaknesses; retrying", rv, rnd)
             score = 0.0
             if review:
                 sm = re.search(r"OVERALL:\s*([\d.]+)", review)

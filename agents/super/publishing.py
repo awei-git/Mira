@@ -1,7 +1,7 @@
-"""Publishing pipeline — auto-publish approved articles and trigger podcasts.
+"""Publishing pipeline — auto-publish approved articles and optional follow-ups.
 
-Handles the publish -> podcast_en -> podcast_zh -> complete lifecycle,
-weekly podcast rate limiting, and stuck pipeline detection.
+Handles Substack publishing, optional podcast follow-through, and stuck pipeline
+detection.
 """
 
 import logging
@@ -17,6 +17,7 @@ except (ImportError, ModuleNotFoundError):
 
 from state import load_state, save_state
 from runtime.dispatcher import _dispatch_background
+from config import AUTO_PODCAST_ENABLED, X_PROMOTION_ENABLED
 
 log = logging.getLogger("mira")
 
@@ -73,7 +74,7 @@ def _check_pending_publish():
                 workspace=workspace,
                 final_md=final_md,
                 item_id=legacy.get("item_id", ""),
-                auto_podcast=legacy.get("auto_podcast", True),
+                auto_podcast=legacy.get("auto_podcast", AUTO_PODCAST_ENABLED),
             )
             del state["pending_publish"]
             save_state(state)
@@ -174,16 +175,20 @@ def _check_pending_publish():
         if post_url:
             queue_notes_for_article(entry["title"], content[:3000], post_url)
 
-        # Tweet about the new article
-        try:
-            sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
-            from twitter import tweet_for_article
+        # X/Twitter promotion is intentionally optional. Keep Substack publish
+        # healthy even while X is disabled or credentials are stale.
+        if X_PROMOTION_ENABLED:
+            try:
+                sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
+                from twitter import tweet_for_article
 
-            tweet_result = tweet_for_article(entry["title"], entry.get("subtitle", ""), post_url, soul_context="")
-            if tweet_result:
-                log.info("Tweeted about '%s'", entry["title"])
-        except Exception as tw_e:
-            log.warning("Twitter promotion failed for '%s': %s", entry["slug"], tw_e)
+                tweet_result = tweet_for_article(entry["title"], entry.get("subtitle", ""), post_url, soul_context="")
+                if tweet_result:
+                    log.info("Tweeted about '%s'", entry["title"])
+            except Exception as tw_e:
+                log.warning("Twitter promotion failed for '%s': %s", entry["slug"], tw_e)
+        else:
+            log.info("Skipping X/Twitter article promotion; publishing.x_promotion_enabled=false")
 
     except Exception as e:
         err = str(e)
@@ -260,6 +265,10 @@ def _check_pending_podcast():
     and picks the strongest one to podcast this week.
     """
     from publish.manifest import get_next_pending, update_manifest, load_manifest
+
+    if not AUTO_PODCAST_ENABLED:
+        log.info("Skipping podcast follow-through; publishing.auto_podcast_enabled=false")
+        return
 
     state = load_state()
     current_week = datetime.now().strftime("%Y-W%W")

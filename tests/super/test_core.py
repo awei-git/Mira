@@ -1,6 +1,8 @@
 """Smoke tests — verify core modules import and basic functions work."""
 
 from __future__ import annotations
+import ast
+import importlib.util
 import json
 import sys
 from contextlib import contextmanager
@@ -26,6 +28,30 @@ def test_core_imports():
     import core
 
     assert hasattr(core, "cmd_run"), "core.py missing cmd_run"
+
+
+def test_canonical_config_exports_imported_symbols():
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    config_path = repo_root / "lib" / "config.py"
+    spec = importlib.util.spec_from_file_location("_mira_test_config", config_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    exported = set(dir(module))
+
+    missing: dict[str, list[str]] = {}
+    for path in repo_root.rglob("*.py"):
+        if any(part in {".venv", "__pycache__"} for part in path.parts):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or node.module != "config":
+                continue
+            for alias in node.names:
+                if alias.name != "*" and alias.name not in exported:
+                    missing.setdefault(alias.name, []).append(str(path.relative_to(repo_root)))
+
+    assert not missing
 
 
 def test_control_plane_dispatch_resets_terminal_local_record(monkeypatch):
@@ -122,6 +148,82 @@ def test_registry_loads():
     assert "writer" in agents
     assert "general" in agents
     assert "podcast" in agents
+
+
+def test_audit_module_hash_matches_current_soul_manager():
+    import hashlib
+
+    from agents.shared.config import AUDIT_MODULE_HASH
+
+    soul_manager_path = Path(__file__).resolve().parent.parent.parent / "lib" / "soul_manager.py"
+    actual = hashlib.sha256(soul_manager_path.read_bytes()).hexdigest()
+
+    assert AUDIT_MODULE_HASH == actual
+
+
+def test_main_continues_when_skill_audit_integrity_degraded(monkeypatch, tmp_path):
+    import core
+
+    calls = []
+
+    @contextmanager
+    def fake_launchagent_lock():
+        yield
+
+    class FakeProcessLockActive(Exception):
+        pass
+
+    monkeypatch.setattr(sys, "argv", ["core.py", "run"])
+    monkeypatch.setattr(core, "LOGS_DIR", tmp_path)
+    monkeypatch.setattr(core, "Mira", None)
+    monkeypatch.setattr(core, "verify_audit_integrity", lambda: False)
+    monkeypatch.setattr(core, "validate_soul_files", lambda: [])
+    monkeypatch.setattr(core, "check_rules_integrity", lambda: calls.append("rules"))
+    monkeypatch.setattr(core, "validate_config", lambda: True)
+    monkeypatch.setattr(core, "validate_local_model_native_tools", lambda logger=None: None)
+    monkeypatch.setattr(core, "_log_skill_depth_advisories", lambda command: None)
+    monkeypatch.setattr(core, "cmd_run", lambda: calls.append("cmd_run"))
+    monkeypatch.setattr(core.soul_manager, "audit_model_dependency", lambda agents: None)
+    monkeypatch.setitem(sys.modules, "agent_registry", SimpleNamespace(get_registry=lambda: object()))
+    monkeypatch.setitem(sys.modules, "llm", SimpleNamespace(set_usage_agent=lambda agent: None))
+    monkeypatch.setitem(
+        sys.modules,
+        "locks.process",
+        SimpleNamespace(ProcessLockActive=FakeProcessLockActive, launchagent_lock=fake_launchagent_lock),
+    )
+
+    core.main()
+
+    assert calls == ["rules", "cmd_run"]
+    marker = tmp_path / "skill_audit_integrity.json"
+    assert json.loads(marker.read_text(encoding="utf-8"))["status"] == "degraded"
+
+
+def test_main_exits_nonzero_when_soul_integrity_fails(monkeypatch, tmp_path):
+    import core
+
+    @contextmanager
+    def fake_launchagent_lock():
+        yield
+
+    class FakeProcessLockActive(Exception):
+        pass
+
+    monkeypatch.setattr(sys, "argv", ["core.py", "run"])
+    monkeypatch.setattr(core, "LOGS_DIR", tmp_path)
+    monkeypatch.setattr(core, "Mira", None)
+    monkeypatch.setattr(core, "verify_audit_integrity", lambda: True)
+    monkeypatch.setattr(core, "validate_soul_files", lambda: [("identity.md", "missing")])
+    monkeypatch.setitem(
+        sys.modules,
+        "locks.process",
+        SimpleNamespace(ProcessLockActive=FakeProcessLockActive, launchagent_lock=fake_launchagent_lock),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        core.main()
+
+    assert exc.value.code == 78
 
 
 def test_soul_loads():
@@ -763,6 +865,112 @@ def test_run_autowrite_pipeline_auto_approves_and_marks_done(monkeypatch, tmp_pa
     # Manifest auto-approved so _check_pending_publish will pick it up
     assert manifest_updates, "expected update_manifest to be called"
     assert manifest_updates[-1][1].get("status") == "approved"
+
+
+def test_run_autowrite_pipeline_blocks_weak_substack_draft(monkeypatch, tmp_path):
+    """Substack autowrite should fail quality gate before manifest approval."""
+    from workflows import writing
+    import publish.manifest as publish_manifest
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    final_file = project_dir / "final.md"
+    final_file.write_text("# Thoughts\n\nIn this essay, I explore trust in AI.\n", encoding="utf-8")
+
+    class FakeBridge:
+        def __init__(self):
+            self.calls = []
+
+        def update_task_status(self, task_id, status, agent_message=""):
+            self.calls.append((task_id, status, agent_message))
+
+    bridge = FakeBridge()
+    manifest_updates = []
+
+    monkeypatch.setattr("workflows.writing._TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr("workflows.writing.Mira", lambda: bridge)
+    monkeypatch.setattr(
+        "workflows.writing.run_full_pipeline",
+        lambda title, body: (project_dir, final_file.read_text(encoding="utf-8")),
+    )
+    monkeypatch.setattr(
+        publish_manifest,
+        "update_manifest",
+        lambda slug, **fields: manifest_updates.append((slug, fields)) or {"slug": slug, **fields},
+    )
+    monkeypatch.setenv("MIRA_PUBLISH_MANIFEST_PATH", str(tmp_path / "publish_manifest.json"))
+
+    idea = "# Weak\n\n- **platform**: Substack\n\n## Thesis\n\nGeneric AI trust article."
+    writing.run_autowrite_pipeline("autowrite_2026-06-03", "Thoughts", "essay", idea)
+
+    assert (project_dir / "substack_quality_report.json").exists()
+    assert manifest_updates
+    assert manifest_updates[-1][1]["status"] == "blocked_writer_gate"
+    assert not any(update[1].get("status") == "approved" for update in manifest_updates)
+    assert bridge.calls[-1][1] == "error"
+
+
+def test_run_autowrite_pipeline_approves_strong_substack_draft_with_subtitle(monkeypatch, tmp_path):
+    """Strong Substack drafts carry the quality-checked subtitle into the manifest."""
+    from workflows import writing
+    import publish.manifest as publish_manifest
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    final_file = project_dir / "final.md"
+    final_file.write_text(
+        """# My Agent Said Done Before It Had Proof
+
+*The app looked settled because activity was mistaken for proof.*
+
+Last week I traced a Mira task through the app, the thread, and the task record after the worker had failed. I only caught the failure because the app stayed cheerful while the logs were dead.
+
+The useful lesson was not that agents fail. Everyone knows that. The useful lesson was that the interface can become the lie if the status model treats activity as evidence.
+
+## What The Status Hid
+
+I traced the thread through the task record, the bridge item, and the app reply path. The failure was not a missing model call. It was a state transition that made a human-visible promise before verification existed.
+
+## A Better Rule
+
+A reliable agent needs a standard: done means the observable user outcome exists. If the outcome is not checked, the honest state is still running or unverified.
+""",
+        encoding="utf-8",
+    )
+
+    class FakeBridge:
+        def __init__(self):
+            self.calls = []
+
+        def update_task_status(self, task_id, status, agent_message=""):
+            self.calls.append((task_id, status, agent_message))
+
+    bridge = FakeBridge()
+    manifest_updates = []
+
+    monkeypatch.setattr("workflows.writing._TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr("workflows.writing.Mira", lambda: bridge)
+    monkeypatch.setattr(
+        "workflows.writing.run_full_pipeline",
+        lambda title, body: (project_dir, final_file.read_text(encoding="utf-8")),
+    )
+    monkeypatch.setattr(
+        publish_manifest,
+        "update_manifest",
+        lambda slug, **fields: manifest_updates.append((slug, fields)) or {"slug": slug, **fields},
+    )
+    monkeypatch.setenv("MIRA_PUBLISH_MANIFEST_PATH", str(tmp_path / "publish_manifest.json"))
+
+    idea = "# Strong\n\n- **platform**: Substack\n\n## Thesis\n\nDone means the user-visible outcome exists."
+    writing.run_autowrite_pipeline("autowrite_2026-06-03", "Strong", "essay", idea)
+
+    assert (project_dir / ".substack_article_packet.json").exists()
+    assert (project_dir / "substack_quality_report.json").exists()
+    assert manifest_updates
+    approved = manifest_updates[-1][1]
+    assert approved["status"] == "approved"
+    assert approved["subtitle"] == "The app looked settled because activity was mistaken for proof."
+    assert bridge.calls[-1][1] == "done"
 
 
 def test_writing_agent_run_command_uses_canonical_pipeline(monkeypatch, tmp_path):

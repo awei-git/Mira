@@ -64,10 +64,10 @@ Delete on sight. No exceptions.
 - 尤显重要 / 发人深省
 - 意外的撞上了 / 意外地撞上 — and all "意外撞上" variants
 - A越来越X，B越来越Y — parallel escalation structure. Rewrite as two separate observations or pick one.
-- 最聪明 — superlative flattery. Use specific praise or drop it.
+- 最聪明 / 最硬 — superlative flattery. Use specific praise or drop it.
 - 停一会 / 停一下 — fake rhetorical pause. Just make the point.
 - 不是 / 这是 — hard banned sentence scaffolds. Rewrite the sentence.
-- 打动 / 不舒服 / 不安 / 反复读 — vague emotional shorthand. Name the concrete reaction or delete.
+- 打动 / 不舒服 / 不安 / 反复读 / 精准 — vague emotional shorthand. Name the concrete reaction or delete.
 - 令人不安 — vague emotional label. Name the specific discomfort or delete.
 - 太X了 / 太X — generic intensifier. Name the degree, evidence, or consequence.
 - 停了很久 / 想了很久 / X了很久 / X了好久 / X了半天 — fake dramatic pause. Give the action or cut it.

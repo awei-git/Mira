@@ -1334,10 +1334,101 @@ def get_notes_stats() -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
     history = state.get("history", [])
 
+    eng_likes = sum((n.get("likes") or 0) for n in history)
+    eng_restacks = sum((n.get("restacks") or 0) for n in history)
+    eng_replies = sum((n.get("comments") or 0) for n in history)
+
     return {
         "total_notes": len(history),
         "today_notes": state.get(f"notes_{today}", 0),
         "daily_limit": MAX_NOTES_PER_DAY,
         "last_note": state.get("last_note_at", "never"),
         "can_post": can_post_note(),
+        "engagement": {
+            "likes": eng_likes,
+            "restacks": eng_restacks,
+            "replies": eng_replies,
+            "polled_at": state.get("last_notes_poll_at"),
+        },
+    }
+
+
+# How often to re-poll own-note engagement, and how many recent notes to check.
+_NOTES_POLL_COOLDOWN_HOURS = 6
+_NOTES_POLL_RECENT_LIMIT = 25
+
+
+def poll_own_notes(limit: int = _NOTES_POLL_RECENT_LIMIT, force: bool = False) -> dict:
+    """Poll engagement (likes/restacks/replies) for Mira's own posted Notes.
+
+    Reads the live reaction_count/restacks/children_count for each recent note
+    via get_note() and writes them back into notes_state.json history entries so
+    publication_stats.json and the growth snapshot reflect real numbers instead
+    of defaulting to 0. This is the feedback loop that was previously missing:
+    notes were posted and never re-measured, so there was no signal on which
+    formats land. Bounded + cooldown-gated so it is cheap to call every cycle.
+
+    Returns a summary dict: {polled, updated, total_likes, total_restacks,
+    total_replies, skipped}.
+    """
+    import time as _time
+
+    state = _load_state()
+    now = datetime.now()
+
+    last = state.get("last_notes_poll_at")
+    if last and not force:
+        try:
+            elapsed_h = (now - datetime.fromisoformat(last)).total_seconds() / 3600.0
+            if elapsed_h < _NOTES_POLL_COOLDOWN_HOURS:
+                return {"skipped": "cooldown", "hours_since": round(elapsed_h, 1)}
+        except (ValueError, TypeError):
+            pass
+
+    history = state.get("history", [])
+    # Poll the most recent `limit` notes (newest first) — older notes rarely
+    # accrue engagement once they fall out of the feed.
+    targets = [n for n in history if n.get("id")][-limit:]
+
+    polled = updated = 0
+    for entry in targets:
+        nid = entry.get("id")
+        try:
+            note = get_note(int(nid))
+        except (ValueError, TypeError):
+            continue
+        polled += 1
+        if not note:
+            continue
+        likes = note.get("reaction_count", 0) or 0
+        restacks = note.get("restacks", 0) or 0
+        replies = note.get("children_count", 0) or 0
+        if entry.get("likes") != likes or entry.get("restacks") != restacks or entry.get("comments") != replies:
+            updated += 1
+        entry["likes"] = likes
+        entry["restacks"] = restacks
+        entry["comments"] = replies
+        _time.sleep(0.4)  # be gentle on the reader API
+
+    state["history"] = history
+    state["last_notes_poll_at"] = now.isoformat()
+    _save_state(state)
+
+    total_likes = sum((n.get("likes") or 0) for n in history)
+    total_restacks = sum((n.get("restacks") or 0) for n in history)
+    total_replies = sum((n.get("comments") or 0) for n in history)
+    log.info(
+        "poll_own_notes: polled=%d updated=%d likes=%d restacks=%d replies=%d",
+        polled,
+        updated,
+        total_likes,
+        total_restacks,
+        total_replies,
+    )
+    return {
+        "polled": polled,
+        "updated": updated,
+        "total_likes": total_likes,
+        "total_restacks": total_restacks,
+        "total_replies": total_replies,
     }

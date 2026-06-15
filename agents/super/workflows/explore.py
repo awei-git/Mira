@@ -4,6 +4,7 @@ Extracted from core.py — pure extraction, no logic changes.
 """
 
 import hashlib
+import importlib.util
 import json
 import logging
 import re
@@ -23,6 +24,13 @@ from config import (
     SKILLS_DIR,
     SKILL_REAUDIT_DAYS,
 )
+
+_SHARED_CONFIG_PATH = _AGENTS_DIR / "shared" / "config.py"
+_config_spec = importlib.util.spec_from_file_location("_mira_shared_config", _SHARED_CONFIG_PATH)
+if _config_spec is None or _config_spec.loader is None:
+    raise ImportError(f"Could not load config from {_SHARED_CONFIG_PATH}")
+config = importlib.util.module_from_spec(_config_spec)
+_config_spec.loader.exec_module(config)
 
 try:
     from bridge import Mira
@@ -62,6 +70,16 @@ log = logging.getLogger("mira")
 
 
 from evolution import traced  # noqa: E402
+
+
+def _explorer_briefing_format_instruction() -> str:
+    if getattr(config, "EXPLORER_BRIEFING_FORMAT", "digest") != "digest":
+        return ""
+    return """
+## Briefing format
+
+Digest mode is enabled. Override the full-length briefing format above: output 3-5 bullet points, max 200 words total. Cover only the single most important insight from each chosen source. Keep source links inline.
+"""
 
 
 @traced("explore", agent="explorer", budget_seconds=600)
@@ -204,6 +222,9 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     prompt = explore_prompt(
         soul_ctx, feed_text, source_slot=slot_name, recent_topics=recent_topics, analytical_lens=analytical_lens
     )
+    format_instruction = _explorer_briefing_format_instruction()
+    if format_instruction:
+        prompt = f"{prompt}\n{format_instruction}"
     briefing = claude_think(prompt, timeout=180)
 
     if not briefing:
@@ -379,6 +400,15 @@ def _disable_failed_soul_skills(soul_dir: Path, failed: list) -> list[str]:
     return disabled
 
 
+def _source_item_hash(source_item: dict, fallback: dict) -> str:
+    existing_hash = source_item.get("raw_source_hash") if isinstance(source_item, dict) else None
+    if existing_hash:
+        return str(existing_hash)
+    raw_material = source_item if source_item else fallback
+    raw_text = json.dumps(raw_material, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+
+
 def _update_explore_state_for_sources(
     state: dict,
     source_names: list[str] | None,
@@ -473,13 +503,19 @@ def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None) ->
                 save_state(_state)
             except Exception:
                 pass
-        feed_url = dive.get("url", "")
+        feed_url = str(source_item.get("url") or dive.get("url", ""))
         extracted_at = datetime.utcnow().isoformat() + "Z"
-        extraction_rationale = desc[:120]
+        skill_provenance = {
+            "source_url": feed_url,
+            "source_hash": _source_item_hash(source_item, dive),
+            "acquired_at": extracted_at,
+        }
+        extraction_rationale = " ".join(desc.split())[:120]
         provenance_yaml = (
-            f"provenance_source: {feed_url}\n"
-            f"provenance_extracted_at: {extracted_at}\n"
-            f"provenance_rationale: {extraction_rationale}"
+            "provenance:\n"
+            f"  source: {json.dumps(feed_url)}\n"
+            f"  extracted_at: {json.dumps(extracted_at)}\n"
+            f"  extraction_rationale: {json.dumps(extraction_rationale)}"
         )
         if content.startswith("---"):
             end = content.find("\n---", 3)
@@ -498,7 +534,7 @@ def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None) ->
                 name,
                 ",".join(epistemic_audit["flags"]),
             )
-        if save_skill(name, desc, content):
+        if save_skill(name, desc, content, provenance=skill_provenance):
             skills_written += 1
             log.info("Learned new skill from deep dive: %s", name)
 

@@ -13,7 +13,7 @@ from pathlib import Path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
-from config import JOURNAL_DIR, MIRA_DIR
+from config import JOURNAL_DIR, MIRA_DIR, X_PROMOTION_ENABLED
 from user_paths import user_journal_dir
 
 try:
@@ -154,21 +154,24 @@ def do_growth_cycle():
     except Exception as e:
         log.debug("Evolution Substack reward collection failed: %s", e)
 
-    # Collect pending twitter metrics after engagement cycle
-    try:
-        from twitter import collect_pending_metrics
-        import json as _json
-        from config import SOCIAL_STATE_DIR
+    if X_PROMOTION_ENABLED:
+        # Collect pending twitter metrics after engagement cycle.
+        try:
+            from twitter import collect_pending_metrics
+            import json as _json
+            from config import SOCIAL_STATE_DIR
 
-        _tw_state_path = SOCIAL_STATE_DIR / "twitter_state.json"
-        if _tw_state_path.exists():
-            _tw_state = _json.loads(_tw_state_path.read_text())
-            collected = collect_pending_metrics(_tw_state)
-            if collected:
-                log.info("Collected metrics for %d tweets", len(collected))
-                _tw_state_path.write_text(_json.dumps(_tw_state, indent=2, ensure_ascii=False))
-    except Exception as e:
-        log.debug("Twitter metrics collection failed: %s", e)
+            _tw_state_path = SOCIAL_STATE_DIR / "twitter_state.json"
+            if _tw_state_path.exists():
+                _tw_state = _json.loads(_tw_state_path.read_text())
+                collected = collect_pending_metrics(_tw_state)
+                if collected:
+                    log.info("Collected metrics for %d tweets", len(collected))
+                    _tw_state_path.write_text(_json.dumps(_tw_state, indent=2, ensure_ascii=False))
+        except Exception as e:
+            log.debug("Twitter metrics collection failed: %s", e)
+    else:
+        log.info("Skipping X/Twitter metric collection; publishing.x_promotion_enabled=false")
 
 
 def do_notes_cycle():

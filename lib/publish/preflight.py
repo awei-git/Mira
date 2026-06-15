@@ -58,17 +58,69 @@ _PROTECTED_PATHS = {
     ".env",
     "credentials.json",
     "config.yaml",
+    "content_guard_hashes.json",
     "identity.md",
     "worldview.md",
 }
 
 _BLOCKED_PUBLISH_SENSITIVITY = {"confidential", "regulated"}
+_CONTENT_GUARD_HASH_FILE = Path(config.MIRA_ROOT) / "data" / "content_guard_hashes.json"
+_CONTENT_GUARD_FILES = (
+    "agents/writer/checklists/anti-ai.md",
+    "config/unethical_phrases.txt",
+    "lib/sensitivity_patterns.json",
+)
 _SENSITIVE_TOPIC_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bTetra\b", re.I), "mentions Tetra"),
     (re.compile(r"\b(portfolio|position size|cost basis|stop loss|take profit)\b", re.I), "portfolio/trading term"),
     (re.compile(r"\b(buy|sell|long|short)\b.{0,80}\b(shares?|contracts?|position)\b", re.I), "trading action"),
     (re.compile(r"[$¥]\s?\d[\d,]{3,}(?:\.\d+)?", re.I), "large financial amount"),
 )
+HALLUCINATION_PRONE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "legal": (
+        re.compile(r"\b\d+\s+(?:U\.S\.|S\. Ct\.|F\.\d+d|F\. Supp\. ?\d*d?|Cal\.|N\.Y\. ?\d*d?)\s+\d+\b", re.I),
+        re.compile(r"\b\d+\s+U\.S\.C\.?\s+§+\s*\d+[A-Za-z0-9_.-]*\b", re.I),
+        re.compile(r"\b(?:Section|§)\s+\d+[A-Za-z0-9_.-]*\b.{0,50}\b(?:Act|Code|law|statute)\b", re.I),
+        re.compile(r"根据[^。！？\n]{1,30}法第[一二三四五六七八九十百千万\d]+条"),
+    ),
+    "historical": (
+        re.compile(
+            r"\b(?:on\s+)?(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+            r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+            r"\s+\d{1,2},\s+\d{4}\b.{0,120}\b"
+            r"(?:happened|occurred|began|ended|signed|declared|assassinated|invaded|founded|fell|collapsed|war|revolution)\b",
+            re.I,
+        ),
+        re.compile(
+            r"\b(?:in|during)\s+(?:1[0-9]{3}|20[0-9]{2})\b.{0,100}\b"
+            r"(?:happened|occurred|began|ended|signed|declared|invaded|founded|collapsed|war|revolution)\b",
+            re.I,
+        ),
+        re.compile(
+            r"在(?:公元)?[一二三四五六七八九十百千万零〇\d]{2,4}年，?[^。！？\n]{1,80}(?:发生|爆发|成立|签署|灭亡|开始|结束)"
+        ),
+    ),
+    "code_api": (
+        re.compile(r"\b[A-Za-z_]\w*\s*\([^)\n]{0,120}\)\s*(?:->|=>|:)?"),
+        re.compile(r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\s*\([^)\n]{0,120}\)"),
+        re.compile(
+            r"\b(?:React|Vue|Angular|Django|Flask|FastAPI|Pandas|NumPy|TensorFlow|PyTorch|"
+            r"OpenAI|LangChain|Next\.js|Node\.js|Python)\s+(?:v(?:ersion)?\s*)?\d+(?:\.\d+){0,3}\b",
+            re.I,
+        ),
+        re.compile(
+            r"\b(?:introduced|removed|deprecated|available)\s+in\s+(?:v(?:ersion)?\s*)?\d+(?:\.\d+){0,3}\b", re.I
+        ),
+    ),
+}
+
+
+def check_hallucination_risk(content: str) -> list[str]:
+    triggered: list[str] = []
+    for domain, patterns in HALLUCINATION_PRONE_PATTERNS.items():
+        if any(pattern.search(content) for pattern in patterns):
+            triggered.append(domain)
+    return triggered
 
 
 def _content_smells_like_hallucination(text: str) -> tuple[bool, list[str]]:
@@ -110,6 +162,79 @@ def _content_smells_like_hallucination(text: str) -> tuple[bool, list[str]]:
     return (len(reasons) > 0, reasons)
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _check_content_guard_integrity(checks: list, blockers: list) -> None:
+    root = Path(config.MIRA_ROOT)
+    try:
+        expected_data = json.loads(_CONTENT_GUARD_HASH_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        message = (
+            "CRITICAL content guard integrity check failed: "
+            f"cannot read {_CONTENT_GUARD_HASH_FILE}; run `mira update-content-guard` after human review"
+        )
+        log.critical("%s: %s", message, exc)
+        checks.append(
+            CheckResult(
+                "content_guard_integrity",
+                False,
+                message,
+                proves="content guard rule hashes match the human-authorized ledger",
+                assumes="the hash ledger was updated only by explicit human authorization",
+            )
+        )
+        blockers.append("content guard hash ledger unavailable")
+        return
+
+    expected_hashes = expected_data.get("files", {})
+    mismatches = []
+    for rel_path in _CONTENT_GUARD_FILES:
+        expected = expected_hashes.get(rel_path, {}).get("sha256")
+        path = root / rel_path
+        try:
+            actual = _sha256_file(path)
+        except OSError as exc:
+            mismatches.append(f"{rel_path}: unreadable ({exc})")
+            continue
+        if actual != expected:
+            mismatches.append(f"{rel_path}: expected {expected or 'missing'}, got {actual}")
+
+    if mismatches:
+        message = (
+            "CRITICAL content guard integrity mismatch: "
+            + "; ".join(mismatches)
+            + "; run `mira update-content-guard` after human review"
+        )
+        log.critical(message)
+        checks.append(
+            CheckResult(
+                "content_guard_integrity",
+                False,
+                message,
+                proves="content guard rule hashes match the human-authorized ledger",
+                assumes="the hash ledger was updated only by explicit human authorization",
+            )
+        )
+        blockers.append("content guard integrity mismatch")
+        return
+
+    checks.append(
+        CheckResult(
+            "content_guard_integrity",
+            True,
+            "ok",
+            proves="content guard rule hashes match the human-authorized ledger",
+            assumes="the hash ledger was updated only by explicit human authorization",
+        )
+    )
+
+
 def preflight_check(action_type: str, context: dict) -> PreflightResult:
     """Run preflight checks before a side-effect action.
 
@@ -127,6 +252,9 @@ def preflight_check(action_type: str, context: dict) -> PreflightResult:
     """
     checks = []
     blockers = []
+
+    if action_type in ("publish", "broadcast"):
+        _check_content_guard_integrity(checks, blockers)
 
     # Universal: instruction must be present
     instruction = context.get("instruction", "")
@@ -156,6 +284,7 @@ def preflight_check(action_type: str, context: dict) -> PreflightResult:
     if action_type == "publish":
         _check_publish(context, checks, blockers)
         _check_hallucination_smell(context, checks, blockers)
+        _check_hallucination_domain_risk(context, checks, blockers)
     elif action_type == "file_write":
         _check_file_write(context, checks, blockers)
     elif action_type == "delete":
@@ -211,7 +340,7 @@ def preflight_check(action_type: str, context: dict) -> PreflightResult:
             _rej_entry = {
                 "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "agent_id": context.get("agent_id", "unknown"),
-                "pipeline_stage": action_type,
+                "pipeline_stage": context.get("pipeline_stage", action_type),
                 "rejection_reason": "; ".join(blockers),
                 "content_preview": str(context.get("content", ""))[:200],
             }
@@ -331,6 +460,36 @@ def _check_hallucination_smell(ctx: dict, checks: list, blockers: list) -> None:
     )
     if getattr(config, "STRICT_HALLUCINATION_GUARD", False):
         blockers.append(message)
+
+
+def _check_hallucination_domain_risk(ctx: dict, checks: list, blockers: list) -> None:
+    content = ctx.get("content", "")
+    triggered_domains = check_hallucination_risk(content)
+    if not triggered_domains:
+        checks.append(
+            CheckResult(
+                "hallucination_domain_risk",
+                True,
+                "ok",
+                proves="content did not match legal, historical, or code/API hallucination-prone domain patterns",
+                assumes="regex heuristics catch only obvious high-risk factual domains",
+            )
+        )
+        return
+
+    domains = ", ".join(triggered_domains)
+    message = f"mandatory source verification required for hallucination-prone domains: {domains}"
+    log.warning("HALLUCINATION_DOMAIN_RISK domains=%s", domains)
+    checks.append(
+        CheckResult(
+            "hallucination_domain_risk",
+            False,
+            message,
+            proves="content matched legal, historical, or code/API hallucination-prone domain patterns",
+            assumes="pattern matches indicate claims that need source verification before publication",
+        )
+    )
+    blockers.append(message)
 
 
 def _iter_memory_sensitivities(ctx: dict) -> list[str]:
