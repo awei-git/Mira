@@ -52,6 +52,7 @@ _PODCAST_CONFIG = {
     "zh": {
         "repo": "awei-git/MiraPodcastZh",
         "pages_url": "https://awei-git.github.io/MiraPodcastZh",
+        "link": "https://uncountablemira.substack.com",
         "title": "米拉与我 · Mira and Me",
         "description": (
             "米拉(Mira)是一个AI智能体，每天读论文、写文章、犯错误。"
@@ -66,6 +67,7 @@ _PODCAST_CONFIG = {
     "en": {
         "repo": "awei-git/MiraPodcastEn",
         "pages_url": "https://awei-git.github.io/MiraPodcastEn",
+        "link": "https://uncountablemira.substack.com",
         "title": "Mira and Me",
         "description": (
             "Mira is an AI agent who reads papers, writes essays, and makes mistakes every day. "
@@ -76,6 +78,19 @@ _PODCAST_CONFIG = {
         ),
         "language": "en",
         "repo_dir": PODCAST_REPOS_DIR / "en",
+    },
+    "marginalia_zh": {
+        "repo": "awei-git/MiraMarginalia",
+        "pages_url": "https://awei-git.github.io/MiraMarginalia",
+        "link": "https://awei-git.github.io/MiraMarginalia",
+        "title": "米拉的页边小记",
+        "description": (
+            "一档中文非虚构读书播客。Mira 每周读一本书，把七天页边笔记压成一期"
+            "十五分钟以内的声音小记：不做摘要，抓一个新鲜、具体、可争辩的观点。"
+        ),
+        "language": "zh-CN",
+        "audio_lang": "zh",
+        "repo_dir": PODCAST_REPOS_DIR / "marginalia_zh",
     },
 }
 
@@ -368,7 +383,7 @@ def _load_or_create_feed(feed_path: Path, lang: str = "zh") -> ET.Element:
         return el
 
     sub(channel, "title", cfg["title"])
-    sub(channel, "link", PODCAST_LINK)
+    sub(channel, "link", cfg.get("link", PODCAST_LINK))
     sub(channel, "description", cfg["description"])
     sub(channel, "language", cfg["language"])
     sub(channel, "atom:link", href=feed_url, rel="self", type="application/rss+xml")
@@ -548,6 +563,7 @@ def publish_episode(
     description: str = "",
     pub_date: datetime | None = None,
     lang: str = "zh",
+    channel: str | None = None,
 ) -> str | None:
     """Publish a podcast episode to the correct GitHub Pages RSS feed.
 
@@ -556,21 +572,25 @@ def publish_episode(
         title:       Episode title (shown in podcast apps).
         description: Episode description (shown in podcast apps).
         pub_date:    Publication datetime (default: now).
-        lang:        "zh" or "en" — determines which repo/feed to publish to.
+        lang:        "zh" or "en" — determines the episode audio language.
+        channel:     Optional feed key. Use this for dedicated shows that share
+                     an audio language, for example "marginalia_zh".
 
     Returns:
         RSS feed URL if successful, None on failure.
     """
-    cfg = _get_config(lang)
+    feed_key = channel or lang
+    cfg = _get_config(feed_key)
+    audio_lang = cfg.get("audio_lang", lang)
     pages_url = cfg["pages_url"]
     feed_url = f"{pages_url}/feed.xml"
-    title = _localized_title_for_feed(title, lang, mp3_path.parent)
-    description = _localized_description_for_feed(description, lang, mp3_path.parent)
+    title = _localized_title_for_feed(title, audio_lang, mp3_path.parent)
+    description = _localized_description_for_feed(description, audio_lang, mp3_path.parent)
 
     # Derive slug from parent directory (episode dirs are named by slug, files are all episode.mp3)
     raw_slug = mp3_path.parent.name if mp3_path.stem == "episode" else mp3_path.stem
     slug = re.sub(r"[^a-z0-9-]", "-", raw_slug.lower()).strip("-")
-    log.info("Publishing episode '%s' (slug: %s) to %s feed", title, slug, lang.upper())
+    log.info("Publishing episode '%s' (slug: %s) to %s feed", title, slug, feed_key.upper())
 
     # Auto-generate description from script.txt if not provided
     if not description:
@@ -586,7 +606,7 @@ def publish_episode(
                     _sys.path.insert(0, _shared)
                 from llm import claude_think
 
-                desc_lang = "中文" if lang == "zh" else "English"
+                desc_lang = "中文" if audio_lang == "zh" else "English"
                 desc_prompt = (
                     f"Write a 2-3 sentence podcast episode description in {desc_lang}. "
                     f"Summarize what this episode discusses — the main topic, key ideas, "
@@ -600,7 +620,7 @@ def publish_episode(
                 log.warning("LLM description generation failed: %s", e)
         if not description:
             description = title
-    if lang == "zh" and not _has_cjk(description):
+    if audio_lang == "zh" and not _has_cjk(description):
         raise ValueError("ZH podcast publish requires a Chinese episode description.")
 
     # 0. Validate episode before publishing
@@ -623,9 +643,9 @@ def publish_episode(
 
     # 1. Ephemeral shallow clone — write, push, drop. No persistent local state.
     try:
-        with _publish_lock(lang), _ephemeral_repo(lang) as repo_dir:
+        with _publish_lock(feed_key), _ephemeral_repo(feed_key) as repo_dir:
             feed_path = repo_dir / "feed.xml"
-            rss = _load_or_create_feed(feed_path, lang=lang)
+            rss = _load_or_create_feed(feed_path, lang=feed_key)
 
             # Remove existing entry if present (allows title/description updates)
             if _remove_episode_from_feed(rss, slug):
@@ -653,7 +673,7 @@ def publish_episode(
                 pub_date,
                 transcript_url=transcript_url,
                 transcript_type=transcript_type,
-                lang=lang,
+                lang=audio_lang,
             )
             _save_feed(rss, feed_path)
 
@@ -671,12 +691,12 @@ def publish_episode(
                 return None
 
             # 5. Update README episode table (still inside the ephemeral checkout)
-            _update_readme(repo_dir, title, description, lang)
+            _update_readme(repo_dir, title, description, audio_lang)
     except RuntimeError as exc:
-        log.error("Could not obtain ephemeral repo for %s: %s", lang, exc)
+        log.error("Could not obtain ephemeral repo for %s: %s", feed_key, exc)
         return None
 
-    log.info("Published to %s feed: %s", lang.upper(), feed_url)
+    log.info("Published to %s feed: %s", feed_key.upper(), feed_url)
 
     # Post-condition: verify episode appears in the published feed
     verified, source = _verify_feed_contains_slug(slug, feed_url, cfg)

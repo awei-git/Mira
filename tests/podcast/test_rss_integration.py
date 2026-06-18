@@ -87,6 +87,23 @@ def test_lang_config_repo_dirs_are_persistent():
     assert en["repo_dir"] == PODCAST_REPOS_DIR / "en"
 
 
+def test_marginalia_channel_config():
+    from config import PODCAST_REPOS_DIR
+    from rss import _get_config, _load_or_create_feed
+
+    cfg = _get_config("marginalia_zh")
+    assert cfg["repo"] == "awei-git/MiraMarginalia"
+    assert cfg["audio_lang"] == "zh"
+    assert cfg["repo_dir"] == PODCAST_REPOS_DIR / "marginalia_zh"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        rss = _load_or_create_feed(Path(tmpdir) / "feed.xml", lang="marginalia_zh")
+        channel = rss.find("channel")
+        assert channel.findtext("title") == "米拉的页边小记"
+        assert channel.findtext("link") == "https://awei-git.github.io/MiraMarginalia"
+        assert channel.findtext("language") == "zh-CN"
+
+
 # ---------------------------------------------------------------------------
 # 3. File naming — must use slug, never "episode.mp3"
 # ---------------------------------------------------------------------------

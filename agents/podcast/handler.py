@@ -139,6 +139,7 @@ VOL_MM = 1.5  # louder than default (1.0)
 # ---------------------------------------------------------------------------
 VOICE_MIRA_EN_GEMINI = "Leda"  # Mira EN: female, warm, calm, gentle
 VOICE_MIRA_ZH_GEMINI = "Kore"  # Mira ZH: female, firm, crisp (the "crispy" voice)
+VOICE_MARGINALIA_ZH_GEMINI = "Leda"  # Marginalia ZH: calm single-narrator voice
 VOICE_HOST_EN_GEMINI = "Charon"  # EN host: male, warm, grounded
 VOICE_HOST_ZH_GEMINI = "Charon"  # ZH host: male, curious, grounded
 SPEED_ZH_GEMINI = 1.12  # Gemini ZH tends to be slow; 1.12x tightens it up
@@ -443,7 +444,19 @@ def _call_gemini_tts(
     return None
 
 
-def _call_gemini_tts_text(text: str, voice_name: str, lang: str, api_key: str) -> bytes | None:
+def _gemini_tts_instruction(lang: str, speaker: str = "MIRA") -> str:
+    if speaker == "MARGINALIA" and lang == "zh":
+        return (
+            "你是《米拉的页边小记》的中文女声主播。用安静、稳定、亲近的语气朗读，"
+            "像在夜里给一个聪明朋友解释一本书。不要表演，不要亢奋；保留轻微停顿、"
+            "思考感和低强度的锋利。只生成音频，不要生成文字。\n\n"
+        )
+    if lang == "zh":
+        return "你是播客主播，正在录制一期对谈节目。用自然的播客语气朗读，有感情起伏，该好奇时上扬，该感叹时加重，该停顿时留白。不要像念稿，要像在跟朋友聊一个让你兴奋的话题。\n\n"
+    return "Say the following text out loud exactly as written, with natural podcast energy and emotion. Be curious when asking, emphatic when making a point, and pause where it matters. Do not generate any text response — only produce audio.\n\n"
+
+
+def _call_gemini_tts_text(text: str, voice_name: str, lang: str, api_key: str, speaker: str = "MIRA") -> bytes | None:
     """Single-speaker Gemini TTS for one text segment. Returns PCM bytes (24kHz s16le mono).
 
     voice_name: one of VOICE_MIRA_EN_GEMINI, VOICE_MIRA_ZH_GEMINI, VOICE_HOST_GEMINI
@@ -455,10 +468,7 @@ def _call_gemini_tts_text(text: str, voice_name: str, lang: str, api_key: str) -
             text = text.strip().rstrip("。") + "。好的。"
         else:
             text = text.strip().rstrip(".") + ". Alright."
-    if lang == "zh":
-        instruction = "你是播客主播，正在录制一期对谈节目。用自然的播客语气朗读，有感情起伏，该好奇时上扬，该感叹时加重，该停顿时留白。不要像念稿，要像在跟朋友聊一个让你兴奋的话题。\n\n"
-    else:
-        instruction = "Say the following text out loud exactly as written, with natural podcast energy and emotion. Be curious when asking, emphatic when making a point, and pause where it matters. Do not generate any text response — only produce audio.\n\n"
+    instruction = _gemini_tts_instruction(lang, speaker=speaker)
     payload = {
         "contents": [{"parts": [{"text": instruction + text}]}],
         "generationConfig": {
@@ -653,7 +663,7 @@ def _tts_single_chunk(text: str, api_key: str, lang: str = "en") -> bytes | None
     return _call_gemini_tts_text(text, voice, lang, api_key)
 
 
-def generate_tts(text: str, output_path: Path, lang: str = "en") -> bool:
+def generate_tts(text: str, output_path: Path, lang: str = "en", speaker: str = "MIRA") -> bool:
     """Voiceover TTS: split into chunks, convert to MP3, concatenate.
 
     Uses TTS_PROVIDER (gemini / minimax / auto) — see config at top of file.
@@ -666,7 +676,7 @@ def generate_tts(text: str, output_path: Path, lang: str = "en") -> bool:
     try:
         for i, chunk in enumerate(chunks):
             log.info("  chunk %d/%d (%d chars)...", i + 1, len(chunks), len(chunk))
-            data, fmt = _tts_call_with_fallback(chunk, "MIRA", lang)
+            data, fmt = _tts_call_with_fallback(chunk, speaker, lang)
             if data is None:
                 log.error("  chunk %d failed", i + 1)
                 return False
@@ -694,6 +704,117 @@ def generate_tts(text: str, output_path: Path, lang: str = "en") -> bool:
         import shutil
 
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _master_marginalia_mp3(mp3_path: Path) -> bool:
+    """Normalize the solo voiceover to mono podcast delivery loudness."""
+    tmp = mp3_path.with_name(f"{mp3_path.stem}-mastered.tmp{mp3_path.suffix}")
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(mp3_path),
+            "-af",
+            "loudnorm=I=-19:TP=-1:LRA=7",
+            "-codec:a",
+            "libmp3lame",
+            "-b:a",
+            "96k",
+            "-ar",
+            "44100",
+            str(tmp),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        if tmp.exists():
+            tmp.unlink()
+        log.error("Marginalia mastering failed: %s", result.stderr[-500:])
+        return False
+    tmp.replace(mp3_path)
+    log.info("Marginalia MP3 mastered: %s", mp3_path)
+    return True
+
+
+def adapt_marginalia_for_speech(article_text: str, title: str, lang: str = "zh") -> str:
+    """Condense final marginalia source material into a calm single-narrator script."""
+    if lang != "zh":
+        raise ValueError("Mira Marginalia voiceover currently supports Chinese only")
+    article_text = _strip_draft_metadata(article_text)
+    import sys
+
+    shared = str(Path(__file__).resolve().parent.parent.parent / "lib")
+    if shared not in sys.path:
+        sys.path.insert(0, shared)
+    from llm import claude_think
+
+    prompt = f"""把这份底稿改成《米拉的页边小记》的中文单人播客底稿。
+
+标题：{title}
+
+声音：
+- 一个冷静的中文女声，像在安静读书和解释，不像脱口秀或访谈。
+- 句子短一些，但不要口水化。
+- 保留底稿最锋利的观点，不要扩写。
+
+长度：
+- 目标 3000 到 3800 个中文字符。
+- 必须能在 15 分钟以内读完。
+
+处理规则：
+- 去掉 markdown 标题、链接、脚注。
+- 不要说“欢迎收听”“今天我们来聊”。
+- 不要加新的事实或引文。
+- 可以把视觉段落改成适合耳朵的过渡。
+- 只输出可直接朗读的中文正文。
+
+底稿：
+{article_text}"""
+    script = claude_think(prompt, timeout=120, tier="light")
+    return (script or _basic_cleanup(article_text)).strip()
+
+
+def generate_marginalia_voiceover(
+    article_text: str,
+    title: str,
+    output_dir: Path | None = None,
+    slug: str = "",
+    lang: str = "zh",
+    already_script: bool = False,
+    master_audio: bool = True,
+) -> Path | None:
+    """Generate a single calm Chinese female voice episode for Mira Marginalia."""
+    if lang != "zh":
+        raise ValueError("Mira Marginalia voiceover currently supports Chinese only")
+    import sys
+
+    shared = str(Path(__file__).resolve().parent.parent.parent / "lib")
+    if shared not in sys.path:
+        sys.path.insert(0, shared)
+    from config import ARTIFACTS_DIR
+
+    if output_dir is None:
+        output_dir = ARTIFACTS_DIR / "audio" / "marginalia" / "zh"
+    episode_slug = slug or _slug(title)
+    episode_dir = output_dir / episode_slug
+    episode_dir.mkdir(parents=True, exist_ok=True)
+    mp3_path = episode_dir / "episode.mp3"
+
+    log.info("Mira Marginalia voiceover: '%s' [%s]", title, lang)
+    script = article_text.strip() if already_script else adapt_marginalia_for_speech(article_text, title, lang=lang)
+    script_path = episode_dir / "script.txt"
+    script_path.write_text(script, encoding="utf-8")
+    (episode_dir / "title_zh.txt").write_text(title, encoding="utf-8")
+    log.info("Marginalia script saved: %s (%d chars)", script_path.name, len(script))
+
+    if not generate_tts(script, mp3_path, lang=lang, speaker="MARGINALIA"):
+        return None
+    if master_audio and not _master_marginalia_mp3(mp3_path):
+        return None
+    return mp3_path
 
 
 def generate_audio_for_article(
@@ -1117,6 +1238,8 @@ def _voice_for_speaker(speaker: str, lang: str) -> str:
     """Return Gemini voice name for a given speaker + language."""
     if speaker == "HOST":
         return VOICE_HOST_ZH_GEMINI if lang == "zh" else VOICE_HOST_EN_GEMINI
+    if speaker == "MARGINALIA" and lang == "zh":
+        return VOICE_MARGINALIA_ZH_GEMINI
     return VOICE_MIRA_ZH_GEMINI if lang == "zh" else VOICE_MIRA_EN_GEMINI
 
 
@@ -1124,6 +1247,8 @@ def _voice_for_speaker_minimax(speaker: str, lang: str) -> str:
     """Return MiniMax voice ID for a given speaker + language."""
     if speaker == "HOST":
         return VOICE_HOST_ZH_MM if lang == "zh" else VOICE_HOST_EN_MM
+    if speaker == "MARGINALIA" and lang == "zh":
+        return VOICE_MIRA_ZH_MM
     return VOICE_MIRA_ZH_MM if lang == "zh" else VOICE_MIRA_EN_MM
 
 
@@ -1148,7 +1273,7 @@ def _tts_call_with_fallback(text: str, speaker: str, lang: str) -> tuple[bytes |
             return None, ""
         voice_name = _voice_for_speaker(speaker, lang)
         try:
-            pcm = _call_gemini_tts_text(text, voice_name, lang, api_key)
+            pcm = _call_gemini_tts_text(text, voice_name, lang, api_key, speaker=speaker)
             return (pcm, "pcm") if pcm is not None else (None, "")
         except RuntimeError as e:
             if "quota exhausted" in str(e):
@@ -1244,7 +1369,7 @@ def _tts_conversation_chunk(turns: list[tuple[str, str]], api_key: str, lang: st
         return None
     speaker, text = turns[0]
     voice_name = _voice_for_speaker(speaker, lang)
-    return _call_gemini_tts_text(text, voice_name, lang, api_key)
+    return _call_gemini_tts_text(text, voice_name, lang, api_key, speaker=speaker)
 
 
 def _get_mp3_duration(mp3_path: Path) -> float:

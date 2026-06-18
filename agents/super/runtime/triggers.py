@@ -7,6 +7,7 @@ State management: functions use lazy imports of load_state/save_state from
 core to avoid circular imports at module level.
 """
 
+import json
 import logging
 import random
 from datetime import datetime, time, timedelta
@@ -52,6 +53,7 @@ from config import (
     SKILL_STUDY_TIME,
     LOG_RETENTION_DAYS,
     DATA_DIR,
+    SOUL_DIR,
 )
 
 
@@ -326,6 +328,25 @@ def should_book_review() -> bool:
 
     state = _load_state()
     return not state.get(f"book_review_{now.strftime('%Y-%m-%d')}")
+
+
+def should_mira_marginalia() -> bool:
+    """Check if the Mira Marginalia weekly reading/podcast job should run."""
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), time(9, 30))
+    delta = (now - scheduled).total_seconds() / 60
+    if delta < 0 or delta > 210:
+        return False
+
+    state_path = SOUL_DIR / "mira_marginalia_state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    current_week = f"{now.year}-W{now.isocalendar()[1]:02d}"
+    if state.get("status") == "complete" and state.get("week_id") == current_week:
+        return False
+    return state.get("last_run_date") != now.strftime("%Y-%m-%d")
 
 
 def should_comparative_book_project() -> bool:
