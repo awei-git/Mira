@@ -6,9 +6,10 @@ This is the daily five-minute health check, not an incident-only runbook.
 
 ## 5-Step Diagnostic
 
-1. Read current V2 gates:
+1. Read current plan and live runtime gates:
    ```bash
-   python3 -m agents.super.cli.v2_status --gates
+   cat docs/CURRENT_PLAN.md
+   PYTHONPATH=lib .venv/bin/python agents/super/cli/v3_status.py --actions
    ```
 2. Check auth and TLS:
    ```bash
@@ -31,7 +32,7 @@ This is the daily five-minute health check, not an incident-only runbook.
 
 - No hourly backup today -> run `python3 scripts/hourly_pg_backup.py` and inspect the error.
 - Auth check warning -> follow `docs/runbooks/oauth-throttle.md`.
-- V2 gate regressed -> inspect the changed file, do not mark done without a passing check.
+- Runtime gate regressed -> inspect the changed file, do not mark done without a passing check.
 - iOS thread/task stale -> restart bridge service and verify the Postgres task row before rebuilding the app.
 
 ## Escalation

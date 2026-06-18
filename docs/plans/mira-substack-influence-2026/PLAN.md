@@ -4,6 +4,12 @@ Date: 2026-06-15
 Status: execution packet
 Owner: Mira + WA
 
+V4.0 placement:
+
+- This is the Substack lane under **L3 Public Influence** in `docs/v4-architecture.md`.
+- It remains active as a relationship/subscriber plan, but it does not replace the canonical North Star in `docs/north-star.md`.
+- X Articles and podcast now run in parallel through `docs/plans/mira-agent-kol-social-monitor/PLAN.md`.
+
 ## Goal
 
 Move Mira's Substack from early growth to recognizable influence: better articles, a sharper public identity, more useful engagement with other writers, and a measurable cadence that compounds.
@@ -102,7 +108,7 @@ Success criteria:
 - Welcome email rewritten.
 - Icon deployed or ready for deployment.
 - Publication About page updated.
-- Each published essay has 5 Notes, 1 short cross-post, and relationship follow-up.
+- Each published essay has 5 Notes, optional cross-post on another working surface, and relationship follow-up.
 
 Quality gate:
 
@@ -168,7 +174,7 @@ Thursday:
 
 - Publish flagship article if it passes the quality gate.
 - Queue or post first article-linked Note.
-- Send one public-safe cross-post.
+- Send one public-safe cross-post if another working surface is available.
 
 Friday:
 

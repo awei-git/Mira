@@ -90,7 +90,7 @@ Consequences:
 
 References:
 - docs/system-design.md#...
-- docs/production-roadmap.md#...
+- docs/v4-architecture.md#...
 - PR / issue / review 文档
 ```
 
@@ -136,7 +136,7 @@ Consequences:
 
 References:
 - docs/system-design.md
-- docs/production-roadmap.md
+- docs/v4-architecture.md
 
 ## DECISION-0002: Operator Dashboard And Restore Drill Are Production Surfaces
 
@@ -179,7 +179,7 @@ Consequences:
 
 References:
 - docs/system-design.md
-- docs/production-roadmap.md
+- docs/v4-architecture.md
 
 ## DECISION-0004: Failed Is The Only Canonical Runtime Failure State
 
@@ -200,7 +200,7 @@ Consequences:
 
 References:
 - docs/system-design.md
-- docs/production-roadmap.md
+- docs/v4-architecture.md
 
 ## DECISION-0005: Workflow Trace IDs Are Required Runtime Metadata
 
@@ -221,7 +221,7 @@ Consequences:
 
 References:
 - docs/system-design.md
-- docs/production-roadmap.md
+- docs/v4-architecture.md
 
 ## DECISION-0007: Specialist Manifests Must Become Authority Contracts
 
@@ -243,7 +243,7 @@ Consequences:
 
 References:
 - docs/system-design.md
-- docs/production-roadmap.md
+- docs/v4-architecture.md
 
 ## DECISION-0008: High-Value Knowledge Work Requires A Reviewer Mesh
 
@@ -265,7 +265,7 @@ Consequences:
 
 References:
 - docs/system-design.md
-- docs/production-roadmap.md
+- docs/v4-architecture.md
 
 ## DECISION-0006: Canonical Runtime Contracts Override Legacy Handler Semantics
 
@@ -286,4 +286,38 @@ Consequences:
 
 References:
 - docs/system-design.md
-- docs/production-roadmap.md
+- docs/v4-architecture.md
+
+## DECISION-0009: V4.0 Uses A Layered North Star Stack
+
+Date: 2026-06-18
+Status: accepted
+
+Context:
+- Mira accumulated several correct but partially conflicting planning frames: V3.1 memory compounding, V4 survival, A2A trust research, Substack growth, X Articles, podcast, and OPC/business optionality.
+- Treating each plan as its own North Star makes execution drift likely: survival can crowd out research, content growth can crowd out evidence, and public influence can become vanity metrics.
+- The project needs one canonical goal and one layered execution stack.
+
+Decision:
+- `docs/north-star.md` is the canonical goal.
+- `docs/v4-architecture.md` is the current execution plan.
+- V4.0 uses L0-L4:
+  1. L0 Survival.
+  2. L1 Memory compounding.
+  3. L2 Research-build.
+  4. L3 Public influence.
+  5. L4 Business optionality.
+- Substack, X Articles, podcasts, and GitHub public artifacts are L3 surfaces. They do not redefine the North Star.
+- The Social KOL monitor must show which L0-L4 layer each artifact advances.
+
+Consequences:
+- New plans must map themselves to L0-L4.
+- Raw engagement cannot be reported as North Star progress unless it is a qualified audience signal.
+- Survival work remains mandatory but cannot replace research-build output.
+- Public content must trace back to evidence, operational receipts, experiments, tools, or explicit research questions.
+
+References:
+- docs/north-star.md
+- docs/v4-architecture.md
+- docs/objectives-and-metrics.md
+- docs/plans/mira-agent-kol-social-monitor/PLAN.md

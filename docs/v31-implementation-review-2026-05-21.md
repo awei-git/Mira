@@ -4,7 +4,7 @@ Date: 2026-05-21
 
 ## Scope
 
-Reviewed the V3.1 implementation surface against `docs/v3.1-architecture.html`, with emphasis on executable modules under `lib/mira`, workflow packs, dashboard queues, and the V3 test suite.
+Reviewed the V3.1 implementation surface against the retired V3.1 architecture HTML, with emphasis on executable modules under `lib/mira`, workflow packs, dashboard queues, and the V3 test suite. The V3.1 source HTML was removed in the V4 cleanup; current inherited concepts are summarized in `docs/v4-architecture.md`.
 
 ## Current State
 
