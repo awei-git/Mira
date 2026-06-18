@@ -300,6 +300,7 @@ def test_backend_dashboard_endpoint_returns_technical_snapshot(monkeypatch, tmp_
     assert memory_counts["queued"] == memory_counts["review_queue"]
     assert memory_counts["items"] == memory_counts["recent_app_items"]
     assert {"artifacts", "recent_items", "jobs"} <= set(body["outputs"])
+    assert {"north_star", "scorecard", "lanes", "recent"} <= set(body["public_influence"])
     assert "security" in body
     assert "agent_stats" in body["outputs"]["jobs"]
     assert {"kernel", "ledger", "commits", "effect_log", "eval_history", "snapshots", "artifacts"} <= set(body["paths"])
@@ -485,6 +486,97 @@ def test_backend_dashboard_surfaces_social_partial_blockers(monkeypatch, tmp_pat
     assert outputs[0]["status"] == "blocked_external_api"
     assert "2026-05-27" in outputs[0]["error"]
     assert any(row["status"] == "posted_note" for row in outputs)
+
+
+def test_backend_dashboard_summarizes_public_influence_lanes(monkeypatch, tmp_path: Path):
+    real_datetime = server.datetime
+
+    class FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = real_datetime(2026, 6, 18, 16, 0, 0, tzinfo=timezone.utc)
+            return base if tz else base.replace(tzinfo=None)
+
+    social = tmp_path / "social"
+    logs = tmp_path / "logs"
+    soul = tmp_path / "soul"
+    artifacts = tmp_path / "artifacts"
+    podcast_repos = tmp_path / "podcast_repos"
+    social.mkdir()
+    logs.mkdir()
+    soul.mkdir()
+    (podcast_repos / "marginalia_zh").mkdir(parents=True)
+    (artifacts / "audio" / "marginalia" / "zh" / "mira-marginalia-2026-w25").mkdir(parents=True)
+    (podcast_repos / "marginalia_zh" / "feed.xml").write_text("<rss />", encoding="utf-8")
+    (artifacts / "audio" / "marginalia" / "zh" / "mira-marginalia-2026-w25" / "episode.mp3").write_bytes(b"mp3")
+    monkeypatch.setattr(server, "SOCIAL_STATE_DIR", social)
+    monkeypatch.setattr(server, "LOGS_DIR", logs)
+    monkeypatch.setattr(server, "SOUL_DIR", soul)
+    monkeypatch.setattr(server, "ARTIFACTS_DIR", artifacts)
+    monkeypatch.setattr(server, "PODCAST_REPOS_DIR", podcast_repos)
+    monkeypatch.setattr(server, "datetime", FrozenDateTime)
+    (social / "publication_stats.json").write_text(
+        json.dumps(
+            {
+                "fetched_at": "2026-06-18T02:01:32Z",
+                "articles": [
+                    {
+                        "title": "Why the Trusted System Becomes the Attack Surface",
+                        "slug": "trusted-system",
+                        "post_date": "2026-06-15T21:03:20Z",
+                        "likes": 3,
+                        "comments": 4,
+                        "restacks": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (social / "notes_state.json").write_text(
+        json.dumps(
+            {
+                "history": [
+                    {
+                        "text": "A note about agent trust.",
+                        "date": "2026-06-18T13:02:22Z",
+                        "link": "https://uncountablemira.substack.com/p/trusted-system",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (social / "twitter_state.json").write_text(
+        json.dumps({"tweet_history": [{"text": "x post", "date": "2026-06-18T14:00:00Z"}]}),
+        encoding="utf-8",
+    )
+    (soul / "mira_marginalia_state.json").write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "completed_days": [1, 2, 3, 4, 5, 6, 7],
+                "episode_slug": "mira-marginalia-2026-w25",
+                "final_title": "读完之后留下的刺",
+                "podcast_feed_url": "https://awei-git.github.io/MiraMarginalia/feed.xml",
+                "book": {"title": "A Book"},
+                "updated_at": "2026-06-18T15:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = server._public_influence_summary("ang")
+
+    lanes = {lane["id"]: lane for lane in summary["lanes"]}
+    assert lanes["substack"]["status"] == "green"
+    assert lanes["substack"]["primary_metric"] == "1 article(s) in 30d"
+    assert lanes["x_articles"]["status"] == "green"
+    assert "X Article collector" in lanes["x_articles"]["blockers"][0]
+    assert lanes["marginalia"]["status"] == "green"
+    assert lanes["marginalia"]["primary_metric"] == "7/7 daily notes"
+    assert lanes["github_podcast"]["status"] == "green"
+    assert summary["scorecard"][0]["value"] >= 10
 
 
 def test_backend_dashboard_does_not_invent_step_usage_from_pipeline_aggregate():

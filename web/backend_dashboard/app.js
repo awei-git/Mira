@@ -5,6 +5,7 @@ import { renderAccessPage } from "./pages/access.js";
 import { renderConfigPage } from "./pages/config.js";
 import { renderMemoryPage } from "./pages/memory.js";
 import { renderOutputsPage } from "./pages/outputs.js";
+import { renderInfluencePage } from "./pages/influence.js";
 import { renderPipelinesPage } from "./pages/pipelines.js";
 import { renderUsagePage } from "./pages/usage.js";
 
@@ -13,6 +14,7 @@ const renderers = {
   memory: renderMemoryPage,
   usage: renderUsagePage,
   outputs: renderOutputsPage,
+  influence: renderInfluencePage,
   config: renderConfigPage,
   access: renderAccessPage,
 };
@@ -125,6 +127,8 @@ function updateShell(data) {
   const hb = data.service.heartbeat || {};
   const jobs = data.outputs.jobs || {};
   const alerts = data.outputs.alert_items || [];
+  const influence = data.public_influence || {};
+  const influenceScore = (influence.scorecard || []).find((row) => row.label === "QAA proxy") || {};
   const history = jobs.usage_history || {};
   const usage = (history.totals || {}).today || jobs.usage_totals || {};
   const queues = data.memory.queues || {};
@@ -160,7 +164,12 @@ function updateShell(data) {
     linkMetric(metric("Pipelines", data.pipelines.length, pipelineNote), "pipelines", `Pipelines: ${pipelineNote}`),
     linkMetric(metric("Today tokens", fmtTokens(usage.tokens || 0), tokenNote), "usage", `Today tokens: ${tokenNote}`),
     linkMetric(miniUsageCard((history || {}).daily || []), "usage", "30 day usage chart"),
-    linkMetric(metric("Memory commits", commitWindow, memoryNote), "memory", `Memory commits: ${memoryNote}`)
+    linkMetric(metric("Memory commits", commitWindow, memoryNote), "memory", `Memory commits: ${memoryNote}`),
+    linkMetric(
+      metric("Influence", influenceScore.value ?? 0, influenceScore.note || "Qualified Agent Attention"),
+      "influence",
+      "Public influence monitor"
+    )
   );
 }
 

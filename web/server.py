@@ -37,8 +37,11 @@ from config import (
     ICLOUD_COMMAND_FALLBACK_ENABLED,
     LOGS_DIR,
     MDNS_ADVERTISE_ENABLED,
+    ARTIFACTS_DIR,
     MIRA_DIR,
+    PODCAST_REPOS_DIR,
     SOCIAL_STATE_DIR,
+    SOUL_DIR,
     TASKS_DIR,
     WEBGUI_ALLOW_LAN_WITHOUT_TOKEN,
     WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN,
@@ -1697,6 +1700,228 @@ def _social_pipeline_outputs(pipeline_name: str, social_dir: Path, logs_dir: Pat
     return outputs[:4]
 
 
+def _as_list(value) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _as_dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _utc_dt(value: str | None) -> datetime | None:
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _recent_count(rows: list[dict], field: str, days: int = 7) -> int:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    return sum(1 for row in rows if (dt := _utc_dt(str(row.get(field) or ""))) and dt >= cutoff)
+
+
+def _latest_by_time(rows: list[dict], fields: tuple[str, ...]) -> dict:
+    best: tuple[datetime, dict] | None = None
+    for row in rows:
+        for field in fields:
+            dt = _utc_dt(str(row.get(field) or ""))
+            if dt is None:
+                continue
+            if best is None or dt > best[0]:
+                best = (dt, row)
+            break
+    return best[1] if best else {}
+
+
+def _sum_int(rows: list[dict], field: str) -> int:
+    total = 0
+    for row in rows:
+        try:
+            total += int(row.get(field) or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _file_updated_at(path: Path) -> str:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except OSError:
+        return ""
+
+
+def _public_influence_lane(
+    lane_id: str,
+    name: str,
+    status: str,
+    primary_metric: str,
+    secondary_metric: str,
+    *,
+    updated_at: str = "",
+    href: str = "",
+    signals: list[dict] | None = None,
+    blockers: list[str] | None = None,
+) -> dict:
+    return {
+        "id": lane_id,
+        "name": name,
+        "status": status,
+        "primary_metric": primary_metric,
+        "secondary_metric": secondary_metric,
+        "updated_at": updated_at,
+        "href": href,
+        "signals": signals or [],
+        "blockers": [blocker for blocker in (blockers or []) if blocker],
+    }
+
+
+def _public_influence_summary(user_id: str) -> dict:
+    social_dir = SOCIAL_STATE_DIR
+    logs_dir = LOGS_DIR
+    publication = _as_dict(_read_json(social_dir / "publication_stats.json"))
+    articles = _as_list(publication.get("articles"))
+    notes_state = _as_dict(_read_json(social_dir / "notes_state.json"))
+    notes = _as_list(notes_state.get("history"))
+    twitter_state = _as_dict(_read_json(social_dir / "twitter_state.json"))
+    tweets = _as_list(twitter_state.get("tweet_history"))
+    marginalia = _as_dict(_read_json(SOUL_DIR / "mira_marginalia_state.json"))
+
+    latest_article = _latest_by_time(articles, ("post_date", "updated_at", "created_at"))
+    latest_note = _latest_by_time(notes, ("date", "updated_at", "created_at"))
+    latest_tweet = _latest_by_time(tweets, ("date", "updated_at", "created_at"))
+    article_slug = str(latest_article.get("slug") or "")
+    article_href = f"https://uncountablemira.substack.com/p/{quote(article_slug)}" if article_slug else ""
+    substack_total = _sum_int(articles, "likes") + _sum_int(articles, "comments") + _sum_int(articles, "restacks")
+    notes_7d = _recent_count(notes, "date", days=7)
+    article_30d = _recent_count(articles, "post_date", days=30)
+
+    log_text = "\n".join(
+        [_tail_text(logs_dir / "bg-substack-growth.log"), _tail_text(logs_dir / "bg-substack-comments.log")]
+    )
+    x_blocked = "SpendCapReached" in log_text
+
+    marginalia_status = str(marginalia.get("status") or "missing")
+    marginalia_episode_slug = str(marginalia.get("episode_slug") or "")
+    marginalia_audio = ARTIFACTS_DIR / "audio" / "marginalia" / "zh" / marginalia_episode_slug / "episode.mp3"
+    feed_path = PODCAST_REPOS_DIR / "marginalia_zh" / "feed.xml"
+    feed_url = str(marginalia.get("podcast_feed_url") or "https://awei-git.github.io/MiraMarginalia/feed.xml")
+
+    lanes = [
+        _public_influence_lane(
+            "substack",
+            "Substack",
+            "green" if articles or notes else "gray",
+            f"{article_30d} article(s) in 30d",
+            f"{substack_total} earned engagement - {notes_7d} note(s) in 7d",
+            updated_at=str(latest_article.get("post_date") or publication.get("fetched_at") or ""),
+            href=article_href,
+            signals=[
+                {"label": "latest article", "value": latest_article.get("title") or "none", "href": article_href},
+                {
+                    "label": "latest note",
+                    "value": short_title(str(latest_note.get("text") or "none"), 110),
+                    "href": str(latest_note.get("link") or ""),
+                },
+            ],
+            blockers=(
+                [] if articles or notes else ["publication_stats.json and notes_state.json have no usable records"]
+            ),
+        ),
+        _public_influence_lane(
+            "x_articles",
+            "X / Articles",
+            "yellow" if x_blocked else ("green" if tweets else "gray"),
+            f"{_recent_count(tweets, 'date', days=30)} post(s) in 30d",
+            "X Article metrics are not connected yet",
+            updated_at=str(latest_tweet.get("date") or twitter_state.get("last_tweet_at") or ""),
+            href="",
+            signals=[{"label": "latest post", "value": short_title(str(latest_tweet.get("text") or "none"), 120)}],
+            blockers=[
+                "X API spend cap reached" if x_blocked else "",
+                "No X Article collector state yet; only short-post history is observed",
+            ],
+        ),
+        _public_influence_lane(
+            "marginalia",
+            "米拉的页边小记",
+            (
+                "red"
+                if marginalia_status == "podcast_failed"
+                else ("green" if marginalia_status == "complete" else ("yellow" if marginalia else "gray"))
+            ),
+            f"{len(marginalia.get('completed_days') or [])}/7 daily notes",
+            marginalia_status,
+            updated_at=str(marginalia.get("updated_at") or marginalia.get("podcast_published_at") or ""),
+            href=str(marginalia.get("podcast_feed_url") or ""),
+            signals=[
+                {"label": "book", "value": _as_dict(marginalia.get("book")).get("title") or "not selected"},
+                {"label": "episode", "value": marginalia.get("final_title") or marginalia_episode_slug or "pending"},
+            ],
+            blockers=[str(marginalia.get("podcast_error") or "")],
+        ),
+        _public_influence_lane(
+            "github_podcast",
+            "GitHub Podcast Feed",
+            "green" if feed_path.exists() or marginalia.get("podcast_feed_url") else "gray",
+            "MiraMarginalia RSS",
+            "GitHub Pages audio distribution",
+            updated_at=_file_updated_at(feed_path) or _file_updated_at(marginalia_audio),
+            href=feed_url,
+            signals=[
+                {"label": "feed", "value": feed_url, "href": feed_url},
+                {"label": "audio artifact", "value": "present" if marginalia_audio.exists() else "not observed"},
+            ],
+            blockers=(
+                []
+                if feed_path.exists() or marginalia.get("podcast_feed_url")
+                else ["No local feed.xml or published feed URL observed"]
+            ),
+        ),
+    ]
+
+    qaa = substack_total + notes_7d + _recent_count(tweets, "date", days=7)
+    recent = [
+        {
+            "surface": "Substack",
+            "title": latest_article.get("title") or "",
+            "updated_at": latest_article.get("post_date") or "",
+            "href": article_href,
+        },
+        {
+            "surface": "Substack Note",
+            "title": short_title(str(latest_note.get("text") or ""), 120),
+            "updated_at": latest_note.get("date") or "",
+            "href": str(latest_note.get("link") or ""),
+        },
+        {
+            "surface": "X",
+            "title": short_title(str(latest_tweet.get("text") or ""), 120),
+            "updated_at": latest_tweet.get("date") or "",
+            "href": "",
+        },
+        {
+            "surface": "Podcast",
+            "title": marginalia.get("final_title") or marginalia_episode_slug,
+            "updated_at": marginalia.get("podcast_published_at") or marginalia.get("updated_at") or "",
+            "href": str(marginalia.get("podcast_feed_url") or ""),
+        },
+    ]
+    return {
+        "north_star": "Qualified Agent Attention",
+        "updated_at": _utc_iso(),
+        "scorecard": [
+            {"label": "QAA proxy", "value": qaa, "note": "earned reactions + recent notes/posts"},
+            {"label": "30d articles", "value": article_30d, "note": "Substack"},
+            {"label": "7d notes", "value": notes_7d, "note": "Substack Notes"},
+            {"label": "7d X posts", "value": _recent_count(tweets, "date", days=7), "note": "short posts only"},
+        ],
+        "lanes": lanes,
+        "recent": [row for row in recent if row.get("title")],
+    }
+
+
 def short_title(value: str, limit: int) -> str:
     text = " ".join(str(value).split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "..."
@@ -2531,6 +2756,7 @@ def get_backend_dashboard(user_id: str, request: Request):
             "queues": snapshot.review_queues,
         },
         "pipelines": pipeline_rows,
+        "public_influence": _public_influence_summary(user_id),
         "policies": {
             "hard": snapshot.hard_policy_count,
             "soft": snapshot.soft_policy_count,

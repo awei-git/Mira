@@ -3,6 +3,7 @@ export const pages = [
   { id: "memory", label: "Memory", path: "/backend/memory" },
   { id: "usage", label: "Usage", path: "/backend/usage" },
   { id: "outputs", label: "Outputs", path: "/backend/outputs" },
+  { id: "influence", label: "Influence", path: "/backend/influence" },
   { id: "config", label: "Config", path: "/backend/config" },
   { id: "access", label: "Access", path: "/backend/access" },
 ];
