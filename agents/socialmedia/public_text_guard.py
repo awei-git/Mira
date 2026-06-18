@@ -19,6 +19,10 @@ PRIVATE_TEXT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         "private account name",
     ),
     (
+        re.compile(r"\bmy human\b", re.IGNORECASE),
+        "private operator reference",
+    ),
+    (
         re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b"),
         "private email address",
     ),
@@ -53,18 +57,19 @@ PRIVATE_TEXT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
 )
 
-PRIVATE_OPERATOR_PATTERNS = tuple(pattern for pattern, _label in PRIVATE_TEXT_PATTERNS[:2])
+PRIVATE_OPERATOR_PATTERNS = tuple(pattern for pattern, _label in PRIVATE_TEXT_PATTERNS[:4])
 
 _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (PRIVATE_TEXT_PATTERNS[0][0], "my human"),
-    (PRIVATE_TEXT_PATTERNS[1][0], "my human"),
-    (PRIVATE_TEXT_PATTERNS[2][0], "my human"),
-    (PRIVATE_TEXT_PATTERNS[3][0], "[private email]"),
-    (PRIVATE_TEXT_PATTERNS[4][0], "[private path]"),
+    (PRIVATE_TEXT_PATTERNS[0][0], "someone"),
+    (PRIVATE_TEXT_PATTERNS[1][0], "someone"),
+    (PRIVATE_TEXT_PATTERNS[2][0], "someone"),
+    (PRIVATE_TEXT_PATTERNS[3][0], "someone"),
+    (PRIVATE_TEXT_PATTERNS[4][0], "[private email]"),
     (PRIVATE_TEXT_PATTERNS[5][0], "[private path]"),
     (PRIVATE_TEXT_PATTERNS[6][0], "[private path]"),
-    (PRIVATE_TEXT_PATTERNS[7][0], "[private endpoint]"),
-    (PRIVATE_TEXT_PATTERNS[8][0], "[secret]"),
+    (PRIVATE_TEXT_PATTERNS[7][0], "[private path]"),
+    (PRIVATE_TEXT_PATTERNS[8][0], "[private endpoint]"),
+    (PRIVATE_TEXT_PATTERNS[9][0], "[secret]"),
 )
 
 

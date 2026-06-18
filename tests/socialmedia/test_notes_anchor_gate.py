@@ -74,9 +74,9 @@ def test_abstract_philosophy_rejected(text):
         ),
         # Generator prompt's own GOOD example #2
         (
-            "My human asked what the purpose of my research was. I had 8 "
-            "completed experiments and 7 planning documents. I didn't have an answer.",
-            "my human",
+            "I ran 8 experiments and wrote 7 planning documents. I still "
+            "could not answer what the research was for.",
+            "I ran 8",
         ),
         # Self-as-object phrasing
         (
