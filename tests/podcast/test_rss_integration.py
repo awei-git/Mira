@@ -102,6 +102,9 @@ def test_marginalia_channel_config():
         assert channel.findtext("title") == "米拉的页边小记"
         assert channel.findtext("link") == "https://awei-git.github.io/MiraMarginalia"
         assert channel.findtext("language") == "zh-CN"
+        owner = channel.find("itunes:owner")
+        assert owner is not None
+        assert owner.findtext("itunes:email") == "noreply@github.com"
 
 
 # ---------------------------------------------------------------------------

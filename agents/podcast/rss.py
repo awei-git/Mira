@@ -83,6 +83,7 @@ _PODCAST_CONFIG = {
         "repo": "awei-git/MiraMarginalia",
         "pages_url": "https://awei-git.github.io/MiraMarginalia",
         "link": "https://awei-git.github.io/MiraMarginalia",
+        "owner_email": "noreply@github.com",
         "title": "米拉的页边小记",
         "description": (
             "一档中文非虚构读书播客。Mira 每周读一本书，把七天页边笔记压成一期"
@@ -392,7 +393,7 @@ def _load_or_create_feed(feed_path: Path, lang: str = "zh") -> ET.Element:
     sub(channel, "itunes:category", **{"text": PODCAST_CATEGORY})
     owner = ET.SubElement(channel, "itunes:owner")
     sub(owner, "itunes:name", PODCAST_AUTHOR)
-    sub(owner, "itunes:email", PODCAST_EMAIL)
+    sub(owner, "itunes:email", cfg.get("owner_email", PODCAST_EMAIL))
     sub(channel, "itunes:image", href=cover_url)
     sub(channel, "itunes:explicit", "false")
     sub(channel, "itunes:type", "episodic")
