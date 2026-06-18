@@ -519,11 +519,21 @@ def test_backend_dashboard_summarizes_public_influence_lanes(monkeypatch, tmp_pa
         json.dumps(
             {
                 "fetched_at": "2026-06-18T02:01:32Z",
+                "subscribers": {
+                    "total": 37,
+                    "paid": 0,
+                    "delta_30d": 18,
+                    "subscribers": [
+                        {"name": "Reader A", "activity_rating": 5, "signup_at": "2026-06-17T10:00:00Z"},
+                        {"name": "Reader B", "activity_rating": 0, "signup_at": "2026-06-16T10:00:00Z"},
+                    ],
+                },
                 "articles": [
                     {
                         "title": "Why the Trusted System Becomes the Attack Surface",
                         "slug": "trusted-system",
                         "post_date": "2026-06-15T21:03:20Z",
+                        "views": 25,
                         "likes": 3,
                         "comments": 4,
                         "restacks": 1,
@@ -541,6 +551,9 @@ def test_backend_dashboard_summarizes_public_influence_lanes(monkeypatch, tmp_pa
                         "text": "A note about agent trust.",
                         "date": "2026-06-18T13:02:22Z",
                         "link": "https://uncountablemira.substack.com/p/trusted-system",
+                        "likes": 2,
+                        "comments": 1,
+                        "restacks": 1,
                     }
                 ]
             }
@@ -549,6 +562,26 @@ def test_backend_dashboard_summarizes_public_influence_lanes(monkeypatch, tmp_pa
     )
     (social / "twitter_state.json").write_text(
         json.dumps({"tweet_history": [{"text": "x post", "date": "2026-06-18T14:00:00Z"}]}),
+        encoding="utf-8",
+    )
+    (social / "comment_metrics.json").write_text(
+        json.dumps(
+            {
+                "244": {
+                    "posted_at": "2026-06-14T12:00:00Z",
+                    "metrics": {
+                        "likes": 2,
+                        "author_reply": True,
+                        "other_replies": 3,
+                        "follows_attributed": 1,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (social / "reply_tracking.json").write_text(
+        json.dumps({"seen_reply_ids": [1, 2, 3], "last_checked": "2026-06-18T12:00:00Z"}),
         encoding="utf-8",
     )
     (soul / "mira_marginalia_state.json").write_text(
@@ -570,13 +603,23 @@ def test_backend_dashboard_summarizes_public_influence_lanes(monkeypatch, tmp_pa
 
     lanes = {lane["id"]: lane for lane in summary["lanes"]}
     assert lanes["substack"]["status"] == "green"
-    assert lanes["substack"]["primary_metric"] == "1 article(s) in 30d"
+    assert lanes["substack"]["primary_metric"] == "37 subscriber(s)"
     assert lanes["x_articles"]["status"] == "green"
     assert "X Article collector" in lanes["x_articles"]["blockers"][0]
     assert lanes["marginalia"]["status"] == "green"
     assert lanes["marginalia"]["primary_metric"] == "7/7 daily notes"
     assert lanes["github_podcast"]["status"] == "green"
-    assert summary["scorecard"][0]["value"] >= 10
+    assert summary["scorecard"][0]["value"] >= 14
+    substack = summary["platforms"]["substack"]
+    assert substack["subscribers"] == 37
+    assert substack["subscriber_delta_30d"] == 18
+    assert substack["followers"] is None
+    assert substack["article_views"] == 25
+    assert substack["article_comments"] == 4
+    assert substack["notes_engagement"] == 4
+    assert substack["relationship_comments"]["author_replies"] == 1
+    assert substack["relationship_comments"]["other_replies"] == 3
+    assert "Substack follower count" in substack["data_gaps"][0]
 
 
 def test_backend_dashboard_does_not_invent_step_usage_from_pipeline_aggregate():

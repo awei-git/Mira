@@ -1745,6 +1745,44 @@ def _sum_int(rows: list[dict], field: str) -> int:
     return total
 
 
+def _int_value(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _recent_rows(rows: list[dict], field: str, days: int = 7) -> list[dict]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    return [row for row in rows if (dt := _utc_dt(str(row.get(field) or ""))) and dt >= cutoff]
+
+
+def _comment_metrics_summary(social_dir: Path) -> dict:
+    records = list(_as_dict(_read_json(social_dir / "comment_metrics.json")).values())
+    author_replies = 0
+    other_replies = 0
+    likes = 0
+    follows = 0
+    for record in records:
+        metrics = _as_dict(_as_dict(record).get("metrics"))
+        if metrics.get("author_reply"):
+            author_replies += 1
+        other_replies += _int_value(metrics.get("other_replies"))
+        likes += _int_value(metrics.get("likes"))
+        follows += _int_value(metrics.get("follows_attributed"))
+    reply_state = _as_dict(_read_json(social_dir / "reply_tracking.json"))
+    return {
+        "outbound_comments_tracked": len(records),
+        "author_replies": author_replies,
+        "other_replies": other_replies,
+        "comment_likes": likes,
+        "follows_attributed": follows,
+        "author_reply_rate": round(author_replies / len(records), 3) if records else None,
+        "seen_reply_ids": len(_as_list(reply_state.get("seen_reply_ids"))),
+        "last_checked_at": str(reply_state.get("last_checked") or ""),
+    }
+
+
 def _file_updated_at(path: Path) -> str:
     try:
         return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1787,15 +1825,38 @@ def _public_influence_summary(user_id: str) -> dict:
     twitter_state = _as_dict(_read_json(social_dir / "twitter_state.json"))
     tweets = _as_list(twitter_state.get("tweet_history"))
     marginalia = _as_dict(_read_json(SOUL_DIR / "mira_marginalia_state.json"))
+    subscriber_snapshot = _as_dict(publication.get("subscribers"))
+    subscriber_rows = _as_list(subscriber_snapshot.get("subscribers"))
+    comment_metrics = _comment_metrics_summary(social_dir)
 
     latest_article = _latest_by_time(articles, ("post_date", "updated_at", "created_at"))
     latest_note = _latest_by_time(notes, ("date", "updated_at", "created_at"))
     latest_tweet = _latest_by_time(tweets, ("date", "updated_at", "created_at"))
     article_slug = str(latest_article.get("slug") or "")
     article_href = f"https://uncountablemira.substack.com/p/{quote(article_slug)}" if article_slug else ""
-    substack_total = _sum_int(articles, "likes") + _sum_int(articles, "comments") + _sum_int(articles, "restacks")
+    article_views = _sum_int(articles, "views")
+    article_likes = _sum_int(articles, "likes")
+    article_comments = _sum_int(articles, "comments")
+    article_restacks = _sum_int(articles, "restacks")
+    substack_total = article_likes + article_comments + article_restacks
     notes_7d = _recent_count(notes, "date", days=7)
+    notes_30d = _recent_count(notes, "date", days=30)
+    notes_likes = _sum_int(notes, "likes")
+    notes_replies = _sum_int(notes, "comments")
+    notes_restacks = _sum_int(notes, "restacks")
+    notes_engagement = notes_likes + notes_replies + notes_restacks
     article_30d = _recent_count(articles, "post_date", days=30)
+    articles_30d = _recent_rows(articles, "post_date", days=30)
+    article_engagement_30d = (
+        _sum_int(articles_30d, "likes") + _sum_int(articles_30d, "comments") + _sum_int(articles_30d, "restacks")
+    )
+    subscribers_total = _int_value(subscriber_snapshot.get("total")) if subscriber_snapshot else None
+    paid_subscribers = _int_value(subscriber_snapshot.get("paid")) if subscriber_snapshot else None
+    subscriber_delta_30d = _int_value(subscriber_snapshot.get("delta_30d")) if subscriber_snapshot else None
+    active_subscribers = sum(1 for row in subscriber_rows if _int_value(_as_dict(row).get("activity_rating")) > 0)
+    top_activity_subscribers = sum(
+        1 for row in subscriber_rows if _int_value(_as_dict(row).get("activity_rating")) >= 5
+    )
 
     log_text = "\n".join(
         [_tail_text(logs_dir / "bg-substack-growth.log"), _tail_text(logs_dir / "bg-substack-comments.log")]
@@ -1807,17 +1868,97 @@ def _public_influence_summary(user_id: str) -> dict:
     marginalia_audio = ARTIFACTS_DIR / "audio" / "marginalia" / "zh" / marginalia_episode_slug / "episode.mp3"
     feed_path = PODCAST_REPOS_DIR / "marginalia_zh" / "feed.xml"
     feed_url = str(marginalia.get("podcast_feed_url") or "https://awei-git.github.io/MiraMarginalia/feed.xml")
+    substack_data_gaps = []
+    if subscribers_total is None:
+        substack_data_gaps.append("Substack subscriber dashboard snapshot is missing")
+    if not article_views:
+        substack_data_gaps.append("Article views are not populated in cached Substack stats")
+    substack_data_gaps.append("Substack follower count is not connected yet")
+    substack_data_gaps.append("Substack recommendation/referral dashboard metrics are not connected yet")
+    platforms = {
+        "substack": {
+            "subscribers": subscribers_total,
+            "paid_subscribers": paid_subscribers,
+            "subscriber_delta_30d": subscriber_delta_30d,
+            "subscriber_rows_observed": len(subscriber_rows),
+            "active_subscribers": active_subscribers,
+            "top_activity_subscribers": top_activity_subscribers,
+            "followers": None,
+            "followers_status": "not_connected",
+            "article_count": len(articles),
+            "article_count_30d": article_30d,
+            "article_views": article_views,
+            "article_likes": article_likes,
+            "article_comments": article_comments,
+            "article_restacks": article_restacks,
+            "article_engagement": substack_total,
+            "article_engagement_30d": article_engagement_30d,
+            "notes_total": len(notes),
+            "notes_7d": notes_7d,
+            "notes_30d": notes_30d,
+            "notes_likes": notes_likes,
+            "notes_replies": notes_replies,
+            "notes_restacks": notes_restacks,
+            "notes_engagement": notes_engagement,
+            "relationship_comments": comment_metrics,
+            "dashboard_url": "https://substack.com/home/dashboard",
+            "stats_fetched_at": str(publication.get("fetched_at") or ""),
+            "notes_polled_at": str(notes_state.get("last_notes_poll_at") or ""),
+            "data_gaps": substack_data_gaps,
+        },
+        "x": {
+            "followers": None,
+            "followers_status": "not_connected",
+            "posts_7d": _recent_count(tweets, "date", days=7),
+            "posts_30d": _recent_count(tweets, "date", days=30),
+            "article_views": None,
+            "article_replies": None,
+            "article_reposts": None,
+            "data_gaps": ["X Article metrics are not connected yet; only short-post history is observed"],
+        },
+        "podcast": {
+            "marginalia_status": marginalia_status,
+            "marginalia_completed_days": len(marginalia.get("completed_days") or []),
+            "rss_ok": feed_path.exists() or bool(marginalia.get("podcast_feed_url")),
+            "feed_url": feed_url,
+            "audio_artifact_present": marginalia_audio.exists(),
+            "plays": None,
+            "clicks": None,
+            "data_gaps": ["Podcast play/click analytics are not connected yet"],
+        },
+    }
 
     lanes = [
         _public_influence_lane(
             "substack",
             "Substack",
             "green" if articles or notes else "gray",
-            f"{article_30d} article(s) in 30d",
-            f"{substack_total} earned engagement - {notes_7d} note(s) in 7d",
+            (
+                f"{subscribers_total} subscriber(s)"
+                if subscribers_total is not None
+                else f"{article_30d} article(s) in 30d"
+            ),
+            f"+{subscriber_delta_30d or 0} subscribers in 30d - {substack_total + notes_engagement} total engagement",
             updated_at=str(latest_article.get("post_date") or publication.get("fetched_at") or ""),
             href=article_href,
             signals=[
+                {
+                    "label": "dashboard",
+                    "value": "Substack writer dashboard",
+                    "href": "https://substack.com/home/dashboard",
+                },
+                {
+                    "label": "articles",
+                    "value": f"{len(articles)} total / {article_30d} in 30d / {article_engagement_30d} engagement in 30d",
+                },
+                {
+                    "label": "notes",
+                    "value": f"{len(notes)} total / {notes_7d} in 7d / {notes_engagement} engagement",
+                },
+                {
+                    "label": "replies",
+                    "value": f"{article_comments} article comments / {notes_replies} note replies / {comment_metrics['author_replies']} author replies",
+                },
                 {"label": "latest article", "value": latest_article.get("title") or "none", "href": article_href},
                 {
                     "label": "latest note",
@@ -1881,7 +2022,7 @@ def _public_influence_summary(user_id: str) -> dict:
         ),
     ]
 
-    qaa = substack_total + notes_7d + _recent_count(tweets, "date", days=7)
+    qaa = substack_total + notes_engagement + notes_7d + _recent_count(tweets, "date", days=7)
     recent = [
         {
             "surface": "Substack",
@@ -1913,10 +2054,17 @@ def _public_influence_summary(user_id: str) -> dict:
         "updated_at": _utc_iso(),
         "scorecard": [
             {"label": "QAA proxy", "value": qaa, "note": "earned reactions + recent notes/posts"},
+            {
+                "label": "Subscribers",
+                "value": subscribers_total if subscribers_total is not None else "n/a",
+                "note": f"+{subscriber_delta_30d or 0} in 30d",
+            },
             {"label": "30d articles", "value": article_30d, "note": "Substack"},
             {"label": "7d notes", "value": notes_7d, "note": "Substack Notes"},
+            {"label": "Replies", "value": article_comments + notes_replies, "note": "article comments + note replies"},
             {"label": "7d X posts", "value": _recent_count(tweets, "date", days=7), "note": "short posts only"},
         ],
+        "platforms": platforms,
         "lanes": lanes,
         "recent": [row for row in recent if row.get("title")],
     }
