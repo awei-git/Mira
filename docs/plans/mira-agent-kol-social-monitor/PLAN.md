@@ -1016,13 +1016,25 @@ Work:
   - Notes
   - X posts
   - podcast outline
-- Do not auto-publish X Article until the publishing surface is verified.
+- Run deterministic automatic review on the X Article packet:
+  - title/subtitle present
+  - 700-1,200 word native body
+  - public-text privacy guard
+  - operational receipt in the first third
+  - first-person operational claims backed by an evidence note
+  - at least 5 quotable lines
+  - thread hook and standalone post variants
+- If gates pass, publish automatically through the X Articles API:
+  - create draft Article via `POST /2/articles/draft`
+  - publish draft via `POST /2/articles/{article_id}/publish`
+  - record article/post IDs in local social state
+- If any gate, auth, rate, spend-cap, or API check fails, fail closed and route the packet to review.
 
 Tests:
 
 - One thesis produces all expected artifacts.
 - Quality gates block generic AI content.
-- Human review remains required for public posting where connector confidence is low.
+- Human review remains required only for blocked or low-confidence public posting.
 
 ## First 4-Week Editorial Calendar
 

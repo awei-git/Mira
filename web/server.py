@@ -1824,6 +1824,7 @@ def _public_influence_summary(user_id: str) -> dict:
     notes = _as_list(notes_state.get("history"))
     twitter_state = _as_dict(_read_json(social_dir / "twitter_state.json"))
     tweets = _as_list(twitter_state.get("tweet_history"))
+    x_article_history = _as_list(twitter_state.get("x_article_history"))
     marginalia = _as_dict(_read_json(SOUL_DIR / "mira_marginalia_state.json"))
     subscriber_snapshot = _as_dict(publication.get("subscribers"))
     subscriber_rows = _as_list(subscriber_snapshot.get("subscribers"))
@@ -1832,6 +1833,7 @@ def _public_influence_summary(user_id: str) -> dict:
     latest_article = _latest_by_time(articles, ("post_date", "updated_at", "created_at"))
     latest_note = _latest_by_time(notes, ("date", "updated_at", "created_at"))
     latest_tweet = _latest_by_time(tweets, ("date", "updated_at", "created_at"))
+    latest_x_article = _latest_by_time(x_article_history, ("published_at", "date", "created_at"))
     article_slug = str(latest_article.get("slug") or "")
     article_href = f"https://uncountablemira.substack.com/p/{quote(article_slug)}" if article_slug else ""
     article_views = _sum_int(articles, "views")
@@ -1862,6 +1864,7 @@ def _public_influence_summary(user_id: str) -> dict:
         [_tail_text(logs_dir / "bg-substack-growth.log"), _tail_text(logs_dir / "bg-substack-comments.log")]
     )
     x_blocked = "SpendCapReached" in log_text
+    x_article_30d = _recent_count(x_article_history, "published_at", days=30)
 
     marginalia_status = str(marginalia.get("status") or "missing")
     marginalia_episode_slug = str(marginalia.get("episode_slug") or "")
@@ -1911,10 +1914,14 @@ def _public_influence_summary(user_id: str) -> dict:
             "followers_status": "not_connected",
             "posts_7d": _recent_count(tweets, "date", days=7),
             "posts_30d": _recent_count(tweets, "date", days=30),
+            "article_count": len(x_article_history),
+            "article_count_30d": x_article_30d,
+            "latest_article_title": str(latest_x_article.get("title") or ""),
+            "latest_article_post_id": str(latest_x_article.get("post_id") or ""),
             "article_views": None,
             "article_replies": None,
             "article_reposts": None,
-            "data_gaps": ["X Article metrics are not connected yet; only short-post history is observed"],
+            "data_gaps": ["X Article engagement metrics are not connected yet"],
         },
         "podcast": {
             "marginalia_status": marginalia_status,
@@ -1973,15 +1980,27 @@ def _public_influence_summary(user_id: str) -> dict:
         _public_influence_lane(
             "x_articles",
             "X / Articles",
-            "yellow" if x_blocked else ("green" if tweets else "gray"),
-            f"{_recent_count(tweets, 'date', days=30)} post(s) in 30d",
-            "X Article metrics are not connected yet",
-            updated_at=str(latest_tweet.get("date") or twitter_state.get("last_tweet_at") or ""),
+            "yellow" if x_blocked else ("green" if tweets or x_article_history else "gray"),
+            f"{x_article_30d} article(s) / {_recent_count(tweets, 'date', days=30)} post(s) in 30d",
+            "X Article engagement metrics pending",
+            updated_at=str(
+                latest_x_article.get("published_at")
+                or latest_tweet.get("date")
+                or twitter_state.get("last_tweet_at")
+                or ""
+            ),
             href="",
-            signals=[{"label": "latest post", "value": short_title(str(latest_tweet.get("text") or "none"), 120)}],
+            signals=[
+                {
+                    "label": "latest article",
+                    "value": latest_x_article.get("title") or "none",
+                },
+                {"label": "latest post", "value": short_title(str(latest_tweet.get("text") or "none"), 120)},
+            ],
             blockers=[
                 "X API spend cap reached" if x_blocked else "",
-                "No X Article collector state yet; only short-post history is observed",
+                "No X Article publish history yet" if not x_article_history else "",
+                "X Article engagement metrics are not connected yet",
             ],
         ),
         _public_influence_lane(

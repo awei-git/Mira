@@ -561,7 +561,19 @@ def test_backend_dashboard_summarizes_public_influence_lanes(monkeypatch, tmp_pa
         encoding="utf-8",
     )
     (social / "twitter_state.json").write_text(
-        json.dumps({"tweet_history": [{"text": "x post", "date": "2026-06-18T14:00:00Z"}]}),
+        json.dumps(
+            {
+                "tweet_history": [{"text": "x post", "date": "2026-06-18T14:00:00Z"}],
+                "x_article_history": [
+                    {
+                        "title": "Agents Do Not Need More Trust. They Need Better Receipts.",
+                        "article_id": "article-123",
+                        "post_id": "post-456",
+                        "published_at": "2026-06-18T15:10:00Z",
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     (social / "comment_metrics.json").write_text(
@@ -605,7 +617,8 @@ def test_backend_dashboard_summarizes_public_influence_lanes(monkeypatch, tmp_pa
     assert lanes["substack"]["status"] == "green"
     assert lanes["substack"]["primary_metric"] == "37 subscriber(s)"
     assert lanes["x_articles"]["status"] == "green"
-    assert "X Article collector" in lanes["x_articles"]["blockers"][0]
+    assert "1 article(s)" in lanes["x_articles"]["primary_metric"]
+    assert lanes["x_articles"]["signals"][0]["value"] == "Agents Do Not Need More Trust. They Need Better Receipts."
     assert lanes["marginalia"]["status"] == "green"
     assert lanes["marginalia"]["primary_metric"] == "7/7 daily notes"
     assert lanes["github_podcast"]["status"] == "green"
@@ -618,6 +631,9 @@ def test_backend_dashboard_summarizes_public_influence_lanes(monkeypatch, tmp_pa
     assert substack["article_comments"] == 4
     assert substack["notes_engagement"] == 4
     assert substack["relationship_comments"]["author_replies"] == 1
+    x_platform = summary["platforms"]["x"]
+    assert x_platform["article_count"] == 1
+    assert x_platform["latest_article_post_id"] == "post-456"
     assert substack["relationship_comments"]["other_replies"] == 3
     assert "Substack follower count" in substack["data_gaps"][0]
 
