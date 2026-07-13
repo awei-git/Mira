@@ -48,7 +48,7 @@ Mira is an autonomous AI agent system running as a persistent macOS daemon. It o
 
 ```
 launchd (KeepAlive: true)
-  → /Users/angwei/Sandbox/bin/mira-agent.sh
+  → /path/to/mira-agent.sh
     → while true:
         syntax pre-flight check (py_compile on 5 critical files)
         crash-loop detection (5 crashes in 600s → backoff)

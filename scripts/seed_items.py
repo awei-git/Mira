@@ -1,11 +1,11 @@
 """Seed items/ with sample data from v1 history for UI testing."""
 
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/Users/angwei/Sandbox/Mira/agents/shared")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agents" / "shared"))
 
 import json
-from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from mira import Mira
 

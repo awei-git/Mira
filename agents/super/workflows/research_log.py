@@ -118,7 +118,7 @@ def _gather_today_commits(window_hours: int = 30) -> list[str]:
     """Best-effort scan of git commits in the Mira repo touching research/."""
     import subprocess
 
-    repo_root = _AGENTS_DIR.parent  # /Users/angwei/Sandbox/Mira
+    repo_root = _AGENTS_DIR.parent
     try:
         out = subprocess.run(
             [

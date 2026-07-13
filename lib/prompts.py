@@ -225,7 +225,6 @@ The scheduler creates macOS LaunchAgent jobs that run automatically.
 
 To use it, run Python with the scheduler module:
 ```python
-import sys; sys.path.insert(0, '/Users/angwei/Sandbox/Mira/agents/shared')
 from scheduler import schedule_interval, schedule_calendar, schedule_once, remove, list_jobs, format_jobs_summary, get_log
 
 # Run every 5 minutes:
