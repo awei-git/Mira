@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when structuring a podcast episode for maximum listener retention by designing a cold open, clear central question, and satisfying resolution."
+---
+
 # Episode Arc Structure
 
 **Tags:** podcast, structure, storytelling, narrative, scripting, editing

@@ -10,7 +10,7 @@ AGENTS_DIR = Path(__file__).resolve().parent
 
 # Ensure paths
 sys.path.insert(0, str(AGENTS_DIR / "super"))
-sys.path.insert(0, str(AGENTS_DIR / "shared"))
+sys.path.insert(0, str(AGENTS_DIR.parent / "lib"))
 sys.path.insert(0, str(AGENTS_DIR / "writer"))
 sys.path.insert(0, str(AGENTS_DIR / "podcast"))
 sys.path.insert(0, str(AGENTS_DIR / "socialmedia"))

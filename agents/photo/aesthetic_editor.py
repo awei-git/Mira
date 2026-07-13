@@ -20,13 +20,16 @@ import sys
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import DARKTABLE_CLI_PATH, DARKTABLE_RENDER_TIMEOUT
-from sub_agent import claude_act
+from llm import claude_act
 from dt_xmp import (
-    make_exposure, make_filmic, make_colorbalance,
-    make_tone_equalizer, write_xmp,
+    make_exposure,
+    make_filmic,
+    make_colorbalance,
+    make_tone_equalizer,
+    write_xmp,
 )
 
 log = logging.getLogger("photo.editor")
@@ -34,9 +37,11 @@ log = logging.getLogger("photo.editor")
 
 def _log_photo_failure(step: str, error_msg: str, slug: str = "photo"):
     try:
-        from failure_log import record_failure
-        record_failure(pipeline="photo", step=step, slug=slug,
-                       error_type="photo_agent_error", error_message=error_msg[:500])
+        from ops.failure_log import record_failure
+
+        record_failure(
+            pipeline="photo", step=step, slug=slug, error_type="photo_agent_error", error_message=error_msg[:500]
+        )
     except Exception:
         pass
 
@@ -51,12 +56,9 @@ def _check_darktable_version() -> str | None:
     Logs warning if version doesn't match expected format.
     """
     try:
-        result = subprocess.run(
-            [DARKTABLE_CLI, "--version"],
-            capture_output=True, text=True, timeout=5
-        )
+        result = subprocess.run([DARKTABLE_CLI, "--version"], capture_output=True, text=True, timeout=5)
         # Parse version from output
-        match = _re_mod.search(r'darktable\s+(\d+\.\d+\.\d+)', result.stdout + result.stderr)
+        match = _re_mod.search(r"darktable\s+(\d+\.\d+\.\d+)", result.stdout + result.stderr)
         if match:
             version = match.group(1)
             major, minor, _ = version.split(".")
@@ -66,6 +68,8 @@ def _check_darktable_version() -> str | None:
         return None
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
+
+
 STYLE_DNA = Path(__file__).parent.parent / "shared/soul/learned/wa-photography-style-dna.md"
 OUTPUT_DIR = Path(__file__).parent / "output"
 
@@ -169,15 +173,16 @@ Be SPECIFIC to this image. Don't give generic defaults. Look at the actual conte
         return {}
 
     import re
+
     parsed = None
-    m = re.search(r'```(?:json)?\s*\n(.*?)\n```', result, re.DOTALL)
+    m = re.search(r"```(?:json)?\s*\n(.*?)\n```", result, re.DOTALL)
     if m:
         try:
             parsed = json.loads(m.group(1))
         except json.JSONDecodeError:
             pass
     if not parsed:
-        m = re.search(r'\{.*\}', result, re.DOTALL)
+        m = re.search(r"\{.*\}", result, re.DOTALL)
         if m:
             try:
                 parsed = json.loads(m.group())
@@ -305,14 +310,19 @@ def render_with_darktable(raw_path: Path, xmp_path: Path, output_path: Path) -> 
     """Render RAW using darktable-cli with XMP sidecar."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        DARKTABLE_CLI, str(raw_path), str(xmp_path), str(output_path),
-        "--hq", "true", "--apply-custom-presets", "false",
+        DARKTABLE_CLI,
+        str(raw_path),
+        str(xmp_path),
+        str(output_path),
+        "--hq",
+        "true",
+        "--apply-custom-presets",
+        "false",
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=DARKTABLE_RENDER_TIMEOUT)
         if output_path.exists() and output_path.stat().st_size > 0:
-            log.info("Rendered: %s (%.1f MB)", output_path.name,
-                     output_path.stat().st_size / 1024 / 1024)
+            log.info("Rendered: %s (%.1f MB)", output_path.name, output_path.stat().st_size / 1024 / 1024)
             return True
         log.error("Render failed: %s", result.stderr[-200:] if result.stderr else "no output")
         return False
@@ -340,8 +350,7 @@ def apply_color_match(target_path: Path, reference_path: Path, output_path: Path
         return True
     except Exception as e:
         log.error("Color match failed: %s", e)
-        _log_photo_failure("color_match_failed", f"{target_path.name}: {e}",
-                           slug=target_path.stem)
+        _log_photo_failure("color_match_failed", f"{target_path.name}: {e}", slug=target_path.stem)
         return False
 
 
@@ -381,13 +390,14 @@ Be HONEST. If the edit is bad, say so. A color cast across the whole image, sepi
         return {"approved": False, "score": 0, "critique": "review failed", "suggestions": ""}
 
     import re as _re
-    m = _re.search(r'```(?:json)?\s*\n(.*?)\n```', result, _re.DOTALL)
+
+    m = _re.search(r"```(?:json)?\s*\n(.*?)\n```", result, _re.DOTALL)
     if m:
         try:
             return json.loads(m.group(1))
         except json.JSONDecodeError:
             pass
-    m = _re.search(r'\{.*\}', result, _re.DOTALL)
+    m = _re.search(r"\{.*\}", result, _re.DOTALL)
     if m:
         try:
             return json.loads(m.group())
@@ -426,13 +436,14 @@ Keep the same structure. Only change values that need fixing based on the feedba
         return params
 
     import re as _re
-    m = _re.search(r'```(?:json)?\s*\n(.*?)\n```', result, _re.DOTALL)
+
+    m = _re.search(r"```(?:json)?\s*\n(.*?)\n```", result, _re.DOTALL)
     if m:
         try:
             return json.loads(m.group(1))
         except json.JSONDecodeError:
             pass
-    m = _re.search(r'\{.*\}', result, _re.DOTALL)
+    m = _re.search(r"\{.*\}", result, _re.DOTALL)
     if m:
         try:
             return json.loads(m.group())
@@ -441,8 +452,7 @@ Keep the same structure. Only change values that need fixing based on the feedba
     return params
 
 
-def edit_photo(raw_path: Path, reference_path: Path = None,
-               output_dir: Path = None, max_iterations: int = 3) -> dict:
+def edit_photo(raw_path: Path, reference_path: Path = None, output_dir: Path = None, max_iterations: int = 3) -> dict:
     """Full editing pipeline: analyze → render → review → iterate if needed."""
     # Verify darktable is available before doing any work
     dt_version = _check_darktable_version()
@@ -466,6 +476,7 @@ def edit_photo(raw_path: Path, reference_path: Path = None,
     best_review = None
     params = None
 
+    last_review = None
     for iteration in range(max_iterations):
         log.info("=== Iteration %d for %s ===", iteration + 1, raw_path.stem)
 
@@ -476,25 +487,29 @@ def edit_photo(raw_path: Path, reference_path: Path = None,
             params = revise_params(params, last_review)
         if not params:
             log.error("Analysis/revision failed")
-            _log_photo_failure("analysis_empty",
-                               f"analyze_photo returned empty on iteration {iteration + 1}",
-                               slug=raw_path.stem)
+            _log_photo_failure(
+                "analysis_empty", f"analyze_photo returned empty on iteration {iteration + 1}", slug=raw_path.stem
+            )
             continue
 
         analysis = params.get("analysis", {})
-        log.info("Scene: %s, Light: %s, Mood: %s",
-                 analysis.get("scene_type", "?"),
-                 analysis.get("light_condition", "?"),
-                 analysis.get("mood_target", "?"))
+        log.info(
+            "Scene: %s, Light: %s, Mood: %s",
+            analysis.get("scene_type", "?"),
+            analysis.get("light_condition", "?"),
+            analysis.get("mood_target", "?"),
+        )
 
         xmp_path = params_to_xmp(params, raw_path)
         log.info("XMP written: %s", xmp_path.name)
 
         dt_output = output_dir / f"{raw_path.stem}_v{iteration + 1}_edited.jpg"
         if not render_with_darktable(raw_path, xmp_path, dt_output):
-            _log_photo_failure("darktable_render_failed",
-                               f"darktable-cli failed for {raw_path.name} iteration {iteration + 1}",
-                               slug=raw_path.stem)
+            _log_photo_failure(
+                "darktable_render_failed",
+                f"darktable-cli failed for {raw_path.name} iteration {iteration + 1}",
+                slug=raw_path.stem,
+            )
             continue
 
         # Skip color matching — it causes unnatural color casts
@@ -504,8 +519,9 @@ def edit_photo(raw_path: Path, reference_path: Path = None,
         last_review = review_edit(preview, final_output, params)
         review_score = last_review.get("score", 0)
         approved = last_review.get("approved", False)
-        log.info("Review: score=%s, approved=%s, critique=%s",
-                 review_score, approved, last_review.get("critique", "")[:100])
+        log.info(
+            "Review: score=%s, approved=%s, critique=%s", review_score, approved, last_review.get("critique", "")[:100]
+        )
 
         if review_score > best_score:
             best_score = review_score
@@ -518,17 +534,18 @@ def edit_photo(raw_path: Path, reference_path: Path = None,
             break
 
         if iteration < max_iterations - 1:
-            log.info("Review not approved, iterating with suggestions: %s",
-                     last_review.get("suggestions", "")[:100])
+            log.info("Review not approved, iterating with suggestions: %s", last_review.get("suggestions", "")[:100])
 
     if best_score < 6 and best_score > 0:
-        _log_photo_failure("quality_target_not_met",
-                           f"Best score {best_score}/10 after {max_iterations} iterations",
-                           slug=raw_path.stem)
+        _log_photo_failure(
+            "quality_target_not_met",
+            f"Best score {best_score}/10 after {max_iterations} iterations",
+            slug=raw_path.stem,
+        )
     elif best_score == 0:
-        _log_photo_failure("edit_pipeline_failed",
-                           f"No successful render after {max_iterations} iterations",
-                           slug=raw_path.stem)
+        _log_photo_failure(
+            "edit_pipeline_failed", f"No successful render after {max_iterations} iterations", slug=raw_path.stem
+        )
 
     if best_params:
         params_path = output_dir / f"{raw_path.stem}_params.json"
@@ -543,13 +560,16 @@ def edit_photo(raw_path: Path, reference_path: Path = None,
     }
 
 
-def pick_and_edit(footage_dir: Path, output_dir: Path = None,
-                  reference_dir: Path = None, n_candidates: int = 10) -> dict:
+def pick_and_edit(
+    footage_dir: Path, output_dir: Path = None, reference_dir: Path = None, n_candidates: int = 10
+) -> dict:
     """Daily pipeline: pick the best RAW candidate and edit it."""
     from scorer import AestheticScorer
 
     if output_dir is None:
-        from config import ARTIFACTS_DIR; output_dir = ARTIFACTS_DIR / "photos"
+        from config import ARTIFACTS_DIR
+
+        output_dir = ARTIFACTS_DIR / "photos"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     raw_exts = {".arw", ".cr2", ".cr3", ".nef", ".dng", ".raf"}
@@ -597,6 +617,7 @@ def pick_and_edit(footage_dir: Path, output_dir: Path = None,
 
 if __name__ == "__main__":
     import argparse
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
     parser = argparse.ArgumentParser(description="Per-image aesthetic photo editor")
     parser.add_argument("raw", help="RAW file to edit")

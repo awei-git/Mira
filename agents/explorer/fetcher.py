@@ -1,19 +1,112 @@
 """Fetch content from web sources: arxiv, Reddit, HuggingFace, GitHub, HN, Lobsters, RSS."""
+
+import email.utils
+import hashlib
+import importlib.util
 import json
 import logging
+import math
 import urllib.request
 import urllib.error
 import urllib.parse
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET  # B314/B405: defused for untrusted RSS/Atom XML
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import SOURCES_FILE, FEEDS_DIR, MAX_FEED_ITEMS
+from trust_guard import is_suspicious_content
 
 log = logging.getLogger("mira")
 
 USER_AGENT = "MiraAgent/1.0 (research bot)"
+SOURCE_DAILY_COUNTS_FILE = FEEDS_DIR / "source_daily_counts.json"
+SOURCE_ENTROPY_LOG_FILE = FEEDS_DIR / "source_entropy_log.json"
+SOURCE_COUNT_WINDOW_DAYS = 30
+DEFAULT_FEED_SOURCE_TRUST = 0.5
+
+_SHARED_CONFIG_PATH = Path(__file__).resolve().parent.parent / "shared" / "config.py"
+_shared_config_spec = importlib.util.spec_from_file_location("_mira_shared_config_for_fetcher", _SHARED_CONFIG_PATH)
+if _shared_config_spec is not None and _shared_config_spec.loader is not None:
+    _shared_config = importlib.util.module_from_spec(_shared_config_spec)
+    _shared_config_spec.loader.exec_module(_shared_config)
+    FEED_SOURCE_TRUST = getattr(_shared_config, "FEED_SOURCE_TRUST", {})
+    EXPLORE_SOURCE_ENTROPY_THRESHOLD = getattr(_shared_config, "EXPLORE_SOURCE_ENTROPY_THRESHOLD", 0.6)
+    EXPLORE_SOURCE_WINDOW = getattr(_shared_config, "EXPLORE_SOURCE_WINDOW", 16)
+else:
+    FEED_SOURCE_TRUST = {}
+    EXPLORE_SOURCE_ENTROPY_THRESHOLD = 0.6
+    EXPLORE_SOURCE_WINDOW = 16
+
+
+def _source_trust_weight(source: str | None, source_key: str | None = None) -> float:
+    candidates = []
+    for value in (source, source_key):
+        if not value:
+            continue
+        normalized = str(value).strip().lower().replace(" ", "_")
+        candidates.append(normalized)
+        if normalized.startswith("r/"):
+            candidates.append("reddit")
+        if normalized == "hackernews":
+            candidates.append("hacker_news")
+    for candidate in candidates:
+        if candidate in FEED_SOURCE_TRUST:
+            try:
+                return float(FEED_SOURCE_TRUST[candidate])
+            except (TypeError, ValueError):
+                return DEFAULT_FEED_SOURCE_TRUST
+    return DEFAULT_FEED_SOURCE_TRUST
+
+
+def _apply_source_trust_weight(items: list[dict], source_key: str | None = None) -> list[dict]:
+    for item in items:
+        weight = _source_trust_weight(item.get("source"), source_key)
+        for score_key in ("salience", "relevance"):
+            if score_key not in item:
+                continue
+            try:
+                item[score_key] = float(item[score_key]) * weight
+            except (TypeError, ValueError):
+                continue
+    return items
+
+
+def _item_text(item: dict) -> str:
+    return "\n".join(str(item.get(key, "") or "") for key in ("title", "summary", "url"))
+
+
+def _filter_suspicious_items(items: list[dict]) -> list[dict]:
+    filtered = []
+    for item in items:
+        if is_suspicious_content(_item_text(item)):
+            log.warning(
+                "Skipping suspicious feed item from %s: %s",
+                item.get("source", "?"),
+                str(item.get("title", "?"))[:120],
+            )
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _parse_ts_to_unix(text: str) -> float | None:
+    """Parse RFC 2822 or ISO 8601 timestamp string to Unix float. Returns None on failure."""
+    if not text:
+        return None
+    try:
+        # RFC 2822 (RSS pubDate)
+        parsed = email.utils.parsedate_to_datetime(text)
+        return parsed.timestamp()
+    except Exception:
+        pass
+    try:
+        # ISO 8601 (arxiv, Atom)
+        ts = text.rstrip("Z")
+        dt = datetime.fromisoformat(ts).replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
 
 
 def load_sources() -> dict:
@@ -28,6 +121,78 @@ def load_sources() -> dict:
         return {}
 
 
+def _load_source_daily_counts() -> dict[str, dict[str, int]]:
+    if not SOURCE_DAILY_COUNTS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(SOURCE_DAILY_COUNTS_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning("Could not read source daily counts %s: %s", SOURCE_DAILY_COUNTS_FILE, e)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    counts: dict[str, dict[str, int]] = {}
+    for source, daily_counts in data.items():
+        if not isinstance(source, str) or not isinstance(daily_counts, dict):
+            continue
+        clean_daily_counts = {}
+        for day_text, count in daily_counts.items():
+            if not isinstance(day_text, str):
+                continue
+            try:
+                datetime.fromisoformat(day_text).date()
+                clean_daily_counts[day_text] = max(0, int(count))
+            except (TypeError, ValueError):
+                continue
+        if clean_daily_counts:
+            counts[source] = clean_daily_counts
+    return counts
+
+
+def _write_source_daily_counts(counts: dict[str, dict[str, int]]) -> None:
+    try:
+        SOURCE_DAILY_COUNTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = SOURCE_DAILY_COUNTS_FILE.with_suffix(SOURCE_DAILY_COUNTS_FILE.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(counts, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(SOURCE_DAILY_COUNTS_FILE)
+    except OSError as e:
+        log.warning("Could not write source daily counts %s: %s", SOURCE_DAILY_COUNTS_FILE, e)
+
+
+def _record_source_count(
+    counts: dict[str, dict[str, int]], current_counts: dict[str, int], source: str, count: int, day_key: str
+) -> None:
+    source_key = str(source).strip()
+    if not source_key:
+        return
+    item_count = max(0, int(count))
+    counts.setdefault(source_key, {})[day_key] = item_count
+    current_counts[source_key] = item_count
+
+
+def _source_moving_average(counts: dict[str, dict[str, int]], source: str, today) -> float:
+    cutoff = today - timedelta(days=SOURCE_COUNT_WINDOW_DAYS)
+    values = []
+    for day_text, count in counts.get(source, {}).items():
+        try:
+            day = datetime.fromisoformat(day_text).date()
+        except ValueError:
+            continue
+        if cutoff <= day < today:
+            values.append(count)
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+
+def _warn_on_silent_sources(counts: dict[str, dict[str, int]], current_counts: dict[str, int], today) -> None:
+    for source, count in current_counts.items():
+        avg = _source_moving_average(counts, source, today)
+        if count == 0 and avg > 0:
+            log.warning("feed %s silent: 0 articles, expected ~%.1f", source, avg)
+
+
 def _http_get(url: str, timeout: int = 15) -> str:
     """GET a URL and return body text."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -35,9 +200,20 @@ def _http_get(url: str, timeout: int = 15) -> str:
         return resp.read().decode("utf-8", errors="replace")
 
 
+def _source_hash(raw_content) -> str:
+    if isinstance(raw_content, bytes):
+        text = raw_content.decode("utf-8", errors="replace")
+    elif isinstance(raw_content, str):
+        text = raw_content
+    else:
+        text = json.dumps(raw_content, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Arxiv
 # ---------------------------------------------------------------------------
+
 
 def fetch_arxiv(categories: list[str], max_results: int = 10) -> list[dict]:
     """Fetch recent papers from arxiv API."""
@@ -63,6 +239,7 @@ def fetch_arxiv(categories: list[str], max_results: int = 10) -> list[dict]:
     try:
         root = ET.fromstring(xml_text)
         for entry in root.findall("atom:entry", ns):
+            raw_entry = ET.tostring(entry, encoding="unicode")
             title = entry.findtext("atom:title", "", ns).strip().replace("\n", " ")
             summary = entry.findtext("atom:summary", "", ns).strip()[:300]
             link = ""
@@ -73,12 +250,17 @@ def fetch_arxiv(categories: list[str], max_results: int = 10) -> list[dict]:
             if not link:
                 link_el = entry.find("atom:id", ns)
                 link = link_el.text if link_el is not None else ""
-            items.append({
+            published_ts = _parse_ts_to_unix(entry.findtext("atom:published", "", ns).strip())
+            item: dict = {
                 "source": "arxiv",
                 "title": title,
                 "summary": summary,
                 "url": link,
-            })
+                "raw_source_hash": _source_hash(raw_entry),
+            }
+            if published_ts is not None:
+                item["published_ts"] = published_ts
+            items.append(item)
     except ET.ParseError as e:
         log.error("Arxiv XML parse failed: %s", e)
 
@@ -88,6 +270,7 @@ def fetch_arxiv(categories: list[str], max_results: int = 10) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Reddit
 # ---------------------------------------------------------------------------
+
 
 def fetch_reddit(subreddits: list[str], limit: int = 10) -> list[dict]:
     """Fetch hot posts from subreddits via JSON API."""
@@ -104,13 +287,16 @@ def fetch_reddit(subreddits: list[str], limit: int = 10) -> list[dict]:
             d = post.get("data", {})
             if d.get("stickied"):
                 continue
-            items.append({
-                "source": f"r/{sub}",
-                "title": d.get("title", ""),
-                "summary": (d.get("selftext", "") or "")[:300],
-                "url": f"https://reddit.com{d.get('permalink', '')}",
-                "score": d.get("score", 0),
-            })
+            items.append(
+                {
+                    "source": f"r/{sub}",
+                    "title": d.get("title", ""),
+                    "summary": (d.get("selftext", "") or "")[:300],
+                    "url": f"https://reddit.com{d.get('permalink', '')}",
+                    "score": d.get("score", 0),
+                    "raw_source_hash": _source_hash(d),
+                }
+            )
 
     return items
 
@@ -118,6 +304,7 @@ def fetch_reddit(subreddits: list[str], limit: int = 10) -> list[dict]:
 # ---------------------------------------------------------------------------
 # HuggingFace Daily Papers
 # ---------------------------------------------------------------------------
+
 
 def fetch_hf_papers() -> list[dict]:
     """Fetch today's trending papers from HuggingFace."""
@@ -131,12 +318,15 @@ def fetch_hf_papers() -> list[dict]:
     items = []
     for paper in data[:15]:
         p = paper.get("paper", {})
-        items.append({
-            "source": "huggingface",
-            "title": p.get("title", ""),
-            "summary": (p.get("summary", "") or "")[:300],
-            "url": f"https://huggingface.co/papers/{p.get('id', '')}",
-        })
+        items.append(
+            {
+                "source": "huggingface",
+                "title": p.get("title", ""),
+                "summary": (p.get("summary", "") or "")[:300],
+                "url": f"https://huggingface.co/papers/{p.get('id', '')}",
+                "raw_source_hash": _source_hash(paper),
+            }
+        )
 
     return items
 
@@ -145,8 +335,8 @@ def fetch_hf_papers() -> list[dict]:
 # GitHub Trending (via Search API — stars proxy)
 # ---------------------------------------------------------------------------
 
-def fetch_github_trending(days_back: int = 7, language: str | None = None,
-                          per_page: int = 25) -> list[dict]:
+
+def fetch_github_trending(days_back: int = 7, language: str | None = None, per_page: int = 25) -> list[dict]:
     """Fetch trending repos via GitHub Search API (sorted by stars, recent)."""
     since = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
     q = f"created:>{since}"
@@ -157,10 +347,13 @@ def fetch_github_trending(days_back: int = 7, language: str | None = None,
         f"?q={urllib.parse.quote(q)}&sort=stars&order=desc&per_page={per_page}"
     )
     try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "application/vnd.github+json",
-        })
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "application/vnd.github+json",
+            },
+        )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
     except Exception as e:
@@ -172,13 +365,16 @@ def fetch_github_trending(days_back: int = 7, language: str | None = None,
         desc = (r.get("description") or "")[:300]
         lang = r.get("language") or "?"
         stars = r.get("stargazers_count", 0)
-        items.append({
-            "source": "github_trending",
-            "title": f"{r['full_name']} [{lang}] ({stars} stars)",
-            "summary": desc,
-            "url": r["html_url"],
-            "stars": stars,
-        })
+        items.append(
+            {
+                "source": "github_trending",
+                "title": f"{r['full_name']} [{lang}] ({stars} stars)",
+                "summary": desc,
+                "url": r["html_url"],
+                "stars": stars,
+                "raw_source_hash": _source_hash(r),
+            }
+        )
     return items
 
 
@@ -186,11 +382,19 @@ def fetch_github_trending(days_back: int = 7, language: str | None = None,
 # Hacker News (via Algolia API — single request, rich data)
 # ---------------------------------------------------------------------------
 
+
 def fetch_hackernews(count: int = 30, min_points: int = 0) -> list[dict]:
     """Fetch HN front page stories via Algolia Search API."""
-    params = f"tags=front_page&hitsPerPage={count}"
-    if min_points:
-        params += f"&numericFilters=points>{min_points}"
+    try:
+        requested_count = max(1, int(count))
+    except (TypeError, ValueError):
+        requested_count = 30
+    try:
+        min_score = max(0, int(min_points or 0))
+    except (TypeError, ValueError):
+        min_score = 0
+
+    params = urllib.parse.urlencode({"tags": "front_page", "hitsPerPage": requested_count})
     url = f"https://hn.algolia.com/api/v1/search?{params}"
     try:
         data = json.loads(_http_get(url, timeout=15))
@@ -200,20 +404,31 @@ def fetch_hackernews(count: int = 30, min_points: int = 0) -> list[dict]:
 
     items = []
     for h in data.get("hits", []):
-        items.append({
-            "source": "hackernews",
-            "title": h.get("title", ""),
-            "summary": f"Score: {h.get('points', 0)} | Comments: {h.get('num_comments', 0)}",
-            "url": h.get("url") or f"https://news.ycombinator.com/item?id={h['objectID']}",
-            "score": h.get("points", 0),
-            "hn_url": f"https://news.ycombinator.com/item?id={h['objectID']}",
-        })
+        score = h.get("points", 0) or 0
+        try:
+            score = int(score)
+        except (TypeError, ValueError):
+            score = 0
+        if min_score and score < min_score:
+            continue
+        items.append(
+            {
+                "source": "hackernews",
+                "title": h.get("title", ""),
+                "summary": f"Score: {score} | Comments: {h.get('num_comments', 0)}",
+                "url": h.get("url") or f"https://news.ycombinator.com/item?id={h['objectID']}",
+                "score": score,
+                "hn_url": f"https://news.ycombinator.com/item?id={h['objectID']}",
+                "raw_source_hash": _source_hash(h),
+            }
+        )
     return items
 
 
 # ---------------------------------------------------------------------------
 # Web Search (DuckDuckGo HTML — no API key required)
 # ---------------------------------------------------------------------------
+
 
 def fetch_web_search(query: str, max_results: int = 10) -> list[dict]:
     """Search DuckDuckGo and return structured results.
@@ -222,7 +437,8 @@ def fetch_web_search(query: str, max_results: int = 10) -> list[dict]:
     Returns list of {source, title, summary, url, query} dicts.
     """
     try:
-        from web_browser import search as wb_search
+        from tools.web_browser import search as wb_search
+
         results = wb_search(query, max_results=max_results)
         return [
             {
@@ -231,6 +447,7 @@ def fetch_web_search(query: str, max_results: int = 10) -> list[dict]:
                 "summary": r.snippet[:300],
                 "url": r.url,
                 "query": query,
+                "raw_source_hash": _source_hash({"title": r.title, "snippet": r.snippet, "url": r.url, "query": query}),
             }
             for r in results
         ]
@@ -242,6 +459,7 @@ def fetch_web_search(query: str, max_results: int = 10) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Lobsters (JSON API)
 # ---------------------------------------------------------------------------
+
 
 def fetch_lobsters(count: int = 25) -> list[dict]:
     """Fetch hottest stories from Lobsters."""
@@ -255,19 +473,23 @@ def fetch_lobsters(count: int = 25) -> list[dict]:
     items = []
     for s in data[:count]:
         tags = ", ".join(s.get("tags", []))
-        items.append({
-            "source": "lobsters",
-            "title": s.get("short_id_url", "").split("/")[-1] if not s.get("title") else s.get("title", ""),
-            "summary": f"[{tags}] Score: {s.get('score', 0)} | Comments: {s.get('comment_count', 0)}",
-            "url": s.get("url") or s.get("short_id_url", ""),
-            "score": s.get("score", 0),
-        })
+        items.append(
+            {
+                "source": "lobsters",
+                "title": s.get("short_id_url", "").split("/")[-1] if not s.get("title") else s.get("title", ""),
+                "summary": f"[{tags}] Score: {s.get('score', 0)} | Comments: {s.get('comment_count', 0)}",
+                "url": s.get("url") or s.get("short_id_url", ""),
+                "score": s.get("score", 0),
+                "raw_source_hash": _source_hash(s),
+            }
+        )
     return items
 
 
 # ---------------------------------------------------------------------------
 # Dev.to (public API — no auth needed)
 # ---------------------------------------------------------------------------
+
 
 def fetch_devto(per_page: int = 20, top_days: int = 7) -> list[dict]:
     """Fetch top articles from Dev.to public API."""
@@ -280,20 +502,24 @@ def fetch_devto(per_page: int = 20, top_days: int = 7) -> list[dict]:
 
     items = []
     for a in data:
-        items.append({
-            "source": "devto",
-            "title": a.get("title", ""),
-            "summary": (a.get("description", "") or "")[:300],
-            "url": a.get("url", ""),
-            "score": a.get("positive_reactions_count", 0),
-            "tags": ", ".join(a.get("tag_list", [])),
-        })
+        items.append(
+            {
+                "source": "devto",
+                "title": a.get("title", ""),
+                "summary": (a.get("description", "") or "")[:300],
+                "url": a.get("url", ""),
+                "score": a.get("positive_reactions_count", 0),
+                "tags": ", ".join(a.get("tag_list", [])),
+                "raw_source_hash": _source_hash(a),
+            }
+        )
     return items
 
 
 # ---------------------------------------------------------------------------
 # RSS feeds
 # ---------------------------------------------------------------------------
+
 
 def fetch_rss(feeds: list[dict]) -> list[dict]:
     """Fetch items from RSS feeds. Each feed is {name, url}."""
@@ -315,26 +541,42 @@ def fetch_rss(feeds: list[dict]) -> list[dict]:
             # Try RSS 2.0 format
             feed_items = []
             for item in root.findall(".//item")[:10]:
-                feed_items.append({
+                raw_item = ET.tostring(item, encoding="unicode")
+                rss_item: dict = {
                     "source": name,
                     "title": (item.findtext("title") or "").strip(),
                     "summary": (item.findtext("description") or "").strip()[:300],
                     "url": (item.findtext("link") or "").strip(),
-                })
+                    "raw_source_hash": _source_hash(raw_item),
+                }
+                pub_ts = _parse_ts_to_unix((item.findtext("pubDate") or "").strip())
+                if pub_ts is not None:
+                    rss_item["published_ts"] = pub_ts
+                feed_items.append(rss_item)
             # Try Atom format if no RSS items found for this feed
             if not feed_items:
                 ns = {"atom": "http://www.w3.org/2005/Atom"}
                 for entry in root.findall("atom:entry", ns)[:10]:
+                    raw_entry = ET.tostring(entry, encoding="unicode")
                     link = ""
                     for lnk in entry.findall("atom:link", ns):
                         link = lnk.get("href", "")
                         break
-                    feed_items.append({
+                    atom_item: dict = {
                         "source": name,
                         "title": (entry.findtext("atom:title", "", ns) or "").strip(),
                         "summary": (entry.findtext("atom:summary", "", ns) or "").strip()[:300],
                         "url": link,
-                    })
+                        "raw_source_hash": _source_hash(raw_entry),
+                    }
+                    atom_ts = _parse_ts_to_unix(
+                        (
+                            entry.findtext("atom:updated", "", ns) or entry.findtext("atom:published", "", ns) or ""
+                        ).strip()
+                    )
+                    if atom_ts is not None:
+                        atom_item["published_ts"] = atom_ts
+                    feed_items.append(atom_item)
             items.extend(feed_items)
         except ET.ParseError as e:
             log.error("RSS parse failed for '%s': %s", name, e)
@@ -346,6 +588,71 @@ def fetch_rss(feeds: list[dict]) -> list[dict]:
 # Fetch all sources
 # ---------------------------------------------------------------------------
 
+
+def _load_source_entropy_log() -> list[list[str]]:
+    if not SOURCE_ENTROPY_LOG_FILE.exists():
+        return []
+    try:
+        data = json.loads(SOURCE_ENTROPY_LOG_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [e for e in data if isinstance(e, list)]
+        return []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _append_source_entropy_log(sources: list[str]) -> None:
+    log_data = _load_source_entropy_log()
+    log_data.append(list(sources))
+    log_data = log_data[-EXPLORE_SOURCE_WINDOW:]
+    try:
+        SOURCE_ENTROPY_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SOURCE_ENTROPY_LOG_FILE.with_suffix(SOURCE_ENTROPY_LOG_FILE.suffix + ".tmp")
+        tmp.write_text(json.dumps(log_data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(SOURCE_ENTROPY_LOG_FILE)
+    except OSError as e:
+        log.warning("Could not write source entropy log: %s", e)
+
+
+def _compute_source_entropy(log_data: list[list[str]]) -> float:
+    counts: dict[str, int] = {}
+    for entry in log_data:
+        for source in entry:
+            counts[source] = counts.get(source, 0) + 1
+    total = sum(counts.values())
+    if total == 0 or len(counts) < 2:
+        return 1.0
+    entropy = -sum((c / total) * math.log2(c / total) for c in counts.values())
+    max_entropy = math.log2(len(counts))
+    return entropy / max_entropy if max_entropy > 0 else 1.0
+
+
+def _balance_sources(sources: list[str], log_data: list[list[str]], entropy: float) -> list[str]:
+    if entropy >= EXPLORE_SOURCE_ENTROPY_THRESHOLD or not log_data:
+        return sources
+    counts: dict[str, int] = {}
+    for entry in log_data:
+        for s in entry:
+            counts[s] = counts.get(s, 0) + 1
+    if not counts:
+        return sources
+    in_sources = [s for s in sources if s in counts]
+    if not in_sources:
+        return sources
+    most_fetched = max(in_sources, key=lambda s: counts[s])
+    adjusted = [s for s in sources if s != most_fetched]
+    least_fetched = min(counts, key=lambda s: counts[s])
+    if least_fetched not in adjusted:
+        adjusted.append(least_fetched)
+    log.info(
+        "Entropy %.3f < threshold %.3f: deprioritized '%s'",
+        entropy,
+        EXPLORE_SOURCE_ENTROPY_THRESHOLD,
+        most_fetched,
+    )
+    return adjusted
+
+
 def fetch_sources(source_names: list[str]) -> list[dict]:
     """Fetch from specific named sources. Names: arxiv, reddit, huggingface, hacker_news, rss, or RSS feed names."""
     sources = load_sources()
@@ -354,13 +661,19 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
 
     all_items = []
     names_lower = [n.strip().lower() for n in source_names]
+    today = datetime.now(timezone.utc).date()
+    day_key = today.isoformat()
+    source_daily_counts = _load_source_daily_counts()
+    current_counts = {}
 
     # Arxiv
     if "arxiv" in names_lower:
         arxiv_cfg = sources.get("arxiv", {})
         if arxiv_cfg.get("categories"):
             items = fetch_arxiv(arxiv_cfg["categories"], arxiv_cfg.get("max_results", 10))
+            items = _apply_source_trust_weight(items, "arxiv")
             all_items.extend(items)
+            _record_source_count(source_daily_counts, current_counts, "arxiv", len(items), day_key)
             log.info("Arxiv: %d items", len(items))
 
     # Reddit
@@ -368,14 +681,24 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
         reddit_cfg = sources.get("reddit", {})
         if reddit_cfg.get("subreddits"):
             items = fetch_reddit(reddit_cfg["subreddits"], reddit_cfg.get("limit", 10))
+            items = _apply_source_trust_weight(items, "reddit")
             all_items.extend(items)
+            reddit_counts = {f"r/{sub}": 0 for sub in reddit_cfg["subreddits"]}
+            for item in items:
+                source = item.get("source")
+                if source in reddit_counts:
+                    reddit_counts[source] += 1
+            for source, count in reddit_counts.items():
+                _record_source_count(source_daily_counts, current_counts, source, count, day_key)
             log.info("Reddit: %d items", len(items))
 
     # HuggingFace
     if "huggingface" in names_lower:
         if sources.get("huggingface", {}).get("enabled", True):
             items = fetch_hf_papers()
+            items = _apply_source_trust_weight(items, "huggingface")
             all_items.extend(items)
+            _record_source_count(source_daily_counts, current_counts, "huggingface", len(items), day_key)
             log.info("HuggingFace: %d items", len(items))
 
     # GitHub Trending
@@ -387,7 +710,9 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
                 language=gh_cfg.get("language"),
                 per_page=gh_cfg.get("per_page", 25),
             )
+            items = _apply_source_trust_weight(items, "github_trending")
             all_items.extend(items)
+            _record_source_count(source_daily_counts, current_counts, "github_trending", len(items), day_key)
             log.info("GitHub Trending: %d items", len(items))
 
     # Hacker News (native Algolia API — richer than RSS)
@@ -398,7 +723,9 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
                 count=hn_cfg.get("count", 30),
                 min_points=hn_cfg.get("min_points", 50),
             )
+            items = _apply_source_trust_weight(items, "hacker_news")
             all_items.extend(items)
+            _record_source_count(source_daily_counts, current_counts, "hackernews", len(items), day_key)
             log.info("HackerNews: %d items", len(items))
 
     # Lobsters
@@ -406,7 +733,9 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
         lob_cfg = sources.get("lobsters", {})
         if lob_cfg.get("enabled", True):
             items = fetch_lobsters(count=lob_cfg.get("count", 25))
+            items = _apply_source_trust_weight(items, "lobsters")
             all_items.extend(items)
+            _record_source_count(source_daily_counts, current_counts, "lobsters", len(items), day_key)
             log.info("Lobsters: %d items", len(items))
 
     # Dev.to
@@ -417,17 +746,21 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
                 per_page=dt_cfg.get("per_page", 20),
                 top_days=dt_cfg.get("top_days", 7),
             )
+            items = _apply_source_trust_weight(items, "devto")
             all_items.extend(items)
+            _record_source_count(source_daily_counts, current_counts, "devto", len(items), day_key)
             log.info("Dev.to: %d items", len(items))
 
     # Web Search (DuckDuckGo — query driven, not config-driven)
     # Supports "web_search:QUERY" entries in source_names
     for name in names_lower:
         if name.startswith("web_search:"):
-            query = name[len("web_search:"):]
+            query = name[len("web_search:") :]
             if query:
                 items = fetch_web_search(query, max_results=10)
+                items = _apply_source_trust_weight(items, "duckduckgo")
                 all_items.extend(items)
+                _record_source_count(source_daily_counts, current_counts, f"web_search:{query}", len(items), day_key)
                 log.info("Web search '%s': %d items", query, len(items))
 
     # Specific RSS feeds by name, or all RSS
@@ -436,7 +769,15 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
         # All RSS feeds
         if rss_feeds:
             items = fetch_rss(rss_feeds)
+            items = _apply_source_trust_weight(items, "rss")
             all_items.extend(items)
+            rss_counts = {feed.get("name", "RSS"): 0 for feed in rss_feeds if feed.get("url")}
+            for item in items:
+                source = item.get("source")
+                if source in rss_counts:
+                    rss_counts[source] += 1
+            for source, count in rss_counts.items():
+                _record_source_count(source_daily_counts, current_counts, source, count, day_key)
             log.info("RSS (all): %d items", len(items))
     else:
         # Match specific feeds by name (e.g. "hacker_news" matches "Hacker News")
@@ -447,21 +788,39 @@ def fetch_sources(source_names: list[str]) -> list[dict]:
                 matched.append(feed)
         if matched:
             items = fetch_rss(matched)
+            items = _apply_source_trust_weight(items, "rss")
             all_items.extend(items)
+            rss_counts = {feed.get("name", "RSS"): 0 for feed in matched if feed.get("url")}
+            for item in items:
+                source = item.get("source")
+                if source in rss_counts:
+                    rss_counts[source] += 1
+            for source, count in rss_counts.items():
+                _record_source_count(source_daily_counts, current_counts, source, count, day_key)
             log.info("RSS (matched %d feeds): %d items", len(matched), len(items))
 
+    if current_counts:
+        _write_source_daily_counts(source_daily_counts)
+        _warn_on_silent_sources(source_daily_counts, current_counts, today)
+
     log.info("Selective fetch (%s): %d items total", ",".join(source_names), len(all_items))
+    all_items = _filter_suspicious_items(all_items)
 
     # Save raw
     raw_path = FEEDS_DIR / "raw" / f"{datetime.now().strftime('%Y-%m-%d_%H%M')}.json"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_path.write_text(
-        json.dumps(all_items, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    raw_path.write_text(json.dumps(all_items, indent=2, ensure_ascii=False), encoding="utf-8")
 
     return all_items[:MAX_FEED_ITEMS]
 
 
 def fetch_all() -> list[dict]:
     """Fetch from all configured sources. Returns combined list of items."""
-    return fetch_sources(["arxiv", "reddit", "huggingface", "github_trending", "hackernews", "lobsters", "devto", "rss"])
+    all_sources = ["arxiv", "reddit", "huggingface", "github_trending", "hackernews", "lobsters", "devto", "rss"]
+    entropy_log = _load_source_entropy_log()
+    entropy = _compute_source_entropy(entropy_log)
+    log.info("Source diversity entropy (window=%d): %.3f", EXPLORE_SOURCE_WINDOW, entropy)
+    selected = _balance_sources(all_sources, entropy_log, entropy)
+    items = fetch_sources(selected)
+    _append_source_entropy_log(selected)
+    return items

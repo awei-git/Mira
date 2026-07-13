@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when proving existence or uniqueness for an SPDE with Hölder or non-Lipschitz coefficients where standard Picard iteration fails."
+---
+
 # SPDE Uniqueness and Regularity: Working Procedure
 
 **Trigger if:** You have an SPDE of the form $$dv = \frac{1}{2}\Delta v \, dt + f(v, \nabla v) \nabla v \, dF$$ with Gaussian noise F, and you need to prove:

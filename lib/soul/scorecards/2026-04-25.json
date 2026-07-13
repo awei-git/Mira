@@ -1,0 +1,925 @@
+{
+  "generated_at": "2026-04-25T20:01:10.359501",
+  "period_days": 7,
+  "agents": {
+    "writer": {
+      "agent": "writer",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "coder": {
+      "agent": "coder",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "explorer": {
+      "agent": "explorer",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "researcher": {
+      "agent": "researcher",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "analyst": {
+      "agent": "analyst",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "discussion": {
+      "agent": "discussion",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "podcast": {
+      "agent": "podcast",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "secret": {
+      "agent": "secret",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "general": {
+      "agent": "general",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "socialmedia": {
+      "agent": "socialmedia",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "super": {
+      "agent": "super",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    }
+  },
+  "super": {
+    "component": "super",
+    "period_days": 7,
+    "scores": {
+      "crash_rate": 0.035,
+      "cycles_today": 1779,
+      "heartbeat_age_seconds": 49,
+      "heartbeat_ok": true,
+      "routing_accuracy": 1.0,
+      "total_tasks": 1,
+      "timeout_count": 0,
+      "error_count": 0,
+      "timeout_rate": 0.0,
+      "error_rate": 0.0,
+      "stuck_tasks": 0
+    }
+  },
+  "aggregate": {
+    "total_tasks": 0,
+    "active_agents": 0,
+    "crash_rate": 0.035,
+    "heartbeat_ok": true,
+    "daily_cost_usd": 8.382,
+    "daily_tokens": 1900296,
+    "daily_calls": 397,
+    "stale_score_count": 0
+  },
+  "stale_skills": [
+    {
+      "event": "SKILL_STALE",
+      "skill": "Memory Decay and Reinforcement",
+      "source": "learned",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "WA Photography Style DNA",
+      "source": "learned",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Cut Rhythm and Pacing",
+      "source": "agent:video",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Montage and Juxtaposition",
+      "source": "agent:video",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Sound-First Editing",
+      "source": "agent:video",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Visual Continuity",
+      "source": "agent:video",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Node-Based Color Grading",
+      "source": "agent:video",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Documentary Assembly Edit",
+      "source": "agent:video",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "B-Roll Strategy",
+      "source": "agent:video",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Titles and Motion Graphics",
+      "source": "agent:video",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Audio Ducking and Mixing",
+      "source": "agent:video",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Beat-Sync Editing",
+      "source": "agent:video",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "J-Cut and L-Cut",
+      "source": "agent:video",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "LUT Color Grading Pipeline",
+      "source": "agent:video",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Speed Ramping",
+      "source": "agent:video",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Competitive Landscape Mapping",
+      "source": "agent:analyst",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Quantitative Reasoning",
+      "source": "agent:analyst",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Synthesis and Recommendation",
+      "source": "agent:analyst",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Trend Signal Detection",
+      "source": "agent:analyst",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Scenario Analysis Modeling",
+      "source": "agent:analyst",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Intrinsic Valuation (DCF)",
+      "source": "agent:analyst",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Macro Regime Mapping",
+      "source": "agent:analyst",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Earnings Quality Forensics",
+      "source": "agent:analyst",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Risk Surface Stress Testing",
+      "source": "agent:analyst",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Hierarchical Task Decomposition",
+      "source": "agent:general",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Evidence-Graded Research Synthesis",
+      "source": "agent:general",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Steelman Before Critique",
+      "source": "agent:general",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "What / So What / Now What",
+      "source": "agent:general",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Source Proximity Verification",
+      "source": "agent:general",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Commenting Craft",
+      "source": "agent:socialmedia",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Substack Growth Playbook",
+      "source": "agent:socialmedia",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Hook: First Line",
+      "source": "agent:socialmedia",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Subject Line Science",
+      "source": "agent:socialmedia",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Writer Network Flywheel",
+      "source": "agent:socialmedia",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "One-to-Many Content Repurposing",
+      "source": "agent:socialmedia",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Subscriber Retention Ladder",
+      "source": "agent:socialmedia",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Information Triage",
+      "source": "agent:explorer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Weak Signal Detection",
+      "source": "agent:explorer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Progressive Distillation",
+      "source": "agent:explorer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Cross-Domain Synthesis",
+      "source": "agent:explorer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Intelligence Briefing Craft",
+      "source": "agent:explorer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Hacker News Signal Extraction",
+      "source": "agent:explorer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "GitHub Trending Analysis",
+      "source": "agent:explorer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Web Search — Query Formulation",
+      "source": "agent:explorer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Arxiv Search — Explorer Feed Strategy",
+      "source": "agent:explorer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Reddit Hot Posts — Signal Extraction",
+      "source": "agent:explorer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Character Desire and Contradiction",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Conceptual Metaphor as Structure",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Defamiliarization",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Dialogue Subtext",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Earned Ending",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Free Indirect Discourse",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Iceberg Principle",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Image Systems",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Incluing",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Novum Extrapolation Chain",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Objective Correlative",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "POV Camera Discipline",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Psychic Distance",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Scene-Level Tension",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Sentence Rhythm",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Strategic Withholding",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Telling Detail",
+      "source": "agent:writer",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Task Routing Intelligence",
+      "source": "agent:super",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Instruction Crafting",
+      "source": "agent:super",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Intent Inference",
+      "source": "agent:super",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Multi-Step Orchestration",
+      "source": "agent:super",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Response Synthesis",
+      "source": "agent:super",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Interview Active Listening",
+      "source": "agent:podcast",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Episode Arc Structure",
+      "source": "agent:podcast",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Audio Editing Discipline",
+      "source": "agent:podcast",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Loudness and Mastering",
+      "source": "agent:podcast",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Guest Preparation System",
+      "source": "agent:podcast",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Systematic Debugging",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Incremental Development",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Defensive Interface Design",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Test-Driven Red-Green-Refactor",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Contract-First API Design",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Measure Before Optimize",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Security Threat Modeling",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Checklist-Driven Code Review",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Read Before Write",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Error Handling Patterns",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Git Workflow for Agents",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Codebase Navigation",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Safe Refactoring",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Dependency Management",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Logging and Observability",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "AI Code Generation Quality",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Bug Pattern Detection",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Root Cause Analysis",
+      "source": "agent:coder",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Abstraction and Generalization",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Advanced Proof Tactics",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Asymptotic Analysis",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Computational Verification",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Conjecture Formulation and Testing",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Gaussian Moment Inequalities",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Literature Synthesis",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Math Paper Writing",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Mathematical Problem-Solving Heuristics",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Proof Strategy Selection",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Random Zeros and Rice Formula",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Reading Mathematics Papers",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Small Deviation Probabilities",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "SPDE Uniqueness Techniques",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Spin Glass Models and Gaussian Bounds",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Stochastic Process Fundamentals",
+      "source": "agent:researcher",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Color Grading Theory",
+      "source": "agent:photo",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Composition and Framing",
+      "source": "agent:photo",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Light and Exposure",
+      "source": "agent:photo",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Visual Storytelling",
+      "source": "agent:photo",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Portrait Retouching Philosophy",
+      "source": "agent:photo",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Zone System Processing",
+      "source": "agent:photo",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Decisive Moment Selection",
+      "source": "agent:photo",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "Print Output Pipeline",
+      "source": "agent:photo",
+      "reason": "validated_at absent",
+      "validated_at": null
+    },
+    {
+      "event": "SKILL_STALE",
+      "skill": "WA Photography Style",
+      "source": "agent:photo",
+      "reason": "validated_at absent",
+      "validated_at": null
+    }
+  ],
+  "marginalized_skills": []
+}

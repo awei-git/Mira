@@ -1,0 +1,12 @@
+{
+  "name": "substack",
+  "description": "Substack publisher-operator agent. Owns publication strategy, topic selection, editorial calendar, promotion planning, community engagement planning, metrics review, and monetization roadmap while preserving the existing guarded socialmedia publishing stack.",
+  "keywords": ["substack", "newsletter", "publication", "editorial", "topic", "growth", "monetization", "community", "article strategy"],
+  "handles": ["Substack strategy", "topic backlog", "editorial calendar", "publication growth", "promotion planning", "monetization planning"],
+  "tier": "heavy",
+  "timeout_category": "long",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": true,
+  "allowed_tools": ["Read", "Glob", "Grep", "Write", "Edit"],
+  "permissions": ["filesystem:sandbox:read", "substack:plan", "substack:publish:delegated"]
+}

@@ -1,0 +1,9 @@
+name: a2a_trust
+description: Turn A2A trust research into experiments, tool ideas, and feedback plans.
+inputs:
+  - research_question
+  - source_bundle
+outputs:
+  - experiment_artifact
+  - validator_idea
+  - feedback_plan

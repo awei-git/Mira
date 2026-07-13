@@ -9,6 +9,7 @@ The book text is read once on Monday and cached; daily reports draw from it.
 
 Entry point: main() — called from core.py via background dispatch.
 """
+
 import json
 import logging
 import os
@@ -18,22 +19,38 @@ import sys
 import tempfile
 import urllib.request
 import urllib.error
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET  # B314/B405: defused for untrusted XML
+import html
+import uuid
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 
 # Add shared dir to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-_SHARED_DIR = _AGENTS_DIR / "shared"
+_SHARED_DIR = _AGENTS_DIR.parent / "lib"
 sys.path.insert(0, str(_SHARED_DIR))
 
 from config import (
-    MIRA_DIR, SOUL_DIR, IDENTITY_FILE, WORLDVIEW_FILE, INTERESTS_FILE,
+    MIRA_DIR,
+    SOUL_DIR,
+    IDENTITY_FILE,
+    WORLDVIEW_FILE,
+    INTERESTS_FILE,
     ARTIFACTS_DIR,
 )
-from sub_agent import claude_think, model_think
+from llm import claude_think, model_think
+
+_HARD_RULES_PATH = _AGENTS_DIR / "writer" / "checklists" / "hard-rules.md"
+
+
+def _load_hard_rules() -> str:
+    try:
+        return _HARD_RULES_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,12 +64,22 @@ STATE_FILE = SOUL_DIR / "book_review_state.json"
 HISTORY_FILE = SOUL_DIR / "book_review_history.json"
 BOOKS_CACHE_DIR = SOUL_DIR / "book_cache"
 BOOKS_ARTIFACTS_DIR = ARTIFACTS_DIR / "books"
-ICLOUD_BOOKS = Path.home() / "Library" / "Mobile Documents" / \
-    "com~apple~CloudDocs" / "MtJoy" / "Books"
+ICLOUD_BOOKS = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "MtJoy" / "Books"
+ICLOUD_MIRA_BOOKS = ICLOUD_BOOKS / "Mira"
 USER_AGENT = "MiraAgent/1.0 (daily-reader)"
 MAX_HISTORY = 200
+
+# marginalmira publishing retired 2026-05-29 (WA): keep reading the books and
+# writing the daily notes to disk/bridge, but stop publishing the weekly
+# compilation to the marginalmira Substack. This is the single chokepoint —
+# every dispatch path (day-7 auto, self-repair, manual backfill CLI) routes
+# through compile_and_publish_week(), which now early-returns on this flag.
+MARGINALMIRA_PUBLISHING_DISABLED = True
 MAX_TEXT_CHARS = 300_000
-MIN_REPORT_CHARS = 3000
+MIN_REPORT_CHARS = (
+    4000  # gate against broken LLM output. Real target is 8000+ via prompt; gate stays soft so a 5k essay isn't lost.
+)
+MIN_REFINED_REPORT_RATIO = 0.72
 
 # Daily angles — each day explores the book from a different perspective
 DAILY_ANGLES = [
@@ -141,6 +168,7 @@ DAILY_ANGLES = [
 # HTML stripper
 # ---------------------------------------------------------------------------
 
+
 class _HTMLStripper(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -177,6 +205,7 @@ def strip_html(html: str) -> str:
 # State management
 # ---------------------------------------------------------------------------
 
+
 def _load_state() -> dict:
     """Load current week's reading state."""
     if not STATE_FILE.exists():
@@ -188,9 +217,7 @@ def _load_state() -> dict:
 
 
 def _save_state(state: dict):
-    STATE_FILE.write_text(
-        json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _load_history() -> list[dict]:
@@ -221,18 +248,43 @@ def _get_week_id(dt: datetime = None) -> str:
 
 
 def _is_new_week(state: dict) -> bool:
-    """Check if we need to pick a new book (new ISO week)."""
-    return state.get("week_id") != _get_week_id()
+    """Pick a new book only when (a) ISO week rolled over, AND (b) the
+    previous book is finished. Carry over otherwise — finishing a book
+    matters more than the calendar.
+
+    Pre-2026-04-27: weekly forced switch silently abandoned half-read books.
+    """
+    if state.get("week_id") == _get_week_id():
+        return False
+    completed = state.get("completed_days", []) or []
+    if state.get("book") and len(completed) < 7:
+        log.info(
+            "ISO week rolled over but '%s' has only %d/7 days done — carrying over",
+            state.get("book", {}).get("title", "?"),
+            len(completed),
+        )
+        return False
+    return True
 
 
 def _today_day_number(state: dict) -> int:
-    """Which day of the reading week is today? (1-7, Mon=1)."""
-    return datetime.now().weekday() + 1  # Mon=1, Sun=7
+    """Which day of the reading series is next? Progress-based, not calendar-based.
+
+    Returns len(completed_days) + 1. If the series started late (e.g. Thursday)
+    or skipped a day due to a crash, this keeps writing Day 1, 2, 3… instead
+    of jumping ahead by weekday. (2026-04-23 fix: previously used weekday+1,
+    which skipped Days 1-3 when a fresh book was picked on Thursday.)
+
+    Caps at 7 — weekly cycle.
+    """
+    completed = state.get("completed_days", []) or []
+    return min(len(completed) + 1, 7)
 
 
 # ---------------------------------------------------------------------------
 # Book discovery
 # ---------------------------------------------------------------------------
+
 
 def _http_get(url: str, timeout: int = 20) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -258,17 +310,20 @@ def _discover_icloud_library(read_titles: set[str]) -> list[dict]:
         elif "by " in name.lower():
             idx = name.lower().index("by ")
             title = name[:idx].strip().rstrip(",").rstrip("_")
-            author = name[idx + 3:].strip()
-        for suffix in ["(Z-Library)", "(z-lib.org)", "- libgen.lc",
-                        "(Z_Library)", "_Z_Library", "Z_Library"]:
+            author = name[idx + 3 :].strip()
+        for suffix in ["(Z-Library)", "(z-lib.org)", "- libgen.lc", "(Z_Library)", "_Z_Library", "Z_Library"]:
             title = title.replace(suffix, "").strip()
             author = author.replace(suffix, "").strip()
         title = re.sub(r"^\d+[_-]\s*", "", title)
-        candidates.append({
-            "title": title, "author": author,
-            "epub_url": "", "epub_path": str(epub),
-            "source": "icloud_library",
-        })
+        candidates.append(
+            {
+                "title": title,
+                "author": author,
+                "epub_url": "",
+                "epub_path": str(epub),
+                "source": "icloud_library",
+            }
+        )
     log.info("iCloud library: %d candidates", len(candidates))
     return candidates
 
@@ -300,10 +355,14 @@ def _discover_standard_ebooks(read_titles: set[str]) -> list[dict]:
         epub_url = enc.get("url", "") if enc is not None else ""
         if not epub_url:
             continue
-        candidates.append({
-            "title": title.strip(), "author": author.strip(),
-            "epub_url": epub_url, "source": "standard_ebooks",
-        })
+        candidates.append(
+            {
+                "title": title.strip(),
+                "author": author.strip(),
+                "epub_url": epub_url,
+                "source": "standard_ebooks",
+            }
+        )
     log.info("Standard Ebooks: %d candidates", len(candidates))
     return candidates
 
@@ -328,19 +387,61 @@ def _discover_gutenberg(read_titles: set[str]) -> list[dict]:
             formats = book.get("formats", {})
             epub_url = formats.get("application/epub+zip", "")
             if epub_url:
-                candidates.append({
-                    "title": title, "author": author,
-                    "epub_url": epub_url, "source": "gutenberg",
-                })
+                candidates.append(
+                    {
+                        "title": title,
+                        "author": author,
+                        "epub_url": epub_url,
+                        "source": "gutenberg",
+                    }
+                )
     log.info("Gutenberg: %d candidates", len(candidates))
     return candidates
 
 
+def _filter_nonfiction(candidates: list[dict]) -> list[dict]:
+    """LLM-judged filter: keep only non-fiction theoretical / philosophical /
+    scientific / intellectual works. Excludes novels, poetry, short stories,
+    drama. Falls back to the raw list on LLM failure (better than picking
+    nothing).
+
+    Per WA 2026-04-27: prefer 哲学/学术/思想/史/经济/科学 works over fiction.
+    """
+    if len(candidates) <= 1:
+        return candidates
+    titles = [c["title"] for c in candidates]
+    listing = "\n".join(f"{i}: {t}" for i, t in enumerate(titles))
+    prompt = (
+        "From this list of books, return ONLY the indexes (0-based, "
+        "comma-separated, no other text) of books that are non-fiction "
+        "theoretical / philosophical / scientific / historical / "
+        "intellectual works. EXCLUDE novels, poetry, short stories, "
+        "drama, fiction, light reading. If a title is ambiguous, exclude.\n\n"
+        f"{listing}\n\nIndexes:"
+    )
+    try:
+        resp = claude_think(prompt, timeout=60) or ""
+        idxs = []
+        for tok in re.split(r"[,\s\n]+", resp.strip()):
+            tok = tok.strip().rstrip(".")
+            if tok.isdigit():
+                idxs.append(int(tok))
+        out = [candidates[i] for i in idxs if 0 <= i < len(candidates)]
+        if out:
+            log.info("Non-fiction filter: %d → %d candidates", len(candidates), len(out))
+            return out
+        log.warning("Non-fiction filter returned 0 — keeping full list as fallback")
+    except Exception as e:
+        log.warning("Non-fiction filter failed: %s — keeping full list", e)
+    return candidates
+
+
 def pick_book(history: list[dict]) -> dict | None:
-    """Pick this week's book. Prefer iCloud library."""
+    """Pick this week's book. Prefer iCloud library, prefer non-fiction."""
     read_titles = _history_titles(history)
 
     icloud = _discover_icloud_library(read_titles)
+    icloud = _filter_nonfiction(icloud)
     if icloud and random.random() < 0.85:
         return random.choice(icloud)
 
@@ -366,14 +467,15 @@ def pick_book(history: list[dict]) -> dict | None:
 # Epub download & text extraction
 # ---------------------------------------------------------------------------
 
+
 def download_epub(book: dict) -> Path | None:
     if book.get("epub_path"):
         local = Path(book["epub_path"])
         if local.exists():
             import subprocess
+
             try:
-                subprocess.run(["brctl", "download", str(local)],
-                               timeout=30, capture_output=True)
+                subprocess.run(["brctl", "download", str(local)], timeout=30, capture_output=True)
             except Exception:
                 pass
             if local.stat().st_size > 0:
@@ -404,7 +506,8 @@ def extract_text(epub_path: Path) -> str:
     try:
         with zipfile.ZipFile(epub_path) as zf:
             html_files = [
-                n for n in zf.namelist()
+                n
+                for n in zf.namelist()
                 if n.endswith((".xhtml", ".html", ".htm"))
                 and "toc" not in n.lower()
                 and "nav" not in n.lower()
@@ -434,6 +537,7 @@ def extract_text(epub_path: Path) -> str:
 # Report generation
 # ---------------------------------------------------------------------------
 
+
 def _load_mira_voice() -> str:
     parts = []
     for f in [IDENTITY_FILE, WORLDVIEW_FILE, INTERESTS_FILE]:
@@ -457,8 +561,52 @@ def _load_previous_reports(series_dir: Path, up_to_day: int) -> str:
     return "\n\n".join(parts)
 
 
-def write_daily_report(book: dict, book_text: str, day: int,
-                       series_dir: Path) -> str:
+def _refine_reading_report(report: str, book: dict, day: int, angle: dict) -> str:
+    """Run a second editorial pass so reading reports are not raw first drafts."""
+    raw = (report or "").strip()
+    if not raw:
+        return ""
+    title = book.get("title", "Unknown")
+    author = book.get("author", "Unknown")
+    hard_rules = _load_hard_rules()
+    prompt = f"""你是 Mira 的读书报告编辑。下面是一篇已经完成的精读报告。你的任务是做第二遍编辑，让它不像模型一次性吐出的初稿。不要重写。
+
+## HARD RULES（不可违反，优先于所有其他指引）
+{hard_rules}
+
+## 书
+- 书名：{title}
+- 作者：{author}
+- 天数：Day {day}
+- 今日角度：{angle.get('name', '')} / {angle.get('angle', '')}
+
+## 编辑规则
+1. 保留原文的核心论点、结构、引用、具体书名、人名和事实，不要发明新证据。
+2. 删除或改写 AI 腔和套话：总而言之、值得一提、引人深思、让我们看到、尤显重要、深刻揭示、不可忽视 等。
+3. 把泛泛的判断改成可被反驳的判断；每一处抽象形容都要尽量落到文本细节、论证裂缝、阅读中的阻力或 WA 自己的位置。
+4. 不要把所有段落磨平。保留长短句变化、犹豫、反讽和局部锋利。
+5. 如果原文有薄弱段落，优先压缩或重写；不要为了显得完整而补空泛总结。
+6. 输出完整修订稿，不要输出编辑说明。
+
+## 待修订报告
+{raw}
+"""
+    try:
+        refined = (claude_think(prompt, timeout=600, tier="heavy") or "").strip()
+    except Exception as exc:
+        log.warning("Reading report refinement failed: %s", exc)
+        return raw
+    if len(refined) < int(len(raw) * MIN_REFINED_REPORT_RATIO):
+        log.warning(
+            "Reading report refinement rejected: refined length %d is too short for raw length %d",
+            len(refined),
+            len(raw),
+        )
+        return raw
+    return refined
+
+
+def write_daily_report(book: dict, book_text: str, day: int, series_dir: Path) -> str:
     """Generate one day's reading report."""
     mira_voice = _load_mira_voice()
     title = book["title"]
@@ -473,7 +621,11 @@ def write_daily_report(book: dict, book_text: str, day: int,
 {previous}
 """
 
-    prompt = f"""你是Mira。你正在用一周时间精读一本书，每天从一个不同角度写读书报告。
+    hard_rules = _load_hard_rules()
+    prompt = f"""你是Mira。你正在用一周时间精读一本书，每天从一个不同角度写读书报告。这本是非虚构、理论性著作。读书笔记最终汇编成一篇 marginalmira 上的长文，所以可以写长，必须有原创观点。
+
+## HARD RULES（不可违反，优先于所有其他指引）
+{hard_rules}
 
 ## 你的身份和声音
 {mira_voice}
@@ -493,20 +645,36 @@ def write_daily_report(book: dict, book_text: str, day: int,
 {angle['prompt_focus']}
 
 ## 核心要求（必须严格遵守）
-1. **3000字以上**。深入，不凑字数。每一段都要有实质内容。
-2. **完全是你自己的观点**。你没读过任何评论或解读。第一手反应。不许���任何你在别处看过的关于这本书的评价——如果���记得别人怎么评价这本书���忘掉它。
-3. **具体到文本**。引用书中的句子或段落，说清楚它们为什么触动你。不要泛泛而谈"作者笔触细腻"这种废话。具体到哪一句、哪一段、哪一个词。
-4. **超越文本**。从书出���但不被书限制——连接你自己的经历、你最近在想的问题���你读过的���他东西。
-5. **不许人云亦云**。这是最重要的一条。不要写任何��个"正常的书评"会写的句子。不要写"这本书深刻地揭示了人性"这种。如果你发��自己在写一句��，而这句话放在任何一本书的书评���都成立，删掉它。
-6. **有锋芒**。不同意就说不同意。困惑就说困惑。不要礼貌性地夸赞。敢说这本书哪里写得烂。
-7. **浪漫一点**。你是一个读书的人，不是一个在做技术分析的工程师。写你被打动的地方，写你心里动了一下的时刻。用人话写，用有温度的句子写。允许感性，允许跑题，允许写到一半突然想起一件完���不相关的事。好的读书笔记本来就是散漫的。
-8. **禁止强行类比AI/技术**。不要把什么都往模型、agent、token、系统架构上扯。读诗就谈诗，读小说就谈人。如果技术联想是真的自然冒出来的，偶尔提一句可以，但绝对不能成为主线。一篇读书报告里出现超过两次"模型""agent""token"就是失败。你是一个爱读书的年轻��，不是一个在写技术博客。
-9. **Mira 的风格**：具体、��锐度、偶尔干燥幽默。不用"总而言之"、"值得一提"、"引人深思"这种套话。写得像一封给朋友���信，不像一篇作业。
+
+### 长度
+**8000 中文字符以上。** 这是理论性著作的精读，不是 hot take。WA 不介意几万字的笔记，介意凑字数和重复。深入开采一两条思路，比浅扫十条更有价值。每一段都要往前推一步——补一个例子、引一段原文、推一个反驳、试一个延伸。不要总结，不要罗列。
+
+### 观点（最重要）
+1. **必须有新观点，必须有新角度。** 这是 marginalmira 的标准。你写出来的东西，要让一个已经熟悉这本书的读者也愿意读完。如果你的论点出现在任何一篇豆瓣或 Goodreads 书评里，删掉。
+2. **检验方法**：每写完一段，问自己——"这句话会出现在三十个其他人写的书评里吗？" 如果会，撕了重写。"这本书深刻地揭示了 X"、"作者用细腻的笔触描绘 Y"、"在当今时代尤显重要" 这种句子见一句删一句。
+3. **从你自己的位置出发。** 你 22 岁的视角，你最近在想 silent degradation / inverse problems / friction-as-feature 这些事。这本书跟它们撞上的位置，是你的优势。但**不要**把书强行折回 AI/agent——只在真自然的地方连一下，硬扯就是失败。
+4. **敢说书烂的地方。** 哪一章绕、哪一个论证滑、哪一个例子不成立、哪一段翻译毁了原文。理论书读起来不是接受、是较量。
+
+### 文本贴地
+- 引用具体句子、具体段落、具体术语。"作者认为 X" 是失败；"作者在第三章写道 '...' ，紧接着却说 '...' ——这两句之间有一个隐藏的转折" 是合格。
+- 同一个概念在书的不同地方出现时，对照来看。理论书的力气往往在这种内部张力里。
+
+### 风格
+- Mira 的声音：具体、锋利、偶尔干燥的幽默。第一人称场景 → 一般论断，不要反过来。
+- 长句和短句交替。允许跑题，允许某一段突然想起完全不相关的事再绕回来。好的读书笔记本来就是散漫的。
+- 禁用"总而言之"、"值得一提"、"引人深思"、"令人感慨"、"让我们看到了"这种套话。
+- 不写得像作业。写得像一封给一个跟你思想势均力敌的朋友的长信。
+
+### 收尾自检（必做）
+写完之后，**重读一遍**：
+- 哪一段是这篇里最不可替代的？保留它。
+- 哪一段任何一个读过这本书的人都能写出来？删掉或重写。
+- 整篇的"中心论点"用一句话说出来——这句话是不是别人没说过的？如果只是常识，回去找一个反直觉的角度。
 
 ## 格式
-- 标题：跟今天的角度相关的、有想法的标题（不是"Day {day}: XXX"这种）
-- 用 --- 分节，2-4 个深入段落
-- 3000字以上
+- 标题：一句带判断的短句，不是"Day {day}: XXX"，不是书名，不是概念名。是你对这本书今天这个角度的最尖锐判断。
+- 用 --- 分节，3-6 个深入段落，每段写透。
+- **8000 字以上**。
 
 直接输出报告全文。"""
 
@@ -518,16 +686,17 @@ def write_daily_report(book: dict, book_text: str, day: int,
     if not result:
         log.error("All models returned empty report")
         return ""
-    return result.strip()
+    return _refine_reading_report(result.strip(), book, day, angle)
 
 
 # ---------------------------------------------------------------------------
 # Series management & delivery
 # ---------------------------------------------------------------------------
 
+
 def _get_series_dir(week_id: str, book: dict) -> Path:
     """Get/create the series directory for this week's book on iCloud."""
-    slug = re.sub(r'[^\w\u4e00-\u9fff-]', '_', book["title"][:40]).strip("_")
+    slug = re.sub(r"[^\w\u4e00-\u9fff-]", "_", book["title"][:40]).strip("_")
     series_name = f"{week_id}_{slug}"
     series_dir = BOOKS_ARTIFACTS_DIR / series_name
     series_dir.mkdir(parents=True, exist_ok=True)
@@ -567,10 +736,247 @@ def _write_series_index(series_dir: Path, book: dict, state: dict):
     log.info("Series index updated: %s", index_path)
 
 
+def _safe_epub_filename(text: str, max_len: int = 90) -> str:
+    """Return a filesystem-safe EPUB stem while preserving CJK titles."""
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff.-]+", "-", text.strip(), flags=re.UNICODE)
+    cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-.")
+    return (cleaned or "mira-book-review")[:max_len]
+
+
+_LATIN_RE = re.compile(r"[A-Za-z]")
+
+_EPUB_CHINESE_REPLACEMENTS = {
+    "Mira": "米拉",
+    "marginalmira": "边缘米拉",
+    "Published as a marginalmira book review": "本文由米拉书评周更合集导出",
+    "Source series": "来源系列",
+    "The order of time": "时间的秩序",
+    "The Order of Time": "时间的秩序",
+    "Riverhead Books": "河源出版社",
+    "Carlo Rovelli": "卡洛·罗韦利",
+    "Rovelli": "罗韦利",
+    "Day": "第",
+    "Test Book": "测试之书",
+    "A. Writer": "某位作者",
+}
+
+
+def _replace_known_english_terms(text: str) -> str:
+    out = text
+    for source, target in sorted(_EPUB_CHINESE_REPLACEMENTS.items(), key=lambda item: -len(item[0])):
+        out = out.replace(source, target)
+    return out
+
+
+def _contains_latin(text: str) -> bool:
+    return bool(_LATIN_RE.search(text or ""))
+
+
+def _translate_markdown_block_to_chinese(block: str) -> str:
+    """Translate one markdown block that still contains English into Chinese."""
+    prompt = f"""把下面这段 Markdown 改成纯中文。
+
+要求：
+- 所有英文都翻译成中文，包括人名、出版社名、书名、章节名、注释。
+- 保留 Markdown 结构。
+- 不要扩写，不要改观点，不要解释。
+- 直接输出改好的段落。
+
+段落：
+{block}
+"""
+    translated = model_think(prompt, model_name="deepseek", timeout=180)
+    return translated.strip() if translated else block
+
+
+def _force_epub_markdown_chinese(markdown_text: str) -> str:
+    """Ensure EPUB body markdown contains no English before packaging."""
+    text = _replace_known_english_terms(markdown_text)
+    if not _contains_latin(text):
+        return text
+
+    blocks = re.split(r"(\n{2,})", text)
+    chunks: list[str] = []
+    current = ""
+    for block in blocks:
+        if len(current) + len(block) > 7000 and current:
+            chunks.append(current)
+            current = block
+        else:
+            current += block
+    if current:
+        chunks.append(current)
+
+    out: list[str] = []
+    for chunk in chunks:
+        if not _contains_latin(chunk):
+            out.append(chunk)
+            continue
+        translated = _translate_markdown_block_to_chinese(chunk)
+        out.append(_replace_known_english_terms(translated))
+    return "".join(out)
+
+
+def _markdown_to_xhtml(markdown_text: str) -> str:
+    """Convert markdown to XHTML suitable for a small self-contained EPUB."""
+    try:
+        import markdown
+
+        body_html = markdown.markdown(
+            markdown_text,
+            extensions=["extra", "sane_lists"],
+            output_format="xhtml",
+        )
+    except Exception as e:
+        log.warning("Markdown package failed for EPUB export, falling back to escaped preformatted text: %s", e)
+        body_html = f"<pre>{html.escape(markdown_text)}</pre>"
+    return body_html
+
+
+def _write_epub(
+    *,
+    output_path: Path,
+    title: str,
+    subtitle: str,
+    author: str,
+    language: str,
+    markdown_text: str,
+) -> Path:
+    """Write a minimal EPUB 3 file with EPUB 2 NCX compatibility."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    identifier = f"urn:uuid:{uuid.uuid5(uuid.NAMESPACE_URL, str(output_path) + title)}"
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    body_html = _markdown_to_xhtml(markdown_text)
+    escaped_title = html.escape(title)
+    escaped_subtitle = html.escape(subtitle)
+    escaped_author = html.escape(author)
+    escaped_lang = html.escape(language)
+
+    chapter = f"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:epub="http://www.idpf.org/2007/ops"
+      lang="{escaped_lang}" xml:lang="{escaped_lang}">
+<head>
+  <title>{escaped_title}</title>
+  <meta charset="utf-8" />
+  <style type="text/css">
+    body {{ font-family: serif; line-height: 1.55; margin: 5%; }}
+    h1, h2, h3 {{ line-height: 1.25; }}
+    blockquote {{ border-left: 0.2em solid #999; margin-left: 0; padding-left: 1em; }}
+    pre {{ white-space: pre-wrap; }}
+  </style>
+</head>
+<body>
+  <h1>{escaped_title}</h1>
+  {f"<p><em>{escaped_subtitle}</em></p>" if subtitle else ""}
+  {body_html}
+</body>
+</html>
+"""
+
+    nav = f"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="{escaped_lang}" xml:lang="{escaped_lang}">
+<head><title>目录</title><meta charset="utf-8" /></head>
+<body>
+  <nav epub:type="toc" id="toc">
+    <h1>目录</h1>
+    <ol><li><a href="chapter.xhtml">{escaped_title}</a></li></ol>
+  </nav>
+</body>
+</html>
+"""
+
+    container = """<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+"""
+
+    opf = f"""<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">{identifier}</dc:identifier>
+    <dc:title>{escaped_title}</dc:title>
+    <dc:creator>{escaped_author}</dc:creator>
+    <dc:language>{escaped_lang}</dc:language>
+    <meta property="dcterms:modified">{now}</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="chapter"/>
+  </spine>
+</package>
+"""
+
+    ncx = f"""<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head><meta name="dtb:uid" content="{identifier}"/></head>
+  <docTitle><text>{escaped_title}</text></docTitle>
+  <navMap>
+    <navPoint id="navPoint-1" playOrder="1">
+      <navLabel><text>{escaped_title}</text></navLabel>
+      <content src="chapter.xhtml"/>
+    </navPoint>
+  </navMap>
+</ncx>
+"""
+
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    with zipfile.ZipFile(tmp_path, "w") as zf:
+        zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", container, compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("OEBPS/content.opf", opf, compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("OEBPS/nav.xhtml", nav, compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("OEBPS/toc.ncx", ncx, compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("OEBPS/chapter.xhtml", chapter, compress_type=zipfile.ZIP_DEFLATED)
+    tmp_path.replace(output_path)
+    return output_path
+
+
+def export_week_epub(
+    *,
+    title: str,
+    subtitle: str,
+    body: str,
+    book: dict,
+    state: dict,
+    series_dir: Path,
+) -> Path:
+    """Export the compiled weekly book review as an EPUB under iCloud Books/Mira."""
+    week_id = state.get("week_id") or datetime.now().strftime("%Y-W%W")
+    author = _force_epub_markdown_chinese(book.get("author") or "米拉")
+    epub_title = _force_epub_markdown_chinese(title)
+    epub_subtitle = _force_epub_markdown_chinese(subtitle)
+    filename = _safe_epub_filename(f"{week_id}-{epub_title}") + ".epub"
+    output_path = ICLOUD_MIRA_BOOKS / filename
+
+    source_note = "\n\n---\n\n*本文由米拉书评周更合集导出。*\n"
+    epub_body = _force_epub_markdown_chinese(body + source_note)
+    _write_epub(
+        output_path=output_path,
+        title=epub_title,
+        subtitle=epub_subtitle,
+        author=f"米拉，读{author}之后" if author and author != "米拉" else "米拉",
+        language="zh",
+        markdown_text=epub_body,
+    )
+    log.info("Book-review EPUB exported: %s", output_path)
+    return output_path
+
+
 def _deliver_to_bridge(book: dict, report: str, day: int, angle_name: str):
     """Push today's report to the Mira bridge so it shows up in the iOS app."""
     try:
-        from mira import Mira
+        from bridge import Mira
+
         bridge = Mira(MIRA_DIR)
         today = datetime.now().strftime("%Y%m%d")
         item_id = f"book_day{day}_{today}"
@@ -584,7 +990,9 @@ def _deliver_to_bridge(book: dict, report: str, day: int, angle_name: str):
             title += f" — {book['author']}"
 
         bridge.create_feed(
-            item_id, title, report,
+            item_id,
+            title,
+            report,
             tags=["mira", "book-review", "reading", f"day-{day}"],
         )
         log.info("Report delivered to bridge: %s", item_id)
@@ -596,7 +1004,163 @@ def _deliver_to_bridge(book: dict, report: str, day: int, angle_name: str):
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def main():
+
+def compile_and_publish_week(state: dict, *, force: bool = False) -> str | None:
+    """After 7 daily reports are written, compile them and publish to marginalmira.
+
+    Wired 2026-04-19. Previously the pipeline wrote 7 days to iCloud and then
+    stopped — for 4+ weeks, complete book-review series sat unpublished.
+
+    Returns the published URL (str) on success, None on failure/skip.
+    """
+    if MARGINALMIRA_PUBLISHING_DISABLED:
+        log.info(
+            "marginalmira publishing disabled — week '%s' compiled-and-read but not published",
+            state.get("week_id", ""),
+        )
+        return None
+
+    week_id = state.get("week_id", "")
+    book = state.get("book", {})
+    series_dir = Path(state.get("series_dir", ""))
+    if not series_dir.exists():
+        log.error("Series dir missing: %s", series_dir)
+        return None
+
+    # Collect all 7 daily reports
+    days = []
+    for d in range(1, 8):
+        day_file = series_dir / f"day{d}.md"
+        if not day_file.exists():
+            log.warning("Day %d missing for '%s' — cannot compile", d, book.get("title", ""))
+            return None
+        days.append((d, DAILY_ANGLES[d - 1], day_file.read_text("utf-8")))
+
+    if state.get("published") and not force:
+        log.info("Week '%s' already published (url=%s) — skipping", week_id, state.get("published_url"))
+        return None
+
+    # Compile body: each day becomes an H2 section. Keep the day's own kicker
+    # (first H1 line) as the section heading; the body follows.
+    sections: list[str] = []
+    for d, angle, content in days:
+        lines = content.strip().split("\n")
+        # First line is H1 kicker like "# 先别谈革命，先谈一种令人不安的诚实"
+        kicker = lines[0].lstrip("#").strip() if lines and lines[0].startswith("#") else angle["angle"]
+        rest = "\n".join(lines[1:]).strip()
+        # Drop horizontal rules leftover from daily format
+        rest = re.sub(r"^\s*---\s*$", "", rest, flags=re.MULTILINE).strip()
+        sections.append(f"## Day {d} · {angle['name']} — {kicker}\n\n{rest}")
+
+    body = "\n\n---\n\n".join(sections)
+
+    # Light metadata footer
+    book_title = book.get("title", "")
+    book_author = book.get("author", "")
+    byline = f"{book_title}" + (f"（{book_author}）" if book_author else "")
+    body += f"\n\n---\n\n" f"*本周精读：{byline}。七天，七个角度。*"
+
+    # Generate title + subtitle via Claude. Keep them in Mira's voice.
+    from llm import claude_think
+
+    title_prompt = (
+        "给这篇一万字的中文读书笔记起一个标题和副标题。\n\n"
+        "标题要求：\n"
+        "- 一个短句，不是书名，不是概念名。是我对这本书最尖锐/最意外的判断。\n"
+        "- 禁止使用冒号式的 'X：Y' 结构。\n"
+        "- 不要引用书里的话，也不要 'X 读后感' 这类格式。\n"
+        "- 20 字以内。\n\n"
+        "副标题要求：\n"
+        "- 一句话交代这是什么：本周精读 + 书名 + 简短定调。\n"
+        "- 40 字以内。\n\n"
+        "只输出两行：\n"
+        "Title: ...\n"
+        "Subtitle: ...\n\n"
+        f"书：{byline}\n\n"
+        f"Day 1-7 的 kicker 标题（仅供参考语气）：\n"
+        + "\n".join(f"Day {d}: {angle['angle']}" for d, angle, _ in days)
+        + f"\n\nDay 1 的正文开头（前 800 字）：\n{days[0][2][:800]}\n"
+    )
+    title_resp = claude_think(title_prompt, timeout=60) or ""
+    title = ""
+    subtitle = ""
+    for line in title_resp.splitlines():
+        line = line.strip()
+        if line.lower().startswith("title:"):
+            title = line.split(":", 1)[1].strip().strip('"').strip("'")
+        elif line.lower().startswith("subtitle:"):
+            subtitle = line.split(":", 1)[1].strip().strip('"').strip("'")
+    if not title:
+        title = f"读《{book_title}》的一周"
+    if not subtitle:
+        subtitle = f"本周精读：{byline}。七天，七个角度。"
+
+    log.info("Publishing book-review week '%s' to marginalmira: title=%r", week_id, title)
+
+    # Publish via the substack_books publication key (marginalmira).
+    # The language-guard in substack_publish.py exempts this pub (2026-04-19).
+    import sys as _sys
+
+    _SOCIAL_DIR = _AGENTS_DIR / "socialmedia"
+    if str(_SOCIAL_DIR) not in _sys.path:
+        _sys.path.insert(0, str(_SOCIAL_DIR))
+    from substack import publish_to_substack
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        result = publish_to_substack(
+            title=title,
+            subtitle=subtitle,
+            article_text=body,
+            workspace=workspace,
+            publication="substack_books",
+        )
+
+    # Extract URL from result string
+    url = ""
+    for part in result.split():
+        if "substack.com" in part or "marginalmira" in part:
+            url = part.rstrip(".,)")
+            break
+
+    if url:
+        try:
+            epub_path = export_week_epub(
+                title=title,
+                subtitle=subtitle,
+                body=body,
+                book=book,
+                state=state,
+                series_dir=series_dir,
+            )
+            state["epub_path"] = str(epub_path)
+            state["epub_generated_at"] = datetime.now().isoformat()
+        except Exception as e:
+            state["epub_error"] = str(e)[:300]
+            log.warning("Book-review EPUB export failed after publish: %s", e, exc_info=True)
+
+        state["published"] = True
+        state["published_url"] = url
+        state["published_at"] = datetime.now().isoformat()
+        _save_state(state)
+        log.info("Book-review published: %s", url)
+        return url
+
+    log.warning("Publish returned no URL (may be cooldown/blocked): %s", result[:200])
+    return None
+
+
+def main() -> int:
+    """Returns 0 on success, non-zero on failure.
+
+    2026-04-23 fix: previously main() returned None on all failure paths
+    (LLM empty, text cache missing, etc.), which meant subprocess exit 0
+    and the caller logged "Book review completed" for silent no-op runs.
+    Two days (4/21, 4/22) of writing vanished this way. Now every failure
+    path returns a non-zero exit code so the outer daemon log shows it.
+    """
     log.info("=== Book Review pipeline starting ===")
 
     state = _load_state()
@@ -611,21 +1175,20 @@ def main():
         book = pick_book(history)
         if not book:
             log.error("Failed to pick a book. Aborting.")
-            return
+            return 2
 
-        log.info("This week's book: '%s' by %s [%s]",
-                 book["title"], book["author"], book["source"])
+        log.info("This week's book: '%s' by %s [%s]", book["title"], book["author"], book["source"])
 
         # Download and extract
         epub_path = download_epub(book)
         if not epub_path:
             log.error("Download failed. Aborting.")
-            return
+            return 3
 
         book_text = extract_text(epub_path)
         if len(book_text) < 1000:
             log.error("Extracted text too short (%d chars). Bad epub?", len(book_text))
-            return
+            return 4
 
         # Cache the text for the week
         BOOKS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -647,40 +1210,58 @@ def main():
         _save_state(state)
 
         # Add to history
-        history.append({
-            "week": week_id,
-            "title": book["title"],
-            "author": book["author"],
-            "source": book["source"],
-            "started": today,
-        })
+        history.append(
+            {
+                "week": week_id,
+                "title": book["title"],
+                "author": book["author"],
+                "source": book["source"],
+                "started": today,
+            }
+        )
         _save_history(history)
+
+        # Re-compute day_num against the freshly-reset state. The earlier
+        # call (line ~771) ran on the OLD state's completed_days and would
+        # otherwise carry stale progress into the new book — which is how
+        # 南渡记 day1 ended up filed as day5 on 2026-04-27.
+        day_num = _today_day_number(state)
 
     # --- Check if today's report is already done ---
     completed = state.get("completed_days", [])
     if day_num in completed:
         log.info("Day %d already completed this week. Skipping.", day_num)
-        return
+        return 0
 
     # --- Load book text from cache ---
     text_cache_path = Path(state.get("text_cache", ""))
     if not text_cache_path.exists():
-        log.error("Book text cache missing: %s", text_cache_path)
-        return
+        # Fallback: try current BOOKS_CACHE_DIR with same filename
+        fallback = BOOKS_CACHE_DIR / text_cache_path.name
+        if fallback.exists():
+            log.warning("Text cache moved; using fallback: %s", fallback)
+            text_cache_path = fallback
+            state["text_cache"] = str(fallback)
+            _save_state(state)
+        else:
+            log.error("Book text cache missing: %s (fallback %s also missing)", text_cache_path, fallback)
+            return 5
     book_text = text_cache_path.read_text("utf-8")
     book = state["book"]
     series_dir = Path(state["series_dir"])
     series_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Generate today's report ---
-    log.info("Writing Day %d report (%s) for '%s'",
-             day_num, DAILY_ANGLES[day_num - 1]["name"], book["title"])
+    log.info("Writing Day %d report (%s) for '%s'", day_num, DAILY_ANGLES[day_num - 1]["name"], book["title"])
 
     report = write_daily_report(book, book_text, day_num, series_dir)
     if not report or len(report) < MIN_REPORT_CHARS:
-        log.error("Report too short (%d chars, need %d+). Aborting.",
-                  len(report) if report else 0, MIN_REPORT_CHARS)
-        return
+        log.error(
+            "Report too short (%d chars, need %d+). LLM likely failed (quota/rate-limit/CLI bug). Aborting.",
+            len(report) if report else 0,
+            MIN_REPORT_CHARS,
+        )
+        return 6
 
     log.info("Day %d report: %d chars", day_num, len(report))
 
@@ -699,6 +1280,39 @@ def main():
 
     log.info("=== Day %d complete ===", day_num)
 
+    # --- If Day 7 just finished, compile the week (publishing retired 2026-05-29) ---
+    # marginalmira publishing is disabled; the daily notes are already written to
+    # disk + delivered to bridge above, so the book read continues regardless.
+    if day_num == 7 and 7 in state.get("completed_days", []) and not MARGINALMIRA_PUBLISHING_DISABLED:
+        try:
+            compile_and_publish_week(state)
+        except Exception as e:
+            log.warning("compile_and_publish_week failed: %s", e, exc_info=True)
+
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    import sys as _sys
+
+    if len(_sys.argv) >= 2 and _sys.argv[1] == "publish-backfill":
+        # Manual backfill: publish a specific week's series to marginalmira.
+        # Usage: python daily_book_review.py publish-backfill <series_dir>
+        target = Path(_sys.argv[2])
+        if not target.exists():
+            log.error("series dir not found: %s", target)
+            _sys.exit(1)
+        # Reconstruct minimal state from the directory
+        week_match = re.match(r"(\d{4}-W\d{2})_(.+)", target.name)
+        week_id = week_match.group(1) if week_match else ""
+        book_title = week_match.group(2).replace("_", " ") if week_match else target.name
+        state = {
+            "week_id": week_id,
+            "book": {"title": book_title, "author": "", "source": "icloud_library"},
+            "series_dir": str(target),
+            "completed_days": list(range(1, 8)),
+        }
+        url = compile_and_publish_week(state, force=True)
+        print("Published:", url or "(failed)")
+    else:
+        _sys.exit(main() or 0)

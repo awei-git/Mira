@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when upper-bounding the expected maximum of exponentially many correlated Gaussians using the Khatri-Sidak inequality in five algebraic steps."
+---
+
 # Spin Glass Maximum Bounds via Khatri-Sidak
 
 **Tags:** probability, statistical-physics, spin-glass, gaussian-comparison, sidak-inequality

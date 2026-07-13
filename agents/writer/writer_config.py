@@ -1,15 +1,19 @@
 """Configuration constants for the writing pipeline."""
+
 from pathlib import Path
 import sys
 
 # Ensure shared config is importable
-_shared_dir = str(Path(__file__).resolve().parent.parent / "shared")
+_shared_dir = str(Path(__file__).resolve().parent.parent.parent / "lib")
 if _shared_dir not in sys.path:
     sys.path.insert(0, _shared_dir)
 
 from config import (
-    WRITINGS_OUTPUT_DIR, CLAUDE_BIN as _CLAUDE_BIN,
-    WRITER_CLAUDE_TIMEOUT, WRITER_MAX_RETRIES, WRITER_MAX_STEPS_PER_RUN,
+    WRITINGS_OUTPUT_DIR,
+    CLAUDE_BIN as _CLAUDE_BIN,
+    WRITER_CLAUDE_TIMEOUT,
+    WRITER_MAX_RETRIES,
+    WRITER_MAX_STEPS_PER_RUN,
 )
 
 # Base paths — writer agent directory (resources live here now)
@@ -29,6 +33,15 @@ CLAUDE_MAX_RETRIES = WRITER_MAX_RETRIES
 # How many steps to advance per idea per daily run
 # 3 = scaffold + draft + critique in one run
 MAX_STEPS_PER_RUN = WRITER_MAX_STEPS_PER_RUN
+
+# Anti-AI checklist strictness: "strict" or "relaxed"
+ANTI_AI_STRICTNESS = "strict"
+
+ENABLE_AUDIT_MODE = True
+AUDIT_MODE_TEMPERATURE = 0.3
+AUDIT_MODE_MAX_TOKENS = 2048
+
+VOICE_PRESERVING_GENRES = ["reading_note", "journal", "personal_essay"]
 
 # Type-to-framework mapping
 TYPE_FRAMEWORK = {

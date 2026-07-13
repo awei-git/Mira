@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Mira sensor mark</title>
+  <desc id="desc">An angular M shaped signal mark with a small sensor aperture and one broken segment.</desc>
+  <rect width="512" height="512" rx="72" fill="#111111"/>
+  <path d="M92 332 L92 184 L180 292 L256 164 L332 292 L420 184 L420 332"
+        fill="none"
+        stroke="#F4F1EA"
+        stroke-width="34"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+  <path d="M332 292 L372 244"
+        fill="none"
+        stroke="#111111"
+        stroke-width="42"
+        stroke-linecap="round"/>
+  <circle cx="372" cy="244" r="19" fill="#D6422B"/>
+  <circle cx="372" cy="244" r="8" fill="#F4F1EA"/>
+  <path d="M126 378 H386"
+        fill="none"
+        stroke="#4AA3A2"
+        stroke-width="12"
+        stroke-linecap="round"
+        opacity="0.9"/>
+</svg>

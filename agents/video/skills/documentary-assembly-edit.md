@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when building a documentary edit from interview transcripts and raw footage, assembling from story logic rather than chronological order."
+---
+
 # Documentary Assembly Edit
 
 **Tags:** video, editing, documentary, structure, storytelling

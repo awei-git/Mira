@@ -338,12 +338,13 @@ workspace/
 
 ```python
 MODELS = {
-    "claude":       {"provider": "claude",   "model_id": "claude-sonnet-4-6"},
-    "gpt5":         {"provider": "openai",   "model_id": "gpt-5.4"},
-    "deepseek":     {"provider": "deepseek", "model_id": "deepseek-chat"},
-    "gemini":       {"provider": "gemini",   "model_id": "gemini-3.1-flash-lite-preview"},
-    "gemini-pro":   {"provider": "gemini",   "model_id": "gemini-3.1-pro-preview"},
-    "omlx":         {"provider": "omlx",     "model_id": "qwen3.5-27b"},
+    "codex":        {"provider": "codex_cli", "model_ref": "codex"},
+    "gpt5":         {"provider": "codex_cli", "model_ref": "gpt5"},
+    "claude":       {"provider": "claude",    "model_ref": "claude_sonnet"},
+    "deepseek":     {"provider": "deepseek",  "model_ref": "deepseek_chat"},
+    "gemini":       {"provider": "gemini",    "model_ref": "gemini_flash"},
+    "gemini-pro":   {"provider": "gemini",    "model_ref": "gemini_pro"},
+    "omlx":         {"provider": "omlx",      "model_ref": "omlx.default_model"},
 }
 ```
 
@@ -384,7 +385,7 @@ Daily report aggregates by agent × model.
 ```
 iCloud Drive: ~/Library/Mobile Documents/.../Mira-Bridge/
 ├── heartbeat.json              ← Agent writes every 30s
-├── users/ang/
+├── users/default/
 │   ├── manifest.json           ← Index of all items (generation counter for CAS)
 │   ├── items/*.json            ← One file per item (agent-owned)
 │   ├── commands/*.json         ← iOS writes, agent reads + deletes

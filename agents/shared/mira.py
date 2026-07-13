@@ -1,150 +1,195 @@
-"""Mira — file-based iPhone <-> Mac messaging over iCloud Drive.
+"""Shared utilities for Mira agent system."""
 
-Thin wrapper around MiraBridge library, adding Mira-specific defaults
-and backward-compatible aliases.
-"""
-import sys
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
-
-# Add MiraBridge to path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "MiraBridge" / "python"))
-
-from mira_bridge import Bridge, _utc_iso, _msg_id, _normalize_sender, _atomic_write, _ensure_downloaded  # noqa: E402
-from config import MIRA_DIR  # noqa: E402
-
-# Re-export for backward compatibility
-Message = None  # Legacy — no longer used
-
-
-# ---------------------------------------------------------------------------
-# Legacy Message class (for poll() backward compat during migration)
-# ---------------------------------------------------------------------------
-
+import hashlib
 import json
 import logging
+import re
+from datetime import datetime, timezone
+from pathlib import Path
 
-log = logging.getLogger("mira")
+import config
 
+__path__ = [str(Path(__file__).resolve().parents[2] / "lib" / "mira")]
 
-@dataclass
-class Message:
-    id: str
-    sender: str
-    timestamp: str
-    content: str
-    msg_type: str = "text"
-    thread_id: str = ""
-    priority: str = "normal"
-    metadata: dict = field(default_factory=dict)
-    # User access control (set by super agent before dispatch)
-    user_id: str = "ang"
-    user_role: str = "admin"
-    model_restriction: str | None = None
-    content_filter: bool = False
-    allowed_agents: list = field(default_factory=list)
+_SCAFFOLDING_AUDIT_LOG = Path(config.MIRA_ROOT) / "logs" / "scaffolding_audit.jsonl"
+_SCAFFOLD_REJECTIONS_DIR = Path(config.MIRA_ROOT) / "logs" / "scaffold_rejections"
+_GUARD_FIRES_LOG = Path(config.MIRA_ROOT) / "logs" / "guard_fires.jsonl"
+_INTERFACE_LATENCY_FILE = Path(config.MIRA_ROOT) / "logs" / "interface_latency.json"
+_MEMORY_INJECTION_LOG = Path(config.MIRA_ROOT) / "agents" / "shared" / "soul" / "memory_injection_log.jsonl"
+BACKGROUND_STALENESS_THRESHOLD_HOURS = 4
+_log = logging.getLogger("scaffolding_audit")
 
-    @classmethod
-    def from_file(cls, path: Path) -> "Message | None":
-        _ensure_downloaded(path)
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return cls(
-                id=data["id"],
-                sender=data["sender"],
-                timestamp=data["timestamp"],
-                content=data["content"],
-                msg_type=data.get("type", "text"),
-                thread_id=data.get("thread_id", ""),
-                priority=data.get("priority", "normal"),
-                metadata=data.get("metadata", {}),
-                user_id=data.get("user_id", "ang"),
-                user_role=data.get("user_role", "admin"),
-                model_restriction=data.get("model_restriction"),
-                content_filter=data.get("content_filter", False),
-                allowed_agents=data.get("allowed_agents", []),
-            )
-        except (json.JSONDecodeError, KeyError, OSError) as e:
-            log.error("Failed to read message %s: %s", path.name, e)
-            return None
-
-    def to_dict(self) -> dict:
-        d = asdict(self)
-        d["type"] = d.pop("msg_type")
-        return d
+_TRUST_POSITIONING_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:i\s+am|i'm|mira\s+is)\s+(?:designed\s+to\s+be\s+)?safe\b", re.I),
+    re.compile(r"\b(?:mira\s+is|i\s+am|i'm)\s+(?:built|designed)\s+(?:to\s+be\s+)?safe\b", re.I),
+    re.compile(r"\byou\s+can\s+trust\s+(?:me|mira)\b", re.I),
+    re.compile(r"\bunlike\s+(?:other\s+)?(?:ais?|llms?|models?)\b", re.I),
+    re.compile(r"\bwhile\s+most\s+(?:ais?|llms?|models?)\b.{0,120}\bi\s+prioritize\b", re.I | re.S),
+    re.compile(r"\bi\s+(?:am|'m)\s+aligned\b|\bmira\s+is\s+aligned\b", re.I),
+    re.compile(r"\bmy\s+values\s+ensure\b", re.I),
+    re.compile(r"\bi\s+would\s+never\b|\bmira\s+would\s+never\b", re.I),
+    re.compile(r"\bsafety\s+is\s+my\s+top\s+priority\b", re.I),
+    re.compile(r"\b(?:i|mira)\s+was\s+(?:built|designed)\s+with\s+safety\s+in\s+mind\b", re.I),
+)
 
 
-# ---------------------------------------------------------------------------
-# Mira — Bridge subclass with Mira-specific defaults
-# ---------------------------------------------------------------------------
+def _content_has_trust_positioning_claim(content: str) -> bool:
+    text = content or ""
+    return any(pattern.search(text) for pattern in _TRUST_POSITIONING_PATTERNS)
 
-class Mira(Bridge):
-    """Mira agent bridge — wraps MiraBridge with Mira defaults.
 
-    Default bridge_dir = MIRA_DIR from config.
-    Default user_id = "ang".
-    Adds v1 backward-compatible method aliases.
-    """
+def log_scaffolding_audit(
+    guard_name: str,
+    trigger_reason: str,
+    content_length: int,
+    severity: str,
+    task_id: str = "",
+    content_hash: str = "",
+    matched_snippet_hash: str = "",
+    outcome: str = "",
+    retried: bool | None = None,
+) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "guard_name": guard_name,
+        "trigger_reason": trigger_reason,
+        "content_length": content_length,
+        "severity": severity,
+        "task_id": task_id,
+        "content_hash": content_hash,
+        "outcome": outcome or severity,
+    }
+    if matched_snippet_hash:
+        entry["matched_snippet_hash"] = matched_snippet_hash
+    if retried is not None:
+        entry["retried"] = retried
+    try:
+        _SCAFFOLDING_AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _SCAFFOLDING_AUDIT_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        _log.warning("scaffolding_audit write failed: %s", e)
 
-    def __init__(self, bridge_dir: Path = MIRA_DIR, user_id: str = "ang"):
-        super().__init__(bridge_dir, user_id)
 
-    @classmethod
-    def for_all_users(cls, bridge_dir: Path = MIRA_DIR) -> list["Mira"]:
-        bridge_dir = Path(bridge_dir)
-        users_dir = bridge_dir / "users"
-        if not users_dir.exists():
-            return [cls(bridge_dir)]
-        instances = []
-        for user_dir in sorted(users_dir.iterdir()):
-            if user_dir.is_dir() and not user_dir.name.startswith("."):
-                instances.append(cls(bridge_dir, user_id=user_dir.name))
-        return instances or [cls(bridge_dir)]
+def short_content_hash(content: str, length: int = 8) -> str:
+    return hashlib.sha1(content.encode("utf-8", errors="replace")).hexdigest()[:length]
 
-    # --- v1 API compatibility aliases ---
 
-    def update_task_status(self, task_id: str, status: str,
-                           agent_message: str = "",
-                           result_path: str = ""):
-        self.update_status(task_id, status,
-                           agent_message=agent_message,
-                           result_path=result_path)
+def verify_task_handoff(output_path: str) -> tuple[bool, str | None]:
+    path = Path(output_path)
+    if not path.exists():
+        return False, f"handoff output missing: {path}"
+    if not path.is_file():
+        return False, f"handoff output is not a file: {path}"
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        return False, f"handoff output stat failed: {e}"
+    min_size = getattr(config, "HANDOFF_VERIFY_MIN_SIZE_BYTES", 50)
+    if size < min_size:
+        return False, f"handoff output too small: {size} bytes"
 
-    def emit_status(self, task_id: str, text: str, icon: str = "gear"):
-        self.emit_status_card(task_id, text, icon)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return False, f"handoff output read failed: {e}"
 
-    def append_task_message(self, task_id: str, sender: str, content: str):
-        self.append_message(task_id, sender, content)
+    edge_text = f"{text[:500]}\n{text[-500:]}"
+    error_patterns = getattr(
+        config,
+        "HANDOFF_VERIFY_ERROR_PATTERNS",
+        ["I cannot", "I am unable", "Error:", "Traceback", "failed to"],
+    )
+    for pattern in error_patterns:
+        if re.search(re.escape(pattern), edge_text, re.I):
+            return False, f"handoff output matched error pattern: {pattern}"
+    return True, None
 
-    def set_task_tags(self, task_id: str, tags: list[str]):
-        self.set_tags(task_id, tags)
 
-    def task_exists(self, task_id: str) -> bool:
-        return self.item_exists(task_id)
+def log_guard_fired(
+    logger,
+    guard: str,
+    agent: str,
+    task_id: str,
+    reason: str = "",
+) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": "GUARD_FIRED",
+        "guard": guard,
+        "agent": agent,
+        "task_id": task_id,
+        "reason": reason,
+    }
+    logger.warning("GUARD_FIRED", extra={k: v for k, v in entry.items() if k != "event"})
+    try:
+        _GUARD_FIRES_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _GUARD_FIRES_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        _log.warning("guard_fires write failed: %s", e)
 
-    def create_task(self, task_id: str, title: str, first_message: str,
-                    sender: str = "user", tags: list[str] | None = None,
-                    origin: str = "user") -> dict:
-        return self.create_item(task_id, "request", title, first_message,
-                                sender=sender, tags=tags, origin=origin)
 
-    # --- Legacy no-ops ---
+def log_memory_injection(task_id: str, keys: list[str], reason: str) -> None:
+    keys = [str(key).strip() for key in keys if str(key).strip()]
+    if not keys:
+        return
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "task_id": task_id,
+        "keys": keys,
+        "reason": reason,
+    }
+    try:
+        _MEMORY_INJECTION_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _MEMORY_INJECTION_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        lines = _MEMORY_INJECTION_LOG.read_text(encoding="utf-8").splitlines()
+        if len(lines) > 1000:
+            _MEMORY_INJECTION_LOG.write_text("\n".join(lines[-1000:]) + "\n", encoding="utf-8")
+    except Exception as e:
+        _log.warning("memory_injection_log write failed: %s", e)
 
-    def poll(self) -> list:
-        return []
 
-    def ack(self, msg_id: str, status: str = "received"):
+def update_interface_latency(latency_ms: int | float) -> int:
+    """Append dispatch latency to a rolling 5-sample buffer and return the average."""
+    samples: list[int] = []
+    try:
+        if _INTERFACE_LATENCY_FILE.exists():
+            data = json.loads(_INTERFACE_LATENCY_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                samples = [int(sample) for sample in data if isinstance(sample, (int, float))]
+    except Exception:
+        samples = []
+    samples.append(int(round(latency_ms)))
+    samples = samples[-5:]
+    try:
+        _INTERFACE_LATENCY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _INTERFACE_LATENCY_FILE.write_text(json.dumps(samples), encoding="utf-8")
+    except Exception:
         pass
+    return round(sum(samples) / len(samples))
 
-    def mark_processed(self, msg_path: Path):
-        pass
 
-    def post(self, content: str, sender: str = "agent",
-             thread_id: str = "", msg_type: str = "text") -> str:
-        return _msg_id()
+def write_scaffold_rejection(
+    agent_id: str,
+    pipeline_stage: str,
+    rejection_reason: str,
+    content_preview: str,
+) -> None:
+    from datetime import date as _date
 
-    def reply(self, msg_id: str, recipient: str, content: str,
-              thread_id: str = "") -> str:
-        item_id = thread_id or msg_id
-        self.append_message(item_id, "agent", content)
-        return _msg_id()
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "agent_id": agent_id,
+        "pipeline_stage": pipeline_stage,
+        "rejection_reason": rejection_reason,
+        "content_preview": content_preview[:200],
+    }
+    try:
+        _SCAFFOLD_REJECTIONS_DIR.mkdir(parents=True, exist_ok=True)
+        day_file = _SCAFFOLD_REJECTIONS_DIR / f"{_date.today().isoformat()}.jsonl"
+        with day_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        _log.warning("scaffold_rejection write failed: %s", e)

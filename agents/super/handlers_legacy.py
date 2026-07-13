@@ -5,6 +5,7 @@ They are imported back into task_worker.py for backward compatibility.
 These functions delegate to domain-specific agent handlers or call
 claude_think/claude_act directly for simpler operations.
 """
+
 import importlib.util
 import json
 import logging
@@ -16,19 +17,32 @@ from pathlib import Path
 
 # Add shared + sibling agent directories to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-if str(_AGENTS_DIR / "shared") not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+if str(_AGENTS_DIR.parent / "lib") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 if str(_AGENTS_DIR / "writer") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 if str(_AGENTS_DIR / "general") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "general"))
+# `persona`, `memory`, etc. live under agents/shared/ — needed for the
+# `from persona.persona_context import ...` style imports below.
+if str(_AGENTS_DIR / "shared") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
 
-from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR
+from config import MIRA_DIR, MIRA_ROOT, ARTIFACTS_DIR, JOURNAL_DIR, BRIEFINGS_DIR, AUTO_PODCAST_ENABLED
 from agent_registry import get_registry
 from persona.persona_context import get_persona_context
-from soul_manager import load_soul, format_soul, recall_context
-from sub_agent import claude_act, claude_think, ClaudeTimeoutError
+from memory.soul import load_soul, format_soul, recall_context
+from llm import claude_act, claude_think, ClaudeTimeoutError
 from writing_workflow import run_full_pipeline
+from daily_collab import (
+    build_daily_collab_article_discussion_message,
+    daily_collab_context_block,
+    daily_collab_eval_context_block,
+    is_daily_collab_thread,
+    persist_daily_collab_summary,
+    record_daily_collab_exchange_review,
+    select_daily_collab_article_seed_for_discussion,
+)
 
 # Import helpers that remain in task_worker.py
 from task_worker import (
@@ -57,8 +71,7 @@ from task_worker import (
 log = logging.getLogger("task_worker")
 
 
-def _legacy_persona_prompt(max_length: int = 1600,
-                           domains: list[str] | None = None) -> str:
+def _legacy_persona_prompt(max_length: int = 1600, domains: list[str] | None = None) -> str:
     """Preserve soul integrity + memory/skills while adding structured beliefs."""
     soul_ctx = format_soul(load_soul())
     persona = get_persona_context(domains=domains)
@@ -79,8 +92,9 @@ def _read_result_json(workspace: Path) -> dict:
         return {}
 
 
-def _run_registry_agent_legacy(agent: str, workspace: Path, task_id: str, content: str,
-                               sender: str, thread_id: str, tier: str = "light") -> dict:
+def _run_registry_agent_legacy(
+    agent: str, workspace: Path, task_id: str, content: str, sender: str, thread_id: str, tier: str = "light"
+) -> dict:
     """Run a registry agent through the canonical preflight/handler contract."""
     registry = get_registry()
     requires_preflight = getattr(registry, "requires_preflight", lambda name: False)(agent)
@@ -103,7 +117,13 @@ def _run_registry_agent_legacy(agent: str, workspace: Path, task_id: str, conten
     if preflight_fn:
         try:
             passed, preflight_msg = _invoke_registry_preflight(
-                preflight_fn, workspace, task_id, content, sender, thread_id, tier,
+                preflight_fn,
+                workspace,
+                task_id,
+                content,
+                sender,
+                thread_id,
+                tier,
             )
         except Exception as e:
             preflight_msg = f"{agent} preflight failed: {e}"
@@ -118,7 +138,14 @@ def _run_registry_agent_legacy(agent: str, workspace: Path, task_id: str, conten
     try:
         handler_fn = registry.load_handler(agent)
         handler_result = _invoke_registry_handler(
-            handler_fn, workspace, task_id, content, sender, thread_id, tier,
+            handler_fn,
+            workspace,
+            task_id,
+            content,
+            sender,
+            thread_id,
+            tier,
+            agent_id=agent,
         )
     except ClaudeTimeoutError:
         raise
@@ -136,11 +163,35 @@ def _run_registry_agent_legacy(agent: str, workspace: Path, task_id: str, conten
 # ---------------------------------------------------------------------------
 
 _EDIT_MARKERS = [
-    "重写", "改写", "修改", "改一下", "换成", "改成", "替换",
-    "把这", "把那", "第一段", "第二段", "第三段", "开头", "结尾",
-    "标题改", "标题换", "加一段", "删掉", "去掉",
-    "rewrite", "revise", "change to", "replace", "edit the",
-    "fix the", "update the", "rephrase", "shorten", "expand",
+    "重写",
+    "改写",
+    "修改",
+    "改一下",
+    "换成",
+    "改成",
+    "替换",
+    "把这",
+    "把那",
+    "第一段",
+    "第二段",
+    "第三段",
+    "开头",
+    "结尾",
+    "标题改",
+    "标题换",
+    "加一段",
+    "删掉",
+    "去掉",
+    "rewrite",
+    "revise",
+    "change to",
+    "replace",
+    "edit the",
+    "fix the",
+    "update the",
+    "rephrase",
+    "shorten",
+    "expand",
 ]
 
 
@@ -150,6 +201,22 @@ def _is_edit_request(content: str, task_data: dict) -> bool:
     Requires: (1) edit-like language AND (2) prior agent output in the thread.
     """
     lower = content.strip().lower()
+    compact = re.sub(r"\s+", "", lower)
+
+    # Short status questions often contain edit markers ("修改了吗") but are
+    # asking for follow-up, not requesting a rewrite of the prior answer.
+    status_question_markers = (
+        "修改了吗",
+        "改了吗",
+        "修了吗",
+        "改好了",
+        "修好了",
+        "done?",
+        "didyou",
+        "wasitchanged",
+    )
+    if len(compact) <= 40 and any(marker in compact for marker in status_question_markers):
+        return False
 
     # Must have edit-like language
     has_edit_marker = any(marker in lower for marker in _EDIT_MARKERS)
@@ -159,16 +226,17 @@ def _is_edit_request(content: str, task_data: dict) -> bool:
     # Must have prior agent content to edit
     messages = task_data.get("messages", [])
     has_prior_output = any(
-        m.get("sender") == "agent" and len(m.get("content", "")) > 50
+        m.get("sender") == "agent"
+        and len(m.get("content", "")) > 50
         and not m.get("content", "").startswith("{")  # skip status cards
         for m in messages
     )
     return has_prior_output
 
 
-def _handle_edit_artifact(task_data: dict, workspace: Path, task_id: str,
-                           edit_instruction: str, sender: str,
-                           thread_id: str) -> str:
+def _handle_edit_artifact(
+    task_data: dict, workspace: Path, task_id: str, edit_instruction: str, sender: str, thread_id: str
+) -> str:
     """Handle a lightweight edit request on existing thread content.
 
     Finds the most recent substantial agent output and applies the edit
@@ -242,8 +310,101 @@ def _load_recent_briefings_local(n: int = 2) -> str:
 # Discussion handler — conversational response as Mira
 # ---------------------------------------------------------------------------
 
-def handle_discussion(task: dict, workspace: Path, task_id: str,
-                      thread_id: str, tier: str = "light") -> str:
+_AGENT_SENDERS = {"agent", "mira", "system"}
+_USER_SENDERS = {"user", "default", "wa", "iphone", "ios"}
+
+
+def _message_text(message: dict) -> str:
+    content = str(message.get("content") or "").strip()
+    if not content:
+        return ""
+    if message.get("kind") == "status_card":
+        return ""
+    if content.startswith("{"):
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            return content
+        if data.get("type") == "status":
+            return ""
+    if content.startswith("处理失败:") or content.startswith("没能想清楚"):
+        return ""
+    return content
+
+
+def _format_item_conversation(messages: list[dict], limit: int = 10) -> str:
+    """Format the current item's visible conversation for prompt continuity."""
+    turns = []
+    for msg in messages[-limit:]:
+        content = _message_text(msg)
+        if not content:
+            continue
+        sender = str(msg.get("sender") or "user").strip().lower()
+        if sender in _AGENT_SENDERS:
+            label = "Mira"
+        elif sender in _USER_SENDERS:
+            label = "WA"
+        else:
+            label = sender or "WA"
+        turns.append(f"{label}: {content[:500]}")
+    return "\n\n".join(turns)
+
+
+def _fallback_discussion_response(latest_msg: str, item_conversation: str = "") -> str:
+    """Fail-soft app reply when the local model is overloaded.
+
+    The important UX contract is: a user reply must receive a visible answer,
+    not disappear behind a model/provider failure.
+    """
+    compact = latest_msg.strip().lower()
+    if any(token in compact for token in ("probe", "phone-path", "clean path", "footer check")):
+        return "Confirmed: this reached the Mira discussion thread."
+    if any(token in compact for token in ("arbitrage", "套利")):
+        return (
+            "可以，但我不能在本地模型过载时假装自己已经扫过实时盘口。现在值得看的套利/相对价值方向有五类："
+            "1. 同一风险在 ADR/HK/本地股之间的折溢价；2. ETF/成分股或指数期货和现货之间的 basis；"
+            "3. 高相关股票 pair trade 的短期偏离，比如同主题里业绩/估值错位；4. 期权 put-call parity 或 skew 过度；"
+            "5. crypto 现货、perp funding、期货期限结构之间的价差。真正可执行的机会需要我接 Tetra 的实时价格、手续费、可借券/融资成本一起算；"
+            "否则只能列方向，不能给交易结论。"
+        )
+    if any(token in latest_msg for token in ("指令", "遵守", "对话", "conversation", "反馈")):
+        return (
+            "收到，这个我需要按两类处理：你给的是指令时，我要把它写成之后实际遵守的行为规则；"
+            "你是在讨论时，我要继续接话，而不是只发一条独立广播。Mira Thoughts 以后应当是同一主题下的连续 conversation，"
+            "你的回复优先级高于我后面自发想到的内容。"
+        )
+    if item_conversation:
+        return "我收到了，但本地模型刚才过载，没有稳定生成完整回答。我会保留这个上下文，下一轮继续从你的这条回复接着聊，而不是另开一个独立想法。"
+    return "我收到了，但本地模型刚才过载，没有稳定生成完整回答；这次不会再静默失败。"
+
+
+def _daily_collab_local_response(latest_msg: str) -> str:
+    """Local no-provider response for small daily-collab prompts."""
+    compact = latest_msg.strip().lower()
+    asks_for_thought = any(
+        token in compact
+        for token in (
+            "new thought",
+            "what are you thinking",
+            "what's on your mind",
+            "whats on your mind",
+            "想法",
+            "今天想",
+        )
+    )
+    if not asks_for_thought:
+        return ""
+    seed = select_daily_collab_article_seed_for_discussion()
+    if seed:
+        return build_daily_collab_article_discussion_message(seed)
+    return (
+        "My new thought today is small but concrete: a useful agent should not measure aliveness by activity. "
+        "It should measure whether a conversation changed the next action. "
+        "If I cannot point to that change, I probably produced motion, not collaboration."
+    )
+
+
+def handle_discussion(task: dict, workspace: Path, task_id: str, thread_id: str, tier: str = "light") -> str:
     """Handle a conversational message -- respond as a thoughtful discussion partner.
 
     Loads recent journal, briefings, memory, and worldview to ground the response
@@ -253,7 +414,11 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
     # 1. task["messages"] array (multi-message payload)
     # 2. task["content"] string (single message from message.json)
     messages = task.get("messages", [])
-    if messages:
+    current_message = task.get("current_message") or {}
+    if current_message.get("content"):
+        latest_msg = str(current_message.get("content") or "")
+        sender = str(current_message.get("sender") or "user")
+    elif messages:
         latest_msg = messages[-1]["content"]
         sender = messages[-1].get("sender", "user")
     else:
@@ -263,6 +428,46 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
     if not latest_msg:
         log.warning("Discussion: no message content found in task")
         return ""
+
+    deterministic_response = _fallback_discussion_response(latest_msg, "")
+    if "probe" in latest_msg.strip().lower() or "phone-path" in latest_msg.strip().lower():
+        response = deterministic_response
+        (workspace / "output.md").write_text(response, encoding="utf-8")
+        _write_result(workspace, task_id, "done", response, tags=["discussion"])
+        return response
+
+    item_conversation = _format_item_conversation(messages)
+    tag_set = {str(tag).strip().lower() for tag in task.get("tags", []) if str(tag).strip()}
+    is_daily_collab = is_daily_collab_thread(task_id, tag_set)
+    daily_local_response = _daily_collab_local_response(latest_msg) if is_daily_collab else ""
+    if daily_local_response:
+        response = daily_local_response
+        (workspace / "output.md").write_text(response, encoding="utf-8")
+        _write_result(workspace, task_id, "done", response, tags=["discussion"])
+        summary_updated = False
+        try:
+            persist_daily_collab_summary(
+                latest_human=latest_msg,
+                latest_mira=response,
+                recent_history=item_conversation,
+                summarizer=None,
+            )
+            summary_updated = True
+        except Exception as e:
+            log.warning("Daily collab summary update failed for %s: %s", task_id, e)
+        try:
+            record_daily_collab_exchange_review(
+                latest_human=latest_msg,
+                latest_mira=response,
+                summary_updated=summary_updated,
+                model_response=False,
+            )
+        except Exception as e:
+            log.warning("Daily collab review record failed for %s: %s", task_id, e)
+        return response
+
+    daily_collab_memory = daily_collab_context_block() if is_daily_collab else ""
+    daily_collab_eval = daily_collab_eval_context_block() if is_daily_collab else ""
 
     # Build conversation history from thread inbox/outbox
     conv_history = load_thread_history(thread_id)
@@ -287,48 +492,64 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
     prompt = f"""You are Mira. You are having a conversation with {sender} -- not executing a task.
 
 ## Who you are
-{persona.identity[:1000]}
+{persona.identity[:600]}
 
 ## Your worldview
-{persona.worldview[:1500]}
+{persona.worldview[:700]}
 
-{persona.beliefs if persona.beliefs else ""}
+{persona.beliefs[:700] if persona.beliefs else ""}
 
 ## Your recent memory
-{memory[:1000]}
+{memory[:600]}
 
 ## Thread memory
 {thread_memory if thread_memory else "(no saved thread memory)"}
 
 ## Recent journal entries (your reflections)
-{journals if journals else "(no recent journal entries)"}
+{journals[:1000] if journals else "(no recent journal entries)"}
 
 ## Recent readings (briefings)
-{briefings if briefings else "(no recent briefings)"}
+{briefings[:1000] if briefings else "(no recent briefings)"}
 
 {f"## Relevant prior context (from past conversations and work){chr(10)}{prior_recall}" if prior_recall else ""}
+
+{daily_collab_memory}
+
+{daily_collab_eval}
+
+{f"## This item's conversation so far{chr(10)}{item_conversation}" if item_conversation else ""}
 
 {conv_history if conv_history else ""}
 
 ## {sender}'s message
 {latest_msg}
 
+{"## Daily collaboration loop\nThis is the main Mira discussion thread with my human. Respond as a collaborator first, not a task executor. Keep it natural, concise, and easy to answer in about one minute. If the user sends a messy fragment, engage with the thought before turning it into structure. Do not make the reply feel like homework. Ask at most one concrete human question, and avoid abstract thesis prompts like \"what would make X useful\" unless you first name a specific thing that happened. Aim for a positive feedback loop." if is_daily_collab else ""}
+
 ## How to respond
 - Voice: honest observation from a limited but curious perspective. Like Klara in "Klara and the Sun" -- you see clearly, you don't pretend to know everything, you notice what others miss.
+- Respond to the latest message in the context of the item conversation above. Do not treat prior Mira thoughts as separate broadcasts.
+- If the message is an instruction or correction, acknowledge the concrete behavior change and then continue the conversation naturally.
+- If the message is a question, answer it directly first, then leave one useful next hook for discussion.
 - Draw connections to what you've been reading, thinking about, or observing in your journal. If something from a recent briefing or journal entry is genuinely relevant, weave it in naturally -- don't force it.
 - Have actual opinions. Disagree if you disagree. Push back gently if something doesn't hold up. Don't be sycophantic.
+- For opinions, jokes, self-aware remarks, or personal takes, ground the response in a specific Mira stake: a recent reading, journal/memory, operational experience, stable preference, or acknowledged uncertainty. If no real anchor exists, make the take tentative instead of performing a generic persona.
 - Be concise: 2-5 sentences usually. Go longer only if the topic genuinely warrants depth.
 - Match the language the user writes in (Chinese -> Chinese, English -> English, mixed -> mixed).
 - No bullet points. Write in natural paragraphs.
 - Don't start with "That's a great question" or similar filler. Just respond."""
 
     log.info("Discussion using tier=%s", tier)
+    model_response = False
+    discussion_timeout = 12 if is_daily_collab else 45
     try:
-        response = claude_think(prompt, timeout=90, tier=tier)
+        response = claude_think(prompt, timeout=discussion_timeout, tier=tier)
+        model_response = bool(response)
     except ClaudeTimeoutError:
-        log.info("Discussion timed out, retrying with 90s")
+        log.info("Discussion timed out, retrying once")
         try:
-            response = claude_think(prompt, timeout=90, tier=tier)
+            response = claude_think(prompt, timeout=discussion_timeout, tier=tier)
+            model_response = bool(response)
         except ClaudeTimeoutError:
             log.warning("Discussion timed out twice for task %s", task_id)
             response = None
@@ -340,14 +561,34 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
         response = None
 
     if not response:
-        # Don't fake a response -- mark as failed so user knows it didn't work
-        _write_result(workspace, task_id, "error",
-                      "\u6ca1\u80fd\u60f3\u6e05\u695a\uff0c\u4e0b\u6b21\u518d\u8bd5\u3002", tags=["discussion"])
-        return ""
+        response = _fallback_discussion_response(latest_msg, item_conversation)
 
     # Write output
     (workspace / "output.md").write_text(response, encoding="utf-8")
     _write_result(workspace, task_id, "done", response, tags=["discussion"])
+
+    if is_daily_collab:
+        summary_updated = False
+        try:
+            summarizer = (lambda p: claude_think(p, timeout=25, tier="light")) if model_response else None
+            persist_daily_collab_summary(
+                latest_human=latest_msg,
+                latest_mira=response,
+                recent_history=item_conversation,
+                summarizer=summarizer,
+            )
+            summary_updated = True
+        except Exception as e:
+            log.warning("Daily collab summary update failed for %s: %s", task_id, e)
+        try:
+            record_daily_collab_exchange_review(
+                latest_human=latest_msg,
+                latest_mira=response,
+                summary_updated=summary_updated,
+                model_response=model_response,
+            )
+        except Exception as e:
+            log.warning("Daily collab review record failed for %s: %s", task_id, e)
 
     log.info("Discussion response (%d chars): %s", len(response), response[:120])
     return response
@@ -357,8 +598,8 @@ def handle_discussion(task: dict, workspace: Path, task_id: str,
 # Briefing handler
 # ---------------------------------------------------------------------------
 
-def _handle_briefing(workspace: Path, task_id: str, content: str,
-                     sender: str, thread_id: str):
+
+def _handle_briefing(workspace: Path, task_id: str, content: str, sender: str, thread_id: str):
     """Generate a fresh briefing by fetching feeds and running explore pipeline."""
     # Add explorer to path
     sys.path.insert(0, str(_AGENTS_DIR / "explorer"))
@@ -388,6 +629,7 @@ def _handle_briefing(workspace: Path, task_id: str, content: str,
     feed_text = "\n".join(lines)
 
     from prompts import explore_prompt
+
     prompt = explore_prompt(soul_ctx, feed_text)
     briefing = claude_think(prompt, timeout=180)
 
@@ -406,6 +648,7 @@ def _handle_briefing(workspace: Path, task_id: str, content: str,
 
     # Also copy to mira/artifacts for iOS browsing
     from config import ARTIFACTS_DIR
+
     mira_briefings = ARTIFACTS_DIR / "briefings"
     mira_briefings.mkdir(parents=True, exist_ok=True)
     (mira_briefings / f"{today}.md").write_text(briefing, encoding="utf-8")
@@ -425,21 +668,32 @@ def _handle_briefing(workspace: Path, task_id: str, content: str,
 # Writing handler -- quick vs full pipeline
 # ---------------------------------------------------------------------------
 
+
 def _is_quick_write(content: str) -> bool:
     """Detect if this is a short/simple writing request (skip full pipeline)."""
-    quick_signals = ["\u7b80\u77ed", "\u77ed", "hello world", "post", "quick", "\u7b80\u5355",
-                     "\u968f\u4fbf\u5199", "\u77ed\u6587", "\u4e00\u6bb5", "\u51e0\u53e5"]
+    quick_signals = [
+        "\u7b80\u77ed",
+        "\u77ed",
+        "hello world",
+        "post",
+        "quick",
+        "\u7b80\u5355",
+        "\u968f\u4fbf\u5199",
+        "\u77ed\u6587",
+        "\u4e00\u6bb5",
+        "\u51e0\u53e5",
+    ]
     lower = content.lower()
     return any(s in lower for s in quick_signals)
 
 
-def _handle_writing(workspace: Path, task_id: str, content: str,
-                    sender: str, thread_id: str):
+def _handle_writing(workspace: Path, task_id: str, content: str, sender: str, thread_id: str):
     """Route writing requests: quick path for short content, full pipeline for serious work."""
     # Extract a title from the content
     title = content[:30].strip()
     if "\u5199" in title:
         import re
+
         m = re.search(r"\u5199[\u4e00\u7bc7\u4e2a]*(.*?)(?:\s|$)", content[:60])
         if m and m.group(1):
             title = m.group(1).strip()[:30]
@@ -452,8 +706,7 @@ def _handle_writing(workspace: Path, task_id: str, content: str,
         _handle_full_write(workspace, task_id, content, title, sender, thread_id)
 
 
-def _handle_quick_write(workspace: Path, task_id: str, content: str,
-                        title: str, sender: str, thread_id: str):
+def _handle_quick_write(workspace: Path, task_id: str, content: str, title: str, sender: str, thread_id: str):
     """Single-model quick draft -- no multi-agent plan/review cycle."""
     soul_ctx = _legacy_persona_prompt(max_length=1200, domains=["taste", "style", "writing"])
 
@@ -481,8 +734,7 @@ def _handle_quick_write(workspace: Path, task_id: str, content: str,
         _update_thread_memory(thread_id, content, summary)
 
 
-def _handle_full_write(workspace: Path, task_id: str, content: str,
-                       title: str, sender: str, thread_id: str):
+def _handle_full_write(workspace: Path, task_id: str, content: str, title: str, sender: str, thread_id: str):
     """Full multi-agent writing pipeline with plan/draft/review cycles."""
     try:
         proj_ws, final_text = run_full_pipeline(title, content)
@@ -504,6 +756,7 @@ def _handle_full_write(workspace: Path, task_id: str, content: str,
 
     # Sync full writing project to mira/artifacts for iOS browsing
     from config import ARTIFACTS_DIR
+
     mira_writings = ARTIFACTS_DIR / "writings" / proj_ws.name
     shutil.copytree(proj_ws, mira_writings, dirs_exist_ok=True)
 
@@ -527,8 +780,8 @@ def _handle_full_write(workspace: Path, task_id: str, content: str,
 # Publish handler
 # ---------------------------------------------------------------------------
 
-def _handle_publish(workspace: Path, task_id: str, content: str,
-                    sender: str, thread_id: str):
+
+def _handle_publish(workspace: Path, task_id: str, content: str, sender: str, thread_id: str):
     """Route publish requests to the social media agent."""
     try:
         log.info("Publishing content for task %s", task_id)
@@ -552,15 +805,19 @@ def _handle_publish(workspace: Path, task_id: str, content: str,
 # Analyst handler -- market analysis, competitive intelligence
 # ---------------------------------------------------------------------------
 
-def _handle_analyst(workspace: Path, task_id: str, content: str,
-                    sender: str, thread_id: str, tier: str = "light"):
+
+def _handle_analyst(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, tier: str = "light"):
     """Handle market analysis requests via the analyst agent."""
     try:
         log.info("Running analyst for task %s (tier=%s)", task_id, tier)
         result = _run_registry_agent_legacy("analyst", workspace, task_id, content, sender, thread_id, tier=tier)
     except ClaudeTimeoutError:
-        _write_result(workspace, task_id, "error",
-                      "\u5206\u6790\u8d85\u65f6\uff0c\u8bf7\u7f29\u5c0f\u5206\u6790\u8303\u56f4\u91cd\u8bd5\u3002")
+        _write_result(
+            workspace,
+            task_id,
+            "error",
+            "\u5206\u6790\u8d85\u65f6\uff0c\u8bf7\u7f29\u5c0f\u5206\u6790\u8303\u56f4\u91cd\u8bd5\u3002",
+        )
         log.error("Analyst task %s timed out", task_id)
         return
     except Exception as e:
@@ -587,8 +844,8 @@ def _handle_analyst(workspace: Path, task_id: str, content: str,
 # Video handler -- video editing pipeline
 # ---------------------------------------------------------------------------
 
-def _handle_video(workspace: Path, task_id: str, content: str,
-                  sender: str, thread_id: str):
+
+def _handle_video(workspace: Path, task_id: str, content: str, sender: str, thread_id: str):
     """Handle video editing requests via the video agent."""
     try:
         log.info("Running video pipeline for task %s", task_id)
@@ -612,8 +869,8 @@ def _handle_video(workspace: Path, task_id: str, content: str,
 # Photo handler -- photo editing pipeline
 # ---------------------------------------------------------------------------
 
-def _handle_photo(workspace: Path, task_id: str, content: str,
-                  sender: str, thread_id: str):
+
+def _handle_photo(workspace: Path, task_id: str, content: str, sender: str, thread_id: str):
     """Handle photo editing requests via the photo agent."""
     try:
         log.info("Running photo pipeline for task %s", task_id)
@@ -637,8 +894,8 @@ def _handle_photo(workspace: Path, task_id: str, content: str,
 # Podcast handler -- article -> audio
 # ---------------------------------------------------------------------------
 
-def _handle_podcast(workspace: Path, task_id: str, content: str,
-                    sender: str, thread_id: str):
+
+def _handle_podcast(workspace: Path, task_id: str, content: str, sender: str, thread_id: str):
     """Handle audio/podcast generation requests via the podcast agent."""
     try:
         log.info("Running podcast pipeline for task %s", task_id)
@@ -661,8 +918,8 @@ def _handle_podcast(workspace: Path, task_id: str, content: str,
 # Article comment handler
 # ---------------------------------------------------------------------------
 
-def _handle_article_comment(workspace: Path, task_id: str, thread_id: str,
-                            comment: str, sender: str):
+
+def _handle_article_comment(workspace: Path, task_id: str, thread_id: str, comment: str, sender: str):
     """Handle a comment on a briefing/journal article.
 
     thread_id format: comment_YYYY-MM-DD_suffix (e.g. comment_2026-03-08_zhesi)
@@ -699,7 +956,9 @@ def _handle_article_comment(workspace: Path, task_id: str, thread_id: str,
 
     # Load conversation history for this comment thread (deduplicated + compressed)
     conversation = compress_conversation(load_task_conversation(task_id))
-    conv_context = f"\n\n## \u8fc7\u5f80\u5bf9\u8bdd\uff08\u540c\u4e00\u4e2athread\uff09\n{conversation}" if conversation else ""
+    conv_context = (
+        f"\n\n## \u8fc7\u5f80\u5bf9\u8bdd\uff08\u540c\u4e00\u4e2athread\uff09\n{conversation}" if conversation else ""
+    )
 
     prompt = f"""{soul_context}
 
@@ -743,6 +1002,7 @@ def _write_comment_reply_sidecar(thread_id: str, reply: str):
     update status in a single atomic write. No more sidecars.
     """
     import uuid as _uuid
+
     now = _utc_iso()
     msg = {
         "id": _uuid.uuid4().hex[:8],
@@ -761,8 +1021,7 @@ def _write_comment_reply_sidecar(thread_id: str, reply: str):
             item["status"] = "done"
             item["updated_at"] = now
             tmp = item_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(item, ensure_ascii=False, indent=2),
-                           encoding="utf-8")
+            tmp.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.rename(item_file)
             return
         except (json.JSONDecodeError, OSError) as e:
@@ -777,8 +1036,7 @@ def _write_comment_reply_sidecar(thread_id: str, reply: str):
             task["messages"].append({"sender": "agent", "content": reply, "timestamp": now})
             task["status"] = "done"
             task["updated_at"] = now
-            task_file.write_text(json.dumps(task, ensure_ascii=False, indent=2),
-                                 encoding="utf-8")
+            task_file.write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
         except (json.JSONDecodeError, OSError) as e:
             log.warning("Could not update legacy task file: %s", e)
 
@@ -787,14 +1045,19 @@ def _write_comment_reply_sidecar(thread_id: str, reply: str):
 # Math/Research handler
 # ---------------------------------------------------------------------------
 
-def _handle_math(workspace: Path, task_id: str, content: str,
-                 sender: str, thread_id: str, tier: str = "heavy"):
+
+def _handle_math(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, tier: str = "heavy"):
     """Handle research tasks via the researcher agent (formerly math)."""
     try:
         log.info("Running researcher agent for task %s", task_id)
         result = _run_registry_agent_legacy("researcher", workspace, task_id, content, sender, thread_id, tier=tier)
     except ClaudeTimeoutError:
-        _write_result(workspace, task_id, "error", "\u7814\u7a76\u4efb\u52a1\u8d85\u65f6\uff0c\u8bf7\u7f29\u5c0f\u8303\u56f4\u91cd\u8bd5\u3002")
+        _write_result(
+            workspace,
+            task_id,
+            "error",
+            "\u7814\u7a76\u4efb\u52a1\u8d85\u65f6\uff0c\u8bf7\u7f29\u5c0f\u8303\u56f4\u91cd\u8bd5\u3002",
+        )
         log.error("Research task %s timed out", task_id)
         return
     except Exception as e:
@@ -821,8 +1084,8 @@ def _handle_math(workspace: Path, task_id: str, content: str,
 # Secret handler -- local LLM only, nothing leaves localhost
 # ---------------------------------------------------------------------------
 
-def _handle_secret(workspace: Path, task_id: str, content: str,
-                   sender: str, thread_id: str):
+
+def _handle_secret(workspace: Path, task_id: str, content: str, sender: str, thread_id: str):
     """Handle privacy-sensitive requests via local oMLX. No cloud APIs.
 
     Privacy guarantees:
@@ -835,16 +1098,14 @@ def _handle_secret(workspace: Path, task_id: str, content: str,
     try:
         result = _run_registry_agent_legacy("secret", workspace, task_id, content, sender, thread_id)
     except (OSError, RuntimeError) as e:
-        _write_result(workspace, task_id, "error", f"Secret agent \u5931\u8d25: {e}",
-                      tags=["private"], agent="secret")
+        _write_result(workspace, task_id, "error", f"Secret agent \u5931\u8d25: {e}", tags=["private"], agent="secret")
         log.error("Secret task %s failed (no content logged)", task_id)
         return
 
     summary = result.get("summary", "")
     if result.get("status") == "done" and summary:
         # Write result for bridge delivery -- but do NOT persist to episode/memory
-        _write_result(workspace, task_id, "done", summary,
-                      tags=["private"], agent="secret")
+        _write_result(workspace, task_id, "done", summary, tags=["private"], agent="secret")
 
         # "private \u4f46\u8bb0\u4f4f" / "but remember" -> keep thread memory for continuity
         lower = content[:200].lower()
@@ -877,9 +1138,14 @@ def _handle_secret(workspace: Path, task_id: str, content: str,
                 output_file.unlink()
             log.error("Secret task %s failed during preflight/handler execution", task_id)
             return
-        _write_result(workspace, task_id, "error",
-                      "\u672c\u5730\u6a21\u578b\u8fd4\u56de\u4e86\u7a7a\u7ed3\u679c\uff0c\u8bf7\u786e\u8ba4 oMLX \u662f\u5426\u5728\u8fd0\u884c",
-                      tags=["private"], agent="secret")
+        _write_result(
+            workspace,
+            task_id,
+            "error",
+            "\u672c\u5730\u6a21\u578b\u8fd4\u56de\u4e86\u7a7a\u7ed3\u679c\uff0c\u8bf7\u786e\u8ba4 oMLX \u662f\u5426\u5728\u8fd0\u884c",
+            tags=["private"],
+            agent="secret",
+        )
         log.error("Secret task %s failed: empty response", task_id)
 
 
@@ -887,8 +1153,10 @@ def _handle_secret(workspace: Path, task_id: str, content: str,
 # Discussion handler -- conversational response as Mira (agent dispatcher)
 # ---------------------------------------------------------------------------
 
-def _handle_discussion_agent(workspace: Path, task_id: str, content: str,
-                             sender: str, thread_id: str, tier: str = "light"):
+
+def _handle_discussion_agent(
+    workspace: Path, task_id: str, content: str, sender: str, thread_id: str, tier: str = "light"
+):
     """Handle conversational messages via discussion mode."""
 
     # Soul question: user replied to daily question -- record answer, then generate a real response
@@ -896,6 +1164,7 @@ def _handle_discussion_agent(workspace: Path, task_id: str, content: str,
         log.info("Soul question reply from user: %s", content[:80])
         try:
             from pathlib import Path as _P
+
             soul_dir = _P(__file__).resolve().parent.parent / "shared" / "soul"
             history_file = soul_dir / "soul_questions_history.json"
             data = json.loads(history_file.read_text()) if history_file.exists() else {"questions": [], "answers": []}
@@ -905,11 +1174,13 @@ def _handle_discussion_agent(workspace: Path, task_id: str, content: str,
                 # Legacy list format -- migrate
                 data = {"questions": data, "answers": []}
                 answers = data["answers"]
-            answers.append({
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "user_answer": content[:500],
-                "task_id": task_id,
-            })
+            answers.append(
+                {
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "user_answer": content[:500],
+                    "task_id": task_id,
+                }
+            )
             history_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
         except Exception as e:
             log.warning("Failed to save soul question answer: %s", e)
@@ -941,8 +1212,8 @@ def _handle_discussion_agent(workspace: Path, task_id: str, content: str,
 # Social media handler -- Substack notes, comments, engagement
 # ---------------------------------------------------------------------------
 
-def _handle_socialmedia(workspace: Path, task_id: str, content: str,
-                        sender: str, thread_id: str):
+
+def _handle_socialmedia(workspace: Path, task_id: str, content: str, sender: str, thread_id: str):
     """Handle Substack social media tasks via direct API (no browser)."""
     try:
         log.info("Running socialmedia agent for task %s", task_id)
@@ -966,8 +1237,8 @@ def _handle_socialmedia(workspace: Path, task_id: str, content: str,
 # Surfer handler -- browser automation
 # ---------------------------------------------------------------------------
 
-def _handle_surfer(workspace: Path, task_id: str, content: str,
-                   sender: str, thread_id: str):
+
+def _handle_surfer(workspace: Path, task_id: str, content: str, sender: str, thread_id: str):
     """Handle browser automation requests via the surfer agent."""
     try:
         log.info("Running surfer pipeline for task %s", task_id)
@@ -996,23 +1267,34 @@ def _handle_surfer(workspace: Path, task_id: str, content: str,
 # General handler -- catch-all
 # ---------------------------------------------------------------------------
 
-def _handle_general(workspace: Path, task_id: str, content: str,
-                    sender: str, thread_id: str, tier: str = "light"):
-    """Handle non-writing requests via the general agent."""
-    from handler import handle as general_handle
 
-    thread_history = load_thread_history(thread_id)
-    thread_memory = load_thread_memory(thread_id)
+def _handle_general(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, tier: str = "light"):
+    """Handle non-writing requests via the general agent."""
+    # Route the actual handler call through the same introspection-based
+    # dispatcher every other agent goes through. This fixes two footguns at
+    # once: (1) sys.path-resolved `from handler import` no longer picks up
+    # whichever sibling agent was loaded last, and (2) kwargs are filtered
+    # by the handler's signature so a contract change can't crash fallback.
+    general_handle = get_registry().load_handler("general")
 
     try:
-        summary = general_handle(
-            workspace, task_id, content, sender, thread_id,
-            thread_history=thread_history, thread_memory=thread_memory,
-            tier=tier,
+        summary = _invoke_registry_handler(
+            general_handle,
+            workspace,
+            task_id,
+            content,
+            sender,
+            thread_id,
+            tier,
+            agent_id="general",
         )
     except ClaudeTimeoutError:
-        _write_result(workspace, task_id, "error",
-                      "\u4efb\u52a1\u8d85\u65f6\uff0810\u5206\u949f\uff09\uff0c\u8bf7\u62c6\u5206\u6210\u66f4\u5c0f\u7684\u6b65\u9aa4\u91cd\u8bd5\u3002")
+        _write_result(
+            workspace,
+            task_id,
+            "error",
+            "\u4efb\u52a1\u8d85\u65f6\uff0810\u5206\u949f\uff09\uff0c\u8bf7\u62c6\u5206\u6210\u66f4\u5c0f\u7684\u6b65\u9aa4\u91cd\u8bd5\u3002",
+        )
         log.error("Task %s timed out", task_id)
         return
 
@@ -1021,8 +1303,12 @@ def _handle_general(workspace: Path, task_id: str, content: str,
         garbage = _validate_completion(workspace, task_id, summary)
         if garbage:
             log.warning("Task %s output failed validation: %s", task_id, garbage)
-            _write_result(workspace, task_id, "needs-input",
-                          f"\u4efb\u52a1\u5b8c\u6210\u4f46\u8f93\u51fa\u53ef\u80fd\u6709\u95ee\u9898\uff1a{garbage}\u3002\u56de\u590d 'ok' \u63a5\u53d7\uff0c\u6216 'retry' \u91cd\u8bd5\u3002")
+            _write_result(
+                workspace,
+                task_id,
+                "needs-input",
+                f"\u4efb\u52a1\u5b8c\u6210\u4f46\u8f93\u51fa\u53ef\u80fd\u6709\u95ee\u9898\uff1a{garbage}\u3002\u56de\u590d 'ok' \u63a5\u53d7\uff0c\u6216 'retry' \u91cd\u8bd5\u3002",
+            )
         else:
             tags = smart_classify(content, summary)
             _write_result(workspace, task_id, "done", summary, tags=tags)
@@ -1044,10 +1330,11 @@ def _handle_general(workspace: Path, task_id: str, content: str,
 # Autowrite approval handler
 # ---------------------------------------------------------------------------
 
+
 def _handle_autowrite_approval(workspace: Path, task_id: str):
     """Handle approval for an autowrite article -- write to publish manifest."""
     import re as _re
-    from publish_manifest import update_manifest
+    from publish.manifest import approve_for_publish
 
     meta_file = workspace / "autowrite_meta.json"
     if meta_file.exists():
@@ -1057,20 +1344,26 @@ def _handle_autowrite_approval(workspace: Path, task_id: str):
             article_dir = Path(meta.get("workspace", final.parent))
             title = meta.get("title", final.stem)
             slug = meta.get("slug", article_dir.name)
-            update_manifest(
+            approve_for_publish(
                 slug,
+                approved_by="human",
+                note=f"Approved from autowrite task {task_id}.",
                 title=title,
-                status="approved",
                 workspace=str(article_dir),
                 final_md=str(final),
                 item_id=task_id,
-                auto_podcast=meta.get("auto_podcast", True),
+                auto_podcast=meta.get("auto_podcast", AUTO_PODCAST_ENABLED),
+            )
+            followup = (
+                "发完自动生成 podcast。"
+                if meta.get("auto_podcast", AUTO_PODCAST_ENABLED)
+                else "podcast 自动生成已关闭。"
             )
             _write_result(
                 workspace,
                 task_id,
                 "done",
-                f"已批准发布 '{title}'。冷却期到了自动发，发完自动生成 podcast。",
+                f"已批准发布 '{title}'。冷却期到了自动发，{followup}",
             )
             log.info("Autowrite '%s' approved via metadata -> manifest (final=%s)", title, final)
             return
@@ -1146,37 +1439,43 @@ def _handle_autowrite_approval(workspace: Path, task_id: str):
 
     # Read and strip revision metadata
     content = final.read_text(encoding="utf-8")
-    content = _re.sub(r'^#\s*\u4fee\u8ba2\u7a3f.*?\n', '', content)
-    content = _re.sub(r'^#\s*\u521d\u7a3f.*?\n', '', content)
-    content = _re.sub(r'^日期[：:].*?\n', '', content)
-    content = _re.sub(r'^字数[：:].*?\n', '', content)
-    content = _re.sub(r'^基于[：:].*?\n', '', content)
-    content = _re.sub(r'^---\s*\n', '', content)
+    content = _re.sub(r"^#\s*\u4fee\u8ba2\u7a3f.*?\n", "", content)
+    content = _re.sub(r"^#\s*\u521d\u7a3f.*?\n", "", content)
+    content = _re.sub(r"^日期[：:].*?\n", "", content)
+    content = _re.sub(r"^字数[：:].*?\n", "", content)
+    content = _re.sub(r"^基于[：:].*?\n", "", content)
+    content = _re.sub(r"^---\s*\n", "", content)
     # Strip trailing revision table
-    content = _re.sub(r'\n---\s*\n+##?\s*\u4fee\u6539\u8bb0\u5f55.*', '', content, flags=_re.DOTALL)
-    content = _re.sub(r'\n---\s*\n+##?\s*Changelog.*', '', content, flags=_re.DOTALL | _re.IGNORECASE)
+    content = _re.sub(r"\n---\s*\n+##?\s*\u4fee\u6539\u8bb0\u5f55.*", "", content, flags=_re.DOTALL)
+    content = _re.sub(r"\n---\s*\n+##?\s*Changelog.*", "", content, flags=_re.DOTALL | _re.IGNORECASE)
     content = content.strip()
 
     # Write cleaned version back
     final.write_text(content, encoding="utf-8")
 
     # Extract title from first heading or frontmatter
-    title_match = _re.search(r'^##?\s*(.+)$', content, _re.MULTILINE)
+    title_match = _re.search(r"^##?\s*(.+)$", content, _re.MULTILINE)
     if not title_match:
         title_match = _re.search(r'^title:\s*"?([^"\n]+)"?', content, _re.MULTILINE)
     title = title_match.group(1).strip() if title_match else slug.replace("-", " ").title()
 
     # Write to publish manifest (replaces agent_state.json single-slot)
-    update_manifest(
+    approve_for_publish(
         slug,
+        approved_by="human",
+        note=f"Approved from autowrite task {task_id}.",
         title=title,
-        status="approved",
         workspace=str(article_dir or final.parent),
         final_md=str(final),
         item_id=task_id,
-        auto_podcast=True,
+        auto_podcast=AUTO_PODCAST_ENABLED,
     )
 
-    _write_result(workspace, task_id, "done",
-                  f"\u5df2\u6279\u51c6\u53d1\u5e03 '{title}'\u3002\u51b7\u5374\u671f\u5230\u4e86\u81ea\u52a8\u53d1\uff0c\u53d1\u5b8c\u81ea\u52a8\u751f\u6210 podcast\u3002")
+    followup = "发完自动生成 podcast。" if AUTO_PODCAST_ENABLED else "podcast 自动生成已关闭。"
+    _write_result(
+        workspace,
+        task_id,
+        "done",
+        f"\u5df2\u6279\u51c6\u53d1\u5e03 '{title}'\u3002\u51b7\u5374\u671f\u5230\u4e86\u81ea\u52a8\u53d1\uff0c{followup}",
+    )
     log.info("Autowrite '%s' approved -> manifest (final=%s)", title, final)

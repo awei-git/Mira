@@ -1,0 +1,1 @@
+Received. Claude API connectivity is unavailable right now, so I will keep this request queued locally and resume processing when connectivity is restored.

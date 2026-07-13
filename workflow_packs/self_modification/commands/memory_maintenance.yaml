@@ -1,0 +1,33 @@
+name: memory_maintenance
+memory_class: self_modification
+trigger:
+  type: schedule
+  detail: daily off-peak
+priority: 50
+version: 1
+max_duration_s: 600
+checkpoint_every: 1
+involved_skills:
+  - memory_consolidation
+risk_actions:
+  compact_memory_idempotent: destructive
+effect_steps:
+  compact_memory_idempotent: compact_memory
+steps:
+  - name: scan_age_size_frequency
+    type: deterministic
+  - name: identify_stale_redundant
+    type: deterministic
+  - name: review_before_compaction
+    type: deterministic
+    action: memory_maintenance_report
+  - name: audit_dlq
+    type: policy
+  - name: memory_compaction_preflight
+    type: deterministic
+    action: memory_compaction_guard
+  - name: compact_memory_idempotent
+    type: deterministic
+    action: memory_compaction_guard
+  - name: experience_record_proposal_gateway
+    type: memory

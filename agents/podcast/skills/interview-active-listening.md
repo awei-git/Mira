@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when conducting or preparing for a podcast interview to follow surprising, unresolved, or contradictory threads rather than preset question cards."
+---
+
 # Interview Active Listening
 
 **Tags:** podcast, interview, listening, conversation, technique

@@ -1,0 +1,47 @@
+name: podcast_production
+memory_class: creative
+trigger:
+  type: folder
+  detail: new article in output folder
+priority: 40
+version: 1
+max_duration_s: 900
+checkpoint_every: 1
+involved_skills:
+  - podcast_production
+  - tts_routing
+risk_actions:
+  synthesize_tts_idempotent: external_provider
+  publish_rss_idempotent: publish_public
+effect_steps:
+  synthesize_tts_idempotent: synthesize_tts
+  publish_rss_idempotent: publish_rss
+steps:
+  - name: snapshot_tts_scars_quality_traces
+    type: memory
+  - name: monitor_article_output
+    type: deterministic
+  - name: podcastability_check
+    type: eval
+  - name: select_tts_route
+    type: deterministic
+    action: podcast_tts_route
+  - name: script_and_route_plan
+    type: deterministic
+    action: podcast_plan
+  - name: tts_synthesis_preflight
+    type: deterministic
+    action: podcast_tts_synthesis_guard
+  - name: synthesize_tts_idempotent
+    type: deterministic
+    action: podcast_tts_synthesis_guard
+  - name: duration_policy
+    type: policy
+  - name: rss_publish_preflight
+    type: deterministic
+    action: podcast_rss_publish_guard
+  - name: publish_rss_idempotent
+    type: deterministic
+    action: podcast_rss_publish_guard
+  - name: experience_record_proposal_gateway
+    type: memory

@@ -10,6 +10,7 @@ Uses numpy for precise control over:
 - Vignette
 - Sharpening (unsharp mask)
 """
+
 from __future__ import annotations
 
 import json
@@ -40,9 +41,10 @@ def save(arr: np.ndarray, path: Path, quality: int = 95):
 # Core adjustments (all operate on 0-1 float arrays)
 # ---------------------------------------------------------------------------
 
+
 def adjust_exposure(img: np.ndarray, stops: float) -> np.ndarray:
     """Adjust exposure in photographic stops."""
-    return img * (2.0 ** stops)
+    return img * (2.0**stops)
 
 
 def adjust_contrast(img: np.ndarray, amount: float) -> np.ndarray:
@@ -78,41 +80,41 @@ def adjust_highlights(img: np.ndarray, amount: int) -> np.ndarray:
     """Recover/boost highlights. amount: -100 to 100."""
     if amount == 0:
         return img
-    lum = 0.299 * img[:,:,0] + 0.587 * img[:,:,1] + 0.114 * img[:,:,2]
+    lum = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
     # Smooth mask for highlights (bright areas)
     mask = np.clip((lum - 0.5) / 0.5, 0, 1) ** 1.5
     adjustment = amount / 100.0 * -0.4  # negative amount = darken highlights
-    return img + mask[:,:,np.newaxis] * adjustment
+    return img + mask[:, :, np.newaxis] * adjustment
 
 
 def adjust_shadows(img: np.ndarray, amount: int) -> np.ndarray:
     """Lift/crush shadows. amount: -100 to 100."""
     if amount == 0:
         return img
-    lum = 0.299 * img[:,:,0] + 0.587 * img[:,:,1] + 0.114 * img[:,:,2]
+    lum = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
     mask = np.clip((0.5 - lum) / 0.5, 0, 1) ** 1.5
     adjustment = amount / 100.0 * 0.35
-    return img + mask[:,:,np.newaxis] * adjustment
+    return img + mask[:, :, np.newaxis] * adjustment
 
 
 def adjust_whites(img: np.ndarray, amount: int) -> np.ndarray:
     """Shift white point. amount: -100 to 100."""
     if amount == 0:
         return img
-    lum = 0.299 * img[:,:,0] + 0.587 * img[:,:,1] + 0.114 * img[:,:,2]
+    lum = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
     mask = np.clip((lum - 0.7) / 0.3, 0, 1) ** 2
     adjustment = amount / 100.0 * 0.25
-    return img + mask[:,:,np.newaxis] * adjustment
+    return img + mask[:, :, np.newaxis] * adjustment
 
 
 def adjust_blacks(img: np.ndarray, amount: int) -> np.ndarray:
     """Shift black point. amount: -100 to 100."""
     if amount == 0:
         return img
-    lum = 0.299 * img[:,:,0] + 0.587 * img[:,:,1] + 0.114 * img[:,:,2]
+    lum = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
     mask = np.clip((0.3 - lum) / 0.3, 0, 1) ** 2
     adjustment = amount / 100.0 * 0.2
-    return img + mask[:,:,np.newaxis] * adjustment
+    return img + mask[:, :, np.newaxis] * adjustment
 
 
 def adjust_temperature(img: np.ndarray, shift: float) -> np.ndarray:
@@ -120,10 +122,10 @@ def adjust_temperature(img: np.ndarray, shift: float) -> np.ndarray:
     if abs(shift) < 0.01:
         return img
     result = img.copy()
-    result[:,:,0] += shift * 0.08  # Red
-    result[:,:,2] -= shift * 0.08  # Blue
+    result[:, :, 0] += shift * 0.08  # Red
+    result[:, :, 2] -= shift * 0.08  # Blue
     # Subtle green compensation
-    result[:,:,1] += shift * 0.02
+    result[:, :, 1] += shift * 0.02
     return result
 
 
@@ -132,7 +134,7 @@ def adjust_tint(img: np.ndarray, shift: float) -> np.ndarray:
     if abs(shift) < 0.01:
         return img
     result = img.copy()
-    result[:,:,1] -= shift * 0.05
+    result[:, :, 1] -= shift * 0.05
     return result
 
 
@@ -140,22 +142,22 @@ def adjust_vibrance(img: np.ndarray, amount: float) -> np.ndarray:
     """Vibrance — selective saturation that protects already-saturated colors."""
     if abs(amount) < 0.01:
         return img
-    lum = 0.299 * img[:,:,0] + 0.587 * img[:,:,1] + 0.114 * img[:,:,2]
+    lum = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
     # Current saturation per pixel (rough)
     max_ch = np.max(img, axis=2)
     min_ch = np.min(img, axis=2)
     sat = np.where(max_ch > 0, (max_ch - min_ch) / (max_ch + 1e-6), 0)
     # Boost factor inversely proportional to current saturation
     boost = amount * (1.0 - sat)
-    lum_3d = lum[:,:,np.newaxis]
-    return lum_3d + (img - lum_3d) * (1.0 + boost[:,:,np.newaxis])
+    lum_3d = lum[:, :, np.newaxis]
+    return lum_3d + (img - lum_3d) * (1.0 + boost[:, :, np.newaxis])
 
 
 def adjust_saturation(img: np.ndarray, amount: float) -> np.ndarray:
     """Global saturation. amount: -1 to 1."""
     if abs(amount) < 0.01:
         return img
-    lum = (0.299 * img[:,:,0] + 0.587 * img[:,:,1] + 0.114 * img[:,:,2])[:,:,np.newaxis]
+    lum = (0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2])[:, :, np.newaxis]
     return lum + (img - lum) * (1.0 + amount)
 
 
@@ -182,7 +184,7 @@ def apply_hsl(img: np.ndarray, hsl: dict) -> np.ndarray:
 
     # Hue (0-360)
     hue = np.zeros((h, w))
-    r, g, b = result[:,:,0], result[:,:,1], result[:,:,2]
+    r, g, b = result[:, :, 0], result[:, :, 1], result[:, :, 2]
 
     mask_r = (max_c == r) & (diff > 1e-6)
     mask_g = (max_c == g) & (diff > 1e-6) & ~mask_r
@@ -198,13 +200,13 @@ def apply_hsl(img: np.ndarray, hsl: dict) -> np.ndarray:
 
     # Define hue ranges for each color channel (Lightroom-like)
     channels = {
-        "red":     (345, 15),    # wraps around 0
-        "orange":  (15, 45),
-        "yellow":  (45, 75),
-        "green":   (75, 165),
-        "aqua":    (165, 195),
-        "blue":    (195, 255),
-        "purple":  (255, 285),
+        "red": (345, 15),  # wraps around 0
+        "orange": (15, 45),
+        "yellow": (45, 75),
+        "green": (75, 165),
+        "aqua": (165, 195),
+        "blue": (195, 255),
+        "purple": (255, 285),
         "magenta": (285, 345),
     }
 
@@ -228,47 +230,46 @@ def apply_hsl(img: np.ndarray, hsl: dict) -> np.ndarray:
 
         # Apply saturation adjustment
         if abs(s_val) > 0.01:
-            lum_px = (0.299 * r + 0.587 * g + 0.114 * b)[:,:,np.newaxis]
+            lum_px = (0.299 * r + 0.587 * g + 0.114 * b)[:, :, np.newaxis]
             factor = 1.0 + s_val
             # Only adjust masked pixels
             for c in range(3):
-                result[:,:,c] = np.where(
-                    mask,
-                    lum_px[:,:,0] + (result[:,:,c] - lum_px[:,:,0]) * factor,
-                    result[:,:,c]
+                result[:, :, c] = np.where(
+                    mask, lum_px[:, :, 0] + (result[:, :, c] - lum_px[:, :, 0]) * factor, result[:, :, c]
                 )
 
         # Apply luminance adjustment
         if abs(l_val) > 0.01:
             for c in range(3):
-                result[:,:,c] = np.where(
-                    mask,
-                    result[:,:,c] + l_val * 0.3,
-                    result[:,:,c]
-                )
+                result[:, :, c] = np.where(mask, result[:, :, c] + l_val * 0.3, result[:, :, c])
 
     return result
 
 
-def apply_split_toning(img: np.ndarray,
-                       shadow_hue: int, shadow_sat: int,
-                       highlight_hue: int, highlight_sat: int) -> np.ndarray:
+def apply_split_toning(
+    img: np.ndarray, shadow_hue: int, shadow_sat: int, highlight_hue: int, highlight_sat: int
+) -> np.ndarray:
     """Apply split toning — colorize shadows and highlights separately."""
     if shadow_sat == 0 and highlight_sat == 0:
         return img
 
     result = img.copy()
-    lum = 0.299 * img[:,:,0] + 0.587 * img[:,:,1] + 0.114 * img[:,:,2]
+    lum = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
 
     def hue_to_rgb(hue_deg):
         """Convert hue (0-360) to RGB unit vector."""
         h = hue_deg / 60.0
         x = 1.0 - abs(h % 2 - 1.0)
-        if h < 1: return (1, x, 0)
-        if h < 2: return (x, 1, 0)
-        if h < 3: return (0, 1, x)
-        if h < 4: return (0, x, 1)
-        if h < 5: return (x, 0, 1)
+        if h < 1:
+            return (1, x, 0)
+        if h < 2:
+            return (x, 1, 0)
+        if h < 3:
+            return (0, 1, x)
+        if h < 4:
+            return (0, x, 1)
+        if h < 5:
+            return (x, 0, 1)
         return (1, 0, x)
 
     # Shadow toning
@@ -276,18 +277,18 @@ def apply_split_toning(img: np.ndarray,
         sr, sg, sb = hue_to_rgb(shadow_hue)
         strength = shadow_sat / 100.0 * 0.15
         shadow_mask = np.clip((0.5 - lum) / 0.5, 0, 1) ** 1.2
-        result[:,:,0] += shadow_mask * strength * (sr - 0.5)
-        result[:,:,1] += shadow_mask * strength * (sg - 0.5)
-        result[:,:,2] += shadow_mask * strength * (sb - 0.5)
+        result[:, :, 0] += shadow_mask * strength * (sr - 0.5)
+        result[:, :, 1] += shadow_mask * strength * (sg - 0.5)
+        result[:, :, 2] += shadow_mask * strength * (sb - 0.5)
 
     # Highlight toning
     if highlight_sat > 0:
         hr, hg, hb = hue_to_rgb(highlight_hue)
         strength = highlight_sat / 100.0 * 0.12
         highlight_mask = np.clip((lum - 0.5) / 0.5, 0, 1) ** 1.2
-        result[:,:,0] += highlight_mask * strength * (hr - 0.5)
-        result[:,:,1] += highlight_mask * strength * (hg - 0.5)
-        result[:,:,2] += highlight_mask * strength * (hb - 0.5)
+        result[:, :, 0] += highlight_mask * strength * (hr - 0.5)
+        result[:, :, 1] += highlight_mask * strength * (hg - 0.5)
+        result[:, :, 2] += highlight_mask * strength * (hb - 0.5)
 
     return result
 
@@ -297,8 +298,7 @@ def apply_clarity(img_pil: Image.Image, amount: int) -> Image.Image:
     if amount == 0:
         return img_pil
     if amount > 0:
-        return img_pil.filter(ImageFilter.UnsharpMask(
-            radius=20, percent=int(amount * 2), threshold=3))
+        return img_pil.filter(ImageFilter.UnsharpMask(radius=20, percent=int(amount * 2), threshold=3))
     else:
         return img_pil.filter(ImageFilter.GaussianBlur(radius=abs(amount) / 50.0))
 
@@ -310,7 +310,7 @@ def apply_dehaze(img: np.ndarray, amount: float) -> np.ndarray:
     # Mild contrast boost focused on lower tones
     result = adjust_contrast(img, amount * 0.3)
     # Slight saturation boost
-    lum = (0.299 * result[:,:,0] + 0.587 * result[:,:,1] + 0.114 * result[:,:,2])[:,:,np.newaxis]
+    lum = (0.299 * result[:, :, 0] + 0.587 * result[:, :, 1] + 0.114 * result[:, :, 2])[:, :, np.newaxis]
     result = lum + (result - lum) * (1.0 + amount * 0.15)
     return result
 
@@ -322,25 +322,24 @@ def apply_vignette(img: np.ndarray, amount: float, roundness: float = 0.7) -> np
     h, w = img.shape[:2]
     Y, X = np.ogrid[:h, :w]
     cx, cy = w / 2, h / 2
-    dist = np.sqrt(((X - cx) / (w/2)) ** 2 + ((Y - cy) / (h/2)) ** 2)
+    dist = np.sqrt(((X - cx) / (w / 2)) ** 2 + ((Y - cy) / (h / 2)) ** 2)
     # Feathered falloff
     falloff = np.clip((dist - roundness) / (1.0 - roundness + 0.01), 0, 1) ** 1.5
     factor = 1.0 + amount * falloff
-    return img * factor[:,:,np.newaxis]
+    return img * factor[:, :, np.newaxis]
 
 
-def sharpen(img_pil: Image.Image, amount: int, radius: float = 0.8,
-            detail: int = 25, masking: int = 0) -> Image.Image:
+def sharpen(img_pil: Image.Image, amount: int, radius: float = 0.8, detail: int = 25, masking: int = 0) -> Image.Image:
     """Unsharp mask sharpening."""
     if amount <= 0:
         return img_pil
-    return img_pil.filter(ImageFilter.UnsharpMask(
-        radius=radius, percent=amount, threshold=max(0, masking // 10)))
+    return img_pil.filter(ImageFilter.UnsharpMask(radius=radius, percent=amount, threshold=max(0, masking // 10)))
 
 
 # ---------------------------------------------------------------------------
 # High-level edit function
 # ---------------------------------------------------------------------------
+
 
 def edit_photo(input_path: Path, output_path: Path, params: dict) -> bool:
     """Apply a full set of edits to a photo."""
@@ -421,8 +420,10 @@ def edit_photo(input_path: Path, output_path: Path, params: dict) -> bool:
     if st:
         img = apply_split_toning(
             img,
-            st.get("shadow_hue", 0), st.get("shadow_sat", 0),
-            st.get("highlight_hue", 0), st.get("highlight_sat", 0),
+            st.get("shadow_hue", 0),
+            st.get("shadow_sat", 0),
+            st.get("highlight_hue", 0),
+            st.get("highlight_sat", 0),
         )
         print(f"  Split toning: shadow={st.get('shadow_hue',0)}° highlight={st.get('highlight_hue',0)}°")
 
@@ -448,7 +449,8 @@ def edit_photo(input_path: Path, output_path: Path, params: dict) -> bool:
     sharp = params.get("sharpness", 0)
     if sharp > 0:
         img_pil = sharpen(
-            img_pil, sharp,
+            img_pil,
+            sharp,
             radius=params.get("sharpen_radius", 0.8),
             masking=params.get("sharpen_masking", 0),
         )
@@ -494,12 +496,22 @@ if __name__ == "__main__":
             "vignette": -25,
             "hsl": {
                 "hue": {"orange": -15, "yellow": -20, "green": -10},
-                "saturation": {"red": -30, "orange": 20, "yellow": 15, "green": 55, "aqua": 30, "blue": -15, "purple": -50},
+                "saturation": {
+                    "red": -30,
+                    "orange": 20,
+                    "yellow": 15,
+                    "green": 55,
+                    "aqua": 30,
+                    "blue": -15,
+                    "purple": -50,
+                },
                 "luminance": {"orange": 15, "yellow": 10, "green": -15, "blue": -20},
             },
             "split_toning": {
-                "shadow_hue": 200, "shadow_sat": 8,  # cool blue shadows
-                "highlight_hue": 40, "highlight_sat": 10,  # warm amber highlights
+                "shadow_hue": 200,
+                "shadow_sat": 8,  # cool blue shadows
+                "highlight_hue": 40,
+                "highlight_sat": 10,  # warm amber highlights
             },
         },
     )
@@ -530,12 +542,22 @@ if __name__ == "__main__":
             "vignette": -15,
             "hsl": {
                 "hue": {"orange": -20, "yellow": -25, "green": -10},
-                "saturation": {"red": -40, "orange": 50, "yellow": 45, "green": 40, "aqua": 15, "blue": 10, "purple": -80},
+                "saturation": {
+                    "red": -40,
+                    "orange": 50,
+                    "yellow": 45,
+                    "green": 40,
+                    "aqua": 15,
+                    "blue": 10,
+                    "purple": -80,
+                },
                 "luminance": {"orange": 40, "yellow": 30, "green": -10, "blue": -30},
             },
             "split_toning": {
-                "shadow_hue": 44, "shadow_sat": 5,
-                "highlight_hue": 35, "highlight_sat": 18,  # golden highlights
+                "shadow_hue": 44,
+                "shadow_sat": 5,
+                "highlight_hue": 35,
+                "highlight_sat": 18,  # golden highlights
             },
         },
     )
@@ -566,12 +588,23 @@ if __name__ == "__main__":
             "vignette": -20,
             "hsl": {
                 "hue": {"orange": -15, "yellow": -10, "purple": 10, "magenta": 5},
-                "saturation": {"red": 15, "orange": 20, "yellow": -10, "green": -20, "aqua": 20, "blue": 25, "purple": 30, "magenta": 25},
+                "saturation": {
+                    "red": 15,
+                    "orange": 20,
+                    "yellow": -10,
+                    "green": -20,
+                    "aqua": 20,
+                    "blue": 25,
+                    "purple": 30,
+                    "magenta": 25,
+                },
                 "luminance": {"orange": 20, "yellow": 15, "blue": -25, "purple": -10},
             },
             "split_toning": {
-                "shadow_hue": 280, "shadow_sat": 6,  # purple shadows — complement pink
-                "highlight_hue": 35, "highlight_sat": 12,
+                "shadow_hue": 280,
+                "shadow_sat": 6,  # purple shadows — complement pink
+                "highlight_hue": 35,
+                "highlight_sat": 12,
             },
         },
     )

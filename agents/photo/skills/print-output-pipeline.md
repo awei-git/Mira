@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when preparing a photo file for print output, requiring calibrated display, ICC profile soft-proofing, gamut checking, and output sharpening."
+---
+
 # Print Output Pipeline
 
 **Tags:** photo, editing, print, color-management, ICC, output

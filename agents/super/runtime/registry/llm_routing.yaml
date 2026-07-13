@@ -1,0 +1,33 @@
+defaults:
+  on_quota_exceeded: tier_above_fallback
+
+tasks:
+  local:
+    primary: {tier: 0, adapter: omlx, model: gemma-4-31b-it-4bit}
+    fallback: []
+
+  idle_think:
+    primary: {tier: 0, adapter: omlx, model: gemma-4-31b-it-4bit}
+    fallback: []
+
+  substack_dedup_classify:
+    primary: {tier: 0, adapter: omlx, model: gemma-4-31b-it-4bit}
+    fallback:
+      - {tier: 1, adapter: openai, model: gpt-5-mini}
+
+  anti_ai_guard_scan:
+    primary: {tier: 0, adapter: rules_then_omlx, model: gemma-4-31b-it-4bit}
+    fallback:
+      - {tier: 1, adapter: openai, model: gpt-5-mini}
+
+  default:
+    primary: {tier: 2, adapter: anthropic_oauth, model_ref: claude_sonnet}
+    fallback: []
+
+  premium:
+    primary: {tier: 2, adapter: anthropic_oauth, model_ref: claude_opus}
+    fallback: []
+
+  tool:
+    primary: {tier: 2, adapter: anthropic_oauth, model_ref: claude_sonnet}
+    fallback: []

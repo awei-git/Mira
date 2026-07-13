@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when testing a conjecture, searching for counterexamples, or building intuition before committing effort to a formal proof."
+---
+
 # Computational Verification
 
 **Tags:** math, computation, verification, conjectures, experimental-math

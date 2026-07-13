@@ -10,24 +10,39 @@ This is fundamentally different from web_browser.py which just fetches
 static HTML. Surfer can handle JS-rendered SPAs, fill forms, click
 through multi-step flows, and take screenshots for visual grounding.
 """
+
 import json
 import logging
 import sys
+from datetime import datetime, timezone
+from importlib import util as importlib_util
 from pathlib import Path
 
 _SURFER_DIR = Path(__file__).resolve().parent
 _AGENTS_DIR = _SURFER_DIR.parent
 sys.path.insert(0, str(_SURFER_DIR))
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
-    MIRA_DIR, SURFER_MAX_STEPS, SURFER_STEP_TIMEOUT,
-    SURFER_LLM_TIMEOUT, SURFER_EXTRACTION_TIMEOUT,
+    MIRA_DIR,
+    SURFER_MAX_STEPS,
+    SURFER_STEP_TIMEOUT,
+    SURFER_LLM_TIMEOUT,
+    SURFER_EXTRACTION_TIMEOUT,
 )
-from soul_manager import load_soul, format_soul
-from sub_agent import claude_think
+from memory.soul import load_soul, format_soul
+from llm import claude_think
 
 log = logging.getLogger("surfer_agent")
+
+_SHARED_CONFIG_PATH = _AGENTS_DIR / "shared" / "config.py"
+_shared_config_spec = importlib_util.spec_from_file_location("_mira_shared_config_for_surfer", _SHARED_CONFIG_PATH)
+if _shared_config_spec is not None and _shared_config_spec.loader is not None:
+    _shared_config = importlib_util.module_from_spec(_shared_config_spec)
+    _shared_config_spec.loader.exec_module(_shared_config)
+    EXTRACTION_FALLBACK_POLICY = getattr(_shared_config, "EXTRACTION_FALLBACK_POLICY", "deterministic_first")
+else:
+    EXTRACTION_FALLBACK_POLICY = "deterministic_first"
 
 # Available browser actions the LLM can choose from
 _ACTIONS_SPEC = """
@@ -62,6 +77,7 @@ Available actions (output ONE as JSON):
 
 {"action": "evaluate", "code": "document.querySelector(...).textContent"}
   Run JavaScript and get the result.
+  Do not use browser built-in AI, Gemini Nano, or WebGPU inference. Route private/local inference through Mira's secret/oMLX path.
 
 {"action": "extract", "instruction": "what to extract from the current page"}
   Extract specific information from the current page text.
@@ -74,8 +90,14 @@ Available actions (output ONE as JSON):
 """
 
 
-def handle(workspace: Path, task_id: str, content: str,
-           sender: str, thread_id: str) -> str | None:
+def handle(
+    workspace: Path,
+    task_id: str,
+    content: str,
+    sender: str,
+    thread_id: str,
+    **kwargs,
+) -> str | None:
     """Handle a browser automation request. Returns output text or None."""
     from browser import BrowserSession
 
@@ -112,15 +134,17 @@ def handle(workspace: Path, task_id: str, content: str,
             # Parse the action
             action = _parse_action(llm_response)
             if not action:
-                log.warning("Step %d: Could not parse action from: %s",
-                           step + 1, llm_response[:200])
+                log.warning("Step %d: Could not parse action from: %s", step + 1, llm_response[:200])
                 history.append({"step": step + 1, "error": "Could not parse action"})
                 continue
 
             action_type = action.get("action", "")
-            log.info("Step %d: %s %s", step + 1, action_type,
-                    json.dumps({k: v for k, v in action.items()
-                               if k != "action"}, ensure_ascii=False)[:100])
+            log.info(
+                "Step %d: %s %s",
+                step + 1,
+                action_type,
+                json.dumps({k: v for k, v in action.items() if k != "action"}, ensure_ascii=False)[:100],
+            )
 
             # Handle terminal actions
             if action_type == "done":
@@ -129,25 +153,25 @@ def handle(workspace: Path, task_id: str, content: str,
                 break
             elif action_type == "fail":
                 result = f"Task failed: {action.get('reason', 'Unknown reason')}"
-                history.append({"step": step + 1, "action": "fail",
-                               "reason": action.get("reason", "")})
+                history.append({"step": step + 1, "action": "fail", "reason": action.get("reason", "")})
                 break
 
             # Execute browser action
             browser_result = _execute_action(browser, action)
-            history.append({
-                "step": step + 1,
-                "action": action_type,
-                "detail": {k: str(v)[:80] for k, v in action.items() if k != "action"},
-                "ok": browser_result.ok if hasattr(browser_result, 'ok') else not browser_result.error,
-                "error": browser_result.error if browser_result.error else None,
-            })
+            history.append(
+                {
+                    "step": step + 1,
+                    "action": action_type,
+                    "detail": {k: str(v)[:80] for k, v in action.items() if k != "action"},
+                    "ok": browser_result.ok if hasattr(browser_result, "ok") else not browser_result.error,
+                    "error": browser_result.error if browser_result.error else None,
+                }
+            )
 
             # Update page state for next iteration
             if action_type == "extract":
-                # For extract, use LLM to pull specific info from page text
                 page_text = browser.get_page_text()
-                extraction = _extract_info(page_text, action.get("instruction", ""))
+                extraction = extract_with_fallback(browser, page_text, action.get("instruction", ""))
                 page_state = _format_page_state(browser_result, extraction=extraction)
             elif action_type == "screenshot":
                 page_state = _format_page_state(browser_result, screenshot_taken=True)
@@ -164,17 +188,18 @@ def handle(workspace: Path, task_id: str, content: str,
     return result[:500]
 
 
-def _build_step_prompt(task: str, soul_ctx: str, page_state: str,
-                       history: list[dict], step: int, max_steps: int) -> str:
+def _build_step_prompt(
+    task: str, soul_ctx: str, page_state: str, history: list[dict], step: int, max_steps: int
+) -> str:
     history_text = ""
     if history:
         recent = history[-8:]  # keep context manageable
         lines = []
         for h in recent:
             s = f"Step {h['step']}: {h.get('action', '?')}"
-            if h.get('detail'):
+            if h.get("detail"):
                 s += f" {h['detail']}"
-            if h.get('error'):
+            if h.get("error"):
                 s += f" [ERROR: {h['error']}]"
             lines.append(s)
         history_text = "\n".join(lines)
@@ -205,8 +230,9 @@ Your action (JSON only):"""
 
 def _parse_action(response: str) -> dict | None:
     import re
+
     # Try to find JSON in the response
-    match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+    match = re.search(r"\{[^{}]*\}", response, re.DOTALL)
     if match:
         try:
             return json.loads(match.group())
@@ -225,6 +251,7 @@ def _parse_action(response: str) -> dict | None:
 def _execute_action(browser, action: dict):
     """Execute a browser action and return the result."""
     from browser import BrowserResult
+
     act = action.get("action", "")
 
     try:
@@ -235,21 +262,15 @@ def _execute_action(browser, action: dict):
         elif act == "fill":
             return browser.fill(action["selector"], action["value"])
         elif act == "type":
-            return browser.type_text(
-                action["selector"], action["text"],
-                delay=action.get("delay", 50))
+            return browser.type_text(action["selector"], action["text"], delay=action.get("delay", 50))
         elif act == "press":
             return browser.press(action["key"])
         elif act == "scroll":
-            return browser.scroll(
-                action.get("direction", "down"),
-                action.get("amount", 500))
+            return browser.scroll(action.get("direction", "down"), action.get("amount", 500))
         elif act == "select":
             return browser.select(action["selector"], action["value"])
         elif act == "wait":
-            return browser.wait_for(
-                action["selector"],
-                timeout=action.get("timeout", 10000))
+            return browser.wait_for(action["selector"], timeout=action.get("timeout", 10000))
         elif act == "screenshot":
             b64 = browser.screenshot()
             return BrowserResult(
@@ -285,6 +306,88 @@ Extract ONLY the requested information. Be concise and precise."""
     return result or "[Extraction failed]"
 
 
+def extract_with_fallback(browser, page_text: str, instruction: str) -> str:
+    url = browser._page.url if getattr(browser, "_page", None) else ""
+    if EXTRACTION_FALLBACK_POLICY == "any":
+        return _extract_info(page_text, instruction)
+
+    fallback_reason = ""
+    try:
+        structured = _extract_structured_dom(browser, instruction)
+        if structured:
+            return structured
+        fallback_reason = "no structured DOM/API data matched extraction instruction"
+    except Exception as e:
+        fallback_reason = f"{type(e).__name__}: {e}"
+
+    _log_deterministic_fallback(url, fallback_reason)
+    return _extract_info(page_text, instruction)
+
+
+def _extract_structured_dom(browser, instruction: str) -> str:
+    if not getattr(browser, "_page", None):
+        return ""
+
+    data = browser._page.evaluate(
+        """() => {
+        const jsonLd = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
+            .map(script => {
+                try { return JSON.parse(script.textContent || ''); }
+                catch (_) { return null; }
+            })
+            .filter(Boolean)
+            .slice(0, 5);
+        const tables = Array.from(document.querySelectorAll('table')).slice(0, 3).map(table => {
+            const rows = Array.from(table.querySelectorAll('tr')).slice(0, 12).map(row =>
+                Array.from(row.querySelectorAll('th,td')).map(cell => cell.textContent.trim()).filter(Boolean)
+            ).filter(row => row.length);
+            return rows;
+        }).filter(rows => rows.length);
+        const meta = {
+            title: document.title || '',
+            description: document.querySelector('meta[name="description"]')?.content || '',
+            ogTitle: document.querySelector('meta[property="og:title"]')?.content || '',
+            ogDescription: document.querySelector('meta[property="og:description"]')?.content || '',
+        };
+        return {jsonLd, tables, meta};
+    }"""
+    )
+
+    instruction_lc = instruction.lower()
+    parts = []
+    if data.get("jsonLd"):
+        parts.append("Structured JSON-LD:\n" + json.dumps(data["jsonLd"], ensure_ascii=False, indent=2)[:4000])
+    if data.get("tables"):
+        parts.append("Structured tables:\n" + json.dumps(data["tables"], ensure_ascii=False, indent=2)[:4000])
+    if (
+        not parts
+        and any(term in instruction_lc for term in ("title", "description", "metadata", "meta", "headline"))
+        and any(data.get("meta", {}).values())
+    ):
+        parts.append("Structured metadata:\n" + json.dumps(data["meta"], ensure_ascii=False, indent=2)[:2000])
+
+    return "\n\n".join(parts)
+
+
+def _log_deterministic_fallback(url: str, fallback_reason: str) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    log.warning(
+        "DETERMINISTIC_FALLBACK: using LLM extraction for %s timestamp=%s url=%s "
+        "extraction_method=%s fallback_reason=%s",
+        url,
+        timestamp,
+        url,
+        "llm",
+        fallback_reason,
+        extra={
+            "timestamp": timestamp,
+            "url": url,
+            "extraction_method": "llm",
+            "fallback_reason": fallback_reason,
+        },
+    )
+
+
 def _format_page_state(result, extraction: str = "", screenshot_taken: bool = False) -> str:
     parts = []
     if result.error:
@@ -300,8 +403,7 @@ def _format_page_state(result, extraction: str = "", screenshot_taken: bool = Fa
         parts.append(f"\nPage text (first 4000 chars):\n{text}")
 
     if result.links:
-        link_lines = [f"  [{l['text'][:50]}]({l['href']})"
-                     for l in result.links[:20]]
+        link_lines = [f"  [{l['text'][:50]}]({l['href']})" for l in result.links[:20]]
         parts.append(f"\nLinks:\n" + "\n".join(link_lines))
 
     if screenshot_taken:
@@ -314,7 +416,7 @@ def _format_output(task: str, result: str, history: list[dict]) -> str:
     steps_summary = []
     for h in history:
         line = f"- Step {h['step']}: {h.get('action', '?')}"
-        if h.get('error'):
+        if h.get("error"):
             line += f" (error: {h['error']})"
         steps_summary.append(line)
 

@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when a measured performance number (latency, throughput, memory) is more than 2x worse than a known target and optimization is being considered."
+---
+
 # Measure Before Optimize
 
 **Tags:** coding, performance, profiling, optimization

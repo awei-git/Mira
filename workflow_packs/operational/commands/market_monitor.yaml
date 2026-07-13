@@ -1,0 +1,33 @@
+name: market_monitor
+memory_class: operational
+trigger:
+  type: event
+  detail: Tetra report published
+priority: 20
+version: 1
+max_duration_s: 900
+checkpoint_every: 1
+involved_skills:
+  - market_monitor
+risk_actions:
+  send_market_alert_idempotent: financial_external
+effect_steps:
+  send_market_alert_idempotent: send_market_alert
+steps:
+  - name: snapshot_tetra_reports_and_risk
+    type: memory
+  - name: stage_market_signals
+    type: deterministic
+  - name: market_report
+    type: deterministic
+    action: local_report
+  - name: market_claim_gate
+    type: eval
+  - name: market_alert_preflight
+    type: deterministic
+    action: market_alert_guard
+  - name: send_market_alert_idempotent
+    type: deterministic
+    action: market_alert_guard
+  - name: experience_record_proposal_gateway
+    type: memory

@@ -1,0 +1,36 @@
+name: social_proactive
+memory_class: social
+trigger:
+  type: event
+  detail: quota shortfall
+priority: 40
+version: 1
+max_duration_s: 600
+checkpoint_every: 1
+involved_skills:
+  - substack_growth_playbook
+  - hook_first_line
+risk_actions:
+  post_note_idempotent: publish_public
+effect_steps:
+  post_note_idempotent: post_social
+steps:
+  - name: snapshot_queue_quota_recent_performance
+    type: memory
+  - name: select_topic_from_recent_artifacts
+    type: deterministic
+  - name: draft_note_plan
+    type: deterministic
+    action: social_proactive_plan
+  - name: quota_and_tone_gate
+    type: eval
+  - name: live_publish_guard
+    type: policy
+  - name: social_note_publish_preflight
+    type: deterministic
+    action: social_publish_guard
+  - name: post_note_idempotent
+    type: deterministic
+    action: social_publish_guard
+  - name: experience_record_proposal_gateway
+    type: memory

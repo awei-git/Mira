@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when aligning video cuts to music beats using librosa beat detection and ffmpeg to create rhythmically polished edits."
+---
+
 # Beat-Sync Editing
 
 **Tags:** video, editing, music, rhythm, automation

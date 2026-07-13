@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when assessing whether a company's reported earnings reflect economic reality or are distorted by accounting choices and accruals."
+---
+
 # Earnings Quality Forensics
 
 **Tags:** analyst, accounting, forensics, earnings, due-diligence

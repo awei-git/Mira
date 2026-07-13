@@ -14,13 +14,16 @@ from datetime import datetime
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 log = logging.getLogger("photo.daily")
 
 from config import NAS_PHOTO_DIR as _NAS_PHOTO_DIR
+
 NAS_PHOTO_DIR = Path(_NAS_PHOTO_DIR)
-from config import ARTIFACTS_DIR; ARTIFACTS_DIR = ARTIFACTS_DIR / "photos"
+from config import ARTIFACTS_DIR
+
+ARTIFACTS_DIR = ARTIFACTS_DIR / "photos"
 HISTORY_FILE = Path(__file__).parent / "output/daily_history.json"
 REFERENCE_DIR = Path.home() / "Sandbox/assets/LRed"
 
@@ -126,6 +129,7 @@ def run_daily_edit() -> dict:
 
     # Edit
     from aesthetic_editor import edit_photo
+
     result = edit_photo(selected, reference_path=ref, output_dir=ARTIFACTS_DIR)
 
     # Update history

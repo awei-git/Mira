@@ -7,6 +7,7 @@ Runs entirely locally (no API calls). Rejects unusable footage
 (too short, black frames, extreme blur, lens cap) and scores the rest
 for prioritized analysis in Phase 1.
 """
+
 import json
 import logging
 import subprocess
@@ -14,11 +15,13 @@ import sys
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
-    VIDEO_MIN_CLIP_DURATION, VIDEO_MIN_BRIGHTNESS,
-    VIDEO_MAX_BRIGHTNESS, VIDEO_MIN_BLUR_SCORE,
+    VIDEO_MIN_CLIP_DURATION,
+    VIDEO_MIN_BRIGHTNESS,
+    VIDEO_MAX_BRIGHTNESS,
+    VIDEO_MIN_BLUR_SCORE,
 )
 
 log = logging.getLogger("video.triage")
@@ -36,9 +39,10 @@ def _ffprobe_info(path: Path) -> dict:
     """Get duration, resolution, fps, codec via ffprobe."""
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
-             "-show_format", "-show_streams", str(path)],
-            capture_output=True, text=True, timeout=10,
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         data = json.loads(r.stdout)
         fmt = data.get("format", {})
@@ -55,12 +59,14 @@ def _ffprobe_info(path: Path) -> dict:
                     fps = int(parts[0]) / int(parts[1])
                 break
 
-        has_audio = any(s.get("codec_type") == "audio"
-                        for s in data.get("streams", []))
+        has_audio = any(s.get("codec_type") == "audio" for s in data.get("streams", []))
 
         return {
-            "duration": duration, "width": width, "height": height,
-            "fps": fps, "has_audio": has_audio,
+            "duration": duration,
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "has_audio": has_audio,
         }
     except Exception as e:
         log.warning("ffprobe failed for %s: %s", path.name, e)
@@ -80,9 +86,23 @@ def _extract_sample_frames(path: Path, work_dir: Path, n: int = 3) -> list[Path]
         out = work_dir / f"{path.stem}_sample_{i}.jpg"
         try:
             subprocess.run(
-                ["ffmpeg", "-y", "-ss", str(ss), "-i", str(path),
-                 "-frames:v", "1", "-vf", "scale=320:-1", "-q:v", "5", str(out)],
-                capture_output=True, timeout=10,
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-ss",
+                    str(ss),
+                    "-i",
+                    str(path),
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale=320:-1",
+                    "-q:v",
+                    "5",
+                    str(out),
+                ],
+                capture_output=True,
+                timeout=10,
             )
             if out.exists() and out.stat().st_size > 500:
                 frames.append(out)
@@ -95,20 +115,32 @@ def _compute_brightness(frame_path: Path) -> float:
     """Compute mean brightness of a frame (0-255)."""
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-f", "lavfi",
-             "-i", f"movie={frame_path},signalstats",
-             "-show_entries", "frame_tags=lavfi.signalstats.YAVG",
-             "-of", "csv=p=0"],
-            capture_output=True, text=True, timeout=10,
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-f",
+                "lavfi",
+                "-i",
+                f"movie={frame_path},signalstats",
+                "-show_entries",
+                "frame_tags=lavfi.signalstats.YAVG",
+                "-of",
+                "csv=p=0",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return float(r.stdout.strip())
     except Exception:
         # Fallback: use ffmpeg to get mean brightness
         try:
             r = subprocess.run(
-                ["ffmpeg", "-i", str(frame_path), "-vf",
-                 "format=gray,stats_file=-", "-f", "null", "/dev/null"],
-                capture_output=True, text=True, timeout=10,
+                ["ffmpeg", "-i", str(frame_path), "-vf", "format=gray,stats_file=-", "-f", "null", "/dev/null"],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             # Parse mean from stats
             for line in r.stderr.split("\n"):
@@ -129,14 +161,25 @@ def _compute_blur_score(frame_path: Path) -> float:
     try:
         # Use ffmpeg to compute laplacian and get variance
         r = subprocess.run(
-            ["ffmpeg", "-i", str(frame_path),
-             "-vf", "format=gray,convolution=0 1 0 1 -4 1 0 1 0:0 1 0 1 -4 1 0 1 0:0 1 0 1 -4 1 0 1 0",
-             "-f", "rawvideo", "-pix_fmt", "gray", "-"],
-            capture_output=True, timeout=10,
+            [
+                "ffmpeg",
+                "-i",
+                str(frame_path),
+                "-vf",
+                "format=gray,convolution=0 1 0 1 -4 1 0 1 0:0 1 0 1 -4 1 0 1 0:0 1 0 1 -4 1 0 1 0",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray",
+                "-",
+            ],
+            capture_output=True,
+            timeout=10,
         )
         if r.stdout:
             import array
-            pixels = array.array('B', r.stdout)
+
+            pixels = array.array("B", r.stdout)
             if pixels:
                 mean = sum(pixels) / len(pixels)
                 variance = sum((p - mean) ** 2 for p in pixels) / len(pixels)
@@ -152,23 +195,54 @@ def _compute_motion(path: Path, duration: float) -> float:
         t1, t2 = duration * 0.25, duration * 0.75
         # Use ffmpeg to compute PSNR between two frames (lower PSNR = more different = more motion)
         r = subprocess.run(
-            ["ffmpeg", "-ss", str(t1), "-i", str(path), "-frames:v", "1",
-             "-f", "rawvideo", "-pix_fmt", "gray", "-vf", "scale=160:-1", "-"],
-            capture_output=True, timeout=10,
+            [
+                "ffmpeg",
+                "-ss",
+                str(t1),
+                "-i",
+                str(path),
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray",
+                "-vf",
+                "scale=160:-1",
+                "-",
+            ],
+            capture_output=True,
+            timeout=10,
         )
         frame1 = r.stdout
 
         r = subprocess.run(
-            ["ffmpeg", "-ss", str(t2), "-i", str(path), "-frames:v", "1",
-             "-f", "rawvideo", "-pix_fmt", "gray", "-vf", "scale=160:-1", "-"],
-            capture_output=True, timeout=10,
+            [
+                "ffmpeg",
+                "-ss",
+                str(t2),
+                "-i",
+                str(path),
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray",
+                "-vf",
+                "scale=160:-1",
+                "-",
+            ],
+            capture_output=True,
+            timeout=10,
         )
         frame2 = r.stdout
 
         if frame1 and frame2 and len(frame1) == len(frame2):
             import array
-            p1 = array.array('B', frame1)
-            p2 = array.array('B', frame2)
+
+            p1 = array.array("B", frame1)
+            p2 = array.array("B", frame2)
             diff = sum(abs(a - b) for a, b in zip(p1, p2)) / len(p1)
             return diff  # 0 = static, higher = more motion
     except Exception:
@@ -279,10 +353,7 @@ def triage_all(input_dir: Path, work_dir: Path) -> dict:
     Returns:
         dict with: clips (list), summary stats, reject count
     """
-    videos = sorted([
-        f for f in input_dir.iterdir()
-        if f.suffix.lower() in VIDEO_EXTS and not f.name.startswith(".")
-    ])
+    videos = sorted([f for f in input_dir.iterdir() if f.suffix.lower() in VIDEO_EXTS and not f.name.startswith(".")])
 
     if not videos:
         log.warning("No video files in %s", input_dir)
@@ -318,7 +389,6 @@ def triage_all(input_dir: Path, work_dir: Path) -> dict:
     # Save
     out_path = work_dir / "triage.json"
     out_path.write_text(json.dumps(triage_result, ensure_ascii=False, indent=2))
-    log.info("Triage complete: %d/%d kept, %d rejected",
-             len(videos) - rejected, len(videos), rejected)
+    log.info("Triage complete: %d/%d kept, %d rejected", len(videos) - rejected, len(videos), rejected)
 
     return triage_result

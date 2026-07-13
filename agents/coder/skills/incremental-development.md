@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when implementing a new feature or fix, to enforce building and verifying in small steps rather than writing large unverified changesets."
+---
+
 # Incremental Development
 
 **Tags:** coding, workflow, debugging, architecture

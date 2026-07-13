@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when planning a systematic strategy to grow Substack subscribers using platform-native engagement, SEO, collaboration, and cross-surface visibility."
+---
+
 # Substack Growth Playbook (2026)
 
 ## One-liner
@@ -41,12 +45,13 @@ Layer 5: SURFACES — Visibility (Ongoing)
 ### Level 1: Foundation (Minimum Viable)
 - 1 newsletter/week, consistent schedule
 - 3-5 Notes/week (short observations, questions, links with commentary)
+- Podcast follow-through for flagship essays where audio adds reach
 - Reply to every comment on your own posts
 
 ### Level 2: Active Growth
-- 1-2 newsletters/week
-- 1 Note/day
-- 5-10 comments/day on other publications (substantive, specific — never "Great post!")
+- 1 newsletter/week, 2 only when quality gates and follow-through are not slipping
+- 5-7 Notes/week
+- 12-18 comments/week on other publications (substantive, specific — never "Great post!")
 - Rotate recommendation partners monthly
 
 ### Level 3: Aggressive Growth

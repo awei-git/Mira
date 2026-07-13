@@ -1,0 +1,16 @@
+{
+  "provider_effect_adapters": {
+    "tts": {
+      "command": [
+        "say",
+        "-o",
+        "{output_audio_path}",
+        "-f",
+        "{input_text_path}",
+        "-v",
+        "{voice}"
+      ],
+      "type": "local_tts_command"
+    }
+  }
+}

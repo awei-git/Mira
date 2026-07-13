@@ -1,0 +1,10 @@
+{
+  "name": "reader",
+  "description": "Reader agent for scheduled book review, marginalia, and comparative reading workflows.",
+  "keywords": ["book", "reading", "marginalia", "页边小记", "页边笔记", "读书", "书评"],
+  "handles": ["daily book review", "Mira Marginalia", "米拉的页边小记", "weekly nonfiction reading podcast"],
+  "tier": "light",
+  "timeout_category": "short",
+  "entry_point": "handler.py:handle",
+  "requires_workspace": true
+}

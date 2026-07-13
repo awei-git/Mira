@@ -1,0 +1,102 @@
+{
+  "generated_at": "2026-04-13T20:00:02.174802",
+  "period_days": 7,
+  "agents": {
+    "writer": {
+      "agent": "writer",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "coder": {
+      "agent": "coder",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "explorer": {
+      "agent": "explorer",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "researcher": {
+      "agent": "researcher",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "analyst": {
+      "agent": "analyst",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "discussion": {
+      "agent": "discussion",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "podcast": {
+      "agent": "podcast",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "secret": {
+      "agent": "secret",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "general": {
+      "agent": "general",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    },
+    "socialmedia": {
+      "agent": "socialmedia",
+      "period_days": 7,
+      "task_count": 0,
+      "scores": {},
+      "note": "no tasks in period"
+    }
+  },
+  "super": {
+    "component": "super",
+    "period_days": 7,
+    "scores": {
+      "crash_rate": 0.058,
+      "cycles_today": 485,
+      "heartbeat_age_seconds": 6,
+      "heartbeat_ok": true,
+      "routing_accuracy": 1.0,
+      "total_tasks": 1,
+      "timeout_count": 0,
+      "error_count": 0,
+      "timeout_rate": 0.0,
+      "error_rate": 0.0,
+      "stuck_tasks": 0
+    }
+  },
+  "aggregate": {
+    "total_tasks": 0,
+    "active_agents": 0,
+    "crash_rate": 0.058,
+    "heartbeat_ok": true,
+    "daily_cost_usd": 22.5293,
+    "daily_tokens": 5761933,
+    "daily_calls": 1018
+  }
+}

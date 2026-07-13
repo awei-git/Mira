@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when preparing for a podcast interview with a guest, including research, pre-interview briefing, and question design to avoid stale territory."
+---
+
 # Guest Preparation System
 
 **Tags:** podcast, interview, guests, preparation, workflow

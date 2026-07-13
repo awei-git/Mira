@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when stress-testing a thesis or portfolio against historical, hypothetical, and reverse-stress scenarios to identify hidden tail risks."
+---
+
 # Risk Surface Stress Testing
 
 **Tags:** analyst, risk, stress-testing, portfolio, tail-risk

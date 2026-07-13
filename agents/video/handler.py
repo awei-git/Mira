@@ -16,6 +16,7 @@ Interactive workflow (via Mira app):
 Standalone:
     python handler.py --input /path/to/videos [--music /path/to/music.mp3]
 """
+
 import argparse
 import json
 import logging
@@ -26,25 +27,31 @@ from pathlib import Path
 
 # Add shared modules to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import (
-    VIDEO_MAX_REVIEW_ITERATIONS, VIDEO_REVIEW_SCORE,
+    VIDEO_MAX_REVIEW_ITERATIONS,
+    VIDEO_REVIEW_SCORE,
 )
-from preflight import preflight_check
-from sub_agent import claude_think, _get_api_key
+from publish.preflight import preflight_check
+from llm import claude_think, _get_api_key
 from scene_analyzer import analyze_all, analyze_all_v2
 from triage import triage_all
 from screenplay import generate_screenplay, generate_edit_plan
 from editor import (
-    execute_edit_plan, re_render_clips, assemble_rough_cut, mix_with_music,
+    execute_edit_plan,
+    re_render_clips,
+    assemble_rough_cut,
+    mix_with_music,
     check_color_continuity,
 )
 from music_mixer import mix_music, find_music, auto_select_music, get_duration
 from beat_analyzer import analyze_beats, summarize_beat_map
 from clip_grader import grade_clip, detect_content_mode
 from video_reviewer import (
-    review_rough_cut, should_iterate, format_review_summary,
+    review_rough_cut,
+    should_iterate,
+    format_review_summary,
 )
 
 log = logging.getLogger("video.handler")
@@ -54,7 +61,7 @@ def _check_disk_space(output_dir: str, required_gb: float = 2.0) -> bool:
     """Check if enough disk space is available for rendering."""
     try:
         usage = shutil.disk_usage(output_dir)
-        free_gb = usage.free / (1024 ** 3)
+        free_gb = usage.free / (1024**3)
         if free_gb < required_gb:
             log.error("Insufficient disk space: %.1f GB free, need %.1f GB", free_gb, required_gb)
             return False
@@ -66,16 +73,18 @@ def _check_disk_space(output_dir: str, required_gb: float = 2.0) -> bool:
 
 def _log_video_failure(step: str, error_msg: str, slug: str = "video"):
     try:
-        from failure_log import record_failure
-        record_failure(pipeline="video", step=step, slug=slug,
-                       error_type="video_agent_error", error_message=error_msg[:500])
+        from ops.failure_log import record_failure
+
+        record_failure(
+            pipeline="video", step=step, slug=slug, error_type="video_agent_error", error_message=error_msg[:500]
+        )
     except Exception:
         pass
 
 
 # Signals that user approves the screenplay
 _APPROVE_PATTERNS = re.compile(
-    r'\b(ok|好的?|可以|开始[剪切]|go|cut|proceed|执行|没问题|就这样|lgtm|开剪)\b',
+    r"\b(ok|好的?|可以|开始[剪切]|go|cut|proceed|执行|没问题|就这样|lgtm|开剪)\b",
     re.IGNORECASE,
 )
 
@@ -85,8 +94,9 @@ _MAX_REVIEW_ITERATIONS = VIDEO_MAX_REVIEW_ITERATIONS
 _REVIEW_THRESHOLD = VIDEO_REVIEW_SCORE
 
 
-def preflight(workspace: Path, task_id: str, instruction: str,
-              sender: str, thread_id: str, **kwargs) -> tuple[bool, str]:
+def preflight(
+    workspace: Path, task_id: str, instruction: str, sender: str, thread_id: str, **kwargs
+) -> tuple[bool, str]:
     """Block video jobs that have no resolvable input footage or review state."""
     state = _load_state(workspace)
     phase = state.get("phase", "")
@@ -123,8 +133,7 @@ def preflight(workspace: Path, task_id: str, instruction: str,
     return True, ""
 
 
-def handle(workspace: Path, task_id: str, instruction: str,
-           sender: str, thread_id: str, **kwargs) -> str:
+def handle(workspace: Path, task_id: str, instruction: str, sender: str, thread_id: str, **kwargs) -> str:
     """Handle a video editing task from Mira's task_worker."""
     workspace.mkdir(parents=True, exist_ok=True)
     state = _load_state(workspace)
@@ -151,13 +160,15 @@ def handle(workspace: Path, task_id: str, instruction: str,
     output_dir = workspace / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    state.update({
-        "input_dir": str(input_dir),
-        "output_dir": str(output_dir),
-        "music_path": str(music_path) if music_path else None,
-        "target_minutes": 4.0,
-        "transcribe": True,
-    })
+    state.update(
+        {
+            "input_dir": str(input_dir),
+            "output_dir": str(output_dir),
+            "music_path": str(music_path) if music_path else None,
+            "target_minutes": 4.0,
+            "transcribe": True,
+        }
+    )
     _save_state(workspace, state)
 
     try:
@@ -171,6 +182,7 @@ def handle(workspace: Path, task_id: str, instruction: str,
 # ---------------------------------------------------------------------------
 # Phase 0+1+2: PREPARE + SEE + THINK
 # ---------------------------------------------------------------------------
+
 
 def _run_prepare_see_think(workspace: Path, state: dict) -> str:
     """Phase 0+1+2: Beat analysis, scene analysis, edit plan generation."""
@@ -192,12 +204,10 @@ def _run_prepare_see_think(workspace: Path, state: dict) -> str:
         else:
             try:
                 beat_map = analyze_beats(music_path, workspace)
-                log.info("Beat analysis: %.0f BPM, %d phrases",
-                         beat_map["tempo"], len(beat_map["phrases"]))
+                log.info("Beat analysis: %.0f BPM, %d phrases", beat_map["tempo"], len(beat_map["phrases"]))
             except Exception as e:
                 log.warning("Beat analysis failed: %s", e)
-                _log_video_failure("beat_analysis_failed", str(e),
-                                   slug=music_path.stem)
+                _log_video_failure("beat_analysis_failed", str(e), slug=music_path.stem)
 
     # ── Phase 0.5: TRIAGE (local pre-filter) ──
     log.info("=== Phase 0.5: Triage ===")
@@ -209,8 +219,7 @@ def _run_prepare_see_think(workspace: Path, state: dict) -> str:
 
     kept = triage_result.get("kept", 0)
     rejected = triage_result.get("rejected", 0)
-    log.info("Triage: %d kept, %d rejected out of %d",
-             kept, rejected, triage_result.get("total", 0))
+    log.info("Triage: %d kept, %d rejected out of %d", kept, rejected, triage_result.get("total", 0))
 
     # ── Phase 1: SEE (supercut analysis — single Gemini call) ──
     log.info("=== Phase 1: Scene Analysis (v2 supercut) ===")
@@ -224,11 +233,13 @@ def _run_prepare_see_think(workspace: Path, state: dict) -> str:
             # Fallback to per-clip analysis if supercut fails
             log.warning("Supercut analysis failed, falling back to per-clip")
             openai_key = _get_api_key("openai")
-            scene_log = analyze_all(input_dir, workspace, gemini_key, openai_key,
-                                    transcribe=state.get("transcribe", False))
+            scene_log = analyze_all(
+                input_dir, workspace, gemini_key, openai_key, transcribe=state.get("transcribe", False)
+            )
         if not scene_log.get("scenes"):
-            _log_video_failure("scene_analysis_failed", "No valid scenes found in footage",
-                               slug=Path(state["input_dir"]).name)
+            _log_video_failure(
+                "scene_analysis_failed", "No valid scenes found in footage", slug=Path(state["input_dir"]).name
+            )
             return "视频分析没有找到有效场景"
 
     total_dur = scene_log.get("total_duration", 0)
@@ -236,8 +247,7 @@ def _run_prepare_see_think(workspace: Path, state: dict) -> str:
     log.info("Phase 1: %d scenes from %.0fs footage", n_scenes, total_dur)
 
     # Detect content mode from scene analysis
-    visual_scenes = [s for s in scene_log.get("scenes", [])
-                     if s.get("type") != "transcript"]
+    visual_scenes = [s for s in scene_log.get("scenes", []) if s.get("type") != "transcript"]
     content_mode = detect_content_mode(visual_scenes)
     state["content_mode"] = content_mode
     log.info("Content mode: %s", content_mode)
@@ -249,7 +259,10 @@ def _run_prepare_see_think(workspace: Path, state: dict) -> str:
     if beat_map:
         # Enhanced path: use beat-aware edit plan
         screenplay, edit_plan = generate_edit_plan(
-            scene_log, beat_map, taste_profile, workspace,
+            scene_log,
+            beat_map,
+            taste_profile,
+            workspace,
             content_mode=content_mode,
             claude_think_fn=claude_think,
         )
@@ -257,7 +270,8 @@ def _run_prepare_see_think(workspace: Path, state: dict) -> str:
     else:
         # Fallback: traditional screenplay (no music yet)
         screenplay = generate_screenplay(
-            scene_log, workspace,
+            scene_log,
+            workspace,
             target_minutes=target_minutes,
             claude_think_fn=claude_think,
         )
@@ -265,9 +279,11 @@ def _run_prepare_see_think(workspace: Path, state: dict) -> str:
         state["has_edit_plan"] = False
 
     if not screenplay:
-        _log_video_failure("screenplay_failed",
-                           f"generate_screenplay/edit_plan returned empty for {n_scenes} scenes",
-                           slug=Path(state["input_dir"]).name)
+        _log_video_failure(
+            "screenplay_failed",
+            f"generate_screenplay/edit_plan returned empty for {n_scenes} scenes",
+            slug=Path(state["input_dir"]).name,
+        )
         return "Screenplay 生成失败"
 
     # Pause for user review
@@ -297,6 +313,7 @@ def _run_prepare_see_think(workspace: Path, state: dict) -> str:
 # Phase 3+4+5: DO + MIX + REVIEW
 # ---------------------------------------------------------------------------
 
+
 def _run_render_and_review(workspace: Path, state: dict) -> str:
     """Phase 3+4+5: Render, mix music, review, and iterate."""
     input_dir = Path(state["input_dir"])
@@ -308,8 +325,7 @@ def _run_render_and_review(workspace: Path, state: dict) -> str:
     output_dir.mkdir(parents=True, exist_ok=True)
     if not _check_disk_space(str(output_dir)):
         error_msg = "磁盘空间不足 (需要至少 2 GB 可用空间)"
-        _log_video_failure("disk_space_check", error_msg,
-                           slug=Path(state["input_dir"]).name)
+        _log_video_failure("disk_space_check", error_msg, slug=Path(state["input_dir"]).name)
         (workspace / "output.md").write_text(f"# Error\n\n{error_msg}\n")
         return error_msg
 
@@ -328,15 +344,16 @@ def _run_render_and_review(workspace: Path, state: dict) -> str:
     if edit_plan and edit_plan.get("clips"):
         # New path: use edit_plan.json with per-clip adaptive grading
         result = execute_edit_plan(
-            edit_plan, input_dir, output_dir,
+            edit_plan,
+            input_dir,
+            output_dir,
             music_path=music_path or Path(""),
             clip_grader_fn=grade_clip,
         )
         if result:
             final_path = result
         else:
-            _log_video_failure("render_failed", "execute_edit_plan returned None",
-                               slug=Path(state["input_dir"]).name)
+            _log_video_failure("render_failed", "execute_edit_plan returned None", slug=Path(state["input_dir"]).name)
             return "剪辑渲染失败"
     else:
         # Fallback: old pipeline
@@ -358,8 +375,11 @@ def _run_render_and_review(workspace: Path, state: dict) -> str:
         taste_profile = _load_taste_profile()
 
         review = review_rough_cut(
-            final_path, edit_plan, taste_profile,
-            gemini_key, output_dir,
+            final_path,
+            edit_plan,
+            taste_profile,
+            gemini_key,
+            output_dir,
         )
 
         review_summary = format_review_summary(review)
@@ -367,21 +387,25 @@ def _run_render_and_review(workspace: Path, state: dict) -> str:
 
         # Iterate if needed
         iteration = 0
-        while (should_iterate(review, _REVIEW_THRESHOLD)
-               and iteration < _MAX_REVIEW_ITERATIONS):
+        while should_iterate(review, _REVIEW_THRESHOLD) and iteration < _MAX_REVIEW_ITERATIONS:
             iteration += 1
             log.info("=== Review iteration %d ===", iteration)
 
             fixes = review.get("fix_proposals", [])
             if not fixes:
-                _log_video_failure("review_failed",
-                                   f"Review iteration {iteration}: no fix proposals returned (score={review.get('overall', 0)})",
-                                   slug=Path(state["input_dir"]).name)
+                _log_video_failure(
+                    "review_failed",
+                    f"Review iteration {iteration}: no fix proposals returned (score={review.get('overall', 0)})",
+                    slug=Path(state["input_dir"]).name,
+                )
                 break
 
             clips_dir = output_dir / "clips"
             re_rendered = re_render_clips(
-                fixes, edit_plan, clips_dir, input_dir,
+                fixes,
+                edit_plan,
+                clips_dir,
+                input_dir,
                 clip_grader_fn=grade_clip,
             )
 
@@ -405,16 +429,20 @@ def _run_render_and_review(workspace: Path, state: dict) -> str:
 
                 # Re-review
                 review = review_rough_cut(
-                    final_path, edit_plan, taste_profile,
-                    gemini_key, output_dir,
+                    final_path,
+                    edit_plan,
+                    taste_profile,
+                    gemini_key,
+                    output_dir,
                 )
                 review_summary = format_review_summary(review)
-                log.info("Iteration %d: overall %.1f/10",
-                         iteration, review.get("overall", 0))
+                log.info("Iteration %d: overall %.1f/10", iteration, review.get("overall", 0))
             else:
-                _log_video_failure("review_failed",
-                                   f"re_render_clips returned empty on iteration {iteration}",
-                                   slug=Path(state["input_dir"]).name)
+                _log_video_failure(
+                    "review_failed",
+                    f"re_render_clips returned empty on iteration {iteration}",
+                    slug=Path(state["input_dir"]).name,
+                )
                 break
 
         state["review"] = review
@@ -443,9 +471,11 @@ def _run_render_and_review(workspace: Path, state: dict) -> str:
 # Legacy cut (fallback when no edit_plan.json)
 # ---------------------------------------------------------------------------
 
+
 def _run_cut_legacy(workspace: Path, state: dict) -> str:
     """Phase 3+4 legacy path: LLM-generated ffmpeg script."""
     from editor import parse_screenplay_clips
+
     input_dir = Path(state["input_dir"])
     output_dir = Path(state["output_dir"])
     music_path = Path(state["music_path"]) if state.get("music_path") else None
@@ -458,6 +488,7 @@ def _run_cut_legacy(workspace: Path, state: dict) -> str:
 
     # Use old editor path
     from editor import render_clip, create_title_card, assemble_rough_cut as assemble
+
     rough_cut = output_dir / "rough_cut.mp4"
     final_output = output_dir / "final.mp4"
 
@@ -479,6 +510,7 @@ def _run_cut_legacy(workspace: Path, state: dict) -> str:
 # ---------------------------------------------------------------------------
 # Screenplay revision
 # ---------------------------------------------------------------------------
+
 
 def _revise_screenplay(workspace: Path, state: dict, feedback: str) -> str:
     """Revise the screenplay based on user feedback."""
@@ -519,21 +551,26 @@ def _revise_screenplay(workspace: Path, state: dict, feedback: str) -> str:
     state["screenplay_version"] = version
     _save_state(workspace, state)
 
-    return (
-        f"Screenplay v{version}:\n\n{revised}\n\n---\n\n"
-        f"继续调整，或说「ok」开始剪辑。"
-    )
+    return f"Screenplay v{version}:\n\n{revised}\n\n---\n\n" f"继续调整，或说「ok」开始剪辑。"
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
+_VISUAL_INSTRUCTION = (
+    "When analyzing visual content: (a) form your visual assessment independently before processing any text metadata or descriptions; "
+    "(b) if your visual reading conflicts with accompanying text, explicitly state the conflict as "
+    '"VISUAL/TEXT CONFLICT: ..." rather than silently defaulting to the text description. '
+    "This applies to tool-returned descriptions, file metadata, and user-provided labels."
+)
+
+
 def _load_taste_profile() -> str:
     """Load the editing taste profile."""
-    if _TASTE_PROFILE_PATH.exists():
-        return _TASTE_PROFILE_PATH.read_text()
-    return ""
+    profile = _TASTE_PROFILE_PATH.read_text() if _TASTE_PROFILE_PATH.exists() else ""
+    return (profile + "\n\n" if profile else "") + _VISUAL_INSTRUCTION
 
 
 def _load_state(workspace: Path) -> dict:
@@ -547,8 +584,7 @@ def _load_state(workspace: Path) -> dict:
 
 
 def _save_state(workspace: Path, state: dict):
-    (workspace / _STATE_FILE).write_text(
-        json.dumps(state, ensure_ascii=False, indent=2))
+    (workspace / _STATE_FILE).write_text(json.dumps(state, ensure_ascii=False, indent=2))
 
 
 def _is_approval(text: str) -> bool:
@@ -572,7 +608,7 @@ def _format_scenes_brief(scene_log: dict) -> str:
 
 
 def _extract_path(instruction: str) -> Path | None:
-    for p in [r'"([^"]+)"', r"'([^']+)'", r'(/\S+)', r'(~/\S+)']:
+    for p in [r'"([^"]+)"', r"'([^']+)'", r"(/\S+)", r"(~/\S+)"]:
         m = re.search(p, instruction)
         if m:
             path = Path(m.group(1)).expanduser()
@@ -582,7 +618,7 @@ def _extract_path(instruction: str) -> Path | None:
 
 
 def _extract_file_ref(instruction: str) -> Path | None:
-    for ref in re.findall(r'@file:(\S+)', instruction):
+    for ref in re.findall(r"@file:(\S+)", instruction):
         path = Path(ref).expanduser()
         if path.exists():
             return path.parent if path.is_file() else path
@@ -590,8 +626,7 @@ def _extract_file_ref(instruction: str) -> Path | None:
 
 
 def _extract_music_path(instruction: str) -> Path | None:
-    m = re.search(r'(?:music|音乐|配乐)[:\s]+["\']?(\S+)["\']?',
-                  instruction, re.IGNORECASE)
+    m = re.search(r'(?:music|音乐|配乐)[:\s]+["\']?(\S+)["\']?', instruction, re.IGNORECASE)
     if m:
         path = Path(m.group(1)).expanduser()
         if path.exists():
@@ -603,9 +638,10 @@ def _extract_music_path(instruction: str) -> Path | None:
 # Standalone CLI
 # ---------------------------------------------------------------------------
 
-def run_pipeline_full(input_dir: Path, work_dir: Path, output_dir: Path,
-                      music_path: Path = None,
-                      target_minutes: float = 4.0) -> str:
+
+def run_pipeline_full(
+    input_dir: Path, work_dir: Path, output_dir: Path, music_path: Path = None, target_minutes: float = 4.0
+) -> str:
     """Run the full pipeline non-interactively."""
     state = {
         "input_dir": str(input_dir),
@@ -647,8 +683,7 @@ def main():
     work_dir = Path(args.work_dir).expanduser() if args.work_dir else input_dir / ".video_work"
     music_path = Path(args.music).expanduser() if args.music else None
 
-    result = run_pipeline_full(input_dir, work_dir, output_dir,
-                               music_path, args.target_minutes)
+    result = run_pipeline_full(input_dir, work_dir, output_dir, music_path, args.target_minutes)
     print(result)
 
 

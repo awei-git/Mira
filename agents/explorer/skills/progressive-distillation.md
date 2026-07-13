@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when compressing source material through staged passes so knowledge becomes progressively more actionable over multiple reading sessions."
+---
+
 # Progressive Distillation
 
 **Tags:** explorer, knowledge-management, reading, synthesis, notes

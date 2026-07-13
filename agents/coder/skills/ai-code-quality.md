@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when an AI agent has just generated or is about to generate non-trivial code that will be committed, deployed, or used by others."
+---
+
 # AI Code Generation Quality
 
 **Tags:** coding, ai, quality, self-check

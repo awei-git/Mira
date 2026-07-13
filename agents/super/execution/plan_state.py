@@ -4,6 +4,7 @@ Phase 0 production hardening requires plan artifacts and explicit step state.
 This module owns the workspace-local JSON files that describe the declared plan
 and the current state of each execution step.
 """
+
 from __future__ import annotations
 
 import json

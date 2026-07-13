@@ -9,7 +9,7 @@ log = logging.getLogger("gen_upload")
 
 # Add paths
 agents_dir = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(agents_dir / "shared"))
+sys.path.insert(0, str(agents_dir.parent / "lib"))
 sys.path.insert(0, str(agents_dir / "socialmedia"))
 sys.path.insert(0, str(agents_dir / "podcast"))
 
@@ -62,6 +62,7 @@ def run():
             result_path = Path(result)
             if result_path != audio_path:
                 import shutil
+
                 shutil.copy2(result_path, audio_path)
                 log.info("Copied to %s", audio_path)
             else:

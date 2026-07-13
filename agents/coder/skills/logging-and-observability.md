@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when writing production or background-process code that has invisible failure modes requiring post-hoc debugging, monitoring, or auditing."
+---
+
 # Logging and Observability
 
 **Tags:** coding, logging, observability, debugging

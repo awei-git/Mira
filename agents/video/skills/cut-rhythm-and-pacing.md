@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when the emotional tempo of a video sequence needs to be controlled through deliberate variation in cut timing and duration."
+---
+
 # Cut Rhythm and Pacing
 
 ## One-liner

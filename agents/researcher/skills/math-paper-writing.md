@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when writing or revising a mathematics paper, from structuring the exposition and LaTeX conventions to the full revision workflow."
+---
+
 # Mathematical Paper Writing and Exposition
 
 **Tags:** math, writing, LaTeX, exposition, research, communication

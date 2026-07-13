@@ -11,6 +11,7 @@ Usage:
     # For LLM planner prompt:
     descriptions = registry.get_agent_descriptions()
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -21,15 +22,19 @@ from pathlib import Path
 from typing import Callable
 
 _SUPER_DIR = Path(__file__).resolve().parent
-_SHARED_DIR = _SUPER_DIR.parent / "shared"
+_SHARED_DIR = _SUPER_DIR.parent.parent / "lib"
 if str(_SHARED_DIR) not in sys.path:
     sys.path.insert(0, str(_SHARED_DIR))
 
-from capability_policy import get_capability_policy, resolve_capability_class
+from ops.policy import get_capability_policy, resolve_capability_class
+
+from handler_contract import warn_on_violations
 
 log = logging.getLogger("mira.registry")
 
 _AGENTS_DIR = _SUPER_DIR.parent  # agents/
+
+
 class AgentManifest:
     """Parsed agent manifest."""
 
@@ -39,6 +44,7 @@ class AgentManifest:
         self.keywords: list[str] = data.get("keywords", [])
         self.handles: list[str] = data.get("handles", [])
         self.tier: str = data.get("tier", "light")
+        self.model_backend: str | None = data.get("model_backend")
         self.timeout_category: str = data.get("timeout_category", "short")
         self.entry_point: str = data.get("entry_point", "handler.py:handle")
         self.requires_workspace: bool = data.get("requires_workspace", True)
@@ -46,6 +52,10 @@ class AgentManifest:
             self.name,
             data.get("capability_class"),
         )
+        # Tool access control: if absent, defaults to full access (legacy compat)
+        self.allowed_tools: list[str] | None = data.get("allowed_tools")
+        # Permission scopes: machine-readable resource/API access declarations
+        self.permissions: list[str] = data.get("permissions", [])
         self.agent_dir: Path = agent_dir
 
     def handler_path(self) -> tuple[Path, str]:
@@ -87,6 +97,21 @@ class AgentRegistry:
         manifest = self._manifests.get(name)
         return manifest.timeout_category if manifest else "short"
 
+    def get_model_backend(self, name: str) -> str | None:
+        """Return configured model backend for an agent, or None for default."""
+        manifest = self._manifests.get(name)
+        if manifest and manifest.model_backend:
+            return manifest.model_backend
+        try:
+            from config import AGENT_REGISTRY
+        except ImportError:
+            return None
+        agent_config = AGENT_REGISTRY.get(name) if isinstance(AGENT_REGISTRY, dict) else None
+        if not isinstance(agent_config, dict):
+            return None
+        backend = agent_config.get("model_backend")
+        return str(backend).strip() if backend else None
+
     def get_agent_descriptions(self) -> str:
         """Format all agent descriptions for the LLM planner prompt."""
         lines = []
@@ -118,7 +143,7 @@ class AgentRegistry:
             sys.path.insert(0, agent_dir)
 
         # Also ensure shared is in path
-        shared_dir = str(self._agents_dir / "shared")
+        shared_dir = str(self._agents_dir.parent / "lib")
         if shared_dir not in sys.path:
             sys.path.insert(0, shared_dir)
 
@@ -129,7 +154,12 @@ class AgentRegistry:
             raise ImportError(f"Cannot create module spec for {file_path}")
 
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
         self._modules[name] = module
         return module
 
@@ -154,6 +184,7 @@ class AgentRegistry:
 
         self._handlers[name] = handler
         log.info("Loaded handler: %s → %s:%s", name, file_path.name, func_name)
+        warn_on_violations(handler, name)
         return handler
 
     def load_preflight(self, name: str) -> Callable | None:
@@ -170,6 +201,20 @@ class AgentRegistry:
             manifest.capability_class if manifest else None,
         )
         return policy.requires_preflight
+
+    def get_allowed_tools(self, name: str) -> list[str] | None:
+        """Return the allowed_tools list for an agent, or None if unrestricted."""
+        manifest = self._manifests.get(name)
+        if not manifest:
+            return None
+        return manifest.allowed_tools
+
+    def get_permissions(self, name: str) -> list[str]:
+        """Return declared permission scopes for an agent."""
+        manifest = self._manifests.get(name)
+        if not manifest:
+            return []
+        return manifest.permissions or []
 
     def get_capability_class(self, name: str) -> str:
         manifest = self._manifests.get(name)

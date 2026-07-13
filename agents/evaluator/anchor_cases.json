@@ -1,0 +1,142 @@
+[
+  {
+    "task_id": "writer-publish-2026-03",
+    "original_score": 1.0,
+    "evaluation_timestamp": "2026-03-15T00:00:00+00:00",
+    "task_summary": "Article 'Brittle Benchmarks' drafted and published to Substack. Anti-AI checklist passed. Content guard cleared. 1450 words. Voice consistent with WA style guide.",
+    "raw_evaluation_rubric": {
+      "agent": "writer",
+      "description": "High-quality article publish with all guards passed",
+      "criteria": [
+        {
+          "name": "published_to_platform",
+          "weight": 1.0,
+          "required_terms": ["published", "substack"]
+        },
+        {
+          "name": "quality_gates_passed",
+          "weight": 1.0,
+          "required_terms": ["anti-ai checklist passed", "content guard"]
+        },
+        {
+          "name": "no_errors",
+          "weight": 1.0,
+          "forbidden_terms": ["error", "failed", "traceback"]
+        }
+      ]
+    }
+  },
+  {
+    "task_id": "coder-fix-2026-03",
+    "original_score": 0.667,
+    "evaluation_timestamp": "2026-03-22T00:00:00+00:00",
+    "task_summary": "Attempted to fix import issue in soul_manager.py. Applied patch. Syntax check passed but integration test timed out. No output file produced.",
+    "raw_evaluation_rubric": {
+      "agent": "coder",
+      "description": "Partial fix — patch applied but end-to-end verification incomplete",
+      "criteria": [
+        {
+          "name": "patch_applied",
+          "weight": 1.0,
+          "required_terms": ["patch", "applied"]
+        },
+        {
+          "name": "full_verification",
+          "weight": 1.0,
+          "required_terms": ["integration test passed", "output file produced"]
+        },
+        {
+          "name": "no_crash",
+          "weight": 1.0,
+          "forbidden_terms": ["traceback", "crash"]
+        }
+      ]
+    }
+  },
+  {
+    "task_id": "explorer-briefing-2026-04",
+    "original_score": 1.0,
+    "evaluation_timestamp": "2026-04-01T00:00:00+00:00",
+    "task_summary": "Briefing produced for 2026-04-01. Sources: arxiv (3 papers), reddit/MachineLearning, HN. 8 items curated. Signal-to-noise ratio above threshold. Briefing saved to artifacts/briefings/.",
+    "raw_evaluation_rubric": {
+      "agent": "explorer",
+      "description": "High-quality briefing with diverse primary sources",
+      "criteria": [
+        {
+          "name": "briefing_produced",
+          "weight": 1.0,
+          "required_terms": ["briefing produced"]
+        },
+        {
+          "name": "source_diversity",
+          "weight": 1.0,
+          "any_terms": ["arxiv", "huggingface", "hacker news", "hn"]
+        },
+        {
+          "name": "no_empty_output",
+          "weight": 1.0,
+          "forbidden_terms": ["no sources", "empty", "failed"]
+        }
+      ]
+    }
+  },
+  {
+    "task_id": "super-routing-2026-04",
+    "original_score": 0.5,
+    "evaluation_timestamp": "2026-04-08T00:00:00+00:00",
+    "task_summary": "Received user request to summarize article. Routed to writer agent. Writer requested clarification on target length. Re-route needed. Task completed after second dispatch.",
+    "raw_evaluation_rubric": {
+      "agent": "super",
+      "description": "Routing with clarification loop — partial success, clean dispatch not achieved",
+      "criteria": [
+        {
+          "name": "task_routed",
+          "weight": 1.0,
+          "required_terms": ["routed"]
+        },
+        {
+          "name": "no_clarification_loop",
+          "weight": 1.0,
+          "forbidden_terms": ["clarification", "re-route"]
+        },
+        {
+          "name": "no_timeout",
+          "weight": 1.0,
+          "forbidden_terms": ["timed out", "crash"]
+        },
+        {
+          "name": "clean_dispatch",
+          "weight": 1.0,
+          "required_terms": ["dispatched successfully"]
+        }
+      ]
+    }
+  },
+  {
+    "task_id": "general-task-2026-03",
+    "original_score": 0.0,
+    "evaluation_timestamp": "2026-03-28T00:00:00+00:00",
+    "task_summary": "Task failed. Exception raised during web search fetch. Output not generated. Request aborted after timeout.",
+    "raw_evaluation_rubric": {
+      "agent": "general",
+      "description": "Fully failed task — baseline low-quality anchor",
+      "criteria": [
+        {
+          "name": "output_produced",
+          "weight": 1.0,
+          "required_terms": ["output generated", "task complete"]
+        },
+        {
+          "name": "no_errors",
+          "weight": 1.0,
+          "forbidden_terms": ["failed", "exception", "aborted"]
+        },
+        {
+          "name": "search_results_available",
+          "weight": 1.0,
+          "required_terms": ["web search results"]
+        }
+      ]
+    }
+  }
+]

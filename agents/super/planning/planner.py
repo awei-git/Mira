@@ -5,6 +5,7 @@ Extracted from task_worker.py. Contains:
 - _plan_task: main planner that calls Claude to decompose tasks
 - _synthesize_outputs: synthesizes multi-step outputs into coherent response
 """
+
 from __future__ import annotations
 
 import json
@@ -15,11 +16,11 @@ from pathlib import Path
 
 # Add shared + sibling agent directories to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-if str(_AGENTS_DIR / "shared") not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+if str(_AGENTS_DIR.parent / "lib") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import MIRA_DIR, MIRA_ROOT
-from sub_agent import claude_think
+from llm import claude_think
 from planning.plan_schema import validate_plan_step as _validate_plan_step
 
 log = logging.getLogger("task_worker")
@@ -96,9 +97,16 @@ def _load_super_skills(task_content: str = "") -> str:
 # LLM-based task planning
 # ---------------------------------------------------------------------------
 
-def _plan_task(content: str, conversation: str = "", exec_history: str = "",
-               prior_context: str = "", allowed_agents: list[str] | None = None,
-               content_filter: bool = False) -> list[dict]:
+
+def _plan_task(
+    content: str,
+    conversation: str = "",
+    exec_history: str = "",
+    prior_context: str = "",
+    allowed_agents: list[str] | None = None,
+    content_filter: bool = False,
+    replan_hint: str = "",
+) -> list[dict]:
     """Use LLM to decompose a request into an ordered list of steps.
 
     Each step is {"agent": "<name>", "instruction": "<what to do>"}.
@@ -114,13 +122,15 @@ def _plan_task(content: str, conversation: str = "", exec_history: str = "",
     if exec_history:
         context_parts.append(exec_history)
     if conversation:
-        context_parts.append(f"""
+        context_parts.append(
+            f"""
 IMPORTANT: This is a FOLLOW-UP message in an ongoing conversation. Read the history carefully.
 If the user's intent is clear from context, DO NOT use clarify — just execute the task.
 Only use clarify if the request is genuinely ambiguous even with the conversation history.
 If a previous round already produced content, reference it in your plan (e.g. use publish to publish existing output).
 
-{conversation}""")
+{conversation}"""
+        )
     if context_parts:
         conversation_context = "\n\n".join(context_parts) + f"\n\n---\nLatest message from user: {content[:500]}"
     else:
@@ -132,7 +142,8 @@ If a previous round already produced content, reference it in your plan (e.g. us
     # Calibration feedback: learn from past task outcomes
     cal_section = ""
     try:
-        from evaluator import diagnose_scores
+        from evaluation.scorer import diagnose_scores
+
         diag = diagnose_scores()
         cal = diag.get("calibration_insights", "")
         if cal:
@@ -142,6 +153,7 @@ If a previous round already produced content, reference it in your plan (e.g. us
 
     # Build available agents list from registry (single source of truth)
     from agent_registry import get_registry
+
     _registry = get_registry()
     _all_agent_descs = {}
     for _name in _registry.list_agents():
@@ -150,7 +162,9 @@ If a previous round already produced content, reference it in your plan (e.g. us
             _handles = ", ".join(_m.handles) if _m.handles else _m.description
             _all_agent_descs[_name] = _handles
     # clarify is a virtual agent (not in registry)
-    _all_agent_descs["clarify"] = "Ask the user a question ONLY if the request is genuinely ambiguous and cannot be inferred"
+    _all_agent_descs["clarify"] = (
+        "Ask the user a question ONLY if the request is genuinely ambiguous and cannot be inferred"
+    )
     if allowed_agents:
         # Always include clarify + discussion as fallbacks
         agent_filter = set(allowed_agents) | {"clarify", "discussion"}
@@ -159,13 +173,29 @@ If a previous round already produced content, reference it in your plan (e.g. us
         filtered = _all_agent_descs
     agent_lines = "\n".join(f"- {name}: {desc}" for name, desc in filtered.items())
 
+    # When a previous attempt was rejected by preflight (e.g. general agent
+    # got an effectful task it isn't allowed to do), pass the rejection back
+    # in here so the planner picks a different, capable agent on retry.
+    # Without this, fail-closed preflight + auto_retry results in silently
+    # blocked tasks that look "still pending" forever to the user.
+    replan_section = ""
+    if replan_hint:
+        replan_section = (
+            "\n\n## REPLAN — previous attempt rejected\n"
+            f"Reason: {replan_hint[:300]}\n"
+            "Pick a DIFFERENT agent that has the right capability for this task. "
+            "Do not return the same agent that was just rejected. If the task is effectful "
+            "(modifying files, deleting jobs, calling APIs), choose a specialized agent "
+            "(coder, socialmedia, podcast, etc.) — never `general`.\n"
+        )
+
     content_filter_rule = ""
     if content_filter:
         content_filter_rule = """
 - CONTENT FILTER ACTIVE: This is a child user. Only provide age-appropriate, safe, educational content.
   Never discuss violence, drugs, alcohol, sexual content, or anything dangerous. Redirect inappropriate requests to something positive."""
 
-    prompt = f"""You are a task planner and orchestrator. Decompose this user request into ordered execution steps.{skills_section}{cal_section}
+    prompt = f"""You are a task planner and orchestrator. Decompose this user request into ordered execution steps.{skills_section}{cal_section}{replan_section}
 
 ## Available Agents
 {agent_lines}
@@ -214,14 +244,22 @@ The "prediction" block is REQUIRED on every step. It captures your expectation b
 
 JSON:"""
 
+    # Planning timeout was 20s — too tight when the API is under load. The
+    # detailed pre-market replan task (2026-04-29) timed out twice here,
+    # both the initial plan AND the replan attempt, and each time the
+    # exception path below silently fell back to {"agent": "general"} —
+    # which then failed preflight as "effectful task should use a
+    # specialized agent", with no further recourse. 45s gives the model
+    # room without making the user wait minutes.
     try:
-        result = claude_think(prompt, timeout=20)
+        result = claude_think(prompt, timeout=45)
         if result:
-            match = re.search(r'\[.*\]', result, re.DOTALL)
+            match = re.search(r"\[.*\]", result, re.DOTALL)
             if match:
                 steps = json.loads(match.group())
                 # Validate against schema
                 from agent_registry import get_registry
+
                 valid_agents = get_registry().get_valid_agents() | {"clarify"}  # clarify is special, not in registry
                 validated = []
                 for s in steps:
@@ -233,13 +271,38 @@ JSON:"""
                 if validated:
                     return validated
     except Exception as e:
-        log.warning("Planning failed, falling back to general: %s", e)
+        log.warning("Planning failed, falling back: %s", e)
 
-    return [{"agent": "general", "instruction": content}]
+    # Heuristic fallback when planning truly failed. Previously this always
+    # returned `general`, but `general`'s preflight rejects effectful tasks
+    # (file edits, API calls, scheduling) — so the silent fallback would
+    # immediately fail at the next stage. Look at the request for a strong
+    # specialised-agent signal first; only fall back to `general` for
+    # plain Q&A / read-only requests.
+    lower = (content or "").lower()
+    fallback_agent = "general"
+    if any(k in lower for k in ("market", "stock", "fomc", "earnings", "盘前", "盘后", "市场", "财报")):
+        fallback_agent = "analyst"
+    elif any(k in lower for k in ("写", "文章", "essay", "draft", "blog post", "改稿")):
+        fallback_agent = "writer"
+    elif any(k in lower for k in ("substack", "twitter", "bluesky", "tweet", "post a note", "comment")):
+        fallback_agent = "socialmedia"
+    elif any(k in lower for k in ("podcast", "episode", "tts", "audio")):
+        fallback_agent = "podcast"
+    elif any(k in lower for k in ("photo", "edit photo", "lightroom", "拍")):
+        fallback_agent = "photo"
+    elif any(k in lower for k in ("research", "literature", "paper", "math", "证明", "论文")):
+        fallback_agent = "researcher"
+    elif any(
+        k in lower
+        for k in ("edit code", "fix bug", "refactor", "代码", "脚本", "delete the", "comment out the", "停掉", "关掉")
+    ):
+        fallback_agent = "coder"
+    log.info("planner_fallback agent=%s reason=heuristic_match content=%r", fallback_agent, content[:80])
+    return [{"agent": fallback_agent, "instruction": content, "tier": "light"}]
 
 
-def _synthesize_outputs(original_request: str, plan: list[dict],
-                        final_output: str) -> str:
+def _synthesize_outputs(original_request: str, plan: list[dict], final_output: str) -> str:
     """Synthesize the final output of a multi-step plan into a coherent response.
 
     Only called for multi-step plans where the last step's raw output
@@ -265,9 +328,7 @@ def _synthesize_outputs(original_request: str, plan: list[dict],
                 synthesis_skill = block.strip()
                 break
 
-    steps_summary = "; ".join(
-        f"{s['agent']}: {s['instruction'][:60]}" for s in plan
-    )
+    steps_summary = "; ".join(f"{s['agent']}: {s['instruction'][:60]}" for s in plan)
 
     prompt = f"""You are synthesizing the output of a multi-step agent plan into a single coherent response.
 

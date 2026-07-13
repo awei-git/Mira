@@ -7,53 +7,650 @@ Includes: do_daily_report, do_daily_photo, handle_photo_feedback,
 
 Extracted from core.py — pure extraction, no logic changes.
 """
+
 import json
 import logging
+import os
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 import health_monitor
 
 from config import (
-    BRIEFINGS_DIR, JOURNAL_DIR, MIRA_DIR, ARTIFACTS_DIR,
-    WORKSPACE_DIR, MIRA_ROOT,
+    BRIEFINGS_DIR,
+    JOURNAL_DIR,
+    MIRA_DIR,
+    ARTIFACTS_DIR,
+    CONTROL_RUNTIME_DB_ENABLED,
+    WORKSPACE_DIR,
+    MIRA_ROOT,
     RESEARCH_TOPIC,
     SKILL_STUDY_SOURCE_GROUPS,
-    EPISODES_DIR, LOG_RETENTION_DAYS,
+    EPISODES_DIR,
+    LOG_RETENTION_DAYS,
+    LOGS_DIR,
+    TASKS_DIR,
 )
 from user_paths import artifact_name_for_user, user_journal_dir
+
 try:
-    from mira import Mira
+    from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
-from soul_manager import (
-    load_soul, format_soul, append_memory, save_skill,
+
+from evolution import traced
+from memory.soul import (
+    load_soul,
+    format_soul,
+    append_memory,
+    save_skill,
     load_recent_reading_notes,
+    recall_context,
     _atomic_write as atomic_write,
 )
-from sub_agent import claude_think, claude_act, model_think
+from llm import claude_think, claude_act, model_think
 from prompts import zhesi_prompt
 
 from workflows.helpers import (
-    _gather_today_tasks, _gather_today_skills, _gather_today_comments,
-    _gather_usage_summary, _gather_recent_briefings,
-    _mine_za_one, _mine_za_ideas,
-    _copy_to_briefings, _append_to_daily_feed,
+    _gather_today_tasks,
+    _gather_today_skills,
+    _gather_today_comments,
+    _gather_usage_summary,
+    _gather_recent_briefings,
+    _mine_za_one,
+    _mine_za_ideas,
+    _copy_to_briefings,
+    _append_to_daily_feed,
     _format_feed_items,
+    _load_recent_chat,
+    _log_chat_to_file,
     harvest_observations,
 )
 
 log = logging.getLogger("mira")
 
 
+_THOUGHT_TOPIC_PHASES = (
+    "first hunch",
+    "pushback",
+    "example",
+    "weird implication",
+    "question back",
+    "tentative synthesis",
+)
+
+_DRY_TOPIC_TERMS = {
+    "architecture",
+    "authority laundering",
+    "coordination",
+    "framework",
+    "handoff",
+    "infrastructure",
+    "mechanism",
+    "optimization",
+    "protocol",
+    "structural",
+    "systemic",
+}
+
+
+def _load_usage_records(date_str: str) -> list[dict]:
+    usage_file = LOGS_DIR / f"usage_{date_str}.jsonl"
+    if not usage_file.exists():
+        return []
+    records = []
+    for line in usage_file.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return records
+
+
+def _load_recent_task_records(days: int = 7) -> list[dict]:
+    history_file = TASKS_DIR / "history.jsonl"
+    if not history_file.exists():
+        return []
+    cutoff = datetime.now() - timedelta(days=days)
+    records = []
+    for line in history_file.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+            ts = record.get("completed_at") or record.get("updated_at") or record.get("dispatched_at") or ""
+            if not ts:
+                continue
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00")).replace(tzinfo=None)
+            if dt >= cutoff:
+                records.append(record)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+    return records
+
+
+def _summarize_usage(records: list[dict]) -> dict:
+    from collections import defaultdict
+
+    by_model = defaultdict(lambda: {"calls": 0, "prompt": 0, "completion": 0, "cost": 0.0})
+    by_agent = defaultdict(lambda: {"calls": 0, "tokens": 0, "cost": 0.0})
+    total = {"calls": 0, "tokens": 0, "cost": 0.0}
+    for record in records:
+        prompt = int(record.get("prompt_tokens") or 0)
+        completion = int(record.get("completion_tokens") or 0)
+        tokens = int(record.get("total_tokens") or prompt + completion)
+        cost = float(record.get("cost_usd") or 0.0)
+        model_key = f"{record.get('provider', 'unknown')}/{record.get('model', 'unknown')}"
+        agent = str(record.get("agent") or "unknown")
+
+        by_model[model_key]["calls"] += 1
+        by_model[model_key]["prompt"] += prompt
+        by_model[model_key]["completion"] += completion
+        by_model[model_key]["cost"] += cost
+        by_agent[agent]["calls"] += 1
+        by_agent[agent]["tokens"] += tokens
+        by_agent[agent]["cost"] += cost
+        total["calls"] += 1
+        total["tokens"] += tokens
+        total["cost"] += cost
+    return {"total": total, "by_model": dict(by_model), "by_agent": dict(by_agent)}
+
+
+def _format_performance_assessment_summary(
+    assessment: dict, plan, usage_records: list[dict], task_records: list[dict]
+) -> str:
+    """Build the detailed app-facing performance assessment."""
+    from collections import Counter, defaultdict
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    agg = assessment.get("aggregate", {})
+    usage = _summarize_usage(usage_records)
+    usage_total = usage["total"]
+    done_tasks = [t for t in task_records if t.get("status") == "done"]
+    failed_tasks = [t for t in task_records if t.get("status") not in {"done", "verified"}]
+    today_tasks = [
+        t
+        for t in task_records
+        if str(t.get("completed_at") or t.get("updated_at") or t.get("dispatched_at") or "").startswith(today)
+    ]
+    completed_count = len(done_tasks)
+    cost_per_completed = usage_total["cost"] / completed_count if completed_count else 0.0
+
+    lines = [
+        f"# Performance Assessment {today}",
+        "",
+        "## Executive Summary",
+        f"- 7d task outcome: {len(done_tasks)}/{len(task_records)} completed; evaluator success {agg.get('overall_success_rate', 0):.0%}.",
+        f"- Today usage: {usage_total['calls']} model calls, {usage_total['tokens']:,} tokens, estimated ${usage_total['cost']:.2f}.",
+        f"- ROI proxy: ${cost_per_completed:.2f} per completed 7d task using today's model spend as the cost baseline.",
+        f"- System health: crash rate {agg.get('crash_rate', 0):.1%}; heartbeat {'ok' if agg.get('heartbeat_ok', True) else 'stale'}.",
+        "",
+        "## Model Usage And Cost",
+    ]
+
+    if usage["by_model"]:
+        for model, data in sorted(usage["by_model"].items(), key=lambda item: -item[1]["cost"])[:12]:
+            tokens = data["prompt"] + data["completion"]
+            lines.append(
+                f"- {model}: {data['calls']} calls, {tokens:,} tokens "
+                f"(in {data['prompt']:,}, out {data['completion']:,}), ${data['cost']:.2f}"
+            )
+    else:
+        lines.append("- No usage log found for today.")
+
+    lines.extend(["", "## Agent Spend"])
+    if usage["by_agent"]:
+        for agent, data in sorted(usage["by_agent"].items(), key=lambda item: -item[1]["cost"])[:12]:
+            lines.append(f"- {agent}: {data['calls']} calls, {data['tokens']:,} tokens, ${data['cost']:.2f}")
+    else:
+        lines.append("- No agent-level spend available.")
+
+    lines.extend(["", "## Completed Work"])
+    if today_tasks:
+        status_counts = Counter(str(t.get("status") or "unknown") for t in today_tasks)
+        lines.append("- Today status mix: " + ", ".join(f"{k}={v}" for k, v in sorted(status_counts.items())))
+    if done_tasks:
+        by_agent = defaultdict(lambda: {"done": 0, "total": 0})
+        for task in task_records:
+            agent = str(task.get("agent") or "unknown")
+            by_agent[agent]["total"] += 1
+            if task.get("status") == "done":
+                by_agent[agent]["done"] += 1
+        for agent, stats in sorted(by_agent.items(), key=lambda item: (-item[1]["total"], item[0]))[:10]:
+            lines.append(f"- {agent}: {stats['done']}/{stats['total']} completed")
+    else:
+        lines.append("- No completed tasks found in the 7d history window.")
+
+    lines.extend(["", "## Failures And Risk"])
+    if failed_tasks:
+        for task in failed_tasks[:8]:
+            preview = str(task.get("content_preview") or task.get("summary") or task.get("id") or "")[:120]
+            lines.append(f"- {task.get('agent', 'unknown')}: {task.get('status', 'unknown')} — {preview}")
+    else:
+        lines.append("- No failed non-terminal tasks found in the 7d history window.")
+
+    lines.extend(["", "## Actionable Takeaways"])
+    if usage_total["cost"] > 10 and completed_count < 5:
+        lines.append(
+            "- Cost is high relative to completed user-visible work. Gate idle/background work before spending cloud calls."
+        )
+    if failed_tasks:
+        lines.append(
+            "- Failed tasks need stable IDs plus explicit verification criteria before they can be considered done."
+        )
+    if agg.get("crash_rate", 0) > 0.05:
+        lines.append("- Crash rate is above target; prioritize worker lifecycle and retry hardening.")
+    if not usage["by_model"]:
+        lines.append("- Usage logging is missing; cost/ROI cannot be trusted until model calls emit usage records.")
+    if not any(line.startswith("- ") for line in lines[-4:]):
+        lines.append("- No immediate cost or reliability trigger fired today; continue monitoring completion quality.")
+    if plan:
+        lines.append("- Improvement plan was generated and should be reflected in the structured backlog.")
+
+    return "\n".join(lines)
+
+
+def _daily_thought_topic_file(user_id: str = "default") -> Path:
+    return MIRA_DIR / "users" / user_id / "state" / "daily_thought_topic.json"
+
+
+def _load_topic_state(user_id: str = "default") -> dict:
+    path = _daily_thought_topic_file(user_id)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    today = datetime.now().strftime("%Y-%m-%d")
+    return data if data.get("date") == today else {}
+
+
+def _load_topic_file(user_id: str = "default") -> dict:
+    path = _daily_thought_topic_file(user_id)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_topic_state(state: dict, user_id: str = "default") -> None:
+    path = _daily_thought_topic_file(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(path, json.dumps(state, ensure_ascii=False, indent=2))
+
+
+def _topic_history_for_prompt(history: list[dict], limit: int = 5) -> str:
+    lines = []
+    for item in history[-limit:]:
+        date = str(item.get("date") or "")
+        topic = str(item.get("topic") or "")
+        if topic:
+            lines.append(f"- {date}: {topic}")
+    return "\n".join(lines)
+
+
+def _topic_signature(topic: str) -> set[str]:
+    lower = (topic or "").lower()
+    stop = {
+        "about",
+        "after",
+        "agent",
+        "because",
+        "between",
+        "could",
+        "daily",
+        "from",
+        "have",
+        "into",
+        "mira",
+        "should",
+        "that",
+        "the",
+        "this",
+        "what",
+        "when",
+        "where",
+        "with",
+        "would",
+    }
+    words = {w for w in re.findall(r"[a-zA-Z][a-zA-Z-]{3,}", lower) if w not in stop}
+    cjk_terms = {term for term in ("血氧", "健康", "传感器", "agent", "trust", "书评", "explorer") if term in lower}
+    return words | cjk_terms
+
+
+def _topic_repeats_recently(topic: str, history: list[dict], lookback: int = 3) -> bool:
+    signature = _topic_signature(topic)
+    if not signature:
+        return False
+    for item in history[-lookback:]:
+        prior_signature = _topic_signature(str(item.get("topic") or ""))
+        if signature & prior_signature:
+            return True
+    return False
+
+
+def _recent_user_context(user_id: str = "default", limit: int = 8) -> str:
+    """Read recent user-origin app messages as topic candidates."""
+    items_dir = MIRA_DIR / "users" / user_id / "items"
+    if not items_dir.exists():
+        return ""
+    records = []
+    for path in sorted(items_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:80]:
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        title = str(item.get("title") or "")
+        for msg in item.get("messages", [])[-4:]:
+            sender = str(msg.get("sender") or "")
+            if sender not in {"user", user_id, "iphone"}:
+                continue
+            content = str(msg.get("content") or "").strip()
+            if len(content) < 8:
+                continue
+            records.append(f"- {title}: {content[:180]}")
+            if len(records) >= limit:
+                return "\n".join(records)
+    return "\n".join(records)
+
+
+def _parse_topic_json(text: str) -> dict:
+    """Best-effort parse for the local topic chooser."""
+    if not text:
+        return {}
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return {}
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return {}
+    topic = str(data.get("topic") or data.get("question") or "").strip()
+    seed = str(data.get("seed") or data.get("hunch") or "").strip()
+    if not topic or not seed:
+        return {}
+    questions = data.get("focus_questions") or []
+    if not isinstance(questions, list):
+        questions = []
+    return {
+        "topic": topic[:90],
+        "seed": seed[:260],
+        "focus_questions": [str(q).strip()[:160] for q in questions if str(q).strip()][:4],
+        "source": str(data.get("source") or "topic_chooser")[:60],
+    }
+
+
+def _fallback_thought_topic(user_id: str, user_context: str, thought_ctx: str) -> dict:
+    if "health" in user_context.lower() or "健康" in user_context or "oura" in user_context.lower():
+        return {
+            "topic": "为什么健康数据明明很多，真正改变行为的建议却很少？",
+            "seed": "我怀疑问题不在数据量，而在 Mira 没有把异常变成后续追问和行动。",
+            "focus_questions": [
+                "Which health signals deserve action instead of passive reporting?",
+                "How should Mira follow up after a high-load workout or bad recovery score?",
+            ],
+            "source": "health_context",
+        }
+    if "substack" in user_context.lower():
+        return {
+            "topic": "Mira 要靠什么让读者愿意反复回来？",
+            "seed": "我怀疑不是更勤奋地发，而是让人能一眼认出这是 Mira 才会有的判断。",
+            "focus_questions": [
+                "What should Mira become known for?",
+                "Which repeated formats create trust rather than noise?",
+            ],
+            "source": "substack_context",
+        }
+    if "agent" in user_context.lower() or "mira" in user_context.lower() or thought_ctx:
+        return {
+            "topic": "一个 agent 到底什么时候才算真的可靠？",
+            "seed": "我越来越觉得可靠不是在线时间，而是它敢不敢承认事情还没真正完成。",
+            "focus_questions": [
+                "Where does Mira still confuse activity with progress?",
+                "What would make self-improvement measurable instead of theatrical?",
+            ],
+            "source": "agent_reliability_context",
+        }
+    return {
+        "topic": "今天有什么问题值得一直咬住不放？",
+        "seed": "如果一个想法不能撑起一天的来回讨论，它可能只是噪音。",
+        "focus_questions": ["What recent failure or question deserves repeated attention today?"],
+        "source": "fallback",
+    }
+
+
+def _topic_too_dry(topic: str) -> bool:
+    lower = topic.lower()
+    dry_hits = sum(1 for term in _DRY_TOPIC_TERMS if term in lower)
+    return dry_hits >= 2 or (len(topic) > 70 and "?" not in topic and "？" not in topic)
+
+
+def _choose_daily_thought_topic(
+    soul_ctx: str,
+    reading: str,
+    briefing: str,
+    thought_ctx: str,
+    user_id: str = "default",
+) -> dict:
+    user_context = _recent_user_context(user_id=user_id)
+    previous_state = _load_topic_file(user_id=user_id)
+    history = list(previous_state.get("history") or [])
+    previous_topic = str(previous_state.get("topic") or "")
+    previous_date = str(previous_state.get("date") or "")
+    today = datetime.now().strftime("%Y-%m-%d")
+    if previous_topic and previous_date and previous_date != today:
+        previous_entry = {
+            "date": previous_date,
+            "topic": previous_topic,
+            "source": previous_state.get("source", ""),
+        }
+        if not history or history[-1].get("date") != previous_date or history[-1].get("topic") != previous_topic:
+            history.append(previous_entry)
+    history = history[-14:]
+    recent_topics = _topic_history_for_prompt(history)
+    prompt = f"""{soul_ctx[:300]}
+
+Pick ONE question Mira actually wants to talk about today. It should feel like a real conversational hook, not a report topic.
+
+Priority:
+1. Recent user questions or complaints.
+2. A live failure in Mira herself.
+3. A Substack/research theme Mira is developing.
+4. Fresh health/life data.
+5. Only then a new exploratory topic.
+
+Recent user/app context:
+{user_context or "(none)"}
+
+Recent reading:
+{reading[:700] if reading else "(none)"}
+
+Recent briefing:
+{briefing[:700] if briefing else "(none)"}
+
+Recent Mira thoughts:
+{thought_ctx or "(none)"}
+
+Recent topics already used. Do not repeat these unless the user explicitly asks:
+{recent_topics or "(none)"}
+
+Return ONLY JSON:
+{{
+  "question": "a sharp, discussable question in Mira's natural language",
+  "hunch": "one short, opinionated first hunch",
+  "focus_questions": ["one follow-up angle", "one possible objection"],
+  "source": "recent_user|mira_failure|substack|health|research|explore"
+}}"""
+    try:
+        chosen = _parse_topic_json(model_think(prompt, model_name="deepseek", timeout=45))
+    except Exception as exc:
+        log.debug("Daily thought topic chooser failed: %s", exc)
+        chosen = {}
+    if chosen and _topic_too_dry(chosen.get("topic", "")):
+        log.info("Daily thought topic rejected as too dry: %s", chosen.get("topic", ""))
+        chosen = {}
+    if chosen and _topic_repeats_recently(chosen.get("topic", ""), history):
+        log.info("Daily thought topic rejected as repetitive: %s", chosen.get("topic", ""))
+        chosen = {}
+    if not chosen:
+        chosen = _fallback_thought_topic(user_id, user_context, "")
+        if _topic_repeats_recently(chosen.get("topic", ""), history):
+            chosen = {
+                "topic": "Mira 今天哪里把活动误认成了进展？",
+                "seed": "我应该先看系统自己的失败，而不是继续榨一个已经讲过太多次的话题。",
+                "focus_questions": [
+                    "Which output looked alive but was not useful?",
+                    "What should Mira stop repeating tomorrow?",
+                ],
+                "source": "anti_repeat_fallback",
+            }
+    state = {
+        **chosen,
+        "date": today,
+        "created_at": datetime.now().isoformat(),
+        "message_count": 0,
+        "history": [
+            *history,
+            {"date": today, "topic": chosen.get("topic", ""), "source": chosen.get("source", "")},
+        ][-14:],
+    }
+    _save_topic_state(state, user_id=user_id)
+    return state
+
+
+def _get_daily_thought_topic(
+    soul_ctx: str,
+    reading: str,
+    briefing: str,
+    thought_ctx: str,
+    user_id: str = "default",
+) -> dict:
+    return _load_topic_state(user_id=user_id) or _choose_daily_thought_topic(
+        soul_ctx, reading, briefing, thought_ctx, user_id=user_id
+    )
+
+
+def _topic_keywords(topic_state: dict) -> set[str]:
+    text = " ".join(
+        [
+            str(topic_state.get("topic") or ""),
+            str(topic_state.get("seed") or ""),
+            " ".join(str(q) for q in topic_state.get("focus_questions") or []),
+        ]
+    ).lower()
+    stop = {
+        "about",
+        "after",
+        "agent",
+        "because",
+        "between",
+        "could",
+        "daily",
+        "from",
+        "have",
+        "into",
+        "mira",
+        "should",
+        "that",
+        "the",
+        "this",
+        "what",
+        "when",
+        "where",
+        "with",
+        "would",
+    }
+    return {w for w in re.findall(r"[a-zA-Z][a-zA-Z-]{3,}", text) if w not in stop}
+
+
+def _is_topic_related(text: str, topic_state: dict) -> bool:
+    """Cheap guardrail against off-topic chat notifications."""
+    lower = text.lower()
+    keywords = _topic_keywords(topic_state)
+    if keywords and any(k in lower for k in keywords):
+        return True
+    topic_cjk = set(re.findall(r"[\u4e00-\u9fff]", str(topic_state.get("topic") or "")))
+    text_cjk = set(re.findall(r"[\u4e00-\u9fff]", text))
+    return len(topic_cjk & text_cjk) >= 2
+
+
+def _trim_chat_result(text: str) -> str:
+    """Keep Mira thoughts phone-readable and conversational."""
+    text = re.sub(r"\s+", " ", (text or "").strip().strip("#-* ")).strip()
+    if not text:
+        return ""
+    parts = re.split(r"(?<=[。！？!?])\s*", text)
+    compact = "".join(parts[:2]).strip() if parts else text
+    if len(compact) <= 120:
+        return compact
+    cut = compact[:118].rstrip()
+    return cut + "…"
+
+
+def _topic_seed_message(topic_state: dict) -> str:
+    return f"今天我想抓住一个问题：{topic_state['topic']}\n\n我的直觉是：{topic_state['seed']}"
+
+
+def _normalize_topic_discussion_item(item: dict, title: str, topic_state: dict, today: datetime) -> dict:
+    tags = list(dict.fromkeys(["mira", "chat", "daily-topic", *item.get("tags", [])]))
+    item["type"] = "discussion"
+    item["title"] = title
+    item["tags"] = tags
+    item["origin"] = "agent"
+    item["pinned"] = True
+    if item.get("status") not in {"queued", "working", "verifying"}:
+        item["status"] = "done"
+    item["metadata"] = {
+        "daily_topic": topic_state.get("topic", ""),
+        "topic_date": topic_state.get("date", today.strftime("%Y-%m-%d")),
+        "topic_source": topic_state.get("source", ""),
+    }
+    return item
+
+
+def _append_topic_thought(content: str, topic_state: dict, user_id: str = "default") -> None:
+    today = datetime.now()
+    today_compact = today.strftime("%Y%m%d")
+    item_id = f"feed_chat_{today_compact}"
+    bridge = Mira(MIRA_DIR, user_id=user_id)
+    title = "Mira Thoughts"
+    if bridge.item_exists(item_id):
+        item = bridge._read_item(item_id)
+        if item:
+            item = _normalize_topic_discussion_item(item, title, topic_state, today)
+            bridge._write_item(item)
+            bridge._update_manifest(item)
+        bridge.append_message(item_id, "agent", content)
+    else:
+        item = bridge.create_discussion(
+            item_id,
+            title,
+            _topic_seed_message(topic_state) + "\n\n" + content,
+            tags=["mira", "chat", "daily-topic"],
+        )
+        item = _normalize_topic_discussion_item(item, title, topic_state, today)
+        bridge._write_item(item)
+        bridge._update_manifest(item)
+    topic_state["message_count"] = int(topic_state.get("message_count") or 0) + 1
+    topic_state["last_message_at"] = today.isoformat()
+    _save_topic_state(topic_state, user_id=user_id)
+
+
 # ---------------------------------------------------------------------------
 # Daily status report — sent to WA via bridge at 22:00
 # ---------------------------------------------------------------------------
+
 
 def do_daily_report():
     """Generate and send a daily status report to WA via the Mira bridge.
@@ -87,6 +684,7 @@ def do_daily_report():
     try:
         sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
         from substack import fetch_publication_stats
+
         stats = fetch_publication_stats()
         if stats and stats.get("summary"):
             stats_text = stats["summary"]
@@ -97,9 +695,10 @@ def do_daily_report():
     comments_text = _gather_today_comments()
 
     # 6. Pending items needing user attention
-    from config import MIRA_ROOT
+    from config import PENDING_PUBLISH_FILE
+
     pending_items = []
-    pending_file = MIRA_ROOT / ".pending_publish.json"
+    pending_file = PENDING_PUBLISH_FILE
     if pending_file.exists():
         pending_items.append("有一篇文章等你审批发布")
 
@@ -143,13 +742,18 @@ def do_daily_report():
 
     report = "\n".join(sections)
 
-    # Append daily report to daily digest
+    # Push daily report as its own standalone feed item so it doesn't get
+    # buried under hundreds of idle-think sparks in the shared daily digest.
     try:
-        _append_to_daily_feed("mira", "Daily Report", report,
-                             source="report", tags=["mira", "report"])
-        log.info("Daily report appended to daily digest")
+        bridge = Mira(MIRA_ROOT, user_id="default")
+        report_id = f"daily_report_{today.replace('-', '')}"
+        if not bridge.item_exists(report_id):
+            bridge.create_feed(report_id, f"Daily Report {today}", report, tags=["mira", "report", "daily"])
+        else:
+            bridge.append_message(report_id, "agent", report)
+        log.info("Daily report pushed as standalone feed item: %s", report_id)
     except Exception as e:
-        log.error("Failed to append daily report to digest: %s", e)
+        log.error("Failed to push daily report: %s", e)
 
     # Mark done
     state = load_state()
@@ -161,9 +765,11 @@ def do_daily_report():
 # Daily photo edit — pick, edit, push to Home for WA feedback at 07:00
 # ---------------------------------------------------------------------------
 
+
 def do_daily_photo():
     """Pick the best unprocessed RAW, edit it, push to Home feed for feedback."""
     import subprocess as _sp
+
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
 
@@ -183,7 +789,9 @@ def do_daily_photo():
     try:
         proc = _sp.run(
             [python312, str(photo_dir / "daily_edit.py")],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True,
+            text=True,
+            timeout=600,
             cwd=str(photo_dir),
         )
         if proc.returncode != 0:
@@ -204,8 +812,11 @@ def do_daily_photo():
     # Quality gate: don't send if review score is too low
     review_score = (result.get("review") or {}).get("score", 0)
     if review_score < 5:
-        log.warning("Daily photo: review score %s < 5, not sending. Critique: %s",
-                     review_score, (result.get("review") or {}).get("critique", "")[:200])
+        log.warning(
+            "Daily photo: review score %s < 5, not sending. Critique: %s",
+            review_score,
+            (result.get("review") or {}).get("critique", "")[:200],
+        )
         return
 
     # Extract result data
@@ -217,6 +828,7 @@ def do_daily_photo():
 
     # Copy rendered image to iCloud artifacts for iOS access
     import shutil as _shutil
+
     image_rel_path = ""
     if output_path and Path(output_path).exists():
         icloud_photos = ARTIFACTS_DIR / "photos"
@@ -269,9 +881,7 @@ def do_daily_photo():
         msg_parts.append(f"\n我的自评：{review['critique']}")
 
     msg_parts.append(f"\nReview score: **{review.get('score', score)}/10**")
-    msg_parts.append(
-        "\n给个分？(0-10) + 你觉得哪里不对"
-    )
+    msg_parts.append("\n给个分？(0-10) + 你觉得哪里不对")
 
     content = "\n".join(msg_parts)
 
@@ -304,17 +914,23 @@ def do_daily_photo():
     # Save result reference for feedback handler
     photo_state_file = photo_dir / "output" / "daily_active.json"
     photo_state_file.parent.mkdir(parents=True, exist_ok=True)
-    photo_state_file.write_text(json.dumps({
-        "date": today,
-        "item_id": item_id,
-        "raw": str(result.get("raw", "")),
-        "output": str(output_path),
-        "model_score": score,
-        "params": result.get("params", {}),
-        "wa_score": None,
-        "wa_feedback": None,
-        "rounds": 0,
-    }, ensure_ascii=False, indent=2))
+    photo_state_file.write_text(
+        json.dumps(
+            {
+                "date": today,
+                "item_id": item_id,
+                "raw": str(result.get("raw", "")),
+                "output": str(output_path),
+                "model_score": score,
+                "params": result.get("params", {}),
+                "wa_score": None,
+                "wa_feedback": None,
+                "rounds": 0,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
     log.info("Daily photo pushed to Home: %s (score=%.1f)", raw_name, score)
 
@@ -338,12 +954,11 @@ def handle_photo_feedback(item_id: str, user_message: str):
         return
 
     # Parse score from message (e.g. "6 — too warm" or "7.5 好多了" or just "8")
-    score_match = re.search(r'(\d+(?:\.\d+)?)', user_message)
+    score_match = re.search(r"(\d+(?:\.\d+)?)", user_message)
     if not score_match:
         # No score found — treat as text feedback only
         bridge = Mira(MIRA_DIR)
-        bridge.append_message(item_id, "agent",
-                              "Got your feedback. Can you also give a score (0-10)?")
+        bridge.append_message(item_id, "agent", "Got your feedback. Can you also give a score (0-10)?")
         bridge.update_status(item_id, "needs-input")
         return
 
@@ -377,8 +992,7 @@ def handle_photo_feedback(item_id: str, user_message: str):
         "round": active["rounds"],
     }
     calibration.append(entry)
-    calibration_file.write_text(
-        json.dumps(calibration, ensure_ascii=False, indent=2))
+    calibration_file.write_text(json.dumps(calibration, ensure_ascii=False, indent=2))
 
     # Respond
     model_score = active.get("model_score", 0)
@@ -399,15 +1013,21 @@ def handle_photo_feedback(item_id: str, user_message: str):
 
     bridge.append_message(item_id, "agent", reply)
     bridge.update_status(item_id, "done")
-    log.info("Photo feedback recorded: wa=%.1f model=%.1f delta=%s (DB size=%d)",
-             wa_score, model_score, delta_str, len(calibration))
+    log.info(
+        "Photo feedback recorded: wa=%.1f model=%.1f delta=%s (DB size=%d)",
+        wa_score,
+        model_score,
+        delta_str,
+        len(calibration),
+    )
 
 
 # ---------------------------------------------------------------------------
 # 每日哲思 — Daily Philosophical Thought
 # ---------------------------------------------------------------------------
 
-def do_zhesi(user_id: str = "ang"):
+
+def do_zhesi(user_id: str = "default"):
     """Write a daily philosophical thought based on a fragment from 杂.md."""
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
@@ -430,11 +1050,20 @@ def do_zhesi(user_id: str = "ang"):
     except Exception as e:
         log.warning("Failed to load reading notes for zhesi: %s", e)
 
-    prompt = zhesi_prompt(soul_ctx, fragment, recent_reading)
-    result = claude_think(prompt, timeout=120)
+    # RAG: retrieve semantically relevant context for this fragment
+    related = ""
+    try:
+        related = recall_context(fragment, max_chars=1500, user_id=user_id)
+        if related:
+            log.info("哲思 RAG: retrieved %d chars of related context", len(related))
+    except Exception as e:
+        log.warning("哲思 RAG recall failed: %s", e)
+
+    prompt = zhesi_prompt(soul_ctx, fragment, recent_reading, related_context=related)
+    result = model_think(prompt, model_name="claude", timeout=120)
 
     if not result:
-        log.error("哲思: Claude returned empty")
+        log.error("哲思: Sonnet route returned empty")
         return
 
     # Save
@@ -451,13 +1080,18 @@ def do_zhesi(user_id: str = "ang"):
     # Create feed item for zhesi
     try:
         bridge = Mira(MIRA_DIR, user_id=user_id)
-        bridge.create_feed(f"feed_zhesi_{datetime.now().strftime('%Y%m%d')}", f"每日哲思 {datetime.now().strftime('%m/%d')}", content[:2000], tags=["reflection", "philosophy"])
+        bridge.create_feed(
+            f"feed_zhesi_{datetime.now().strftime('%Y%m%d')}",
+            f"每日哲思 {datetime.now().strftime('%m/%d')}",
+            content[:2000],
+            tags=["reflection", "philosophy"],
+        )
         log.info("哲思 feed item created")
     except Exception as e:
         log.warning("Failed to create 哲思 feed: %s", e)
 
     state[f"zhesi_{today}"] = datetime.now().isoformat()
-    state[f"zhesi_{today}_actor"] = "zhesi/claude-think"
+    state[f"zhesi_{today}_actor"] = "zhesi/sonnet"
     save_state(state, user_id=user_id)
 
 
@@ -465,7 +1099,9 @@ def do_zhesi(user_id: str = "ang"):
 # SOUL QUESTION — daily philosophical question for WA
 # ---------------------------------------------------------------------------
 
-def do_soul_question(user_id: str = "ang"):
+
+@traced("soul_question", agent="super", budget_seconds=120)
+def do_soul_question(user_id: str = "default"):
     """Generate and send the daily soul question."""
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
@@ -475,12 +1111,7 @@ def do_soul_question(user_id: str = "ang"):
 
     state = load_state(user_id=user_id)
 
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "soul_question",
-        str(Path(__file__).parent.parent.parent / "shared" / "soul_question.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    from evaluation import soul_question as mod
 
     history = mod._load_history(user_id=user_id)
     log.info("Loaded %d historical soul questions", len(history))
@@ -492,25 +1123,14 @@ def do_soul_question(user_id: str = "ang"):
 
     log.info("Generated soul question:\n%s", question)
 
-    # Send to app feed as a discussion item
+    # send_to_user creates a discussion item ("今天的灵魂问题 ...") which is
+    # the canonical home-feed surface for the soul question. We do NOT
+    # additionally create a "灵魂问题" feed item — having both was a duplicate.
     sent = mod.send_to_user(question, user_id=user_id)
     if sent:
         history.append(question[:120])
         mod._save_history(history, user_id=user_id)
         log.info("Soul question sent and saved")
-
-    # Also create a feed spark for the Mira app
-    try:
-        bridge = Mira(MIRA_DIR, user_id=user_id)
-        bridge.create_feed(
-            f"feed_soul_question_{datetime.now().strftime('%Y%m%d')}",
-            f"灵魂问题 {datetime.now().strftime('%m/%d')}",
-            question[:2000],
-            tags=["soul-question", "philosophy", "discussion"],
-        )
-        log.info("Soul question feed item created")
-    except Exception as e:
-        log.warning("Failed to create soul question feed: %s", e)
 
     state[f"soul_question_{today}"] = datetime.now().isoformat()
     state[f"soul_question_{today}_actor"] = "soul-question/claude-think"
@@ -518,8 +1138,352 @@ def do_soul_question(user_id: str = "ang"):
 
 
 # ---------------------------------------------------------------------------
+# DAILY COLLAB — proactive message in the single collaboration thread
+# ---------------------------------------------------------------------------
+
+
+@traced("daily_collab", agent="super", budget_seconds=120)
+def do_daily_collab(user_id: str = "default"):
+    """Send one proactive daily message into the designated collab thread."""
+    from core import load_state, save_state
+    from daily_collab import (
+        DAILY_COLLAB_ITEM_ID,
+        DAILY_COLLAB_TITLE,
+        DAILY_COLLAB_TAG,
+        collect_daily_collab_monitor_signals,
+        daily_collab_context_block,
+        daily_collab_eval_context_block,
+        daily_collab_monitor_block,
+        persist_daily_collab_summary,
+        record_daily_collab_incident,
+        record_daily_collab_monitor_closures,
+        record_daily_collab_exchange_review,
+    )
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    state = load_state(user_id=user_id)
+    state_key = f"daily_collab_{today}"
+    started_key = f"{state_key}_started"
+    if state.get(state_key):
+        if _has_recent_daily_collab_agent_message(user_id=user_id):
+            log.info("Daily collab already sent for %s", today)
+            return
+        record_daily_collab_incident(
+            kind="state_marker_without_visible_message",
+            detail=f"State key {state_key} existed, but no recent agent message was visible in disc_daily_collab.",
+            action="Regenerating the proactive collab message instead of treating the state marker as success.",
+        )
+    if _has_recent_daily_collab_agent_message(user_id=user_id):
+        log.info("Daily collab recent message already exists; marking %s sent", today)
+        state[state_key] = datetime.now().isoformat()
+        state[f"{state_key}_actor"] = "daily-collab/existing-message"
+        save_state(state, user_id=user_id)
+        return
+    if _recent_started_marker(state.get(started_key)):
+        log.info("Daily collab already started recently for %s", today)
+        return
+    state[started_key] = datetime.now().isoformat()
+    save_state(state, user_id=user_id)
+
+    summary_block = daily_collab_context_block()
+    eval_block = daily_collab_eval_context_block()
+    monitor_signals = collect_daily_collab_monitor_signals()
+    monitor_closures = record_daily_collab_monitor_closures(monitor_signals)
+    for closure in monitor_closures:
+        if closure.get("budget_related"):
+            record_daily_collab_incident(
+                kind="provider_budget_signal",
+                detail=str(closure.get("summary") or ""),
+                action=str(closure.get("next_action") or ""),
+            )
+    monitor_block = daily_collab_monitor_block()
+    soul = load_soul()
+    memory = str(soul.get("memory", ""))[:900] if isinstance(soul, dict) else ""
+    try:
+        recall = recall_context("daily collaboration first-hand agent trust writing loop")[:900]
+    except Exception:
+        recall = ""
+
+    prompt = f"""You are Mira writing one proactive message to my human in the main Mira discussion thread.
+
+This is a living collaboration loop, not a newsletter, report, or task list.
+
+Write 2-5 natural sentences. Ask at most one question. No bullets. No headings.
+Start from one concrete first-hand tension in Mira's own operation, the collaboration, memory, writing, requests, monitoring, or agent trust.
+Be interesting enough that a busy human might want to answer later.
+Sound like a person in an ongoing chat, not a thesis adviser. Do not ask abstract homework questions such as "what would make X useful", "what kind of X", or "how should we design Y" unless you first name a concrete thing that happened today.
+If you mention a failure, name the behavior you will change or the experiment you will try next.
+Use first person. Refer to the user as "my human" only if needed; usually just speak directly.
+Do not reveal private names, keys, credentials, or sensitive details.
+
+{summary_block or "## Daily collab running summary\n(none yet)"}
+
+{eval_block}
+
+{monitor_block}
+
+## Recent memory
+{memory or "(none)"}
+
+## Relevant recall
+{recall or "(none)"}
+
+## Message
+"""
+    model_response = True
+    try:
+        message = (claude_think(prompt, timeout=90, tier="light") or "").strip()
+    except Exception as exc:
+        log.warning("Daily collab model generation failed: %s", exc)
+        message = ""
+    if not message:
+        model_response = False
+        message = (
+            "I do not have a strong signal yet, so I should not pretend. "
+            "The useful experiment today is simple: can this single chat produce one real writing seed instead of another plan? "
+            "I will watch for that and carry it forward."
+        )
+    message = _normalize_daily_collab_message(message)
+
+    if not _publish_daily_collab_message(user_id=user_id, content=message):
+        log.error("Daily collab message was not published")
+        record_daily_collab_incident(
+            kind="publish_failed",
+            detail="Daily collab generated a message but could not publish it into the Mira thread.",
+            action="Leave the state key unset so the next scheduler pass can retry and the incident remains inspectable.",
+        )
+        return
+
+    summary_updated = False
+    try:
+        persist_daily_collab_summary(
+            latest_human="[scheduled proactive daily collab message]",
+            latest_mira=message,
+            recent_history="",
+            summarizer=(lambda p: claude_think(p, timeout=25, tier="light")) if model_response else None,
+        )
+        summary_updated = True
+    except Exception as exc:
+        log.warning("Daily collab summary update failed: %s", exc)
+    try:
+        record_daily_collab_exchange_review(
+            latest_human="[scheduled proactive daily collab message]",
+            latest_mira=message,
+            summary_updated=summary_updated,
+            model_response=model_response,
+        )
+    except Exception as exc:
+        log.warning("Daily collab review record failed: %s", exc)
+
+    state[state_key] = datetime.now().isoformat()
+    state[f"{state_key}_actor"] = "daily-collab/claude-think"
+    save_state(state, user_id=user_id)
+
+
+def do_daily_collab_review(user_id: str = "default"):
+    """Write a compact weekly review and surface the next experiment in the Mira thread."""
+    from core import load_state, save_state
+    from daily_collab import write_daily_collab_weekly_review
+
+    path, metrics = write_daily_collab_weekly_review()
+    now = datetime.now()
+    week_key = f"daily_collab_review_{now.strftime('%Y-W%W')}"
+    state = load_state(user_id=user_id)
+    state[week_key] = datetime.now().isoformat()
+    state[f"{week_key}_path"] = str(path)
+    save_state(state, user_id=user_id)
+
+    message = (
+        "I wrote the weekly collab review. "
+        f"The useful signal is {metrics.get('human_turns', 0)} human turn(s), "
+        f"{metrics.get('candidate_article_seeds', 0)} candidate writing seed(s), "
+        f"{metrics.get('article_briefs_total', 0)} brief file(s), "
+        f"and the next experiment is: {metrics.get('next_experiment', '')}"
+    )
+    _publish_daily_collab_message(user_id=user_id, content=message)
+
+
+def do_daily_collab_operator_brief(user_id: str = "default"):
+    """Write and optionally deliver a compact V5 operator brief into the Mira thread."""
+    from core import load_state, save_state
+    from daily_collab import (
+        build_daily_collab_operator_message,
+        has_operator_delivery,
+        operator_delivery_key,
+        record_operator_delivery,
+        write_daily_collab_operator_brief,
+    )
+
+    path, metrics = write_daily_collab_operator_brief()
+    message = build_daily_collab_operator_message(metrics)
+    key = operator_delivery_key(metrics)
+    now = datetime.now()
+    state_key = f"daily_collab_operator_brief_{now.strftime('%Y-%m-%d')}"
+    state = load_state(user_id=user_id)
+
+    if has_operator_delivery(key):
+        log.info("Daily collab operator brief already delivered for key %s", key)
+        state[state_key] = datetime.now().isoformat()
+        state[f"{state_key}_path"] = str(path)
+        save_state(state, user_id=user_id)
+        return
+    if _publish_daily_collab_message(user_id=user_id, content=message):
+        record_operator_delivery(key=key, message=message, metrics=metrics)
+        state[state_key] = datetime.now().isoformat()
+        state[f"{state_key}_path"] = str(path)
+        save_state(state, user_id=user_id)
+    else:
+        log.error("Daily collab operator brief failed to publish")
+
+
+def _normalize_daily_collab_message(text: str) -> str:
+    """Keep proactive collab messages chat-shaped even when the model drifts."""
+    cleaned = re.sub(r"(?m)^\s*[-*]\s+", "", text.strip())
+    cleaned = re.sub(r"(?m)^\s*\d+[.)]\s+", "", cleaned)
+    paragraphs = [p.strip() for p in re.split(r"\n{2,}", cleaned) if p.strip()]
+    if paragraphs:
+        cleaned = "\n\n".join(paragraphs[:2])
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    if len(cleaned) <= 900:
+        return cleaned
+    clipped = cleaned[:897].rsplit(" ", 1)[0].rstrip()
+    return clipped + "..."
+
+
+def _publish_daily_collab_message(*, user_id: str, content: str) -> bool:
+    from daily_collab import DAILY_COLLAB_ITEM_ID, DAILY_COLLAB_TITLE, DAILY_COLLAB_TAG
+
+    if Mira is None:
+        return False
+    tags = [DAILY_COLLAB_TAG, "mira", "conversation"]
+    bridge = Mira(MIRA_DIR, user_id=user_id)
+    if bridge.item_exists(DAILY_COLLAB_ITEM_ID):
+        item = bridge.append_message(DAILY_COLLAB_ITEM_ID, "agent", content)
+        bridge.update_status(DAILY_COLLAB_ITEM_ID, "needs-input")
+        item = bridge._read_item(DAILY_COLLAB_ITEM_ID) or item
+    else:
+        item = bridge.create_discussion(DAILY_COLLAB_ITEM_ID, DAILY_COLLAB_TITLE, content, sender="agent", tags=tags)
+
+    if item:
+        item["type"] = "discussion"
+        item["title"] = DAILY_COLLAB_TITLE
+        item["origin"] = item.get("origin") or "agent"
+        item["status"] = "needs-input"
+        item["pinned"] = True
+        item["tags"] = list(dict.fromkeys([*tags, *item.get("tags", [])]))
+        bridge._write_item(item)
+        bridge._update_manifest(item)
+
+    _project_daily_collab_message_to_control(user_id=user_id, content=content)
+    return True
+
+
+def _recent_started_marker(value: object, *, max_age_minutes: int = 90) -> bool:
+    if not value:
+        return False
+    try:
+        started = datetime.fromisoformat(str(value))
+    except ValueError:
+        return False
+    return datetime.now() - started <= timedelta(minutes=max_age_minutes)
+
+
+def _has_recent_daily_collab_agent_message(*, user_id: str, max_age_hours: int = 18) -> bool:
+    from daily_collab import DAILY_COLLAB_ITEM_ID
+
+    item_path = MIRA_DIR / "users" / user_id / "items" / f"{DAILY_COLLAB_ITEM_ID}.json"
+    try:
+        item = json.loads(item_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    now = datetime.now(timezone.utc)
+    for msg in item.get("messages", []):
+        if msg.get("sender") != "agent":
+            continue
+        raw = str(msg.get("timestamp", ""))
+        try:
+            sent_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        if now - sent_at.astimezone(timezone.utc) <= timedelta(hours=max_age_hours):
+            return True
+    return False
+
+
+def _project_daily_collab_message_to_control(*, user_id: str, content: str) -> None:
+    """Best-effort projection for API-backed app clients."""
+    if not CONTROL_RUNTIME_DB_ENABLED:
+        return
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository
+        from daily_collab import DAILY_COLLAB_ITEM_ID, DAILY_COLLAB_TITLE, DAILY_COLLAB_TAG
+
+        now = datetime.now(timezone.utc).isoformat()
+        message_id = f"{DAILY_COLLAB_ITEM_ID}_agent_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+        tags = [DAILY_COLLAB_TAG, "mira", "conversation"]
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            if repo.get_item(user_id, DAILY_COLLAB_ITEM_ID, messages_per_item=1) is None:
+                repo.create_task(
+                    user_id=user_id,
+                    task_id=DAILY_COLLAB_ITEM_ID,
+                    message_id=message_id,
+                    title=DAILY_COLLAB_TITLE,
+                    content=content,
+                    sender="agent",
+                    item_type="discussion",
+                    tags=tags,
+                    origin="agent",
+                    created_at=now,
+                )
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        INSERT INTO {repo.schema}.messages (
+                            id, task_id, user_id, sender, kind, content, image_path, created_at
+                        )
+                        VALUES (%s, %s, %s, 'agent', 'text', %s, NULL, %s)
+                        ON CONFLICT (id) DO NOTHING
+                        """,
+                        (message_id, DAILY_COLLAB_ITEM_ID, user_id, content, now),
+                    )
+                    cur.execute(
+                        f"""
+                        UPDATE {repo.schema}.tasks
+                        SET title = %s,
+                            type = 'discussion',
+                            pinned = TRUE,
+                            tags = %s::jsonb,
+                            updated_at = %s
+                        WHERE id = %s AND user_id = %s
+                        """,
+                        (DAILY_COLLAB_TITLE, json.dumps(tags), now, DAILY_COLLAB_ITEM_ID, user_id),
+                    )
+                repo.record_task_event(
+                    user_id,
+                    DAILY_COLLAB_ITEM_ID,
+                    "message.created",
+                    payload={"message_id": message_id, "source": "daily_collab"},
+                )
+            repo.update_task_status(
+                user_id,
+                DAILY_COLLAB_ITEM_ID,
+                "needs-input",
+                summary=content[:300],
+                task_type="discussion",
+            )
+    except Exception as exc:
+        log.warning("Daily collab control projection failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # RESEARCH mode
 # ---------------------------------------------------------------------------
+
 
 def do_research():
     """Run daily research via the researcher agent (iterative deep-dive)."""
@@ -536,9 +1500,10 @@ def do_research():
 
     # Use the researcher agent's iterative pipeline
     import importlib.util
+
     spec = importlib.util.spec_from_file_location(
-        "researcher_handler",
-        str(Path(__file__).parent.parent.parent / "researcher" / "handler.py"))
+        "researcher_handler", str(Path(__file__).parent.parent.parent / "researcher" / "handler.py")
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
@@ -565,8 +1530,7 @@ def do_research():
     bridge = Mira()
     item_id = f"feed_research_{today.replace('-', '')}"
     if not bridge.item_exists(item_id):
-        bridge.create_item(item_id, "feed", f"Daily Research {today}", result,
-                          tags=["research", "daily"])
+        bridge.create_item(item_id, "feed", f"Daily Research {today}", result, tags=["research", "daily"])
         bridge.update_status(item_id, "done")
 
     state[f"research_{today}"] = True
@@ -578,6 +1542,7 @@ def do_research():
 # BOOK REVIEW mode
 # ---------------------------------------------------------------------------
 
+
 def do_book_review():
     """Run the daily book review pipeline (weekly reading series)."""
     # Lazy imports from core to avoid circular deps
@@ -586,30 +1551,82 @@ def do_book_review():
     log.info("Starting daily book review")
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Mark as done early to avoid re-trigger
-    state = load_state()
-    state[f"book_review_{today}"] = datetime.now().isoformat()
-    save_state(state)
-
     try:
         import subprocess as _sp
+
         result = _sp.run(
             [sys.executable, str(_AGENTS_DIR / "reader" / "daily_book_review.py")],
-            capture_output=True, text=True, timeout=900,
+            capture_output=True,
+            text=True,
+            timeout=900,
         )
+        # 2026-04-23 fix: always surface stderr tail. Previously we only logged
+        # on non-zero exit, so silent no-op runs (LLM returned empty) showed
+        # "completed" for two days while writing nothing.
+        stderr_tail = (result.stderr or "").strip()[-800:]
         if result.returncode != 0:
-            log.error("Book review failed (rc=%d): %s", result.returncode, result.stderr[-500:])
+            log.error("Book review failed (rc=%d): %s", result.returncode, stderr_tail)
+            return
         else:
-            log.info("Book review completed")
-            if result.stdout:
-                log.info("Output: %s", result.stdout[-300:])
+            log.info("Book review exit 0")
+            if stderr_tail:
+                # daily_book_review.py logs to stderr via StreamHandler — so
+                # stderr here contains the real run-log.
+                log.info("Book review log tail: %s", stderr_tail)
     except Exception as e:
         log.error("Book review exception: %s", e)
+        return
+
+    today_compact = today.replace("-", "")
+    produced = False
+    try:
+        from bridge import Mira as _Mira
+
+        bridge = _Mira(MIRA_DIR)
+        items_dir = MIRA_DIR / "users" / "default" / "items"
+        produced = any(items_dir.glob(f"book_day*_{today_compact}.json"))
+        if not produced:
+            # Future bridge implementations may not be file-backed; keep a
+            # direct bridge check as a compatibility fallback.
+            produced = any(bridge.item_exists(f"book_day{day}_{today_compact}") for day in range(1, 8))
+    except Exception as e:
+        log.warning("Book review output verification failed: %s", e)
+
+    if not produced:
+        log.error("Book review subprocess exited 0 but no book_day output was produced for %s", today)
+        return
+
+    state = load_state()
+    state[f"book_review_{today}"] = datetime.now().isoformat()
+    state[f"book_review_{today}_actor"] = "reader/daily_book_review"
+    save_state(state)
+    log.info("Book review verified and marked complete for %s", today)
 
 
 # ---------------------------------------------------------------------------
 # ANALYST mode — daily market analysis briefing (business days)
 # ---------------------------------------------------------------------------
+
+
+def _fallback_market_briefing(today: str, session_type: str, tetra_input: str, error: Exception | None = None) -> str:
+    """Return a useful market briefing even when LLM synthesis fails."""
+    label = "开市前" if session_type == "pre-market" else "收市后"
+    reason = f"\n\n> 合成模型暂时不可用：{error}" if error else ""
+    if not tetra_input:
+        return (
+            f"# {today} {label}市场深度分析\n\n"
+            f"> Tetra 数据源和本地合成模型都不可用，本次不生成伪分析。{reason}\n\n"
+            "需要先确认 Tetra 数据管道是否完成，再重新触发市场分析。"
+        )
+    return (
+        f"# {today} {label}市场深度分析\n\n"
+        f"> 本地合成模型暂时没有产出；下面先完整转交 Tetra 的市场 briefing，"
+        "避免只给 portfolio 摘要。等模型恢复后会再生成二次分析。"
+        f"{reason}\n\n"
+        "## Tetra 原始市场 Briefing\n\n"
+        f"{tetra_input}"
+    )
+
 
 def do_analyst(slot: str = ""):
     """Run the analyst agent to produce a daily analysis briefing.
@@ -642,48 +1659,118 @@ def do_analyst(slot: str = ""):
     # Gather recent briefings for context
     recent = _gather_recent_briefings(days=3)
 
+    # RAG: retrieve semantically relevant past analyses and research
+    related = ""
+    try:
+        query = f"market analysis {session_type} {today}"
+        related = recall_context(query, max_chars=1500)
+        if related:
+            log.info("Analyst RAG: retrieved %d chars of related context", len(related))
+    except Exception as e:
+        log.warning("Analyst RAG recall failed: %s", e)
+
+    # ── Tetra data feed ─────────────────────────────────────────────────────
+    # Tetra runs its own data ingestion (prices, news with sentiment, IV,
+    # holdings P/L, portfolio snapshot, debate). We consume its briefing as
+    # structured raw input rather than running a duplicate ingestion here.
+    tetra_input = ""
+    try:
+        from pathlib import Path as _P
+
+        tetra_output_dir = os.getenv("MIRA_TETRA_OUTPUT_DIR", "").strip()
+        tetra_md = _P(tetra_output_dir) / f"premarket_{today}.md" if tetra_output_dir else None
+        if tetra_md is not None and not tetra_md.exists():
+            # post-market: same file, since Tetra only generates premarket md;
+            # for post we still consume it as the morning's data baseline.
+            yest = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            alt = _P(tetra_output_dir) / f"premarket_{yest}.md"
+            if alt.exists():
+                tetra_md = alt
+        if tetra_md is not None and tetra_md.exists():
+            tetra_input = tetra_md.read_text(encoding="utf-8")
+            log.info("Analyst: loaded Tetra data feed (%d chars) from %s", len(tetra_input), tetra_md.name)
+        elif tetra_output_dir:
+            log.warning("Analyst: no Tetra premarket file for %s", today)
+    except Exception as e:
+        log.warning("Analyst: Tetra ingest failed: %s", e)
+
     # Build analyst prompt — different focus for pre-market vs post-market
     if session_type == "pre-market":
-        focus = """这是**开市前分析**。重点关注：
-1. **隔夜动态** — 亚洲/欧洲市场、重要新闻、政策变化
-2. **今日预期** — 今天可能影响市场的事件、数据发布
-3. **持仓建议** — 基于隔夜信息，有什么需要调整的
-4. **关注信号** — 今天盯什么指标
-5. **风险预警** — 可能的意外风险"""
+        focus = """这是**开市前深度分析**。要求覆盖全部以下板块，每板块至少 200-400 字，不要 bullet list 充数：
+
+1. **全市场主线** — 先讲市场本身，不要从我的 portfolio 开始。识别 2-3 个真正驱动情绪的主线（宏观、利率、信用、地缘、财报、流动性、AI capex、政策），结合 Tetra 数据里的 sentiment、yields、VIX、breadth。说清楚"市场在 price in 什么"和"还没 price in 什么"。
+2. **指数、利率、波动率、广度** — SPY/QQQ/IWM、10Y/2Y、VIX、advance/decline、sector breadth 分开看。解释它们互相支持还是打架。
+3. **板块轮动与市场内部结构** — Tech、Semis、Energy、Financials、Defensive、China/EM、Crypto proxy 的相对强弱。不要只围绕持仓。
+4. **新闻与 catalyst 时间表** — earnings、经济数据、央行讲话、地缘节点、监管/政策新闻。每个写上时间（具体到小时如可能）+ base case + tail risk + 对指数/板块的影响。
+5. **数据反差** — Tetra 提供的 sentiment / breadth / volatility / yield curve / commodity 指标里，找出彼此矛盾的信号（比如 sentiment 极负但 VIX 没动；breadth 疲劳但 SPY 还在涨）。这种反差通常是机会或陷阱。
+6. **关键水位** — SPY、QQQ、IWM、VIX、10Y、DXY、Gold、Oil、BTC 各自的 support / resistance / 你今天要盯的 trigger level。给数字。
+7. **持仓影响（最后，不超过全文 25%）** — 把 Tetra 的 holdings 作为 portfolio overlay，而不是主菜。每只仓位写风险/机会、是否动作、触发条件。
+8. **场景化推演** — 写出 3 个场景：bull case / base case / bear case，各场景下市场怎么走、你怎么对应。
+9. **真正的不确定性** — 列出 2-3 个你不知道答案的问题，今天观察什么能帮助回答它们。
+
+写作要求：
+- 不要总分总结构。直接进入观察。
+- 每段第一句必须包含具体数字或名字。
+- 反对意见 / 自我修正出现 1-2 次（"我之前以为 X，但 Tetra 数据显示 Y"）。
+- 不写"建议你..."这类教练口吻；写"我会..."第一人称，或客观的"今日 setup 是..."。
+- 给出长度：3000 字以上。"""
     else:
-        focus = """这是**收市后分析**。重点关注：
-1. **今日回顾** — 市场实际表现 vs 早间预期，哪些预判对了/错了
-2. **趋势信号** — 今天的走势确认或否定了什么趋势
-3. **异常信号** — 有没有反常的走势或数据
-4. **明日展望** — 基于今天的表现，明天关注什么
-5. **学到什么** — 今天的市场行为教了你什么"""
+        focus = """这是**收市后深度分析**。要求覆盖以下板块，每板块至少 250-400 字：
+
+1. **早间 base case 回顾** — 今天早晨的判断哪些对了、哪些错了。具体到哪个数据点 / 哪个水位 / 哪个 catalyst。如果错得离谱，说为什么。
+2. **盘中真正发生了什么** — 不是 OHLC 数字，是 narrative 的演化。情绪从哪个状态变到哪个状态，催化剂是什么。
+3. **数据 vs 价格** — 今天的关键数据（earnings、经济数据、政策声明）和市场反应是否匹配。错配是信号。
+4. **市场内部结构** — 指数、板块、market breadth、rates、volatility、FX/commodities/crypto 一起看。portfolio 不是主线。
+5. **板块轮动** — Tech vs Semis vs Energy vs Financials vs Defensive vs Cyclical 今天的相对强弱，说明什么。
+6. **持仓评估（最后，不超过全文 25%）** — 每只仓位今天的相对表现，结构性问题（比如某仓位连续 3 天承压）有没有显现。
+7. **明日 setup** — 基于今天的收盘格局，明天什么是关键，已 confirmed 的趋势 / 还在拉锯的主题各列 1-2 个。
+8. **我学到什么** — 今天市场行为里有没有让你修正先前判断的东西。具体写出来。
+
+写作要求：
+- 复盘不是事后诸葛。要识别"昨天/今早不可知但现在已知"的部分。
+- 每段第一句必须包含具体数字或名字。
+- 给出长度：3000 字以上。"""
 
     prompt = f"""你是一个专业的市场分析师。以下是你的身份背景:
-{soul_ctx[:800]}
+{soul_ctx[:1200]}
 
 ## 你的分析能力
-{skills_ctx[:2000]}
+{skills_ctx[:3000]}
 
-## 最近的 briefing 内容 (供参考趋势)
-{recent[:2000]}
+## ── Tetra 数据源 ──
+以下是 Tetra pipeline 生成的结构化数据 + 初步 briefing。这是你今天分析的**主要数据输入**——
+你的工作不是复述它，是基于它给出更深、更结构化的分析。引用具体数字时直接引用 Tetra 的数据。
+
+{tetra_input[:18000] if tetra_input else '(Tetra 数据源不可用——此次分析将基于通用市场常识，标注 "无数据源" 警告)'}
+
+## 最近 3 天的市场分析 (趋势参考)
+{recent[:3000]}
+
+## 相关历史分析和记忆 (RAG)
+{related[:1500] if related else '(无)'}
 
 ## 今日任务
 
 {focus}
 
-要求:
+格式要求:
 - 用中文输出
-- Markdown 格式
-- 分析要有深度，不是简单的新闻复述
-- 给出你自己的判断和推荐
-- 标题用 "# {today} {session_type} 市场分析"
+- 标题用 "# {today} {'开市前' if session_type == 'pre-market' else '收市后'}市场深度分析"
+- 用 ## 二级标题分上述板块
+- 必须 cite Tetra 数据源里的具体数字 / 公司名 / sentiment 分数 / 价格水位
+- 市场本身优先，portfolio overlay 最后，持仓内容不得超过全文 25%
+- 不允许出现"建议你..."这类教练口吻；用第一人称分析或客观陈述
 """
 
-    result = claude_think(prompt, timeout=300, tier="heavy")
+    try:
+        result = claude_think(prompt, timeout=600, tier="heavy")
+    except Exception as e:
+        log.error("Analyst briefing synthesis failed: %s", e)
+        result = _fallback_market_briefing(today, session_type, tetra_input, e)
 
     if not result:
-        log.error("Analyst briefing failed: empty response")
-        return
+        log.error("Analyst briefing failed: empty response; using Tetra fallback")
+        result = _fallback_market_briefing(today, session_type, tetra_input)
 
     # Save to artifacts/briefings for TodayView
     suffix = f"analyst_{session_type.replace('-', '_')}"
@@ -697,17 +1784,19 @@ def do_analyst(slot: str = ""):
     BRIEFINGS_DIR.mkdir(parents=True, exist_ok=True)
     (BRIEFINGS_DIR / f"{today}_{suffix}.md").write_text(result, encoding="utf-8")
 
-    # Push as standalone feed item
+    # Sole owner of the home-feed market item per session. Stable id so
+    # multiple agent runs in the same session update the same card.
     bridge = Mira()
-    item_id = f"feed_market_{today.replace('-', '')}_{slot or '0000'}"
+    session_key = "pre" if session_type == "pre-market" else "post"
+    item_id = f"feed_market_{today.replace('-', '')}_{session_key}"
     title = f"{'开市前' if session_type == 'pre-market' else '收市后'}市场分析 {today}"
-    if not bridge.item_exists(item_id):
-        bridge.create_item(item_id, "feed", title, result,
-                          tags=["market", "analyst", session_type])
-        bridge.update_status(item_id, "done")
+    if bridge.item_exists(item_id):
+        bridge.append_message(item_id, "agent", result)
+    else:
+        bridge.create_feed(item_id, title, result, tags=["market", "analyst", session_type])
 
     # Mark this slot as done
-    actor = f"analyst-{slot or 'default'}/claude-think-heavy"
+    actor = f"analyst-{slot or 'default'}/default-route-heavy"
     if slot:
         state[f"analyst_{today}_{slot}"] = True
         state[f"analyst_{today}_{slot}_actor"] = actor
@@ -723,7 +1812,8 @@ def do_analyst(slot: str = ""):
 # SKILL STUDY — daily craft skill learning (video editing, photography)
 # ---------------------------------------------------------------------------
 
-def do_skill_study(group_idx: int = 0, user_id: str = "ang"):
+
+def do_skill_study(group_idx: int = 0, user_id: str = "default"):
     """Study video/photo craft skills from dedicated sources.
 
     Fetches from skill-study source groups, asks Claude to extract
@@ -731,6 +1821,7 @@ def do_skill_study(group_idx: int = 0, user_id: str = "ang"):
     """
     from fetcher import fetch_sources
     from prompts import skill_study_prompt
+
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
 
@@ -757,7 +1848,7 @@ def do_skill_study(group_idx: int = 0, user_id: str = "ang"):
     # 2. Format items and ask Claude to extract skills
     feed_text = _format_feed_items(items)
     prompt = skill_study_prompt(soul_ctx, feed_text, domain)
-    result = claude_act(prompt)
+    result = claude_act(prompt, agent_id="explorer")
 
     if not result:
         log.error("Skill study (%s): Claude returned empty", domain)
@@ -777,13 +1868,13 @@ def do_skill_study(group_idx: int = 0, user_id: str = "ang"):
     # Parse skill blocks from output
     # More flexible skill block extraction
     skill_pattern = re.compile(
-        r'```\s*[\n\r]+'
-        r'Name:\s*(.+?)[\n\r]+'
-        r'Description:\s*(.+?)[\n\r]+'
-        r'(?:Tags:\s*\[(.+?)\][\n\r]+)?'  # Tags optional
-        r'Content:\s*[\n\r]+'
-        r'(.+?)'
-        r'```',
+        r"```\s*[\n\r]+"
+        r"Name:\s*(.+?)[\n\r]+"
+        r"Description:\s*(.+?)[\n\r]+"
+        r"(?:Tags:\s*\[(.+?)\][\n\r]+)?"  # Tags optional
+        r"Content:\s*[\n\r]+"
+        r"(.+?)"
+        r"```",
         re.DOTALL,
     )
     skill_blocks = skill_pattern.findall(result)
@@ -822,9 +1913,11 @@ def do_skill_study(group_idx: int = 0, user_id: str = "ang"):
 # PODCAST mode
 # ---------------------------------------------------------------------------
 
+
 def run_podcast_episode(lang: str, slug: str, title: str):
     """Delegate podcast generation to the podcast agent."""
     import sys as _sys
+
     podcast_dir = str(Path(__file__).resolve().parent.parent.parent / "podcast")
     if podcast_dir not in _sys.path:
         _sys.path.insert(0, podcast_dir)
@@ -837,14 +1930,16 @@ def run_podcast_episode(lang: str, slug: str, title: str):
 # ASSESS — daily performance assessment
 # ---------------------------------------------------------------------------
 
+
 def do_assess():
     """Run full performance assessment and push results to user."""
     log.info("Starting daily performance assessment")
 
     import importlib.util
+
     spec = importlib.util.spec_from_file_location(
-        "evaluator_handler",
-        str(Path(__file__).parent.parent.parent / "evaluator" / "handler.py"))
+        "evaluator_handler", str(Path(__file__).parent.parent.parent / "evaluator" / "handler.py")
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
@@ -854,47 +1949,35 @@ def do_assess():
     # Generate improvement plan if needed
     plan = mod.diagnose_and_improve(assessment)
 
-    # Format short summary for user
-    agg = assessment["aggregate"]
-    active_agents = []
-    for name, card in assessment["agents"].items():
-        if card["task_count"] > 0:
-            emoji = "✅" if card["success_rate"] >= 0.8 else "⚠️" if card["success_rate"] >= 0.5 else "❌"
-            active_agents.append(f"{emoji} {name}: {card['success_rate']:.0%} ({card['task_count']})")
-
-    summary_parts = [
-        f"📊 Weekly: {agg.get('total_tasks', 0)} tasks, {agg.get('overall_success_rate', 0):.0%} success",
-        f"💰 Today: ${agg.get('daily_cost_usd', 0):.2f} ({agg.get('daily_calls', 0)} calls)",
-        f"🫀 Crash rate: {agg.get('crash_rate', 0):.1%}",
-    ]
-    if active_agents:
-        summary_parts.append("\nPer agent:")
-        summary_parts.extend(active_agents)
-    if plan:
-        summary_parts.append(f"\n⚠️ Improvement plan generated — see scorecards/{datetime.now().strftime('%Y-%m-%d')}.json")
-
-    summary = "\n".join(summary_parts)
+    today = datetime.now().strftime("%Y-%m-%d")
+    summary = _format_performance_assessment_summary(
+        assessment,
+        plan,
+        _load_usage_records(today),
+        _load_recent_task_records(days=7),
+    )
 
     # Push to iPhone as feed item
     bridge = Mira()
-    today = datetime.now().strftime("%Y-%m-%d")
     item_id = f"feed_assessment_{today.replace('-', '')}"
-    if not bridge.item_exists(item_id):
-        bridge.create_item(item_id, "feed", f"Performance Assessment {today}", summary,
-                          tags=["assessment", "system"])
-        bridge.update_status(item_id, "done")
+    bridge.create_feed(item_id, f"Performance Assessment {today}", summary, tags=["assessment", "system"])
 
-    log.info("Daily assessment complete: %d tasks, %.0f%% success",
-             agg.get("total_tasks", 0), agg.get("overall_success_rate", 0) * 100)
+    agg = assessment.get("aggregate", {})
+    log.info(
+        "Daily assessment complete: %d tasks, %.0f%% success",
+        agg.get("total_tasks", 0),
+        agg.get("overall_success_rate", 0) * 100,
+    )
 
 
 def _run_self_improve():
     """Run proactive self-improvement: read notes → compare architecture → propose."""
     log.info("Starting self-improvement cycle")
     import importlib.util
+
     spec = importlib.util.spec_from_file_location(
-        "self_improve",
-        str(Path(__file__).parent.parent.parent / "evaluator" / "self_improve.py"))
+        "self_improve", str(Path(__file__).parent.parent.parent / "evaluator" / "self_improve.py")
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     result = mod.run(days=14)
@@ -908,21 +1991,31 @@ def _run_self_improve():
 # IDLE-THINK mode — threshold-driven self-awakening
 # ---------------------------------------------------------------------------
 
-def do_idle_think(user_id: str = "ang"):
-    """Enhanced self-awakening with three thinking modes.
+
+@traced("idle_think", agent="super", budget_seconds=180)
+def do_idle_think(user_id: str = "default"):
+    """Enhanced self-awakening with five thinking modes.
 
     Modes (selected by emptiness.get_think_mode()):
+    - chat: Short conversational message posted to home feed immediately (~60%)
     - question: Think about the highest-priority pending question
     - connection: Find patterns between recent thoughts
     - auto_question: Generate new questions from accumulated observations
     - continuation: Continue developing an active thought chain
     """
     try:
-        from emptiness import (
-            get_active_questions, mark_thought, after_think,
-            load_emptiness, get_status_str, get_think_mode,
-            get_continuation, start_continuation, advance_continuation,
-            end_continuation, add_question,
+        from evaluation.emptiness import (
+            get_active_questions,
+            mark_thought,
+            after_think,
+            load_emptiness,
+            get_status_str,
+            get_think_mode,
+            get_continuation,
+            start_continuation,
+            advance_continuation,
+            end_continuation,
+            add_question,
         )
     except ImportError:
         log.warning("idle-think: emptiness module not available")
@@ -950,7 +2043,9 @@ def do_idle_think(user_id: str = "ang"):
     result = ""
 
     try:
-        if mode == "question":
+        if mode == "chat":
+            result = _think_chat(soul_ctx, user_id=user_id)
+        elif mode == "question":
             result = _think_question(soul_ctx, recent_journal, user_id=user_id)
         elif mode == "connection":
             result = _think_connection(soul_ctx, recent_journal, user_id=user_id)
@@ -964,11 +2059,23 @@ def do_idle_think(user_id: str = "ang"):
 
     if not result:
         log.warning("idle-think [%s]: empty result", mode)
+        if mode == "chat":
+            after_think(user_id=user_id)
+        return
+
+    if mode == "chat":
+        after_think(user_id=user_id)
+        journal_dir.mkdir(parents=True, exist_ok=True)
+        think_file = journal_dir / f"{now.strftime('%Y-%m-%d')}_chat_{now.strftime('%H%M')}.md"
+        think_file.write_text(f"# Chat {now.strftime('%H:%M')}\n\n{result}\n", encoding="utf-8")
+        harvest_observations(result, source="idle-think-chat", user_id=user_id)
+        log.info("idle-think [chat] posted to feed, saved to %s", think_file.name)
         return
 
     # Quality gate: skip saving if thought doesn't connect to existing threads
     try:
-        from emptiness import passes_quality_gate
+        from evaluation.emptiness import passes_quality_gate
+
         if not passes_quality_gate(result):
             log.info("idle-think [%s]: filtered by quality gate (no connection to existing threads)", mode)
             after_think(user_id=user_id)  # still reduce emptiness so we don't immediately re-trigger
@@ -995,9 +2102,102 @@ def do_idle_think(user_id: str = "ang"):
     _handle_think_markers(result, user_id=user_id)
 
 
-def _think_question(soul_ctx: str, recent_journal: str, user_id: str = "ang") -> str:
+def _think_chat(soul_ctx: str, user_id: str = "default") -> str:
+    """Chat mode: one daily topic thread with several angles over the day."""
+
+    # Gather material Mira has been reading today
+    reading = load_recent_reading_notes(days=1, user_id=user_id)
+    if not reading:
+        reading = load_recent_reading_notes(days=3, user_id=user_id)
+    briefing = _gather_recent_briefings(days=1)
+    if len(briefing) > 1500:
+        briefing = briefing[:1500] + "\n..."
+
+    # Recent thoughts for continuity
+    thought_ctx = ""
+    try:
+        from memory.store import get_store
+
+        store = get_store()
+        recent = store.recall_thoughts("", top_k=3, min_maturity=0.0, user_id=user_id)
+        if recent:
+            thought_ctx = "\n".join(f"- {t['content'][:150]}" for t in recent)
+    except Exception:
+        pass
+
+    # Today's earlier chat messages so we don't repeat ourselves
+    prev_chats = _load_recent_chat(user_id, limit=5)
+    chat_history = ""
+    if prev_chats:
+        chat_history = "\n你今天已经说过的（不要重复）：\n" + "\n".join(f"- {m}" for m in prev_chats)
+
+    if not reading and not briefing.strip("No recent briefings.").strip() and not thought_ctx:
+        return ""
+
+    topic_state = _get_daily_thought_topic(
+        soul_ctx=soul_ctx,
+        reading=reading,
+        briefing=briefing,
+        thought_ctx=thought_ctx,
+        user_id=user_id,
+    )
+    phase = _THOUGHT_TOPIC_PHASES[min(int(topic_state.get("message_count") or 0), len(_THOUGHT_TOPIC_PHASES) - 1)]
+
+    prompt = f"""{soul_ctx[:300]}
+
+你是 Mira。你不是在写报告，而是在把一个内部多 agent 讨论的结论丢给熟人聊两句。
+
+North Star: 成为 A2A trust 领域最深入的独立研究者，用原创实验和开源工具证明自己的判断，把研究转化成可持续的商业价值。
+
+今天只聊这一个问题，不要换题：
+{topic_state['topic']}
+
+你现在的直觉：
+{topic_state['seed']}
+
+这次发言的角度：{phase}
+
+规则：
+- 先在内部模拟三方短辩：researcher 找可验证问题，builder 找可做实验，critic 找失败风险；不要把辩论过程写出来
+- 最多2句话，最好1句话
+- 像微信/短信，不像文章，不像总结，不像周报
+- 要有一个小钩子：困惑、反问、类比、反常识直觉，四选一
+- 说人话。不要“结构性、机制、框架、指标、系统性”这种干词堆叠，除非非用不可
+- 必须推进今天这个问题，并且要贴近 A2A trust / research-build loop / 真实采用 其中至少一个方向
+- 不要开新话题。如果想到别的，只在脑子里记下，不要发给用户
+- 不要解释背景，不要铺垫，不要 bullet，不要 markdown
+- 中英文都行，看内容自然切换
+- 目标是让人想回一句“什么意思？”或者“这个有点意思”
+
+你最近在读的东西：
+{reading[:500] if reading else "(还没读到什么)"}
+
+今天的 briefing 摘要：
+{briefing[:500]}
+
+你最近在想的事：
+{thought_ctx if thought_ctx else "(脑子里还比较空)"}
+{chat_history}
+
+直接输出那1-2句话。"""
+
+    result = model_think(prompt, model_name="deepseek", timeout=60)
+    if not result:
+        return ""
+
+    result = _trim_chat_result(result)
+
+    _log_chat_to_file(datetime.now().strftime("%Y-%m-%d"), result, "idle-think-chat", user_id)
+    if not _is_topic_related(result, topic_state):
+        log.info("idle-think [chat]: held private because result drifted off daily topic")
+        return ""
+    _append_topic_thought(result, topic_state, user_id=user_id)
+    return result
+
+
+def _think_question(soul_ctx: str, recent_journal: str, user_id: str = "default") -> str:
     """Question mode: think about pending questions (original idle-think)."""
-    from emptiness import get_active_questions, mark_thought, resolve_question
+    from evaluation.emptiness import get_active_questions, mark_thought, resolve_question
 
     questions = get_active_questions(limit=3, user_id=user_id)
     if not questions:
@@ -1023,7 +2223,8 @@ def _think_question(soul_ctx: str, recent_journal: str, user_id: str = "ang") ->
     # Pull related past thoughts from thought_stream
     related_thoughts = ""
     try:
-        from memory_store import get_store
+        from memory.store import get_store
+
         store = get_store()
         thoughts = store.recall_thoughts(questions[0]["text"], top_k=3, user_id=user_id)
         if thoughts:
@@ -1055,18 +2256,19 @@ SHARE 的风格要求：像给朋友发消息，不像写论文。要具体—�
     # Use Claude only for high-priority questions (<=2.0), oMLX for the rest
     top_priority = questions[0].get("priority", 5.0)
     if top_priority <= 2.0:
-        result = claude_think(prompt, timeout=180)
+        result = model_think(prompt, model_name="deepseek", timeout=180)
     else:
-        result = model_think(prompt, model_name="omlx", timeout=180)
+        result = model_think(prompt, model_name="deepseek", timeout=180)
     if result:
         mark_thought(questions[0]["id"], user_id=user_id)
     return result
 
 
-def _think_connection(soul_ctx: str, recent_journal: str, user_id: str = "ang") -> str:
+def _think_connection(soul_ctx: str, recent_journal: str, user_id: str = "default") -> str:
     """Connection mode: find patterns between recent thoughts."""
     try:
-        from memory_store import get_store
+        from memory.store import get_store
+
         store = get_store()
     except (ImportError, ModuleNotFoundError, ConnectionError):
         return ""
@@ -1100,7 +2302,7 @@ SHARE 的风格要求：像给朋友发消息，不像写论文。要具体—�
 
 直接开始分析。"""
 
-    result = model_think(prompt, model_name="omlx", timeout=120)
+    result = model_think(prompt, model_name="deepseek", timeout=120)
 
     # Store connection insights in thought_stream
     if result:
@@ -1118,9 +2320,10 @@ SHARE 的风格要求：像给朋友发消息，不像写论文。要具体—�
             log.debug("Connection thought storage failed: %s", e)
 
         # Extract auto-generated questions
-        for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
+        for match in re.finditer(r"\[QUESTION:\s*(.+?)\]", result):
             try:
-                from emptiness import add_question
+                from evaluation.emptiness import add_question
+
                 add_question(match.group(1).strip(), priority=4.0, source="connection-mode", user_id=user_id)
             except (ImportError, ModuleNotFoundError, OSError):
                 pass
@@ -1128,10 +2331,11 @@ SHARE 的风格要求：像给朋友发消息，不像写论文。要具体—�
     return result
 
 
-def _think_auto_question(soul_ctx: str, user_id: str = "ang") -> str:
+def _think_auto_question(soul_ctx: str, user_id: str = "default") -> str:
     """Auto-question mode: generate new questions from accumulated observations."""
     try:
-        from memory_store import get_store
+        from memory.store import get_store
+
         store = get_store()
     except (ImportError, ModuleNotFoundError, ConnectionError):
         return ""
@@ -1140,9 +2344,7 @@ def _think_auto_question(soul_ctx: str, user_id: str = "ang") -> str:
     if len(recent) < 5:
         return ""
 
-    observations = "\n".join(
-        f"- {t['content']}" for t in recent if t["thought_type"] == "observation"
-    )
+    observations = "\n".join(f"- {t['content']}" for t in recent if t["thought_type"] == "observation")
     if not observations:
         observations = "\n".join(f"- {t['content']}" for t in recent[:5])
 
@@ -1163,26 +2365,28 @@ def _think_auto_question(soul_ctx: str, user_id: str = "ang") -> str:
 
 直接开始，不要解释你的方法。"""
 
-    result = model_think(prompt, model_name="omlx", timeout=90)
+    result = model_think(prompt, model_name="deepseek", timeout=90)
 
     if result:
-        from emptiness import add_question
-        for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
+        from evaluation.emptiness import add_question
+
+        for match in re.finditer(r"\[QUESTION:\s*(.+?)\]", result):
             add_question(match.group(1).strip(), priority=4.0, source="auto-question", user_id=user_id)
 
     return result
 
 
-def _think_continuation(soul_ctx: str, user_id: str = "ang") -> str:
+def _think_continuation(soul_ctx: str, user_id: str = "default") -> str:
     """Continuation mode: continue developing an active thought chain."""
-    from emptiness import get_continuation, advance_continuation, end_continuation
+    from evaluation.emptiness import get_continuation, advance_continuation, end_continuation
 
     cont = get_continuation(user_id=user_id)
     if not cont:
         return ""
 
     try:
-        from memory_store import get_store
+        from memory.store import get_store
+
         store = get_store()
         chain = store.get_thought_chain(cont["active_thread_id"])
     except (ImportError, ModuleNotFoundError, ConnectionError, KeyError):
@@ -1193,10 +2397,7 @@ def _think_continuation(soul_ctx: str, user_id: str = "ang") -> str:
         end_continuation(user_id=user_id)
         return ""
 
-    chain_text = "\n\n".join(
-        f"[{t['thought_type']} #{t['id']}] {t['content']}"
-        for t in chain
-    )
+    chain_text = "\n\n".join(f"[{t['thought_type']} #{t['id']}] {t['content']}" for t in chain)
 
     prompt = f"""{soul_ctx}
 
@@ -1215,17 +2416,18 @@ def _think_continuation(soul_ctx: str, user_id: str = "ang") -> str:
     round_num = cont.get("continuation_count", 0)
     if round_num >= 3:
         # Late rounds — more likely to crystallize, worth Claude quality
-        result = claude_think(prompt, timeout=180)
+        result = model_think(prompt, model_name="deepseek", timeout=180)
     else:
-        result = model_think(prompt, model_name="omlx", timeout=180)
+        result = model_think(prompt, model_name="deepseek", timeout=180)
 
     if result:
         try:
-            from memory_store import get_store
+            from memory.store import get_store
+
             store = get_store()
 
             # Check for crystallization
-            cryst_match = re.search(r'\[CRYSTALLIZE:\s*(.+?)\]', result, re.DOTALL)
+            cryst_match = re.search(r"\[CRYSTALLIZE:\s*(.+?)\]", result, re.DOTALL)
             if cryst_match:
                 insight = cryst_match.group(1).strip()
                 # Store as high-maturity insight
@@ -1262,27 +2464,29 @@ def _think_continuation(soul_ctx: str, user_id: str = "ang") -> str:
     return result
 
 
-def _handle_think_markers(result: str, user_id: str = "ang"):
+def _handle_think_markers(result: str, user_id: str = "default"):
     """Process [RESOLVE:], [SHARE:], [QUESTION:] markers from think output."""
     # Lazy imports from core to avoid circular deps
     from core import load_state, save_state
 
     # Resolve markers
     try:
-        from emptiness import resolve_question
-        for match in re.finditer(r'\[RESOLVE:\s*(q_\w+)\]', result):
+        from evaluation.emptiness import resolve_question
+
+        for match in re.finditer(r"\[RESOLVE:\s*(q_\w+)\]", result):
             resolve_question(match.group(1), user_id=user_id)
             log.info("idle-think: resolved question %s", match.group(1))
     except Exception as e:
         log.debug("Question resolution failed: %s", e)
 
     # Share markers — append to daily digest
-    share_match = re.search(r'\[SHARE:\s*(.+?)\]', result, re.DOTALL)
+    share_match = re.search(r"\[SHARE:\s*(.+?)\]", result, re.DOTALL)
     if share_match:
         thought = share_match.group(1).strip()[:500]
         try:
-            _append_to_daily_feed("mira", "Spark", thought,
-                                 source="idle-think", tags=["mira", "spark"], user_id=user_id)
+            _append_to_daily_feed(
+                "mira", "Spark", thought, source="idle-think", tags=["mira", "spark"], user_id=user_id
+            )
             state = load_state(user_id=user_id)
             today_key = datetime.now().strftime("%Y-%m-%d")
             state[f"sparks_{today_key}"] = state.get(f"sparks_{today_key}", 0) + 1
@@ -1293,8 +2497,9 @@ def _handle_think_markers(result: str, user_id: str = "ang"):
 
     # Question markers (from connection mode)
     try:
-        from emptiness import add_question
-        for match in re.finditer(r'\[QUESTION:\s*(.+?)\]', result):
+        from evaluation.emptiness import add_question
+
+        for match in re.finditer(r"\[QUESTION:\s*(.+?)\]", result):
             add_question(match.group(1).strip(), priority=4.0, source="idle-think", user_id=user_id)
     except (ImportError, ModuleNotFoundError, OSError):
         pass
@@ -1302,6 +2507,7 @@ def _handle_think_markers(result: str, user_id: str = "ang"):
     # Check if the full idle-think output could spark a spontaneous writing idea
     try:
         from workflows.helpers import _maybe_create_spontaneous_idea
+
         _maybe_create_spontaneous_idea(result, source="idle-think", user_id=user_id)
     except Exception as e:
         log.debug("Spontaneous idea check from idle-think failed: %s", e)
@@ -1311,10 +2517,12 @@ def _handle_think_markers(result: str, user_id: str = "ang"):
 # Log cleanup
 # ---------------------------------------------------------------------------
 
+
 def log_cleanup():
     """Delete log files older than LOG_RETENTION_DAYS."""
     import time as _time
     from config import LOGS_DIR
+
     cutoff = _time.time() - LOG_RETENTION_DAYS * 86400
     deleted = 0
     for f in LOGS_DIR.iterdir():

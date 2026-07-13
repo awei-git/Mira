@@ -1,0 +1,48 @@
+name: self_evolution
+memory_class: self_modification
+trigger:
+  type: schedule
+  detail: 13:00-16:00
+priority: 40
+version: 1
+max_duration_s: 900
+checkpoint_every: 1
+involved_skills:
+  - self_evolution
+  - coder
+risk_actions:
+  promote_production_idempotent: code_config
+effect_steps:
+  promote_production_idempotent: promote_production
+steps:
+  - name: snapshot_scars_sigs_hypotheses_eval_calibration
+    type: memory
+  - name: detect_mismatches
+    type: deterministic
+  - name: cluster_by_failure_sig_min_count
+    type: deterministic
+  - name: experiment_record
+    type: deterministic
+    action: self_evolution_experiment
+  - name: hypothesis_quality
+    type: eval
+  - name: risk_classify
+    type: policy
+  - name: human_if_high_risk
+    type: human
+  - name: implement_on_branch
+    type: deterministic
+    action: self_evolution_branch_canary
+  - name: tests_golden_set
+    type: eval
+  - name: canary_observe_confirm_reject_rollback
+    type: deterministic
+    action: self_evolution_canary_rollback
+  - name: production_promotion_preflight
+    type: deterministic
+    action: self_evolution_production_promotion_guard
+  - name: promote_production_idempotent
+    type: deterministic
+    action: self_evolution_production_promotion_guard
+  - name: experience_record_proposal_gateway
+    type: memory

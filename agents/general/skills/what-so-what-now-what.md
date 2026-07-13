@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when structuring any analytical output to ensure it covers observable facts, their interpretation, and a concrete actionable recommendation in that order."
+---
+
 # What / So What / Now What
 
 **Tags:** agents, communication, analysis, briefing, structured-thinking

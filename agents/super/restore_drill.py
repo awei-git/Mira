@@ -1,4 +1,5 @@
 """Helpers for governed backup restore dry-runs."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -17,7 +18,8 @@ def latest_backup_dir(root: Path | None = None) -> Path | None:
     if not backup_root.exists():
         return None
     candidates = [
-        path for path in backup_root.iterdir()
+        path
+        for path in backup_root.iterdir()
         if path.is_dir() and path.name[:4].isdigit() and (path / "backup_manifest.json").exists()
     ]
     if not candidates:

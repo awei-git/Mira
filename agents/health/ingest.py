@@ -1,11 +1,64 @@
 """Health data ingestion — consume Apple Health exports and checkup PDFs."""
+
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger("health_ingest")
+
+HEALTH_EXPORT_READ_ATTEMPTS = 5
+HEALTH_EXPORT_RETRY_DELAY_SECONDS = 0.5
+
+
+def expand_health_metrics(metrics: list[dict]) -> list[dict]:
+    """Normalize exported HealthKit metrics into DB metric rows.
+
+    HealthKit workout samples can carry duration, calories, and distance in one
+    object. The health DB stores scalar metric rows, so split the useful fields
+    before inserting while preserving the original workout duration row.
+    """
+    expanded: list[dict] = []
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        expanded.append(metric)
+        if metric.get("type") != "workout":
+            continue
+        date_value = metric.get("date")
+        calories = metric.get("calories")
+        if calories is not None:
+            try:
+                calories_value = float(calories)
+            except (TypeError, ValueError):
+                calories_value = 0.0
+            if calories_value > 0:
+                expanded.append(
+                    {
+                        "type": "workout_calories",
+                        "value": calories_value,
+                        "unit": "kcal",
+                        "date": date_value,
+                    }
+                )
+        distance = metric.get("distance")
+        if distance is not None:
+            try:
+                distance_value = float(distance)
+            except (TypeError, ValueError):
+                distance_value = 0.0
+            if distance_value > 0:
+                expanded.append(
+                    {
+                        "type": "workout_distance",
+                        "value": distance_value,
+                        "unit": "m",
+                        "date": date_value,
+                    }
+                )
+    return expanded
 
 
 def ingest_apple_health(bridge_dir: Path, person_id: str, store) -> int:
@@ -17,25 +70,36 @@ def ingest_apple_health(bridge_dir: Path, person_id: str, store) -> int:
     if not export_file.exists():
         return 0
 
-    try:
-        data = json.loads(export_file.read_text(encoding="utf-8"))
-    except OSError as e:
-        if e.errno == 11:  # EDEADLK — retry once after brief pause
-            import time
-            time.sleep(0.5)
-            try:
-                data = json.loads(export_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError) as e2:
-                log.warning("Health export retry failed for %s: %s", person_id, e2)
+    data = None
+    last_retry_error: Exception | None = None
+    for attempt in range(HEALTH_EXPORT_READ_ATTEMPTS):
+        try:
+            data = json.loads(export_file.read_text(encoding="utf-8"))
+            break
+        except OSError as e:
+            if getattr(e, "errno", None) != 11:
+                log.error("Failed to read health export for %s: %s", person_id, e)
                 return 0
-        else:
-            log.error("Failed to read health export for %s: %s", person_id, e)
-            return 0
-    except json.JSONDecodeError as e:
-        log.error("Failed to parse health export for %s: %s", person_id, e)
+            last_retry_error = e
+        except json.JSONDecodeError as e:
+            last_retry_error = e
+        if attempt < HEALTH_EXPORT_READ_ATTEMPTS - 1:
+            time.sleep(HEALTH_EXPORT_RETRY_DELAY_SECONDS * (attempt + 1))
+
+    if data is None:
+        from logging_util import throttled_warning
+
+        throttled_warning(
+            log,
+            "Health export retry failed for %s: %s",
+            person_id,
+            last_retry_error,
+            key=f"health:retry:{person_id}",
+            interval_seconds=1800,
+        )
         return 0
 
-    metrics = data.get("metrics", [])
+    metrics = expand_health_metrics(data.get("metrics", []))
     if not metrics:
         export_file.unlink(missing_ok=True)
         return 0
@@ -68,7 +132,7 @@ def parse_checkup_pdf(pdf_path: Path, person_id: str, store) -> dict:
     Returns the parsed JSON dict. Also stores results in the database.
     """
     from config import OMLX_DEFAULT_MODEL
-    from sub_agent import _omlx_call
+    from llm import _omlx_call
 
     # Extract text from PDF
     text = _extract_pdf_text(pdf_path)
@@ -110,6 +174,7 @@ Report text:
 
     # Store in database
     from datetime import date
+
     report_date_str = parsed.get("report_date", "")
     try:
         report_date = date.fromisoformat(report_date_str)
@@ -136,15 +201,18 @@ Report text:
         try:
             value = float(item.get("value", ""))
             store.insert_metric(
-                person_id, item["name"], value,
+                person_id,
+                item["name"],
+                value,
                 unit=item.get("unit", ""),
                 source="checkup",
             )
         except (ValueError, TypeError):
             continue
 
-    log.info("Parsed checkup for %s: %d items, %d abnormal",
-             person_id, len(parsed.get("items", [])), len(summary_items))
+    log.info(
+        "Parsed checkup for %s: %d items, %d abnormal", person_id, len(parsed.get("items", [])), len(summary_items)
+    )
     return parsed
 
 
@@ -167,6 +235,7 @@ def parse_checkup_images(image_paths: list[Path], person_id: str, store) -> dict
         log.warning("No text extracted from checkup images for %s", person_id)
         # Store the report record even without parsing
         from datetime import date
+
         store.insert_report(
             person_id=person_id,
             report_date=date.today(),
@@ -178,7 +247,7 @@ def parse_checkup_images(image_paths: list[Path], person_id: str, store) -> dict
 
     # Parse extracted text into structured data
     from config import OMLX_DEFAULT_MODEL
-    from sub_agent import _omlx_call
+    from llm import _omlx_call
 
     prompt = f"""Extract all test results from this medical checkup report.
 For each test item, extract:
@@ -212,6 +281,7 @@ Report text:
 
     # Store in database
     from datetime import date
+
     report_date_str = parsed.get("report_date", "")
     try:
         report_date = date.fromisoformat(report_date_str)
@@ -221,8 +291,7 @@ Report text:
     summary_items = []
     for item in parsed.get("items", []):
         if item.get("flag") and item["flag"] != "normal":
-            summary_items.append(
-                f"{item['name']}: {item.get('value','?')}{item.get('unit','')} ({item['flag']})")
+            summary_items.append(f"{item['name']}: {item.get('value','?')}{item.get('unit','')} ({item['flag']})")
 
     summary = "异常指标: " + "; ".join(summary_items) if summary_items else "各项指标正常"
 
@@ -238,15 +307,21 @@ Report text:
         try:
             value = float(item.get("value", ""))
             store.insert_metric(
-                person_id, item["name"], value,
+                person_id,
+                item["name"],
+                value,
                 unit=item.get("unit", ""),
                 source="checkup",
             )
         except (ValueError, TypeError):
             continue
 
-    log.info("Parsed checkup images for %s: %d items, %d abnormal",
-             person_id, len(parsed.get("items", [])), len(summary_items))
+    log.info(
+        "Parsed checkup images for %s: %d items, %d abnormal",
+        person_id,
+        len(parsed.get("items", [])),
+        len(summary_items),
+    )
     return parsed
 
 
@@ -255,6 +330,7 @@ def _extract_image_text(image_path: Path) -> str:
     try:
         import pytesseract
         from PIL import Image
+
         img = Image.open(str(image_path))
         # Use Chinese + English for medical reports
         text = pytesseract.image_to_string(img, lang="chi_sim+eng")
@@ -270,6 +346,7 @@ def _extract_pdf_text(pdf_path: Path) -> str:
     """Extract text from a PDF file."""
     try:
         import pypdf
+
         reader = pypdf.PdfReader(str(pdf_path))
         text = ""
         for page in reader.pages:
@@ -279,6 +356,7 @@ def _extract_pdf_text(pdf_path: Path) -> str:
         log.warning("pypdf not available, trying pdfplumber")
     try:
         import pdfplumber
+
         with pdfplumber.open(str(pdf_path)) as pdf:
             return "\n".join(page.extract_text() or "" for page in pdf.pages).strip()
     except ImportError:

@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when stuck on a mathematical problem and needing a structured set of heuristic moves to find a path forward before choosing a proof technique."
+---
+
 # Mathematical Problem-Solving Heuristics
 
 **Tags:** math, problem-solving, heuristics, Polya, strategy, research

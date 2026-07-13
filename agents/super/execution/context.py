@@ -9,6 +9,7 @@ Extracted from task_worker.py. Contains:
 - _load_recent_journals: load last N journal entries
 - _load_recent_briefings: load last N briefings
 """
+
 from __future__ import annotations
 
 import json
@@ -18,16 +19,16 @@ from pathlib import Path
 
 # Add shared directory to path
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-if str(_AGENTS_DIR / "shared") not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+if str(_AGENTS_DIR.parent / "lib") not in sys.path:
+    sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 
 from config import MIRA_DIR, JOURNAL_DIR, BRIEFINGS_DIR
-from sub_agent import claude_think
+from llm import claude_think
 
 log = logging.getLogger("task_worker")
 
 
-def _items_dir(user_id: str = "ang") -> Path:
+def _items_dir(user_id: str = "default") -> Path:
     return MIRA_DIR / "users" / user_id / "items"
 
 
@@ -40,7 +41,7 @@ def _legacy_thread_dirs(user_id: str) -> list[Path]:
     ]
 
 
-def load_task_conversation(task_id: str, user_id: str = "ang") -> str:
+def load_task_conversation(task_id: str, user_id: str = "default") -> str:
     """Load conversation history from an item (or legacy task) JSON.
 
     With the new protocol, all messages are in a single items/<id>.json file.
@@ -103,7 +104,7 @@ def load_task_conversation(task_id: str, user_id: str = "ang") -> str:
     return "\n".join(lines)
 
 
-def load_thread_history(thread_id: str, limit: int = 20, user_id: str = "ang") -> str:
+def load_thread_history(thread_id: str, limit: int = 20, user_id: str = "default") -> str:
     """Load recent messages from a thread for context injection."""
     if not thread_id:
         return ""
@@ -145,7 +146,7 @@ def load_thread_history(thread_id: str, limit: int = 20, user_id: str = "ang") -
     return "\n".join(lines)
 
 
-def load_thread_memory(thread_id: str, user_id: str = "ang") -> str:
+def load_thread_memory(thread_id: str, user_id: str = "default") -> str:
     """Load per-thread memory if it exists."""
     if not thread_id:
         return ""
@@ -162,6 +163,7 @@ def load_thread_memory(thread_id: str, user_id: str = "ang") -> str:
 # ---------------------------------------------------------------------------
 
 _COMPRESS_THRESHOLD = 3000  # chars above which we compress
+
 
 def compress_conversation(conversation: str, max_chars: int = 2000) -> str:
     """Compress a long conversation history to fit within token budget.
@@ -202,7 +204,7 @@ def compress_conversation(conversation: str, max_chars: int = 2000) -> str:
             f"Summarize this conversation excerpt in 3-5 bullet points. "
             f"Focus on decisions made, key information exchanged, and task progress. "
             f"Be concise.\n\n{middle[:3000]}",
-            timeout=60
+            timeout=60,
         )
         if summary and len(summary) < len(middle):
             compressed_middle = f"\n*[{len(msg_indices) - 4} earlier messages summarized]*\n{summary}\n"
@@ -222,9 +224,7 @@ def _truncate_messages(conversation: str, max_chars: int) -> str:
         return conversation
     half = max_chars // 2
     return (
-        conversation[:half]
-        + f"\n\n... ({len(conversation) - max_chars} chars omitted) ...\n\n"
-        + conversation[-half:]
+        conversation[:half] + f"\n\n... ({len(conversation) - max_chars} chars omitted) ...\n\n" + conversation[-half:]
     )
 
 

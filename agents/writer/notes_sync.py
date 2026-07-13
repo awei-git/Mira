@@ -15,6 +15,7 @@ from pathlib import Path
 
 # Load writing-specific config by file path (avoid collision with agent/config.py)
 import importlib.util as _ilu
+
 _wcfg_path = Path(__file__).resolve().parent / "writer_config.py"
 _spec = _ilu.spec_from_file_location("writing_config", _wcfg_path)
 _wcfg = _ilu.module_from_spec(_spec)
@@ -63,6 +64,7 @@ def parse_note_status(body: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # HTML → plain text (Apple Notes stores content as HTML)
 # ---------------------------------------------------------------------------
+
 
 def html_to_text(html: str) -> str:
     """Convert Apple Notes HTML body to plain text with proper line breaks.
@@ -168,7 +170,9 @@ def reset_note_status(note_id: str) -> bool:
     try:
         result = subprocess.run(
             ["osascript", "-l", "JavaScript", "-e", script],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if result.returncode == 0 and "ok" in result.stdout:
             log.info("Reset note %s status to 'done'", note_id[:20])
@@ -302,6 +306,7 @@ def parse_note_body(body: str) -> dict:
 # Slug generation
 # ---------------------------------------------------------------------------
 
+
 def title_to_slug(title: str) -> str:
     """Convert a title (possibly Chinese) to a filesystem-safe slug.
 
@@ -310,6 +315,7 @@ def title_to_slug(title: str) -> str:
     # Try pypinyin for proper Chinese → pinyin conversion
     try:
         from pypinyin import lazy_pinyin
+
         parts = lazy_pinyin(title)
         slug = "-".join(parts)
     except ImportError:
@@ -353,6 +359,7 @@ def title_to_slug(title: str) -> str:
 # Sync state management
 # ---------------------------------------------------------------------------
 
+
 def load_sync_state() -> dict:
     """Load sync state from .notes_sync.json."""
     if NOTES_SYNC_STATE.exists():
@@ -380,6 +387,7 @@ def content_hash(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Markdown generation
 # ---------------------------------------------------------------------------
+
 
 def generate_idea_markdown(title: str, parsed: dict) -> str:
     """Generate markdown matching _template.md format."""
@@ -434,6 +442,7 @@ def generate_idea_markdown(title: str, parsed: dict) -> str:
 # Update existing markdown (preserve Status section)
 # ---------------------------------------------------------------------------
 
+
 def _reset_idea_state(idea_path: Path):
     """Reset the pipeline state fields so the idea gets re-processed.
 
@@ -475,33 +484,35 @@ def update_idea_content(idea_path: Path, title: str, parsed: dict):
         return
 
     # Rebuild the content section above the marker
-    new_above = "\n".join([
-        f"# {title}",
-        "",
-        f"- **type**: {parsed.get('type', 'essay')}",
-        f"- **language**: {parsed.get('language', '中文')}",
-        f"- **platform**: {parsed.get('platform', 'Substack')}",
-        f"- **target_words**: {parsed.get('target_words', '3000')}",
-        "- **deadline**:",
-        "",
-        "## Theme",
-        "",
-        parsed.get("theme", ""),
-        "",
-        "## Key Points",
-        "",
-        parsed.get("key_points", ""),
-        "",
-        "## Notes",
-        "",
-        parsed.get("notes", ""),
-        "",
-        "## Feedback",
-        "",
-        parsed.get("feedback", ""),
-        "",
-        "---",
-    ])
+    new_above = "\n".join(
+        [
+            f"# {title}",
+            "",
+            f"- **type**: {parsed.get('type', 'essay')}",
+            f"- **language**: {parsed.get('language', '中文')}",
+            f"- **platform**: {parsed.get('platform', 'Substack')}",
+            f"- **target_words**: {parsed.get('target_words', '3000')}",
+            "- **deadline**:",
+            "",
+            "## Theme",
+            "",
+            parsed.get("theme", ""),
+            "",
+            "## Key Points",
+            "",
+            parsed.get("key_points", ""),
+            "",
+            "## Notes",
+            "",
+            parsed.get("notes", ""),
+            "",
+            "## Feedback",
+            "",
+            parsed.get("feedback", ""),
+            "",
+            "---",
+        ]
+    )
 
     new_text = new_above + "\n" + marker + parts[1]
     idea_path.write_text(new_text, encoding="utf-8")
@@ -527,12 +538,11 @@ def update_idea_feedback(idea_path: Path, feedback: str):
 # Main sync
 # ---------------------------------------------------------------------------
 
+
 def find_unique_slug(slug: str, note_id: str, sync_state: dict) -> str:
     """Ensure slug is unique — append -2, -3 etc. if needed."""
     # Check if another note already owns this slug
-    existing_ids = {
-        v["slug"]: nid for nid, v in sync_state.items()
-    }
+    existing_ids = {v["slug"]: nid for nid, v in sync_state.items()}
 
     candidate = slug
     counter = 2
@@ -605,7 +615,7 @@ def sync_notes() -> list[str]:
             # "update" forces a re-sync regardless of hash — but only once.
             # After processing, we set update_synced=True so we don't loop.
             # Clear the flag when user switches back to "done".
-            force_update = (status == "update")
+            force_update = status == "update"
             if status != "update":
                 entry.pop("update_synced", None)
             if force_update and entry.get("update_synced") and entry.get("content_hash") == c_hash:

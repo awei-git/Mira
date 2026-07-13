@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when making color decisions in photo editing that need to be intentional and emotionally motivated rather than technically correct by default."
+---
+
 # Color Grading Theory
 
 **Tags:** photo, editing, color, grading, mood

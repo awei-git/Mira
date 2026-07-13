@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when writing instructions for a sub-agent to ensure the deliverable, constraints, and context are specified in the format that agent works best with."
+---
+
 # Instruction Crafting for Sub-Agents
 
 **Tags:** agents, orchestration, instruction-writing, super-agent, prompting

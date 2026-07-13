@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when multiple sub-agents have produced outputs that must be integrated into a single coherent response rather than concatenated."
+---
+
 # Response Synthesis
 
 **Tags:** agents, orchestration, synthesis, aggregation, super-agent

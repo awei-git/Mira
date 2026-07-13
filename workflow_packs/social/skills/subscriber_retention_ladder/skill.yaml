@@ -1,0 +1,10 @@
+name: subscriber_retention_ladder
+description: Classify weekly audience signals into concrete retention and conversation actions.
+inputs:
+  - subscriber_stats
+  - publication_stats
+  - comment_metrics
+outputs:
+  - weekly_growth_report.md
+  - retention_action
+  - confidence_notes

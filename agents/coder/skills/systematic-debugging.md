@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when you have a reliable bug reproduction but the stacktrace does not point to the root cause and at least one targeted fix has already failed."
+---
+
 # Bisection Debugging
 
 **Tags:** coding, debugging, workflow

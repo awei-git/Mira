@@ -1,0 +1,46 @@
+version: 1
+defaults:
+  task_type: generic_request
+  verifier: runtime.verifiers.output_file_min_size
+  expected_observable_outcome: "A non-empty output artifact is available for the user."
+  min_size_bytes: 40
+
+task_types:
+  generic_request:
+    match:
+      tags: []
+      agents: []
+    verifier: runtime.verifiers.output_file_min_size
+    expected_observable_outcome: "A non-empty output artifact is available for the user."
+    min_size_bytes: 40
+
+  writing:
+    match:
+      tags: ["writing", "writer"]
+      agents: ["writer"]
+    verifier: runtime.verifiers.output_file_min_size
+    expected_observable_outcome: "A written draft or final text is available in output.md."
+    min_size_bytes: 500
+
+  coding:
+    match:
+      tags: ["coding", "coder"]
+      agents: ["coder"]
+    verifier: runtime.verifiers.output_file_min_size
+    expected_observable_outcome: "A concise implementation report is available in output.md."
+    min_size_bytes: 120
+
+  podcast:
+    match:
+      tags: ["podcast", "audio", "tts"]
+      agents: ["podcast"]
+    verifier: runtime.verifiers.output_file_min_size
+    expected_observable_outcome: "A podcast/audio generation report or artifact reference is available."
+    min_size_bytes: 120
+
+  needs_input:
+    match:
+      statuses: ["needs-input"]
+    verifier: runtime.verifiers.output_file_min_size
+    expected_observable_outcome: "A clear question or unblock request is visible to the user."
+    min_size_bytes: 20

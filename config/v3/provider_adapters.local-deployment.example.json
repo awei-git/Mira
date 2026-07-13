@@ -1,0 +1,31 @@
+{
+  "provider_effect_adapters": {
+    "deployment": {
+      "command": [
+        "/usr/local/bin/mira-deploy",
+        "{input_json_path}",
+        "{result_json_path}"
+      ],
+      "role": "deployment",
+      "type": "local_deployment_command"
+    },
+    "deployment_health": {
+      "command": [
+        "/usr/local/bin/mira-deploy-health",
+        "{input_json_path}",
+        "{result_json_path}"
+      ],
+      "role": "deployment_health",
+      "type": "local_deployment_command"
+    },
+    "deployment_rollback": {
+      "command": [
+        "/usr/local/bin/mira-deploy-rollback",
+        "{input_json_path}",
+        "{result_json_path}"
+      ],
+      "role": "deployment_rollback",
+      "type": "local_deployment_command"
+    }
+  }
+}

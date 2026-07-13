@@ -1,0 +1,9 @@
+name: incident_response
+description: Triage operational failures into severity, rollback, and follow-up evidence.
+inputs:
+  - health_failures
+  - dead_letter_queue
+outputs:
+  - incident_response.md
+  - severity
+  - rollback_notes

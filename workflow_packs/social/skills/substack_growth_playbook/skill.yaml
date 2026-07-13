@@ -1,0 +1,10 @@
+name: substack_growth_playbook
+description: Plan growth actions from publication, notes, comments, and subscriber signals.
+inputs:
+  - publication_stats
+  - notes_state
+  - memory_snapshot
+outputs:
+  - social_proactive_note.md
+  - weekly_growth_report.md
+  - action_category

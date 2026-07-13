@@ -18,12 +18,55 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest
+        run: pip install -r requirements.txt pytest pytest-cov
 
       - name: Create minimal runtime dirs
         run: |
           mkdir -p /tmp/mira-test/threads
-          mkdir -p /tmp/mira-test/users/ang/items
+          mkdir -p /tmp/mira-test/users/default/items
 
-      - name: Run fast tests
-        run: python -m pytest agents/ -m "not slow" -x -q --tb=short
+      - name: Run fast tests with coverage
+        run: |
+          # `not runtime` excludes tests that depend on local agent state
+          # (data/, secrets.yml, config.yml — .gitignored, absent on CI).
+          # See pytest.ini for marker definitions and tests/super/test_core.py
+          # for the string-path monkeypatch convention that survives
+          # refactors (vs. module-object patches that silently drift).
+          python -m pytest tests/ -m "not slow and not runtime" -q --tb=line \
+            --cov=agents --cov=lib --cov-report=term-missing --cov-report=xml
+
+      - name: Check V2 kernel boundaries
+        run: python scripts/check_v2_kernel_boundaries.py
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install bandit
+        run: pip install bandit
+
+      - name: Run security scan
+        run: |
+          bandit -r agents/ lib/ web/ -c .bandit -f json -o bandit-report.json \
+            -x "*/test_*,*/tests/*" || true
+          bandit -r agents/ lib/ web/ -c .bandit -x "*/test_*,*/tests/*" -ll
+
+      - name: Upload security report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json

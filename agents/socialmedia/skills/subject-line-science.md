@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when writing an email subject line for a newsletter send where open rate is the primary metric to optimize."
+---
+
 # Subject Line Science
 
 **Tags:** newsletter, email, substack, open-rate, growth

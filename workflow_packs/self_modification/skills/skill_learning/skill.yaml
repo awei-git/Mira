@@ -1,0 +1,9 @@
+name: skill_learning
+description: Capture candidate techniques before any generated skill is saved or enabled.
+inputs:
+  - task_result
+  - memory_snapshot
+outputs:
+  - skill_learning.md
+  - candidate_skill
+  - audit_notes

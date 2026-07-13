@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when conducting a code review that requires systematic coverage of tests, design, correctness, security, and style in layered order."
+---
+
 # Checklist-Driven Code Review
 
 **Tags:** coding, code-review, quality, collaboration

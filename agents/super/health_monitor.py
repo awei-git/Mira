@@ -3,10 +3,12 @@
 Tracks dispatch/outcome of background processes, detects repeated failures,
 sends alerts via iPhone bridge, and generates daily health summaries.
 """
+
 import fcntl
 import json
 import logging
 import os
+import subprocess
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -14,12 +16,13 @@ from pathlib import Path
 log = logging.getLogger("mira.health")
 
 # Paths
+from config import PIDS_DIR, LOGS_DIR, HEALTH_FILE, ARTIFACTS_DIR as _ARTIFACTS_DIR
+
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
 _MIRA_ROOT = _AGENTS_DIR.parent
-_BG_PID_DIR = _MIRA_ROOT / "agents" / ".bg_pids"
-_LOGS_DIR = _MIRA_ROOT / "logs"
-_HEALTH_FILE = _MIRA_ROOT / ".bg_health.json"
-from config import ARTIFACTS_DIR as _ARTIFACTS_DIR
+_BG_PID_DIR = PIDS_DIR
+_LOGS_DIR = LOGS_DIR
+_HEALTH_FILE = HEALTH_FILE
 _BRIEFINGS_DIR = _ARTIFACTS_DIR / "briefings"
 _PUBLISHED_DIR = _ARTIFACTS_DIR / "writings" / "_published"
 
@@ -37,6 +40,7 @@ CRITICAL_PROCESSES = {"journal", "reflect", "writing-pipeline"}
 # Health file I/O
 # ---------------------------------------------------------------------------
 
+
 def _load_health() -> dict:
     try:
         return json.loads(_HEALTH_FILE.read_text(encoding="utf-8"))
@@ -52,8 +56,7 @@ def _save_health(health: dict):
             fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
             try:
                 tmp = _HEALTH_FILE.with_suffix(".tmp")
-                tmp.write_text(json.dumps(health, indent=2, ensure_ascii=False),
-                               encoding="utf-8")
+                tmp.write_text(json.dumps(health, indent=2, ensure_ascii=False), encoding="utf-8")
                 tmp.replace(_HEALTH_FILE)
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
@@ -65,12 +68,18 @@ def _save_health(health: dict):
 # Recording dispatch and outcomes
 # ---------------------------------------------------------------------------
 
+
 def record_dispatch(name: str, pid: int):
     """Record that a background process was dispatched."""
     health = _load_health()
     proc = health["processes"].setdefault(name, {})
     proc["last_dispatch"] = datetime.now().isoformat()
     proc["last_pid"] = pid
+    log_file = _LOGS_DIR / f"bg-{name}.log"
+    try:
+        proc["log_size_at_dispatch"] = log_file.stat().st_size
+    except OSError:
+        proc["log_size_at_dispatch"] = 0
 
     today = datetime.now().strftime("%Y-%m-%d")
     daily = health.setdefault("daily_stats", {}).setdefault(today, {})
@@ -90,7 +99,7 @@ def record_outcome(name: str):
     today = now.strftime("%Y-%m-%d")
 
     # Determine success/failure from PID file exit code + fatal log errors
-    pid_file = _LOGS_DIR.parent / "bg_pids" / f"{name}.pid"
+    pid_file = _BG_PID_DIR / f"{name}.pid"
     log_file = _LOGS_DIR / f"bg-{name}.log"
     failed = False
     reason = ""
@@ -100,9 +109,12 @@ def record_outcome(name: str):
     if last_pid:
         try:
             import subprocess
+
             result = subprocess.run(
                 ["ps", "-p", str(last_pid), "-o", "stat="],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             # If ps returns nothing, process exited — check log for fatal errors only
         except Exception:
@@ -114,10 +126,22 @@ def record_outcome(name: str):
     if log_file.exists():
         try:
             size = log_file.stat().st_size
+            try:
+                dispatch_offset = int(proc.get("log_size_at_dispatch", 0) or 0)
+            except (TypeError, ValueError):
+                dispatch_offset = 0
+            if dispatch_offset < 0 or dispatch_offset > size:
+                dispatch_offset = 0
+
             with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                if size > 2048:
-                    f.seek(size - 2048)
-                    f.readline()  # skip partial line
+                if dispatch_offset > 0:
+                    read_from = max(dispatch_offset, size - 65536)
+                else:
+                    read_from = max(0, size - 2048)
+                if read_from > 0:
+                    f.seek(read_from)
+                    if read_from != dispatch_offset:
+                        f.readline()  # skip partial line
                 tail = f.read()
 
             # Only unhandled exceptions (Traceback) count as real failures
@@ -174,27 +198,84 @@ def record_outcome(name: str):
     return not failed
 
 
-def harvest_all():
+def _read_pid_file(pid_file: Path) -> tuple[int, str | None] | None:
+    try:
+        raw = pid_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    if ":" in raw:
+        pid_text, start_time = raw.split(":", 1)
+        try:
+            return int(pid_text), start_time.strip() or None
+        except ValueError:
+            return None
+    try:
+        return int(raw), None
+    except ValueError:
+        return None
+
+
+def _proc_start_time(pid: int) -> str | None:
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _pid_file_process_alive(pid_file: Path) -> bool:
+    parsed = _read_pid_file(pid_file)
+    if not parsed:
+        return False
+    pid, expected_start = parsed
+    try:
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    if expected_start is None:
+        return True
+    actual_start = _proc_start_time(pid)
+    return actual_start is not None and actual_start == expected_start
+
+
+def harvest_all() -> list[str]:
     """Check all PID files for dead processes and record their outcomes.
 
     Called from cmd_run() to catch processes that finished between cycles.
+    Returns list of bg-names that completed *successfully* this cycle
+    (used by pipeline chaining to trigger follow-up jobs).
     """
     if not _BG_PID_DIR.exists():
-        return
+        return []
 
+    completed: list[str] = []
     for pid_file in _BG_PID_DIR.glob("*.pid"):
         name = pid_file.stem
+        if _pid_file_process_alive(pid_file):
+            continue
+        ok = record_outcome(name)
+        if ok:
+            completed.append(name)
         try:
-            pid = int(pid_file.read_text().strip())
-            os.kill(pid, 0)  # still alive
-        except (OSError, ValueError):
-            # Process is dead — record outcome
-            record_outcome(name)
+            pid_file.unlink()
+        except OSError:
+            pass
+    return completed
 
 
 # ---------------------------------------------------------------------------
 # Alerting
 # ---------------------------------------------------------------------------
+
 
 def _maybe_alert(name: str, health: dict | None = None):
     """Send an alert if failure threshold is exceeded, with dedup."""
@@ -233,20 +314,10 @@ def _maybe_alert(name: str, health: dict | None = None):
 
     # Send alert via Mira bridge
     reason = proc.get("last_failure_reason", "unknown error")
-    msg = (
-        f"⚠️ {name} 连续失败 {consecutive} 次\n"
-        f"错误: {reason}\n"
-        f"日志: logs/bg-{name}.log"
-    )
+    msg = f"⚠️ {name} 连续失败 {consecutive} 次\n" f"错误: {reason}\n" f"日志: logs/bg-{name}.log"
 
     try:
-        import sys
-        shared_dir = str(_AGENTS_DIR / "shared")
-        if shared_dir not in sys.path:
-            sys.path.insert(0, shared_dir)
-        from mira import Mira
-        bridge = Mira()
-        bridge.post(msg)
+        _publish_health_alert(msg)
         log.warning("Health alert sent for '%s': %d consecutive failures", name, consecutive)
     except Exception as e:
         log.error("Failed to send health alert: %s", e)
@@ -262,6 +333,7 @@ def _maybe_alert(name: str, health: dict | None = None):
 # ---------------------------------------------------------------------------
 # Anomaly detection
 # ---------------------------------------------------------------------------
+
 
 def check_anomalies():
     """Detect abnormal absences — processes that should have run but didn't.
@@ -289,7 +361,8 @@ def check_anomalies():
     # 1. Explore should run at least 2x per day by evening
     if now.hour >= 20:
         explore_count = sum(
-            1 for p, data in health.get("processes", {}).items()
+            1
+            for p, data in health.get("processes", {}).items()
             if p.startswith("explore-") and data.get("last_success", "")[:10] == today
         )
         if explore_count < 2:
@@ -347,13 +420,7 @@ def _maybe_anomaly_alert(message: str, health: dict):
         return
 
     try:
-        import sys
-        shared_dir = str(_AGENTS_DIR / "shared")
-        if shared_dir not in sys.path:
-            sys.path.insert(0, shared_dir)
-        from mira import Mira
-        bridge = Mira()
-        bridge.post(f"⚠️ 异常检测: {message}")
+        _publish_health_alert(f"⚠️ 异常检测: {message}")
         log.warning("Anomaly alert: %s", message)
     except Exception as e:
         log.error("Failed to send anomaly alert: %s", e)
@@ -365,9 +432,55 @@ def _maybe_anomaly_alert(message: str, health: dict):
     _save_health(health)
 
 
+def _get_bridge():
+    import sys
+
+    shared_dir = str(_AGENTS_DIR.parent / "lib")
+    if shared_dir not in sys.path:
+        sys.path.insert(0, shared_dir)
+    from bridge import Mira
+
+    return Mira()
+
+
+def _publish_health_alert(message: str):
+    """Publish health alerts through the current item API, not legacy post()."""
+    bridge = _get_bridge()
+    item_id = "mira_health_alerts"
+    title = "Mira Health Alerts"
+    if bridge.item_exists(item_id):
+        bridge.append_message(item_id, "agent", message)
+        item = bridge._read_item(item_id)
+        if item:
+            item["type"] = "discussion"
+            item["title"] = title
+            item["status"] = "done"
+            item["origin"] = "agent"
+            item["tags"] = list(dict.fromkeys(["health", "ops", "system", *item.get("tags", [])]))
+            item["pinned"] = True
+            bridge._write_item(item)
+            bridge._update_manifest(item)
+        return
+
+    item = bridge.create_item(
+        item_id,
+        "discussion",
+        title,
+        message,
+        sender="agent",
+        tags=["health", "ops", "system"],
+        origin="agent",
+    )
+    item["status"] = "done"
+    item["pinned"] = True
+    bridge._write_item(item)
+    bridge._update_manifest(item)
+
+
 # ---------------------------------------------------------------------------
 # Health summary for journal
 # ---------------------------------------------------------------------------
+
 
 def generate_health_summary() -> str:
     """Generate a plain-text health summary for inclusion in the daily journal."""
@@ -430,6 +543,7 @@ def generate_health_summary() -> str:
 # ---------------------------------------------------------------------------
 # Cleanup — prune old daily stats
 # ---------------------------------------------------------------------------
+
 
 def prune_old_stats(keep_days: int = 7):
     """Remove daily stats older than keep_days. Called from reflect or journal."""

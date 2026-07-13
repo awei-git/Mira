@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when surveying multiple math papers on a topic to build a coherent map of results, connections, and open gaps across the literature."
+---
+
 # Literature Synthesis
 
 **Tags:** research, math, literature-review, paper-reading, knowledge-management

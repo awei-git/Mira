@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when a Substack essay has just been published and needs to be decomposed into native-format social content for Twitter/X and LinkedIn."
+---
+
 # One-to-Many Content Repurposing
 
 **Tags:** substack, writing, social-media, repurposing, distribution

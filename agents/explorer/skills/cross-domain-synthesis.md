@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when content from different domains surfaces and structural analogies between them could transfer solutions or generate novel ideas."
+---
+
 # Cross-Domain Synthesis
 
 **Tags:** explorer, synthesis, creativity, analogy, knowledge

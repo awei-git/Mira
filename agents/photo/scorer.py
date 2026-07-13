@@ -30,8 +30,12 @@ class AestheticHead(nn.Module):
     def __init__(self, in_dim=768, hidden=256):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden), nn.ReLU(), nn.Dropout(0.3),
-            nn.Linear(hidden, 64), nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(in_dim, hidden),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(hidden, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(64, 1),
         )
 

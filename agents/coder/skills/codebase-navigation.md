@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when you need to understand component connections or locate definitions, callers, and configuration in an unfamiliar codebase."
+---
+
 # Codebase Navigation
 
 **Tags:** coding, exploration, understanding

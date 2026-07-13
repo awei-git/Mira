@@ -1,0 +1,8 @@
+name: article_writing
+description: Draft article artifacts before public release.
+inputs:
+  - title
+  - memory_snapshot
+outputs:
+  - article.md
+  - quality_notes

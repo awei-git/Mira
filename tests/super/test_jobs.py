@@ -1,0 +1,295 @@
+"""Tests for declarative job registry."""
+
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+
+def test_all_jobs_have_names():
+    from runtime.jobs import BACKGROUND_JOBS
+
+    names = [j.name for j in BACKGROUND_JOBS]
+    assert len(names) == len(set(names)), f"Duplicate job names: {names}"
+    assert all(n for n in names), "All jobs must have non-empty names"
+
+
+def test_get_jobs():
+    from runtime.jobs import get_jobs
+
+    jobs = get_jobs()
+    assert len(jobs) > 15, f"Expected 15+ jobs, got {len(jobs)}"
+
+
+def test_get_job_by_name():
+    from runtime.jobs import get_job
+
+    j = get_job("journal")
+    assert j is not None
+    assert j.name == "journal"
+    assert j.trigger == "time_window"
+
+
+def test_job_in_window():
+    from runtime.jobs import get_job
+
+    j = get_job("self-audit")
+    assert j is not None
+    assert j.in_window(9)  # 8-10 window
+    assert not j.in_window(15)
+
+
+def test_job_state_key():
+    from runtime.jobs import get_job
+
+    j = get_job("journal")
+    assert j is not None
+    key = j.state_key(today="2026-04-04")
+    assert "2026-04-04" in key
+
+
+def test_list_job_names():
+    from runtime.jobs import list_job_names
+
+    names = list_job_names()
+    assert "journal" in names
+    assert "explore" in names
+    assert "self-evolve" in names
+    assert names == sorted(names), "Should be sorted"
+
+
+def test_inline_jobs():
+    from runtime.jobs import BACKGROUND_JOBS
+
+    inline = [j for j in BACKGROUND_JOBS if j.inline]
+    assert len(inline) >= 2, "At least health-check and log-cleanup should be inline"
+    inline_names = {j.name for j in inline}
+    assert "health-check" in inline_names
+    assert "log-cleanup" in inline_names
+
+
+def test_evaluate_job_payload_filters_shared_trigger(monkeypatch):
+    from runtime.jobs import evaluate_job_payload, get_job
+
+    job = get_job("analyst-pre")
+    assert job is not None
+
+    monkeypatch.setattr("runtime.triggers.should_analyst", lambda: "0700")
+    assert evaluate_job_payload(job) == "0700"
+
+    monkeypatch.setattr("runtime.triggers.should_analyst", lambda: "1800")
+    assert evaluate_job_payload(job) is None
+
+
+def test_build_job_dispatch_formats_dynamic_templates():
+    from runtime.jobs import build_job_dispatch, get_job
+
+    job = get_job("explore")
+    assert job is not None
+
+    bg_name, cmd = build_job_dispatch(
+        job,
+        {"label": "arxiv_hf", "sources": ["arxiv", "huggingface"]},
+        python_executable="python3",
+        core_path="/tmp/core.py",
+    )
+
+    assert bg_name == "explore-arxiv_hf"
+    assert cmd == [
+        "python3",
+        "/tmp/core.py",
+        "explore",
+        "--sources",
+        "arxiv,huggingface",
+        "--slot",
+        "arxiv_hf",
+    ]
+
+
+def test_build_job_dispatch_appends_user_flag_for_per_user_jobs():
+    from runtime.jobs import build_job_dispatch, get_job
+
+    job = get_job("idle-think")
+    assert job is not None
+    assert job.per_user is True
+
+    bg_name, cmd = build_job_dispatch(
+        job,
+        True,
+        python_executable="python3",
+        core_path="/tmp/core.py",
+        user_id="liquan",
+    )
+
+    assert bg_name == "idle-think-liquan"
+    assert cmd == [
+        "python3",
+        "/tmp/core.py",
+        "idle-think",
+        "--user",
+        "liquan",
+    ]
+
+
+def test_spark_check_job_is_per_user():
+    from runtime.jobs import get_job
+
+    job = get_job("spark-check")
+
+    assert job is not None
+    assert job.per_user is True
+    assert job.bg_name_pattern == "spark-check-{user_id}"
+
+
+def test_soul_question_job_is_per_user():
+    from runtime.jobs import get_job
+
+    job = get_job("soul-question")
+
+    assert job is not None
+    assert job.per_user is True
+    assert job.bg_name_pattern == "soul-question-{user_id}"
+
+
+def test_daily_collab_job_is_per_user():
+    from runtime.jobs import get_job
+
+    job = get_job("daily-collab")
+
+    assert job is not None
+    assert job.per_user is True
+    assert job.bg_name_pattern == "daily-collab-{user_id}"
+    assert job.command == ["daily-collab"]
+
+
+def test_daily_collab_operator_brief_job_registered():
+    from runtime.jobs import get_job
+
+    job = get_job("daily-collab-operator-brief")
+
+    assert job is not None
+    assert job.trigger == "conditional"
+    assert job.trigger_name == "_should_daily_collab_operator_brief"
+    assert job.command == ["daily-collab-operator-brief"]
+
+
+def test_backlog_and_restore_triggers_do_not_write_state(monkeypatch):
+    from datetime import datetime as real_datetime
+    from runtime import triggers
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 4, 6, 14, 0, 0)
+
+    monkeypatch.setattr(triggers, "datetime", FakeDateTime)
+    monkeypatch.setattr(triggers, "_load_state", lambda user_id=None: {})
+    saves = []
+    monkeypatch.setattr(triggers, "_save_state", lambda state, user_id=None: saves.append((state, user_id)))
+
+    class FakeBacklog:
+        def get_active(self):
+            return [SimpleNamespace(status="approved", executor="self_evolve_proposal")]
+
+    monkeypatch.setitem(sys.modules, "ops.backlog", SimpleNamespace(ActionBacklog=FakeBacklog))
+    assert triggers._should_backlog_executor() is True
+
+    monkeypatch.setitem(sys.modules, "restore_drill", SimpleNamespace(latest_backup_dir=lambda: "/tmp/backup"))
+    assert triggers._should_restore_dry_run() is True
+
+    assert saves == []
+
+
+def test_backlog_trigger_checks_control_backlog(monkeypatch):
+    from datetime import datetime as real_datetime
+    from runtime import triggers
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 5, 4, 19, 0, 0)
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def list_backlog_items(self, user_id, *, status=None, limit=100):
+            return [{"id": "self_audit:demo", "executor": "self_audit.apply_low_risk", "status": "proposed"}]
+
+    class FakeTransaction:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(triggers, "datetime", FakeDateTime)
+    monkeypatch.setattr(triggers, "_load_state", lambda user_id=None: {})
+    monkeypatch.setitem(
+        sys.modules,
+        "backlog_executor",
+        SimpleNamespace(CONTROL_EXECUTORS={"request_verify.apply", "self_audit.apply_low_risk"}),
+    )
+    monkeypatch.setitem(sys.modules, "control.db", SimpleNamespace(transaction=lambda: FakeTransaction()))
+    monkeypatch.setitem(sys.modules, "control.repository", SimpleNamespace(ControlRepository=FakeRepo))
+
+    assert triggers._should_backlog_executor() is True
+
+
+def test_health_and_self_improvement_triggers_do_not_prewrite_state(monkeypatch):
+    from datetime import datetime as real_datetime
+    from runtime import triggers
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 5, 2, 9, 0, 0)
+
+        @classmethod
+        def combine(cls, date, time):
+            return real_datetime.combine(date, time)
+
+    monkeypatch.setattr(triggers, "datetime", FakeDateTime)
+    monkeypatch.setattr(triggers, "_load_state", lambda user_id=None: {})
+    saves = []
+    monkeypatch.setattr(triggers, "_save_state", lambda state, user_id=None: saves.append((state, user_id)))
+    monkeypatch.setattr(triggers, "_has_unreported_health_metrics", lambda: False)
+
+    assert triggers._should_health_check() is True
+    assert triggers._should_self_audit() is True
+    assert saves == []
+
+
+def test_health_weekly_job_registered():
+    from runtime.jobs import get_job
+
+    job = get_job("health-weekly")
+
+    assert job is not None
+    assert job.inline is True
+    assert job.inline_runner == "health-weekly"
+
+
+def test_pipeline_followups_respect_autowrite_cooldown(monkeypatch):
+    import jobs
+
+    dispatched = []
+    monkeypatch.setattr(jobs, "evaluate_job_payload", lambda job: None if job.name == "autowrite-check" else True)
+    monkeypatch.setattr(jobs, "_dispatch_background", lambda *args, **kwargs: dispatched.append(args) or True)
+
+    jobs._dispatch_pipeline_followups(["explore-test"], [])
+
+    assert dispatched == []
+
+
+def test_record_dispatch_updates_cooldown_job_state(monkeypatch):
+    import jobs
+    from runtime.jobs import get_job
+
+    state = {}
+    monkeypatch.setattr(jobs, "load_state", lambda user_id=None: state)
+    monkeypatch.setattr(jobs, "save_state", lambda new_state, user_id=None: state.update(new_state))
+
+    job = get_job("autowrite-check")
+    jobs._record_scheduled_job_dispatch(job, True)
+
+    assert "last_autowrite_check" in state

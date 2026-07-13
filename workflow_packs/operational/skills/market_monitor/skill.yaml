@@ -1,0 +1,10 @@
+name: market_monitor
+description: Stage Tetra market signals and risk notes before portfolio-facing action.
+inputs:
+  - tetra_report
+  - risk_context
+outputs:
+  - market_monitor.md
+  - market_alert_preview.json
+  - risk_notes
+  - missing_data

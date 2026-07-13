@@ -6,6 +6,7 @@ Phase 0 of the enhanced video pipeline:
 Outputs beat timestamps, phrase boundaries, tempo, and energy curve
 for use in screenplay generation and clip-to-beat alignment.
 """
+
 import json
 import subprocess
 from pathlib import Path
@@ -16,14 +17,17 @@ def _ensure_librosa():
     try:
         import librosa
         import numpy as np
+
         return librosa, np
     except ImportError:
         subprocess.run(
             ["pip3", "install", "--break-system-packages", "librosa", "soundfile"],
-            capture_output=True, timeout=120,
+            capture_output=True,
+            timeout=120,
         )
         import librosa
         import numpy as np
+
         return librosa, np
 
 
@@ -60,7 +64,7 @@ def analyze_beats(music_path: Path, work_dir: Path) -> dict:
     for pt in phrases:
         idx = int(np.argmin(np.abs(rms_times - pt)))
         # Average energy in a window around this phrase
-        window = rms[max(0, idx - 5):idx + 5]
+        window = rms[max(0, idx - 5) : idx + 5]
         avg_energy = float(window.mean()) / rms_max if len(window) > 0 else 0
         energy_curve.append({"time": pt, "energy": round(avg_energy, 3)})
 
@@ -93,8 +97,7 @@ def _detect_sections(energy_curve: list[dict], duration: float) -> list[dict]:
     n = len(energies)
 
     if n < 4:
-        return [{"start": 0, "end": duration, "type": "full",
-                 "energy": round(sum(energies) / n, 3)}]
+        return [{"start": 0, "end": duration, "type": "full", "energy": round(sum(energies) / n, 3)}]
 
     # Split into roughly 4 sections
     quarter = n // 4
@@ -102,40 +105,48 @@ def _detect_sections(energy_curve: list[dict], duration: float) -> list[dict]:
 
     # Intro: first quarter
     intro_energy = sum(energies[:quarter]) / quarter
-    sections.append({
-        "start": round(times[0], 2),
-        "end": round(times[quarter], 2),
-        "type": "intro",
-        "energy": round(intro_energy, 3),
-    })
+    sections.append(
+        {
+            "start": round(times[0], 2),
+            "end": round(times[quarter], 2),
+            "type": "intro",
+            "energy": round(intro_energy, 3),
+        }
+    )
 
     # Build: second quarter
-    build_energy = sum(energies[quarter:2 * quarter]) / quarter
-    sections.append({
-        "start": round(times[quarter], 2),
-        "end": round(times[2 * quarter], 2),
-        "type": "build",
-        "energy": round(build_energy, 3),
-    })
+    build_energy = sum(energies[quarter : 2 * quarter]) / quarter
+    sections.append(
+        {
+            "start": round(times[quarter], 2),
+            "end": round(times[2 * quarter], 2),
+            "type": "build",
+            "energy": round(build_energy, 3),
+        }
+    )
 
     # Peak: third quarter (or wherever energy is highest)
-    peak_energy = sum(energies[2 * quarter:3 * quarter]) / quarter
-    sections.append({
-        "start": round(times[2 * quarter], 2),
-        "end": round(times[3 * quarter], 2),
-        "type": "peak",
-        "energy": round(peak_energy, 3),
-    })
+    peak_energy = sum(energies[2 * quarter : 3 * quarter]) / quarter
+    sections.append(
+        {
+            "start": round(times[2 * quarter], 2),
+            "end": round(times[3 * quarter], 2),
+            "type": "peak",
+            "energy": round(peak_energy, 3),
+        }
+    )
 
     # Outro: last quarter
     outro_start = 3 * quarter
     outro_energy = sum(energies[outro_start:]) / (n - outro_start)
-    sections.append({
-        "start": round(times[outro_start], 2),
-        "end": round(duration, 2),
-        "type": "outro",
-        "energy": round(outro_energy, 3),
-    })
+    sections.append(
+        {
+            "start": round(times[outro_start], 2),
+            "end": round(duration, 2),
+            "type": "outro",
+            "energy": round(outro_energy, 3),
+        }
+    )
 
     return sections
 
@@ -143,8 +154,7 @@ def _detect_sections(energy_curve: list[dict], duration: float) -> list[dict]:
 def summarize_beat_map(beat_map: dict) -> str:
     """Create a concise text summary for injection into LLM prompts."""
     sections_desc = ", ".join(
-        f"{s['type']}({s['start']:.0f}-{s['end']:.0f}s, energy={s['energy']:.2f})"
-        for s in beat_map.get("sections", [])
+        f"{s['type']}({s['start']:.0f}-{s['end']:.0f}s, energy={s['energy']:.2f})" for s in beat_map.get("sections", [])
     )
     return (
         f"Music: {beat_map['tempo']:.0f} BPM, {beat_map['duration']:.0f}s total. "

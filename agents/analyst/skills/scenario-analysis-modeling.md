@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when quantifying a range of outcomes for an investment or business decision using structured base/bull/bear scenario models."
+---
+
 # Scenario Analysis Modeling
 
 **Tags:** analyst, finance, modeling, forecasting, risk

@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when extracting high-signal tech, startup, or science insights from Hacker News, especially from comment threads that qualify or contradict the linked article."
+---
+
 # Hacker News Signal Extraction
 
 **Tags:** explorer, hackernews, curation, tech, signal-noise

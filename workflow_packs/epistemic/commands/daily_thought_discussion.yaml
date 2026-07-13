@@ -1,0 +1,23 @@
+name: daily_thought_discussion
+memory_class: epistemic
+trigger:
+  type: schedule
+  detail: 10:00-20:00
+priority: 40
+version: 1
+max_duration_s: 600
+checkpoint_every: 1
+involved_skills:
+  - daily_thought_discussion
+steps:
+  - name: snapshot_recent_questions_and_threads
+    type: memory
+  - name: choose_discussion_prompt
+    type: deterministic
+  - name: discussion_report
+    type: deterministic
+    action: local_report
+  - name: assumption_quality_gate
+    type: eval
+  - name: experience_record_proposal_gateway
+    type: memory

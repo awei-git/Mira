@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when sizing a market (TAM/SAM/SOM), validating unit economics, or distinguishing real growth from vanity metrics using cohort analysis."
+---
+
 # Quantitative Reasoning
 
 **Tags:** market-analysis, market-sizing, unit-economics, quantitative, financial-analysis

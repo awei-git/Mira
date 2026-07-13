@@ -6,6 +6,8 @@ a task should be dispatched. Extracted from core.py to reduce file size.
 State management: functions use lazy imports of load_state/save_state from
 core to avoid circular imports at module level.
 """
+
+import json
 import logging
 import random
 from datetime import datetime, time, timedelta
@@ -16,11 +18,13 @@ log = logging.getLogger("mira")
 
 def _load_state(user_id: str | None = None):
     from core import load_state
+
     return load_state(user_id=user_id)
 
 
 def _save_state(state, user_id: str | None = None):
     from core import save_state
+
     save_state(state, user_id=user_id)
 
 
@@ -28,16 +32,30 @@ def _save_state(state, user_id: str | None = None):
 # Config imports (safe — config has no dependency on core)
 # ---------------------------------------------------------------------------
 from config import (
-    EXPLORE_SOURCE_GROUPS, EXPLORE_COOLDOWN_MINUTES,
-    EXPLORE_ACTIVE_START, EXPLORE_ACTIVE_END, EXPLORE_MAX_PER_DAY,
-    REFLECT_DAY, REFLECT_TIME,
+    EXPLORE_SOURCE_GROUPS,
+    EXPLORE_COOLDOWN_MINUTES,
+    EXPLORE_ACTIVE_START,
+    EXPLORE_ACTIVE_END,
+    EXPLORE_MAX_PER_DAY,
+    REFLECT_DAY,
+    REFLECT_TIME,
     JOURNAL_TIME,
-    ANALYST_TIMES, ANALYST_BUSINESS_DAYS_ONLY,
-    ZHESI_TIME, RESEARCH_TIME, RESEARCH_TOPIC,
+    ANALYST_TIMES,
+    ANALYST_BUSINESS_DAYS_ONLY,
+    ZHESI_TIME,
+    RESEARCH_TIME,
+    RESEARCH_TOPIC,
     RESEARCH_LOG_TIME,
-    SOUL_QUESTION_TIME, BOOK_REVIEW_TIME,
-    SKILL_STUDY_SOURCE_GROUPS, SKILL_STUDY_COOLDOWN_HOURS, SKILL_STUDY_TIME,
+    SOUL_QUESTION_TIME,
+    DAILY_COLLAB_TIME,
+    BOOK_REVIEW_TIME,
+    SKILL_STUDY_SOURCE_GROUPS,
+    SKILL_STUDY_COOLDOWN_HOURS,
+    SKILL_STUDY_TIME,
     LOG_RETENTION_DAYS,
+    DATA_DIR,
+    MIRA_DIR,
+    SOUL_DIR,
 )
 
 
@@ -46,13 +64,14 @@ from config import (
 # ---------------------------------------------------------------------------
 DAILY_PHOTO_TIME = time(7, 0)
 DAILY_REPORT_TIME = time(22, 0)
-GROWTH_COOLDOWN_HOURS = 2   # Run growth cycle every 2 hours (8:00-23:00 = ~7 runs/day)
-NOTES_COOLDOWN_HOURS = 4    # Run Notes cycle at most every 4 hours
+GROWTH_COOLDOWN_HOURS = 2  # Run growth cycle every 2 hours (8:00-23:00 = ~7 runs/day)
+NOTES_COOLDOWN_HOURS = 4  # Run Notes cycle at most every 4 hours
 
 
 # ---------------------------------------------------------------------------
 # Trigger functions
 # ---------------------------------------------------------------------------
+
 
 def should_explore() -> dict | None:
     """Check if Mira should explore now. Free-form, curiosity-driven.
@@ -150,7 +169,11 @@ def should_research_log(user_id: str | None = None) -> bool:
     scheduled = datetime.combine(now.date(), RESEARCH_LOG_TIME)
     if now < scheduled:
         return False
-    state = _load_state(user_id=user_id)
+    # research_log writes its completion marker into the user-namespaced state
+    # (user_id="default"), so default to that namespace when the dispatcher calls
+    # us without a user_id. Without this, the trigger keeps firing after the
+    # log is already written.
+    state = _load_state(user_id=user_id or "default")
     key = f"research_log_{now.strftime('%Y-%m-%d')}"
     return not state.get(key)
 
@@ -164,7 +187,7 @@ def should_research_cycle() -> bool:
     has nothing to report.
 
     The state key `last_research_cycle` is written by research_cycle.py into
-    the user-namespaced state (user_id="ang"), so we must read from the same
+    the user-namespaced state (user_id="default"), so we must read from the same
     namespace here. Earlier this read top-level state, which never matched the
     write side and caused research-cycle to dispatch every 30s — burning the
     Claude SDK quota and starving substack-growth/notes out of BG slots.
@@ -173,7 +196,7 @@ def should_research_cycle() -> bool:
     if now.hour < 8 or now.hour >= 23:
         return False
 
-    state = _load_state(user_id="ang")
+    state = _load_state(user_id="default")
     last = state.get("last_research_cycle", "")
     if last:
         try:
@@ -296,6 +319,80 @@ def should_soul_question(user_id: str | None = None) -> bool:
     return not state.get(f"soul_question_{now.strftime('%Y-%m-%d')}")
 
 
+def should_daily_collab(user_id: str | None = None) -> bool:
+    """Check whether Mira should send today's proactive collab message."""
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), DAILY_COLLAB_TIME)
+    if now < scheduled or now.hour >= 23:
+        return False
+
+    user = user_id or "default"
+    state = _load_state(user_id=user)
+    if not state.get(f"daily_collab_{now.strftime('%Y-%m-%d')}"):
+        return True
+    return not _has_recent_daily_collab_message(user_id=user)
+
+
+def _has_recent_daily_collab_message(*, user_id: str, max_age_hours: int = 18) -> bool:
+    item_path = MIRA_DIR / "users" / user_id / "items" / "disc_daily_collab.json"
+    try:
+        item = json.loads(item_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    cutoff = datetime.now() - timedelta(hours=max_age_hours)
+    for msg in item.get("messages", []):
+        if msg.get("sender") != "agent":
+            continue
+        try:
+            sent_at = datetime.fromisoformat(str(msg.get("timestamp", "")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if sent_at.tzinfo is not None:
+            sent_at = sent_at.astimezone().replace(tzinfo=None)
+        if sent_at >= cutoff:
+            return True
+    return False
+
+
+def _should_daily_collab_review() -> bool:
+    """Write one compact weekly relationship review on Monday evening."""
+    now = datetime.now()
+    if now.weekday() != 0:
+        return False
+    if not (20 <= now.hour <= 23):
+        return False
+    state = _load_state(user_id="default")
+    week_key = f"daily_collab_review_{now.strftime('%Y-W%W')}"
+    return not state.get(week_key)
+
+
+def _should_daily_collab_operator_brief() -> bool:
+    """Write one compact V5 operator brief when there is actionable signal."""
+    now = datetime.now()
+    if not (18 <= now.hour <= 23):
+        return False
+    state = _load_state(user_id="default")
+    today_key = f"daily_collab_operator_brief_{now.strftime('%Y-%m-%d')}"
+    if state.get(today_key):
+        return False
+    try:
+        from daily_collab import build_daily_collab_operator_brief, has_operator_delivery, operator_delivery_key
+
+        _, metrics = build_daily_collab_operator_brief()
+        if not (
+            metrics.get("act_signals")
+            or metrics.get("budget_signals")
+            or metrics.get("candidate_article_seeds")
+            or metrics.get("recent_incidents")
+            or (isinstance(metrics.get("writing_triage"), dict) and metrics["writing_triage"].get("parked_count"))
+        ):
+            return False
+        return not has_operator_delivery(operator_delivery_key(metrics))
+    except Exception as exc:
+        log.debug("daily collab operator brief trigger failed: %s", exc)
+        return False
+
+
 def should_book_review() -> bool:
     """Check if it's time for the daily book review report (once per day)."""
     now = datetime.now()
@@ -307,6 +404,38 @@ def should_book_review() -> bool:
 
     state = _load_state()
     return not state.get(f"book_review_{now.strftime('%Y-%m-%d')}")
+
+
+def should_mira_marginalia() -> bool:
+    """Check if the Mira Marginalia weekly reading/podcast job should run."""
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), time(9, 30))
+    delta = (now - scheduled).total_seconds() / 60
+    if delta < 0 or delta > 210:
+        return False
+
+    state_path = SOUL_DIR / "mira_marginalia_state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    current_week = f"{now.year}-W{now.isocalendar()[1]:02d}"
+    if state.get("status") == "complete" and state.get("week_id") == current_week:
+        return False
+    return state.get("last_run_date") != now.strftime("%Y-%m-%d")
+
+
+def should_comparative_book_project() -> bool:
+    """Check if it's time for the 30-day comparative book project."""
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), time(10, 0))
+    delta = (now - scheduled).total_seconds() / 60
+
+    if delta < 0 or delta > 180:
+        return False
+
+    state = _load_state()
+    return not state.get(f"comparative_book_project_{now.strftime('%Y-%m-%d')}")
 
 
 def should_check_writing() -> bool:
@@ -334,6 +463,7 @@ def should_check_writing() -> bool:
 def should_podcast() -> tuple[str, str, str] | None:
     """Delegate podcast backlog selection to the podcast agent."""
     import sys as _sys
+
     podcast_dir = str(Path(__file__).resolve().parent.parent.parent / "podcast")
     if podcast_dir not in _sys.path:
         _sys.path.insert(0, podcast_dir)
@@ -437,7 +567,8 @@ def should_spark_check(user_id: str | None = None) -> bool:
     # Only check if there's been new input (explore, task, etc.)
     # Use a simple heuristic: check if memory has grown since last spark check
     last_memory_lines = state.get("spark_memory_lines", 0)
-    from soul_manager import get_memory_size
+    from memory.soul import get_memory_size
+
     current_lines = get_memory_size()
     if current_lines <= last_memory_lines:
         return False
@@ -451,12 +582,14 @@ _IDLE_THINK_DAILY_COST_CAP = 5.0  # USD — stop idle-think when daily Claude co
 def _idle_think_cost_today() -> float:
     """Sum today's idle-think Claude cost from usage log."""
     from datetime import date
+
     usage_file = Path(__file__).resolve().parents[2] / "logs" / f"usage_{date.today().isoformat()}.jsonl"
     if not usage_file.exists():
         return 0.0
     total = 0.0
     try:
         import json as _json
+
         for line in usage_file.read_text(encoding="utf-8").splitlines():
             try:
                 d = _json.loads(line)
@@ -469,26 +602,41 @@ def _idle_think_cost_today() -> float:
     return total
 
 
-def should_idle_think(user_id: str = "ang") -> bool:
+_IDLE_THINK_MIN_INTERVAL_MINUTES = 120  # hard floor: at most once per 2 hours per user
+
+
+def should_idle_think(user_id: str = "default") -> bool:
     """Returns True if emptiness has crossed the threshold and agent is idle.
 
-    The emptiness value accumulates over time when Mira is idle. More pending
-    questions = faster accumulation. When it exceeds the threshold, Mira
-    self-awakens to think through the top-priority question.
-
-    External input bypasses this entirely (handled in do_talk / cmd_run).
+    Hard constraint: at most once per 2 hours per user, regardless of
+    emptiness value. This prevents oMLX from running non-stop.
     """
     try:
-        from emptiness import tick, check_threshold
+        from evaluation.emptiness import tick, check_threshold, load_emptiness
         from task_manager import TaskManager
     except ImportError:
         return False
 
+    # --- Hard 2-hour minimum interval (per user) ---
+    state = load_emptiness(user_id=user_id)
+    last_think = state.get("last_think_at")
+    if last_think:
+        try:
+            from datetime import datetime, timezone
+
+            elapsed = datetime.now(timezone.utc) - datetime.fromisoformat(last_think.replace("Z", "+00:00"))
+            elapsed_min = elapsed.total_seconds() / 60.0
+            if elapsed_min < _IDLE_THINK_MIN_INTERVAL_MINUTES:
+                return False
+        except (ValueError, TypeError):
+            pass
+
     # Daily cost cap: stop burning Claude quota on idle thinking
     cost = _idle_think_cost_today()
     if cost >= _IDLE_THINK_DAILY_COST_CAP:
-        log.info("idle-think: daily Claude cost cap reached ($%.2f >= $%.2f), skipping",
-                 cost, _IDLE_THINK_DAILY_COST_CAP)
+        log.info(
+            "idle-think: daily Claude cost cap reached ($%.2f >= $%.2f), skipping", cost, _IDLE_THINK_DAILY_COST_CAP
+        )
         return False
 
     # Don't self-awaken if there are active tasks (external input takes priority)
@@ -540,6 +688,22 @@ def should_daily_report() -> bool:
     return not state.get(f"daily_report_{now.strftime('%Y-%m-%d')}")
 
 
+def should_kol_digest() -> bool:
+    """Run the known-KOL digest once per morning, independent of explorer."""
+    now = datetime.now()
+    if not (7 <= now.hour < 11):
+        return False
+    today = now.strftime("%Y-%m-%d")
+    state_path = DATA_DIR / "kol" / "state.json"
+    try:
+        import json
+
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        state = {}
+    return not str(state.get("last_kol_digest", "")).startswith(today)
+
+
 def _should_health_check() -> bool:
     """Run health check once per day in the morning (7-9 AM).
 
@@ -547,22 +711,57 @@ def _should_health_check() -> bool:
     daily insight reflects last night's sleep and this morning's readiness.
     """
     now = datetime.now()
-    if not (7 <= now.hour <= 9):
+    if not (7 <= now.hour < 12):
         return False
     state = _load_state()
     today = now.strftime("%Y-%m-%d")
     if state.get(f"health_check_{today}"):
         return False
-    state[f"health_check_{today}"] = now.isoformat()
-    _save_state(state)
     return True
+
+
+def _has_unreported_health_metrics() -> bool:
+    """Return True when fresh health data arrived after the latest daily insight."""
+    try:
+        import psycopg2
+        import psycopg2.extras
+        from config import DATABASE_URL
+    except Exception:
+        return False
+
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT max(recorded_at)::date AS latest_metric_date
+                    FROM health_metrics
+                    WHERE recorded_at >= current_date - interval '2 days'
+                    """
+                )
+                metric_row = cur.fetchone() or {}
+                latest_metric_date = metric_row.get("latest_metric_date")
+                if not latest_metric_date:
+                    return False
+                cur.execute(
+                    """
+                    SELECT max(insight_date) AS latest_insight_date
+                    FROM health_insights
+                    WHERE insight_type = 'daily'
+                    """
+                )
+                insight_row = cur.fetchone() or {}
+                latest_insight_date = insight_row.get("latest_insight_date")
+                return latest_insight_date is None or latest_metric_date > latest_insight_date
+    except Exception:
+        return False
 
 
 def should_health_check_or_pending_exports() -> bool:
     """Run health check when its daily window opens or pending exports exist."""
     from core import _has_pending_health_exports
 
-    return _should_health_check() or _has_pending_health_exports()
+    return _should_health_check() or _has_pending_health_exports() or _has_unreported_health_metrics()
 
 
 def _should_health_weekly_report() -> bool:
@@ -573,11 +772,9 @@ def _should_health_weekly_report() -> bool:
     if not (9 <= now.hour <= 11):
         return False
     state = _load_state()
-    week_key = f"health_weekly_{now.strftime('%Y-W%W')}"
+    week_key = f"health_weekly_{now.strftime('%Y-%m-%d')}"
     if state.get(week_key):
         return False
-    state[week_key] = now.isoformat()
-    _save_state(state)
     return True
 
 
@@ -590,8 +787,6 @@ def _should_self_audit() -> bool:
     today = now.strftime("%Y-%m-%d")
     if state.get(f"self_audit_{today}"):
         return False
-    state[f"self_audit_{today}"] = now.isoformat()
-    _save_state(state)
     return True
 
 
@@ -604,16 +799,13 @@ def _should_self_evolve() -> bool:
     today = now.strftime("%Y-%m-%d")
     if state.get(f"self_evolve_{today}"):
         return False
-    state[f"self_evolve_{today}"] = now.isoformat()
-    state[f"self_evolve_{today}_actor"] = "self-evolve/claude-think"
-    _save_state(state)
     return True
 
 
 def _should_backlog_executor() -> bool:
-    """Run when there is at least one approved executable backlog item."""
+    """Run when there is at least one executable backlog item."""
     now = datetime.now()
-    if not (14 <= now.hour <= 18):
+    if not (8 <= now.hour <= 23):
         return False
     state = _load_state()
     stamp = state.get("last_backlog_executor", "")
@@ -623,19 +815,37 @@ def _should_backlog_executor() -> bool:
                 return False
         except ValueError:
             pass
+    if _has_control_backlog_work():
+        return True
     try:
-        from action_backlog import ActionBacklog
+        from ops.backlog import ActionBacklog
 
         backlog = ActionBacklog()
         has_work = any(
-            item.status == "approved" and item.executor == "self_evolve_proposal"
-            for item in backlog.get_active()
+            item.status == "approved" and item.executor == "self_evolve_proposal" for item in backlog.get_active()
         )
     except Exception:
         return False
     if not has_work:
         return False
     return True
+
+
+def _has_control_backlog_work() -> bool:
+    """Return whether the Postgres control backlog has executable proposed work."""
+    try:
+        from backlog_executor import CONTROL_EXECUTORS
+        from control.db import transaction
+        from control.repository import ControlRepository
+
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            return any(
+                item.get("executor") in CONTROL_EXECUTORS
+                for item in repo.list_backlog_items("default", status="proposed", limit=200)
+            )
+    except Exception:
+        return False
 
 
 def _should_restore_dry_run() -> bool:

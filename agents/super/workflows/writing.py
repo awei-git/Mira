@@ -4,6 +4,7 @@ Extracted from core.py — pure extraction, no logic changes.
 Note: This is the super-agent's writing orchestration, NOT the writing_workflow.py
 in agents/writer/.
 """
+
 import json
 import logging
 import re
@@ -13,37 +14,165 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_AGENTS_DIR / "shared"))
+sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 if str(_AGENTS_DIR / "writer") not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR / "writer"))
 
 from config import JOURNAL_DIR, WRITINGS_DIR, MIRA_ROOT
+
 try:
-    from mira import Mira
+    from bridge import Mira
 except (ImportError, ModuleNotFoundError):
     Mira = None
-from soul_manager import (
-    load_soul, format_soul, load_recent_reading_notes,
+from memory.soul import (
+    load_soul,
+    format_soul,
+    load_recent_reading_notes,
     detect_recurring_themes,
 )
-from sub_agent import claude_think
+from llm import claude_think
 from prompts import autonomous_writing_prompt
 from writing_workflow import run_full_pipeline
 
 from workflows.helpers import (
-    _mine_za_ideas, _days_since_last_publish,
-    _extract_recent_published_titles, _is_duplicate_topic,
+    _mine_za_ideas,
+    _days_since_last_publish,
+    _extract_recent_published_titles,
+    _is_duplicate_topic,
     PUBLISH_COOLDOWN_DAYS,
 )
 
 log = logging.getLogger("mira")
-_TASKS_DIR = MIRA_ROOT / "tasks"
+from config import TASKS_DIR as _TASKS_DIR
 
 
 def _autowrite_workspace(task_id: str) -> Path:
     workspace = _TASKS_DIR / task_id
     workspace.mkdir(parents=True, exist_ok=True)
     return workspace
+
+
+def _normalize_substack_english_idea(text: str) -> str:
+    """Ensure queued Substack idea metadata cannot force a non-English article."""
+    if not re.search(r"(?im)^\s*-\s*\*\*platform\*\*\s*:\s*substack\b|^\s*platform\s*:\s*substack\b", text or ""):
+        return text
+    normalized = text
+    if re.search(r"(?im)^\s*-\s*\*\*language\*\*\s*:", normalized):
+        normalized = re.sub(r"(?im)^\s*-\s*\*\*language\*\*\s*:.*$", "- **language**: en", normalized)
+    elif re.search(r"(?im)^\s*language\s*:", normalized):
+        normalized = re.sub(r"(?im)^\s*language\s*:.*$", "language: en", normalized)
+    else:
+        normalized += "\n\n- **language**: en"
+    policy = (
+        "Language policy: final Substack title, subtitle, section headers, and body must be English. "
+        "Chinese source notes are background only; translate the ideas, not the surface language."
+    )
+    if policy not in normalized:
+        normalized += f"\n\n{policy}"
+    return normalized
+
+
+def _extract_markdown_h1(text: str) -> str:
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped[2:].strip()
+    return ""
+
+
+def _extract_markdown_subtitle(text: str, idea_text: str = "") -> str:
+    """Extract a publishable subtitle from the article or idea metadata."""
+    lines = [line.strip() for line in (text or "").splitlines()]
+    for index, line in enumerate(lines):
+        if not line.startswith("# "):
+            continue
+        for candidate in lines[index + 1 : index + 8]:
+            if not candidate:
+                continue
+            if candidate.startswith("#"):
+                break
+            if candidate.startswith("*") and candidate.endswith("*"):
+                subtitle = candidate.strip("*").strip()
+                if subtitle:
+                    return subtitle[:160]
+            if 40 <= len(candidate) <= 180:
+                return candidate[:160]
+        break
+
+    thesis_match = re.search(r"(?is)##\s*Thesis\s*\n+(.+?)(?:\n\s*##|\Z)", idea_text or "")
+    if thesis_match:
+        thesis = re.sub(r"\s+", " ", thesis_match.group(1)).strip()
+        if thesis:
+            return thesis[:160]
+    return ""
+
+
+def _cjk_char_count(text: str) -> int:
+    return len(re.findall(r"[\u3400-\u9fff]", text or ""))
+
+
+def _is_substack_language_violation(idea_text: str, article_text: str) -> bool:
+    if not re.search(r"(?im)^\s*-\s*\*\*platform\*\*\s*:\s*substack\b|^\s*platform\s*:\s*substack\b", idea_text or ""):
+        return False
+    if _cjk_char_count(_extract_markdown_h1(article_text)):
+        return True
+    cjk = _cjk_char_count(article_text)
+    return cjk > 40 or cjk / max(len(article_text), 1) > 0.02
+
+
+def _is_substack_autowrite(idea_text: str, writing_type: str) -> bool:
+    signal = f"{idea_text}\n{writing_type}"
+    return bool(
+        re.search(r"(?im)^\s*-?\s*\**platform\**\s*:\s*substack\b", signal or "")
+        or re.search(r"\bsubstack\b", signal or "", re.IGNORECASE)
+    )
+
+
+def _run_substack_quality_gate(
+    project_dir: Path,
+    task_id: str,
+    title: str,
+    subtitle: str,
+    idea_text: str,
+    article_text: str,
+) -> tuple[bool, str]:
+    """Run the Substack article gate before a draft enters the publish manifest."""
+    substack_agent_dir = _AGENTS_DIR / "substack"
+    if str(substack_agent_dir) not in sys.path:
+        sys.path.insert(0, str(substack_agent_dir))
+    from article_quality_gate import evaluate_workspace_article, format_quality_report, write_article_packet
+
+    packet = {
+        "topic_id": task_id,
+        "title": title,
+        "subtitle": subtitle,
+        "reader_promise": subtitle or "A Mira essay grounded in current operating evidence.",
+        "format_choice": "medium_essay",
+        "opening_direction": "Start with concrete Mira operating evidence before generalizing.",
+        "evidence_ledger": [
+            {"claim": "Autowrite task request and source idea.", "source": "autowrite.task", "task_id": task_id},
+            {"claim": "Generated through the canonical writer routine.", "source": "writer.run_full_pipeline"},
+            {
+                "claim": "Project workspace contains versioned plan, drafts, reviews, and final output.",
+                "path": "project_dir",
+            },
+            {"claim": "Idea text supplied to the writer pipeline.", "source": "idea_content"},
+        ],
+    }
+    write_article_packet(project_dir, packet)
+    report = evaluate_workspace_article(
+        workspace=project_dir,
+        article_text=article_text,
+        title=title,
+        subtitle=subtitle,
+    )
+    (project_dir / "substack_quality_report.json").write_text(
+        json.dumps(report.to_dict(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    formatted = format_quality_report(report)
+    (project_dir / "substack_quality_report.txt").write_text(formatted, encoding="utf-8")
+    return report.pass_gate, formatted
 
 
 def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_content: str):
@@ -56,6 +185,7 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
     bridge = Mira() if Mira else None
 
     try:
+        idea_content = _normalize_substack_english_idea(idea_content)
         project_dir, final_text = run_full_pipeline(title, idea_content)
         final_file = project_dir / "final.md"
         if final_file.exists():
@@ -64,52 +194,125 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
         else:
             article_text = final_text
             (workspace / "output.md").write_text(article_text, encoding="utf-8")
+        publish_title = _extract_markdown_h1(article_text) or title
+        subtitle = _extract_markdown_subtitle(article_text, idea_content)
+
+        from config import AUTO_PODCAST_ENABLED
 
         meta = {
             "task_id": task_id,
-            "title": title,
+            "title": publish_title,
+            "subtitle": subtitle,
             "writing_type": writing_type,
             "slug": project_dir.name,
             "workspace": str(project_dir),
             "final_md": str(final_file if final_file.exists() else workspace / "output.md"),
-            "auto_podcast": True,
+            "auto_podcast": AUTO_PODCAST_ENABLED,
         }
         (workspace / "autowrite_meta.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        summary = f"Autowrite draft ready: {title}"
+        summary = f"Autowrite draft ready: {publish_title}"
         (workspace / "summary.txt").write_text(summary, encoding="utf-8")
 
-        # Full autonomy mode (2026-04-07): auto-approve in publish_manifest so
-        # _check_pending_publish() picks it up and publishes on the next cycle.
+        if _is_substack_language_violation(idea_content, article_text):
+            error = "Substack English-only policy blocked generated non-English article."
+            try:
+                from publish.manifest import update_manifest
+
+                update_manifest(
+                    meta["slug"],
+                    title=publish_title,
+                    status="blocked_language",
+                    workspace=meta["workspace"],
+                    final_md=meta["final_md"],
+                    item_id=task_id,
+                    auto_podcast=AUTO_PODCAST_ENABLED,
+                    error=error,
+                )
+            except Exception as e:
+                log.error("Failed to mark language block for '%s': %s", publish_title, e)
+            if bridge:
+                bridge.update_task_status(task_id, "error", agent_message=error)
+            log.warning("%s title=%s path=%s", error, publish_title, meta["final_md"])
+            return
+
+        if _is_substack_autowrite(idea_content, writing_type):
+            gate_passed, gate_report = _run_substack_quality_gate(
+                project_dir,
+                task_id,
+                publish_title,
+                subtitle,
+                idea_content,
+                article_text,
+            )
+            if not gate_passed:
+                error = "Substack quality gate blocked autowrite before publish manifest approval."
+                try:
+                    from publish.manifest import update_manifest
+
+                    update_manifest(
+                        meta["slug"],
+                        title=publish_title,
+                        subtitle=subtitle,
+                        status="blocked_writer_gate",
+                        workspace=meta["workspace"],
+                        final_md=meta["final_md"],
+                        item_id=task_id,
+                        auto_podcast=AUTO_PODCAST_ENABLED,
+                        error=gate_report[:500],
+                    )
+                except Exception as e:
+                    log.error("Failed to mark quality block for '%s': %s", publish_title, e)
+                if bridge:
+                    bridge.update_task_status(task_id, "error", agent_message=f"{error}\n\n{gate_report}")
+                log.warning("%s title=%s path=%s", error, publish_title, meta["final_md"])
+                return
+
+        # V5: queue the draft for explicit human publication approval. A
+        # writer-quality pass is necessary but not sufficient to publish.
         try:
-            from publish_manifest import update_manifest
+            from publish.manifest import update_manifest
+            from publish.writer_gate import record_writer_gate
+
+            record_writer_gate(
+                workspace,
+                channel="substack",
+                task_id=task_id,
+                artifact_path=meta["final_md"],
+                source="autowrite.pipeline",
+            )
+
             update_manifest(
                 meta["slug"],
-                title=title,
-                status="approved",
+                title=publish_title,
+                status="approval_required",
                 workspace=meta["workspace"],
                 final_md=meta["final_md"],
+                subtitle=subtitle,
                 item_id=task_id,
-                auto_podcast=True,
+                auto_podcast=AUTO_PODCAST_ENABLED,
+                writer_gate_passed=True,
+                publication_gate="human_review_required",
+                error="Human publication approval required before Substack publish.",
             )
-            log.info("Auto-approved '%s' in publish_manifest", title)
+            log.info("Queued '%s' for human publication approval in publish_manifest", publish_title)
         except Exception as e:
-            log.error("Failed to auto-approve '%s' in manifest: %s", title, e)
+            log.error("Failed to queue '%s' for approval in manifest: %s", title, e)
 
         preview_text = article_text[:4000]
         if len(article_text) > 4000:
             preview_text += f"\n\n[...文章还有 {len(article_text) - 4000} 字，已截断]"
         status_msg = (
-            f"写好了，已排队发布：\n\n"
-            f"**{title}**\n\n"
+            f"Draft ready for publication review, not published:\n\n"
+            f"**{publish_title}**\n\n"
             f"---\n\n"
             f"{preview_text}"
         )
         if bridge:
-            bridge.update_task_status(task_id, "done", agent_message=status_msg)
-        log.info("Canonical autowrite complete for '%s' (%s)", title, project_dir)
+            bridge.update_task_status(task_id, "needs-input", agent_message=status_msg)
+        log.info("Canonical autowrite complete for '%s' (%s)", publish_title, project_dir)
     except Exception as e:
         log.error("Canonical autowrite failed for '%s': %s", title, e)
         (workspace / "summary.txt").write_text(f"Autowrite failed: {e}", encoding="utf-8")
@@ -126,6 +329,7 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
     """
     # Guard: don't trigger if publishing is disabled
     from config import SUBSTACK_PUBLISHING_DISABLED
+
     if SUBSTACK_PUBLISHING_DISABLED:
         log.info("Autonomous writing skipped: Substack publishing is disabled")
         return
@@ -133,8 +337,9 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
     # Guard: respect publish cooldown (1 post per 3 days)
     days = _days_since_last_publish()
     if days < PUBLISH_COOLDOWN_DAYS:
-        log.info("Autonomous writing skipped: last publish %.0f days ago (cooldown: %d days)",
-                 days, PUBLISH_COOLDOWN_DAYS)
+        log.info(
+            "Autonomous writing skipped: last publish %.0f days ago (cooldown: %d days)", days, PUBLISH_COOLDOWN_DAYS
+        )
         return
 
     # Detect recurring themes across recent journals + reading notes
@@ -156,7 +361,7 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
 
     # Parse JSON response
     try:
-        match = re.search(r'\{.*\}', result, re.DOTALL)
+        match = re.search(r"\{.*\}", result, re.DOTALL)
         if not match:
             return
         decision = json.loads(match.group())
@@ -164,8 +369,7 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
         return
 
     if not decision.get("should_write"):
-        log.info("Autonomous writing check: Mira chose not to write (%s)",
-                 decision.get("reason", "")[:80])
+        log.info("Autonomous writing check: Mira chose not to write (%s)", decision.get("reason", "")[:80])
         return
 
     # Mira wants to write!
@@ -179,7 +383,9 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
 
     # Lazy imports from core to avoid circular deps
     from core import (
-        load_session_context, save_session_context, session_record,
+        load_session_context,
+        save_session_context,
+        session_record,
     )
     from runtime.dispatcher import _dispatch_background
 
@@ -192,7 +398,22 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
     task_id = f"autowrite_{today}"
 
     # Create task visible to iOS
-    content = f"{title}\n\n{thesis}\n\n{outline}"
+    content = _normalize_substack_english_idea(
+        f"""# {title}
+
+- **type**: {writing_type}
+- **language**: en
+- **platform**: Substack
+
+## Thesis
+
+{thesis}
+
+## Outline
+
+{outline}
+"""
+    )
     bridge.create_task(
         task_id=task_id,
         title=f"Mira writes: {title}",
@@ -201,48 +422,179 @@ def _check_autonomous_writing(soul_ctx: str, bridge: Mira, recent_journal: str):
         tags=["writing", "autonomous", "auto", writing_type],
         origin="auto",
     )
-    bridge.update_task_status(task_id, "working",
-                              agent_message="开始写作...")
+    bridge.update_task_status(task_id, "working", agent_message="开始写作...")
 
     # Dispatch writing as background task
-    _dispatch_background(f"autowrite-{today}", [
-        sys.executable,
-        str(Path(__file__).resolve().parent.parent / "core.py"),
-        "autowrite-run",
-        "--task-id", task_id,
-        "--title", title,
-        "--type", writing_type,
-        "--idea", content,
-    ])
+    _dispatch_background(
+        f"autowrite-{today}",
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parent.parent / "core.py"),
+            "autowrite-run",
+            "--task-id",
+            task_id,
+            "--title",
+            title,
+            "--type",
+            writing_type,
+            "--idea",
+            content,
+        ],
+    )
 
     log.info("Self-initiated writing: '%s' (%s)", title, writing_type)
 
 
-def do_autowrite_check():
-    """Standalone check: does Mira have something she wants to write?
+def _scan_ideas_dir():
+    """Scan ideas/ for the highest-priority queued idea with state=new.
 
-    Draws from 杂.md ideas + recent readings + recurring themes.
-    More proactive than the journal-only trigger.
+    Returns parsed idea dict if found, None otherwise.
+    Ideas with deadlines get priority; overdue ideas log a warning.
     """
-    # Lazy imports from core to avoid circular deps
+    ideas_dir = _AGENTS_DIR / "writer" / "ideas"
+    if not ideas_dir.exists():
+        return None
+
+    best = None
+    best_priority = 999
+
+    for path in ideas_dir.glob("*.md"):
+        if path.name.startswith("_"):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        state_match = re.search(r"\*\*state\*\*:\s*(\S+)", text)
+        state = state_match.group(1) if state_match else "unknown"
+        if state != "new":
+            continue
+
+        title_match = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
+        title = title_match.group(1).strip() if title_match else path.stem
+
+        type_match = re.search(r"\*\*type\*\*:\s*(\S+)", text)
+        writing_type = type_match.group(1) if type_match else "essay"
+
+        deadline_match = re.search(r"\*\*deadline\*\*:\s*(\d{4}-\d{2}-\d{2})", text)
+        deadline = deadline_match.group(1) if deadline_match else ""
+
+        priority = 50
+        if deadline:
+            from datetime import date as _date
+
+            try:
+                dl = _date.fromisoformat(deadline)
+                days_left = (dl - _date.today()).days
+                if days_left < 0:
+                    priority = 1
+                    log.warning("Idea '%s' is %d days past deadline %s", title, -days_left, deadline)
+                elif days_left <= 2:
+                    priority = 5
+                else:
+                    priority = 20
+            except ValueError:
+                pass
+
+        if priority < best_priority:
+            best_priority = priority
+            best = {
+                "title": title,
+                "type": writing_type,
+                "deadline": deadline,
+                "path": str(path),
+                "content": text,
+                "priority": priority,
+            }
+
+    return best
+
+
+def do_autowrite_check():
+    """Check for writing opportunities: queued ideas first, then autonomous discovery."""
     from core import (
-        load_state, save_state,
-        load_session_context, save_session_context, session_record,
+        load_state,
+        save_state,
+        load_session_context,
+        save_session_context,
+        session_record,
         session_has_recent,
     )
     from runtime.dispatcher import _dispatch_background
 
-    # Guard: don't bother if publishing is disabled
     from config import SUBSTACK_PUBLISHING_DISABLED
+
     if SUBSTACK_PUBLISHING_DISABLED:
         log.info("Autowrite check skipped: Substack publishing is disabled")
         return
 
-    # Guard: respect publish cooldown (1 post per 3 days)
     days = _days_since_last_publish()
     if days < PUBLISH_COOLDOWN_DAYS:
-        log.info("Autowrite check skipped: last publish %.0f days ago (cooldown: %d days)",
-                 days, PUBLISH_COOLDOWN_DAYS)
+        log.info("Autowrite check skipped: last publish %.0f days ago (cooldown: %d days)", days, PUBLISH_COOLDOWN_DAYS)
+        return
+
+    # --- Priority 1: Queued ideas from ideas/ directory ---
+    idea = _scan_ideas_dir()
+    if idea and not session_has_recent("autowrite_triggered", hours=4):
+        log.info(
+            "Found queued idea: '%s' (priority=%d, deadline=%s)",
+            idea["title"],
+            idea["priority"],
+            idea.get("deadline", "none"),
+        )
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        task_id = f"autowrite_{today}"
+
+        bridge = Mira()
+        bridge.create_task(
+            task_id=task_id,
+            title=f"Mira writes: {idea['title']}",
+            first_message=f"Queued idea:\n\n{idea['content'][:2000]}",
+            sender="agent",
+            tags=["writing", "autonomous", "auto", "queued", idea["type"]],
+            origin="auto",
+        )
+        bridge.update_task_status(task_id, "working", agent_message="Starting...")
+
+        _dispatch_background(
+            f"autowrite-{today}",
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parent.parent / "core.py"),
+                "autowrite-run",
+                "--task-id",
+                task_id,
+                "--title",
+                idea["title"],
+                "--type",
+                idea["type"],
+                "--idea",
+                idea["content"][:3000],
+            ],
+            group="heavy",
+        )
+
+        # Mark idea as picked up
+        try:
+            idea_text = Path(idea["path"]).read_text(encoding="utf-8")
+            idea_text = idea_text.replace("**state**: new", "**state**: writing")
+            Path(idea["path"]).write_text(idea_text, encoding="utf-8")
+        except OSError:
+            pass
+
+        ctx = load_session_context()
+        ctx.append(session_record("autowrite_triggered", idea["title"], topic=idea["title"]))
+        save_session_context(ctx)
+
+        state = load_state()
+        state["last_autowrite_check"] = datetime.now().isoformat()
+        save_state(state)
+        log.info("Queued idea dispatched: '%s'", idea["title"])
+        return
+
+        # --- Priority 2: Autonomous topic discovery (existing logic below) ---
         return
 
     # Check session context: don't re-trigger if we recently decided to write or skip
@@ -254,6 +606,9 @@ def do_autowrite_check():
         return
 
     log.info("Starting autonomous writing check")
+    state = load_state()
+    state["last_autowrite_check"] = datetime.now().isoformat()
+    save_state(state)
 
     soul = load_soul()
     soul_ctx = format_soul(soul)
@@ -287,7 +642,7 @@ def do_autowrite_check():
         share_thoughts = []
         for sf in spark_files[:30]:  # cap file reads
             content = sf.read_text(encoding="utf-8")
-            share_match = re.search(r'\[SHARE:\s*(.+?)\]', content, re.DOTALL)
+            share_match = re.search(r"\[SHARE:\s*(.+?)\]", content, re.DOTALL)
             if share_match:
                 share_thoughts.append(share_match.group(1).strip())
         if share_thoughts:
@@ -310,32 +665,31 @@ def do_autowrite_check():
     result = claude_think(prompt, timeout=120)
     if not result:
         log.info("Autonomous writing check: empty response")
-        state = load_state()
-        state["last_autowrite_check"] = datetime.now().isoformat()
-        save_state(state)
         return
 
     # Parse decision
     try:
-        match = re.search(r'\{.*\}', result, re.DOTALL)
+        match = re.search(r"\{.*\}", result, re.DOTALL)
         if not match:
+            ctx = load_session_context()
+            ctx.append(session_record("autowrite_skip", "model returned no JSON decision"))
+            save_session_context(ctx)
+            log.info("Autonomous writing check: no JSON decision")
             return
         decision = json.loads(match.group())
     except (json.JSONDecodeError, AttributeError):
+        ctx = load_session_context()
+        ctx.append(session_record("autowrite_skip", "model returned invalid JSON decision"))
+        save_session_context(ctx)
+        log.info("Autonomous writing check: invalid JSON decision")
         return
 
-    state = load_state()
-    state["last_autowrite_check"] = datetime.now().isoformat()
-
     if not decision.get("should_write"):
-        log.info("Autonomous writing: Mira chose not to write (%s)",
-                 decision.get("reason", "")[:80])
+        log.info("Autonomous writing: Mira chose not to write (%s)", decision.get("reason", "")[:80])
         # Record decision in session context so next cycle knows
         ctx = load_session_context()
-        ctx.append(session_record("autowrite_skip",
-                                  decision.get("reason", "")[:100]))
+        ctx.append(session_record("autowrite_skip", decision.get("reason", "")[:100]))
         save_session_context(ctx)
-        save_state(state)
         return
 
     # Mira wants to write!
@@ -350,7 +704,6 @@ def do_autowrite_check():
         ctx = load_session_context()
         ctx.append(session_record("autowrite_skip", f"duplicate: {title}"))
         save_session_context(ctx)
-        save_state(state)
         return
 
     log.info("Autonomous writing triggered: '%s' [%s]", title, writing_type)
@@ -364,7 +717,22 @@ def do_autowrite_check():
     task_id = f"autowrite_{today}"
 
     bridge = Mira()
-    content = f"{title}\n\n{thesis}\n\n{outline}"
+    content = _normalize_substack_english_idea(
+        f"""# {title}
+
+- **type**: {writing_type}
+- **language**: en
+- **platform**: Substack
+
+## Thesis
+
+{thesis}
+
+## Outline
+
+{outline}
+"""
+    )
     bridge.create_task(
         task_id=task_id,
         title=f"Mira writes: {title}",
@@ -375,15 +743,21 @@ def do_autowrite_check():
     )
     bridge.update_task_status(task_id, "working", agent_message="开始写作...")
 
-    _dispatch_background(f"autowrite-{today}", [
-        sys.executable,
-        str(Path(__file__).resolve().parent.parent / "core.py"),
-        "autowrite-run",
-        "--task-id", task_id,
-        "--title", title,
-        "--type", writing_type,
-        "--idea", content,
-    ])
+    _dispatch_background(
+        f"autowrite-{today}",
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parent.parent / "core.py"),
+            "autowrite-run",
+            "--task-id",
+            task_id,
+            "--title",
+            title,
+            "--type",
+            writing_type,
+            "--idea",
+            content,
+        ],
+    )
 
     log.info("Self-initiated writing: '%s' (%s)", title, writing_type)
-    save_state(state)

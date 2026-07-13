@@ -1,0 +1,35 @@
+name: social_reactive
+memory_class: social
+trigger:
+  type: schedule
+  detail: every 2h
+priority: 30
+version: 1
+max_duration_s: 600
+checkpoint_every: 1
+involved_skills:
+  - commenting_craft
+risk_actions:
+  post_reply_idempotent: publish_public
+effect_steps:
+  post_reply_idempotent: post_social
+steps:
+  - name: snapshot_relationship_scars_recent_threads
+    type: memory
+  - name: triage_high_signal_replies
+    type: deterministic
+  - name: draft_reply
+    type: deterministic
+    action: social_reactive_draft
+  - name: comment_quality_gate
+    type: eval
+  - name: live_publish_guard
+    type: policy
+  - name: social_publish_preflight
+    type: deterministic
+    action: social_publish_guard
+  - name: post_reply_idempotent
+    type: deterministic
+    action: social_publish_guard
+  - name: experience_record_proposal_gateway
+    type: memory

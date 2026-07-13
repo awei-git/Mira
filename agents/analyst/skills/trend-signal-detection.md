@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when separating genuine emerging trends from noise by evaluating cross-source convergence, structural drivers, and leading vs. lagging indicators."
+---
+
 # Trend Signal Detection
 
 **Tags:** market-analysis, trends, forecasting, signal-detection

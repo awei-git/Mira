@@ -5,13 +5,14 @@ and adding things we should be doing but aren't.
 
 Runs weekly (alongside reflect) or on-demand.
 """
+
 import json
 import logging
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-_SHARED = Path(__file__).resolve().parent.parent / "shared"
+_SHARED = Path(__file__).resolve().parent.parent.parent / "lib"
 _SUPER = Path(__file__).resolve().parent.parent / "super"
 if str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
@@ -26,10 +27,31 @@ _READING_NOTES_DIR = _SOUL_DIR / "reading_notes"
 
 # Architecture-relevant keywords in reading note titles/content
 _ARCH_KEYWORDS = {
-    "agent", "harness", "tool", "memory", "rag", "eval", "orchestr",
-    "pipeline", "prompt", "llm", "reflection", "loop", "multi-agent",
-    "context", "routing", "planning", "sandbox", "audit", "observ",
-    "架构", "流水线", "编排", "评估", "记忆", "工具",
+    "agent",
+    "harness",
+    "tool",
+    "memory",
+    "rag",
+    "eval",
+    "orchestr",
+    "pipeline",
+    "prompt",
+    "llm",
+    "reflection",
+    "loop",
+    "multi-agent",
+    "context",
+    "routing",
+    "planning",
+    "sandbox",
+    "audit",
+    "observ",
+    "架构",
+    "流水线",
+    "编排",
+    "评估",
+    "记忆",
+    "工具",
 }
 
 # Key source files that define Mira's architecture
@@ -66,11 +88,13 @@ def _load_recent_arch_notes(days: int = 14) -> list[dict]:
 
         # Check if note is architecture-relevant
         if any(kw in lower for kw in _ARCH_KEYWORDS):
-            notes.append({
-                "file": path.name,
-                "title": path.stem[11:],  # strip date prefix
-                "content": content[:1500],  # cap for prompt size
-            })
+            notes.append(
+                {
+                    "file": path.name,
+                    "title": path.stem[11:],  # strip date prefix
+                    "content": content[:1500],  # cap for prompt size
+                }
+            )
 
     return notes[:15]  # max 15 notes
 
@@ -91,7 +115,9 @@ def _summarize_architecture() -> str:
                 break
 
         functions = [l.strip() for l in lines if l.strip().startswith("def ")][:30]
-        parts.append(f"### {label}\n{docstring}\nFunctions: {', '.join(f.split('(')[0].replace('def ','') for f in functions)}")
+        parts.append(
+            f"### {label}\n{docstring}\nFunctions: {', '.join(f.split('(')[0].replace('def ','') for f in functions)}"
+        )
 
     return "\n\n".join(parts)
 
@@ -108,11 +134,9 @@ def generate_proposals(days: int = 14) -> list[dict]:
 
     arch_summary = _summarize_architecture()
 
-    notes_text = "\n\n---\n\n".join(
-        f"**{n['title']}**\n{n['content']}" for n in notes
-    )
+    notes_text = "\n\n---\n\n".join(f"**{n['title']}**\n{n['content']}" for n in notes)
 
-    from sub_agent import claude_think
+    from llm import claude_think
 
     prompt = f"""You are Mira's self-improvement system. You've been reading about best practices in agent architecture. Now compare what you've learned with your own architecture and propose concrete improvements.
 
@@ -165,8 +189,7 @@ JSON only."""
     _PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
     today = datetime.now().strftime("%Y-%m-%d")
     proposal_file = _PROPOSALS_DIR / f"{today}.json"
-    proposal_file.write_text(
-        json.dumps(proposals, ensure_ascii=False, indent=2), encoding="utf-8")
+    proposal_file.write_text(json.dumps(proposals, ensure_ascii=False, indent=2), encoding="utf-8")
 
     log.info("Generated %d self-improvement proposals", len(proposals))
     return proposals
@@ -204,13 +227,15 @@ def run(days: int = 14) -> str | None:
 
     # Push to user via bridge
     try:
-        from mira import Mira
+        from bridge import Mira
+
         bridge = Mira()
         today = datetime.now().strftime("%Y-%m-%d")
         item_id = f"self_improve_{today.replace('-', '')}"
         if not bridge.item_exists(item_id):
-            bridge.create_item(item_id, "request", f"Self-Improvement Proposals {today}",
-                              text, tags=["self-improvement", "system"])
+            bridge.create_item(
+                item_id, "request", f"Self-Improvement Proposals {today}", text, tags=["self-improvement", "system"]
+            )
             log.info("Self-improvement proposals pushed to user")
     except (ImportError, OSError) as e:
         log.warning("Failed to push proposals to bridge: %s", e)

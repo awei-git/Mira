@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when analyzing a market's competitive structure, identifying strategic groups, or mapping rivals, substitutes, and potential entrants."
+---
+
 # Competitive Landscape Mapping
 
 **Tags:** market-analysis, competitive-intelligence, strategy, positioning
@@ -45,6 +49,8 @@ Step back from individual competitors and assess:
 - **Switching costs** -- how locked-in are customers?
 - **Network effects** -- does any player benefit from scale in a compounding way?
 - **Rate of disruption** -- how quickly are new entrants changing the game?
+
+For infrastructure-heavy markets, explicitly assess electricity availability, water use, land access, grid interconnect queues, permitting timeline, local political resistance, community trust, and operator/regulator relationships. State whether these constraints are merely costs that capital can overcome or true durable moats that protect advantaged operators.
 
 ## Application
 

@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when the user's literal request needs to be decoded into their true underlying intent and implicit constraints before routing to a sub-agent."
+---
+
 # Intent Inference
 
 **Tags:** agents, orchestration, intent, understanding, super-agent

@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when monitoring what engineers are actively building to detect early signals of new technology directions before they appear in mainstream discourse."
+---
+
 # GitHub Trending Analysis
 
 **Tags:** explorer, github, open-source, trends, development

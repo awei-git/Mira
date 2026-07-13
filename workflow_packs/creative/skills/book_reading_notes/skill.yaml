@@ -1,0 +1,9 @@
+name: book_reading_notes
+description: Stage book notes with claims, counterclaims, and reusable concepts.
+inputs:
+  - book_context
+  - memory_snapshot
+outputs:
+  - book_reading_notes.md
+  - claim_map
+  - uncertainty_notes

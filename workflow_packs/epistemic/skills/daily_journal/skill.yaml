@@ -1,0 +1,9 @@
+name: daily_journal
+description: Summarize recorded daily experience without invented interiority.
+inputs:
+  - experience_ledger
+  - memory_snapshot
+outputs:
+  - daily_journal.md
+  - event_summary
+  - identity_claim_notes

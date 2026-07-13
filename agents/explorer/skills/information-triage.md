@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when processing a high-volume feed and needing to rapidly classify items by signal strength and domain relevance to route attention efficiently."
+---
+
 # Information Triage
 
 **Tags:** explorer, research, curation, signal-noise, workflow

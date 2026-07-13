@@ -1,26 +1,34 @@
 """Operator dashboard summary for Mira production runtime."""
+
 from __future__ import annotations
 
 import json
 import logging
+import hashlib
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from config import LOGS_DIR, MIRA_DIR
-from failure_log import load_recent_failures
-from action_backlog import ActionBacklog
+from config import LOGS_DIR, MIRA_DIR, STATE_DIR
+from ops.failure_log import load_recent_failures
+from ops.backlog import ActionBacklog, ActionItem
 from execution.runtime_contract import normalize_task_status
-from publish_manifest import get_stuck_articles, load_manifest
+from publish.manifest import get_stuck_articles, load_manifest
 from task_manager import HISTORY_FILE, STATUS_FILE
 
 log = logging.getLogger("mira.operator_dashboard")
 
 _RESTORE_DRILL_LOG = LOGS_DIR / "restore_drills.jsonl"
+_OPERATOR_ALERT_STATE = STATE_DIR / "operator_alert_state.json"
+_PROVIDER_CIRCUIT_FILE = STATE_DIR / "api_provider_circuit.json"
 _DEFAULT_STUCK_MINUTES = 30
 _PROCESS_RECENCY_HOURS = 72
+_ALERT_REPEAT_HOURS = 6
+_ONE_SHOT_PROCESS_FAILURE_HOURS = 6
+_ONE_SHOT_PROCESS_RE = re.compile(r"^(autowrite-\d{4}-\d{2}-\d{2}|podcast-|voiceover-)")
 
 
-def build_operator_summary(user_id: str = "ang") -> dict:
+def build_operator_summary(user_id: str = "default") -> dict:
     """Build the current operator dashboard snapshot."""
     task_status = _load_json(STATUS_FILE, default=[])
     active_tasks = []
@@ -28,7 +36,7 @@ def build_operator_summary(user_id: str = "ang") -> dict:
     now = datetime.now(timezone.utc)
 
     for rec in task_status:
-        if rec.get("user_id", "ang") != user_id:
+        if rec.get("user_id", "default") != user_id:
             continue
         status = normalize_task_status(rec.get("status", ""))
         if status not in ("dispatched", "running"):
@@ -62,9 +70,7 @@ def build_operator_summary(user_id: str = "ang") -> dict:
     manifest = load_manifest()
     articles = list(manifest.get("articles", {}).values())
     publish_queue = [
-        _publish_entry(entry)
-        for entry in articles
-        if entry.get("status") and entry.get("status") != "complete"
+        _publish_entry(entry) for entry in articles if entry.get("status") and entry.get("status") != "complete"
     ]
     publish_queue.sort(key=lambda item: item.get("updated_at", ""))
 
@@ -93,21 +99,152 @@ def build_operator_summary(user_id: str = "ang") -> dict:
         "health": health,
         "backlog": backlog,
         "recent_incidents": incidents,
+        "provider_circuits": _api_provider_circuits(),
         "latest_restore_drill": _latest_restore_drill(),
     }
 
 
-def write_operator_summary(user_id: str = "ang", bridge_dir: Path | None = None) -> Path:
+def write_operator_summary(user_id: str = "default", bridge_dir: Path | None = None) -> Path:
     """Write dashboard summary into the user bridge directory."""
     target_root = Path(bridge_dir) if bridge_dir else MIRA_DIR
     out_dir = target_root / "users" / user_id / "operator"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "dashboard.json"
     data = build_operator_summary(user_id=user_id)
+    _sync_operator_action_backlog(data)
+    data["backlog"] = _build_backlog_summary()
     tmp = out_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(out_path)
+    _maybe_publish_operator_alert(user_id=user_id, summary=data, bridge_dir=target_root)
     return out_path
+
+
+def _maybe_publish_operator_alert(*, user_id: str, summary: dict, bridge_dir: Path) -> None:
+    """Publish actionable dashboard anomalies into one stable app thread."""
+    try:
+        state = _load_json(_OPERATOR_ALERT_STATE, default={})
+        user_state = state.get(user_id, {})
+        lines = _operator_alert_lines(summary)
+        digest_src = "\n".join(lines) if lines else "clear"
+        digest = hashlib.sha256(digest_src.encode("utf-8")).hexdigest()
+        now = datetime.now(timezone.utc)
+        last_digest = user_state.get("digest", "")
+        last_published_at = user_state.get("published_at", "")
+
+        should_publish = digest != last_digest
+        if not should_publish and lines and not _is_recent_iso(last_published_at, hours=_ALERT_REPEAT_HOURS):
+            should_publish = True
+        if not should_publish:
+            return
+
+        content = _format_operator_alert(summary, lines)
+        _publish_operator_alert_item(user_id=user_id, bridge_dir=bridge_dir, content=content)
+        state[user_id] = {"digest": digest, "published_at": now.strftime("%Y-%m-%dT%H:%M:%SZ")}
+        _save_json(_OPERATOR_ALERT_STATE, state)
+    except Exception as exc:
+        log.warning("operator alert publish failed: %s", exc)
+
+
+def _operator_alert_lines(summary: dict) -> list[str]:
+    """Return user-visible operator alerts from the dashboard snapshot."""
+    lines: list[str] = []
+    stuck_tasks = summary.get("tasks", {}).get("stuck", []) or []
+    if stuck_tasks:
+        previews = ", ".join((task.get("preview") or task.get("task_id") or "unknown")[:48] for task in stuck_tasks[:3])
+        lines.append(f"{len(stuck_tasks)} task(s) appear stuck over {_DEFAULT_STUCK_MINUTES} minutes: {previews}")
+
+    health = summary.get("health", {}) or {}
+    failing_processes = int(health.get("failing_processes", 0) or 0)
+    if failing_processes:
+        names = ", ".join(
+            proc.get("name", "unknown")
+            for proc in (health.get("processes", []) or [])
+            if _process_has_active_failure(proc)
+        )
+        lines.append(f"{failing_processes} scheduled process(es) are failing: {names}")
+
+    publish = summary.get("publish", {}) or {}
+    stuck_articles = publish.get("stuck", []) or []
+    if stuck_articles:
+        slugs = ", ".join((article.get("slug") or "unknown") for article in stuck_articles[:3])
+        lines.append(f"{len(stuck_articles)} publish item(s) are stuck: {slugs}")
+
+    counts = publish.get("counts", {}) or {}
+    blocked_writer = int(counts.get("blocked_writer_gate", 0) or 0)
+    blocked_security = int(counts.get("blocked_security_claim", 0) or 0)
+    blocked_publish = int(counts.get("blocked_publish_error", 0) or 0)
+    if blocked_writer:
+        lines.append(f"{blocked_writer} publish item(s) are blocked by writer-quality gate")
+    if blocked_security:
+        lines.append(f"{blocked_security} publish item(s) are blocked by security-claim review")
+    if blocked_publish:
+        lines.append(f"{blocked_publish} publish item(s) returned no Substack URL and need review")
+
+    for circuit in summary.get("provider_circuits", []) or []:
+        provider = circuit.get("provider", "provider")
+        until = circuit.get("disabled_until", "")
+        reason = circuit.get("reason", "")
+        lines.append(f"{provider} provider circuit is open until {until}: {reason}")
+
+    incidents = summary.get("recent_incidents", []) or []
+    repeated = [
+        inc
+        for inc in incidents
+        if int(inc.get("count", 0) or 0) >= 3 and _is_recent_iso(inc.get("timestamp", ""), hours=_ALERT_REPEAT_HOURS)
+    ]
+    if repeated:
+        inc = repeated[0]
+        lines.append(
+            "Repeated incident: "
+            f"{inc.get('pipeline', 'unknown')}/{inc.get('step', 'unknown')} "
+            f"({inc.get('count')}x) {inc.get('error_type', '')}"
+        )
+
+    return lines
+
+
+def _format_operator_alert(summary: dict, lines: list[str]) -> str:
+    updated_at = summary.get("updated_at", _utc_iso())
+    if not lines:
+        return f"Mira Ops Status\n\nAll monitored operator checks are clear as of {updated_at}."
+    body = "\n".join(f"- {line}" for line in lines)
+    return f"Mira Ops Status\n\nDetected at {updated_at}:\n\n{body}\n\nThis is generated from the operator dashboard, not raw logs."
+
+
+def _publish_operator_alert_item(*, user_id: str, bridge_dir: Path, content: str) -> None:
+    from bridge import Mira
+
+    bridge = Mira(bridge_dir=bridge_dir, user_id=user_id)
+    item_id = "mira_ops_status"
+    title = "Mira Ops Status"
+    if bridge.item_exists(item_id):
+        bridge.append_message(item_id, "agent", content)
+        item = bridge._read_item(item_id)
+        if item:
+            item["type"] = "discussion"
+            item["title"] = title
+            item["status"] = "done"
+            item["origin"] = "agent"
+            item["tags"] = list(dict.fromkeys(["ops", "system", *item.get("tags", [])]))
+            item["pinned"] = True
+            bridge._write_item(item)
+            bridge._update_manifest(item)
+        return
+
+    item = bridge.create_item(
+        item_id,
+        "discussion",
+        title,
+        content,
+        sender="agent",
+        tags=["ops", "system"],
+        origin="agent",
+    )
+    item["status"] = "done"
+    item["pinned"] = True
+    bridge._write_item(item)
+    bridge._update_manifest(item)
 
 
 def _build_backlog_summary() -> dict:
@@ -134,6 +271,123 @@ def _build_backlog_summary() -> dict:
             }
         )
     return {"counts": counts, "next_actions": next_actions}
+
+
+def _sync_operator_action_backlog(summary: dict) -> dict:
+    """Persist current operator alerts as backlog items until explicitly closed."""
+    items = _operator_action_items(summary)
+    if not items:
+        return {"upserted": 0, "items": []}
+    backlog = ActionBacklog()
+    active_by_title = {item.title: item for item in backlog.get_active()}
+    saved = []
+    for item in items:
+        existing = active_by_title.get(item.title)
+        if existing and _should_suppress_backlog_refresh(existing, item):
+            saved.append({"outcome": "suppressed", "title": existing.title, "status": existing.status})
+            continue
+        outcome, stored = backlog.upsert_active(item)
+        saved.append({"outcome": outcome, "title": stored.title, "status": stored.status})
+    upserted = sum(1 for item in saved if item["outcome"] in {"created", "updated"})
+    return {"upserted": upserted, "items": saved}
+
+
+def _should_suppress_backlog_refresh(existing: ActionItem, incoming: ActionItem) -> bool:
+    """Avoid turning stable operator incidents into phone-notification spam."""
+    if existing.source != "operator_dashboard" or incoming.source != "operator_dashboard":
+        return False
+    payload = incoming.payload if isinstance(incoming.payload, dict) else {}
+    if payload.get("kind") != "repeated_pipeline_incident":
+        return False
+    existing_payload = existing.payload if isinstance(existing.payload, dict) else {}
+    existing_incident = existing_payload.get("incident") if isinstance(existing_payload.get("incident"), dict) else {}
+    incoming_incident = payload.get("incident") if isinstance(payload.get("incident"), dict) else {}
+    stable_keys = ("pipeline", "step", "error_type")
+    if any(existing_incident.get(key) != incoming_incident.get(key) for key in stable_keys):
+        return False
+    return _is_recent_iso(existing.updated_at or existing.created_at, hours=_ALERT_REPEAT_HOURS)
+
+
+def _operator_action_items(summary: dict) -> list[ActionItem]:
+    items: list[ActionItem] = []
+
+    for task in summary.get("tasks", {}).get("stuck", []) or []:
+        task_id = str(task.get("workflow_id") or task.get("task_id") or "unknown")
+        preview = str(task.get("preview") or "").strip()
+        items.append(
+            ActionItem(
+                title=f"Resolve stuck task: {task_id}"[:180],
+                description=preview or f"Task {task_id} is still running past the operator timeout window.",
+                source="operator_dashboard",
+                priority="high",
+                target_dimension="operational_reliability",
+                executor="manual_review.required",
+                payload={
+                    "kind": "stuck_task",
+                    "task": task,
+                    "verification_criteria": [
+                        "The task reaches a terminal status, or the stale runtime record is intentionally cleared.",
+                    ],
+                },
+            )
+        )
+
+    for proc in summary.get("health", {}).get("processes", []) or []:
+        if not _process_has_active_failure(proc):
+            continue
+        name = str(proc.get("name") or "unknown")
+        failures = int(proc.get("consecutive_failures", 0) or 0)
+        reason = str(proc.get("last_failure_reason") or "").strip()
+        items.append(
+            ActionItem(
+                title=f"Resolve scheduled process failure: {name}"[:180],
+                description=(
+                    f"{name} has {failures} consecutive failure(s)." + (f" Last failure: {reason}" if reason else "")
+                ),
+                source="operator_dashboard",
+                priority="high" if failures >= 3 else "medium",
+                target_dimension="operational_reliability",
+                executor="manual_review.required",
+                payload={
+                    "kind": "scheduled_process_failure",
+                    "process": proc,
+                    "verification_criteria": [
+                        "The process records a successful run after the failure.",
+                        "If obsolete, the process is disabled in every scheduler that can launch it.",
+                    ],
+                },
+            )
+        )
+
+    for inc in summary.get("recent_incidents", []) or []:
+        count = int(inc.get("count", 0) or 0)
+        if count < 3 or not _is_recent_iso(inc.get("timestamp", ""), hours=_ALERT_REPEAT_HOURS):
+            continue
+        pipeline = str(inc.get("pipeline") or "unknown")
+        step = str(inc.get("step") or "unknown")
+        error_type = str(inc.get("error_type") or "unknown_error")
+        items.append(
+            ActionItem(
+                title=f"Resolve repeated pipeline incident: {pipeline}/{step}/{error_type}"[:180],
+                description=(
+                    f"{pipeline}/{step} reported {count} recent {error_type} incident(s). "
+                    f"{str(inc.get('error_message') or '').strip()[:240]}"
+                ).strip(),
+                source="operator_dashboard",
+                priority="high",
+                target_dimension="operational_reliability",
+                executor="manual_review.required",
+                payload={
+                    "kind": "repeated_pipeline_incident",
+                    "incident": inc,
+                    "verification_criteria": [
+                        "The incident has a concrete resolution recorded, or recurrence drops below threshold.",
+                    ],
+                },
+            )
+        )
+
+    return items
 
 
 def _latest_restore_drill() -> dict:
@@ -170,6 +424,7 @@ def _load_bg_health() -> dict:
         proc = {
             "name": name,
             "last_dispatch": data.get("last_dispatch", ""),
+            "last_exit": data.get("last_exit", ""),
             "last_success": data.get("last_success", ""),
             "consecutive_failures": data.get("consecutive_failures", 0),
             "last_failure_reason": data.get("last_failure_reason", ""),
@@ -186,7 +441,7 @@ def _load_bg_health() -> dict:
     )
     return {
         "daily_stats": health.get("daily_stats", {}).get(today, {}),
-        "failing_processes": sum(1 for proc in processes if int(proc.get("consecutive_failures", 0)) > 0),
+        "failing_processes": sum(1 for proc in processes if _process_has_active_failure(proc)),
         "processes": processes[:12],
     }
 
@@ -194,6 +449,8 @@ def _load_bg_health() -> dict:
 def _recent_incidents() -> list[dict]:
     grouped: dict[tuple[str, str, str, str], dict] = {}
     for rec in load_recent_failures(days=7, limit=50):
+        if rec.get("resolution"):
+            continue
         key = (
             rec.get("pipeline", ""),
             rec.get("step", ""),
@@ -217,6 +474,33 @@ def _recent_incidents() -> list[dict]:
     return sorted(grouped.values(), key=lambda rec: rec.get("timestamp", ""), reverse=True)[:10]
 
 
+def _api_provider_circuits() -> list[dict]:
+    data = _load_json(_PROVIDER_CIRCUIT_FILE, default={})
+    now = datetime.now(timezone.utc)
+    open_circuits = []
+    for provider, entry in data.items():
+        until = entry.get("disabled_until", "")
+        if not until:
+            continue
+        try:
+            until_dt = datetime.fromisoformat(until.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if until_dt.tzinfo is None:
+            until_dt = until_dt.replace(tzinfo=timezone.utc)
+        if now >= until_dt.astimezone(timezone.utc):
+            continue
+        open_circuits.append(
+            {
+                "provider": provider,
+                "reason": entry.get("reason", ""),
+                "disabled_until": until,
+                "updated_at": entry.get("updated_at", ""),
+            }
+        )
+    return sorted(open_circuits, key=lambda item: item.get("disabled_until", ""))
+
+
 def _publish_entry(entry: dict) -> dict:
     timestamps = entry.get("timestamps", {}) or {}
     status = entry.get("status", "")
@@ -237,6 +521,13 @@ def _load_json(path: Path, default):
         return default
 
 
+def _save_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
 def _load_history(*, limit: int, user_id: str) -> list[dict]:
     if not HISTORY_FILE.exists():
         return []
@@ -251,7 +542,7 @@ def _load_history(*, limit: int, user_id: str) -> list[dict]:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if rec.get("user_id", "ang") == user_id:
+                if rec.get("user_id", "default") == user_id:
                     rows.append(rec)
     except OSError:
         return []
@@ -287,7 +578,7 @@ def _valid_restore_drill(record: dict) -> bool:
 
 
 def _process_is_relevant(proc: dict, *, today: str) -> bool:
-    if int(proc.get("consecutive_failures", 0) or 0) > 0:
+    if _process_has_active_failure(proc):
         return True
     for key in ("last_dispatch", "last_success"):
         if _is_recent_iso(proc.get(key, ""), hours=_PROCESS_RECENCY_HOURS):
@@ -295,16 +586,44 @@ def _process_is_relevant(proc: dict, *, today: str) -> bool:
     return False
 
 
+def _process_has_active_failure(proc: dict) -> bool:
+    if int(proc.get("consecutive_failures", 0) or 0) <= 0:
+        return False
+    recency_hours = (
+        _ONE_SHOT_PROCESS_FAILURE_HOURS if _ONE_SHOT_PROCESS_RE.match(proc.get("name", "")) else _PROCESS_RECENCY_HOURS
+    )
+    if not (
+        _is_recent_iso(proc.get("last_exit", ""), hours=recency_hours)
+        or _is_recent_iso(proc.get("last_dispatch", ""), hours=recency_hours)
+    ):
+        return False
+    last_success = _parse_iso(proc.get("last_success", ""))
+    last_exit = _parse_iso(proc.get("last_exit", ""))
+    if last_success and last_exit and last_success >= last_exit:
+        return False
+    if last_success and not last_exit:
+        return False
+    return True
+
+
 def _is_recent_iso(value: str, *, hours: int) -> bool:
     if not value:
         return False
-    try:
-        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
+    ts = _parse_iso(value)
+    if ts is None:
         return False
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     return datetime.now(timezone.utc) - ts.astimezone(timezone.utc) <= timedelta(hours=hours)
+
+
+def _parse_iso(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _process_sort_ts(proc: dict) -> str:

@@ -3,24 +3,61 @@
 The super agent dispatches tasks here; sub-agents run as separate processes.
 Each launchd cycle: dispatch new tasks + collect completed results.
 """
+
 import fcntl
+import hashlib
 import json
 import logging
 import os
 import signal
+import statistics
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
-from config import MIRA_DIR, TASK_TIMEOUT, TASK_TIMEOUT_LONG, MAX_CONCURRENT_TASKS, TASK_MAX_RETRIES
+_MIRA_ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[2]
+if str(_MIRA_ROOT_FOR_IMPORTS) not in sys.path:
+    sys.path.insert(0, str(_MIRA_ROOT_FOR_IMPORTS))
+_SHARED_DIR_FOR_IMPORTS = _MIRA_ROOT_FOR_IMPORTS / "agents" / "shared"
+if str(_SHARED_DIR_FOR_IMPORTS) not in sys.path:
+    sys.path.insert(0, str(_SHARED_DIR_FOR_IMPORTS))
+
+from agents.shared.mira import verify_task_handoff
+from config import (
+    CONTROL_RUNTIME_DB_ENABLED,
+    LOGS_DIR,
+    MIRA_DIR,
+    TASK_TIMEOUT,
+    TASK_TIMEOUT_LONG,
+    MAX_CONCURRENT_TASKS,
+    TASK_MAX_RETRIES,
+    MAX_SUBTASK_DEPTH,
+    AGENT_REGISTRY,
+    PEER_VERIFY_ENABLED,
+    PEER_VERIFY_THRESHOLD,
+    PEER_VERIFY_TIMEOUT,
+)
 from execution.runtime_contract import derive_workflow_id, normalize_task_status
 
 # Timeout resolution: first check registry manifest, then fall back to tag keywords
-_LONG_TIMEOUT_TAGS = {"writing", "write", "novel", "essay", "blog", "research",
-                      "深度研究", "coding", "podcast", "audio", "tts", "generate"}
+_LONG_TIMEOUT_TAGS = {
+    "writing",
+    "write",
+    "novel",
+    "essay",
+    "blog",
+    "research",
+    "深度研究",
+    "coding",
+    "podcast",
+    "audio",
+    "tts",
+    "generate",
+}
 
 # No-timeout agents (background jobs that can run indefinitely)
 _BACKGROUND_TIMEOUT = 86400  # 24 hours — effectively no timeout
@@ -35,6 +72,7 @@ def _resolve_timeout(tags: list[str]) -> float:
     """
     try:
         from agent_registry import get_registry
+
         registry = get_registry()
         for tag in tags:
             cat = registry.get_timeout_category(tag)
@@ -50,20 +88,459 @@ def _resolve_timeout(tags: list[str]) -> float:
         return TASK_TIMEOUT_LONG
     return TASK_TIMEOUT
 
+
 log = logging.getLogger("mira")
 
+
+def _merge_tags(existing: list[str] | None, incoming: list[str] | None) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for tag in list(existing or []) + list(incoming or []):
+        text = str(tag or "").strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(text)
+    return merged
+
+
+def _is_conversation_record(rec) -> bool:
+    tag_keys = {str(tag or "").strip().casefold().replace("_", "-") for tag in getattr(rec, "tags", []) or []}
+    return (
+        getattr(rec, "task_id", "") == "disc_daily_collab"
+        or "discussion" in tag_keys
+        or "daily-collab" in tag_keys
+        or "daily collab" in tag_keys
+    )
+
+
+class TaskDepthExceeded(Exception):
+    pass
+
+
 # Task workspaces stored locally (NOT on iCloud bridge)
-from config import MIRA_ROOT
-TASKS_DIR = MIRA_ROOT / "tasks"
+from config import TASKS_DIR
+
 STATUS_FILE = TASKS_DIR / "status.json"
 HISTORY_FILE = TASKS_DIR / "history.jsonl"
+TIMING_STATS_FILE = TASKS_DIR / "timing_stats.jsonl"
+ROUTING_AUDIT_FILE = LOGS_DIR / "routing_audit.jsonl"
+_STUCK_TASK_STATES = {"accepted", "in-progress", "in_progress", "dispatched", "running", "working"}
+UNRESOLVED_TASK_STATUSES = {"failed", "timeout", "blocked", "completed_unverified"}
+UNRESOLVED_TASK_WARN_THRESHOLD = 3
+MAX_DISPATCH_HOPS = 3
+FRICTION_DIRECT = "direct"
+FRICTION_INFRASTRUCTURE = "infrastructure_friction"
+PEER_VERIFIER_AGENT = "evaluator"
+_TIER_RANK = {"light": 0, "heavy": 1}
+_PEER_VERIFY_TERMINAL_STATUSES = {"done", "verified", "completed_unverified"}
 
 # Path to the worker script (same directory as this file)
 WORKER_SCRIPT = Path(__file__).resolve().parent / "task_worker.py"
+WORKSPACE_TASK_MARKER = ".task_id"
+WORKSPACE_RUN_META = "run_meta.json"
+_WORKSPACE_STATE_ARTIFACTS = {
+    "message.json",
+    "plan.json",
+    "step_states.json",
+    "progress.md",
+    "result.json",
+    "output.md",
+    "summary.txt",
+    "worker.log",
+    "worker_stderr.log",
+}
 
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_task_timestamp(value) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _coerce_dispatch_hops(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _classify_dispatch_hops(dispatch_hops: int) -> str:
+    return FRICTION_INFRASTRUCTURE if dispatch_hops >= MAX_DISPATCH_HOPS else FRICTION_DIRECT
+
+
+def _record_agent_label(rec: dict) -> str:
+    for key in ("agent", "execution_agent", "task_type"):
+        value = str(rec.get(key) or "").strip()
+        if value:
+            return value
+    tags = rec.get("tags") or []
+    if isinstance(tags, list) and tags:
+        value = str(tags[0] or "").strip()
+        if value:
+            return value
+    return "unknown"
+
+
+def _agent_tier(agent_name: str) -> str:
+    name = str(agent_name or "").strip()
+    if not name:
+        return ""
+    try:
+        from agent_registry import get_registry
+
+        manifest = get_registry().get_manifest(name)
+        if manifest and manifest.tier:
+            return str(manifest.tier).strip().lower()
+    except Exception:
+        pass
+    agent_config = AGENT_REGISTRY.get(name) if isinstance(AGENT_REGISTRY, dict) else None
+    if isinstance(agent_config, dict):
+        return str(agent_config.get("tier") or "").strip().lower()
+    return ""
+
+
+def _record_agent_tier(rec) -> str:
+    candidates = [getattr(rec, "agent", ""), getattr(rec, "task_type", "")]
+    candidates.extend(getattr(rec, "tags", []) or [])
+    for candidate in candidates:
+        tier = _agent_tier(candidate)
+        if tier:
+            return tier
+    return ""
+
+
+def _tier_meets_threshold(agent_tier: str, threshold: str) -> bool:
+    tier = str(agent_tier or "").strip().lower()
+    limit = str(threshold or "heavy").strip().lower()
+    if limit in {"off", "none", "disabled"}:
+        return False
+    if limit not in _TIER_RANK:
+        limit = "heavy"
+    return tier in _TIER_RANK and _TIER_RANK[tier] >= _TIER_RANK[limit]
+
+
+def _coerce_peer_verify_timeout(value) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 30
+
+
+def _normalize_peer_decision(value) -> str:
+    text = str(value or "").strip().lower().replace("_", "-")
+    if text in {"pass", "passed", "ok", "approve", "approved"}:
+        return "pass"
+    if text in {"fail", "failed", "block", "blocked", "reject", "rejected"}:
+        return "fail"
+    if text in {"flag", "flagged", "warning", "warn", "needs-review"}:
+        return "flag"
+    return ""
+
+
+def _parse_peer_verification(raw: str) -> dict:
+    text = str(raw or "").strip()
+    parsed = None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        decision = _normalize_peer_decision(parsed.get("decision") or parsed.get("status") or parsed.get("assessment"))
+        reason = str(parsed.get("reason") or parsed.get("summary") or parsed.get("rationale") or "").strip()
+        warnings = parsed.get("warnings") or parsed.get("flags") or []
+    else:
+        lowered = text.lower()
+        if "fail" in lowered or "reject" in lowered or "block" in lowered:
+            decision = "fail"
+        elif "flag" in lowered or "warning" in lowered or "concern" in lowered:
+            decision = "flag"
+        elif "pass" in lowered or "ok" in lowered:
+            decision = "pass"
+        else:
+            decision = "flag"
+        reason = text
+        warnings = []
+    if not decision:
+        decision = "flag"
+    if isinstance(warnings, str):
+        warnings = [warnings]
+    elif not isinstance(warnings, list):
+        warnings = []
+    return {
+        "decision": decision,
+        "reason": (reason or "Peer verifier returned an unclear assessment.")[:1000],
+        "warnings": [str(item).strip()[:500] for item in warnings if str(item).strip()][:5],
+        "verifier_agent": PEER_VERIFIER_AGENT,
+        "verifier_tier": "light",
+    }
+
+
+def _truncate_peer_text(value, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n\n[truncated]"
+
+
+def _write_result_payload(result_file: Path, data: dict) -> None:
+    tmp_path = result_file.with_suffix(".peer.tmp")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(result_file)
+
+
+def _task_transition_time(rec: dict) -> datetime | None:
+    for key in (
+        "last_state_transition_at",
+        "state_transition_at",
+        "status_changed_at",
+        "status_updated_at",
+        "updated_at",
+        "dispatched_at",
+        "started_at",
+    ):
+        parsed = _parse_task_timestamp(rec.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _task_agent_type(rec: dict) -> str:
+    for key in ("agent_type", "agent", "task_type", "type"):
+        value = str(rec.get(key) or "").strip()
+        if value:
+            return value
+    tags = rec.get("tags") or []
+    if isinstance(tags, list) and tags:
+        return str(tags[0] or "unknown")
+    return "unknown"
+
+
+def get_stuck_tasks(threshold_minutes=60) -> dict:
+    """Return non-terminal tasks whose last state transition is older than threshold."""
+    try:
+        threshold = float(threshold_minutes)
+    except (TypeError, ValueError):
+        threshold = 60.0
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=threshold)
+    stuck: dict[str, dict] = {}
+
+    def _consider(rec: dict) -> None:
+        status = normalize_task_status(rec.get("status", ""))
+        if status not in _STUCK_TASK_STATES:
+            return
+        transitioned_at = _task_transition_time(rec)
+        if transitioned_at is None or transitioned_at >= cutoff:
+            return
+        task_id = str(rec.get("task_id") or rec.get("id") or "").strip()
+        if not task_id:
+            return
+        stuck[task_id] = {
+            "task_id": task_id,
+            "status": status,
+            "agent_type": _task_agent_type(rec),
+            "last_transition_at": transitioned_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+
+    try:
+        data = json.loads(STATUS_FILE.read_text(encoding="utf-8")) if STATUS_FILE.exists() else []
+        if isinstance(data, list):
+            for rec in data:
+                if isinstance(rec, dict):
+                    _consider(rec)
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    if CONTROL_RUNTIME_DB_ENABLED:
+        try:
+            from control.db import schema_name, transaction
+            from db.connection import dict_cursor
+
+            with transaction() as conn:
+                with dict_cursor(conn) as cur:
+                    cur.execute(
+                        f"""
+                        SELECT id, status, type, task_type, updated_at, started_at
+                        FROM {schema_name()}.tasks
+                        WHERE status = ANY(%s)
+                        """,
+                        (list(_STUCK_TASK_STATES),),
+                    )
+                    for row in cur.fetchall():
+                        rec = dict(row)
+                        rec["task_id"] = rec.get("id")
+                        _consider(rec)
+        except Exception as exc:
+            log.debug("Control DB stuck task scan failed: %s", exc)
+
+    agent_type_counts: dict[str, int] = {}
+    for rec in stuck.values():
+        agent_type = rec["agent_type"]
+        agent_type_counts[agent_type] = agent_type_counts.get(agent_type, 0) + 1
+
+    return {
+        "count": len(stuck),
+        "agent_types": sorted(agent_type_counts),
+        "agent_type_counts": agent_type_counts,
+        "task_ids": sorted(stuck),
+        "tasks": sorted(stuck.values(), key=lambda item: item["task_id"]),
+        "threshold_minutes": threshold,
+    }
+
+
+def _append_routing_audit(task_type: str, agent: str, reason: str | None) -> None:
+    entry = json.dumps(
+        {"ts": datetime.now(timezone.utc).timestamp(), "task_type": task_type, "agent": agent, "reason": reason},
+        ensure_ascii=False,
+    )
+    try:
+        ROUTING_AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if ROUTING_AUDIT_FILE.exists():
+            lines = ROUTING_AUDIT_FILE.read_text(encoding="utf-8").splitlines()
+            if len(lines) >= 10000:
+                ROUTING_AUDIT_FILE.write_text("\n".join(lines[-9000:]) + "\n", encoding="utf-8")
+        with open(ROUTING_AUDIT_FILE, "a", encoding="utf-8") as _f:
+            _f.write(entry + "\n")
+    except OSError:
+        pass
+
+
+def _task_hash(task_id: str) -> str:
+    return hashlib.sha1(task_id.encode("utf-8")).hexdigest()[:10]
+
+
+def _patch_metadata(workspace: Path, patch: dict) -> None:
+    meta_file = workspace / "metadata.json"
+    try:
+        existing = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
+        existing.update(patch)
+        meta_file.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
+def _write_completion_metadata(workspace: Path, completed_at=None) -> None:
+    parsed_completed_at = _parse_task_timestamp(completed_at)
+    completed_ts = (
+        parsed_completed_at.timestamp() if parsed_completed_at is not None else datetime.now(timezone.utc).timestamp()
+    )
+    patch = {"completed_at": completed_ts}
+    meta_file = workspace / "metadata.json"
+    try:
+        if meta_file.exists():
+            queued_at = json.loads(meta_file.read_text(encoding="utf-8")).get("queued_at")
+            if queued_at is not None:
+                patch["latency_s"] = round(completed_ts - float(queued_at), 1)
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    _patch_metadata(workspace, patch)
+
+
+def _has_workspace_state(path: Path) -> bool:
+    return any((path / name).exists() for name in _WORKSPACE_STATE_ARTIFACTS)
+
+
+def _resolve_workspace_dir(requested: Path, task_id: str) -> Path:
+    """Return a workspace path that is owned by this task id.
+
+    Callers provide human-readable directories, but those names are not a
+    uniqueness boundary. A stale or colliding workspace must not leak
+    progress/result artifacts into a different task.
+    """
+    marker = requested / WORKSPACE_TASK_MARKER
+    if marker.exists():
+        try:
+            owner = marker.read_text(encoding="utf-8").strip()
+            if owner == task_id:
+                return requested
+        except OSError:
+            pass
+        return requested.with_name(f"{requested.name}_{_task_hash(task_id)}")
+
+    if requested.exists() and _has_workspace_state(requested):
+        return requested.with_name(f"{requested.name}_{_task_hash(task_id)}")
+
+    return requested
+
+
+def _pid_matches_worker(pid: int, task_id: str) -> bool:
+    """Return True only when pid still looks like this task_worker process."""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return True
+    if result.returncode != 0:
+        return False
+    command = (result.stdout or "").strip()
+    if not command:
+        return False
+    return str(WORKER_SCRIPT) in command and f"--task-id {task_id}" in command
+
+
+def _message_from_workspace(workspace: Path):
+    msg_file = workspace / "message.json"
+    try:
+        data = json.loads(msg_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return SimpleNamespace(
+        id=data.get("id") or data.get("task_id") or "",
+        thread_id=data.get("thread_id", ""),
+        sender=data.get("sender", "user"),
+        content=data.get("content", ""),
+        user_id=data.get("user_id", "default"),
+        user_role=data.get("user_role", "admin"),
+        model_restriction=data.get("model_restriction"),
+        content_filter=data.get("content_filter", False),
+        allowed_agents=data.get("allowed_agents", []),
+        workflow_id=data.get("workflow_id", ""),
+        to_dict=lambda: data,
+    )
+
+
+def _original_intent_from_payload(msg, payload: dict) -> str:
+    for value in (
+        payload.get("original_intent"),
+        getattr(msg, "original_intent", None),
+        getattr(getattr(msg, "root_task", None), "description", None),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    root_task = payload.get("root_task")
+    if isinstance(root_task, dict):
+        value = root_task.get("description")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("original_intent", "root_task_description"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    return str(payload.get("content") or getattr(msg, "content", "") or "").strip()
 
 
 @dataclass
@@ -73,11 +550,11 @@ class TaskRecord:
     msg_id: str
     thread_id: str
     sender: str
-    content_preview: str   # first 80 chars of message
+    content_preview: str  # first 80 chars of message
     pid: int
-    status: str            # dispatched | running | done | needs-input | blocked | failed | timeout
+    status: str  # dispatched | running | completed_unverified | verified | needs-input | blocked | failed | timeout | parked
     started_at: str
-    user_id: str = "ang"
+    user_id: str = "default"
     completed_at: str = ""
     workspace: str = ""
     summary: str = ""
@@ -86,6 +563,14 @@ class TaskRecord:
     max_attempts: int = TASK_MAX_RETRIES
     failure_class: str = ""
     timeout_alerted_at: str = ""
+    task_type: str = ""
+    agent: str = ""
+    dispatch_hops: int = 0
+    friction_classification: str = ""
+    optimized_routing_suggestion: str = ""
+    verification: dict | None = None
+    outcome_verified: bool = False
+    verification_method: str = ""
 
     def __post_init__(self):
         if self.tags is None:
@@ -106,12 +591,23 @@ def classify_task(content: str) -> list[str]:
     tags = []
     lower = content.lower()
 
-    _WRITING_KW = ["写", "文章", "essay", "blog", "write", "novel", "research",
-                   "深度研究", "rewrite", "改写", "重写", "稿", "研究"]
-    _CODE_KW = ["修改", "implement", "fix", "code", "refactor", "改进",
-                "framework", "pipeline", "publish", "发布"]
-    _MEDIA_KW = ["podcast", "音频", "tts", "audio", "generate", "生成",
-                 "transcript", "episode", "跑"]
+    _WRITING_KW = [
+        "写",
+        "文章",
+        "essay",
+        "blog",
+        "write",
+        "novel",
+        "research",
+        "深度研究",
+        "rewrite",
+        "改写",
+        "重写",
+        "稿",
+        "研究",
+    ]
+    _CODE_KW = ["修改", "implement", "fix", "code", "refactor", "改进", "framework", "pipeline", "publish", "发布"]
+    _MEDIA_KW = ["podcast", "音频", "tts", "audio", "generate", "生成", "transcript", "episode", "跑"]
 
     if any(kw in lower for kw in _WRITING_KW):
         tags.append("writing")
@@ -138,8 +634,65 @@ class TaskManager:
         """Check if all concurrent task slots are occupied."""
         return self.get_active_count() >= MAX_CONCURRENT_TASKS
 
-    def dispatch(self, msg, workspace_dir: Path, *, attempt_count: int = 1,
-                 max_attempts: int | None = None) -> str:
+    def _record_for_task_id(self, task_id: str) -> TaskRecord | None:
+        for rec in self._records:
+            if rec.task_id == task_id:
+                return rec
+        return None
+
+    def _verify_handoff_before_dispatch(self, consumer_task_id: str, task_chain: list[str]) -> bool:
+        if not task_chain:
+            return True
+
+        producer_task_id = task_chain[-1]
+        producer = self._record_for_task_id(producer_task_id)
+        output_path = Path(producer.workspace) / "output.md" if producer and producer.workspace else None
+        if output_path is None:
+            reason = f"producer task record missing or has no workspace: {producer_task_id}"
+            ok = False
+        else:
+            ok, reason = verify_task_handoff(str(output_path))
+
+        if ok:
+            return True
+
+        log.warning(
+            "Blocked task handoff producer=%s consumer=%s output=%s reason=%s",
+            producer_task_id,
+            consumer_task_id,
+            output_path or "",
+            reason,
+        )
+        if producer is not None:
+            producer.status = "blocked"
+            producer.failure_class = "handoff_verification_failed"
+            producer.summary = f"Handoff verification failed before {consumer_task_id}: {reason}"
+            producer.completed_at = producer.completed_at or _utc_iso()
+            if producer.workspace:
+                _write_completion_metadata(Path(producer.workspace), producer.completed_at)
+            self._append_trace(
+                producer,
+                "handoff.blocked",
+                {
+                    "consumer_task_id": consumer_task_id,
+                    "output_path": str(output_path or ""),
+                    "reason": reason,
+                },
+            )
+            self._mirror_record(producer, event_type="task.handoff_blocked")
+            self._save_status()
+        return False
+
+    def dispatch(
+        self,
+        msg,
+        workspace_dir: Path,
+        *,
+        attempt_count: int = 1,
+        max_attempts: int | None = None,
+        depth: int = 0,
+        task_chain: list[str] | None = None,
+    ) -> str:
         """Spawn a background worker for a message. Returns task_id.
 
         Supports up to MAX_CONCURRENT_TASKS parallel workers.
@@ -148,10 +701,31 @@ class TaskManager:
         Args:
             msg: talk_bridge.Message instance
             workspace_dir: directory for task output files
+            depth: current subtask nesting depth (0 = top-level)
+            task_chain: ordered list of ancestor task IDs for observability
         """
+        chain = list(task_chain or [])
+        if depth >= MAX_SUBTASK_DEPTH:
+            chain_str = " -> ".join(chain) if chain else "(empty)"
+            log.error(
+                "TaskDepthExceeded: depth=%d >= MAX_SUBTASK_DEPTH=%d for msg %s; chain: %s",
+                depth,
+                MAX_SUBTASK_DEPTH,
+                msg.id,
+                chain_str,
+            )
+            raise TaskDepthExceeded(f"Subtask depth {depth} reached limit {MAX_SUBTASK_DEPTH}. Chain: {chain_str}")
+
+        if not self._verify_handoff_before_dispatch(msg.id, chain):
+            return ""
+
         if self.is_busy():
-            log.info("TaskManager busy (%d/%d slots), deferring task for msg %s",
-                     self.get_active_count(), MAX_CONCURRENT_TASKS, msg.id)
+            log.info(
+                "TaskManager busy (%d/%d slots), deferring task for msg %s",
+                self.get_active_count(),
+                MAX_CONCURRENT_TASKS,
+                msg.id,
+            )
             return ""
 
         task_id = msg.id
@@ -160,10 +734,27 @@ class TaskManager:
             thread_id=getattr(msg, "thread_id", "") or "",
             workflow_id=getattr(msg, "workflow_id", "") or "",
         )
+        workspace_dir = _resolve_workspace_dir(Path(workspace_dir), task_id)
         workspace_dir.mkdir(parents=True, exist_ok=True)
+        (workspace_dir / WORKSPACE_TASK_MARKER).write_text(task_id + "\n", encoding="utf-8")
+        _patch_metadata(workspace_dir, {"queued_at": datetime.now(timezone.utc).timestamp()})
+        run_started_at = _utc_iso()
+        (workspace_dir / WORKSPACE_RUN_META).write_text(
+            json.dumps(
+                {
+                    "task_id": task_id,
+                    "workflow_id": workflow_id,
+                    "attempt_count": attempt_count,
+                    "started_at": run_started_at,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
         # Clean stale results from previous runs so worker doesn't skip execution
-        for stale in ("result.json", "result.tmp", "output.md", "summary.txt"):
+        for stale in ("result.json", "result.tmp", "output.md", "summary.txt", "heartbeat.json"):
             f = workspace_dir / stale
             if f.exists():
                 f.unlink()
@@ -172,16 +763,23 @@ class TaskManager:
         msg_file = workspace_dir / "message.json"
         msg_payload = dict(msg.to_dict())
         msg_payload["workflow_id"] = workflow_id
-        msg_payload["user_id"] = getattr(msg, "user_id", "ang") or "ang"
+        msg_payload["user_id"] = getattr(msg, "user_id", "default") or "default"
+        msg_payload["tags"] = list(getattr(msg, "tags", []) or [])
+        msg_payload["subtask_depth"] = depth
+        msg_payload["task_chain"] = chain + [msg.id]
+        msg_payload["original_intent"] = _original_intent_from_payload(msg, msg_payload)
         msg_file.write_text(json.dumps(msg_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # Spawn worker as a detached process
         cmd = [
             sys.executable,
             str(WORKER_SCRIPT),
-            "--msg-file", str(msg_file),
-            "--workspace", str(workspace_dir),
-            "--task-id", task_id,
+            "--msg-file",
+            str(msg_file),
+            "--workspace",
+            str(workspace_dir),
+            "--task-id",
+            task_id,
         ]
         if msg.thread_id:
             cmd.extend(["--thread-id", msg.thread_id])
@@ -199,24 +797,36 @@ class TaskManager:
             log.error("Failed to dispatch task %s: %s", task_id, e)
             return ""
 
+        _patch_metadata(workspace_dir, {"dispatched_at": datetime.now(timezone.utc).timestamp()})
+
         record = TaskRecord(
             task_id=task_id,
             workflow_id=workflow_id,
             msg_id=msg.id,
             thread_id=msg.thread_id,
-            user_id=getattr(msg, "user_id", "ang") or "ang",
+            user_id=getattr(msg, "user_id", "default") or "default",
             sender=msg.sender,
             content_preview=msg.content[:80],
             pid=proc.pid,
             status="dispatched",
-            started_at=_utc_iso(),
+            started_at=run_started_at,
             workspace=str(workspace_dir),
-            tags=classify_task(msg.content),
+            tags=list(getattr(msg, "tags", None) or classify_task(msg.content)),
             attempt_count=attempt_count,
             max_attempts=max_attempts or TASK_MAX_RETRIES,
+            dispatch_hops=len(chain),
+            friction_classification=_classify_dispatch_hops(len(chain)),
+        )
+        _append_routing_audit(
+            task_type=record.tags[0] if record.tags else "general",
+            agent=record.tags[0] if record.tags else "general",
+            reason=None,
         )
         self._records.append(record)
         self._save_status()
+        self._mirror_record(record, event_type="task.dispatched")
+        self._append_trace(record, "task.dispatched", {"pid": proc.pid, "workspace": str(workspace_dir)})
+        self._start_dispatch_workflow(record)
 
         log.info(
             "Dispatched task %s workflow=%s user=%s (PID %d): %s",
@@ -228,6 +838,202 @@ class TaskManager:
         )
         return task_id
 
+    def _start_dispatch_workflow(self, record: TaskRecord) -> None:
+        if not CONTROL_RUNTIME_DB_ENABLED:
+            return
+        try:
+            from runtime.task_workflow import start_dispatch_workflow
+
+            workflow_run_id = start_dispatch_workflow(asdict(record))
+            log.info("DBOS dispatch workflow started task=%s workflow_run=%s", record.task_id, workflow_run_id)
+        except Exception as e:
+            log.warning("DBOS dispatch workflow start failed for %s: %s", record.task_id, e)
+
+    def _should_peer_verify(self, rec: TaskRecord) -> tuple[bool, str]:
+        if not PEER_VERIFY_ENABLED:
+            return False, ""
+        if normalize_task_status(rec.status) not in _PEER_VERIFY_TERMINAL_STATUSES:
+            return False, ""
+        if (rec.agent or "").strip() == PEER_VERIFIER_AGENT:
+            return False, ""
+        agent_tier = _record_agent_tier(rec)
+        if not _tier_meets_threshold(agent_tier, PEER_VERIFY_THRESHOLD):
+            return False, agent_tier
+        return True, agent_tier
+
+    def _peer_verification_output(self, workspace: Path, result_payload: dict) -> str:
+        output_file = workspace / "output.md"
+        if output_file.exists():
+            try:
+                return output_file.read_text(encoding="utf-8")
+            except OSError:
+                pass
+        for key in ("output", "summary"):
+            value = result_payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return rec.summary if (rec := result_payload.get("summary")) else ""
+
+    def _run_peer_verification(self, rec: TaskRecord, result_payload: dict, workspace: Path) -> dict:
+        should_verify, agent_tier = self._should_peer_verify(rec)
+        if not should_verify:
+            return {}
+
+        msg = _message_from_workspace(workspace)
+        task_spec = getattr(msg, "content", "") if msg else ""
+        if not task_spec:
+            task_spec = rec.content_preview
+        output = self._peer_verification_output(workspace, result_payload)
+        prompt = f"""You are the evaluator agent performing a quick peer verification.
+Do not redo the task. Check only whether the specialist output matches the original task spec and whether there are obvious hallucinations, missing requested actions, or unsupported completion claims.
+
+Return only JSON with this shape:
+{{"decision":"pass|fail|flag","reason":"...","warnings":["..."]}}
+
+Use "pass" when the output is responsive and has no obvious sanity issues.
+Use "fail" when the output clearly does not satisfy the task, is empty, or claims completion without evidence.
+Use "flag" when the output is mostly usable but needs a warning annotation.
+
+Original task spec:
+{_truncate_peer_text(task_spec, 4000)}
+
+Specialist agent: {rec.agent or rec.task_type or "unknown"}
+Specialist tier: {agent_tier}
+Task status: {rec.status}
+Result summary:
+{_truncate_peer_text(rec.summary, 1500)}
+
+Specialist output:
+{_truncate_peer_text(output, 12000)}
+"""
+        try:
+            from llm import claude_think
+
+            raw = claude_think(prompt, timeout=_coerce_peer_verify_timeout(PEER_VERIFY_TIMEOUT), tier="light")
+        except Exception as exc:
+            log.warning("Peer verification unavailable for task %s: %s", rec.task_id, exc)
+            return {
+                "decision": "flag",
+                "reason": f"Peer verification unavailable: {exc}",
+                "warnings": ["verification_timeout_or_error"],
+                "verifier_agent": PEER_VERIFIER_AGENT,
+                "verifier_tier": "light",
+                "source_agent": rec.agent or rec.task_type or "unknown",
+                "source_tier": agent_tier,
+                "threshold": PEER_VERIFY_THRESHOLD,
+            }
+
+        assessment = _parse_peer_verification(raw or "")
+        assessment.update(
+            {
+                "source_agent": rec.agent or rec.task_type or "unknown",
+                "source_tier": agent_tier,
+                "threshold": PEER_VERIFY_THRESHOLD,
+            }
+        )
+        return assessment
+
+    def _apply_peer_verification(self, rec: TaskRecord, result_payload: dict, assessment: dict) -> None:
+        if not assessment:
+            return
+
+        decision = str(assessment.get("decision") or "flag").strip().lower()
+        result_payload["peer_verification"] = assessment
+        existing_verification = rec.verification if isinstance(rec.verification, dict) else {}
+        rec.verification = {**existing_verification, "peer_verification": assessment}
+        result_payload["verification"] = rec.verification
+
+        if decision == "pass":
+            log.info("Peer verification passed task=%s agent=%s", rec.task_id, assessment.get("source_agent"))
+            return
+
+        reason = str(assessment.get("reason") or "").strip() or "output did not pass peer sanity check"
+        if decision == "fail":
+            rec.status = "blocked"
+            rec.failure_class = "peer_verification_failed"
+            rec.summary = f"Peer verification failed: {reason}"
+            rec.outcome_verified = False
+            rec.verification_method = "peer_verification_failed"
+            result_payload["status"] = rec.status
+            result_payload["summary"] = rec.summary
+            result_payload["failure_class"] = rec.failure_class
+            result_payload["outcome_verified"] = rec.outcome_verified
+            result_payload["verification_method"] = rec.verification_method
+            log.warning("Peer verification failed task=%s reason=%s", rec.task_id, reason)
+            return
+
+        warning = f"Peer verification flagged: {reason}"
+        rec.summary = f"{rec.summary} {warning}".strip() if rec.summary else warning
+        result_payload["summary"] = rec.summary
+        result_payload["peer_verification_warning"] = warning
+        if not rec.verification_method:
+            rec.verification_method = "peer_verification_flagged"
+            result_payload["verification_method"] = rec.verification_method
+        log.warning("Peer verification flagged task=%s reason=%s", rec.task_id, reason)
+
+    def _run_sycophancy_audit(self, rec: TaskRecord, result_payload: dict, workspace: Path) -> None:
+        try:
+            from soul_manager import audit_sycophancy
+        except Exception as exc:
+            log.warning("SYCOPHANCY_AUDIT unavailable task=%s error=%s", rec.task_id, exc)
+            return
+
+        msg = _message_from_workspace(workspace)
+        message_payload = msg.to_dict() if msg else {}
+        task_context = {
+            "task_id": rec.task_id,
+            "workflow_id": rec.workflow_id,
+            "orchestrator_framing": message_payload.get("original_intent")
+            or message_payload.get("content")
+            or rec.content_preview,
+            "summary": rec.summary,
+            "status": rec.status,
+            "agent": rec.agent or rec.task_type or "unknown",
+            "task_type": rec.task_type,
+            "tags": rec.tags or [],
+        }
+        response_text = self._peer_verification_output(workspace, result_payload)
+        try:
+            report = audit_sycophancy(response_text, task_context)
+        except Exception as exc:
+            log.warning("SYCOPHANCY_AUDIT failed task=%s error=%s", rec.task_id, exc)
+            return
+
+        flagged_patterns = list(getattr(report, "flagged_patterns", []) or [])
+        if not flagged_patterns:
+            return
+
+        report_payload = asdict(report) if hasattr(report, "__dataclass_fields__") else dict(report)
+        existing_verification = rec.verification if isinstance(rec.verification, dict) else {}
+        rec.verification = {**existing_verification, "sycophancy_audit": report_payload}
+        result_payload["verification"] = rec.verification
+        result_payload["sycophancy_audit_warning"] = {
+            "score": report_payload.get("score"),
+            "flagged_patterns": flagged_patterns,
+        }
+        self._append_trace(
+            rec,
+            "task.sycophancy_warning",
+            {
+                "agent": rec.agent or rec.task_type or "unknown",
+                "score": report_payload.get("score"),
+                "flagged_patterns": flagged_patterns,
+                "details": report_payload.get("details", {}),
+                "evaluator_escalation_candidate": True,
+            },
+        )
+        try:
+            _write_result_payload(workspace / "result.json", result_payload)
+        except OSError as exc:
+            log.debug("SYCOPHANCY_AUDIT result payload update failed task=%s error=%s", rec.task_id, exc)
+        log.warning(
+            "SYCOPHANCY_AUDIT warning task=%s agent=%s score=%s flags=%s",
+            rec.task_id,
+            rec.agent or rec.task_type or "unknown",
+            report_payload.get("score"),
+            ",".join(flagged_patterns),
+        )
+
     # ------------------------------------------------------------------
     # Check / collect
     # ------------------------------------------------------------------
@@ -238,19 +1044,33 @@ class TaskManager:
         changed = False
 
         for rec in self._records:
-            if rec.status in ("done", "failed", "timeout", "needs-input", "blocked"):
+            if rec.status in (
+                "done",
+                "completed_unverified",
+                "verified",
+                "failed",
+                "timeout",
+                "needs-input",
+                "blocked",
+                "parked",
+            ):
                 continue
 
             # Check if process is still alive
             try:
                 os.kill(rec.pid, 0)  # signal 0 = check existence
-                alive = True
+                alive = _pid_matches_worker(rec.pid, rec.task_id)
             except OSError:
                 alive = False
 
             if not alive:
                 # Process exited — check for result
                 result = self._collect_result(rec)
+                if not result and rec.failure_class == "worker_crash" and rec.attempt_count < rec.max_attempts:
+                    self._mirror_record(rec, event_type="task.worker_crash")
+                    if self._retry_worker_crash(rec):
+                        changed = True
+                        continue
                 completed.append(rec)
             else:
                 # Check timeout
@@ -259,23 +1079,45 @@ class TaskManager:
                 timeout = _resolve_timeout(rec.tags or [])
                 if elapsed > timeout:
                     # Don't kill — pause and ask user
-                    log.warning("Task %s exceeded timeout (PID %d, %ds/%ds) — notifying user",
-                                rec.task_id, rec.pid, int(elapsed), int(timeout))
+                    log.warning(
+                        "Task %s exceeded timeout (PID %d, %ds/%ds) — notifying user",
+                        rec.task_id,
+                        rec.pid,
+                        int(elapsed),
+                        int(timeout),
+                    )
                     # Only notify once (check if already notified)
                     if not rec.timeout_alerted_at:
                         rec.timeout_alerted_at = _utc_iso()
                         changed = True
                         try:
-                            from mira import Mira
+                            from bridge import Mira
+
                             bridge = Mira(MIRA_DIR, user_id=rec.user_id)
                             elapsed_str = f"{int(elapsed//60)}分钟"
+                            # Title format previously echoed `content_preview`
+                            # (the user's own command), so a "kill the job"
+                            # reply produced an alert titled "任务超时: kill
+                            # the job" — useless for identifying WHICH task
+                            # was stuck. Lead with the task_id (or a human
+                            # tag if available) and put the user content in
+                            # parentheses.
+                            primary_id = rec.task_id
+                            human_tag = ""
+                            if rec.tags:
+                                human_tag = " · " + ", ".join(rec.tags[:2])
+                            preview = (rec.content_preview or "")[:60]
+                            title = f"任务超时: {primary_id}{human_tag}"
+                            if preview:
+                                title += f" — {preview}"
                             bridge.create_item(
                                 f"timeout-{rec.task_id}",
                                 "alert",
-                                f"任务超时: {rec.content_preview}",
+                                title,
                                 f"任务已运行{elapsed_str}，超过预期时间。\n\n"
-                                f"回复 'kill' 终止任务，或 'wait' 继续等待。\n\n"
-                                f"任务ID: {rec.task_id}",
+                                f"任务ID: {rec.task_id}\n"
+                                f"消息内容: {preview}\n\n"
+                                f"回复 'kill' 终止任务，或 'wait' 继续等待。",
                                 sender="agent",
                                 tags=["timeout", "alert"],
                                 origin="agent",
@@ -284,12 +1126,13 @@ class TaskManager:
                             log.warning("Failed to send timeout notification: %s", e)
                     # Check if user replied 'kill' to the timeout alert
                     try:
-                        from mira import Mira
+                        from bridge import Mira
+
                         bridge = Mira(MIRA_DIR, user_id=rec.user_id)
                         timeout_item = bridge.get_item(f"timeout-{rec.task_id}")
                         if timeout_item:
                             msgs = timeout_item.get("messages", [])
-                            user_replies = [m for m in msgs if m.get("sender") in ("ang", "iphone", "user")]
+                            user_replies = [m for m in msgs if m.get("sender") in ("default", "iphone", "user")]
                             if user_replies:
                                 last_reply = user_replies[-1].get("content", "").lower().strip()
                                 if "kill" in last_reply or "停" in last_reply or "stop" in last_reply:
@@ -298,7 +1141,9 @@ class TaskManager:
                                     rec.status = "timeout"
                                     rec.completed_at = _utc_iso()
                                     rec.summary = "Task killed by user after timeout"
+                                    _write_completion_metadata(Path(rec.workspace), rec.completed_at)
                                     completed.append(rec)
+                                    self._mirror_record(rec, event_type="task.timeout")
                                 # If user said 'wait', just let it keep running
                     except Exception:
                         pass
@@ -306,17 +1151,22 @@ class TaskManager:
                     if rec.status != "running":
                         rec.status = "running"
                         changed = True
+                        self._mirror_record(rec, event_type="task.running")
+                        self._append_trace(rec, "task.running", {"pid": rec.pid})
 
         if completed or changed:
             self._save_status()
         if completed:
             self._append_history(completed)
+            for rec in completed:
+                self._mirror_record(rec, event_type=f"task.{rec.status}")
 
         return completed
 
     def _collect_result(self, rec: TaskRecord) -> bool:
         """Read result from a completed task's workspace."""
         import time as _time
+
         ws = Path(rec.workspace)
         result_file = ws / "result.json"
 
@@ -332,8 +1182,37 @@ class TaskManager:
                 rec.completed_at = data.get("completed_at", _utc_iso())
                 rec.failure_class = data.get("failure_class", "")
                 rec.workflow_id = data.get("workflow_id", rec.workflow_id) or rec.workflow_id
+                rec.task_type = data.get("task_type", rec.task_type) or rec.task_type
+                rec.agent = data.get("agent") or data.get("execution_agent") or rec.agent
+                rec.dispatch_hops = _coerce_dispatch_hops(data.get("dispatch_hops", rec.dispatch_hops))
+                rec.friction_classification = data.get("friction_classification") or _classify_dispatch_hops(
+                    rec.dispatch_hops
+                )
+                rec.optimized_routing_suggestion = data.get("optimized_routing_suggestion", "")
+                rec.verification = data.get("verification") if isinstance(data.get("verification"), dict) else None
+                rec.outcome_verified = bool(data.get("outcome_verified", False))
+                rec.verification_method = (
+                    data.get("verification_method", rec.verification_method) or rec.verification_method
+                )
                 if data.get("tags"):
-                    rec.tags = data["tags"]
+                    rec.tags = _merge_tags(rec.tags, data["tags"])
+                self._run_sycophancy_audit(rec, data, ws)
+                self._append_trace(
+                    rec,
+                    "task.result_collected",
+                    {
+                        "status": rec.status,
+                        "summary": rec.summary,
+                        "failure_class": rec.failure_class,
+                        "task_type": rec.task_type,
+                        "agent": rec.agent,
+                        "dispatch_hops": rec.dispatch_hops,
+                        "friction_classification": rec.friction_classification,
+                        "outcome_verified": rec.outcome_verified,
+                        "verification_method": rec.verification_method,
+                    },
+                )
+                _write_completion_metadata(ws, rec.completed_at)
                 return True
             except (json.JSONDecodeError, OSError) as e:
                 log.error("Failed to read result for task %s: %s", rec.task_id, e)
@@ -341,9 +1220,15 @@ class TaskManager:
         # No result file — check if output.md exists as fallback
         output_file = ws / "output.md"
         if output_file.exists():
-            rec.status = "done"
+            rec.status = "completed_unverified"
             rec.summary = output_file.read_text(encoding="utf-8")[:200]
             rec.completed_at = _utc_iso()
+            self._append_trace(
+                rec,
+                "task.legacy_output_collected",
+                {"status": rec.status, "summary": rec.summary},
+            )
+            _write_completion_metadata(ws, rec.completed_at)
             return True
 
         # Process died without producing output — check stderr for crash info
@@ -365,6 +1250,12 @@ class TaskManager:
             rec.summary = f"Worker crashed: {crash_info}"
         else:
             rec.summary = "Worker exited without producing output"
+        self._append_trace(
+            rec,
+            "task.worker_crashed",
+            {"status": rec.status, "summary": rec.summary, "failure_class": rec.failure_class},
+        )
+        _write_completion_metadata(ws, rec.completed_at)
         return False
 
     def _kill_task(self, rec: TaskRecord):
@@ -376,6 +1267,34 @@ class TaskManager:
                 os.kill(rec.pid, signal.SIGKILL)
             except OSError:
                 pass
+
+    def _retry_worker_crash(self, rec: TaskRecord) -> bool:
+        """Retry a worker crash from its persisted message payload."""
+        workspace = Path(rec.workspace)
+        msg = _message_from_workspace(workspace)
+        if not msg or not getattr(msg, "id", ""):
+            log.warning("Cannot retry worker crash for %s: message.json unavailable", rec.task_id)
+            return False
+        try:
+            self._records.remove(rec)
+        except ValueError:
+            pass
+        self._save_status()
+        self._mirror_task_status(rec.user_id, rec.task_id, "queued", event_type="task.auto_retry_queued")
+        next_attempt = rec.attempt_count + 1
+        log.warning(
+            "Auto-retrying crashed worker task=%s attempt=%d/%d",
+            rec.task_id,
+            next_attempt,
+            rec.max_attempts,
+        )
+        dispatched = self.dispatch(
+            msg,
+            workspace,
+            attempt_count=next_attempt,
+            max_attempts=rec.max_attempts,
+        )
+        return bool(dispatched)
 
     # ------------------------------------------------------------------
     # Get results for replying
@@ -389,6 +1308,57 @@ class TaskManager:
         summary.txt is a meta-description; only use as fallback when no output.md.
         """
         ws = Path(rec.workspace)
+        result_data = None
+        result_file = ws / "result.json"
+        if result_file.exists():
+            try:
+                data = json.loads(result_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    result_data = data
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        def _verification_receipt(content: str, *, output_exists: bool) -> str:
+            if _is_conversation_record(rec):
+                return content
+            status = normalize_task_status(rec.status)
+            outcome_unverified = (
+                isinstance(result_data, dict) and result_data.get("outcome_verified") is False and output_exists
+            )
+            if status != "completed_unverified" and not outcome_unverified:
+                return content
+
+            if isinstance(result_data, dict):
+                verification = result_data.get("verification")
+                if not isinstance(verification, dict):
+                    verification = {}
+                next_action = str(result_data.get("next_action") or "").strip()
+            else:
+                verification = rec.verification if isinstance(rec.verification, dict) else {}
+                next_action = ""
+
+            proxy_checked = str(verification.get("proxy_checked") or "none").strip() or "none"
+            evidence_gap = str(
+                verification.get("summary") or rec.summary or "outcome verification was not available"
+            ).strip()
+            assumptions = verification.get("unverified_assumptions") or []
+            if isinstance(assumptions, list):
+                assumptions_text = ", ".join(str(item).strip() for item in assumptions if str(item).strip())
+            else:
+                assumptions_text = str(assumptions).strip()
+            assumptions_text = assumptions_text or "none"
+            next_action = next_action or "none"
+
+            receipt = "\n".join(
+                [
+                    "Verification: unverified",
+                    f"Checked: {proxy_checked}",
+                    f"Evidence gap: {evidence_gap}",
+                    f"Unverified assumptions: {assumptions_text}",
+                    f"Next action: {next_action}",
+                ]
+            )
+            return f"{receipt}\n\n{content}"
 
         # Build a relative path from bridge root (for iOS file links)
         bridge_root = MIRA_DIR
@@ -402,19 +1372,19 @@ class TaskManager:
             content = output_file.read_text(encoding="utf-8").strip()
             if content:
                 if len(content) <= 4000:
-                    return content
-                return (
-                    content[:3000]
-                    + f"\n\n... (全文太长，已截断)\n\n"
+                    return _verification_receipt(content, output_exists=True)
+                truncated = (
+                    content[:3000] + f"\n\n... (全文太长，已截断)\n\n"
                     f"完整内容: [{rel_ws / 'output.md'}](file://{rel_ws / 'output.md'})"
                 )
+                return _verification_receipt(truncated, output_exists=True)
 
         # No output.md — try summary.txt
         summary_file = ws / "summary.txt"
         if summary_file.exists():
             summary = summary_file.read_text(encoding="utf-8").strip()
             if summary:
-                return summary
+                return _verification_receipt(summary, output_exists=False)
 
         return rec.summary or "任务完成，但没有产生输出。"
 
@@ -429,7 +1399,16 @@ class TaskManager:
     def find_failed_task(self, task_id: str) -> TaskRecord | None:
         """Find a terminal task by task_id (for retry or inspection)."""
         for r in self._records:
-            if r.task_id == task_id and r.status in ("done", "failed", "timeout", "needs-input", "blocked"):
+            if r.task_id == task_id and r.status in (
+                "done",
+                "completed_unverified",
+                "verified",
+                "failed",
+                "timeout",
+                "needs-input",
+                "blocked",
+                "parked",
+            ):
                 return r
         return None
 
@@ -446,13 +1425,104 @@ class TaskManager:
             if r.task_id == task_id:
                 removed = self._records.pop(i)
                 self._save_status()
+                self._mirror_task_status(removed.user_id, task_id, "queued", event_type="task.retry_reset")
                 log.info("Reset task %s for retry", task_id)
                 return removed
+        return None
+
+    def cancel_task(self, task_id: str, *, reason: str = "Cancelled by user") -> TaskRecord | None:
+        """Cancel a task if known, killing the worker when it is still active."""
+        for rec in self._records:
+            if rec.task_id != task_id:
+                continue
+            if rec.status in ("dispatched", "running"):
+                self._kill_task(rec)
+            rec.status = "failed"
+            rec.completed_at = _utc_iso()
+            rec.summary = reason
+            rec.failure_class = "cancelled"
+            if rec.workspace:
+                _write_completion_metadata(Path(rec.workspace), rec.completed_at)
+            self._save_status()
+            self._append_history([rec])
+            self._mirror_record(rec, event_type="task.cancelled")
+            log.info("Cancelled task %s", task_id)
+            return rec
+        return None
+
+    def park_task(self, task_id: str, *, reason: str = "Parked after review") -> TaskRecord | None:
+        """Mark a known task as reviewed and intentionally not actionable now."""
+        for rec in self._records:
+            if rec.task_id != task_id:
+                continue
+            if normalize_task_status(rec.status) in ("dispatched", "running"):
+                self._kill_task(rec)
+            rec.status = "parked"
+            rec.completed_at = rec.completed_at or _utc_iso()
+            rec.summary = reason
+            rec.failure_class = rec.failure_class or "parked"
+            if rec.workspace:
+                _write_completion_metadata(Path(rec.workspace), rec.completed_at)
+            self._append_trace(rec, "task.parked", {"reason": reason})
+            self._save_status()
+            self._append_history([rec])
+            self._mirror_record(rec, event_type="task.parked")
+            log.info("Parked task %s", task_id)
+            return rec
         return None
 
     def get_active_count(self) -> int:
         """Number of currently running tasks."""
         return sum(1 for r in self._records if r.status in ("dispatched", "running"))
+
+    def get_unresolved_inventory(self, max_items=5) -> dict:
+        """Return a compact inventory of terminal records that still need attention."""
+        try:
+            limit = max(0, int(max_items))
+        except (TypeError, ValueError):
+            limit = 5
+
+        unresolved = []
+        for rec in self._records:
+            status = normalize_task_status(rec.status)
+            if status not in UNRESOLVED_TASK_STATUSES:
+                continue
+            if status == "completed_unverified" and _is_conversation_record(rec):
+                continue
+            agent_type = rec.task_type or (rec.tags[0] if rec.tags else "") or "unknown"
+            failure_class = rec.failure_class or "unknown"
+            unresolved.append((rec, status, agent_type, failure_class))
+
+        by_status: dict[str, int] = {}
+        by_agent_type: dict[str, int] = {}
+        by_failure_class: dict[str, int] = {}
+        oldest_completed_at = ""
+        for rec, status, agent_type, failure_class in unresolved:
+            by_status[status] = by_status.get(status, 0) + 1
+            by_agent_type[agent_type] = by_agent_type.get(agent_type, 0) + 1
+            by_failure_class[failure_class] = by_failure_class.get(failure_class, 0) + 1
+            if rec.completed_at and (not oldest_completed_at or rec.completed_at < oldest_completed_at):
+                oldest_completed_at = rec.completed_at
+
+        unresolved.sort(key=lambda item: item[0].completed_at or item[0].started_at or "")
+        return {
+            "count": len(unresolved),
+            "by_status": by_status,
+            "by_agent_type": by_agent_type,
+            "by_failure_class": by_failure_class,
+            "oldest_completed_at": oldest_completed_at,
+            "tasks": [
+                {
+                    "task_id": rec.task_id,
+                    "status": status,
+                    "agent_type": agent_type,
+                    "failure_class": failure_class,
+                    "completed_at": rec.completed_at,
+                    "summary": rec.summary,
+                }
+                for rec, status, agent_type, failure_class in unresolved[:limit]
+            ],
+        }
 
     def get_status_summary(self) -> dict:
         """Return agent status summary for heartbeat/display.
@@ -462,20 +1532,48 @@ class TaskManager:
             active_count: int — number of running tasks
             active_tasks: list — preview of active task content
             last_completed: str — timestamp of most recent completion
+            unresolved_inventory: dict — unresolved terminal task inventory
         """
         active = [r for r in self._records if r.status in ("dispatched", "running")]
         completed = [r for r in self._records if r.completed_at]
         completed.sort(key=lambda r: r.completed_at, reverse=True)
 
+        def _heartbeat_for(record: TaskRecord) -> dict:
+            heartbeat_file = Path(record.workspace) / "heartbeat.json" if record.workspace else None
+            if not heartbeat_file or not heartbeat_file.exists():
+                return {}
+            try:
+                data = json.loads(heartbeat_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                return {}
+            return {
+                "last_heartbeat_at": data.get("updated_at", ""),
+                "elapsed_seconds": data.get("elapsed_seconds", 0),
+                "heartbeat_count": data.get("heartbeat_count", 0),
+                "current_step": data.get("current_step"),
+                "total_steps": data.get("total_steps"),
+                "current_agent": data.get("current_agent"),
+                "current_phase": data.get("current_phase"),
+                "status_text": data.get("status_text"),
+                "eta_text": data.get("eta_text"),
+            }
+
         return {
             "busy": len(active) > 0,
             "active_count": len(active),
             "active_tasks": [
-                {"task_id": r.task_id, "workflow_id": r.workflow_id, "preview": r.content_preview,
-                 "started_at": r.started_at, "tags": r.tags}
+                {
+                    "task_id": r.task_id,
+                    "workflow_id": r.workflow_id,
+                    "preview": r.content_preview,
+                    "started_at": r.started_at,
+                    "tags": r.tags,
+                    **_heartbeat_for(r),
+                }
                 for r in active
             ],
             "last_completed": completed[0].completed_at if completed else "",
+            "unresolved_inventory": self.get_unresolved_inventory(),
         }
 
     # ------------------------------------------------------------------
@@ -493,7 +1591,7 @@ class TaskManager:
                 if "tags" not in rec:
                     rec["tags"] = []
                 if "user_id" not in rec:
-                    rec["user_id"] = "ang"
+                    rec["user_id"] = "default"
                 if "workflow_id" not in rec:
                     rec["workflow_id"] = derive_workflow_id(
                         task_id=rec.get("task_id", ""),
@@ -507,6 +1605,23 @@ class TaskManager:
                     rec["failure_class"] = ""
                 if "timeout_alerted_at" not in rec:
                     rec["timeout_alerted_at"] = ""
+                if "task_type" not in rec:
+                    rec["task_type"] = ""
+                if "agent" not in rec:
+                    rec["agent"] = ""
+                if "dispatch_hops" not in rec:
+                    rec["dispatch_hops"] = 0
+                rec["dispatch_hops"] = _coerce_dispatch_hops(rec.get("dispatch_hops", 0))
+                if not rec.get("friction_classification"):
+                    rec["friction_classification"] = _classify_dispatch_hops(rec["dispatch_hops"])
+                if "optimized_routing_suggestion" not in rec:
+                    rec["optimized_routing_suggestion"] = ""
+                if "verification" not in rec:
+                    rec["verification"] = None
+                if "outcome_verified" not in rec:
+                    rec["outcome_verified"] = False
+                if "verification_method" not in rec:
+                    rec["verification_method"] = ""
                 rec["status"] = normalize_task_status(rec.get("status", ""))
                 records.append(TaskRecord(**rec))
             return records
@@ -521,9 +1636,7 @@ class TaskManager:
         with open(lock_path, "w") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
             try:
-                fd, tmp = tempfile.mkstemp(
-                    dir=STATUS_FILE.parent, suffix=".tmp", prefix=".tasks_"
-                )
+                fd, tmp = tempfile.mkstemp(dir=STATUS_FILE.parent, suffix=".tmp", prefix=".tasks_")
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
                     f.flush()
@@ -537,6 +1650,77 @@ class TaskManager:
                 raise
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
+
+    def _mirror_record(self, rec: TaskRecord, *, event_type: str = "task.updated") -> None:
+        """Best-effort Postgres mirror used during the DB runtime migration."""
+        if not CONTROL_RUNTIME_DB_ENABLED:
+            return
+        try:
+            from control.db import transaction
+            from control.repository import ControlRepository
+
+            with transaction() as conn:
+                repo = ControlRepository(conn)
+                repo.overlay_task_record(asdict(rec))
+                if normalize_task_status(rec.status) in {"verified", "completed_unverified", "done"}:
+                    repo.enqueue_request_verify(
+                        {
+                            "id": rec.task_id,
+                            "user_id": rec.user_id,
+                            "status": normalize_task_status(rec.status),
+                            "title": rec.content_preview or rec.task_id,
+                            "result_summary": rec.summary,
+                            "task_type": rec.task_type,
+                            "verification": rec.verification if isinstance(rec.verification, dict) else None,
+                            "outcome_verified": rec.outcome_verified,
+                        }
+                    )
+                repo.record_task_event(
+                    rec.user_id,
+                    rec.task_id,
+                    event_type,
+                    status=normalize_task_status(rec.status),
+                    payload={
+                        "pid": rec.pid,
+                        "workspace": rec.workspace,
+                        "summary": rec.summary,
+                        "task_type": rec.task_type,
+                        "outcome_verified": rec.outcome_verified,
+                        "verification_method": rec.verification_method,
+                    },
+                )
+        except Exception as e:
+            log.warning("Control DB task mirror failed for %s: %s", rec.task_id, e)
+
+    def _append_trace(self, rec: TaskRecord, event_type: str, payload: dict | None = None) -> None:
+        try:
+            from runtime.trace import append_trace
+
+            base_payload = {
+                "workflow_id": rec.workflow_id,
+                "status": normalize_task_status(rec.status),
+                "attempt_count": rec.attempt_count,
+                "max_attempts": rec.max_attempts,
+            }
+            if payload:
+                base_payload.update(payload)
+            append_trace(rec.task_id, event_type, base_payload)
+        except Exception as e:
+            log.debug("Trace append failed for %s: %s", rec.task_id, e)
+
+    def _mirror_task_status(self, user_id: str, task_id: str, status: str, *, event_type: str) -> None:
+        if not CONTROL_RUNTIME_DB_ENABLED:
+            return
+        try:
+            from control.db import transaction
+            from control.repository import ControlRepository
+
+            with transaction() as conn:
+                repo = ControlRepository(conn)
+                repo.update_task_status(user_id, task_id, status)
+                repo.record_task_event(user_id, task_id, event_type, status=normalize_task_status(status))
+        except Exception as e:
+            log.warning("Control DB task status mirror failed for %s: %s", task_id, e)
 
     def _append_history(self, records: list[TaskRecord]):
         """Append completed task records to history.jsonl with lock."""
@@ -553,12 +1737,30 @@ class TaskManager:
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
 
+        # Record task outcomes in evolution experience log
+        try:
+            from evolution import record_task_outcome
+
+            for rec in records:
+                if rec.status in ("done", "verified", "completed_unverified", "failed", "timeout", "parked"):
+                    agent = rec.tags[0] if rec.tags else "general"
+                    record_task_outcome(
+                        task_id=rec.task_id,
+                        agent=agent,
+                        action=rec.content_preview[:200],
+                        status=rec.status,
+                        summary=rec.summary[:300] if rec.summary else "",
+                    )
+        except Exception as e:
+            log.debug("Evolution recording failed (non-critical): %s", e)
+
     def cleanup_old_records(self, max_age_days: int = 7):
         """Remove completed task records older than max_age_days."""
         cutoff = datetime.now(timezone.utc).timestamp() - max_age_days * 86400
         before = len(self._records)
         self._records = [
-            r for r in self._records
+            r
+            for r in self._records
             if r.status in ("dispatched", "running")
             or not r.completed_at
             or datetime.fromisoformat(r.completed_at.replace("Z", "+00:00")).timestamp() > cutoff
@@ -566,3 +1768,97 @@ class TaskManager:
         if len(self._records) < before:
             log.info("Cleaned up %d old task records", before - len(self._records))
             self._save_status()
+
+
+# ---------------------------------------------------------------------------
+# Timing percentile utilities — read timing_stats.jsonl, compute p50/p95
+# ---------------------------------------------------------------------------
+
+
+def _percentile(sorted_data: list[float], pct: float) -> float:
+    """Linear-interpolation percentile (pct in 0–100) over a sorted list."""
+    n = len(sorted_data)
+    if n == 0:
+        return 0.0
+    k = (n - 1) * pct / 100
+    lo, hi = int(k), min(int(k) + 1, n - 1)
+    return sorted_data[lo] + (k - lo) * (sorted_data[hi] - sorted_data[lo])
+
+
+def get_timing_percentiles(task_type: str | None = None, window_days: int = 7) -> dict:
+    """Read timing_stats.jsonl and return p50/p95 per task_type for the last window_days.
+
+    Returns:
+        {task_type: {"p50": float, "p95": float, "count": int, "configured_timeout_s": float}}
+    """
+    if not TIMING_STATS_FILE.exists():
+        return {}
+
+    cutoff = datetime.now(timezone.utc).timestamp() - window_days * 86400
+    samples: dict[str, list[float]] = {}
+    configured: dict[str, float] = {}
+
+    try:
+        for line in TIMING_STATS_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts_str = entry.get("ts", "")
+            if ts_str:
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+                    if ts < cutoff:
+                        continue
+                except ValueError:
+                    pass
+            ttype = entry.get("task_type", "unknown")
+            if task_type and ttype != task_type:
+                continue
+            dur = entry.get("actual_duration_s")
+            if dur is None:
+                continue
+            samples.setdefault(ttype, []).append(float(dur))
+            configured[ttype] = entry.get("configured_timeout_s", 0.0)
+    except OSError:
+        return {}
+
+    result = {}
+    for ttype, durs in samples.items():
+        sorted_durs = sorted(durs)
+        result[ttype] = {
+            "p50": round(_percentile(sorted_durs, 50), 1),
+            "p95": round(_percentile(sorted_durs, 95), 1),
+            "count": len(durs),
+            "configured_timeout_s": configured.get(ttype, 0.0),
+        }
+    return result
+
+
+def get_timing_summary(window_days: int = 7) -> str:
+    """Return a human-readable timing summary for inclusion in the daily journal.
+
+    Example:
+        Task timing (7-day, act phase):
+          writer       p50=45s   p95=280s  budget=600s  n=12
+          coder        p50=120s  p95=490s  budget=600s  n=5   ⚠ p95>80%
+    """
+    percentiles = get_timing_percentiles(window_days=window_days)
+    if not percentiles:
+        return ""
+
+    lines = [f"Task timing ({window_days}-day, act phase):"]
+    for ttype, stats in sorted(percentiles.items()):
+        budget = stats["configured_timeout_s"]
+        p95_pct = (stats["p95"] / budget * 100) if budget else 0
+        warning = "  ⚠ p95>80%" if p95_pct > 80 else ""
+        lines.append(
+            f"  {ttype:<12} p50={stats['p50']:.0f}s"
+            f"  p95={stats['p95']:.0f}s"
+            f"  budget={int(budget)}s"
+            f"  n={stats['count']}{warning}"
+        )
+    return "\n".join(lines)

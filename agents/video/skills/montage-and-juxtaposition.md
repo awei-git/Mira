@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when selecting and ordering shots where the juxtaposition between clips should create meaning or emotion that no single shot contains alone."
+---
+
 # Montage and Juxtaposition
 
 **Tags:** video, editing, montage, meaning

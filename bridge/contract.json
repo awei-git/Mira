@@ -1,0 +1,124 @@
+{
+  "schema_version": "2026-05-01.v1",
+  "canonical_truth": "Postgres schema mira_control via Mira FastAPI",
+  "transport": {
+    "discovery": "mDNS Bonjour service _mira._tcp",
+    "tls": "local self-signed certificate pinned by SHA256 fingerprint in MiraApp",
+    "legacy_icloud_commands": "manual DR recovery importer only; never consumed by normal dispatch loop"
+  },
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/api/heartbeat",
+      "auth": "local token",
+      "description": "Server and runtime liveness probe."
+    },
+    {
+      "method": "GET",
+      "path": "/api/{user_id}/tasks",
+      "auth": "local token",
+      "description": "Return canonical task projection for the user.",
+      "query": {
+        "include_archived": "bool, default false",
+        "limit": "int, default 200",
+        "updated_after": "optional ISO timestamp",
+        "messages_per_item": "int, default 20"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/{user_id}/tasks",
+      "auth": "local token",
+      "description": "Create a request/discussion task in canonical Postgres state.",
+      "body": {
+        "type": "request|discussion",
+        "title": "string",
+        "content": "string",
+        "quick": "bool",
+        "tags": "string[]",
+        "client_request_id": "optional idempotency id"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/{user_id}/tasks/{task_id}",
+      "auth": "local token",
+      "description": "Return one canonical task projection, including verification fields when available.",
+      "response_fields": {
+        "status": "queued|working|verifying|needs-input|done|failed|archived",
+        "task_type": "optional internal task type",
+        "verification": "optional verifier verdict payload",
+        "outcome_verified": "bool",
+        "verification_method": "optional verifier method"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/{user_id}/tasks/{task_id}/reply",
+      "auth": "local token",
+      "description": "Append a user reply to an existing task thread.",
+      "body": {
+        "content": "string",
+        "client_message_id": "optional idempotency id"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/{user_id}/tasks/{task_id}/cancel",
+      "auth": "local token",
+      "description": "Cancel a queued/running task."
+    },
+    {
+      "method": "POST",
+      "path": "/api/{user_id}/tasks/{task_id}/retry",
+      "auth": "local token",
+      "description": "Retry a failed or cancelled task within retry policy."
+    },
+    {
+      "method": "GET",
+      "path": "/api/{user_id}/threads",
+      "auth": "local token",
+      "description": "Return thread list backed by canonical task/message projection."
+    },
+    {
+      "method": "GET",
+      "path": "/api/{user_id}/events",
+      "auth": "local token",
+      "description": "SSE stream of task events when enabled."
+    },
+    {
+      "method": "POST",
+      "path": "/api/{user_id}/v2-status/cards",
+      "auth": "local token",
+      "description": "Create an app-visible V2 operator feed card. This writes a feed item, not a task command.",
+      "body": {
+        "card_type": "daily_status|decision|sunday_gate|drift_alert|build_summary",
+        "title": "string",
+        "body": "string",
+        "reply_options": "string[]",
+        "default_action": "string, default WAIT",
+        "ttl_hours": "int, default 24"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/{user_id}/v2-status/cards/{card_id}/reply",
+      "auth": "local token",
+      "description": "Record a reply to a V2 operator feed card.",
+      "body": {
+        "reply": "string; must match reply_options when present"
+      }
+    }
+  ],
+  "status_mapping": {
+    "queued": "queued",
+    "dispatched": "working",
+    "running": "working",
+    "completed_unverified": "verifying",
+    "verified": "done",
+    "needs-input": "needs-input",
+    "failed": "failed",
+    "timeout": "failed",
+    "blocked": "failed"
+  }
+}

@@ -1,0 +1,197 @@
+"""Local LLM providers — oMLX and Ollama (backward-compatible aliases)."""
+
+import json
+import logging
+import time
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+log = logging.getLogger("mira")
+
+_OMLX_CIRCUIT_FILE = Path("/tmp/mira-omlx-circuit.json")
+
+
+def _omlx_circuit_open() -> bool:
+    try:
+        data = json.loads(_OMLX_CIRCUIT_FILE.read_text(encoding="utf-8"))
+        return float(data.get("open_until", 0)) > time.time()
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _trip_omlx_circuit(reason: str, cooldown_seconds: int = 180) -> None:
+    payload = {"open_until": time.time() + cooldown_seconds, "reason": reason}
+    try:
+        _OMLX_CIRCUIT_FILE.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _omlx_call(model_id: str, prompt: str, system: str = "", timeout: int = 300) -> str:
+    """Call local oMLX (OpenAI-compatible) for privacy-sensitive tasks. Never leaves localhost."""
+    from config import (
+        LOCAL_LLM_NATIVE_TOOLS_ALLOWED,
+        OMLX_ALLOW_NONLOCAL_HOST,
+        OMLX_DISABLE_SERVER_TOOLS,
+        OMLX_HOST,
+        OMLX_PORT,
+    )
+    from llm import _estimate_tokens, _log_usage
+
+    if _omlx_circuit_open():
+        log.warning("oMLX circuit open; skipping local generation")
+        return ""
+
+    if not OMLX_ALLOW_NONLOCAL_HOST and OMLX_HOST not in {"127.0.0.1", "localhost", "::1"}:
+        reason = f"non-local OMLX_HOST configured: {OMLX_HOST}"
+        log.error("Refusing oMLX call: %s", reason)
+        _trip_omlx_circuit(reason)
+        return ""
+
+    native_tools_forbidden = OMLX_DISABLE_SERVER_TOOLS or not LOCAL_LLM_NATIVE_TOOLS_ALLOWED
+    mira_side_broker_present = False
+    if LOCAL_LLM_NATIVE_TOOLS_ALLOWED and not mira_side_broker_present:
+        log.warning(
+            "LOCAL_LLM_NATIVE_TOOLS_ALLOWED is true, but _omlx_call has no Mira-side "
+            "tool broker; keeping local server native tools disabled"
+        )
+        native_tools_forbidden = True
+
+    endpoint = f"http://{OMLX_HOST}:{OMLX_PORT}/v1/chat/completions"
+
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+
+    payload = {
+        "model": model_id,
+        "messages": messages,
+        # Keep the default local generation budget modest. A 32k default made
+        # short app replies sit in "working" for minutes on local models.
+        "max_tokens": 2048,
+        "temperature": 0.7,
+    }
+    if native_tools_forbidden:
+        payload["tools"] = []
+        payload["tool_choice"] = "none"
+    body = json.dumps(payload).encode("utf-8")
+
+    req = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            choice = data["choices"][0]
+            message = choice.get("message", {})
+            if native_tools_forbidden and (
+                choice.get("finish_reason") == "tool_calls" or message.get("tool_calls") or message.get("function_call")
+            ):
+                log.error("Security error: rejected oMLX response containing tool call")
+                _trip_omlx_circuit("local server attempted tool call")
+                return ""
+            content = message.get("content") or ""
+            model_used = data.get("model", model_id)
+            log.info("oMLX call: %s → %d chars", model_used, len(content))
+            usage = data.get("usage", {})
+            _log_usage(
+                "omlx",
+                model_used,
+                usage.get("prompt_tokens", _estimate_tokens(prompt)),
+                usage.get("completion_tokens", _estimate_tokens(content)),
+                estimated="usage" not in data,
+            )
+            return content.strip()
+    except Exception as e:
+        reason = str(e)
+        log.error("oMLX %s failed: %s", model_id, reason)
+        if "timed out" in reason.lower() or "HTTP Error 507" in reason:
+            _trip_omlx_circuit(reason)
+        # Fallback to secondary local model
+        from config import OMLX_FALLBACK_MODEL
+
+        if model_id != OMLX_FALLBACK_MODEL:
+            log.info("oMLX falling back to %s", OMLX_FALLBACK_MODEL)
+            return _omlx_call(OMLX_FALLBACK_MODEL, prompt, system=system, timeout=timeout)
+        return ""
+
+
+def omlx_embed(text: str, model: str = "", retries: int = 2) -> list[float]:
+    """Get embedding from local oMLX (OpenAI-compatible).
+
+    Wrapped in a circuit breaker (`net.circuit_breaker`) so that when
+    the local endpoint is dying (HTTP 507 / timeouts, which baseline
+    showed dominate ~91% of ERROR log volume), we fast-fail returning
+    [] instead of piling retries on a sick process.
+    """
+    if not text or not text.strip():
+        return []
+    from config import OMLX_HOST, OMLX_PORT, OMLX_EMBED_MODEL
+    from net.circuit_breaker import CircuitOpen, get_circuit
+
+    if not model:
+        model = OMLX_EMBED_MODEL
+    endpoint = f"http://{OMLX_HOST}:{OMLX_PORT}/v1/embeddings"
+
+    payload = {"model": model, "input": text}
+    body = json.dumps(payload).encode("utf-8")
+
+    breaker = get_circuit(
+        "omlx_embed",
+        window_seconds=300.0,
+        min_samples=8,
+        error_rate_threshold=0.5,
+        cooldown_seconds=180.0,
+    )
+
+    def _single_attempt() -> list[float]:
+        req = urllib.request.Request(
+            endpoint,
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data["data"][0]["embedding"]
+
+    for attempt in range(1 + retries):
+        try:
+            return breaker.call(_single_attempt)
+        except CircuitOpen:
+            # Provider is tripped — skip retries, let caller fall back.
+            log.debug("oMLX embed skipped: circuit OPEN")
+            return []
+        except urllib.error.HTTPError as e:
+            if e.code == 500 and attempt < retries:
+                import time as _time
+
+                wait = 2**attempt
+                log.warning("oMLX embed 500, retry %d/%d in %ds", attempt + 1, retries, wait)
+                _time.sleep(wait)
+                continue
+            log.error("oMLX embed failed (HTTP %d): %s", e.code, str(e))
+            return []
+        except (urllib.error.URLError, OSError) as e:
+            if attempt < retries:
+                import time as _time
+
+                _time.sleep(2)
+                continue
+            log.error("oMLX embed failed: %s", str(e))
+            return []
+    return []
+
+
+def _ollama_call(model_id: str, prompt: str, system: str = "", timeout: int = 300) -> str:
+    """Backward-compatible alias during the Ollama -> oMLX migration."""
+    return _omlx_call(model_id, prompt, system=system, timeout=timeout)
+
+
+def ollama_embed(text: str, model: str = "nomic-embed-text", retries: int = 2) -> list[float]:
+    """Backward-compatible alias during the Ollama -> oMLX migration."""
+    return omlx_embed(text, model=model, retries=retries)

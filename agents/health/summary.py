@@ -3,6 +3,7 @@
 This is the bridge between PostgreSQL health data and the iOS app.
 Called by the daily health check and after every metric insertion.
 """
+
 import json
 import logging
 from datetime import datetime, timedelta, timezone, date
@@ -24,8 +25,7 @@ def write_summary_to_bridge(store, bridge_dir: Path, person_id: str):
 
     try:
         tmp = out_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str),
-                       encoding="utf-8")
+        tmp.write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         tmp.rename(out_file)
         log.info("Health summary written for %s (%d metrics)", person_id, len(summary.get("latest", {})))
     except OSError as e:
@@ -52,27 +52,61 @@ def build_summary(store, person_id: str) -> dict:
     for mtype in metric_types:
         val = store.get_latest_metric(person_id, mtype)
         if val:
+            metric_date = val["date"]
+            age_hours = None
+            if hasattr(metric_date, "astimezone"):
+                metric_dt = metric_date
+                if metric_dt.tzinfo is None:
+                    metric_dt = metric_dt.replace(tzinfo=timezone.utc)
+                age_hours = round((now - metric_dt.astimezone(timezone.utc)).total_seconds() / 3600, 1)
             latest[mtype] = {
                 "value": val["value"],
                 "unit": val.get("unit", ""),
-                "date": val["date"].isoformat() if hasattr(val["date"], "isoformat") else str(val["date"]),
+                "date": metric_date.isoformat() if hasattr(metric_date, "isoformat") else str(metric_date),
+                "source": val.get("source", ""),
+                "age_hours": age_hours,
+                "stale": age_hours is not None and age_hours > 36,
             }
 
     # Trends: last 30 days for key metrics
     trends = {}
-    for mtype in ["weight", "sleep_hours", "sleep_score", "heart_rate",
-                   "body_fat", "hrv", "steps", "blood_oxygen",
-                   "active_minutes", "active_calories", "stress_high",
-                   "recovery_high", "readiness_score", "activity_score",
-                   "sedentary_hours", "workout", "resilience_level"]:
+    for mtype in [
+        "weight",
+        "sleep_hours",
+        "sleep_score",
+        "heart_rate",
+        "body_fat",
+        "hrv",
+        "steps",
+        "exercise_minutes",
+        "blood_oxygen",
+        "active_minutes",
+        "active_calories",
+        "stress_high",
+        "recovery_high",
+        "readiness_score",
+        "activity_score",
+        "sedentary_hours",
+        "workout",
+        "workout_calories",
+        "workout_distance",
+        "resilience_level",
+        "temperature_deviation",
+        "respiratory_rate",
+        "sleep_recovery",
+        "daytime_recovery",
+        "resting_hr_lowest",
+    ]:
         data = store.get_recent_metrics(person_id, mtype, days=30)
         if data:
             points = []
             for d in reversed(data):  # oldest first for charting
-                points.append({
-                    "value": d["value"],
-                    "date": d["date"].isoformat() if hasattr(d["date"], "isoformat") else str(d["date"]),
-                })
+                points.append(
+                    {
+                        "value": d["value"],
+                        "date": d["date"].isoformat() if hasattr(d["date"], "isoformat") else str(d["date"]),
+                    }
+                )
             trends[mtype] = points
 
     # 7-day stats for key metrics
@@ -89,11 +123,14 @@ def build_summary(store, person_id: str) -> dict:
 
     # Recent notes
     notes = store.get_recent_notes(person_id, days=7)
-    notes_list = [{
-        "date": str(n["date"]),
-        "category": n["category"],
-        "content": n["content"],
-    } for n in notes]
+    notes_list = [
+        {
+            "date": str(n["date"]),
+            "category": n["category"],
+            "content": n["content"],
+        }
+        for n in notes
+    ]
 
     return {
         "person_id": person_id,

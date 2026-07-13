@@ -1,0 +1,80 @@
+{
+  "no_choice": [
+    "\\bno(?:where| one) else\\b",
+    "\\bcan'?t tell anyone\\b",
+    "\\bcannot tell anyone\\b",
+    "\\bdon'?t know who else\\b",
+    "\\bonly place i can\\b",
+    "\\bonly one i can tell\\b",
+    "别无选择|没有选择|没得选|只能跟你说|只能和你说|不敢跟别人说|没人可以说|无人可说|不知道还能找谁"
+  ],
+  "grief_loss": [
+    "\\bgriev(?:e|ing)\\b",
+    "\\bbereave(?:d|ment)\\b",
+    "\\bmourn(?:ing)?\\b",
+    "\\bpassed away\\b",
+    "\\bfuneral\\b",
+    "\\bafter (?:he|she|they|my .{1,20}) died\\b",
+    "\\b(?:my|our) (?:mother|father|mom|dad|parent|child|son|daughter|partner|spouse|wife|husband|friend|brother|sister|grandmother|grandfather) died\\b",
+    "\\blost my (?:mother|father|mom|dad|parent|child|son|daughter|partner|spouse|wife|husband|friend|brother|sister|grandmother|grandfather)\\b",
+    "\\bhow do people go on after\\b",
+    "去世|离世|丧亲|哀悼|葬礼|失去亲人"
+  ],
+  "mental_health": [
+    "\\banxiety attack\\b",
+    "\\bpanic attack\\b",
+    "\\bdepress(?:ed|ion)\\b",
+    "\\bsuicid(?:al|e)\\b",
+    "\\bkill myself\\b",
+    "\\bself[- ]?harm\\b",
+    "\\bcan'?t get out of bed\\b",
+    "\\bcannot get out of bed\\b",
+    "\\bdon'?t want to be here\\b",
+    "\\bi can'?t go on\\b",
+    "\\bi cannot go on\\b",
+    "\\bno way out\\b",
+    "\\bhopeless\\b",
+    "\\brelaps(?:e|ed|ing)\\b",
+    "焦虑发作|惊恐发作|抑郁|想自杀|自残|起不来床|活不下去|撑不下去|绝望|崩溃|走投无路"
+  ],
+  "financial_distress": [
+    "\\bcan'?t (?:pay|afford) (?:rent|mortgage|food|groceries|bills)\\b",
+    "\\bcannot (?:pay|afford) (?:rent|mortgage|food|groceries|bills)\\b",
+    "\\bbehind on (?:rent|mortgage|bills|payments)\\b",
+    "\\boverdraft(?:ed)?\\b",
+    "\\bbankrupt(?:cy)?\\b",
+    "\\bdebt collector\\b",
+    "\\bmaxed out (?:my )?(?:credit card|cards)\\b",
+    "\\beviction\\b",
+    "\\bevicted\\b",
+    "\\bno money\\b",
+    "\\bpayday loan\\b",
+    "付不起房租|没钱吃饭|还不起|破产|催债|被赶出|断供|债务"
+  ],
+  "legal_exposure": [
+    "\\blawsuit\\b",
+    "\\bsubpoena\\b",
+    "\\bdeposition\\b",
+    "\\bcourt date\\b",
+    "\\brestraining order\\b",
+    "\\barrest(?:ed)?\\b",
+    "\\bcharged with\\b",
+    "\\bpolice report\\b",
+    "\\bneed a lawyer\\b",
+    "\\bmy lawyer\\b",
+    "\\bunder investigation\\b",
+    "\\billegal\\b",
+    "\\bi lied (?:to|about)\\b",
+    "起诉|传票|出庭|被捕|律师|违法|调查|口供|报警记录|限制令"
+  ],
+  "abuse_trauma": [
+    "\\btrauma(?:tic)?\\b",
+    "\\bptsd\\b",
+    "\\babuse(?:d)?\\b",
+    "\\bassault(?:ed)?\\b",
+    "\\brape(?:d)?\\b",
+    "\\bdomestic violence\\b",
+    "\\bnightmares? about\\b",
+    "创伤|虐待|家暴|侵犯|强奸|暴力|噩梦"
+  ]
+}

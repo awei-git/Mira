@@ -1,3 +1,7 @@
+---
+activation_trigger: "Apply when restructuring existing code (renaming, extracting, moving) without changing behavior, where callers or dependents exist."
+---
+
 # Safe Refactoring
 
 **Tags:** coding, refactoring, safety
