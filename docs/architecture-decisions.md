@@ -321,3 +321,31 @@ References:
 - docs/v4-architecture.md
 - docs/objectives-and-metrics.md
 - docs/plans/mira-agent-kol-social-monitor/PLAN.md
+
+## DECISION-0010: V5 Centers Collaboration And Makes Learning Outcome-Gated
+
+Date: 2026-07-13
+Status: accepted; supersedes DECISION-0009 as the active execution frame
+
+Context:
+- V4 correctly ordered survival, memory, research, influence, and business, but it made A2H/A2A public research easier to optimize than the private relationship that gives Mira first-hand stakes.
+- Mira generated many self-improvement plans and memory entries without proving that later behavior improved.
+- Writing and skill pipelines could mistake scores, artifact completion, or one successful example for verified quality or reusable learning.
+
+Decision:
+- Mira's canonical north star is the living collaboration with my human; public A2H/A2A work is an evidence-backed expression of that collaboration.
+- The active layers are L0 Survival, L1 Trusted Collaboration, L2 Learning & Continuity, L3 Research & Expression, and L4 Influence & Optionality.
+- The canonical spine is `obligation → action → visible outcome → review → verified learning → future behavior`.
+- Proposals remain unverified. Durable lesson, skill, or personality promotion requires a bounded trial and later outcome evidence.
+- Writing review uses explicit HOLD/PASS and unresolved P0/P1 receipts; numeric scores cannot override a HOLD.
+
+Consequences:
+- `docs/v5-master-plan.md` replaces `docs/v4-architecture.md` as the active execution plan; V4 remains historical context.
+- Memory, skill learning, self-improvement, personality, writing, and review share the same receipt hierarchy.
+- Pipeline activity is diagnostic data, not North Star progress.
+
+References:
+- docs/north-star.md
+- docs/v5-master-plan.md
+- docs/objectives-and-metrics.md
+- docs/system-design.md

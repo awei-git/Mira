@@ -442,6 +442,20 @@ def do_reflect(user_id: str = "ang"):
     except Exception as e:
         log.warning("Reflect self-evaluation failed: %s", e)
 
+    # --- Evaluator anchor drift: detect silent benchmark/rubric movement ---
+    try:
+        import importlib.util
+
+        evaluator_path = Path(__file__).parent.parent.parent / "evaluator" / "evaluator.py"
+        spec = importlib.util.spec_from_file_location("evaluator_drift_core", evaluator_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load evaluator module: {evaluator_path}")
+        evaluator_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evaluator_mod)
+        evaluator_mod.check_eval_drift()
+    except Exception as e:
+        log.warning("Evaluator anchor drift check failed: %s", e)
+
     # --- Score → Action: diagnose weak areas and generate improvement plan ---
     try:
         from evaluation.scorer import diagnose_scores, generate_improvement_plan
@@ -452,11 +466,9 @@ def do_reflect(user_id: str = "ang"):
             log.info("Score diagnosis: %d low, %d declining", len(diagnosis["low_scores"]), len(diagnosis["declining"]))
             plan = generate_improvement_plan(diagnosis)
             if plan:
-                append_memory(
-                    f"Self-improvement plan generated: {len(diagnosis['low_scores'])} weak areas identified",
-                    user_id=user_id,
-                )
-                log.info("Improvement plan saved to soul/improvement_plan.json")
+                # A proposal is not a memory. Only a verified outcome should be
+                # promoted into durable memory after the experiment has receipts.
+                log.info("Improvement experiment proposed in soul/improvement_plan.json")
 
             try:
                 from ops.backlog import ActionBacklog

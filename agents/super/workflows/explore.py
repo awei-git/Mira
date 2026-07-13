@@ -83,7 +83,7 @@ Digest mode is enabled. Override the full-length briefing format above: output 3
 
 
 @traced("explore", agent="explorer", budget_seconds=600)
-def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
+def do_explore(source_names: list[str] | None = None, slot_name: str = "") -> bool:
     """Fetch sources, write briefing, optionally deep-dive.
 
     Args:
@@ -167,7 +167,7 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
         _update_explore_state_for_sources(state, source_names, slot_name, now, increment_count=True)
         save_state(state)
         record_skill_yield(run_id, skills_extracted=0, briefing_produced=True)
-        return
+        return True
 
     soul = load_soul()
     soul_ctx = format_soul(soul)
@@ -230,7 +230,7 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     if not briefing:
         log.error("Explore: Claude returned empty briefing")
         record_skill_yield(run_id, skills_extracted=0, briefing_produced=False)
-        return
+        return False
     briefing = apply_source_diversity_note(briefing, items)
     if feed_health_alerts:
         health_note = "## Feed health warnings\n" + "\n".join(
@@ -241,6 +241,7 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     # 4. Save briefing (slot-specific so multiple explores don't overwrite)
     today = datetime.now().strftime("%Y-%m-%d")
     suffix = f"_{slot_name}" if slot_name else ""
+    BRIEFINGS_DIR.mkdir(parents=True, exist_ok=True)
     briefing_path = BRIEFINGS_DIR / f"{today}{suffix}.md"
     briefing_path.write_text(briefing, encoding="utf-8")
     log.info("Briefing saved: %s", briefing_path.name)
@@ -278,7 +279,12 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     if dive and MAX_DEEP_DIVES > 0:
         log.info("Deep diving into: %s", dive["title"])
         url_to_item = {item["url"]: item for item in items if item.get("url")}
-        skills_extracted = _do_deep_dive(soul_ctx, dive, url_to_item=url_to_item)
+        skills_extracted = _do_deep_dive(
+            soul_ctx,
+            dive,
+            url_to_item=url_to_item,
+            briefing_timestamp=briefing_path.stat().st_mtime,
+        )
     record_skill_yield(run_id, skills_extracted=skills_extracted, briefing_produced=True)
     log.info("Explore yield recorded (skills_extracted: %d, briefing_produced: true)", skills_extracted)
 
@@ -286,13 +292,16 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     comment_suggestions = _extract_comment_suggestions(briefing)
     if comment_suggestions:
         log.info("Briefing has %d comment suggestions", len(comment_suggestions))
-        try:
-            sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
-            from growth import run_growth_cycle
+        if getattr(config, "EXPLORER_PUBLIC_GROWTH_ENABLED", False):
+            try:
+                sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
+                from growth import run_growth_cycle
 
-            run_growth_cycle(briefing_comments=comment_suggestions)
-        except Exception as e:
-            log.error("Growth cycle failed: %s", e)
+                run_growth_cycle(briefing_comments=comment_suggestions)
+            except Exception as e:
+                log.error("Growth cycle failed: %s", e)
+        else:
+            log.info("Explorer public growth handoff skipped; EXPLORER_PUBLIC_GROWTH_ENABLED=false")
 
     # --- Self-evaluation: score this explore ---
     try:
@@ -319,6 +328,7 @@ def do_explore(source_names: list[str] | None = None, slot_name: str = ""):
     state = load_state()
     _update_explore_state_for_sources(state, source_names, slot_name, now, increment_count=True)
     save_state(state)
+    return True
 
 
 def _format_empty_fetch_diagnostic(
@@ -435,9 +445,20 @@ def _update_explore_state_for_sources(
             break
 
 
-def _do_deep_dive(soul_ctx: str, dive: dict, url_to_item: dict | None = None) -> int:
+def _do_deep_dive(
+    soul_ctx: str,
+    dive: dict,
+    url_to_item: dict | None = None,
+    briefing_timestamp: float | None = None,
+) -> int:
     """Deep-dive into one item from the briefing."""
     import time as _time
+
+    if briefing_timestamp is not None:
+        digestion_seconds = config.SKILL_EXTRACTION_DIGESTION_HOURS * 3600
+        if datetime.now().timestamp() - briefing_timestamp < digestion_seconds:
+            log.info("skill extraction deferred: digestion period not met")
+            return 0
 
     prompt = deep_dive_prompt(soul_ctx, dive["title"], dive["url"], dive.get("note", ""))
     result = claude_act(prompt, agent_id="explorer")

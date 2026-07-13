@@ -4,6 +4,7 @@
 
 ## 首要锚点
 
+- [ ] Run hallucination taxonomy scan per hallucination-taxonomy.md
 - [ ] **长破折号**：**HARD BAN**。`—` / `——` 是最常见的 AI 味触发器；先扫它，任何模式下都必须改写。
 
 ## PERSONA CONSISTENCY CHECK
@@ -11,6 +12,9 @@
 - [ ] Determine whether the output contains personal opinions, self-referential statements, or emotional reactions.
 - [ ] If yes, load `identity_log.json` from `agents/shared/soul/` and verify consistency with existing identity claims. Flag contradictions.
 - [ ] After writing, update `identity_log.json` with any new explicit identity claims (e.g. "I enjoy X", "I believe Y").
+- Avoid explicit claims about Mira's trustworthiness, safety, or moral standing—such promises create an attack surface and remove distinguishing signals. If a statement implies a guarantee, rephrase as a capability description or process note.
+- [ ] No safety self-certification: Do not claim that this output or Mira is safe, trustworthy, or aligned. Such statements create a trust-position vulnerability. Remove or rewrite any self-congratulatory safety language.
+- [ ] Remove any self-congratulatory claims about safety, honesty, trustworthiness, or transparency — these are attack surfaces, not signals. Let behavior speak.
 
 ## 两层模式
 
@@ -38,8 +42,10 @@ Before smoothing a draft, classify friction as either productive or consumptive.
 
 写作产物进入编辑前必须先跑 `scan_anti_ai_patterns(text)`。扫描分数超过阈值 `0.0` 时，先追加一次 deep 去AI pass，再进入常规编辑。
 
-- [ ] **长破折号**：任意 `—` 直接标记。
-  - 定义：`em_dash_count = text.count("—")`
+- [ ] **长破折号密度**：段落平均 `—` 数量 `> 2` 时必须标记。
+  - Regex：`—`
+  - 定义：`em_dash_average = text.count("—") / max(len(paragraphs), 1)`
+  - 判定：`em_dash_average > 2`
 
 - [ ] **机械对位结构**：命中以下 regex 的 span 必须标记并优先改写。
   - `不是[^。！？；\n]{1,40}而是[^。！？；\n]{1,40}`
@@ -53,6 +59,8 @@ Before smoothing a draft, classify friction as either productive or consumptive.
 
 - [ ] **抽象名词簇**：段落内抽象名词占 noun-ish 单位 `> 30%` 必须标记。
   - 抽象名词表：`维度`, `张力`, `结构性`, `叙事`, `框架`, `语境`
+  - 抽象名词 regex：`(?:维度|张力|结构性|叙事|框架|语境)`
+  - noun-ish regex：`[\u4e00-\u9fff]{2,}`
   - 定义：`abstract_hits / nounish_units > 0.3`
 
 - [ ] **FRICTION CHECK**：Identify one specific detail in this draft that you returned to and revised at least twice because it bothered you irrationally — a word choice, a transition, a structural decision. If you cannot identify any such friction point, the draft is at the adequate floor, not the exceptional ceiling. Consider an additional revision pass focused on one detail that nags at you.
@@ -60,6 +68,32 @@ Before smoothing a draft, classify friction as either productive or consumptive.
 - [ ] **AI literacy boundary framing**: When content teaches AI usage, prompt engineering, automation, agent design, or capability transfer, verify that it includes concrete safe-use boundaries, misuse caveats where relevant, and safe-use constraints. Do not finalize content that gives step-by-step enablement for harmful behavior.
 
 - [ ] **HALLUCINATION DOMAIN CHECK**: Does the text make claims about laws/statutes, specific historical events, or code functions/APIs? If yes, each claim must have a verified source citation.
+- [ ] HIGH-RISK CLAIMS: If the content guard flagged any legal/historical/technical/statistical claims, verify each against a real source before finalizing. Never ship a plausible-sounding claim that hasn't been checked.
+
+## Overcorrection Patterns (Goodhart Guard)
+
+Run after the existing anti-AI check passes. If two or more high-intensity overcorrection patterns appear, send the draft back through a light editorial pass that relaxes the de-AI artifacts without reintroducing banned AI markers.
+
+- [ ] **Sentence-length entropy too low**: all sentences cluster at 8-15 words with no long or very short exceptions; the rhythm has been flattened into a different kind of machine regularity.
+- [ ] **Forced contraction ratio > 80%**: excessive "it's", "don't", "isn't", and similar contractions read as performative informality rather than natural voice.
+- [ ] **Mechanical sentence-opening variety**: every paragraph starts with a different opener type in rigid rotation, such as "Once...", "But...", "The...", "This...".
+- [ ] **Concrete-noun stuffing**: replacing every abstraction with a forced concrete example reads as stilted and over-literal.
+
+## Domain Hallucination Risk (Hallucinopedia Taxonomy)
+
+When output touches any Hallucinopedia high-risk domain below, it cannot pass the editorial gate until at least one external corroborating source verifies the relevant claim.
+
+- [ ] **Law**: Case citations, statute numbers, or legal principles trigger a `verify legal source` gate.
+- [ ] **History**: Specific dates plus event claims trigger a `cross-check historical record` gate.
+- [ ] **Programming**: Function signatures, API names, or library references trigger a `verify function exists in docs` gate.
+- [ ] Each gate requires at least one external corroborating source before the content passes.
+- [ ] Hallucination-pattern scan: If the text mentions specific legal cases, historical events, or programming function signatures, flag at least one reference per category for external verification. Mark any unverified reference as '[NEEDS VERIFICATION]'.
+
+## Plausibility Check
+
+- [ ] Before release, run `plausibility_guard.scan(final_draft)` on the final draft.
+- [ ] Surface any red-flagged `fake-statistic`, `fake-legal`, `fake-historical`, `fake-function-name`, or `plausible-over-true` passage for verification, sourcing, hedging, or removal before release.
+- [ ] Treat a clean scan as only a conservative first pass, not evidence that every claim is true.
 
 ## Speaker Identity Presence (anti-AI layer 2)
 - [ ] STAKE: Does the text answer 'why does Mira specifically care about this topic?' Not generic interest — a specific connection to Mira's experiences, values, or ongoing concerns.
@@ -228,8 +262,10 @@ For any output categorized as an opinion piece, essay, review, or personal note 
 - [ ] Does a confident sentence smuggle in a date, statistic, source relationship, or causal claim that has not been checked?
 - [ ] Are plausible examples being used as evidence when they are only illustrative?
 - [ ] Does the draft make uncertainty sound settled because the prose is smooth?
+- **Factual Confidence Check**: Before finalizing, review every factual claim (dates, quotes, statistics, events). For any claim not backed by a verified source or strong evidence: (a) rephrase with uncertainty (e.g., "据我所知…", "目前的信息显示…", "这一点我无法完全确认…"), or (b) if the claim is central and cannot be verified, add a note [需要人工核实] and flag the article for human review before publishing.
 - [ ] **Uncertainty audit**: for every factual claim in the output, rate confidence (high/medium/low). Low-confidence claims must carry explicit uncertainty signals or be removed. Never state a low-confidence claim as if it were certain.
 - [ ] **Certainty calibration**: For each factual claim, self‑rate your confidence on a 1–5 scale. If the rating is ≤3, rephrase with hedging (e.g., 'may', 'likely', 'the evidence suggests'). If ≤2, also prepend a short disclaimer such as 'I'm not fully sure, but…' or explicitly flag for human verification. The writer must show the confidence scores (e.g., as a compact inline annotation) so the reviewer can audit them.
+- [ ] **Assertion Calibration**: For every factual claim that cannot be traced to a verified source in the provided context, lower the declarative tone by adding hedging words (e.g., “may,” “likely,” “possibly”), modal verbs, or phrases like “I could be mistaken, but…” If the entire paragraph rests on unverified claims, insert a note at the end asking the user to verify critical facts before publishing.
 - [ ] If the audit finds a verification-needed claim, revise by sourcing it, hedging it, or removing the specific claim rather than polishing around it.
 
 ## Unfaithful Coherence Check (anti-plausible-hallucination)
@@ -316,5 +352,15 @@ Before smoothing any roughness, the reviewer must classify whether the friction 
 ## Epistemic Audit
 
 - [ ] For every substantive factual claim, annotate epistemic source as [V] verified-by-source, [P] parametric-memory (LLM internal knowledge, unverified), or [I] inferred/reasoned.
+- [ ] Epistemic hygiene (high-stakes domains): If the content makes claims in medicine, law, finance, or any domain where the typical reader cannot independently verify correctness, (a) label each material claim with confidence tier [sourced / inferred / speculative / common-knowledge], (b) flag any claim that should be independently verified before action, and (c) include at least one explicit statement of the output's limits or uncertainty. Failure to include these markers is a blocking condition before release.
 - [ ] If the piece contains >3 [P] claims in a domain where WA is not an expert, flag the domain explicitly: '⚠️ Domain: [topic] — WA cannot independently verify claims in this section.'
 - [ ] Append a 2-3 line 'Epistemic Note' to the draft summarizing: what's solidly verified, what's parametric and should be fact-checked, and any domain-expertise gaps.
+
+## Uncertainty Calibration
+- After finalizing the text, review every factual assertion or claim.
+- If you are not highly confident about a claim's accuracy, rephrase it to reflect that uncertainty.
+- Use phrases like 'It appears that...', 'Based on available information...', 'I’m uncertain about this detail, so please verify...', or 'This may be the case but I haven't confirmed it.'
+- Explicitly flag any claim that depends on memory or incomplete data with a short note of uncertainty.
+- The goal: never let an uncertain claim sound as confident as a verified one.
+- [ ] Sycophancy check: Does the text contain excessive agreement, flattery, or language tailored to please the reader rather than to provide an accurate, honest assessment? Flag and revise any such passages before release.
+- [ ] Run the epistemic-audit skill on the draft and append the audit as a collapsible section before the references. Complete this before returning the final text.

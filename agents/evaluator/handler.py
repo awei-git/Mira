@@ -55,6 +55,7 @@ _SPOT_CHECK_LOG = Path(__file__).resolve().parent.parent.parent / "logs" / "eval
 _EVALUATION_LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs" / "evaluations"
 _EVALUATOR_LOG = Path(__file__).resolve().parent.parent / "shared" / "soul" / "evaluator_log.jsonl"
 _DRIFT_LOG_FILE = _EVALUATION_LOG_DIR / "drift_log.json"
+_EVAL_DRIFT_LOG = Path(__file__).resolve().parent.parent.parent / "logs" / "eval_drift.log"
 _CONTENT_GUARD_AUDIT_SCHEDULE = {
     "name": "content_guard_completeness_audit",
     "weekday": 0,
@@ -250,6 +251,29 @@ AGENT_CRITERIA: dict[str, AgentCriteria] = {
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
                 "ground_truth_available": True,
+            },
+        },
+    },
+    "kol": {
+        "description": "KOL digest — fixed-source monitoring and daily synthesis",
+        "metrics": {
+            "digest_produced": {
+                "description": "Daily digest artifacts successfully generated",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+                "ground_truth_available": True,
+            },
+            "source_health": {
+                "description": "Tracked source fetch health recorded per run",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+                "ground_truth_available": True,
+            },
+            "item_relevance": {
+                "description": "Top items aligned to each KOL's declared angle",
+                "metric_type": "proxy",
+                "ground_truth_type": "consensus_proxy",
+                "ground_truth_available": False,
             },
         },
     },
@@ -616,6 +640,80 @@ def _log_drift_warning(drift: dict) -> None:
         tmp_path.replace(_DRIFT_LOG_FILE)
     except OSError as exc:
         log.debug("Could not write drift log for %s: %s", drift.get("agent"), exc)
+
+
+def _score_record_time(record: dict) -> datetime | None:
+    try:
+        ts = datetime.fromisoformat(str(record.get("timestamp", "")).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
+def _score_record_value(record: dict) -> float | None:
+    try:
+        return float(record.get("score"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _detect_eval_drift_trend(agent_name: str, history: list[dict], window_days: int, threshold: float) -> dict | None:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+    points: list[tuple[datetime, float]] = []
+    for record in history:
+        ts = _score_record_time(record)
+        score = _score_record_value(record)
+        if ts is not None and score is not None and ts >= cutoff:
+            points.append((ts, score))
+
+    points.sort(key=lambda item: item[0])
+    if len(points) < 3:
+        return None
+
+    first_ts = points[0][0]
+    x_values = [(ts - first_ts).total_seconds() / 86400 / max(window_days, 1) for ts, _ in points]
+    y_values = [score for _, score in points]
+    x_mean = sum(x_values) / len(x_values)
+    y_mean = sum(y_values) / len(y_values)
+    denominator = sum((x - x_mean) ** 2 for x in x_values)
+    if denominator == 0:
+        return None
+
+    slope = sum((x - x_mean) * (y - y_mean) for x, y in zip(x_values, y_values)) / denominator
+    deltas = [current - previous for previous, current in zip(y_values, y_values[1:])]
+    if slope <= threshold or not all(delta >= 0 for delta in deltas):
+        return None
+
+    return {
+        "type": "eval_benchmark_staleness_risk",
+        "agent": agent_name,
+        "slope": round(slope, 6),
+        "threshold": threshold,
+        "window_days": window_days,
+        "sample_count": len(points),
+        "first_score": round(y_values[0], 6),
+        "last_score": round(y_values[-1], 6),
+        "message": "steady improvement on fixed evaluator benchmarks may indicate overfitting or benchmark staleness",
+    }
+
+
+def _log_eval_drift_trend_warning(flag: dict) -> None:
+    record = {"timestamp": datetime.now(timezone.utc).isoformat(), **flag}
+    try:
+        _EVAL_DRIFT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_EVAL_DRIFT_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    except OSError as exc:
+        log.debug("Could not write eval drift trend log for %s: %s", flag.get("agent"), exc)
+    log.warning(
+        "EVAL_DRIFT_TREND agent=%s slope=%.6f threshold=%.6f window_days=%d",
+        flag.get("agent"),
+        flag.get("slope", 0.0),
+        flag.get("threshold", 0.0),
+        flag.get("window_days", 0),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1839,7 +1937,7 @@ def score_all(days: int | None = None) -> dict:
     sampled_type_counts: dict[str, int] = {}
     sampled_dates = []
     drift_flags = []
-    from config import EVAL_SCORE_TTL_DAYS as _ttl_days
+    from config import EVAL_DRIFT_TREND_THRESHOLD, EVAL_DRIFT_WINDOW_DAYS, EVAL_SCORE_TTL_DAYS as _ttl_days
 
     for agent_name in AGENT_CRITERIA:
         card = score_agent(agent_name, days)
@@ -1884,6 +1982,16 @@ def score_all(days: int | None = None) -> dict:
                 _log_drift_warning(drift)
                 card["drift"] = drift
                 drift_flags.append(drift)
+            eval_drift_flag = _detect_eval_drift_trend(
+                agent_name,
+                active_history,
+                EVAL_DRIFT_WINDOW_DAYS,
+                EVAL_DRIFT_TREND_THRESHOLD,
+            )
+            if eval_drift_flag:
+                _log_eval_drift_trend_warning(eval_drift_flag)
+                card["eval_drift_trend_flag"] = eval_drift_flag
+                result.setdefault("notable_flags", []).append(eval_drift_flag)
     result["drift_flags"] = drift_flags
 
     # Score super
@@ -2600,6 +2708,8 @@ _ACTIONABLE_IMPROVEMENT_VERB_RE = re.compile(
     re.IGNORECASE,
 )
 _IMPROVEMENT_ITEM_RE = re.compile(r"^\s*(?:[-*]\s+|\d+[.)]\s+)")
+_STABILITY_AUDIT_THRESHOLD = 5
+_STEELMAN_DISSENT_SECTION_RE = re.compile(r"(?ims)^##\s+Steelman Dissent\s*\n(?P<body>.*?)(?=^##\s+\S|\Z)")
 
 
 def _needs_actionable_improvement_correction(plan: str) -> bool:
@@ -2608,6 +2718,78 @@ def _needs_actionable_improvement_correction(plan: str) -> bool:
         return False
     actionable = sum(1 for item in items if _ACTIONABLE_IMPROVEMENT_VERB_RE.search(item))
     return actionable * 2 < len(items)
+
+
+def _stability_audit(plan: str) -> tuple[float, str] | None:
+    prompt = f"""Given the following improvement plan, assess whether it risks overfitting to current evaluation metrics in a way that could silently degrade real performance. Return a risk score 0-10 and a brief explanation.
+
+Return exactly:
+RISK_SCORE: <0-10>
+EXPLANATION: <brief explanation>
+
+Improvement plan:
+{plan}"""
+
+    try:
+        from config import OMLX_DEFAULT_MODEL
+        from llm import _omlx_call
+
+        response = (_omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=30) or "").strip()
+    except Exception as e:
+        log.warning("Stability audit failed: %s", e)
+        return None
+
+    if not response:
+        return None
+
+    score_match = re.search(r"(?:risk[_\s-]*score|score)\s*[:=]\s*(10(?:\.0+)?|[0-9](?:\.\d+)?)", response, re.I)
+    if not score_match:
+        score_match = re.search(r"\b(10(?:\.0+)?|[0-9](?:\.\d+)?)\b", response)
+    if not score_match:
+        log.warning("Stability audit returned unparsable response: %s", response[:200])
+        return None
+
+    risk_score = max(0.0, min(10.0, float(score_match.group(1))))
+    explanation = response
+    for line in response.splitlines():
+        if re.match(r"\s*(?:explanation|reason)\s*[:=]", line, re.I):
+            explanation = re.sub(r"^\s*(?:explanation|reason)\s*[:=]\s*", "", line, flags=re.I).strip()
+            break
+
+    return risk_score, explanation
+
+
+def _has_nonempty_steelman_dissent(output: str) -> bool:
+    match = _STEELMAN_DISSENT_SECTION_RE.search(output or "")
+    return bool(match and match.group("body").strip())
+
+
+def _build_steelman_dissent(assessment: dict) -> str:
+    agg = assessment.get("aggregate", {}) if isinstance(assessment, dict) else {}
+    total_tasks = agg.get("total_tasks", 0)
+    task_clause = (
+        f"The assessment is based on {total_tasks} sampled tasks, which may still be a biased or stale slice of Mira's real behavior."
+        if total_tasks
+        else "The assessment has little or no task evidence in this window, so its confidence may be mostly procedural."
+    )
+    return (
+        f"- {task_clause} It may reward the parts of the system that already emit measurable traces while missing quiet failures, "
+        "user-visible dissatisfaction, or tasks that never entered the evaluator's sample.\n"
+        "- The deeper failure mode is self-sealing: because Mira treats self-improvement as a core commitment, this assessment may "
+        "interpret more monitoring, scoring, and intervention as progress instead of asking whether the improvement loop itself is "
+        "overfitting, distorting behavior, or crowding out simpler alternatives such as narrower scope, external review, or doing less."
+    )
+
+
+def _ensure_steelman_dissent(report: str, assessment: dict, task_id: str) -> str | None:
+    if _has_nonempty_steelman_dissent(report):
+        return report
+    log.warning("EVALUATOR_STEELMAN_DISSENT_MISSING task_id=%s - requesting regeneration", task_id)
+    regenerated = report.rstrip() + "\n\n## Steelman Dissent\n" + _build_steelman_dissent(assessment)
+    if _has_nonempty_steelman_dissent(regenerated):
+        return regenerated
+    log.warning("EVALUATOR_STEELMAN_DISSENT_REGENERATION_FAILED task_id=%s", task_id)
+    return None
 
 
 def diagnose_and_improve(assessment: dict) -> str | None:
@@ -2888,6 +3070,17 @@ INVERTED_SCORES: <comma-separated list of flagged agent/metric names, or "none">
                 )
                 plan = warning + "\n\n" + plan
 
+            stability_audit = _stability_audit(plan)
+            if stability_audit:
+                risk_score, stability_explanation = stability_audit
+                if risk_score > _STABILITY_AUDIT_THRESHOLD:
+                    stability_warning = (
+                        "[STABILITY WARNING]\n"
+                        f"Risk score: {risk_score:g}/10\n"
+                        f"Explanation: {stability_explanation}"
+                    )
+                    plan = stability_warning + "\n\n" + plan
+
             plan_data = {
                 "generated_at": datetime.now().isoformat(),
                 "problems": problems,
@@ -3005,6 +3198,17 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
                     f"{warning.get('rate', 0):.1%} exceeded "
                     f"{warning.get('threshold', _SCAFFOLDING_REJECTION_THRESHOLD_DEFAULT):.0%} "
                     f"({warning.get('count', 0)} rejections over {warning.get('window_days', days)} days)"
+                )
+
+    notable_flags = assessment.get("notable_flags", [])
+    if notable_flags:
+        lines.extend(["", "## Notable Flags"])
+        for flag in notable_flags:
+            if flag.get("type") == "eval_benchmark_staleness_risk":
+                lines.append(
+                    "- eval_benchmark_staleness_risk "
+                    f"{flag.get('agent')}: monthly slope {float(flag.get('slope', 0)):.2%} exceeded "
+                    f"{float(flag.get('threshold', 0)):.0%} over {flag.get('sample_count', 0)} samples"
                 )
 
     rubric_warning = assessment.get("rubric_unvalidated_warning", "")
@@ -3162,11 +3366,19 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
     if plan:
         lines.extend(["", "## Improvement Plan", plan])
 
+    lines.extend(["", "## Steelman Dissent", _build_steelman_dissent(assessment)])
+
     report = "\n".join(lines)
+    report = _ensure_steelman_dissent(report, assessment, task_id)
+    if report is None:
+        return None
 
     caveat = assessment.get("measurement_validity_caveat", "")
     if caveat:
         report = caveat + "\n\n" + report
+        report = _ensure_steelman_dissent(report, assessment, task_id)
+        if report is None:
+            return None
 
     # Write to workspace
     (workspace / "output.md").write_text(report, encoding="utf-8")

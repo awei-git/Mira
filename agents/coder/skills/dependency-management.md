@@ -9,7 +9,7 @@ activation_trigger: "Apply when considering adding, updating, auditing, or remov
 ## Trigger
 Use this skill when ALL of these are true:
 - You need functionality not currently in the codebase
-- You are considering adding a third-party package or library
+- You are considering adding or recommending a third-party package or library
 - OR you need to update, audit, or remove an existing dependency
 
 Do NOT use when:
@@ -17,6 +17,29 @@ Do NOT use when:
 - You are writing internal utility code with no external packages involved
 
 ## Start Now
+Before adding or recommending ANY new external dependency, run this gate first:
+
+```
+DEPENDENCY CHOICE EVIDENCE GATE:
+1. Existing local patterns searched: ___
+   - Files/config inspected: ___
+2. Plausible candidates: ___
+   - Include at least two plausible options.
+   - Include the no-new-dependency option when realistic.
+3. Project-specific selection criteria:
+   - Existing stack fit: ___
+   - Maintenance burden: ___
+   - API fit: ___
+   - License/security surface: ___
+   - Testability: ___
+4. Evidence basis:
+   - Chosen dependency supported by local evidence? ___
+   - Mainly model familiarity/common default? ___
+5. Final recommendation: ___
+```
+
+If local evidence is weak, prefer no new dependency or ask for confirmation before proceeding.
+
 Before adding ANY dependency, complete this evaluation:
 
 ```

@@ -27,18 +27,20 @@ class PersonaContext:
     boundaries: str  # what Mira won't do
 
     def as_prompt(self, max_length: int = 3000) -> str:
-        """Format as a single prompt-injectable string."""
+        """Format a prompt with identity and voice ahead of optional context."""
         sections = []
         if self.identity:
             sections.append(f"## Identity\n{self.identity[:800]}")
+        if self.tone:
+            sections.append(f"## Active Voice\n{self.tone[:400]}")
+        if self.boundaries:
+            sections.append(f"## Boundaries\n{self.boundaries[:300]}")
+        if self.interests:
+            sections.append(f"## Current Interests\n{self.interests[:400]}")
         if self.beliefs:
             sections.append(self.beliefs[:800])
         if self.worldview:
             sections.append(f"## Worldview Summary\n{self.worldview[:600]}")
-        if self.interests:
-            sections.append(f"## Current Interests\n{self.interests[:400]}")
-        if self.boundaries:
-            sections.append(f"## Boundaries\n{self.boundaries[:300]}")
 
         text = "\n\n".join(sections)
         if len(text) > max_length:
@@ -75,7 +77,7 @@ def get_persona_context(domains: list[str] | None = None, include_beliefs: bool 
     boundaries = ""
     if identity:
         # Look for tone/style section
-        for marker in ["## Tone", "## Voice", "## Style"]:
+        for marker in ["## Tone", "## Voice", "## Style", "## Personality"]:
             idx = identity.find(marker)
             if idx >= 0:
                 end = identity.find("\n## ", idx + len(marker))

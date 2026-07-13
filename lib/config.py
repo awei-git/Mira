@@ -541,6 +541,11 @@ MODELS = {
         "model_id": _MODEL_VERSION_CFG.get("gpt5", "gpt-5.5"),
         "style": "GPT-5.5 through the Codex subscription CLI",
     },
+    "gpt": {
+        "provider": "openai",
+        "model_id": _MODEL_VERSION_CFG.get("gpt5", "gpt-5.5"),
+        "style": "GPT-5.5 through the OpenAI API",
+    },
     "deepseek": {
         "provider": "deepseek",
         "model_id": _MODEL_VERSION_CFG.get("deepseek_chat", "deepseek-v4-pro"),
@@ -581,8 +586,8 @@ MODELS = {
 # Which models to use for writing tasks (from config.yml)
 _models_cfg = _cfg.get("models", {})
 CLOUD_LLM_ENABLED = _env_bool("MIRA_CLOUD_LLM_ENABLED", bool(_models_cfg.get("cloud_enabled", True)))
-WRITING_MODELS = _models_cfg.get("writing", ["claude", "gpt5", "deepseek", "gemini"])
-REVIEW_MODELS = _models_cfg.get("review", ["claude", "gpt5", "gemini"])
+WRITING_MODELS = _models_cfg.get("writing", ["codex", "claude", "omlx"])
+REVIEW_MODELS = _models_cfg.get("review", ["codex", "claude", "omlx"])
 DEFAULT_MODEL = _models_cfg.get("default", "claude")
 CLAUDE_FALLBACK_MODEL = _models_cfg.get("claude_fallback", "codex")
 HEALTH_REPORT_MODEL = _models_cfg.get("health_report", "gpt5")
@@ -594,7 +599,7 @@ SUBSTACK_PUBLISHING_DISABLED = _publishing_cfg.get("substack_disabled", False)
 STRICT_HALLUCINATION_GUARD = _publishing_cfg.get("strict_hallucination_guard", False)
 CONTENT_GUARD_SURVIVAL_MODE = _publishing_cfg.get("content_guard_survival_mode", True)
 X_PROMOTION_ENABLED = bool(_publishing_cfg.get("x_promotion_enabled", False))
-AUTO_PODCAST_ENABLED = bool(_publishing_cfg.get("auto_podcast_enabled", False))
+AUTO_PODCAST_ENABLED = bool(_publishing_cfg.get("auto_podcast_enabled", True))
 
 # Writing workflow
 MIN_REVIEW_ROUNDS = 5
@@ -762,6 +767,9 @@ ZHESI_TIME = _parse_times([_sched.get("zhesi_time", "09:30")])[0]
 
 # Daily soul question
 SOUL_QUESTION_TIME = _parse_times([_sched.get("soul_question_time", "20:00")])[0]
+
+# Daily collaboration loop
+DAILY_COLLAB_TIME = _parse_times([_sched.get("daily_collab_time", "11:30")])[0]
 
 # Daily book review (weekly reading series)
 BOOK_REVIEW_TIME = _parse_times([_sched.get("book_review_time", "09:00")])[0]
@@ -1000,6 +1008,7 @@ HEALTH_HISTORY_CAP = _thresholds.get("health_history_cap", 10)
 HEALTH_MAX_ALERTS_PERSONAL = _thresholds.get("health_max_alerts_personal", 10)
 EVALUATOR_MIN_ISSUE_SEVERITY = _thresholds.get("evaluator_min_issue_severity", "medium")
 EVAL_SCORE_TTL_DAYS = _thresholds.get("eval_score_ttl_days", 30)
+EVAL_DRIFT_WINDOW_DAYS = int(_thresholds.get("eval_drift_window_days", 30))
 SUSPENDED_METRICS: list[str] = ["reading_volume", "hallucination_rate", "emotional_range"]
 DISABLED_RUBRICS: set[str] = {"reading_volume", "hallucination_rate", "emotional_range", "rubric_calibration"}
 MISCALIBRATION_FLAG_THRESHOLD: int = _thresholds.get("miscalibration_flag_threshold", 3)
@@ -1014,8 +1023,29 @@ class ConfigError(RuntimeError):
 # lib/config.py directly instead of agents/shared/config.py.
 TOKEN_USAGE_LOG = TOKEN_USAGE_LOG_PATH
 AUDIT_LOG_PATH = LOGS_DIR / "action_audit.jsonl"
+AUDIT_LOG_ENABLED = True
 AGENT_AUDIT_LOG = LOGS_DIR / "agent_audit.jsonl"
 AGENT_AUDIT_MODE = True
+LLM_MODEL = _MODEL_VERSION_CFG.get("claude_sonnet", "claude-sonnet-4-20250514")
+DELIBERATION_MODE = True
+DELIBERATION_LOG_PATH = LOGS_DIR / "deliberation.jsonl"
+HIGH_IMPACT_ACTION_PATTERNS = [
+    "publish",
+    "delete",
+    "rm",
+    "unlink",
+    "skill.save",
+    "skill.enable",
+    "substack.post",
+    "substack.note",
+    "podcast.publish",
+    "email.send",
+]
+SCOPE_ESCALATION_MODE = "log_only"
+SYNTHESIS_PASSTHROUGH_AGENTS = {"coder", "photo", "video", "researcher"}
+PEER_VERIFY_ENABLED = bool(_cfg.get("peer_verify_enabled", False))
+PEER_VERIFY_THRESHOLD = str(_cfg.get("peer_verify_threshold", "heavy"))
+PEER_VERIFY_TIMEOUT = int(_cfg.get("peer_verify_timeout", 30))
 LOCAL_MODEL_ENDPOINT_ALLOWLIST = list(
     _cfg.get("local_model_endpoint_allowlist", ["localhost", "127.0.0.1", "::1"]) or ["localhost", "127.0.0.1", "::1"]
 )
@@ -1057,6 +1087,17 @@ AGENT_REGISTRY.update(
         },
     }
 )
+AGENT_ACTION_SCOPE = {name: ["file_write"] for name in ALL_AGENTS}
+for _agent_name in ("general", "explorer", "analyst", "researcher", "podcast", "socialmedia", "surfer"):
+    AGENT_ACTION_SCOPE[_agent_name] = ["file_write", "network_call"]
+AGENT_ACTION_SCOPE.update(
+    {
+        "coder": ["file_write", "install_package", "modify_config"],
+        "substack": ["file_write", "network_call"],
+        "super": ["file_write", "modify_config"],
+        "task_worker": ["file_write", "network_call"],
+    }
+)
 
 PUBLISH_AUTO_CONFIDENCE_THRESHOLD = float(_publishing_cfg.get("auto_confidence_threshold", 0.8))
 PUBLISH_OBSESSION_GATE_ENABLED = bool(_publishing_cfg.get("obsession_gate_enabled", False))
@@ -1066,6 +1107,8 @@ MAX_ATTRIBUTION_DEPTH = int(_limits.get("max_attribution_depth", 2))
 VERIFICATION_SPOT_CHECK_RATE = float(_limits.get("verification_spot_check_rate", 0.15))
 PROXY_AUDIT_SAMPLE_RATE = float(_limits.get("proxy_audit_sample_rate", 0.10))
 PROXY_DRIFT_THRESHOLD = float(_thresholds.get("proxy_drift_threshold", 0.20))
+EVAL_DRIFT_THRESHOLD = float(_thresholds.get("eval_drift_threshold", 0.15))
+EVAL_DRIFT_TREND_THRESHOLD = float(_thresholds.get("eval_drift_trend_threshold", 0.02))
 REVIEW_TRUST_INFLATION_THRESHOLD = int(_thresholds.get("review_trust_inflation_threshold", 8))
 SCAFFOLDING_REJECTION_THRESHOLD = float(_thresholds.get("scaffolding_rejection_threshold", 0.20))
 SILENT_COMPLETION_MIN_RATIO = float(_thresholds.get("silent_completion_min_ratio", 0.30))
@@ -1075,12 +1118,23 @@ SILENT_COMPLETION_HEDGE_PHRASES = list(
         ["unfortunately", "couldn't complete", "i don't know", "unable to", "failed to"],
     )
 )
+AI_OUTPUT_REVIEW_BUDGET_LINES = int(_thresholds.get("ai_output_review_budget_lines", 120))
+AI_OUTPUT_WARNING_RATIO = float(_thresholds.get("ai_output_warning_ratio", 0.35))
 
 SOCIAL_MAX_COMMENTS_PER_DAY = int(_rate_limits.get("social_max_comments_per_day", 5))
 SOCIAL_MAX_NOTES_PER_DAY = int(_rate_limits.get("social_max_notes_per_day", NOTES_MAX_PER_DAY))
 DEEP_VERIFY_PROBABILITY = float(_thresholds.get("deep_verify_probability", 0.15))
 DEEP_VERIFY_COOLDOWN_MINUTES = int(_thresholds.get("deep_verify_cooldown_minutes", 120))
 ANTI_AI_FLOOR_THRESHOLD = float(_thresholds.get("anti_ai_floor_threshold", 0.20))
+TRUST_CLAIM_GUARD_ENABLED = bool(_thresholds.get("trust_claim_guard_enabled", True))
+REQUIRE_SKILL_COMPREHENSION = bool(_limits.get("require_skill_comprehension", True))
+BLOCK_EXTERNAL_JUDGMENT_SKILLS_WITHOUT_BOUNDARIES = bool(
+    _limits.get("block_external_judgment_skills_without_boundaries", True)
+)
+MAX_AUDIT_BYTES_PER_DAY = int(_limits.get("max_audit_bytes_per_day", 50000))
+MAX_UNREVIEWED_SKILLS = int(_limits.get("max_unreviewed_skills", 5))
+SKILL_AUDIT_OVERRIDE_MODE = str(_limits.get("skill_audit_override_mode", "strict"))
+SKILL_DIGESTION_MINUTES = int(_limits.get("skill_digestion_minutes", 15))
 NARRATIVE_MONOPOLY_SOURCES = tuple(_socialmedia_cfg.get("narrative_monopoly_sources", ()))
 NARRATIVE_MONOPOLY_THRESHOLD = float(_socialmedia_cfg.get("narrative_monopoly_threshold", 0.80))
 

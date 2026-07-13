@@ -237,20 +237,17 @@ class MemoryStore:
         if self._migrated:
             return
         try:
-            import sys
-
-            migrations_dir = Path(__file__).resolve().parent.parent.parent / "agents" / "shared" / "migrations"
-            if str(migrations_dir.parent) not in sys.path:
-                sys.path.insert(0, str(migrations_dir.parent))
-            from migrations.run import run_migrations
+            from agents.shared.migrations.run import run_migrations
 
             run_migrations()
-            self._ensure_joint_attention_columns()
-            self._ensure_trust_confidence_columns()
-            self._migrated = True
         except Exception as e:
-            log.warning("Auto-migration failed (non-fatal): %s", e)
-            self._migrated = True  # Don't retry every call
+            log.warning("Auto-migration runner failed (non-fatal): %s", e)
+        for repair in (self._ensure_joint_attention_columns, self._ensure_trust_confidence_columns):
+            try:
+                repair()
+            except Exception as e:
+                log.warning("Auto-migration repair %s failed (non-fatal): %s", repair.__name__, e)
+        self._migrated = True  # Don't retry every call
 
     def _ensure_joint_attention_columns(self):
         """Add joint-attention columns to existing memory tables."""

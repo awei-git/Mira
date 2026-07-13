@@ -3024,6 +3024,9 @@ class Reply(BaseModel):
     content: str = Field(..., min_length=1, max_length=50000)
 
 
+WRITE_RESPONSE_MESSAGES = 20
+
+
 class HealthMetricIn(BaseModel):
     type: str = Field(..., min_length=1, max_length=100)
     value: float
@@ -3092,6 +3095,18 @@ def _optimistic_item(
         "error": None,
         "result_path": None,
     }
+
+
+def _trim_item_messages(item: dict, *, limit: int = WRITE_RESPONSE_MESSAGES) -> dict:
+    """Return an app response copy with bounded message history."""
+    if not isinstance(item, dict):
+        return item
+    messages = item.get("messages")
+    if not isinstance(messages, list) or len(messages) <= limit:
+        return item
+    trimmed = dict(item)
+    trimmed["messages"] = messages[-max(1, int(limit)) :]
+    return trimmed
 
 
 def _export_compat_item(user_id: str, item: dict) -> None:
@@ -3267,7 +3282,7 @@ def create_task_api(user_id: str, req: NewTask):
             },
         )
         _export_compat_item(user_id, item)
-    return {"item_id": item_id, "status": "queued", "item": item}
+    return {"item_id": item_id, "status": "queued", "item": _trim_item_messages(item)}
 
 
 @app.post("/api/{user_id}/tasks/{task_id}/reply")
@@ -3308,7 +3323,7 @@ def reply_to_task_api(user_id: str, task_id: str, reply: Reply):
             },
         )
         _export_compat_item(user_id, item)
-    return {"status": "sent", "item": item}
+    return {"status": "sent", "item": _trim_item_messages(item)}
 
 
 @app.post("/api/{user_id}/health/export")

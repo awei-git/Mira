@@ -8,7 +8,7 @@ verification, with 30-minute cooldown between retries.
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -72,6 +72,30 @@ def _verify_soul_question(state, today):
     """Soul question verifier: state key or canonical discussion item exists."""
     today_compact = today.replace("-", "")
     return bool(state.get(f"soul_question_{today}") or _bridge_item_exists(f"soul_question_{today_compact}"))
+
+
+def _verify_daily_collab(state, today):
+    """Daily collab verifier: require a same-thread agent message today."""
+    item_path = MIRA_DIR / "users" / DEFAULT_DAILY_USER_ID / "items" / "disc_daily_collab.json"
+    try:
+        item = json.loads(item_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    for msg in item.get("messages", []):
+        if msg.get("sender") != "agent":
+            continue
+        raw = str(msg.get("timestamp", ""))
+        if raw.startswith(today):
+            return True
+        try:
+            sent_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - sent_at.astimezone(timezone.utc) <= timedelta(hours=18):
+            return True
+    return False
 
 
 def _verify_analyst(slot):
@@ -156,6 +180,12 @@ _DAILY_TASK_CONTRACTS = {
         "window": (10, 22),
         "verify": _verify_soul_question,
         "label": "灵魂提问",
+    },
+    "daily_collab": {
+        "dispatch": ("daily-collab", ["daily-collab"]),
+        "window": (11, 23),
+        "verify": _verify_daily_collab,
+        "label": "Daily Collab",
     },
     # daily-photo disabled 2026-04-29 by WA ("照片这个job就删掉吧 没什么用
     # 你也没有任何进步"). runtime/jobs.py disabled the trigger, but this

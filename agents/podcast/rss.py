@@ -703,6 +703,22 @@ def publish_episode(
     verified, source = _verify_feed_contains_slug(slug, feed_url, cfg)
     if verified:
         log.info("RSS verification: episode '%s' found in %s feed", slug, source)
+        try:
+            import sys as _sys
+
+            _shared = str(Path(__file__).resolve().parent.parent.parent / "lib")
+            if _shared not in _sys.path:
+                _sys.path.insert(0, _shared)
+            from ops.failure_log import resolve_failure
+
+            resolve_failure(
+                slug,
+                "feed_verification",
+                f"Episode found in published feed: {source}",
+                error_type="episode_not_in_feed",
+            )
+        except Exception:
+            pass
     else:
         try:
             import sys as _sys

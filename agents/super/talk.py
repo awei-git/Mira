@@ -120,6 +120,22 @@ def _message_from_control_item(item: dict, user_id: str, user_cfg: dict):
         content_filter=user_cfg.get("content_filter", False),
         allowed_agents=user_cfg.get("allowed_agents", ["general"]),
     )
+    msg.tags = item.get("tags") if isinstance(item.get("tags"), list) else []
+    msg.metadata = {"item_type": item.get("type") or "", "tags": msg.tags}
+    tag_set = {str(tag or "").strip().casefold().replace("_", "-") for tag in msg.tags}
+    item_type = str(item.get("type") or "").strip().casefold()
+    task_type = str(item.get("task_type") or "").strip().casefold()
+    if (
+        item.get("id") == "disc_daily_collab"
+        or item_type == "discussion"
+        or task_type == "discussion"
+        or "discussion" in tag_set
+        or "daily-collab" in tag_set
+        or "conversation" in tag_set
+    ):
+        msg.routing_agent = "discussion"
+        msg.allowed_agents = ["discussion"]
+        msg.metadata["routing_agent"] = "discussion"
     _apply_sensitivity_guard(msg)
     return msg
 
@@ -208,13 +224,11 @@ def _dispatch_control_plane_tasks(task_mgr, bridges_by_user: dict, default_bridg
                 continue
         user_cfg = get_user_config(user_id)
         bridge = bridges_by_user.get(user_id, default_bridge)
-        content = ""
-        messages = item.get("messages") if isinstance(item.get("messages"), list) else []
-        if messages:
-            content = messages[-1].get("content", "")
+        msg = _message_from_control_item(item, user_id, user_cfg)
+        content = msg.content
         if not _check_inbound_command_safety(bridge, {"sender": user_id}, task_id, item.get("title", ""), content):
             continue
-        if not _intent_gate_allows(bridge, task_id, content):
+        if not _intent_gate_allows(bridge, task_id, content, tags=item.get("tags"), item_type=item.get("type")):
             continue
         try:
             with transaction() as conn:
@@ -226,7 +240,6 @@ def _dispatch_control_plane_tasks(task_mgr, bridges_by_user: dict, default_bridg
         if not claimed:
             log.info("Control DB task %s already claimed or no longer queued", task_id)
             continue
-        msg = _message_from_control_item(item, user_id, user_cfg)
         workspace = TASKS_DIR / _talk_slug(msg.content, task_id)
         dispatched = task_mgr.dispatch(msg, workspace)
         if dispatched:
@@ -272,10 +285,58 @@ def _check_inbound_command_safety(bridge, cmd: dict, item_id: str, title: str, c
     return False
 
 
+def _intent_clarification_key(bridge, item_id: str, question: str) -> str:
+    user_id = getattr(bridge, "user_id", "ang") or "ang"
+    material = f"{user_id}\n{item_id or '-'}\n{question}".encode("utf-8")
+    return hashlib.sha1(material).hexdigest()[:16]
+
+
+def _intent_clarification_recorded(bridge, item_id: str, question: str) -> bool:
+    state = load_state()
+    receipts = state.get("intent_clarifications")
+    if not isinstance(receipts, dict):
+        return False
+    return _intent_clarification_key(bridge, item_id, question) in receipts
+
+
+def _record_intent_clarification(bridge, item_id: str, question: str, channel: str) -> None:
+    state = load_state()
+    receipts = state.get("intent_clarifications")
+    if not isinstance(receipts, dict):
+        receipts = {}
+    receipts[_intent_clarification_key(bridge, item_id, question)] = {
+        "item_id": item_id or "",
+        "question": question,
+        "channel": channel,
+        "user_id": getattr(bridge, "user_id", "ang") or "ang",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    state["intent_clarifications"] = receipts
+    save_state(state)
+
+
+def _outbox_has_intent_clarification(outbox: Path, item_id: str, question: str) -> bool:
+    for path in outbox.glob("intent_clarify_*.json"):
+        if path.suffix == ".tmp":
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if payload.get("thread_id") == (item_id or payload.get("id")) and payload.get("content") == question:
+            return True
+    return False
+
+
 def _write_intent_clarification_outbox(bridge, item_id: str, question: str) -> None:
+    if _intent_clarification_recorded(bridge, item_id, question):
+        return
     outbox = MIRA_DIR / "outbox"
     outbox.mkdir(parents=True, exist_ok=True)
-    message_id = f"intent_clarify_{uuid.uuid4().hex[:8]}"
+    message_id = f"intent_clarify_{_intent_clarification_key(bridge, item_id, question)[:12]}"
+    if (outbox / f"{message_id}.json").exists() or _outbox_has_intent_clarification(outbox, item_id, question):
+        _record_intent_clarification(bridge, item_id, question, "outbox")
+        return
     payload = {
         "id": message_id,
         "sender": "agent",
@@ -287,9 +348,101 @@ def _write_intent_clarification_outbox(bridge, item_id: str, question: str) -> N
         "metadata": {"user_id": getattr(bridge, "user_id", "ang")},
     }
     (outbox / f"{message_id}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _record_intent_clarification(bridge, item_id, question, "outbox")
 
 
-def _intent_gate_allows(bridge, item_id: str, task_description: str) -> bool:
+def _bridge_item_has_agent_message(bridge, item_id: str, message: str) -> bool:
+    read_item = getattr(bridge, "_read_item", None)
+    if not callable(read_item) or not item_id:
+        return False
+    item = read_item(item_id)
+    if not isinstance(item, dict):
+        return False
+    messages = item.get("messages")
+    if not isinstance(messages, list):
+        return False
+    for msg in reversed(messages[-8:]):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("sender") == "agent" and msg.get("content") == message:
+            return True
+    return False
+
+
+def _update_bridge_intent_clarification(bridge, item_id: str, question: str) -> bool:
+    update = getattr(bridge, "update_status", None) or getattr(bridge, "update_task_status", None)
+    if not callable(update) or not item_id:
+        return False
+    if _bridge_item_has_agent_message(bridge, item_id, question):
+        update(item_id, "needs-input")
+    else:
+        update(item_id, "needs-input", agent_message=question)
+    _record_intent_clarification(bridge, item_id, question, "bridge")
+    return True
+
+
+def _create_bridge_clarification_item(
+    bridge,
+    item_id: str,
+    task_description: str,
+    *,
+    tags: list[str] | None = None,
+    item_type: str | None = None,
+) -> bool:
+    if not item_id:
+        return False
+    title = (task_description or item_id).strip().splitlines()[0][:50] or item_id
+    tag_list = list(tags or [])
+    if item_type in {"new_discussion", "discussion", "comment"} and callable(
+        getattr(bridge, "create_discussion", None)
+    ):
+        bridge.create_discussion(item_id, title, task_description or "", sender="user", tags=tag_list)
+        return True
+    create_task = getattr(bridge, "create_task", None)
+    if not callable(create_task):
+        return False
+    try:
+        create_task(item_id, title, task_description or "", sender="user", tags=tag_list, origin="user")
+    except TypeError:
+        create_task(item_id, title, task_description or "", sender="user", tags=tag_list)
+    return True
+
+
+def _project_intent_clarification_to_control_db(bridge, item_id: str, question: str) -> None:
+    if not CONTROL_RUNTIME_DB_ENABLED or not item_id:
+        return
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository
+
+        user_id = getattr(bridge, "user_id", "ang") or "ang"
+        with transaction() as conn:
+            ControlRepository(conn).update_task_status(
+                user_id,
+                item_id,
+                "needs-input",
+                summary="Intent unclear; waiting for human clarification.",
+                agent_message=question,
+            )
+    except Exception as exc:
+        log.warning("Control DB intent clarification projection failed for %s: %s", item_id, exc)
+
+
+def _is_daily_collab_context(item_id: str, tags: list[str] | None = None, item_type: str | None = None) -> bool:
+    tag_set = {str(tag).strip().lower() for tag in (tags or []) if str(tag).strip()}
+    return item_id == "disc_daily_collab" or "daily-collab" in tag_set
+
+
+def _intent_gate_allows(
+    bridge,
+    item_id: str,
+    task_description: str,
+    *,
+    tags: list[str] | None = None,
+    item_type: str | None = None,
+) -> bool:
+    if _is_daily_collab_context(item_id, tags=tags, item_type=item_type):
+        return True
     result = check_intent_clarity(task_description)
     if result.get("is_clear", True):
         return True
@@ -297,11 +450,20 @@ def _intent_gate_allows(bridge, item_id: str, task_description: str) -> bool:
         return True
     question = result.get("question") or "What specific outcome do you want Mira to produce?"
     if item_id and bridge.item_exists(item_id):
-        update = getattr(bridge, "update_status", None) or getattr(bridge, "update_task_status", None)
-        if callable(update):
-            update(item_id, "needs-input", agent_message=question)
+        _update_bridge_intent_clarification(bridge, item_id, question)
     else:
-        _write_intent_clarification_outbox(bridge, item_id, question)
+        created = _create_bridge_clarification_item(
+            bridge,
+            item_id,
+            task_description,
+            tags=tags,
+            item_type=item_type,
+        )
+        if created:
+            _update_bridge_intent_clarification(bridge, item_id, question)
+        else:
+            _write_intent_clarification_outbox(bridge, item_id, question)
+    _project_intent_clarification_to_control_db(bridge, item_id, question)
     log.info("Intent gate paused task %s: %s", item_id or "-", question)
     return False
 
@@ -538,6 +700,7 @@ _TASK_TERMINAL_STATUSES = {
     "timeout",
     "needs-input",
     "blocked",
+    "parked",
 }
 
 
@@ -546,6 +709,16 @@ def _find_task_record(task_mgr, task_id: str):
         if getattr(rec, "task_id", "") == task_id:
             return rec
     return None
+
+
+def _is_conversation_record(rec) -> bool:
+    tag_keys = {str(tag or "").strip().casefold().replace("_", "-") for tag in getattr(rec, "tags", []) or []}
+    return (
+        getattr(rec, "task_id", "") == "disc_daily_collab"
+        or "discussion" in tag_keys
+        or "daily-collab" in tag_keys
+        or "daily collab" in tag_keys
+    )
 
 
 def _project_record_to_control_db(rec, status: str, *, agent_message: str = "", error_message: str = "") -> None:
@@ -586,7 +759,7 @@ def _project_record_to_bridge(bridge, task_mgr, rec) -> None:
     """
     rec.status = normalize_task_status(getattr(rec, "status", ""))
     content = task_mgr.get_reply_content(rec)
-    footer = _status_footer(task_mgr)
+    footer = "" if _is_conversation_record(rec) else _status_footer(task_mgr)
     is_comment = rec.task_id.startswith("comment_")
 
     if rec.status == "needs-input":
@@ -598,7 +771,7 @@ def _project_record_to_bridge(bridge, task_mgr, rec) -> None:
         log.info("STATE %s: working -> needs-input", rec.task_id)
         return
 
-    if rec.status == "completed_unverified" and "discussion" in (getattr(rec, "tags", []) or []):
+    if rec.status == "completed_unverified" and _is_conversation_record(rec):
         msg_text = (content + footer) if not is_comment else ""
         bridge.update_status(rec.task_id, "done", agent_message=msg_text)
         _project_record_to_control_db(rec, "verified", agent_message=msg_text)
@@ -633,6 +806,15 @@ def _project_record_to_bridge(bridge, task_mgr, rec) -> None:
         log.info("STATE %s: working -> done", rec.task_id)
         return
 
+    if rec.status == "parked":
+        msg_text = (content + footer) if not is_comment else ""
+        bridge.update_status(rec.task_id, "archived", agent_message=msg_text)
+        _project_record_to_control_db(rec, "archived", agent_message=msg_text)
+        if rec.tags:
+            bridge.set_tags(rec.task_id, rec.tags)
+        log.info("STATE %s: working -> archived (parked)", rec.task_id)
+        return
+
     retryable = task_mgr.can_retry(rec)
     if rec.status == "blocked":
         error_msg = f"处理被阻止: {rec.summary}" if rec.summary else "处理被阻止。"
@@ -662,10 +844,13 @@ def _sweep_stuck_items(bridge, task_mgr):
         except (json.JSONDecodeError, OSError):
             continue
         # Auto-dismiss queued alerts — they're notifications, not tasks
-        if item.get("type") == "alert" and item.get("status") == "queued":
+        if item.get("type") == "alert":
             item_id = item.get("id", path.stem)
-            log.info("Auto-dismissing alert: %s", item_id)
-            bridge.update_status(item_id, "completed")
+            if item.get("status") == "queued":
+                log.info("Auto-dismissing alert: %s", item_id)
+                bridge.update_status(item_id, "completed")
+            elif item.get("status") == "working":
+                log.debug("Leaving active alert out of stuck-task sweep: %s", item_id)
             continue
         if item.get("status") != "working":
             continue
@@ -795,7 +980,7 @@ def do_talk():
                 quick = cmd.get("quick", False)
                 if not _check_inbound_command_safety(bridge, cmd, task_id, title, content):
                     continue
-                if not _intent_gate_allows(bridge, task_id, content):
+                if not _intent_gate_allows(bridge, task_id, content, tags=tags, item_type=cmd_type):
                     continue
                 if not bridge.item_exists(task_id):
                     bridge.create_task(task_id, title, content, sender=sender, tags=tags, origin="user")
@@ -810,7 +995,7 @@ def do_talk():
                 disc_id = cmd.get("item_id") or f"disc_{uuid.uuid4().hex[:8]}"
                 if not _check_inbound_command_safety(bridge, cmd, disc_id, title, content):
                     continue
-                if not _intent_gate_allows(bridge, disc_id, content):
+                if not _intent_gate_allows(bridge, disc_id, content, tags=tags, item_type=cmd_type):
                     continue
                 if not bridge.item_exists(disc_id):
                     bridge.create_discussion(disc_id, title, content, sender=sender, tags=tags)
@@ -844,7 +1029,7 @@ def do_talk():
                 disc_id = f"disc_{uuid.uuid4().hex[:8]}"
                 if not _check_inbound_command_safety(bridge, cmd, disc_id, f"Re: {title}", content):
                     continue
-                if not _intent_gate_allows(bridge, disc_id, content):
+                if not _intent_gate_allows(bridge, disc_id, content, tags=["feed-comment"], item_type=cmd_type):
                     continue
                 bridge.create_discussion(
                     disc_id, f"Re: {title}", content, sender=sender, tags=["feed-comment"], parent_id=parent_id
@@ -872,7 +1057,7 @@ def do_talk():
                 recall_id = f"req_recall_{uuid.uuid4().hex[:8]}"
                 if not _check_inbound_command_safety(bridge, cmd, recall_id, f"Recall: {query[:40]}", query):
                     continue
-                if not _intent_gate_allows(bridge, recall_id, query):
+                if not _intent_gate_allows(bridge, recall_id, query, tags=["recall"], item_type=cmd_type):
                     continue
                 bridge.create_task(
                     recall_id, f"Recall: {query[:40]}", query, sender=sender, tags=["recall"], origin="user"
@@ -912,7 +1097,7 @@ def do_talk():
                         followups = list(todo.get("followups", [])) + [{"source": "user", "content": content}]
                         history = "\n".join(f"[{fu.get('source','?')}] {fu.get('content','')}" for fu in followups)
                         full_content = f"Todo: {todo['title']}\n\nConversation so far:\n{history}\n\nUser's latest message:\n{content}"
-                        if not _intent_gate_allows(bridge, req_id, full_content):
+                        if not _intent_gate_allows(bridge, req_id, full_content, tags=["todo"], item_type=cmd_type):
                             continue
                         # Save user followup to todo
                         bridge.add_followup(todo_id, content, source="user")
@@ -986,7 +1171,7 @@ def do_talk():
                 log.info("Picking up todo %s: %s", todo_id, todo_title)
                 # Create a request item for the todo
                 req_id = f"req_{todo_id}"
-                if not _intent_gate_allows(user_bridge, req_id, todo_title):
+                if not _intent_gate_allows(user_bridge, req_id, todo_title, tags=["todo"], item_type="todo"):
                     continue
                 user_bridge.update_todo(todo_id, status="working")
                 user_bridge.create_task(
@@ -1047,6 +1232,13 @@ def do_talk():
                 old_rec = task_mgr.find_failed_task(msg.thread_id)
                 if old_rec:
                     log.info("Mira [%s] is a retry/follow-up for task %s", msg.id, msg.thread_id)
+                    if normalize_task_status(getattr(old_rec, "status", "")) == "parked":
+                        retry_msg = "这个旧任务已经复盘后归档了。请重新发起一个新任务，并说明你想从哪里继续。"
+                        bridge.reply(msg.id, msg.sender, retry_msg, thread_id=msg.thread_id)
+                        bridge.update_task_status(msg.thread_id, "archived")
+                        bridge.mark_processed(msg_path)
+                        log.info("Rejected follow-up for parked task %s", old_rec.task_id)
+                        continue
                     if not task_mgr.can_retry(old_rec):
                         retry_msg = "该任务已达到重试上限，请检查失败原因后重新发起新任务。"
                         bridge.reply(msg.id, msg.sender, retry_msg, thread_id=msg.thread_id)

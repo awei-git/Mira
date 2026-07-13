@@ -70,11 +70,13 @@ def _check_pending_publish():
             update_manifest(
                 slug,
                 title=legacy.get("title", slug),
-                status="approved",
+                status="approval_required",
                 workspace=workspace,
                 final_md=final_md,
                 item_id=legacy.get("item_id", ""),
                 auto_podcast=legacy.get("auto_podcast", AUTO_PODCAST_ENABLED),
+                publication_gate="human_review_required",
+                error="Human publication approval required before Substack publish.",
             )
             del state["pending_publish"]
             save_state(state)
@@ -87,6 +89,16 @@ def _check_pending_publish():
         sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
         from substack import publish_to_substack
         from publish.writer_gate import require_writer_gate
+
+        if not _has_publication_approval(entry):
+            update_manifest(
+                entry["slug"],
+                status="approval_required",
+                publication_gate="human_review_required",
+                error="Human publication approval required before Substack publish.",
+            )
+            log.warning("Publish approval required before '%s' can be published", entry.get("title", entry["slug"]))
+            return
 
         final = Path(entry["final_md"])
         if not final.exists():
@@ -207,10 +219,19 @@ def _extract_substack_url(result: str) -> str:
     return ""
 
 
+def _has_publication_approval(entry: dict) -> bool:
+    """Return True only when a manifest row carries an explicit human publication receipt."""
+    return bool(
+        entry.get("human_approved_at") or entry.get("publication_approved_by") or entry.get("human_approved") is True
+    )
+
+
 def _blocked_publish_status(result: str) -> str:
     text = result or ""
     if "Substack quality gate blocked publish" in text or "writer gate" in text.lower():
         return "blocked_writer_gate"
+    if "Preflight blocked publish" in text:
+        return "blocked_publish_error"
     if "Substack 未配置" in text or "Substack 认证失败" in text or "cookie 已过期" in text:
         return "blocked_manual_review"
     return ""

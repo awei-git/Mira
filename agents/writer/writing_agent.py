@@ -194,23 +194,10 @@ def _run_canonical_autowrite(
 
 
 def _iter_canonical_projects():
-    """Return canonical writing_workflow projects from the shared workspace."""
-    from config import WORKSPACE_DIR
+    """Return active canonical writing_workflow projects from all current roots."""
+    from writing_workflow import find_active_projects
 
-    projects = []
-    for project_dir in sorted(WORKSPACE_DIR.iterdir()):
-        if not project_dir.is_dir():
-            continue
-        project_file = project_dir / "project.json"
-        if not project_file.exists():
-            continue
-        try:
-            project = json.loads(project_file.read_text(encoding="utf-8"))
-        except Exception as exc:
-            log.warning("Skipping canonical project %s: %s", project_dir, exc)
-            continue
-        projects.append((project_dir, project))
-    return projects
+    return sorted(find_active_projects(), key=lambda item: item[0].name)
 
 
 def _find_canonical_project(slug: str):

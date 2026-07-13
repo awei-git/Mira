@@ -1,6 +1,20 @@
 import json
+import importlib.util
+import sys
+from pathlib import Path
 
-import handler
+
+def _load_kol_handler():
+    handler_path = Path(__file__).resolve().parents[2] / "agents" / "kol" / "handler.py"
+    spec = importlib.util.spec_from_file_location("kol_handler_under_test", handler_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+handler = _load_kol_handler()
 
 
 def test_registry_contains_expected_kol_count():

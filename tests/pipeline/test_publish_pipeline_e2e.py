@@ -523,6 +523,47 @@ class TestFailureLog:
         finally:
             fl.FAILURE_LOG = original_log
 
+    def test_resolve_failure_can_filter_error_type(self, tmp_path):
+        """Resolving old RSS failures must not hide newer verification failures."""
+        import ops.failure_log as fl
+
+        original_log = fl.FAILURE_LOG
+        fl.FAILURE_LOG = tmp_path / "test_failures.jsonl"
+
+        try:
+            fl.record_failure(
+                pipeline="podcast",
+                step="podcast_en",
+                slug=TEST_SLUG,
+                error_type="rss_publish_failed",
+                error_message="RSS publish returned None",
+            )
+            fl.record_failure(
+                pipeline="podcast",
+                step="podcast_en",
+                slug=TEST_SLUG,
+                error_type="verification_failed",
+                error_message="MP3 too short",
+            )
+
+            assert (
+                fl.resolve_failure(
+                    TEST_SLUG,
+                    "podcast_en",
+                    "RSS published successfully",
+                    error_type="rss_publish_failed",
+                )
+                is True
+            )
+
+            failures = fl.load_recent_failures()
+            by_type = {failure["error_type"]: failure for failure in failures}
+            assert by_type["rss_publish_failed"]["resolution"] == "RSS published successfully"
+            assert by_type["verification_failed"]["resolution"] is None
+
+        finally:
+            fl.FAILURE_LOG = original_log
+
 
 # ===================================================================
 # 6. Pipeline validation

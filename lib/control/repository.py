@@ -30,6 +30,17 @@ def _as_json_list(value: Any) -> list:
     return []
 
 
+def _strip_nul_text(value: Any) -> Any:
+    """Remove NUL bytes before projecting legacy text into Postgres."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, list):
+        return [_strip_nul_text(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _strip_nul_text(item) for key, item in value.items()}
+    return value
+
+
 def _read_json(path: Path) -> dict | list | None:
     try:
         if not path.exists():
@@ -51,6 +62,22 @@ def _is_human_review_draft(item_id: str, item: dict | None = None) -> bool:
         return True
     tags = _as_json_list((item or {}).get("tags"))
     return "x_reply" in tags or "needs-human" in tags
+
+
+def _is_conversation_task(item_id: str, item: dict | None = None) -> bool:
+    tags = {
+        str(tag or "").strip().casefold().replace("_", "-")
+        for tag in _as_json_list((item or {}).get("tags"))
+        if str(tag or "").strip()
+    }
+    return (
+        item_id == "disc_daily_collab"
+        or str((item or {}).get("type") or "").strip().casefold() == "discussion"
+        or str((item or {}).get("task_type") or "").strip().casefold() == "discussion"
+        or "discussion" in tags
+        or "daily-collab" in tags
+        or "daily collab" in tags
+    )
 
 
 def _clip_status_text(text: str, limit: int = 240) -> str:
@@ -141,6 +168,7 @@ class ControlRepository:
     ) -> dict | None:
         now = _utc_iso()
         normalized = normalize_task_status(status) or status
+        stored_status = "archived" if normalized == "parked" else normalized
         failed = normalized in ("failed", "timeout", "blocked")
         with self.conn.cursor() as cur:
             cur.execute(
@@ -149,7 +177,7 @@ class ControlRepository:
                 SET status = %s,
                     updated_at = %s,
                     completed_at = CASE
-                        WHEN %s IN ('done', 'verified', 'completed_unverified', 'failed', 'timeout', 'blocked', 'needs-input') THEN COALESCE(completed_at, %s)
+                        WHEN %s IN ('done', 'verified', 'completed_unverified', 'failed', 'timeout', 'blocked', 'needs-input', 'parked', 'archived') THEN COALESCE(completed_at, %s)
                         WHEN %s IN ('queued', 'dispatched', 'running') THEN NULL
                         ELSE completed_at
                     END,
@@ -165,7 +193,7 @@ class ControlRepository:
                 RETURNING id
                 """,
                 (
-                    normalized,
+                    stored_status,
                     now,
                     normalized,
                     now,
@@ -194,6 +222,8 @@ class ControlRepository:
                 "timeout",
                 "blocked",
                 "needs-input",
+                "parked",
+                "archived",
             ):
                 cur.execute(
                     f"""
@@ -248,6 +278,10 @@ class ControlRepository:
         origin: str = "user",
         created_at: str | None = None,
     ) -> dict:
+        title = _strip_nul_text(title)
+        content = _strip_nul_text(content)
+        sender = _strip_nul_text(sender)
+        tags = _strip_nul_text(tags)
         now = created_at or _utc_iso()
         with self.conn.cursor() as cur:
             cur.execute(
@@ -318,11 +352,31 @@ class ControlRepository:
         content: str,
         created_at: str | None = None,
     ) -> dict:
+        sender = _strip_nul_text(sender)
+        content = _strip_nul_text(content)
         now = created_at or _utc_iso()
         with self.conn.cursor() as cur:
-            cur.execute(f"SELECT 1 FROM {self.schema}.tasks WHERE id = %s AND user_id = %s", (task_id, user_id))
-            if cur.fetchone() is None:
+            cur.execute(
+                f"SELECT type, tags, task_type FROM {self.schema}.tasks WHERE id = %s AND user_id = %s",
+                (task_id, user_id),
+            )
+            task_row = cur.fetchone()
+            if task_row is None:
                 raise KeyError(task_id)
+            task_meta = {}
+            if isinstance(task_row, dict):
+                task_meta = {
+                    "type": task_row.get("type"),
+                    "tags": task_row.get("tags"),
+                    "task_type": task_row.get("task_type"),
+                }
+            elif isinstance(task_row, (list, tuple)):
+                task_meta = {
+                    "type": task_row[0] if len(task_row) > 0 else None,
+                    "tags": task_row[1] if len(task_row) > 1 else None,
+                    "task_type": task_row[2] if len(task_row) > 2 else None,
+                }
+            force_requeue = _is_conversation_task(task_id, task_meta)
             cur.execute(
                 f"""
                 INSERT INTO {self.schema}.messages (
@@ -343,6 +397,7 @@ class ControlRepository:
                 UPDATE {self.schema}.tasks
                 SET updated_at = %s,
                     status = CASE
+                        WHEN %s THEN 'queued'
                         WHEN status IN (
                             'queued',
                             'dispatched',
@@ -352,18 +407,22 @@ class ControlRepository:
                         ELSE 'queued'
                     END,
                     started_at = CASE
+                        WHEN %s THEN NULL
                         WHEN status IN ('queued', 'dispatched', 'running', 'working') THEN started_at
                         ELSE NULL
                     END,
                     heartbeat_at = CASE
+                        WHEN %s THEN NULL
                         WHEN status IN ('queued', 'dispatched', 'running', 'working') THEN heartbeat_at
                         ELSE NULL
                     END,
                     completed_at = CASE
+                        WHEN %s THEN NULL
                         WHEN status IN ('queued', 'dispatched', 'running', 'working') THEN completed_at
                         ELSE NULL
                     END,
                     worker_pid = CASE
+                        WHEN %s THEN NULL
                         WHEN status IN ('queued', 'dispatched', 'running', 'working') THEN worker_pid
                         ELSE NULL
                     END,
@@ -374,7 +433,16 @@ class ControlRepository:
                     retryable = FALSE
                 WHERE id = %s AND user_id = %s
                 """,
-                (now, task_id, user_id),
+                (
+                    now,
+                    force_requeue,
+                    force_requeue,
+                    force_requeue,
+                    force_requeue,
+                    force_requeue,
+                    task_id,
+                    user_id,
+                ),
             )
         self._record_event(task_id, user_id, "message.created", status=None, payload={"message_id": message_id})
         return self.get_item(user_id, task_id) or {}
@@ -618,6 +686,7 @@ class ControlRepository:
             return [dict(row) for row in cur.fetchall()]
 
     def upsert_bridge_item(self, user_id: str, item: dict) -> None:
+        item = _strip_nul_text(item)
         item_id = str(item.get("id") or "").strip()
         if not item_id:
             return
@@ -747,6 +816,7 @@ class ControlRepository:
                 )
 
     def overlay_task_record(self, rec: dict) -> None:
+        rec = _strip_nul_text(rec)
         task_id = str(rec.get("task_id") or "").strip()
         if not task_id:
             return
@@ -754,6 +824,9 @@ class ControlRepository:
         status = normalize_task_status(rec.get("status")) or "queued"
         if _is_human_review_draft(task_id) and status in {"queued", "dispatched", "running", "working"}:
             status = "needs-input"
+        if _is_conversation_task(task_id, rec) and status == "completed_unverified":
+            status = "verified"
+        stored_status = "archived" if status == "parked" else status
         failed = status in ("failed", "timeout", "blocked")
         with self.conn.cursor() as cur:
             cur.execute(
@@ -797,6 +870,9 @@ class ControlRepository:
                     AND {self.schema}.tasks.status IN ('queued', 'dispatched', 'running', 'working')
                     AND {self.schema}.tasks.updated_at > EXCLUDED.updated_at
                 ) AND NOT (
+                    {self.schema}.tasks.status IN ('done', 'verified', 'failed', 'timeout', 'blocked', 'needs-input', 'archived')
+                    AND EXCLUDED.status IN ('queued', 'dispatched', 'running', 'working')
+                ) AND NOT (
                     {self.schema}.tasks.type IN ('discussion', 'feed')
                     AND {self.schema}.tasks.origin = 'agent'
                     AND {self.schema}.tasks.updated_at > EXCLUDED.updated_at
@@ -806,7 +882,7 @@ class ControlRepository:
                     "id": task_id,
                     "user_id": rec.get("user_id") or "ang",
                     "title": rec.get("content_preview") or task_id,
-                    "status": status,
+                    "status": stored_status,
                     "tags": json.dumps(_as_json_list(rec.get("tags"))),
                     "created_at": rec.get("started_at") or now,
                     "updated_at": rec.get("completed_at") or now,
@@ -863,6 +939,8 @@ class ControlRepository:
                 "timeout",
                 "blocked",
                 "needs-input",
+                "parked",
+                "archived",
             }:
                 cur.execute(
                     f"""
@@ -886,7 +964,7 @@ class ControlRepository:
         where = "user_id = %s"
         params: list[Any] = [user_id]
         if not include_archived:
-            where += " AND status <> 'archived'"
+            where += " AND status NOT IN ('archived', 'parked')"
         with dict_cursor(self.conn) as cur:
             cur.execute(
                 f"""

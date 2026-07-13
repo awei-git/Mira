@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import importlib.util
 from pathlib import Path
 
 
@@ -10,10 +11,21 @@ for path in (ROOT / "lib", ROOT / "agents" / "writer", ROOT / "agents" / "shared
         sys.path.insert(0, str(path))
 
 
-def _flagged_texts(text: str) -> list[str]:
-    from handler import scan_anti_ai_patterns
+def _load_writer_handler():
+    handler_path = ROOT / "agents" / "writer" / "handler.py"
+    spec = importlib.util.spec_from_file_location("writer_handler_under_test", handler_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
-    report = scan_anti_ai_patterns(text)
+
+_WRITER_HANDLER = _load_writer_handler()
+
+
+def _flagged_texts(text: str) -> list[str]:
+    report = _WRITER_HANDLER.scan_anti_ai_patterns(text)
     return [span["text"] for span in report["flagged_spans"]]
 
 
@@ -25,7 +37,7 @@ def test_scan_blocks_bushi_and_zheshi_everywhere():
 
 
 def test_scan_blocks_any_em_dash():
-    from handler import scan_anti_ai_patterns
+    scan_anti_ai_patterns = _WRITER_HANDLER.scan_anti_ai_patterns
 
     text = "这个句子用了长破折号 —— 所以必须被拦。"
     strict_flagged = [span["text"] for span in scan_anti_ai_patterns(text)["flagged_spans"]]

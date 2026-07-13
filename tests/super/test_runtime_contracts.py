@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,12 +17,26 @@ from execution.plan_state import initialize_plan_artifacts, mark_step_finished
 
 
 def _patch_task_worker_test_side_effects(monkeypatch):
+    verified_payload = {
+        "status": "verified",
+        "verified": True,
+        "artifact_type": "file",
+        "target": "output.md",
+        "summary": "test verifier stub",
+        "checks": [{"name": "test stub", "passed": True, "message": "verification mocked"}],
+        "proxy_checked": "test stub",
+        "property_assumed": "test output exists",
+        "unverified_assumptions": [],
+    }
+
     monkeypatch.setattr("task_worker._emit_status", lambda *args, **kwargs: None)
     monkeypatch.setattr("task_support._append_exec_log", lambda *args, **kwargs: None)
     monkeypatch.setattr("task_worker._record_premortem", lambda *args, **kwargs: None)
     monkeypatch.setattr("task_worker._record_postmortem", lambda *args, **kwargs: None)
     monkeypatch.setattr("task_support._verify_output", lambda *args, **kwargs: None)
-    monkeypatch.setattr("task_worker.save_episode", lambda *args, **kwargs: None)
+    monkeypatch.setattr("task_result._step_verification_payload", lambda *args, **kwargs: dict(verified_payload))
+    monkeypatch.setattr("task_result._verify_step_artifact", lambda *args, **kwargs: True)
+    monkeypatch.setattr(task_worker, "save_episode", lambda *args, **kwargs: None, raising=False)
     monkeypatch.setattr("task_result.append_trace", lambda *args, **kwargs: None)
     monkeypatch.setattr("memory.soul.auto_flush", lambda *args, **kwargs: None)
 
@@ -103,6 +118,19 @@ def test_execute_plan_steps_backfills_needs_input_result(tmp_path, monkeypatch):
 
     monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
     _patch_task_worker_test_side_effects(monkeypatch)
+    failed_payload = {
+        "status": "failed",
+        "verified": False,
+        "artifact_type": "file",
+        "target": "output.md",
+        "summary": "generic_request: output.md missing or below 40 bytes.",
+        "checks": [{"name": "output.md exists", "passed": False, "message": "missing"}],
+        "proxy_checked": "output.md exists + minimum size",
+        "property_assumed": "test output exists",
+        "unverified_assumptions": [],
+    }
+    monkeypatch.setattr("task_result._step_verification_payload", lambda *args, **kwargs: dict(failed_payload))
+    monkeypatch.setattr("task_result._verify_step_artifact", task_worker._verify_step_artifact)
 
     plan = [
         {
@@ -653,6 +681,38 @@ def test_write_result_backfills_canonical_contract_for_legacy_calls(tmp_path, mo
     assert result["next_action"] == "proceed-to-next-step"
     assert result["verification"]["status"] == "not-run"
     assert any(Path(item["path"]).name == "output.md" for item in result["artifacts_produced"])
+
+
+def test_write_result_preserves_short_discussion_reply(tmp_path, monkeypatch):
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    _patch_task_worker_test_side_effects(monkeypatch)
+    monkeypatch.setitem(sys.modules, "post_hooks", SimpleNamespace(spawn_post_hooks=lambda *args, **kwargs: None))
+    monkeypatch.setattr(
+        task_worker,
+        "claude_think",
+        lambda *args, **kwargs: pytest.fail("discussion replies should not use reasoning rewrite"),
+    )
+
+    reply = "Confirmed-still in the Mira thread."
+    (workspace / "output.md").write_text(reply, encoding="utf-8")
+
+    task_worker._write_result(
+        workspace,
+        "disc_daily_collab",
+        "done",
+        reply,
+        tags=["discussion", "daily-collab"],
+        agent="discussion",
+    )
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert (workspace / "output.md").read_text(encoding="utf-8") == reply
+    assert not (workspace / "raw_response.md").exists()
+    assert result["status"] == "completed_unverified"
+    assert result["summary"] == reply
+    assert "silent_completion_suspected" not in result
+    assert "reasoning" not in result
 
 
 def test_ensure_step_result_reuses_cached_verification(tmp_path, monkeypatch):
@@ -1322,4 +1382,7 @@ def test_autowrite_approval_prefers_metadata_file(tmp_path, monkeypatch):
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
     assert captured["slug"] == "title-slug"
     assert captured["fields"]["status"] == "approved"
+    assert captured["fields"]["human_approved_at"]
+    assert captured["fields"]["publication_approved_by"] == "human"
+    assert captured["fields"]["publication_gate"] == "human_approved"
     assert result["status"] == "completed_unverified"

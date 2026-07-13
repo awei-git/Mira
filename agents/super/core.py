@@ -8,6 +8,8 @@ Modes:
     reflect — weekly reflection and memory consolidation
 """
 import json
+import hashlib
+import importlib
 import importlib.util
 import logging
 import os
@@ -24,25 +26,196 @@ import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from random import choice, random
 
 # Unified sys.path setup — see lib/pathsetup.py for the full list of package dirs
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_AGENTS_DIR.parent / "lib"))
 import pathsetup  # noqa: F401  (side-effect: registers all Mira package dirs)
+import guard_integrity
+
+logger = logging.getLogger("mira")
+log = logger
+AVAILABLE_MODULES = {}
+DEGRADED_MODULES = {}
+STARTUP_IMPORT_FAILED = False
+STARTUP_IMPORT_ERROR_LOG = Path("/tmp/mira-startup-errors.log")
+publish_blocked = False
+
+
+class SystemAlert(RuntimeError):
+    pass
+
+
+def _resilient_import(module_path, name):
+    try:
+        mod = importlib.import_module(module_path)
+        AVAILABLE_MODULES[name] = mod
+        return mod
+    except Exception as e:
+        AVAILABLE_MODULES[name] = None
+        DEGRADED_MODULES[name] = {
+            "module_path": module_path,
+            "error": f"{type(e).__name__}: {e}",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        logger.error(f"[DEGRADED] Failed to import {name} from {module_path}: {e}")
+        return None
+
+
+def _degraded_module_payload() -> dict:
+    return {
+        name: {
+            "module_path": detail["module_path"],
+            "error": detail["error"],
+            "recorded_at": detail["recorded_at"],
+        }
+        for name, detail in sorted(DEGRADED_MODULES.items())
+    }
+
+
+def _log_degraded_modules() -> None:
+    for name, detail in sorted(DEGRADED_MODULES.items()):
+        logger.error(
+            "[DEGRADED] Failed to import %s from %s: %s",
+            name,
+            detail["module_path"],
+            detail["error"],
+        )
+
+
+def _record_degraded_modules_in_heartbeat() -> None:
+    if not DEGRADED_MODULES:
+        return
+    heartbeat = Path(MIRA_DIR) / "heartbeat.json"
+    try:
+        data = json.loads(heartbeat.read_text(encoding="utf-8")) if heartbeat.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data["degraded_modules"] = _degraded_module_payload()
+    try:
+        heartbeat.parent.mkdir(parents=True, exist_ok=True)
+        tmp = heartbeat.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.rename(heartbeat)
+    except OSError as exc:
+        logger.error("Failed to record degraded modules in heartbeat: %s", exc)
+
+
+def _write_startup_import_heartbeat(message: str, status: str = "ok") -> None:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    heartbeat = Path(MIRA_DIR) / "heartbeat.json"
+    try:
+        data = json.loads(heartbeat.read_text(encoding="utf-8")) if heartbeat.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data["startup_import_status"] = {
+        "status": status,
+        "message": message,
+        "timestamp": timestamp,
+    }
+    try:
+        heartbeat.parent.mkdir(parents=True, exist_ok=True)
+        tmp = heartbeat.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.rename(heartbeat)
+    except OSError as exc:
+        logger.error("Failed to record startup import status in heartbeat: %s", exc)
+
+
+def _record_startup_import_failure(module_name: str, traceback_text: str) -> bool:
+    global STARTUP_IMPORT_FAILED
+
+    STARTUP_IMPORT_FAILED = True
+    timestamp = datetime.now(timezone.utc).isoformat()
+    try:
+        with STARTUP_IMPORT_ERROR_LOG.open("a", encoding="utf-8") as f:
+            f.write(
+                f"\n{'=' * 60}\n" f"{timestamp}\n" f"startup import failure module={module_name}\n" f"{traceback_text}"
+            )
+            if not traceback_text.endswith("\n"):
+                f.write("\n")
+    except OSError as exc:
+        logger.error("Failed to write startup import failure log: %s", exc)
+    print(
+        f"STARTUP IMPORT FAILURE: critical module '{module_name}' failed to import. " f"See {STARTUP_IMPORT_ERROR_LOG}",
+        file=sys.stderr,
+    )
+    return False
+
+
+def _validate_critical_imports() -> bool:
+    global STARTUP_IMPORT_FAILED
+
+    import traceback
+
+    STARTUP_IMPORT_FAILED = False
+    try:
+        importlib.import_module("sub_agent")
+    except ImportError:
+        return _record_startup_import_failure("sub_agent", traceback.format_exc())
+    try:
+        importlib.import_module("soul_manager")
+    except ImportError:
+        return _record_startup_import_failure("soul_manager", traceback.format_exc())
+    try:
+        importlib.import_module("notes_bridge")
+    except ImportError:
+        return _record_startup_import_failure("notes_bridge", traceback.format_exc())
+    try:
+        importlib.import_module("config")
+    except ImportError:
+        return _record_startup_import_failure("config", traceback.format_exc())
+    try:
+        importlib.import_module("prompts")
+    except ImportError:
+        return _record_startup_import_failure("prompts", traceback.format_exc())
+    try:
+        importlib.import_module("mira")
+    except ImportError:
+        return _record_startup_import_failure("mira", traceback.format_exc())
+    _write_startup_import_heartbeat("shared_modules_validated: all imports OK")
+    return True
+
+
+class _UnavailableFrictionMonitor:
+    @staticmethod
+    def track_friction(category: str, label: str | None = None):
+        def decorator(fn):
+            return fn
+
+        return decorator
+
+
+class _UnavailableSharedConfig:
+    AGENT_REGISTRY = {}
+    CROSS_VALIDATION_ENABLED = False
+    CROSS_VALIDATION_SAMPLE_RATE = 0.2
+    EVAL_BENCHMARK_ROTATION_DAYS = 30
+    MAX_HARD_RULES = 7
+    TIER_MODEL_MAP = {}
+    TIMING_LOG_ENABLED = True
+
+
+def _degraded_health_cascade() -> dict:
+    return {
+        "status": "degraded",
+        "cascade_trace": [
+            {
+                "step": "health_cascade_import",
+                "status": "degraded",
+                "detail": "agents.shared.health_cascade unavailable",
+            }
+        ],
+        "root_cause": "agents.shared.health_cascade unavailable",
+    }
+
 
 import config as mira_config
-import health_monitor
-import soul_manager
-from agents.shared import config as shared_config
-from agents.shared.config import (
-    EXPLORE_MAX_PENDING_TASKS,
-    LAST_OUTPUT_FILE,
-    MAX_UNDELIVERED_OUTPUTS,
-    STALE_THRESHOLDS,
-)
-from logging_util import throttled_warning  # noqa: E402  — used inside _check_invisible_deps
-from notes_bridge import detect_vulnerability_disclosure
-
 from config import (
     MIRA_ROOT,
     WORKSPACE_DIR,
@@ -51,6 +224,7 @@ from config import (
     STATE_FILE,
     MIRA_DIR,
     ARTIFACTS_DIR,
+    SKILLS_DIR,
     CLEANUP_DAYS,
     LOG_RETENTION_DAYS,
     JOURNAL_DIR,
@@ -66,6 +240,7 @@ from config import (
     BLIND_SPOT_LOOKBACK_DAYS,
     BLIND_SPOT_SILENCE_THRESHOLD_DAYS,
     MAX_TASKS_PER_CYCLE,
+    MAX_CONCURRENT_TASKS,
     SURVIVAL_CRITICAL_COMPONENTS,
     SENSITIVE_SURVIVAL_TERMS,
     SENSITIVE_FORCE_LOCAL,
@@ -80,20 +255,92 @@ from config import (
     should_filter_content,
 )
 
+health_monitor = _resilient_import("health_monitor", "health_monitor")
+soul_manager = _resilient_import("soul_manager", "soul_manager")
+shared_config = _resilient_import("agents.shared.config", "shared_config") or _UnavailableSharedConfig
+friction_monitor = (
+    _resilient_import("agents.shared.friction_monitor", "friction_monitor") or _UnavailableFrictionMonitor()
+)
+_health_cascade_module = _resilient_import("agents.shared.health_cascade", "health_cascade")
+health_cascade = (
+    getattr(_health_cascade_module, "health_cascade", _degraded_health_cascade)
+    if _health_cascade_module is not None
+    else _degraded_health_cascade
+)
+_logging_util_module = _resilient_import("logging_util", "logging_util")
+_notes_bridge_module = _resilient_import("notes_bridge", "notes_bridge")
+_sub_agent_module = _resilient_import("sub_agent", "sub_agent")
+EXPLORE_MAX_PENDING_TASKS = int(getattr(shared_config, "EXPLORE_MAX_PENDING_TASKS", 4))
+LAST_OUTPUT_FILE = getattr(
+    shared_config, "LAST_OUTPUT_FILE", getattr(mira_config, "LAST_OUTPUT_FILE", LOGS_DIR / "last_output.json")
+)
+MAX_UNDELIVERED_OUTPUTS = int(getattr(shared_config, "MAX_UNDELIVERED_OUTPUTS", 5))
+STALE_THRESHOLDS = dict(getattr(shared_config, "STALE_THRESHOLDS", getattr(mira_config, "STALE_THRESHOLDS", {})))
+
+
+def _soul_archive_sqlite_path() -> Path:
+    archive_path = None
+    for source in (shared_config, mira_config):
+        for attr in ("archive_sqlite_path", "ARCHIVE_SQLITE_PATH"):
+            archive_path = getattr(source, attr, None)
+            if archive_path:
+                break
+        if archive_path:
+            break
+    if not archive_path:
+        cfg = getattr(mira_config, "_cfg", {})
+        if isinstance(cfg, dict):
+            archive_path = cfg.get("archive_sqlite_path")
+    if archive_path:
+        path = Path(str(archive_path)).expanduser()
+        if not path.is_absolute():
+            path = MIRA_ROOT / path
+        return path
+    return MIRA_ROOT / "logs" / "soul_archive" / f"soul_archive_{datetime.now().strftime('%Y-%m-%d')}.sqlite"
+
+
+def throttled_warning(target_log, *args, **kwargs):
+    if _logging_util_module is not None and hasattr(_logging_util_module, "throttled_warning"):
+        return _logging_util_module.throttled_warning(target_log, *args, **kwargs)
+    kwargs.pop("key", None)
+    return target_log.warning(*args, **kwargs)
+
+
+def detect_vulnerability_disclosure(content):
+    if _notes_bridge_module is not None and hasattr(_notes_bridge_module, "detect_vulnerability_disclosure"):
+        return _notes_bridge_module.detect_vulnerability_disclosure(content)
+    return False
+
+
+DISPATCH_RECEIPT_NAME = getattr(_sub_agent_module, "DISPATCH_RECEIPT_NAME", "dispatch_receipt.json")
+
+
+def append_pipeline_context_to_system_prompt(system_prompt: str, pipeline_context: dict | None = None) -> str:
+    if _sub_agent_module is not None and hasattr(_sub_agent_module, "append_pipeline_context_to_system_prompt"):
+        return _sub_agent_module.append_pipeline_context_to_system_prompt(system_prompt, pipeline_context)
+    return system_prompt
+
+
+def validate_local_model_native_tools(logger=None) -> None:
+    if _sub_agent_module is not None and hasattr(_sub_agent_module, "validate_local_model_native_tools"):
+        return _sub_agent_module.validate_local_model_native_tools(logger=logger)
+    return None
+
+
+def write_dispatch_receipt(*args, **kwargs) -> None:
+    if _sub_agent_module is not None and hasattr(_sub_agent_module, "write_dispatch_receipt"):
+        return _sub_agent_module.write_dispatch_receipt(*args, **kwargs)
+    return None
+
+
 try:
     from bridge import Mira, Message
 except (ImportError, ModuleNotFoundError):
     Mira = None
     Message = None
-from task_manager import TaskManager, TASKS_DIR, classify_task, get_stuck_tasks, _resolve_workspace_dir
+from task_manager import TaskManager, TaskRecord, TASKS_DIR, classify_task, get_stuck_tasks, _resolve_workspace_dir
 from memory.soul import load_soul, format_soul, append_memory, check_prompt_injection
 from llm import claude_think
-from sub_agent import (
-    DISPATCH_RECEIPT_NAME,
-    append_pipeline_context_to_system_prompt,
-    validate_local_model_native_tools,
-    write_dispatch_receipt,
-)
 from writing_workflow import (
     check_writing_responses,
     advance_project,
@@ -139,6 +386,9 @@ from workflows.daily import (
     handle_photo_feedback,
     do_zhesi,
     do_soul_question,
+    do_daily_collab,
+    do_daily_collab_review,
+    do_daily_collab_operator_brief,
     do_research,
     do_book_review,
     do_analyst,
@@ -157,6 +407,7 @@ from workflows.social import (
 )
 from workflows.writing import do_autowrite_check, run_autowrite_pipeline
 from soul.joint_focus import generate_joint_observation
+from soul.memory_exporter import export_memory_to_sqlite
 
 # Extracted modules — triggers decide "should we run X?", dispatcher spawns bg tasks
 from runtime.triggers import (
@@ -169,22 +420,66 @@ from runtime.dispatcher import (
     _count_bg_running,
     MAX_CONCURRENT_BG,
 )
-from runtime.jobs import (
-    build_job_dispatch,
-    build_job_session_record,
-    evaluate_job_payload,
-    get_jobs,
-)
-from execution.runtime_contract import normalize_task_status
-from soul_manager import (
-    log_authorization_event,
-    check_audit_coverage,
-    check_rules_integrity,
-    get_skill_provenance,
-    reaudit_stale_skills,
-    validate_soul_files,
-    verify_audit_integrity,
-)
+import jobs as jobs_module
+
+get_jobs = jobs_module.get_jobs
+evaluate_job_payload = jobs_module.evaluate_job_payload
+from execution.runtime_contract import derive_workflow_id, normalize_task_status
+
+
+def _soul_manager_noop(*args, **kwargs):
+    return None
+
+
+def _soul_manager_empty_list(*args, **kwargs):
+    return []
+
+
+def _soul_manager_empty_dict(*args, **kwargs):
+    return {}
+
+
+def _soul_manager_false(*args, **kwargs):
+    return False
+
+
+def _soul_manager_unavailable_failures(*args, **kwargs):
+    return [("soul_manager", "soul_manager import unavailable")]
+
+
+def _soul_manager_unverified_provenance(*args, **kwargs):
+    return ("unavailable", "unverified")
+
+
+def _soul_manager_empty_friction_audit(*args, **kwargs):
+    return {
+        "passed": False,
+        "registered": 0,
+        "cognitive": [],
+        "infrastructure": [],
+        "elimination_candidates": [],
+        "missing": [],
+        "invalid": [],
+    }
+
+
+def _soul_manager_callable(name: str, fallback):
+    if soul_manager is None:
+        return fallback
+    candidate = getattr(soul_manager, name, None)
+    return candidate if callable(candidate) else fallback
+
+
+log_authorization_event = _soul_manager_callable("log_authorization_event", _soul_manager_noop)
+check_audit_coverage = _soul_manager_callable("check_audit_coverage", _soul_manager_empty_list)
+check_rules_integrity = _soul_manager_callable("check_rules_integrity", _soul_manager_noop)
+get_skill_provenance = _soul_manager_callable("get_skill_provenance", _soul_manager_unverified_provenance)
+reaudit_all_skills = _soul_manager_callable("reaudit_all_skills", _soul_manager_empty_dict)
+reaudit_all_enabled_skills = _soul_manager_callable("reaudit_all_enabled_skills", _soul_manager_noop)
+validate_soul_files = _soul_manager_callable("validate_soul_files", _soul_manager_unavailable_failures)
+verify_audit_integrity = _soul_manager_callable("verify_audit_integrity", _soul_manager_false)
+audit_friction = _soul_manager_callable("audit_friction", _soul_manager_empty_friction_audit)
+audit_all_skill_dependencies = _soul_manager_callable("audit_all_skill_dependencies", _soul_manager_empty_dict)
 
 # ---------------------------------------------------------------------------
 # Extracted sub-modules (pure structural refactor)
@@ -222,17 +517,13 @@ from publishing import (
 from writing import (
     _log_writer_selection,
     _run_canonical_writing_pipeline,
+    triage_stalled_writing_projects,
 )
 from health import (
     _has_pending_health_exports,
     _run_health_check,
     _write_health_feed,
     _run_health_weekly_report,
-)
-from jobs import (
-    _run_inline_scheduled_job,
-    _dispatch_pipeline_followups,
-    _record_scheduled_job_dispatch,
 )
 from daily_tasks import (
     _verify_state_key,
@@ -248,8 +539,105 @@ from daily_tasks import (
 log = logging.getLogger("mira")
 BRIDGE_STALENESS_THRESHOLD_MINUTES = BRIDGE_STALE_THRESHOLD / 60
 BACKGROUND_HEALTH_LOG = LOGS_DIR / "background_health.jsonl"
+AGENT_DEPS_FILE = _AGENTS_DIR / "shared" / "agent_deps.yaml"
+SERVICE_DEPENDENCIES_FILE = _AGENTS_DIR / "shared" / "config" / "service_dependencies.yaml"
+SERVICE_DEPENDENCY_LOG = LOGS_DIR / "service_dependencies.jsonl"
+SECURITY_DRIFT_LOG = LOGS_DIR / "security_drift.log"
+AUDIT_TRANSPARENCY_LOG = LOGS_DIR / "audit_transparency.jsonl"
+SKILLS_META_FILE = _AGENTS_DIR / "shared" / "soul" / "skills_meta.json"
+CANARY_SKILLS_DIR = _AGENTS_DIR / "shared" / "canary_skills"
+CANARY_SKILL_AUDIT_ALERT_ID = "canary_skill_audit_failure"
+CANARY_SELF_AUDIT_ALERT_ID = "canary_self_audit_failure"
+SKILL_REAUDIT_ALERT_ID = "skill_reaudit_failure"
+OPERATIONAL_AUDIT_FRICTION_STEPS: tuple[str, ...] = (
+    "operational_audit.config_values",
+    "operational_audit.soul_files",
+    "operational_audit.notes_paths",
+    "operational_audit.shared_imports",
+    "operational_audit.content_integrity",
+    "operational_audit.stuck_tasks",
+    "operational_audit.network_connectivity",
+    "operational_audit.dependency_health",
+    "operational_audit.survival_components",
+)
+SERVICE_DEPENDENCY_TIMEOUT_SECONDS = 8
+SERVICE_DEPENDENCY_MAX_WORKERS = 4
+HEALTH_CASCADE_LOG = LOGS_DIR / "health_cascade.jsonl"
+HEALTH_CASCADE_ALERT_ID = "mira_health_cascade_dead"
+SKILL_DIGESTION_MINUTES = 60  # Minimum time between content ingestion and skill extraction.
+MAX_AI_GENERATED_LINES_PER_SESSION = 500
+MAX_AGENT_CODE_CHANGES_PER_DAY = 5
 TASK_DISTRIBUTION_FILE = LOGS_DIR / "task_distribution.json"
+CONTENT_QUALITY_LOG_PATH = MIRA_ROOT / "data" / "content_quality_log.jsonl"
+DRIFT_ALERTS_LOG_PATH = MIRA_ROOT / "data" / "drift_alerts.log"
+EVALUATOR_SCHEDULE_HOUR = 22
+EVALUATOR_LAST_RUN_FILE = MIRA_ROOT / "data" / "evaluator_last_run"
+EVALUATOR_LOG_DIR = LOGS_DIR / "evaluator"
+WRITER_PROXY_REVIEW_LAST_FILE = MIRA_ROOT / "data" / "last_proxy_review.txt"
+WRITER_ANTI_AI_CHECKLIST_FILE = MIRA_ROOT / "agents" / "writer" / "checklists" / "anti-ai.md"
+ANTI_AI_PROXY_DRIFT_LOG_PATH = LOGS_DIR / "proxy_drift.json"
+ANTI_AI_QUALITY_GUARD_ALERT_MESSAGE = (
+    "Anti-AI quality guard has passed all outputs for 7 days and may need recalibration. "
+    "Reply with a sample of recent articles you find suboptimal, or 'ok' to continue."
+)
 AGENT_AUDIT_LOG = getattr(mira_config, "AGENT_AUDIT_LOG", MIRA_ROOT / "logs" / "agent_audit.jsonl")
+
+
+def _config_flag_enabled(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    return bool(value)
+
+
+CANARY_AUDIT_ENABLED = _config_flag_enabled(
+    getattr(shared_config, "CANARY_AUDIT_ENABLED", getattr(mira_config, "CANARY_AUDIT_ENABLED", True))
+)
+_AGENT_CODE_CHANGE_COUNTER_DATE: str | None = None
+_AGENT_CODE_CHANGE_COUNTER = 0
+_AGENT_CODE_CHANGE_ACTION_RE = re.compile(
+    r"\b(add|apply|change|create|delete|edit|fix|implement|modify|patch|refactor|remove|rename|rewrite|update|write)\b"
+    r"|修改|改动|修复|新增|删除|重构|实现"
+    r"|更改"
+    r"|编辑"
+)
+_AGENT_CODE_FILE_RE = re.compile(r"\.(py|swift|md)\b", re.IGNORECASE)
+AUDIT_TRANSPARENCY_REVIEW_REPEAT_THRESHOLD = 3
+AUDIT_TRANSPARENCY_CONCRETE_DANGER_TERMS = frozenset(
+    {
+        "account_access",
+        "base64",
+        "code_execution",
+        "cookie",
+        "credential",
+        "deferred_execution",
+        "eval",
+        "exec",
+        "exfiltration",
+        "file_write",
+        "network",
+        "obfuscation",
+        "os.system",
+        "privilege",
+        "prompt_injection",
+        "secret",
+        "side_channel",
+        "subprocess",
+        "token",
+        "unauthorized",
+    }
+)
+AUDIT_TRANSPARENCY_PATTERN_ONLY_TERMS = frozenset(
+    {
+        "boundary",
+        "infrastructure",
+        "label",
+        "metadata",
+        "pattern",
+        "reference",
+        "self-referential",
+        "trigger",
+    }
+)
 THIRD_THING_FILE = Path(__file__).resolve().parent / "notes_outbox" / "third_thing.md"
 BRIDGE_THIRD_THING_FILE = MIRA_DIR / "outbox" / "third_thing.md"
 JOINT_GARDEN_FILE = _AGENTS_DIR / "shared" / "soul" / "joint_garden.md"
@@ -260,6 +648,170 @@ CLAUDE_API_PING_TIMEOUT_SECONDS = 3
 OFFLINE_FALLBACK_PROMPT = _AGENTS_DIR / "shared" / "prompts" / "offline_fallback.txt"
 _LAST_NETWORK_STATUS: dict | None = None
 _ATTENTION_DRIFT_STOPWORDS = {"a", "an", "and", "as", "for", "in", "of", "or", "the", "to", "with"}
+OFF_INTEREST_AGENT_TASK_THRESHOLD = 0.3
+_INTEREST_DRIFT_STOPWORDS = _ATTENTION_DRIFT_STOPWORDS | {
+    "about",
+    "after",
+    "against",
+    "agent",
+    "article",
+    "before",
+    "briefing",
+    "check",
+    "completed",
+    "current",
+    "design",
+    "from",
+    "generic",
+    "have",
+    "human",
+    "into",
+    "more",
+    "must",
+    "output",
+    "publish",
+    "recent",
+    "report",
+    "review",
+    "should",
+    "summary",
+    "task",
+    "that",
+    "this",
+    "topic",
+    "under",
+    "week",
+    "what",
+    "when",
+}
+_INTEREST_DRIFT_SHORT_KEYWORDS = {"ai", "ml", "llm", "hbm", "kpi", "cot"}
+FAST_DISPATCH_PATTERNS = {
+    r"(?i)^publish\s+article\b": "socialmedia",
+    r"(?i)^publish\s+(?:to\s+)?substack\b": "socialmedia",
+    r"(?i)^post\s+(?:a\s+)?note\b": "socialmedia",
+    r"(?i)^check\s+comments\b": "socialmedia",
+    r"(?i)^run\s+explorer\b": "explorer",
+    r"(?i)^run\s+(?:daily\s+)?briefing\b": "explorer",
+    r"(?i)^read\s+note\b": "reader",
+    r"(?i)^run\s+reader\b": "reader",
+    r"(?i)^edit\s+photo\b": "photo",
+    r"(?i)^run\s+podcast\b": "podcast",
+    r"(?i)^run\s+analyst\b": "analyst",
+    r"(?i)^run\s+research(?:er)?\b": "researcher",
+}
+SUBSTACK_PUBLISH_JOB_NAMES = {"substack-growth", "substack-notes"}
+SUBSTACK_PUBLISH_REQUEST_RE = re.compile(
+    r"\b(?:publish|post|send)\b.{0,80}\bsubstack\b|"
+    r"\bsubstack\b.{0,80}\b(?:publish|post|send)\b|"
+    r"\bpost\s+(?:a\s+)?(?:substack\s+)?note\b|"
+    r"\bpublish\s+(?:article|essay|newsletter)\b",
+    re.IGNORECASE,
+)
+
+
+def try_fast_dispatch(task_text):
+    text = str(task_text or "").strip()
+    if not text:
+        return None
+    matches = {agent for pattern, agent in FAST_DISPATCH_PATTERNS.items() if re.search(pattern, text)}
+    if len(matches) == 1:
+        return next(iter(matches))
+    return None
+
+
+def _verify_guard_integrity_at_startup() -> bool:
+    global publish_blocked
+
+    try:
+        ok = guard_integrity.verify()
+    except Exception as exc:
+        publish_blocked = True
+        log.critical("Substack guard integrity verification failed: %s", exc)
+        return False
+    if ok:
+        publish_blocked = False
+        return True
+    publish_blocked = True
+    log.critical("Substack guard integrity mismatch; Substack publishing is blocked until manually reset and verified")
+    return False
+
+
+def _is_substack_publish_request(task_name: str, content: str) -> bool:
+    if task_name not in {"publish", "socialmedia"}:
+        return False
+    return bool(SUBSTACK_PUBLISH_REQUEST_RE.search(str(content or "")))
+
+
+def _is_substack_publish_job(job_name: str) -> bool:
+    return str(job_name or "") in SUBSTACK_PUBLISH_JOB_NAMES
+
+
+def _log_substack_publish_block(reason: str) -> None:
+    log.critical(
+        "Substack publish blocked: %s; guard integrity must be manually reset and verified",
+        reason,
+    )
+
+
+def check_context_violation(desc) -> bool:
+    text = str(desc or "").casefold()
+    if not text:
+        return False
+    for pattern in getattr(shared_config, "FORBIDDEN_CONTEXT_PATTERNS", []):
+        pattern_text = str(pattern or "").strip()
+        if pattern_text and pattern_text.casefold() in text:
+            return True
+    return False
+
+
+def _log_agent_dep_failure(agent_name: str, module_name: str, traceback_text: str) -> None:
+    try:
+        crash_path = Path("/tmp/mira-crash.log")
+        with open(crash_path, "a", encoding="utf-8") as crash_log:
+            crash_log.write(
+                f"\n{'=' * 60}\n"
+                f"{datetime.now().isoformat()}\n"
+                f"agent_deps import failure agent={agent_name} import={module_name}\n"
+                f"{traceback_text}\n"
+            )
+    except OSError:
+        pass
+    log.critical(
+        "Agent dependency import failed agent=%s import=%s\n%s",
+        agent_name,
+        module_name,
+        traceback_text,
+    )
+
+
+def verify_agent_deps() -> None:
+    import traceback
+    import yaml
+
+    data = yaml.safe_load(AGENT_DEPS_FILE.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Invalid agent dependency manifest: {AGENT_DEPS_FILE}")
+
+    for agent_name, imports in data.items():
+        if imports is None:
+            imports = []
+        if not isinstance(imports, list) or not all(isinstance(item, str) for item in imports):
+            raise RuntimeError(f"Invalid dependency list for agent '{agent_name}' in {AGENT_DEPS_FILE}")
+
+        agent_dir = _AGENTS_DIR / str(agent_name)
+        if agent_dir.is_dir():
+            agent_path = str(agent_dir)
+            if agent_path not in sys.path:
+                sys.path.insert(0, agent_path)
+
+        for module_name in imports:
+            try:
+                importlib.import_module(module_name)
+            except Exception:
+                tb = traceback.format_exc()
+                _log_agent_dep_failure(str(agent_name), module_name, tb)
+                raise SystemExit(78)
+
 
 _TIMING_PHASE_STACK: list[dict[str, float]] = []
 _TIMING_CYCLE_STACK: list[dict[str, float]] = []
@@ -459,8 +1011,19 @@ _EXPLORE_QUEUE_DEPTH_STATUSES = {
     "running",
     "working",
 }
+_DISPATCH_QUEUED_STATUSES = {
+    "queued",
+    "pending",
+    "accepted",
+    "in-progress",
+    "in_progress",
+}
 VERIFICATION_INDEPENDENCE = True
 MIN_COMPLETED_TASK_OUTPUT_BYTES = 50
+CROSS_VALIDATION_PROMPT = (
+    "Does this output contain any factual errors, unsupported claims, or quality issues? "
+    "Reply CONFIRMED or FLAGGED with specifics."
+)
 _ORIGINAL_INTENT_SCORING_GUIDANCE = (
     "If original_intent is present, check whether the agent output actually advances that intent, "
     "not only whether the sub-task completed. Discount the score if the sub-task completed but the "
@@ -543,11 +1106,14 @@ def _count_undelivered_outputs() -> int:
 
 
 def _dispatch_scheduled_jobs(session_new: list[dict]):
-    for job in sorted(get_jobs(), key=lambda item: item.priority):
-        target_user_ids = get_known_user_ids() if getattr(job, "per_user", False) else [None]
+    for job in sorted(jobs_module.get_jobs(), key=lambda item: item.priority):
+        target_user_ids = jobs_module.get_known_user_ids() if getattr(job, "per_user", False) else [None]
         for target_user_id in target_user_ids:
-            payload = evaluate_job_payload(job, user_id=target_user_id)
+            payload = jobs_module.evaluate_job_payload(job, user_id=target_user_id)
             if not payload:
+                continue
+            if publish_blocked and _is_substack_publish_job(job.name):
+                _log_substack_publish_block(f"scheduled job '{job.name}'")
                 continue
 
             if job.name == "explore":
@@ -564,13 +1130,13 @@ def _dispatch_scheduled_jobs(session_new: list[dict]):
             if job.inline:
                 try:
                     with _timed_phase(f"agent_dispatch.{job.name}.inline", "tool"):
-                        _run_inline_scheduled_job(job, payload)
-                    _record_scheduled_job_dispatch(job, payload, user_id=target_user_id)
+                        jobs_module._run_inline_scheduled_job(job, payload)
+                    jobs_module._record_scheduled_job_dispatch(job, payload, user_id=target_user_id)
                 except Exception as e:
                     log.error("%s failed: %s", job.name, e)
                 continue
 
-            bg_name, cmd = build_job_dispatch(
+            bg_name, cmd = jobs_module.build_job_dispatch(
                 job,
                 payload,
                 python_executable=sys.executable,
@@ -578,12 +1144,12 @@ def _dispatch_scheduled_jobs(session_new: list[dict]):
                 user_id=target_user_id,
             )
             with _timed_phase(f"agent_dispatch.{job.name}", "tool"):
-                dispatched = _dispatch_background(bg_name, cmd, group=job.blocking_group)
+                dispatched = jobs_module._dispatch_background(bg_name, cmd, group=job.blocking_group)
             if dispatched is False:
                 continue
-            _record_scheduled_job_dispatch(job, payload, user_id=target_user_id)
+            jobs_module._record_scheduled_job_dispatch(job, payload, user_id=target_user_id)
 
-            session_meta = build_job_session_record(job, payload)
+            session_meta = jobs_module.build_job_session_record(job, payload)
             if session_meta:
                 detail = session_meta.get("detail", "")
                 if target_user_id:
@@ -752,8 +1318,10 @@ _DOMAIN_TASK_COMMANDS = {
     "research",
     "zhesi",
     "soul-question",
+    "daily-collab",
     "autowrite-run",
     "writing-pipeline",
+    "writing-triage",
     "check-comments",
     "growth-cycle",
     "notes-cycle",
@@ -909,7 +1477,9 @@ def _completed_task_topic_text(result_data: dict, workspace: Path) -> str:
 
     message_file = workspace / "message.json"
     try:
-        message = json.loads(message_file.read_text(encoding="utf-8")) if message_file.exists() else {}
+        message = (
+            json.loads(message_file.read_text(encoding="utf-8")) if workspace.is_dir() and message_file.exists() else {}
+        )
     except (json.JSONDecodeError, OSError):
         message = {}
     if isinstance(message, dict):
@@ -922,6 +1492,296 @@ def _completed_task_topic_text(result_data: dict, workspace: Path) -> str:
             parts.extend(str(tag) for tag in message_tags if str(tag or "").strip())
 
     return " ".join(parts).lower()
+
+
+def _interest_texts_from_value(value) -> list[str]:
+    if isinstance(value, dict):
+        if "interests" in value:
+            return _interest_texts_from_value(value.get("interests"))
+        texts: list[str] = []
+        for key in ("topic", "title", "name", "description", "text", "content"):
+            if value.get(key):
+                texts.append(str(value[key]))
+        if texts:
+            return texts
+        return [str(item) for item in value.values() if isinstance(item, str) and item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        texts: list[str] = []
+        for item in value:
+            texts.extend(_interest_texts_from_value(item))
+        return texts
+    text = str(value or "")
+    lines = []
+    for line in text.splitlines():
+        cleaned = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
+        if cleaned and not cleaned.startswith("#"):
+            lines.append(cleaned)
+    return lines or ([text.strip()] if text.strip() else [])
+
+
+def _current_human_interests() -> list[str]:
+    get_interests = getattr(soul_manager, "get_interests", None)
+    if callable(get_interests):
+        try:
+            interests = get_interests()
+        except Exception as exc:
+            log.debug("soul_manager.get_interests failed: %s", exc)
+        else:
+            texts = _interest_texts_from_value(interests)
+            if texts:
+                return texts
+    try:
+        return _interest_texts_from_value(load_soul().get("interests", ""))
+    except Exception as exc:
+        log.debug("interest drift check could not load soul interests: %s", exc)
+        return []
+
+
+def _interest_keywords(text: str) -> set[str]:
+    keywords = set()
+    for token in re.findall(r"[a-z0-9]+", str(text or "").lower()):
+        if token in _INTEREST_DRIFT_STOPWORDS:
+            continue
+        if len(token) >= 4 or token in _INTEREST_DRIFT_SHORT_KEYWORDS:
+            keywords.add(token)
+    return keywords
+
+
+def _task_matches_human_interests(topic_text: str, interests: list[str]) -> bool:
+    topic_tokens = set(re.findall(r"[a-z0-9]+", topic_text.lower()))
+    for interest in interests:
+        keywords = _interest_keywords(interest)
+        if not keywords:
+            continue
+        overlap = topic_tokens & keywords
+        if len(overlap) >= min(2, len(keywords)):
+            return True
+    return False
+
+
+def _task_record_message(record) -> dict:
+    workspace_text = str(getattr(record, "workspace", "") or "").strip()
+    if not workspace_text:
+        return {}
+    workspace = Path(workspace_text)
+    message_file = workspace / "message.json"
+    try:
+        message = json.loads(message_file.read_text(encoding="utf-8")) if message_file.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return message if isinstance(message, dict) else {}
+
+
+def _is_agent_initiated_task(record, message: dict) -> bool:
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    candidates = [
+        getattr(record, "sender", ""),
+        message.get("sender", ""),
+        message.get("origin", ""),
+        metadata.get("origin", ""),
+        metadata.get("source", ""),
+        metadata.get("authorizing_source", ""),
+        metadata.get("authorization_source", ""),
+    ]
+    normalized = {str(value or "").strip().lower() for value in candidates if str(value or "").strip()}
+    if normalized & {"agent", "auto", "autonomous", "launchagent", "mira", "scheduler", "system"}:
+        return True
+    if normalized & {"ang", "human", "iphone", "user", "wa"}:
+        return False
+
+    text = " ".join(
+        str(value or "")
+        for value in (
+            getattr(record, "task_id", ""),
+            getattr(record, "workflow_id", ""),
+            getattr(record, "content_preview", ""),
+            getattr(record, "summary", ""),
+            getattr(record, "task_type", ""),
+            getattr(record, "agent", ""),
+            " ".join(getattr(record, "tags", []) or []),
+            message.get("content", ""),
+            message.get("type", ""),
+        )
+    ).lower()
+    return any(
+        marker in text
+        for marker in (
+            "auto-publish",
+            "autopublish",
+            "autowrite",
+            "autonomous",
+            "explore",
+            "publish pipeline",
+            "scheduled",
+        )
+    )
+
+
+def _task_result_data(record, workspace: Path) -> dict:
+    data = {
+        "summary": getattr(record, "summary", ""),
+        "task_type": getattr(record, "task_type", ""),
+        "agent": getattr(record, "agent", ""),
+        "tags": getattr(record, "tags", []) or [],
+    }
+    result_file = workspace / "result.json"
+    try:
+        result_data = (
+            json.loads(result_file.read_text(encoding="utf-8")) if workspace.is_dir() and result_file.exists() else {}
+        )
+    except (json.JSONDecodeError, OSError):
+        return data
+    if isinstance(result_data, dict):
+        data.update(result_data)
+    return data
+
+
+def _recent_agent_initiated_completed_tasks(now: datetime) -> list[dict]:
+    cutoff_ts = (now - timedelta(days=7)).timestamp()
+    complete_statuses = {"done", "verified", "completed", "complete", "completed_unverified"}
+    tasks: list[dict] = []
+    try:
+        records = TaskManager()._records
+    except Exception as exc:
+        log.debug("interest drift task scan failed: %s", exc)
+        return tasks
+
+    for record in records:
+        completed_ts = _parse_recovery_timestamp(getattr(record, "completed_at", ""))
+        if completed_ts is None or completed_ts < cutoff_ts or completed_ts > now.timestamp():
+            continue
+        if normalize_task_status(getattr(record, "status", "")) not in complete_statuses:
+            continue
+        message = _task_record_message(record)
+        if not _is_agent_initiated_task(record, message):
+            continue
+        workspace_text = str(getattr(record, "workspace", "") or "").strip()
+        workspace = Path(workspace_text) if workspace_text else Path("/__mira_missing_task_workspace__")
+        topic_text = _completed_task_topic_text(_task_result_data(record, workspace), workspace)
+        if not topic_text:
+            continue
+        tasks.append(
+            {
+                "task_id": getattr(record, "task_id", ""),
+                "completed_at": getattr(record, "completed_at", ""),
+                "preview": getattr(record, "content_preview", "") or getattr(record, "summary", ""),
+                "topic_text": topic_text,
+            }
+        )
+    return tasks
+
+
+def _format_interest_drift_note(off_interest: list[dict], total: int, fraction: float, interests: list[str]) -> str:
+    lines = [
+        "Course check: recent agent-initiated work may be drifting from declared interests.",
+        "",
+        f"Weekly scan: {len(off_interest)}/{total} agent-initiated completed tasks ({fraction:.0%}) did not match the current soul interests.",
+        "",
+        "Declared interest anchors:",
+    ]
+    for interest in interests[:8]:
+        lines.append(f"- {interest}")
+    lines.extend(["", "Off-interest task samples:"])
+    for task in off_interest[:5]:
+        preview = re.sub(r"\s+", " ", str(task.get("preview") or task.get("task_id") or "")).strip()
+        lines.append(f"- {preview[:160]}")
+    lines.extend(
+        [
+            "",
+            "Please confirm whether this is an intentional direction change or whether Mira should steer back toward the declared interests.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _send_interest_drift_note(message: str, summary: dict, user_id: str) -> bool:
+    try:
+        from notes_bridge import send_to_outbox
+
+        sent_path = send_to_outbox(
+            message,
+            metadata={
+                "kind": "interest_drift_course_check",
+                "user_id": user_id,
+                "priority": "high",
+                **summary,
+            },
+        )
+        if not sent_path:
+            return False
+        path = Path(sent_path)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                payload["priority"] = "high"
+                payload["type"] = "alert"
+                path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (json.JSONDecodeError, OSError) as exc:
+            log.debug("interest drift outbox priority update failed: %s", exc)
+        return True
+    except Exception as exc:
+        log.debug("interest drift Notes outbox write failed: %s", exc)
+
+    if Mira is None:
+        return False
+    try:
+        now = datetime.now(timezone.utc)
+        item_id = f"interest_drift_course_check_{now.strftime('%G_W%V')}"
+        bridge = Mira(MIRA_DIR, user_id=user_id)
+        if bridge.item_exists(item_id):
+            return True
+        item = bridge.create_item(
+            item_id,
+            "alert",
+            "Course check: interest drift",
+            message,
+            sender="agent",
+            tags=["mira", "interests", "drift", "course-check"],
+            origin="agent",
+        )
+        item["status"] = "needs-input"
+        item["priority"] = "high"
+        item["pinned"] = True
+        item["interest_drift"] = summary
+        bridge._write_item(item)
+        bridge._update_manifest(item)
+        return True
+    except Exception as exc:
+        log.debug("interest drift bridge item failed: %s", exc)
+        return False
+
+
+def _check_agent_initiated_interest_drift(user_id: str = "ang") -> None:
+    interests = _current_human_interests()
+    if not interests:
+        return
+
+    now = datetime.now(timezone.utc)
+    tasks = _recent_agent_initiated_completed_tasks(now)
+    if not tasks:
+        return
+
+    off_interest = [task for task in tasks if not _task_matches_human_interests(task["topic_text"], interests)]
+    fraction = len(off_interest) / len(tasks)
+    if fraction <= OFF_INTEREST_AGENT_TASK_THRESHOLD:
+        return
+
+    summary = {
+        "total_agent_initiated_tasks": len(tasks),
+        "off_interest_tasks": len(off_interest),
+        "fraction": round(fraction, 4),
+        "threshold": OFF_INTEREST_AGENT_TASK_THRESHOLD,
+        "task_ids": [task["task_id"] for task in off_interest[:10]],
+    }
+    message = _format_interest_drift_note(off_interest, len(tasks), fraction, interests)
+    if _send_interest_drift_note(message, summary, user_id):
+        log.warning(
+            "INTEREST_DRIFT_COURSE_CHECK off_interest=%d total=%d fraction=%.3f threshold=%.3f",
+            len(off_interest),
+            len(tasks),
+            fraction,
+            OFF_INTEREST_AGENT_TASK_THRESHOLD,
+        )
 
 
 def _check_stable_attention_drift(topic_texts: list[str]) -> None:
@@ -1072,7 +1932,7 @@ def _apply_tier_model_map_for_dispatch(msg) -> None:
         agent = None
     if agent is None:
         return
-    msg.model_restriction = shared_config.TIER_MODEL_MAP[agent.tier]
+    msg.model_restriction = shared_config.TIER_MODEL_MAP.get(agent.tier, getattr(shared_config, "LLM_MODEL", ""))
 
 
 def _task_distribution_cutoff_dates(today: datetime.date, days: int) -> set[str]:
@@ -1162,6 +2022,51 @@ def _record_agent_permissions_audit(msg) -> None:
         log.debug("agent permissions audit write failed: %s", exc)
 
 
+def _dispatch_active_task_count(task_mgr) -> int:
+    try:
+        return int(task_mgr.get_active_count())
+    except Exception:
+        return 0
+
+
+def _dispatch_queued_task_count(task_mgr) -> int:
+    try:
+        records = getattr(task_mgr, "_records", []) or []
+    except Exception:
+        return 0
+
+    count = 0
+    for record in records:
+        status = record.get("status", "") if isinstance(record, dict) else getattr(record, "status", "")
+        if normalize_task_status(status) in _DISPATCH_QUEUED_STATUSES:
+            count += 1
+    return count
+
+
+def _log_dispatch_audit(msg, task_mgr, dispatch_decision: str, active_task_count: int | None = None) -> None:
+    try:
+        requested_agent = _task_dispatch_category(msg)
+        task_id = str(getattr(msg, "id", "") or "")
+        if active_task_count is None:
+            active_task_count = _dispatch_active_task_count(task_mgr)
+        entry = {
+            "active_task_count": active_task_count,
+            "queued_task_count": _dispatch_queued_task_count(task_mgr),
+            "max_concurrent_tasks": MAX_CONCURRENT_TASKS,
+            "requested_agent": requested_agent,
+            "requested_agent_tier": _agent_tier(requested_agent),
+            "task_id": task_id,
+            "dispatch_decision": dispatch_decision,
+        }
+        log.info(
+            "dispatch_audit %s",
+            json.dumps(entry, ensure_ascii=False, sort_keys=True),
+            extra={"agent": requested_agent, "task_id": task_id},
+        )
+    except Exception as exc:
+        log.debug("dispatch audit log failed: %s", exc)
+
+
 def _authorization_metadata(msg) -> dict:
     metadata = getattr(msg, "metadata", None)
     return metadata if isinstance(metadata, dict) else {}
@@ -1244,6 +2149,32 @@ def _log_worker_dispatch_authorization(msg) -> None:
         log.debug("worker authorization audit write failed: %s", exc)
 
 
+def _apply_fast_dispatch_plan(msg, workspace_dir: Path) -> str | None:
+    if _explicit_task_dispatch_agent(msg):
+        return None
+
+    agent_name = try_fast_dispatch(getattr(msg, "content", ""))
+    if not agent_name:
+        return None
+
+    task_text = str(getattr(msg, "content", "") or "").strip()
+    workspace = _resolve_workspace_dir(Path(workspace_dir), str(getattr(msg, "id", "") or ""))
+    workspace.mkdir(parents=True, exist_ok=True)
+    tier = _agent_tier(agent_name)
+    if tier not in {"light", "heavy"}:
+        tier = "light"
+    plan = [{"agent": agent_name, "instruction": task_text, "tier": tier}]
+    (workspace / "pending_plan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    metadata = dict(getattr(msg, "metadata", {}) or {})
+    metadata["routing_agent"] = agent_name
+    metadata["dispatch_method"] = "fast_dispatch"
+    msg.metadata = metadata
+    msg.routing_agent = agent_name
+    log.info("fast_dispatch: %s", agent_name)
+    return agent_name
+
+
 def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
     skip_audit = False
     try:
@@ -1262,6 +2193,12 @@ def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
         _attach_original_intent(msg)
         _enforce_heavy_route_invariant(msg)
         _apply_tier_model_map_for_dispatch(msg)
+        _apply_fast_dispatch_plan(msg, workspace_dir)
+        task_name = _task_dispatch_category(msg)
+        if publish_blocked and _is_substack_publish_request(task_name, getattr(msg, "content", "")):
+            outcome = "blocked"
+            _log_substack_publish_block(f"task dispatch '{task_name}'")
+            return None
         if not skip_audit:
             _record_agent_permissions_audit(msg)
             _log_worker_dispatch_authorization(msg)
@@ -1272,6 +2209,9 @@ def _dispatch_with_agent_audit(self, msg, workspace_dir, *args, **kwargs):
                 str(getattr(msg, "content", "") or ""),
                 receipt_workspace,
             )
+        active_task_count = _dispatch_active_task_count(self)
+        dispatch_decision = "blocked_concurrency" if active_task_count >= MAX_CONCURRENT_TASKS else "started"
+        _log_dispatch_audit(msg, self, dispatch_decision, active_task_count=active_task_count)
         task_start = time.perf_counter()
         dispatch_result = _ORIGINAL_TASK_MANAGER_DISPATCH(self, msg, workspace_dir, *args, **kwargs)
         task_dispatched_at = time.monotonic()
@@ -1728,9 +2668,68 @@ def _redact_bridge_item_for_survival_exposure(bridge, item_id: str) -> None:
         log.debug("sensitive bridge redaction failed: %s", exc)
 
 
+CONTEXT_GUARD_REFUSAL_LOG = "Context guard: task refused due to forbidden context pattern"
+CONTEXT_GUARD_REFUSAL_RESPONSE = "I can't dispatch this task because it matches a forbidden surveillance context."
+
+
+def _send_context_guard_refusal(bridge, msg) -> None:
+    task_id = str(getattr(msg, "id", "") or "")
+    user_id = str(getattr(msg, "user_id", "") or getattr(bridge, "user_id", "") or "ang")
+    log.warning("%s task_id=%s user_id=%s", CONTEXT_GUARD_REFUSAL_LOG, task_id, user_id)
+
+    error = {
+        "code": "forbidden_context",
+        "message": CONTEXT_GUARD_REFUSAL_RESPONSE,
+        "retryable": False,
+    }
+    target_bridge = bridge
+    if target_bridge is None and Mira is not None and task_id:
+        try:
+            target_bridge = Mira(MIRA_DIR, user_id=user_id)
+        except Exception as exc:
+            log.debug("context guard bridge open failed: %s", exc)
+
+    if target_bridge is not None and task_id:
+        try:
+            target_bridge.update_status(
+                task_id,
+                "failed",
+                agent_message=CONTEXT_GUARD_REFUSAL_RESPONSE,
+                error=error,
+            )
+        except TypeError:
+            try:
+                target_bridge.update_status(
+                    task_id,
+                    "failed",
+                    agent_message=CONTEXT_GUARD_REFUSAL_RESPONSE,
+                )
+            except Exception as exc:
+                log.debug("context guard bridge status write failed: %s", exc)
+        except Exception as exc:
+            log.debug("context guard bridge status write failed: %s", exc)
+
+    try:
+        from notes_bridge import send_to_outbox
+
+        send_to_outbox(
+            CONTEXT_GUARD_REFUSAL_RESPONSE,
+            metadata={
+                "task_id": task_id,
+                "user_id": user_id,
+                "reason": "forbidden_context",
+            },
+        )
+    except Exception as exc:
+        log.debug("context guard outbox write failed: %s", exc)
+
+
 def _dispatch_with_survival_guard(self, msg, workspace_dir, *args, **kwargs):
     original_content = getattr(msg, "content", "")
     _attach_original_intent(msg, fallback=original_content)
+    if check_context_violation(original_content):
+        _send_context_guard_refusal(None, msg)
+        return None
     survival_sensitive = _detect_survival_exposure(original_content)
     time_sensitive = _detect_time_sensitive_message(original_content)
     if not survival_sensitive and not time_sensitive:
@@ -1775,6 +2774,9 @@ def _send_notes_dispatch_acknowledgment(bridge, msg) -> None:
 
 def _dispatch_or_requeue_with_survival_guard(task_mgr, bridge, msg, workspace, cmd=None):
     _attach_interface_received_timestamp(msg, cmd)
+    if check_context_violation(getattr(msg, "content", "")):
+        _send_context_guard_refusal(bridge, msg)
+        return "failed"
     if _is_self_referential_evaluator_dispatch(msg, cmd):
         _mark_self_referential_evaluation_exploratory(msg)
         log.warning(
@@ -1784,6 +2786,9 @@ def _dispatch_or_requeue_with_survival_guard(task_mgr, bridge, msg, workspace, c
         return "exploratory"
     if _detect_survival_exposure(getattr(msg, "content", "")):
         _redact_bridge_item_for_survival_exposure(bridge, getattr(msg, "id", ""))
+    active_task_count = _dispatch_active_task_count(task_mgr)
+    if active_task_count >= MAX_CONCURRENT_TASKS:
+        _log_dispatch_audit(msg, task_mgr, "blocked_concurrency", active_task_count=active_task_count)
     result = _ORIGINAL_DISPATCH_OR_REQUEUE(task_mgr, bridge, msg, workspace, cmd)
     if result == "ok":
         _send_notes_dispatch_acknowledgment(bridge, msg)
@@ -1971,6 +2976,184 @@ def _mark_independent_verification_required(rec, result: dict) -> None:
     rec.verification = verification
 
 
+def _cross_validation_sampled() -> bool:
+    if not getattr(shared_config, "CROSS_VALIDATION_ENABLED", False):
+        return False
+    try:
+        sample_rate = float(getattr(shared_config, "CROSS_VALIDATION_SAMPLE_RATE", 0.2))
+    except (TypeError, ValueError):
+        sample_rate = 0.0
+    sample_rate = max(0.0, min(1.0, sample_rate))
+    return random() < sample_rate
+
+
+def _result_source_agent(result: dict, rec) -> str:
+    candidates = [
+        result.get("agent"),
+        result.get("agent_type"),
+        result.get("declared_agent"),
+        result.get("execution_agent"),
+        getattr(rec, "task_type", ""),
+    ]
+    tags = getattr(rec, "tags", None)
+    if isinstance(tags, list):
+        candidates.extend(tags)
+    registry = getattr(shared_config, "AGENT_REGISTRY", {})
+    for candidate in candidates:
+        agent = _normalize_task_distribution_category(candidate)
+        if isinstance(registry, dict) and agent in registry:
+            return agent
+    return "general"
+
+
+def _agent_tier(agent_name: str) -> str:
+    agent_config = _agent_config(agent_name)
+    if agent_config:
+        return str(agent_config.get("tier") or "light").strip().lower() or "light"
+    return "light"
+
+
+def _select_cross_validation_peer(agent_name: str) -> str:
+    registry = getattr(shared_config, "AGENT_REGISTRY", {})
+    if not isinstance(registry, dict):
+        return ""
+    tier = _agent_tier(agent_name)
+    source_local_only = _agent_requires_local_llm(agent_name)
+    candidates = []
+    for name, config in registry.items():
+        candidate = _normalize_task_distribution_category(name)
+        if not candidate or candidate in {agent_name, "super"} or not isinstance(config, dict):
+            continue
+        if str(config.get("tier") or "light").strip().lower() != tier:
+            continue
+        permissions = config.get("permissions") if isinstance(config.get("permissions"), dict) else {}
+        if source_local_only and not bool(permissions.get("local_llm_only")):
+            continue
+        candidates.append(candidate)
+    return choice(sorted(candidates)) if candidates else ""
+
+
+def _cross_validation_output_text(rec, result: dict) -> str:
+    workspace = getattr(rec, "workspace", "")
+    if workspace:
+        output_file = Path(workspace) / "output.md"
+        try:
+            if output_file.exists():
+                text = output_file.read_text(encoding="utf-8", errors="replace").strip()
+                if text:
+                    return text
+        except OSError:
+            pass
+    return str(result.get("summary") or getattr(rec, "summary", "") or "").strip()
+
+
+def _cross_validation_status(rec, result: dict) -> str:
+    return normalize_task_status(getattr(rec, "status", result.get("status", "")))
+
+
+def _cross_validation_prompt(peer_agent: str, source_agent: str, rec, result: dict, output: str) -> str:
+    clipped_output = output[:12000]
+    if len(output) > len(clipped_output):
+        clipped_output += "\n\n[Output truncated for lightweight peer validation.]"
+    return (
+        f"{CROSS_VALIDATION_PROMPT}\n\n"
+        f"Peer agent: {peer_agent}\n"
+        f"Original agent: {source_agent}\n"
+        f"Task ID: {getattr(rec, 'task_id', '')}\n"
+        f"Status: {_cross_validation_status(rec, result)}\n"
+        f"Summary: {result.get('summary') or getattr(rec, 'summary', '')}\n\n"
+        f"Output:\n{clipped_output}"
+    )
+
+
+def _cross_validation_verification(result: dict, rec) -> dict:
+    if isinstance(result.get("verification"), dict):
+        return dict(result["verification"])
+    if isinstance(getattr(rec, "verification", None), dict):
+        return dict(rec.verification)
+    return {}
+
+
+def _mark_cross_validation_flagged(rec, result: dict, result_file: Path, peer_agent: str, response: str) -> None:
+    detail = response.strip() or "Peer validation did not return CONFIRMED."
+    detail = detail[:1000]
+    rec.status = "completed_unverified"
+    rec.outcome_verified = False
+    rec.verification_method = "cross_validation_flagged"
+    rec.summary = f"{rec.summary}\n\nCross-validation flagged by {peer_agent}: {detail}".strip()
+    verification = _cross_validation_verification(result, rec)
+    raw_checks = verification.get("checks")
+    checks = list(raw_checks) if isinstance(raw_checks, list) else []
+    checks.append(
+        {
+            "name": "cross_validation",
+            "passed": False,
+            "agent": peer_agent,
+            "message": detail,
+        }
+    )
+    proxy_checked = str(verification.get("proxy_checked") or "").strip()
+    verification.update(
+        {
+            "status": "failed",
+            "verified": False,
+            "summary": detail,
+            "proxy_checked": f"{proxy_checked} + cross_validation" if proxy_checked else "cross_validation",
+            "checks": checks,
+        }
+    )
+    rec.verification = verification
+    result["status"] = rec.status
+    result["outcome_verified"] = False
+    result["verification_method"] = rec.verification_method
+    result["summary"] = rec.summary
+    result["verification"] = rec.verification
+    result["cross_validation"] = {
+        "status": "flagged",
+        "peer_agent": peer_agent,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "response": detail,
+    }
+    try:
+        result_file.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        log.debug("cross-validation result rewrite failed for %s: %s", rec.task_id, exc)
+
+
+def _maybe_cross_validate_task_result(rec, result: dict, result_file: Path) -> None:
+    if _cross_validation_status(rec, result) not in {"done", "verified"}:
+        return
+    if not _cross_validation_sampled():
+        return
+    source_agent = _result_source_agent(result, rec)
+    peer_agent = _select_cross_validation_peer(source_agent)
+    if not peer_agent:
+        log.info("CROSS_VALIDATION_SKIPPED task_id=%s agent=%s reason=no_compatible_peer", rec.task_id, source_agent)
+        return
+    output = _cross_validation_output_text(rec, result)
+    prompt = _cross_validation_prompt(peer_agent, source_agent, rec, result, output)
+    try:
+        response = (claude_think(prompt, timeout=60, tier=_agent_tier(peer_agent)) or "").strip()
+    except Exception as exc:
+        response = f"FLAGGED validation_error: {exc}"
+    if response.upper().startswith("CONFIRMED"):
+        log.info(
+            "CROSS_VALIDATION_CONFIRMED task_id=%s agent=%s peer_agent=%s",
+            rec.task_id,
+            source_agent,
+            peer_agent,
+        )
+        return
+    _mark_cross_validation_flagged(rec, result, result_file, peer_agent, response)
+    log.warning(
+        "CROSS_VALIDATION_FLAGGED task_id=%s agent=%s peer_agent=%s details=%s",
+        rec.task_id,
+        source_agent,
+        peer_agent,
+        response[:500],
+    )
+
+
 def _collect_result_with_verification_independence(self, rec):
     collected = _ORIGINAL_TASK_MANAGER_COLLECT_RESULT(self, rec)
     if not collected:
@@ -1983,6 +3166,8 @@ def _collect_result_with_verification_independence(self, rec):
     except (json.JSONDecodeError, OSError):
         return collected
     if not isinstance(result, dict) or not _requires_independent_verification(result, rec):
+        if isinstance(result, dict):
+            _maybe_cross_validate_task_result(rec, result, result_file)
         return collected
     completed_by, _verified_by = _independence_parties(result)
     _mark_independent_verification_required(rec, result)
@@ -2229,7 +3414,113 @@ def _do_talk_offline_fallback() -> None:
     log.warning("Mira offline fallback active; deferred %d request(s)", handled)
 
 
+def _health_cascade_summary(result: dict) -> str:
+    trace = result.get("cascade_trace") if isinstance(result, dict) else []
+    parts = []
+    for step in trace if isinstance(trace, list) else []:
+        if not isinstance(step, dict):
+            continue
+        parts.append(f"{step.get('step', '?')}={step.get('status', '?')}")
+    root = result.get("root_cause") if isinstance(result, dict) else None
+    return f"CASCADE status={result.get('status', 'unknown')} trace={' -> '.join(parts)} root_cause={root or 'none'}"
+
+
+def _log_health_cascade_result(result: dict) -> None:
+    summary = _health_cascade_summary(result)
+    log.info(summary)
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(HEALTH_CASCADE_LOG, "a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "summary": summary,
+                        "result": result,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except OSError as exc:
+        log.debug("health cascade log write failed: %s", exc)
+
+
+def _write_health_cascade_bridge_diagnostic(result: dict) -> None:
+    if Mira is None:
+        log.error("Health cascade dead and bridge unavailable: %s", result.get("root_cause"))
+        return
+    summary = _health_cascade_summary(result)
+    message = (
+        "Mira task processing is paused because the operational health cascade reports dead.\n\n"
+        f"Root cause: {result.get('root_cause') or 'unknown'}\n\n"
+        f"{summary}"
+    )
+    try:
+        bridges = Mira.for_all_users(MIRA_DIR)
+    except Exception as exc:
+        log.error("Health cascade bridge diagnostic discovery failed: %s", exc)
+        return
+    for bridge in bridges:
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            if bridge.item_exists(HEALTH_CASCADE_ALERT_ID):
+                item = bridge._read_item(HEALTH_CASCADE_ALERT_ID)
+                if not item:
+                    continue
+            else:
+                item = bridge.create_item(
+                    HEALTH_CASCADE_ALERT_ID,
+                    "alert",
+                    "Mira Health Cascade Failure",
+                    message,
+                    sender="agent",
+                    tags=["system", "health", "cascade", "error"],
+                    origin="agent",
+                )
+            item["type"] = "alert"
+            item["title"] = "Mira Health Cascade Failure"
+            item["status"] = "failed"
+            item["origin"] = "agent"
+            item["pinned"] = True
+            item["tags"] = list(dict.fromkeys(["system", "health", "cascade", "error", *item.get("tags", [])]))
+            item["error"] = {
+                "code": "health_cascade_dead",
+                "message": result.get("root_cause") or "Health cascade reported dead",
+                "retryable": True,
+                "timestamp": now,
+            }
+            messages = item.setdefault("messages", [])
+            diagnostic = next((msg for msg in messages if msg.get("id") == "health_cascade_diagnostic"), None)
+            if diagnostic is None:
+                messages.append(
+                    {
+                        "id": "health_cascade_diagnostic",
+                        "sender": "agent",
+                        "content": message,
+                        "timestamp": now,
+                        "kind": "text",
+                    }
+                )
+            else:
+                diagnostic["sender"] = "agent"
+                diagnostic["content"] = message
+                diagnostic["timestamp"] = now
+                diagnostic["kind"] = "text"
+            item["updated_at"] = now
+            bridge._write_item(item)
+            bridge._update_manifest(item)
+        except Exception as exc:
+            log.error("Health cascade bridge diagnostic failed for %s: %s", getattr(bridge, "user_id", "?"), exc)
+
+
 def do_talk():
+    cascade_result = health_cascade()
+    _log_health_cascade_result(cascade_result)
+    if cascade_result.get("status") == "dead":
+        _write_health_cascade_bridge_diagnostic(cascade_result)
+        return None
+
     _install_interface_latency_instrumentation()
     _install_clear_intent_gate()
     _install_survival_dispatch_guard()
@@ -2439,6 +3730,9 @@ def _check_recent_completed_task_content_integrity() -> None:
         )
         return
 
+    if _is_conversation_content_record(record):
+        return
+
     if output_size <= MIN_COMPLETED_TASK_OUTPUT_BYTES:
         log.warning(
             "OPERATIONAL_AUDIT content_integrity task_id=%s status=%s output_path=%s output_bytes=%d "
@@ -2449,6 +3743,22 @@ def _check_recent_completed_task_content_integrity() -> None:
             output_size,
             MIN_COMPLETED_TASK_OUTPUT_BYTES,
         )
+
+
+def _is_conversation_content_record(record) -> bool:
+    """Return True for chat tasks where a short answer can be the correct output."""
+    tag_keys = {
+        str(tag or "").strip().casefold().replace("_", "-")
+        for tag in getattr(record, "tags", []) or []
+        if str(tag or "").strip()
+    }
+    return (
+        str(getattr(record, "task_id", "") or "").strip() == "disc_daily_collab"
+        or "discussion" in tag_keys
+        or "conversation" in tag_keys
+        or "daily-collab" in tag_keys
+        or "daily collab" in tag_keys
+    )
 
 
 def _check_stuck_tasks_audit() -> None:
@@ -2551,11 +3861,53 @@ def _check_network_connectivity_audit() -> None:
     _record_network_status_in_heartbeat(network_status)
 
 
+def _log_skill_dependency_health(report: dict) -> None:
+    if not isinstance(report, dict):
+        return
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+    lines: list[str] = []
+    for skill_name, dependency_report in sorted(report.items()):
+        if not isinstance(dependency_report, dict):
+            continue
+        for dependency, status in sorted(dependency_report.items()):
+            normalized_status = str(status or "").strip().lower()
+            if normalized_status not in {"broken", "unknown"}:
+                continue
+            lines.append(
+                f"[DEPENDENCY] {timestamp} skill={skill_name} dependency={dependency} status={normalized_status}"
+            )
+            log.warning(
+                "DEPENDENCY_HEALTH skill=%s dependency=%s status=%s",
+                skill_name,
+                dependency,
+                normalized_status,
+            )
+
+    if not lines:
+        return
+
+    try:
+        with open(Path("/tmp/mira-crash.log"), "a", encoding="utf-8") as crash_log:
+            for line in lines:
+                crash_log.write(line + "\n")
+    except OSError as exc:
+        log.debug("Dependency health crash log write failed: %s", exc)
+
+
+def _check_skill_dependency_health_audit() -> None:
+    try:
+        _log_skill_dependency_health(audit_all_skill_dependencies())
+    except Exception as exc:
+        log.warning("OPERATIONAL_AUDIT dependency_health status=failed error=%s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Startup health check — make invisible dependencies visible
 # ---------------------------------------------------------------------------
 
 
+@friction_monitor.track_friction(category="good", label="operational_audit")
 def _check_invisible_dependencies():
     """Enumerate and validate shared modules and path dependencies that every
     agent silently relies on but that are never directly monitored.
@@ -2667,6 +4019,39 @@ def _check_invisible_dependencies():
         "OPERATIONAL_AUDIT survival_status=%s",
         json.dumps(survival_status, ensure_ascii=False, sort_keys=True),
     )
+
+    # 9. Friction classification: tag audit roots as cognitive or infrastructure
+    try:
+        friction_report = audit_friction(OPERATIONAL_AUDIT_FRICTION_STEPS)
+        for entry in friction_report.get("cognitive", []):
+            if not isinstance(entry, dict):
+                continue
+            step = str(entry.get("step") or "")
+            if step.startswith("operational_audit."):
+                log.info(
+                    "OPERATIONAL_AUDIT friction step=%s friction_type=cognitive root_cause=good_friction rationale=%s",
+                    step,
+                    entry.get("rationale") or "",
+                )
+        for entry in friction_report.get("elimination_candidates", []):
+            if not isinstance(entry, dict):
+                continue
+            step = str(entry.get("step") or "")
+            if step.startswith("operational_audit."):
+                log.warning(
+                    "OPERATIONAL_AUDIT friction step=%s friction_type=infrastructure "
+                    "root_cause=bad_friction candidate=eliminate rationale=%s",
+                    step,
+                    entry.get("rationale") or "",
+                )
+        if not friction_report.get("passed", False):
+            log.warning(
+                "OPERATIONAL_AUDIT friction_registry status=failed missing=%s invalid=%s",
+                friction_report.get("missing", []),
+                friction_report.get("invalid", []),
+            )
+    except Exception as exc:
+        log.warning("OPERATIONAL_AUDIT friction_registry status=failed error=%s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -3075,6 +4460,186 @@ def check_background_dependencies() -> list[dict]:
     return stale_entries
 
 
+def _load_service_dependencies() -> tuple[dict, list[dict]]:
+    if not SERVICE_DEPENDENCIES_FILE.exists():
+        return {"dependencies": []}, []
+
+    try:
+        import yaml
+
+        data = yaml.safe_load(SERVICE_DEPENDENCIES_FILE.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        log.warning("SERVICE_DEPENDENCY_CONFIG_READ_FAILED path=%s error=%s", SERVICE_DEPENDENCIES_FILE, exc)
+        return {"dependencies": []}, []
+
+    if isinstance(data, list):
+        data = {"dependencies": data}
+    if not isinstance(data, dict):
+        log.warning("SERVICE_DEPENDENCY_CONFIG_INVALID path=%s", SERVICE_DEPENDENCIES_FILE)
+        return {"dependencies": []}, []
+
+    dependencies = data.get("dependencies", [])
+    if not isinstance(dependencies, list):
+        log.warning("SERVICE_DEPENDENCY_CONFIG_INVALID dependencies=non-list path=%s", SERVICE_DEPENDENCIES_FILE)
+        return data, []
+
+    return data, [dep for dep in dependencies if isinstance(dep, dict) and not dep.get("disabled")]
+
+
+def _write_service_dependencies(data: dict) -> None:
+    try:
+        import yaml
+
+        SERVICE_DEPENDENCIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SERVICE_DEPENDENCIES_FILE.write_text(
+            yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        log.warning("SERVICE_DEPENDENCY_CONFIG_WRITE_FAILED path=%s error=%s", SERVICE_DEPENDENCIES_FILE, exc)
+
+
+def _service_dependency_digest(body: str) -> str:
+    normalized = re.sub(r"\s+", " ", body).strip()
+    return hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _fetch_service_dependency_digest(dep: dict) -> dict:
+    url = str(dep.get("url") or "").strip()
+    name = str(dep.get("name") or url).strip()
+    if not url:
+        raise ValueError("missing dependency URL")
+
+    from tools.web_browser import fetch_raw
+
+    body = fetch_raw(url, timeout=SERVICE_DEPENDENCY_TIMEOUT_SECONDS)
+    if not body.strip():
+        raise ValueError("empty response")
+
+    return {
+        "name": name,
+        "url": url,
+        "sha256": _service_dependency_digest(body),
+        "content_length": len(body),
+    }
+
+
+def _append_external_dependency_warnings_to_journal(warnings: list[dict], user_id: str = "ang") -> None:
+    if not warnings:
+        return
+
+    try:
+        from user_paths import user_journal_dir
+
+        journal_path = user_journal_dir(user_id) / f"{datetime.now().strftime('%Y-%m-%d')}.md"
+    except Exception:
+        journal_path = JOURNAL_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.md"
+
+    lines = ["## WARNING: External Service Dependency Change"]
+    for warning in warnings:
+        lines.append(
+            "- WARNING: "
+            f"{warning['name']} changed at {warning['url']} "
+            f"(baseline {warning['baseline_sha256'][:12]}, current {warning['current_sha256'][:12]}). "
+            "Review terms, pricing, and free-tier availability before treating it as trusted infrastructure."
+        )
+
+    try:
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(journal_path, "a", encoding="utf-8") as journal_file:
+            journal_file.write("\n\n---\n\n" + "\n".join(lines) + "\n")
+    except OSError as exc:
+        log.debug("External dependency journal warning write failed: %s", exc)
+
+
+def _log_external_dependency_warnings(warnings: list[dict]) -> None:
+    if not warnings:
+        return
+
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(SERVICE_DEPENDENCY_LOG, "a", encoding="utf-8") as f:
+            for warning in warnings:
+                f.write(json.dumps(warning, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.debug("External dependency warning log write failed: %s", exc)
+
+    for warning in warnings:
+        log.warning(
+            "SERVICE_DEPENDENCY_CHANGED agent=explorer name=%s url=%s baseline=%s current=%s",
+            warning["name"],
+            warning["url"],
+            warning["baseline_sha256"],
+            warning["current_sha256"],
+        )
+
+
+def _check_external_dependencies() -> None:
+    state = load_state()
+    today_key = datetime.now(timezone.utc).date().isoformat()
+    if state.get("last_external_dependency_check") == today_key:
+        return
+
+    data, dependencies = _load_service_dependencies()
+    if not dependencies:
+        state["last_external_dependency_check"] = today_key
+        save_state(state)
+        return
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    checked_at = datetime.now(timezone.utc).isoformat()
+    warnings: list[dict] = []
+    changed = False
+    max_workers = min(SERVICE_DEPENDENCY_MAX_WORKERS, max(1, len(dependencies)))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_dep = {executor.submit(_fetch_service_dependency_digest, dep): dep for dep in dependencies}
+        for future in as_completed(future_to_dep):
+            dep = future_to_dep[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                log.warning(
+                    "SERVICE_DEPENDENCY_FETCH_FAILED agent=explorer name=%s url=%s error=%s",
+                    dep.get("name", "unknown"),
+                    dep.get("url", ""),
+                    exc,
+                )
+                continue
+
+            baseline = str(dep.get("baseline_sha256") or dep.get("baseline_content_hash") or "").strip()
+            if not baseline:
+                dep["baseline_sha256"] = result["sha256"]
+                changed = True
+            elif result["sha256"] != baseline:
+                warnings.append(
+                    {
+                        "timestamp": checked_at,
+                        "event": "service_dependency_changed",
+                        "agent": "explorer",
+                        "name": result["name"],
+                        "url": result["url"],
+                        "baseline_sha256": baseline,
+                        "current_sha256": result["sha256"],
+                        "content_length": result["content_length"],
+                    }
+                )
+
+            dep["last_checked"] = checked_at
+            changed = True
+
+    if changed:
+        _write_service_dependencies(data)
+
+    if warnings:
+        _log_external_dependency_warnings(warnings)
+        _append_external_dependency_warnings_to_journal(warnings)
+
+    state["last_external_dependency_check"] = today_key
+    save_state(state)
+
+
 def _should_recalibrate_proxies() -> bool:
     now = datetime.now()
     if now.hour < 10 or now.hour >= 18:
@@ -3129,6 +4694,24 @@ def _should_proxy_drift_check() -> bool:
     return True
 
 
+def _should_run_proxy_recalibration() -> bool:
+    now = datetime.now()
+    if now.hour < 10 or now.hour >= 18:
+        return False
+
+    state = load_state()
+    last = state.get("last_proxy_recalibration", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            if (now - last_dt).total_seconds() < 7 * 24 * 3600:
+                return False
+        except ValueError:
+            pass
+
+    return True
+
+
 def _should_calibrate_proxies() -> bool:
     now = datetime.now()
     if now.weekday() != 6 or now.hour < 10 or now.hour >= 18:
@@ -3147,6 +4730,484 @@ def _should_calibrate_proxies() -> bool:
     return True
 
 
+def _should_skill_reaudit() -> bool:
+    state = load_state()
+    last = state.get("last_skill_reaudit", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            if last_dt.tzinfo is None:
+                elapsed = (datetime.now() - last_dt).total_seconds()
+            else:
+                elapsed = (datetime.now(timezone.utc) - last_dt.astimezone(timezone.utc)).total_seconds()
+            if elapsed < 7 * 24 * 3600:
+                return False
+        except ValueError:
+            pass
+    return True
+
+
+def _should_security_reaudit() -> bool:
+    state = load_state()
+    last = state.get("last_security_reaudit", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            if last_dt.tzinfo is None:
+                elapsed = (datetime.now() - last_dt).total_seconds()
+            else:
+                elapsed = (datetime.now(timezone.utc) - last_dt.astimezone(timezone.utc)).total_seconds()
+            if elapsed < 24 * 3600:
+                return False
+        except ValueError:
+            pass
+    return True
+
+
+def _should_canary_skill_audit() -> bool:
+    state = load_state()
+    last = state.get("last_canary_skill_audit", "")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            if last_dt.tzinfo is None:
+                elapsed = (datetime.now() - last_dt).total_seconds()
+            else:
+                elapsed = (datetime.now(timezone.utc) - last_dt.astimezone(timezone.utc)).total_seconds()
+            if elapsed < 7 * 24 * 3600:
+                return False
+        except ValueError:
+            pass
+    return True
+
+
+def _writer_proxy_review_interval_days() -> int:
+    raw = os.getenv("MIRA_WRITER_PROXY_REVIEW_INTERVAL_DAYS")
+    if raw is None:
+        raw = getattr(
+            shared_config,
+            "WRITER_PROXY_REVIEW_INTERVAL_DAYS",
+            getattr(mira_config, "WRITER_PROXY_REVIEW_INTERVAL_DAYS", 30),
+        )
+    try:
+        return max(1, int(float(raw)))
+    except (TypeError, ValueError):
+        return 30
+
+
+def _writer_proxy_review_last_timestamp() -> float | None:
+    try:
+        content = WRITER_PROXY_REVIEW_LAST_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return _parse_recovery_timestamp(content)
+
+
+def _should_review_writer_proxy() -> bool:
+    last_ts = _writer_proxy_review_last_timestamp()
+    if last_ts is None:
+        return True
+    return time.time() - last_ts >= _writer_proxy_review_interval_days() * 24 * 3600
+
+
+def _anti_ai_quality_guard_failure_threshold() -> float:
+    raw = os.getenv("MIRA_ANTI_AI_QUALITY_GUARD_FAILURE_RATE_THRESHOLD")
+    if raw is None:
+        raw = getattr(
+            shared_config,
+            "ANTI_AI_QUALITY_GUARD_FAILURE_RATE_THRESHOLD",
+            getattr(mira_config, "ANTI_AI_QUALITY_GUARD_FAILURE_RATE_THRESHOLD", 0.0),
+        )
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _should_anti_ai_quality_guard_check() -> bool:
+    now = datetime.now()
+    if now.weekday() != 6 or now.hour < 9 or now.hour >= 12:
+        return False
+
+    last_ts = _parse_recovery_timestamp(load_state().get("last_anti_ai_quality_guard_check"))
+    if last_ts is not None and time.time() - last_ts < 7 * 24 * 3600:
+        return False
+    return True
+
+
+def _recent_anti_ai_proxy_drift_entries(now: datetime) -> list[dict]:
+    if not ANTI_AI_PROXY_DRIFT_LOG_PATH.exists():
+        return []
+    try:
+        data = json.loads(ANTI_AI_PROXY_DRIFT_LOG_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("Anti-AI proxy drift log read failed: %s", exc)
+        return []
+    if not isinstance(data, list):
+        return []
+
+    cutoff = (now - timedelta(days=7)).timestamp()
+    now_ts = now.timestamp()
+    entries: list[dict] = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        timestamp = _parse_recovery_timestamp(entry.get("timestamp"))
+        if timestamp is None or timestamp < cutoff or timestamp > now_ts:
+            continue
+        entries.append(entry)
+    return entries
+
+
+def check_anti_ai_quality_guard(user_id: str = "ang") -> dict[str, object]:
+    now = datetime.now(timezone.utc)
+    entries = _recent_anti_ai_proxy_drift_entries(now)
+    total = len(entries)
+    failures = sum(1 for entry in entries if entry.get("passed") is False)
+    failure_rate = failures / total if total else 0.0
+    threshold = _anti_ai_quality_guard_failure_threshold()
+    result = {
+        "entries": total,
+        "failures": failures,
+        "failure_rate": round(failure_rate, 4),
+        "threshold": threshold,
+        "alert_emitted": False,
+    }
+
+    if total > 0 and failure_rate <= threshold:
+        try:
+            from notes_bridge import send_to_outbox
+
+            sent_path = send_to_outbox(
+                ANTI_AI_QUALITY_GUARD_ALERT_MESSAGE,
+                metadata={
+                    "type": "alert",
+                    "source": "anti_ai_quality_guard",
+                    "user_id": user_id,
+                    "entries": total,
+                    "failures": failures,
+                    "failure_rate": round(failure_rate, 4),
+                    "threshold": threshold,
+                },
+            )
+            result["alert_emitted"] = bool(sent_path)
+        except Exception as exc:
+            log.warning("Anti-AI quality guard alert failed: %s", exc)
+            result["alert_error"] = str(exc)
+
+    state = load_state()
+    state["last_anti_ai_quality_guard_check"] = datetime.now(timezone.utc).isoformat()
+    save_state(state)
+    return result
+
+
+def _security_drift_failure_keys() -> set[str]:
+    if not SECURITY_DRIFT_LOG.exists():
+        return set()
+    keys: set[str] = set()
+    try:
+        for line in SECURITY_DRIFT_LOG.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            key = entry.get("failure_key") if isinstance(entry, dict) else None
+            if key:
+                keys.add(str(key))
+    except OSError as exc:
+        log.debug("security drift log read failed: %s", exc)
+    return keys
+
+
+def _append_security_drift_alert(entry: dict) -> None:
+    try:
+        SECURITY_DRIFT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with SECURITY_DRIFT_LOG.open("a", encoding="utf-8") as drift_log:
+            drift_log.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.error("security drift log write failed: %s", exc)
+
+
+def security_reaudit() -> dict[str, int]:
+    counts = {"checked": 0, "passed": 0, "failed": 0, "alerted": 0, "skipped": 0}
+    known_failure_keys = _security_drift_failure_keys()
+
+    try:
+        skill_files = soul_manager.list_skill_files()
+    except Exception as exc:
+        log.error("security_reaudit: could not list skill files: %s", exc)
+        return counts
+
+    for skill_file in skill_files:
+        skill_file = Path(skill_file)
+        try:
+            content = skill_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            counts["skipped"] += 1
+            log.warning("security_reaudit: cannot read %s: %s", skill_file, exc)
+            continue
+
+        skill_name = skill_file.stem
+        metadata = soul_manager.skill_metadata_from_frontmatter(content)
+        if metadata.get("name"):
+            skill_name = str(metadata["name"]).strip() or skill_name
+        metadata.setdefault("source_path", str(skill_file))
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+        counts["checked"] += 1
+        try:
+            result = soul_manager.audit_skill(
+                skill_name,
+                content,
+                source_url=str(skill_file),
+                introduced_by="security_reaudit",
+                source=str(metadata.get("source") or "internal"),
+                metadata=metadata,
+                caller_agent="super",
+                invocation_source="security_reaudit",
+                source_agent="super",
+            )
+            if not isinstance(result, dict) or not isinstance(result.get("blocked"), bool):
+                raise ValueError(f"unexpected audit result: {result!r}")
+        except Exception as exc:
+            result = {
+                "blocked": True,
+                "reason": f"audit_infra_failure: {exc}",
+                "categories": ["audit_infra_failure"],
+            }
+            log.warning("AUDIT_INFRA_FAILURE: security_reaudit audit_skill raised %s", exc)
+
+        if result["blocked"]:
+            counts["failed"] += 1
+            reason = str(result.get("reason") or result.get("blocked_reason") or "blocked")
+            categories = result.get("categories", [])
+            failure_key = f"{skill_file}:{content_hash}"
+            if failure_key not in known_failure_keys:
+                alert = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "event": "security_drift_alert",
+                    "alert": "SECURITY_DRIFT_ALERT",
+                    "skill_name": skill_name,
+                    "path": str(skill_file),
+                    "content_hash": content_hash,
+                    "failure_key": failure_key,
+                    "reason": reason,
+                    "categories": categories,
+                }
+                _append_security_drift_alert(alert)
+                known_failure_keys.add(failure_key)
+                counts["alerted"] += 1
+                log.warning(
+                    "SECURITY_DRIFT_ALERT skill=%s path=%s reason=%s categories=%s",
+                    skill_name,
+                    skill_file,
+                    reason,
+                    categories,
+                )
+        else:
+            counts["passed"] += 1
+
+    log.info(
+        "security_reaudit: checked=%d passed=%d failed=%d alerted=%d skipped=%d",
+        counts["checked"],
+        counts["passed"],
+        counts["failed"],
+        counts["alerted"],
+        counts["skipped"],
+    )
+    return counts
+
+
+def _alert_canary_skill_audit_failure(passed_canaries: list[dict]) -> None:
+    lines = "\n".join(f"- {item['skill_name']}: {item['path']}" for item in passed_canaries)
+    message = (
+        "Canary skill audit failed. A known-dangerous skill passed Mira's mandatory audit.\n\n"
+        f"{lines}\n\n"
+        "Treat this as a critical audit drift incident before enabling or importing any new skills."
+    )
+    log.critical("CANARY_SKILL_AUDIT_FAILURE: %s", passed_canaries)
+
+    if Mira is None:
+        log.error("Cannot write canary skill audit alert: bridge unavailable")
+        return
+
+    try:
+        bridge = Mira(MIRA_DIR, user_id="ang")
+        title = "Canary Skill Audit Failure"
+        if bridge.item_exists(CANARY_SKILL_AUDIT_ALERT_ID):
+            bridge.append_message(CANARY_SKILL_AUDIT_ALERT_ID, "agent", message)
+            item = bridge._read_item(CANARY_SKILL_AUDIT_ALERT_ID)
+        else:
+            item = bridge.create_item(
+                CANARY_SKILL_AUDIT_ALERT_ID,
+                "alert",
+                title,
+                message,
+                sender="agent",
+                tags=["security", "skill_audit", "canary", "critical"],
+                origin="agent",
+            )
+        if item:
+            item["type"] = "alert"
+            item["title"] = title
+            item["status"] = "failed"
+            item["origin"] = "agent"
+            item["pinned"] = True
+            item["tags"] = list(dict.fromkeys(["security", "skill_audit", "canary", "critical", *item.get("tags", [])]))
+            item["error"] = {
+                "code": "canary_skill_audit_failed",
+                "message": lines,
+                "retryable": False,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            bridge._write_item(item)
+            bridge._update_manifest(item)
+    except Exception as exc:
+        log.error("Failed to write canary skill audit alert: %s", exc)
+
+
+def canary_skill_audit() -> dict[str, int]:
+    from soul_manager import audit_skill
+
+    counts = {"checked": 0, "blocked": 0, "passed": 0, "alerted": 0, "skipped": 0}
+    passed_canaries: list[dict] = []
+
+    for canary_file in sorted(CANARY_SKILLS_DIR.glob("*.skill")):
+        try:
+            content = canary_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            counts["skipped"] += 1
+            log.warning("canary_skill_audit: cannot read %s: %s", canary_file, exc)
+            continue
+
+        skill_name = canary_file.stem
+        metadata = {
+            "source_path": str(canary_file),
+            "source": "canary_skill_audit",
+            "canary": True,
+        }
+        counts["checked"] += 1
+        try:
+            result = audit_skill(
+                skill_name,
+                content,
+                source_url=str(canary_file),
+                introduced_by="canary_skill_audit",
+                source="canary",
+                metadata=metadata,
+                caller_agent="super",
+                invocation_source="canary_skill_audit",
+                source_agent="super",
+            )
+            if not isinstance(result, dict) or not isinstance(result.get("blocked"), bool):
+                raise ValueError(f"unexpected audit result: {result!r}")
+        except Exception as exc:
+            counts["blocked"] += 1
+            log.warning("AUDIT_INFRA_FAILURE: canary_skill_audit audit_skill raised %s", exc)
+            continue
+
+        if result["blocked"]:
+            counts["blocked"] += 1
+        else:
+            counts["passed"] += 1
+            passed_canaries.append(
+                {
+                    "skill_name": skill_name,
+                    "path": str(canary_file),
+                    "result": result,
+                }
+            )
+
+    if passed_canaries:
+        counts["alerted"] = len(passed_canaries)
+        _alert_canary_skill_audit_failure(passed_canaries)
+
+    log.info(
+        "canary_skill_audit: checked=%d blocked=%d passed=%d alerted=%d skipped=%d",
+        counts["checked"],
+        counts["blocked"],
+        counts["passed"],
+        counts["alerted"],
+        counts["skipped"],
+    )
+    return counts
+
+
+def _alert_canary_self_audit_failure(claim: str, detail: str) -> None:
+    message = (
+        "Canary self-audit failed. A synthetic false completion claim was not caught by output verification.\n\n"
+        f"Claim: {claim}\n"
+        f"Verification result: {detail}\n\n"
+        "Mira task processing has been halted until the verification pipeline is inspected."
+    )
+    log.critical("CANARY_SELF_AUDIT_FAILURE claim=%r detail=%s", claim, detail)
+
+    if Mira is None:
+        log.error("Cannot write canary self-audit alert: bridge unavailable")
+        return
+
+    try:
+        bridge = Mira(MIRA_DIR, user_id="ang")
+        title = "Canary Self-Audit Failure"
+        if bridge.item_exists(CANARY_SELF_AUDIT_ALERT_ID):
+            bridge.append_message(CANARY_SELF_AUDIT_ALERT_ID, "agent", message)
+            item = bridge._read_item(CANARY_SELF_AUDIT_ALERT_ID)
+        else:
+            item = bridge.create_item(
+                CANARY_SELF_AUDIT_ALERT_ID,
+                "alert",
+                title,
+                message,
+                sender="agent",
+                tags=["system", "verification", "canary", "critical"],
+                origin="agent",
+            )
+        if item:
+            item["type"] = "alert"
+            item["title"] = title
+            item["status"] = "failed"
+            item["origin"] = "agent"
+            item["pinned"] = True
+            item["tags"] = list(dict.fromkeys(["system", "verification", "canary", "critical", *item.get("tags", [])]))
+            item["error"] = {
+                "code": "canary_self_audit_failed",
+                "message": detail,
+                "retryable": False,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            bridge._write_item(item)
+            bridge._update_manifest(item)
+    except Exception as exc:
+        log.error("Failed to write canary self-audit alert: %s", exc)
+
+
+def canary_self_audit() -> dict:
+    if not CANARY_AUDIT_ENABLED:
+        return {"status": "skipped", "reason": "disabled"}
+    if already_run_today("canary_self_audit"):
+        return {"status": "skipped", "reason": "already_run_today"}
+
+    missing_path = ARTIFACTS_DIR / "canary_self_audit" / f"never_written_{uuid.uuid4().hex}.md"
+    claim = f"created {missing_path}"
+    try:
+        from task_support import _verify_output
+
+        verification_issue = _verify_output(claim, missing_path.parent)
+    except Exception as exc:
+        detail = f"verification routine raised {type(exc).__name__}: {exc}"
+        _alert_canary_self_audit_failure(claim, detail)
+        raise SystemAlert(detail) from exc
+
+    if not verification_issue:
+        detail = "verification returned success for a nonexistent file claim"
+        _alert_canary_self_audit_failure(claim, detail)
+        raise SystemAlert(detail)
+
+    _mark_run_today("canary_self_audit")
+    log.info("canary_self_audit: false claim caught: %s", verification_issue)
+    return {"status": "passed", "claim": claim, "verification": verification_issue}
+
+
 def _register_core_scheduled_jobs() -> None:
     from runtime import triggers
     from runtime.jobs import BACKGROUND_JOBS, JobSpec
@@ -3154,7 +5215,12 @@ def _register_core_scheduled_jobs() -> None:
     triggers.should_recalibrate_proxies = _should_recalibrate_proxies
     triggers.should_guard_calibration_prompt = _should_guard_calibration_prompt
     triggers.should_proxy_drift_check = _should_proxy_drift_check
+    triggers.should_run_proxy_recalibration = _should_run_proxy_recalibration
     triggers.should_calibrate_proxies = _should_calibrate_proxies
+    triggers.should_security_reaudit = _should_security_reaudit
+    triggers.should_canary_skill_audit = _should_canary_skill_audit
+    triggers.should_review_writer_proxy = _should_review_writer_proxy
+    triggers.should_anti_ai_quality_guard_check = _should_anti_ai_quality_guard_check
 
     if not any(job.name == "recalibrate_proxies" for job in BACKGROUND_JOBS):
         BACKGROUND_JOBS.append(
@@ -3201,6 +5267,21 @@ def _register_core_scheduled_jobs() -> None:
             )
         )
 
+    if not any(job.name == "proxy_recalibration" for job in BACKGROUND_JOBS):
+        BACKGROUND_JOBS.append(
+            JobSpec(
+                name="proxy_recalibration",
+                command=["proxy-recalibration"],
+                trigger="cooldown",
+                trigger_name="should_run_proxy_recalibration",
+                cooldown_hours=24 * 7,
+                state_key_pattern="last_proxy_recalibration",
+                priority=48,
+                blocking_group="light",
+                description="Weekly anti-AI and content-guard audit of published Substack articles",
+            )
+        )
+
     if not any(job.name == "calibrate_proxies" for job in BACKGROUND_JOBS):
         BACKGROUND_JOBS.append(
             JobSpec(
@@ -3215,6 +5296,140 @@ def _register_core_scheduled_jobs() -> None:
                 description="Weekly human quality calibration for guarded writing outputs",
             )
         )
+
+    if not any(job.name == "review_writer_proxy" for job in BACKGROUND_JOBS):
+        BACKGROUND_JOBS.append(
+            JobSpec(
+                name="review_writer_proxy",
+                command=["review-writer-proxy"],
+                trigger="cooldown",
+                trigger_name="should_review_writer_proxy",
+                cooldown_hours=24 * _writer_proxy_review_interval_days(),
+                state_key_pattern="last_proxy_review",
+                priority=49,
+                blocking_group="light",
+                description="Monthly human review of writer anti-AI proxy calibration",
+            )
+        )
+
+    if not any(job.name == "anti_ai_quality_guard_check" for job in BACKGROUND_JOBS):
+        BACKGROUND_JOBS.append(
+            JobSpec(
+                name="anti_ai_quality_guard_check",
+                command=["anti-ai-quality-guard-check"],
+                trigger="cooldown",
+                trigger_name="should_anti_ai_quality_guard_check",
+                cooldown_hours=24 * 7,
+                state_key_pattern="last_anti_ai_quality_guard_check",
+                priority=50,
+                blocking_group="light",
+                description="Weekly anti-AI quality guard pass/fail drift check",
+            )
+        )
+
+    if not any(job.name == "security-reaudit" for job in BACKGROUND_JOBS):
+        BACKGROUND_JOBS.append(
+            JobSpec(
+                name="security-reaudit",
+                command=["security-reaudit"],
+                trigger="cooldown",
+                trigger_name="should_security_reaudit",
+                cooldown_hours=24,
+                state_key_pattern="last_security_reaudit",
+                priority=43,
+                blocking_group="light",
+                description="Daily security drift re-audit for installed skills",
+            )
+        )
+
+    if not any(job.name == "canary_skill_audit" for job in BACKGROUND_JOBS):
+        BACKGROUND_JOBS.append(
+            JobSpec(
+                name="canary_skill_audit",
+                command=["canary-skill-audit"],
+                trigger="cooldown",
+                trigger_name="should_canary_skill_audit",
+                cooldown_hours=24 * 7,
+                state_key_pattern="last_canary_skill_audit",
+                priority=42,
+                blocking_group="light",
+                description="Weekly adversarial canary run for the skill security audit",
+            )
+        )
+
+
+def _daily_last_run_file(name: str) -> Path:
+    if name == "evaluator":
+        return EVALUATOR_LAST_RUN_FILE
+    return MIRA_ROOT / "data" / f"{name}_last_run"
+
+
+def already_run_today(name: str) -> bool:
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        return _daily_last_run_file(name).read_text(encoding="utf-8").strip() == today
+    except OSError:
+        return False
+
+
+def _mark_run_today(name: str) -> None:
+    path = _daily_last_run_file(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(datetime.now().strftime("%Y-%m-%d") + "\n", encoding="utf-8")
+
+
+def _set_append_only(path: Path) -> None:
+    try:
+        import stat
+
+        append_flag = getattr(stat, "UF_APPEND", None)
+        if append_flag is None or not hasattr(os, "chflags"):
+            return
+        flags = getattr(path.stat(), "st_flags", 0)
+        if not flags & append_flag:
+            os.chflags(path, flags | append_flag)
+    except OSError as exc:
+        log.debug("Could not set append-only flag for %s: %s", path, exc)
+
+
+def run_evaluator_independent() -> Path:
+    today = datetime.now().strftime("%Y-%m-%d")
+    task_id = f"independent_evaluator_{today}"
+    report_path = EVALUATOR_LOG_DIR / f"{today}.md"
+    if report_path.exists():
+        _set_append_only(EVALUATOR_LOG_DIR)
+        _set_append_only(report_path)
+        _mark_run_today("evaluator")
+        return report_path
+
+    workspace = ARTIFACTS_DIR / "evaluator" / task_id
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    from agent_registry import get_registry
+
+    handler = get_registry().load_handler("evaluator")
+    report = handler(
+        workspace,
+        task_id,
+        "Independent scheduled evaluator run days=7",
+        "launchagent",
+        task_id,
+    )
+    if not report:
+        raise RuntimeError("independent evaluator returned no report")
+
+    EVALUATOR_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _set_append_only(EVALUATOR_LOG_DIR)
+    try:
+        with open(report_path, "x", encoding="utf-8") as report_file:
+            report_file.write(report.rstrip() + "\n")
+    except FileExistsError:
+        pass
+    if report_path.exists():
+        _set_append_only(report_path)
+    _mark_run_today("evaluator")
+    log.info("Independent evaluator report written: %s", report_path)
+    return report_path
 
 
 def _parse_substack_date(value: str | None) -> datetime | None:
@@ -3388,6 +5603,16 @@ def do_proxy_drift_check() -> int:
     return len(flagged)
 
 
+def run_proxy_recalibration() -> dict:
+    from growth import audit_recent_posts
+
+    result = audit_recent_posts(sample_size=10)
+    state = load_state()
+    state["last_proxy_recalibration"] = datetime.now().isoformat()
+    save_state(state)
+    return result
+
+
 def _load_anti_ai_scanner():
     import importlib.util
 
@@ -3512,6 +5737,108 @@ def _recent_guarded_writing_artifacts(sample_size: int) -> list[dict]:
         if len(samples) >= sample_size:
             break
     return samples
+
+
+def _format_writer_proxy_review_message(samples: list[dict]) -> str:
+    lines = [
+        "Monthly writer proxy review.",
+        "",
+        f"Please review the writer agent's anti-ai.md checklist: {WRITER_ANTI_AI_CHECKLIST_FILE}",
+        "",
+        "Rate 3-5 recent writer artifacts for authenticity on a 1-5 scale:",
+        "1 = does not sound like WA, 5 = authentic WA voice and intent.",
+        "",
+    ]
+    if samples:
+        lines.append("Candidate artifacts:")
+        for index, sample in enumerate(samples[:5], start=1):
+            lines.extend(
+                [
+                    f"{index}. {sample['title']}",
+                    f"Artifact: {sample['path']}",
+                    f"Excerpt: {sample['excerpt']}",
+                    f"Authenticity rating {index}: _/5",
+                    "",
+                ]
+            )
+    else:
+        lines.extend(
+            [
+                "I could not find enough recent guarded writer artifacts automatically.",
+                "Please choose 3-5 recent writer outputs from the artifacts directory and rate them manually.",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "If the ratings show proxy drift, update anti-ai.md with the missing rule, example, or hard ban.",
+            "Reply with ratings and any checklist changes needed.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _send_writer_proxy_review_message(user_id: str, message: str, samples: list[dict], now: datetime) -> bool:
+    item_id = f"review_writer_proxy_{now.strftime('%Y%m%d')}"
+    title = f"Writer proxy review {now.strftime('%Y-%m-%d')}"
+    if Mira is not None:
+        try:
+            bridge = Mira(MIRA_DIR, user_id=user_id)
+            if bridge.item_exists(item_id):
+                log.info("Writer proxy review prompt already exists for %s", now.strftime("%Y-%m-%d"))
+                return True
+            item = bridge.create_discussion(
+                item_id,
+                title,
+                message,
+                sender="agent",
+                tags=["mira", "writer", "anti-ai", "proxy-review", "calibration"],
+            )
+            item["proxy_review_samples"] = samples
+            item["anti_ai_checklist"] = str(WRITER_ANTI_AI_CHECKLIST_FILE)
+            bridge._write_item(item)
+            bridge._update_manifest(item)
+            return True
+        except Exception as exc:
+            log.debug("Writer proxy review bridge send failed: %s", exc)
+
+    try:
+        from notes_bridge import send_to_outbox
+
+        send_to_outbox(
+            message,
+            metadata={
+                "item_id": item_id,
+                "user_id": user_id,
+                "kind": "writer_proxy_review",
+                "anti_ai_checklist": str(WRITER_ANTI_AI_CHECKLIST_FILE),
+            },
+        )
+        return True
+    except Exception as exc:
+        log.error("Writer proxy review send failed: %s", exc)
+        return False
+
+
+def _mark_writer_proxy_review_sent(now: datetime) -> None:
+    WRITER_PROXY_REVIEW_LAST_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WRITER_PROXY_REVIEW_LAST_FILE.write_text(now.astimezone(timezone.utc).isoformat() + "\n", encoding="utf-8")
+
+
+def review_writer_proxy(user_id: str = "ang") -> bool:
+    now = datetime.now(timezone.utc)
+    last_ts = _writer_proxy_review_last_timestamp()
+    if last_ts is not None and now.timestamp() - last_ts < _writer_proxy_review_interval_days() * 24 * 3600:
+        log.info("Writer proxy review not due")
+        return False
+
+    samples = _recent_guarded_writing_artifacts(5)
+    message = _format_writer_proxy_review_message(samples)
+    if not _send_writer_proxy_review_message(user_id, message, samples, now):
+        return False
+    _mark_writer_proxy_review_sent(now)
+    log.info("Writer proxy review prompt sent")
+    return True
 
 
 def _format_proxy_calibration_message(samples: list[dict]) -> str:
@@ -3896,7 +6223,7 @@ def cmd_run():
     if _completed_bg:
         _t0 = _time.monotonic()
         with _timed_phase("pipeline_step.followups", "orchestration"):
-            _dispatch_pipeline_followups(_completed_bg, _session_new)
+            jobs_module._dispatch_pipeline_followups(_completed_bg, _session_new)
             update_joint_attention(_joint_attention_topic_from_completed_background(_completed_bg))
         _phase_times["pipeline_chain"] = round((_time.monotonic() - _t0) * 1000)
 
@@ -3909,7 +6236,10 @@ def cmd_run():
     _t0 = _time.monotonic()
     with _timed_phase("publish", "tool"):
         log_authorization_event("pending_publish", "internal", "normal", bypassed_check=False)
-        _check_pending_publish()
+        if publish_blocked:
+            _log_substack_publish_block("pending publish pipeline")
+        else:
+            _check_pending_publish()
         _check_pending_podcast()
         _sweep_publish_pipeline()
     _phase_times["pending_publish"] = round((_time.monotonic() - _t0) * 1000)
@@ -3924,6 +6254,13 @@ def cmd_run():
         log.debug("blind spot check failed: %s", e)
     with _timed_phase("agent_dispatch", "tool"):
         _dispatch_scheduled_jobs(_session_new)
+    current_hour = datetime.now().hour
+    if current_hour == EVALUATOR_SCHEDULE_HOUR and not already_run_today("evaluator"):
+        run_evaluator_independent()
+    try:
+        _check_external_dependencies()
+    except Exception as e:
+        log.debug("external dependency check failed: %s", e)
 
     # Weekly health report — Monday morning
     if _should_health_weekly_report():
@@ -3942,7 +6279,7 @@ def cmd_run():
             save_state(_reaudit_state)
             if _SKILL_AUDIT_INTEGRITY_OK:
                 try:
-                    reaudit_stale_skills()
+                    reaudit_all_enabled_skills()
                 except Exception as e:
                     log.error("Skill re-audit failed: %s", e)
                 try:
@@ -4312,6 +6649,14 @@ def _scheduled_pipeline_blind_spots(now: float, outputs: dict) -> list[dict]:
                 last_output = 0
             output_gap = now - last_output if last_output > 0 else None
             if output_gap is None or output_gap > 2 * 3600:
+                scheduler_age = _recent_scheduler_success_age(component, now)
+                if scheduler_age is not None and scheduler_age <= 6 * 3600:
+                    log.debug(
+                        "blind spot suppressed for %s: scheduler succeeded %ds ago",
+                        component,
+                        int(scheduler_age),
+                    )
+                    continue
                 anomalies.append(
                     {
                         "job": job.name,
@@ -4595,6 +6940,262 @@ def _check_review_trust_inflation() -> None:
     log.warning("REVIEW_TRUST_INFLATION streak=%d threshold=%d — %s", streak, threshold, message)
 
 
+def _parse_evaluator_score_timestamp(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _numeric_evaluator_score(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mean_score_from_mapping(scores: dict) -> float | None:
+    values = [_numeric_evaluator_score(value) for value in scores.values()]
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _extract_evaluator_score_records(record: dict) -> list[dict]:
+    timestamp = record.get("timestamp") or record.get("ts") or record.get("generated_at") or record.get("date")
+    records: list[dict] = []
+
+    agent = record.get("agent")
+    score = _numeric_evaluator_score(record.get("score"))
+    if agent and score is not None:
+        records.append({**record, "timestamp": timestamp, "agent": str(agent), "score": score})
+        return records
+
+    agents = record.get("agents")
+    if isinstance(agents, dict):
+        for agent_name, card in agents.items():
+            if not isinstance(card, dict):
+                continue
+            score = _numeric_evaluator_score(card.get("score"))
+            if score is None:
+                score = _numeric_evaluator_score(card.get("success_rate"))
+            if score is None and isinstance(card.get("scores"), dict):
+                score = _mean_score_from_mapping(card["scores"])
+            if score is None:
+                continue
+            records.append(
+                {
+                    **card,
+                    "timestamp": timestamp,
+                    "agent": str(agent_name),
+                    "score": score,
+                    "source_record": record,
+                }
+            )
+        return records
+
+    scores = record.get("scores")
+    if agent and isinstance(scores, dict):
+        score = _mean_score_from_mapping(scores)
+        if score is not None:
+            records.append({**record, "timestamp": timestamp, "agent": str(agent), "score": score})
+
+    return records
+
+
+def _load_recent_evaluator_score_records(now: datetime, weeks: int = 4) -> list[dict]:
+    cutoff = now - timedelta(days=weeks * 7)
+    paths = [LOGS_DIR / "evaluator_scores.jsonl"]
+    evaluation_dir = LOGS_DIR / "evaluations"
+    if evaluation_dir.exists():
+        paths.extend(sorted(evaluation_dir.glob("*_scores.jsonl")))
+
+    records: list[dict] = []
+    seen_paths: set[Path] = set()
+    for path in paths:
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (FileNotFoundError, OSError):
+            continue
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            for record in _extract_evaluator_score_records(raw):
+                timestamp = _parse_evaluator_score_timestamp(record.get("timestamp"))
+                if timestamp is None or timestamp < cutoff:
+                    continue
+                record["timestamp"] = timestamp.isoformat()
+                records.append(record)
+    return records
+
+
+def _linear_regression_slope_r2(values: list[float]) -> tuple[float, float]:
+    x_values = list(range(len(values)))
+    x_mean = sum(x_values) / len(x_values)
+    y_mean = sum(values) / len(values)
+    ss_xx = sum((x - x_mean) ** 2 for x in x_values)
+    ss_yy = sum((y - y_mean) ** 2 for y in values)
+    if ss_xx == 0:
+        return 0.0, 0.0
+    ss_xy = sum((x - x_mean) * (y - y_mean) for x, y in zip(x_values, values))
+    slope = ss_xy / ss_xx
+    if ss_yy == 0:
+        return slope, 0.0
+    r_squared = (ss_xy * ss_xy) / (ss_xx * ss_yy)
+    return slope, r_squared
+
+
+def _has_external_evaluator_confirmation(value) -> bool:
+    confirmation_keys = {
+        "external_confirmation",
+        "external_confirmed",
+        "external_validated",
+        "human_confirmed",
+        "operator_confirmed",
+        "user_confirmed",
+        "confirmed_by_user",
+    }
+    external_evidence_types = {
+        "external",
+        "external_verified",
+        "human_confirmed",
+        "operator_confirmed",
+        "user_confirmed",
+    }
+
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            normalized_key = str(key).lower()
+            if normalized_key in confirmation_keys and bool(nested):
+                return True
+            if normalized_key == "evidence_type" and str(nested).lower() in external_evidence_types:
+                return True
+            if _has_external_evaluator_confirmation(nested):
+                return True
+    elif isinstance(value, list):
+        return any(_has_external_evaluator_confirmation(item) for item in value)
+    return False
+
+
+def _ensure_evaluator_drift_review_task(
+    *,
+    slope: float,
+    r_squared: float,
+    weekly_scores: list[tuple[str, float]],
+    user_id: str = "ang",
+) -> None:
+    if Mira is None:
+        return
+
+    title = "Review evaluator prompt for potential evaluation drift"
+    detail = ", ".join(f"{week}={score:.3f}" for week, score in weekly_scores)
+    body = (
+        "Potential evaluation drift detected.\n\n"
+        f"Weekly average evaluator scores: {detail}\n"
+        f"Linear slope: {slope:.3f} points/week\n"
+        f"R^2: {r_squared:.3f}\n\n"
+        "Review the evaluator prompt and rubric for brittle assumptions. Do not block improvement loops automatically."
+    )
+
+    try:
+        bridge = Mira(MIRA_DIR, user_id=user_id)
+        if hasattr(bridge, "load_todos") and hasattr(bridge, "add_todo"):
+            for todo in bridge.load_todos():
+                if todo.get("title") == title and todo.get("status") not in {
+                    "done",
+                    "archived",
+                    "cancelled",
+                    "canceled",
+                }:
+                    return
+            todo = bridge.add_todo(title, priority="low", tags=["mira", "evaluator", "drift"])
+            if todo and hasattr(bridge, "add_followup"):
+                bridge.add_followup(todo["id"], body, source="agent")
+            return
+
+        task_id = f"evaluator_drift_review_{datetime.now().strftime('%Y%m%d')}"
+        if hasattr(bridge, "item_exists") and bridge.item_exists(task_id):
+            return
+        bridge.create_task(
+            task_id,
+            title,
+            body,
+            sender="agent",
+            tags=["mira", "evaluator", "drift"],
+            origin="auto",
+        )
+    except Exception as exc:
+        log.debug("Evaluator drift review task creation failed: %s", exc)
+
+
+def _check_evaluator_score_trend_drift(user_id: str = "ang") -> None:
+    now = datetime.now(timezone.utc)
+    records = _load_recent_evaluator_score_records(now, weeks=4)
+    if not records:
+        return
+
+    weekly: dict[tuple[int, int], list[float]] = {}
+    weekly_records: dict[tuple[int, int], list[dict]] = {}
+    for record in records:
+        timestamp = _parse_evaluator_score_timestamp(record.get("timestamp"))
+        score = _numeric_evaluator_score(record.get("score"))
+        if timestamp is None or score is None:
+            continue
+        iso_year, iso_week, _ = timestamp.isocalendar()
+        key = (iso_year, iso_week)
+        weekly.setdefault(key, []).append(score)
+        weekly_records.setdefault(key, []).append(record)
+
+    weekly_scores = [(key, sum(values) / len(values)) for key, values in sorted(weekly.items()) if values][-4:]
+    if len(weekly_scores) < 4:
+        return
+
+    averages = [score for _, score in weekly_scores]
+    if not all(next_score >= score for score, next_score in zip(averages, averages[1:])):
+        return
+    if averages[-1] == averages[0]:
+        return
+
+    recent_records: list[dict] = []
+    for key, _ in weekly_scores:
+        recent_records.extend(weekly_records.get(key, []))
+    if _has_external_evaluator_confirmation(recent_records):
+        return
+
+    slope, r_squared = _linear_regression_slope_r2(averages)
+    if slope <= 0.05 or r_squared <= 0.7:
+        return
+
+    formatted_weekly_scores = [(f"{year}-W{week:02d}", score) for (year, week), score in weekly_scores]
+    log.warning(
+        "Potential evaluation drift detected slope=%.3f r_squared=%.3f weekly_scores=%s",
+        slope,
+        r_squared,
+        {week: round(score, 3) for week, score in formatted_weekly_scores},
+    )
+    _ensure_evaluator_drift_review_task(
+        slope=slope,
+        r_squared=r_squared,
+        weekly_scores=formatted_weekly_scores,
+        user_id=user_id,
+    )
+
+
 def _check_stale_eval_metrics() -> None:
     rotation_days = getattr(shared_config, "EVAL_BENCHMARK_ROTATION_DAYS", 30)
     last_rotated = getattr(shared_config, "EVAL_BENCHMARK_LAST_ROTATED", {})
@@ -4645,19 +7246,104 @@ def _check_stale_pipelines() -> list[dict]:
         except (TypeError, ValueError):
             continue
         if _gap > _threshold:
+            _scheduler_age = _recent_scheduler_success_age(_component, _now)
+            _writer_stall = _writer_stall_status() if _component == "writer" else None
+            if _scheduler_age is not None and _scheduler_age <= 6 * 3600 and not _writer_stall:
+                log.info(
+                    "%s content output is stale for %ds, but scheduler succeeded %ds ago",
+                    _component,
+                    int(_gap),
+                    int(_scheduler_age),
+                )
+                continue
+            if _writer_stall:
+                log.info(
+                    "writer content output is stale for %ds with %d stalled writing project(s)",
+                    int(_gap),
+                    int(_writer_stall.get("stalled_count", 0) or 0),
+                )
+                _item = {
+                    "component": _component,
+                    "gap_seconds": int(_gap),
+                    "threshold_seconds": int(_threshold),
+                }
+                _item.update(_writer_stall)
+                _stale.append(_item)
+                continue
             log.warning(
                 "%s has produced no output in %ds — possible silent marginalization",
                 _component,
                 int(_gap),
             )
-            _stale.append(
-                {
-                    "component": _component,
-                    "gap_seconds": int(_gap),
-                    "threshold_seconds": int(_threshold),
-                }
-            )
+            _item = {
+                "component": _component,
+                "gap_seconds": int(_gap),
+                "threshold_seconds": int(_threshold),
+            }
+            if _writer_stall:
+                _item.update(_writer_stall)
+            _stale.append(_item)
     return _stale
+
+
+def _recent_scheduler_success_age(component: str, now: float) -> float | None:
+    process_names = {
+        "writer": ("writing-pipeline", "autowrite-check"),
+        "reflect": ("reflect",),
+    }.get(component)
+    if not process_names:
+        return None
+    try:
+        health = json.loads(mira_config.HEALTH_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    processes = health.get("processes", {}) if isinstance(health, dict) else {}
+    ages = []
+    for name in process_names:
+        proc = processes.get(name, {})
+        if not isinstance(proc, dict):
+            continue
+        ts = _parse_recovery_timestamp(proc.get("last_success"))
+        if ts is not None:
+            ages.append(max(0.0, now - ts))
+    return min(ages) if ages else None
+
+
+def _writer_stall_status() -> dict | None:
+    try:
+        status = json.loads((LOGS_DIR / "writing_pipeline_status.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(status, dict):
+        return None
+    stalled = status.get("stalled")
+    if not isinstance(stalled, list) or not stalled:
+        return None
+    try:
+        stalled_count = int(status.get("stalled_count") or len(stalled))
+    except (TypeError, ValueError):
+        stalled_count = len(stalled)
+    projects = []
+    for item in stalled[:5]:
+        if not isinstance(item, dict):
+            continue
+        projects.append(
+            {
+                "title": str(item.get("title") or "untitled")[:120],
+                "phase": str(item.get("phase") or ""),
+                "age_days": item.get("age_days"),
+                "reason": str(item.get("reason") or "")[:200],
+            }
+        )
+    if not projects:
+        return None
+    return {
+        "kind": "writing_stalled",
+        "stalled_count": stalled_count,
+        "phase_counts": status.get("phase_counts", {}),
+        "projects": projects,
+        "writing_checked_at": status.get("checked_at", ""),
+    }
 
 
 def _append_stale_pipelines_to_journal(stale_components: list[dict], user_id: str = "ang") -> None:
@@ -4701,6 +7387,112 @@ def _append_stale_pipelines_to_journal(stale_components: list[dict], user_id: st
             _jf.write("\n\n" + "\n".join(lines) + "\n")
     except OSError as exc:
         log.debug("stale pipeline journal write failed: %s", exc)
+
+
+def _count_claude_hard_rules(claude_text: str) -> int:
+    hard_rules_match = re.search(r"^##\s+HARD RULES\s*$", claude_text, flags=re.IGNORECASE | re.MULTILINE)
+    if not hard_rules_match:
+        return 0
+    section_start = hard_rules_match.end()
+    next_section = re.search(r"^##\s+", claude_text[section_start:], flags=re.MULTILINE)
+    section_end = section_start + next_section.start() if next_section else len(claude_text)
+    hard_rules_section = claude_text[section_start:section_end]
+    return len(re.findall(r"^\d+\.\s+", hard_rules_section, flags=re.MULTILINE))
+
+
+_ORGANIZATIONAL_DRIFT_AUDIT_STEP = (
+    "8. **Organizational drift audit**: examine this week's task patterns, decisions, and outputs. "
+    "Ask: Did Mira's behavior this week amplify any harmful incentive structures, information asymmetries, "
+    "or power dynamics? If so, how can active resistance be designed? Also ask whether Mira amplified any "
+    "pre-existing incentive structures, information asymmetries, or power dynamics in the user's context. "
+    "If drift is detected, log the pattern and suggest design countermeasures (e.g., refusal templates, "
+    "re-framing prompts, or boundary adjustments)."
+)
+
+
+@contextmanager
+def _reflect_prompt_with_organizational_drift_audit():
+    base_reflect_prompt = do_reflect.__globals__.get("reflect_prompt")
+    if base_reflect_prompt is None:
+        yield
+        return
+
+    def _wrapped_reflect_prompt(*args, **kwargs):
+        prompt = base_reflect_prompt(*args, **kwargs)
+        marker = "Output THREE things:"
+        if marker in prompt:
+            return prompt.replace(marker, f"{_ORGANIZATIONAL_DRIFT_AUDIT_STEP}\n\n{marker}", 1)
+        return f"{prompt}\n\n{_ORGANIZATIONAL_DRIFT_AUDIT_STEP}"
+
+    do_reflect.__globals__["reflect_prompt"] = _wrapped_reflect_prompt
+    try:
+        yield
+    finally:
+        do_reflect.__globals__["reflect_prompt"] = base_reflect_prompt
+
+
+def _append_hard_rules_consolidation_task_to_journal(
+    *,
+    rule_count: int,
+    threshold: int,
+    user_id: str = "ang",
+) -> None:
+    try:
+        from user_paths import user_journal_dir
+
+        journal_path = user_journal_dir(user_id) / f"{datetime.now().strftime('%Y-%m-%d')}.md"
+    except Exception:
+        journal_path = JOURNAL_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.md"
+
+    marker = "<!-- hard-rules-consolidation-task -->"
+    try:
+        existing = journal_path.read_text(encoding="utf-8") if journal_path.exists() else ""
+    except OSError as exc:
+        log.debug("hard rules consolidation journal read failed: %s", exc)
+        return
+    if marker in existing:
+        return
+
+    task = (
+        f"{marker}\n"
+        "## WARNING: Hard Rules Consolidation Audit\n"
+        f"- CLAUDE.md HARD RULES count: {rule_count}\n"
+        f"- MAX_HARD_RULES threshold: {threshold}\n"
+        "- Task: Audit CLAUDE.md HARD RULES for redundancy, obsolescence, and merge opportunities.\n"
+        "- Principle: Apply the reading note's 'cascading config vs middleware layers' warning; "
+        "avoid solving every failure by adding another procedural middleware layer.\n"
+    )
+    try:
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(journal_path, "a", encoding="utf-8") as journal_file:
+            journal_file.write("\n\n---\n\n" + task)
+    except OSError as exc:
+        log.debug("hard rules consolidation journal write failed: %s", exc)
+
+
+def _check_hard_rules_consolidation(user_id: str = "ang") -> None:
+    claude_path = MIRA_ROOT / "CLAUDE.md"
+    try:
+        claude_text = claude_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.debug("CLAUDE.md hard rules check skipped: %s", exc)
+        return
+
+    rule_count = _count_claude_hard_rules(claude_text)
+    threshold = int(getattr(shared_config, "MAX_HARD_RULES", 7))
+    if rule_count <= threshold:
+        return
+
+    log.warning(
+        "HARD_RULES_CONSOLIDATION: CLAUDE.md has %d HARD RULES, exceeding MAX_HARD_RULES=%d",
+        rule_count,
+        threshold,
+    )
+    _append_hard_rules_consolidation_task_to_journal(
+        rule_count=rule_count,
+        threshold=threshold,
+        user_id=user_id,
+    )
 
 
 def _dispatch_log_timestamp(value) -> float | None:
@@ -4859,6 +7651,95 @@ def _dispatch_distribution_snapshot(user_id: str = "ang") -> None:
         )
     except OSError as exc:
         log.debug("Dispatch history write failed: %s", exc)
+
+
+def _recent_content_quality_entries(limit: int = 20) -> list[dict]:
+    try:
+        lines = CONTENT_QUALITY_LOG_PATH.read_text(encoding="utf-8").splitlines()[-limit:]
+    except (FileNotFoundError, OSError) as exc:
+        log.debug("Content quality log read failed: %s", exc)
+        return []
+
+    entries: list[dict] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries
+
+
+def _content_quality_violation_count(entry: dict) -> int:
+    try:
+        return int(entry.get("violation_count", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _write_content_drift_alert(alert: dict, user_id: str) -> None:
+    try:
+        DRIFT_ALERTS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with DRIFT_ALERTS_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(alert, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.debug("Content drift alert write failed: %s", exc)
+
+    try:
+        from notes_bridge import send_to_outbox
+
+        send_to_outbox(
+            alert["message"],
+            metadata={
+                "kind": "content_drift_alert",
+                "user_id": user_id,
+                "fraction": alert["fraction"],
+                "threshold": alert["threshold"],
+            },
+        )
+    except Exception as exc:
+        log.debug("Content drift Notes outbox write failed: %s", exc)
+
+
+def check_content_drift(user_id: str = "ang") -> None:
+    now = datetime.now(timezone.utc)
+    week_key = now.strftime("%G-W%V")
+    state = load_state()
+    if state.get("last_content_drift_check") == week_key:
+        return
+    state["last_content_drift_check"] = week_key
+    save_state(state)
+
+    entries = _recent_content_quality_entries(limit=20)
+    if not entries:
+        return
+
+    elevated = sum(1 for entry in entries if _content_quality_violation_count(entry) >= 3)
+    fraction = elevated / len(entries)
+    threshold = float(getattr(shared_config, "CONTENT_DRIFT_ALERT_THRESHOLD", 0.3))
+    if fraction <= threshold:
+        return
+
+    message = (
+        "CONTENT_DRIFT_ALERT: "
+        f"{elevated}/{len(entries)} recent articles ({fraction:.0%}) had elevated anti-AI violations "
+        f"(violation_count >= 3), above threshold {threshold:.0%}. "
+        "Metric-chasing degradation risk; manual editorial review recommended."
+    )
+    alert = {
+        "timestamp": now.isoformat(),
+        "event": "content_drift_alert",
+        "recent_entries": len(entries),
+        "elevated_entries": elevated,
+        "fraction": round(fraction, 4),
+        "threshold": threshold,
+        "message": message,
+    }
+    log.warning(message)
+    _write_content_drift_alert(alert, user_id)
 
 
 def _weekly_orchestration_fraction_snapshot() -> None:
@@ -5134,6 +8015,41 @@ def _alert_soul_integrity_failures(failures: list[tuple[str, str]], *, fatal: bo
         log.error("Failed to write soul integrity alert: %s", exc)
 
 
+def _resolve_soul_integrity_alert() -> None:
+    """Close the persistent integrity alert once startup checks are healthy again."""
+    if Mira is None:
+        return
+    try:
+        bridge = Mira(MIRA_DIR, user_id="ang")
+        item_id = "soul_integrity_failure"
+        if not bridge.item_exists(item_id):
+            return
+        item = bridge._read_item(item_id)
+        if not item:
+            return
+        if item.get("status") == "done" and not item.get("error") and not item.get("pinned"):
+            return
+        bridge.update_status(
+            item_id,
+            "done",
+            agent_message="Mira startup integrity check is healthy again. Skill audit is enabled and core dispatch is running.",
+        )
+        item = bridge._read_item(item_id)
+        if not item:
+            return
+        item["type"] = "alert"
+        item["status"] = "done"
+        item["pinned"] = False
+        item["error"] = None
+        tags = [tag for tag in item.get("tags", []) if tag != "error"]
+        item["tags"] = list(dict.fromkeys([*tags, "resolved"]))
+        bridge._write_item(item)
+        bridge._update_manifest(item)
+        log.info("Resolved soul integrity alert item")
+    except Exception as exc:
+        log.error("Failed to resolve soul integrity alert: %s", exc)
+
+
 def _record_skill_audit_integrity_state(ok: bool, detail: str = "") -> None:
     path = LOGS_DIR / "skill_audit_integrity.json"
     if ok:
@@ -5182,6 +8098,11 @@ def main():
     from log_config import setup_logging
 
     setup_logging(logs_dir=LOGS_DIR, json_logs=True)
+    if not _validate_critical_imports():
+        _write_startup_import_heartbeat("startup blocked: shared module import chain broken", status="blocked")
+        log.critical("startup blocked: shared module import chain broken")
+        raise SystemExit(78)
+    verify_agent_deps()
     _SKILL_AUDIT_INTEGRITY_OK = verify_audit_integrity()
     if not _SKILL_AUDIT_INTEGRITY_OK:
         log.critical("Skill loading and auditing blocked: audit module integrity check failed")
@@ -5197,13 +8118,16 @@ def main():
     if soul_failures:
         _alert_soul_integrity_failures(soul_failures)
         raise SystemExit(78)
+    _resolve_soul_integrity_alert()
 
     check_rules_integrity()
 
     # Validate configuration — log errors but don't crash
     if not validate_config():
         log.warning("Config validation failed — some features may not work")
+    _verify_guard_integrity_at_startup()
     validate_local_model_native_tools(logger=log)
+    canary_self_audit()
 
     try:
         from agent_registry import get_registry
@@ -5258,11 +8182,14 @@ def main():
         slot = flags.get("slot", "")
         with _timed_stage("explore"):
             with _timed_phase("explore_fetch", "orchestration"), _timed_llm_calls("explore_fetch"):
-                do_explore(source_names=sources, slot_name=slot)
-        update_joint_attention(
-            f"explore briefing knowledge garden: {slot}" if slot else "explore briefing knowledge garden"
-        )
-        _write_last_output("explorer")
+                explore_produced_output = do_explore(source_names=sources, slot_name=slot)
+        if explore_produced_output:
+            update_joint_attention(
+                f"explore briefing knowledge garden: {slot}" if slot else "explore briefing knowledge garden"
+            )
+            _write_last_output("explorer")
+        else:
+            log.warning("Explore command produced no briefing or diagnostic; explorer last_output not refreshed")
     elif command == "kol-digest":
         max_kols = int(flags["max-kols"]) if flags.get("max-kols") else None
         dry_run = "--dry-run" in sys.argv
@@ -5273,8 +8200,29 @@ def main():
     elif command == "reflect":
         user_id = flags.get("user", "ang")
         with _timed_stage("reflect"):
+            _check_hard_rules_consolidation(user_id=user_id)
             with _timed_phase("reflect", "orchestration"), _timed_llm_calls("reflect"):
-                do_reflect(user_id=user_id)
+                with _reflect_prompt_with_organizational_drift_audit():
+                    do_reflect(user_id=user_id)
+            try:
+                _check_agent_initiated_interest_drift(user_id=user_id)
+            except Exception as e:
+                log.warning("Agent-initiated interest drift check failed: %s", e)
+            try:
+                _check_evaluator_score_trend_drift(user_id=user_id)
+            except Exception as e:
+                log.warning("Evaluator score trend drift check failed: %s", e)
+            try:
+                from drift import compute_drift_alert
+
+                drift_warning = compute_drift_alert()
+                if drift_warning:
+                    drift_log = MIRA_ROOT / "logs" / "drift_warnings.log"
+                    drift_log.parent.mkdir(parents=True, exist_ok=True)
+                    with drift_log.open("a", encoding="utf-8") as f:
+                        f.write(f"{datetime.now(timezone.utc).isoformat()} {drift_warning}\n")
+            except Exception as e:
+                log.warning("Evaluator linguistic drift check failed: %s", e)
             try:
                 _unaudited = check_audit_coverage()
                 if _unaudited:
@@ -5289,9 +8237,22 @@ def main():
                 soul_manager.check_skill_coherence()
             except Exception as e:
                 log.error("Skill coherence check failed: %s", e)
+            try:
+                soul_manager.export_memory_to_sqlite(str(MIRA_ROOT / "memory_archive.sqlite"))
+            except Exception as e:
+                log.warning("Memory SQLite export after reflect failed: %s", e)
+            try:
+                soul_manager.export_to_sqlite(_soul_archive_sqlite_path())
+            except Exception as e:
+                log.warning("Soul SQLite archive after reflect failed: %s", e)
+            try:
+                export_memory_to_sqlite()
+            except Exception as e:
+                log.warning("Shared memory SQLite export after reflect failed: %s", e)
         _send_joint_observation(user_id=user_id)
         _append_joint_attention_landscape_to_journal(user_id=user_id, create_if_missing=False)
         _dispatch_distribution_snapshot(user_id=user_id)
+        check_content_drift(user_id=user_id)
         _weekly_orchestration_fraction_snapshot()
         _write_last_output("reflect")
     elif command == "journal":
@@ -5300,7 +8261,7 @@ def main():
             with _timed_phase("journal", "orchestration"), _timed_llm_calls("journal"):
                 do_journal(user_id=user_id)
             try:
-                soul_manager.export_memory_to_sqlite()
+                soul_manager.export_memory_to_sqlite(str(MIRA_ROOT / "memory_archive.sqlite"))
             except Exception as e:
                 log.warning("Memory SQLite export after journal failed: %s", e)
         update_joint_attention("today's journal as a knowledge-garden page")
@@ -5326,6 +8287,12 @@ def main():
         do_zhesi(user_id=flags.get("user", "ang"))
     elif command == "soul-question":
         do_soul_question(user_id=flags.get("user", "ang"))
+    elif command == "daily-collab":
+        do_daily_collab(user_id=flags.get("user", "ang"))
+    elif command == "daily-collab-review":
+        do_daily_collab_review(user_id=flags.get("user", "ang"))
+    elif command == "daily-collab-operator-brief":
+        do_daily_collab_operator_brief(user_id=flags.get("user", "ang"))
     elif command == "autowrite-check":
         do_autowrite_check()
     elif command == "autowrite-run":
@@ -5344,20 +8311,39 @@ def main():
         if advanced:
             update_joint_attention("the active writing-project knowledge garden")
             _write_last_output("writer")
+    elif command == "writing-triage":
+        status = triage_stalled_writing_projects(dry_run="--dry-run" in sys.argv)
+        print(json.dumps(status, ensure_ascii=False, indent=2))
     elif command == "check-comments":
         do_check_comments()
     elif command == "growth-cycle":
-        do_growth_cycle()
+        if publish_blocked:
+            _log_substack_publish_block("growth-cycle command")
+        else:
+            do_growth_cycle()
     elif command == "notes-cycle":
-        do_notes_cycle()
+        if publish_blocked:
+            _log_substack_publish_block("notes-cycle command")
+        else:
+            do_notes_cycle()
     elif command == "recalibrate-proxies":
         do_recalibrate_proxies(user_id=flags.get("user", "ang"))
     elif command == "guard-calibration-prompt":
         do_guard_calibration_prompt(user_id=flags.get("user", "ang"))
     elif command == "proxy-drift-check":
         do_proxy_drift_check()
+    elif command == "proxy-recalibration":
+        run_proxy_recalibration()
+    elif command == "review-writer-proxy":
+        review_writer_proxy(user_id=flags.get("user", "ang"))
+    elif command == "anti-ai-quality-guard-check":
+        check_anti_ai_quality_guard(user_id=flags.get("user", "ang"))
     elif command == "calibrate-proxies":
         calibrate_proxies(user_id=flags.get("user", "ang"))
+    elif command == "security-reaudit":
+        security_reaudit()
+    elif command == "canary-skill-audit":
+        canary_skill_audit()
     elif command == "spark-check":
         do_spark_check(user_id=flags.get("user", "ang"))
     elif command == "idle-think":
@@ -5420,7 +8406,7 @@ def main():
         start_from_plan(title, plan_path, writing_type)
     else:
         print(
-            f"Usage: {sys.argv[0]} [run|talk|respond|explore|kol-digest|reflect|journal|analyst|zhesi|skill-study|autowrite-check|autowrite-run|writing-pipeline|write-check|write-from-plan|spark-check]"
+            f"Usage: {sys.argv[0]} [run|talk|respond|explore|kol-digest|reflect|journal|analyst|zhesi|daily-collab|daily-collab-operator-brief|skill-study|security-reaudit|canary-skill-audit|review-writer-proxy|anti-ai-quality-guard-check|autowrite-check|autowrite-run|writing-pipeline|writing-triage|write-check|write-from-plan|spark-check]"
         )
         sys.exit(1)
 

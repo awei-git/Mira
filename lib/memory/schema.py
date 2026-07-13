@@ -8,6 +8,8 @@ Memory types:
     belief       Mira's opinions/judgments (see also belief_store.py)
     episode      Record of a task, conversation, or event
     task_state   Workflow checkpoints and pending items
+    preference   A durable preference stated or demonstrated by the human
+    lesson       A behavior change verified by outcome evidence
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-VALID_MEMORY_TYPES = {"fact", "belief", "episode", "task_state"}
+VALID_MEMORY_TYPES = {"fact", "belief", "episode", "task_state", "preference", "lesson"}
 VALID_CONFIDENCE = (0.0, 1.0)
 
 
@@ -45,6 +47,9 @@ class MemoryRecord:
     conflicts_with: list[str] = field(default_factory=list)
     owner_scope: str = "global"  # "global", "thread:{id}", "agent:{name}"
     joint_attention_score: float = 0.0
+    evidence_ids: list[str] = field(default_factory=list)
+    use_count: int = 0
+    last_used_at: str | None = None
     record_id: str = field(default_factory=_new_id)
 
     def __post_init__(self):
@@ -52,6 +57,7 @@ class MemoryRecord:
             raise ValueError(f"Invalid memory_type: {self.memory_type}. " f"Must be one of {VALID_MEMORY_TYPES}")
         self.confidence = max(0.0, min(1.0, self.confidence))
         self.joint_attention_score = max(0.0, float(self.joint_attention_score))
+        self.use_count = max(0, int(self.use_count))
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -81,6 +87,17 @@ class MemoryRecord:
     def mark_verified(self):
         """Update last_verified_at to now."""
         self.last_verified_at = _utc_now()
+
+    def can_promote(self) -> bool:
+        """Whether this record has enough receipts to become durable context."""
+        if self.memory_type in {"belief", "preference", "lesson"}:
+            return self.confidence >= 0.6 and bool(self.evidence_ids)
+        return self.confidence >= 0.3
+
+    def mark_used(self):
+        """Record that retrieval changed a live prompt or decision."""
+        self.use_count += 1
+        self.last_used_at = _utc_now()
 
 
 def filter_by_freshness(records: list[MemoryRecord], max_age_days: int = 90) -> list[MemoryRecord]:

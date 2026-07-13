@@ -385,6 +385,53 @@ def _is_approval(content: str) -> bool:
     return False
 
 
+_PUBLICATION_APPROVAL_PHRASES = [
+    "publish",
+    "publish it",
+    "publish this",
+    "approve publish",
+    "approve publication",
+    "approved for publication",
+    "yes publish",
+    "go ahead publish",
+    "ship it",
+    "发吧",
+    "可以发",
+    "可以发了",
+    "发布",
+    "确认发布",
+    "同意发布",
+]
+
+_PUBLICATION_REJECTION_PHRASES = [
+    "do not publish",
+    "don't publish",
+    "not publish",
+    "no publish",
+    "cancel publish",
+    "别发",
+    "别发布",
+    "不要发",
+    "不要发布",
+    "不发",
+    "不发布",
+    "取消发布",
+]
+
+
+def _is_publication_approval(content: str) -> bool:
+    """Detect explicit approval for a public publication side effect."""
+    stripped = content.strip().lower()
+    if not stripped or len(stripped) > 100:
+        return False
+    if any(phrase in stripped for phrase in _PUBLICATION_REJECTION_PHRASES):
+        return False
+    return any(
+        stripped == phrase or stripped.startswith(phrase) or phrase in stripped
+        for phrase in _PUBLICATION_APPROVAL_PHRASES
+    )
+
+
 _REJECTION_PHRASES = [
     "reject",
     "cancel",

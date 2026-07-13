@@ -150,6 +150,28 @@ def test_soul_question_job_is_per_user():
     assert job.bg_name_pattern == "soul-question-{user_id}"
 
 
+def test_daily_collab_job_is_per_user():
+    from runtime.jobs import get_job
+
+    job = get_job("daily-collab")
+
+    assert job is not None
+    assert job.per_user is True
+    assert job.bg_name_pattern == "daily-collab-{user_id}"
+    assert job.command == ["daily-collab"]
+
+
+def test_daily_collab_operator_brief_job_registered():
+    from runtime.jobs import get_job
+
+    job = get_job("daily-collab-operator-brief")
+
+    assert job is not None
+    assert job.trigger == "conditional"
+    assert job.trigger_name == "_should_daily_collab_operator_brief"
+    assert job.command == ["daily-collab-operator-brief"]
+
+
 def test_backlog_and_restore_triggers_do_not_write_state(monkeypatch):
     from datetime import datetime as real_datetime
     from runtime import triggers

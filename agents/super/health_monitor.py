@@ -8,6 +8,7 @@ import fcntl
 import json
 import logging
 import os
+import subprocess
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -197,6 +198,55 @@ def record_outcome(name: str):
     return not failed
 
 
+def _read_pid_file(pid_file: Path) -> tuple[int, str | None] | None:
+    try:
+        raw = pid_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    if ":" in raw:
+        pid_text, start_time = raw.split(":", 1)
+        try:
+            return int(pid_text), start_time.strip() or None
+        except ValueError:
+            return None
+    try:
+        return int(raw), None
+    except ValueError:
+        return None
+
+
+def _proc_start_time(pid: int) -> str | None:
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _pid_file_process_alive(pid_file: Path) -> bool:
+    parsed = _read_pid_file(pid_file)
+    if not parsed:
+        return False
+    pid, expected_start = parsed
+    try:
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    if expected_start is None:
+        return True
+    actual_start = _proc_start_time(pid)
+    return actual_start is not None and actual_start == expected_start
+
+
 def harvest_all() -> list[str]:
     """Check all PID files for dead processes and record their outcomes.
 
@@ -210,18 +260,15 @@ def harvest_all() -> list[str]:
     completed: list[str] = []
     for pid_file in _BG_PID_DIR.glob("*.pid"):
         name = pid_file.stem
+        if _pid_file_process_alive(pid_file):
+            continue
+        ok = record_outcome(name)
+        if ok:
+            completed.append(name)
         try:
-            pid = int(pid_file.read_text().strip())
-            os.kill(pid, 0)  # still alive
-        except (OSError, ValueError):
-            # Process is dead — record outcome
-            ok = record_outcome(name)
-            if ok:
-                completed.append(name)
-            try:
-                pid_file.unlink()
-            except OSError:
-                pass
+            pid_file.unlink()
+        except OSError:
+            pass
     return completed
 
 

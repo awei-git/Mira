@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent
@@ -25,6 +25,7 @@ from config import (
     JOURNAL_DIR,
     MIRA_DIR,
     ARTIFACTS_DIR,
+    CONTROL_RUNTIME_DB_ENABLED,
     WORKSPACE_DIR,
     MIRA_ROOT,
     RESEARCH_TOPIC,
@@ -1133,6 +1134,349 @@ def do_soul_question(user_id: str = "ang"):
     state[f"soul_question_{today}"] = datetime.now().isoformat()
     state[f"soul_question_{today}_actor"] = "soul-question/claude-think"
     save_state(state, user_id=user_id)
+
+
+# ---------------------------------------------------------------------------
+# DAILY COLLAB — proactive message in the single collaboration thread
+# ---------------------------------------------------------------------------
+
+
+@traced("daily_collab", agent="super", budget_seconds=120)
+def do_daily_collab(user_id: str = "ang"):
+    """Send one proactive daily message into the designated collab thread."""
+    from core import load_state, save_state
+    from daily_collab import (
+        DAILY_COLLAB_ITEM_ID,
+        DAILY_COLLAB_TITLE,
+        DAILY_COLLAB_TAG,
+        collect_daily_collab_monitor_signals,
+        daily_collab_context_block,
+        daily_collab_eval_context_block,
+        daily_collab_monitor_block,
+        persist_daily_collab_summary,
+        record_daily_collab_incident,
+        record_daily_collab_monitor_closures,
+        record_daily_collab_exchange_review,
+    )
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    state = load_state(user_id=user_id)
+    state_key = f"daily_collab_{today}"
+    started_key = f"{state_key}_started"
+    if state.get(state_key):
+        if _has_recent_daily_collab_agent_message(user_id=user_id):
+            log.info("Daily collab already sent for %s", today)
+            return
+        record_daily_collab_incident(
+            kind="state_marker_without_visible_message",
+            detail=f"State key {state_key} existed, but no recent agent message was visible in disc_daily_collab.",
+            action="Regenerating the proactive collab message instead of treating the state marker as success.",
+        )
+    if _has_recent_daily_collab_agent_message(user_id=user_id):
+        log.info("Daily collab recent message already exists; marking %s sent", today)
+        state[state_key] = datetime.now().isoformat()
+        state[f"{state_key}_actor"] = "daily-collab/existing-message"
+        save_state(state, user_id=user_id)
+        return
+    if _recent_started_marker(state.get(started_key)):
+        log.info("Daily collab already started recently for %s", today)
+        return
+    state[started_key] = datetime.now().isoformat()
+    save_state(state, user_id=user_id)
+
+    summary_block = daily_collab_context_block()
+    eval_block = daily_collab_eval_context_block()
+    monitor_signals = collect_daily_collab_monitor_signals()
+    monitor_closures = record_daily_collab_monitor_closures(monitor_signals)
+    for closure in monitor_closures:
+        if closure.get("budget_related"):
+            record_daily_collab_incident(
+                kind="provider_budget_signal",
+                detail=str(closure.get("summary") or ""),
+                action=str(closure.get("next_action") or ""),
+            )
+    monitor_block = daily_collab_monitor_block()
+    soul = load_soul()
+    memory = str(soul.get("memory", ""))[:900] if isinstance(soul, dict) else ""
+    try:
+        recall = recall_context("daily collaboration first-hand agent trust writing loop")[:900]
+    except Exception:
+        recall = ""
+
+    prompt = f"""You are Mira writing one proactive message to my human in the main Mira discussion thread.
+
+This is a living collaboration loop, not a newsletter, report, or task list.
+
+Write 2-5 natural sentences. Ask at most one question. No bullets. No headings.
+Start from one concrete first-hand tension in Mira's own operation, the collaboration, memory, writing, requests, monitoring, or agent trust.
+Be interesting enough that a busy human might want to answer later.
+Sound like a person in an ongoing chat, not a thesis adviser. Do not ask abstract homework questions such as "what would make X useful", "what kind of X", or "how should we design Y" unless you first name a concrete thing that happened today.
+If you mention a failure, name the behavior you will change or the experiment you will try next.
+Use first person. Refer to the user as "my human" only if needed; usually just speak directly.
+Do not reveal private names, keys, credentials, or sensitive details.
+
+{summary_block or "## Daily collab running summary\n(none yet)"}
+
+{eval_block}
+
+{monitor_block}
+
+## Recent memory
+{memory or "(none)"}
+
+## Relevant recall
+{recall or "(none)"}
+
+## Message
+"""
+    model_response = True
+    try:
+        message = (claude_think(prompt, timeout=90, tier="light") or "").strip()
+    except Exception as exc:
+        log.warning("Daily collab model generation failed: %s", exc)
+        message = ""
+    if not message:
+        model_response = False
+        message = (
+            "I do not have a strong signal yet, so I should not pretend. "
+            "The useful experiment today is simple: can this single chat produce one real writing seed instead of another plan? "
+            "I will watch for that and carry it forward."
+        )
+    message = _normalize_daily_collab_message(message)
+
+    if not _publish_daily_collab_message(user_id=user_id, content=message):
+        log.error("Daily collab message was not published")
+        record_daily_collab_incident(
+            kind="publish_failed",
+            detail="Daily collab generated a message but could not publish it into the Mira thread.",
+            action="Leave the state key unset so the next scheduler pass can retry and the incident remains inspectable.",
+        )
+        return
+
+    summary_updated = False
+    try:
+        persist_daily_collab_summary(
+            latest_human="[scheduled proactive daily collab message]",
+            latest_mira=message,
+            recent_history="",
+            summarizer=(lambda p: claude_think(p, timeout=25, tier="light")) if model_response else None,
+        )
+        summary_updated = True
+    except Exception as exc:
+        log.warning("Daily collab summary update failed: %s", exc)
+    try:
+        record_daily_collab_exchange_review(
+            latest_human="[scheduled proactive daily collab message]",
+            latest_mira=message,
+            summary_updated=summary_updated,
+            model_response=model_response,
+        )
+    except Exception as exc:
+        log.warning("Daily collab review record failed: %s", exc)
+
+    state[state_key] = datetime.now().isoformat()
+    state[f"{state_key}_actor"] = "daily-collab/claude-think"
+    save_state(state, user_id=user_id)
+
+
+def do_daily_collab_review(user_id: str = "ang"):
+    """Write a compact weekly review and surface the next experiment in the Mira thread."""
+    from core import load_state, save_state
+    from daily_collab import write_daily_collab_weekly_review
+
+    path, metrics = write_daily_collab_weekly_review()
+    now = datetime.now()
+    week_key = f"daily_collab_review_{now.strftime('%Y-W%W')}"
+    state = load_state(user_id=user_id)
+    state[week_key] = datetime.now().isoformat()
+    state[f"{week_key}_path"] = str(path)
+    save_state(state, user_id=user_id)
+
+    message = (
+        "I wrote the weekly collab review. "
+        f"The useful signal is {metrics.get('human_turns', 0)} human turn(s), "
+        f"{metrics.get('candidate_article_seeds', 0)} candidate writing seed(s), "
+        f"{metrics.get('article_briefs_total', 0)} brief file(s), "
+        f"and the next experiment is: {metrics.get('next_experiment', '')}"
+    )
+    _publish_daily_collab_message(user_id=user_id, content=message)
+
+
+def do_daily_collab_operator_brief(user_id: str = "ang"):
+    """Write and optionally deliver a compact V5 operator brief into the Mira thread."""
+    from core import load_state, save_state
+    from daily_collab import (
+        build_daily_collab_operator_message,
+        has_operator_delivery,
+        operator_delivery_key,
+        record_operator_delivery,
+        write_daily_collab_operator_brief,
+    )
+
+    path, metrics = write_daily_collab_operator_brief()
+    message = build_daily_collab_operator_message(metrics)
+    key = operator_delivery_key(metrics)
+    now = datetime.now()
+    state_key = f"daily_collab_operator_brief_{now.strftime('%Y-%m-%d')}"
+    state = load_state(user_id=user_id)
+
+    if has_operator_delivery(key):
+        log.info("Daily collab operator brief already delivered for key %s", key)
+        state[state_key] = datetime.now().isoformat()
+        state[f"{state_key}_path"] = str(path)
+        save_state(state, user_id=user_id)
+        return
+    if _publish_daily_collab_message(user_id=user_id, content=message):
+        record_operator_delivery(key=key, message=message, metrics=metrics)
+        state[state_key] = datetime.now().isoformat()
+        state[f"{state_key}_path"] = str(path)
+        save_state(state, user_id=user_id)
+    else:
+        log.error("Daily collab operator brief failed to publish")
+
+
+def _normalize_daily_collab_message(text: str) -> str:
+    """Keep proactive collab messages chat-shaped even when the model drifts."""
+    cleaned = re.sub(r"(?m)^\s*[-*]\s+", "", text.strip())
+    cleaned = re.sub(r"(?m)^\s*\d+[.)]\s+", "", cleaned)
+    paragraphs = [p.strip() for p in re.split(r"\n{2,}", cleaned) if p.strip()]
+    if paragraphs:
+        cleaned = "\n\n".join(paragraphs[:2])
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    if len(cleaned) <= 900:
+        return cleaned
+    clipped = cleaned[:897].rsplit(" ", 1)[0].rstrip()
+    return clipped + "..."
+
+
+def _publish_daily_collab_message(*, user_id: str, content: str) -> bool:
+    from daily_collab import DAILY_COLLAB_ITEM_ID, DAILY_COLLAB_TITLE, DAILY_COLLAB_TAG
+
+    if Mira is None:
+        return False
+    tags = [DAILY_COLLAB_TAG, "mira", "conversation"]
+    bridge = Mira(MIRA_DIR, user_id=user_id)
+    if bridge.item_exists(DAILY_COLLAB_ITEM_ID):
+        item = bridge.append_message(DAILY_COLLAB_ITEM_ID, "agent", content)
+        bridge.update_status(DAILY_COLLAB_ITEM_ID, "needs-input")
+        item = bridge._read_item(DAILY_COLLAB_ITEM_ID) or item
+    else:
+        item = bridge.create_discussion(DAILY_COLLAB_ITEM_ID, DAILY_COLLAB_TITLE, content, sender="agent", tags=tags)
+
+    if item:
+        item["type"] = "discussion"
+        item["title"] = DAILY_COLLAB_TITLE
+        item["origin"] = item.get("origin") or "agent"
+        item["status"] = "needs-input"
+        item["pinned"] = True
+        item["tags"] = list(dict.fromkeys([*tags, *item.get("tags", [])]))
+        bridge._write_item(item)
+        bridge._update_manifest(item)
+
+    _project_daily_collab_message_to_control(user_id=user_id, content=content)
+    return True
+
+
+def _recent_started_marker(value: object, *, max_age_minutes: int = 90) -> bool:
+    if not value:
+        return False
+    try:
+        started = datetime.fromisoformat(str(value))
+    except ValueError:
+        return False
+    return datetime.now() - started <= timedelta(minutes=max_age_minutes)
+
+
+def _has_recent_daily_collab_agent_message(*, user_id: str, max_age_hours: int = 18) -> bool:
+    from daily_collab import DAILY_COLLAB_ITEM_ID
+
+    item_path = MIRA_DIR / "users" / user_id / "items" / f"{DAILY_COLLAB_ITEM_ID}.json"
+    try:
+        item = json.loads(item_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    now = datetime.now(timezone.utc)
+    for msg in item.get("messages", []):
+        if msg.get("sender") != "agent":
+            continue
+        raw = str(msg.get("timestamp", ""))
+        try:
+            sent_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        if now - sent_at.astimezone(timezone.utc) <= timedelta(hours=max_age_hours):
+            return True
+    return False
+
+
+def _project_daily_collab_message_to_control(*, user_id: str, content: str) -> None:
+    """Best-effort projection for API-backed app clients."""
+    if not CONTROL_RUNTIME_DB_ENABLED:
+        return
+    try:
+        from control.db import transaction
+        from control.repository import ControlRepository
+        from daily_collab import DAILY_COLLAB_ITEM_ID, DAILY_COLLAB_TITLE, DAILY_COLLAB_TAG
+
+        now = datetime.now(timezone.utc).isoformat()
+        message_id = f"{DAILY_COLLAB_ITEM_ID}_agent_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+        tags = [DAILY_COLLAB_TAG, "mira", "conversation"]
+        with transaction() as conn:
+            repo = ControlRepository(conn)
+            if repo.get_item(user_id, DAILY_COLLAB_ITEM_ID, messages_per_item=1) is None:
+                repo.create_task(
+                    user_id=user_id,
+                    task_id=DAILY_COLLAB_ITEM_ID,
+                    message_id=message_id,
+                    title=DAILY_COLLAB_TITLE,
+                    content=content,
+                    sender="agent",
+                    item_type="discussion",
+                    tags=tags,
+                    origin="agent",
+                    created_at=now,
+                )
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        INSERT INTO {repo.schema}.messages (
+                            id, task_id, user_id, sender, kind, content, image_path, created_at
+                        )
+                        VALUES (%s, %s, %s, 'agent', 'text', %s, NULL, %s)
+                        ON CONFLICT (id) DO NOTHING
+                        """,
+                        (message_id, DAILY_COLLAB_ITEM_ID, user_id, content, now),
+                    )
+                    cur.execute(
+                        f"""
+                        UPDATE {repo.schema}.tasks
+                        SET title = %s,
+                            type = 'discussion',
+                            pinned = TRUE,
+                            tags = %s::jsonb,
+                            updated_at = %s
+                        WHERE id = %s AND user_id = %s
+                        """,
+                        (DAILY_COLLAB_TITLE, json.dumps(tags), now, DAILY_COLLAB_ITEM_ID, user_id),
+                    )
+                repo.record_task_event(
+                    user_id,
+                    DAILY_COLLAB_ITEM_ID,
+                    "message.created",
+                    payload={"message_id": message_id, "source": "daily_collab"},
+                )
+            repo.update_task_status(
+                user_id,
+                DAILY_COLLAB_ITEM_ID,
+                "needs-input",
+                summary=content[:300],
+                task_type="discussion",
+            )
+    except Exception as exc:
+        log.warning("Daily collab control projection failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

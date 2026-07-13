@@ -270,8 +270,8 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
                 log.warning("%s title=%s path=%s", error, publish_title, meta["final_md"])
                 return
 
-        # Full autonomy mode (2026-04-07): auto-approve in publish_manifest so
-        # _check_pending_publish() picks it up and publishes on the next cycle.
+        # V5: queue the draft for explicit human publication approval. A
+        # writer-quality pass is necessary but not sufficient to publish.
         try:
             from publish.manifest import update_manifest
             from publish.writer_gate import record_writer_gate
@@ -287,24 +287,31 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
             update_manifest(
                 meta["slug"],
                 title=publish_title,
-                status="approved",
+                status="approval_required",
                 workspace=meta["workspace"],
                 final_md=meta["final_md"],
                 subtitle=subtitle,
                 item_id=task_id,
                 auto_podcast=AUTO_PODCAST_ENABLED,
                 writer_gate_passed=True,
+                publication_gate="human_review_required",
+                error="Human publication approval required before Substack publish.",
             )
-            log.info("Auto-approved '%s' in publish_manifest", publish_title)
+            log.info("Queued '%s' for human publication approval in publish_manifest", publish_title)
         except Exception as e:
-            log.error("Failed to auto-approve '%s' in manifest: %s", title, e)
+            log.error("Failed to queue '%s' for approval in manifest: %s", title, e)
 
         preview_text = article_text[:4000]
         if len(article_text) > 4000:
             preview_text += f"\n\n[...文章还有 {len(article_text) - 4000} 字，已截断]"
-        status_msg = f"写好了，已排队发布：\n\n" f"**{publish_title}**\n\n" f"---\n\n" f"{preview_text}"
+        status_msg = (
+            f"Draft ready for publication review, not published:\n\n"
+            f"**{publish_title}**\n\n"
+            f"---\n\n"
+            f"{preview_text}"
+        )
         if bridge:
-            bridge.update_task_status(task_id, "done", agent_message=status_msg)
+            bridge.update_task_status(task_id, "needs-input", agent_message=status_msg)
         log.info("Canonical autowrite complete for '%s' (%s)", publish_title, project_dir)
     except Exception as e:
         log.error("Canonical autowrite failed for '%s': %s", title, e)

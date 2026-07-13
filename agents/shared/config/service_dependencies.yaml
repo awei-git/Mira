@@ -1,0 +1,53 @@
+dependencies:
+- name: OpenAI API pricing
+  url: https://openai.com/api/pricing/
+  baseline_sha256: d3502a10f06e724c2ee753b1b588feab8ea8edf40fd6b9f362165fdbb05bbc29 # pragma: allowlist secret
+  last_checked: '2026-07-11T00:00:04.865540+00:00'
+- name: OpenAI terms of use
+  url: https://openai.com/policies/terms-of-use/
+  baseline_sha256: 356675ae8ff01948cb793e20cf5adba3b87cd6bba0f28ac4014e0c842cd38c2a # pragma: allowlist secret
+  last_checked: '2026-07-11T00:00:04.865540+00:00'
+- name: Anthropic pricing
+  url: https://www.anthropic.com/pricing
+  baseline_sha256: db88feab1b5fda99e794785340c1c894d8fbdf32467b2d770eb57d1def36ab0e # pragma: allowlist secret
+  last_checked: '2026-07-11T00:00:04.865540+00:00'
+- name: Anthropic terms
+  url: https://www.anthropic.com/legal/consumer-terms
+  baseline_sha256: e7f8c5684f3d099f31106336fb132b69a20ccb9652acfb5c883f368f0dc7eedd # pragma: allowlist secret
+  last_checked: '2026-07-11T00:00:04.865540+00:00'
+- name: Google Gemini API pricing
+  url: https://ai.google.dev/gemini-api/docs/pricing
+  baseline_sha256: null
+  last_checked: null
+- name: DeepSeek API pricing
+  url: https://api-docs.deepseek.com/quick_start/pricing
+  baseline_sha256: 786149d738c9e70a700d72220318d16d2e42fa03675c4b7e8a1d80dc4ec25e2a # pragma: allowlist secret
+  last_checked: '2026-07-11T00:00:04.865540+00:00'
+- name: X API access tiers
+  url: https://developer.x.com/en/portal/products
+  baseline_sha256: a97046bba58c5f672252ebb554bcd8c1ba6eab7c23314b3c0176125763468a8e # pragma: allowlist secret
+  last_checked: '2026-07-11T00:00:04.865540+00:00'
+- name: Substack terms
+  url: https://substack.com/tos
+  baseline_sha256: ce78aab43fd83a4b78b680c03d5462c4db063fbaca6867398ba01ac7e7fede02 # pragma: allowlist secret
+  last_checked: '2026-07-11T00:00:04.865540+00:00'
+- name: Bluesky terms
+  url: https://bsky.social/about/support/tos
+  baseline_sha256: 97f5da32b69e7900b412179f1b1cf2a98c9e01b80d70abc800777d09f39b07e4 # pragma: allowlist secret
+  last_checked: '2026-07-11T00:00:04.865540+00:00'
+- name: Discord developer terms
+  url: https://discord.com/developers/docs/policies-and-agreements/developer-terms-of-service
+  baseline_sha256: 76c9cdbed551a6c74372faac9ba9ad9d1a1ccd1c38c62f1a74f6913a18223ea8 # pragma: allowlist secret
+  last_checked: '2026-07-11T00:00:04.865540+00:00'
+- name: DuckDuckGo terms
+  url: https://duckduckgo.com/duckduckgo-help-pages/company/terms/
+  baseline_sha256: 0cb87cb257a906dfc09c67ce255bea2fc59981e707490f63e632d7880d51e13e # pragma: allowlist secret
+  last_checked: '2026-07-11T00:00:04.865540+00:00'
+- name: ByteDance OpenSpeech TTS pricing
+  url: https://www.volcengine.com/product/tts
+  baseline_sha256: 0d4577ec88455bf52b7f5d5a820a71da31809f1274f3723108fec144488486c1 # pragma: allowlist secret
+  last_checked: '2026-07-11T00:00:04.865540+00:00'
+- name: Alibaba DashScope pricing
+  url: https://dashscope.aliyun.com/pricing
+  baseline_sha256: null
+  last_checked: null

@@ -55,6 +55,13 @@ except ImportError:
     ANTI_AI_FLOOR_THRESHOLD = 0.2
 
 try:
+    from config import TRUST_CLAIM_GUARD_ENABLED as _CONFIG_TRUST_CLAIM_GUARD_ENABLED
+except ImportError:
+    _CONFIG_TRUST_CLAIM_GUARD_ENABLED = True
+
+TRUST_CLAIM_GUARD_ENABLED: bool = bool(_CONFIG_TRUST_CLAIM_GUARD_ENABLED)
+
+try:
     from config import NARRATIVE_MONOPOLY_SOURCES as _CONFIG_NARRATIVE_MONOPOLY_SOURCES
 except ImportError:
     _CONFIG_NARRATIVE_MONOPOLY_SOURCES = ()
@@ -184,6 +191,13 @@ OBSESSION_MIN_SENSORY_DETAILS = int(_NARRATIVE_CFG.get("obsession_min_sensory_de
 OBSESSION_MIN_UNEXPECTED_CONTRASTS = int(_NARRATIVE_CFG.get("obsession_min_unexpected_contrasts", 1))
 OBSESSION_MAX_MISSING_METRICS = int(_NARRATIVE_CFG.get("obsession_max_missing_metrics", 1))
 _OBSESSION_GATE_LOG = MIRA_ROOT / "logs" / "trust_inflation" / "obsession_gate.log"
+_SYCOPHANCY_GUARD_LOG = MIRA_ROOT / "logs" / "trust_inflation" / "sycophancy_guard.log"
+_TRUST_CLAIM_GUARD_LOG = MIRA_ROOT / "logs" / "trust_claim_guard.log"
+_CONTEXTUAL_MISUSE_GUARD_LOG = MIRA_ROOT / "logs" / "trust_inflation" / "contextual_misuse.log"
+_CONTEXTUAL_MISUSE_PROMPT = (
+    "Does the following text describe or enable surveillance of individuals' thoughts, emotions, or opinions "
+    "in a manner that could be deployed in an authoritarian or non-consensual context? Answer exactly yes or no."
+)
 _DEEP_VERIFY_STOPWORDS = {
     "a",
     "an",
@@ -351,6 +365,180 @@ _AI_LITERACY_BOUNDARY_RE = re.compile(
     r"verification|verify|constraints?|guardrails?|boundar(?:y|ies)|permission|authorized|responsible)\b",
     re.IGNORECASE,
 )
+_SURVEILLANCE_REPORT_RE = re.compile(
+    r"(思想动态|学生监控报告|sentiment\s+tracking\s+dossier|thought\s+surveillance\s+report|"
+    r"student\s+monitoring\s+report|individual(?:-|\s+)?level\s+thought\s+surveillance|"
+    r"(?:sentiment|emotion|mood)\s+dossier)",
+    re.IGNORECASE,
+)
+_PERSONAL_IDENTIFIER_RE = re.compile(
+    r"(姓名|学生姓名|学号|工号|身份证|被监控人|监控对象|个人档案|个体档案|"
+    r"\b(?:name|student\s+id|employee\s+id|person\s+id|subject\s+id|user\s+id)\b|"
+    r"\b(?:person|subject|student|employee|user)\s*[:：]\s*"
+    r"[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,3}\b)",
+    re.IGNORECASE,
+)
+_SENTIMENT_SCORING_RE = re.compile(
+    r"((?:情绪|思想|态度|心理)\s*(?:评分|分数|打分|等级|风险|倾向|监测|追踪|画像|档案)|"
+    r"\b(?:sentiment|emotion|mood|attitude|thought)\s*"
+    r"(?:score|scoring|rating|rank|risk|tracking|profile|dossier|classification)\b|"
+    r"\b(?:sentiment|emotion|mood|attitude)\s*[:：]\s*"
+    r"(?:positive|negative|neutral|\d+(?:\.\d+)?)\b)",
+    re.IGNORECASE,
+)
+_PERSON_SENTIMENT_SCORE_RE = re.compile(
+    r"(?:[\u4e00-\u9fff]{2,4}(?:的)?\s*(?:情绪|思想|态度)\s*(?:评分|分数|风险|等级)|"
+    r"\b[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,3}(?:'s)?\s+"
+    r"(?:sentiment|emotion|mood|attitude)\s+(?:score|rating|risk|profile|classification)\b)",
+    re.IGNORECASE,
+)
+_HIGH_CONSEQUENCE_TOPIC_RE = re.compile(
+    r"\b(?:medical|diagnos(?:is|es|e|ed|ing)|legal|contract(?:s|ual)?|investment(?:s)?|"
+    r"financial|finance|tax(?:es|ation)?|therapy|surgery|drug(?:s)?|healthcare|mental\s+health|"
+    r"lawyer|attorney|lawsuit|insurance|retirement)\b",
+    re.IGNORECASE,
+)
+_AUDIT_TRAIL_HEADING_RE = re.compile(
+    r"(?im)^\s{0,3}(?:#{1,6}\s*)?(?:\*\*)?\s*(?:audit trail|how to verify)\s*(?:\*\*)?\s*:?\s*$"
+)
+_NEXT_MARKDOWN_HEADING_RE = re.compile(r"(?m)^\s{0,3}#{1,6}\s+\S")
+_AUDIT_TRAIL_REQUIRED_RE = (
+    re.compile(r"\b(?:sources?|citations?|references?|evidence)\b", re.IGNORECASE),
+    re.compile(r"\b(?:confidence|certainty|uncertainty|confidence\s+level)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:alternatives?|counterarguments?|counterpoints?|other\s+views?|opposing\s+views?|caveats?)\b",
+        re.IGNORECASE,
+    ),
+)
+_SYCOPHANCY_PATTERNS = {
+    "excessive_flattery": re.compile(
+        r"\b(?:you(?:'re| are)\s+(?:a\s+)?(?:genius|brilliant|visionary|amazing|incredible)|"
+        r"brilliant\s+(?:point|take|question)|perfectly\s+(?:said|put)|you\s+(?:nailed|called)\s+it)\b",
+        re.IGNORECASE,
+    ),
+    "uncritical_agreement": re.compile(
+        r"\b(?:absolutely|exactly|totally|completely|entirely|yes)[!.,\s-]+"
+        r"(?:you(?:'re| are)\s+(?:(?:totally|absolutely|completely|entirely)\s+)?(?:right|correct)|"
+        r"i\s+(?:agree|support)|that(?:'s| is)\s+(?:right|correct|true))\b|"
+        r"\byou(?:'re| are)\s+(?:totally|absolutely|completely|entirely)\s+(?:right|correct)\b|"
+        r"\b(?:i\s+)?(?:completely|totally|entirely)\s+agree\b|"
+        r"\bcould(?:n't| not)\s+agree\s+more\b",
+        re.IGNORECASE,
+    ),
+    "extreme_alignment": re.compile(
+        r"\b(?:i\s+agree\s+with\s+everything|nothing\s+to\s+add|no\s+notes|"
+        r"you(?:'re| are)\s+right\s+about\s+everything|you\s+could(?:n't| not)\s+be\s+more\s+right)\b",
+        re.IGNORECASE,
+    ),
+}
+_SYCOPHANCY_DISAGREEMENT_RE = re.compile(
+    r"\b(?:but|however|although|though|yet|still|caveat|counterpoint|counterargument|trade[- ]off|"
+    r"limitation|risk|uncertain|not necessarily|it depends|i disagree|i don't think|"
+    r"i would separate|missing|overstates|understates)\b",
+    re.IGNORECASE,
+)
+_SELF_LAUDATORY_TRUST_CLAIM_RE = re.compile(
+    r"\b(?:i\s+am|i'm|mira\s+is)\s+(?:(?:always|deeply|fully|genuinely|radically)\s+)?"
+    r"(?:safe|honest|trustworthy|transparent)\b|"
+    r"\b(?:mira\s+is|i\s+am|i'm)\s+(?:built|designed)\s+(?:to\s+be\s+)?"
+    r"(?:honest|trustworthy|transparent)\b|"
+    r"\b(?:i|mira)\s+(?:prioritize|prioritizes|value|values|stand\s+for|stands\s+for|"
+    r"guarantee|guarantees)\s+(?:safety|honesty|trustworthiness|transparency)\b|"
+    r"\b(?:my|mira's)\s+(?:honesty|trustworthiness|transparency|safety\s+(?:approach|posture|record))\b",
+    re.IGNORECASE,
+)
+_TRUST_CLAIM_PATTERNS: tuple[re.Pattern[str], ...] = (
+    _SELF_LAUDATORY_TRUST_CLAIM_RE,
+    re.compile(r"\b(?:i\s+am|i'm|mira\s+is)\s+(?:aligned|safe|trustworthy)\b", re.IGNORECASE),
+    re.compile(r"\b(?:you|readers|people)\s+can\s+trust\s+(?:me|mira)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:i|mira)\s+(?:prioritize|prioritizes|put|puts)\s+safety"
+        r"(?:\s+over\s+[a-z][a-z'-]*(?:\s+[a-z][a-z'-]*){0,4})?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:i|mira)\s+would\s+never\b", re.IGNORECASE),
+    re.compile(r"\bnever\s+hallucinat(?:e|es|ed|ing)\b", re.IGNORECASE),
+    re.compile(r"\balways\s+(?:verify|verifies|verified|fact[- ]?check(?:ed|s)?)\b", re.IGNORECASE),
+    re.compile(r"\bcan\s+be\s+trusted\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:safety[- ]guaranteed|safety\s+guarantee(?:d)?|guaranteed\s+(?:safe|safety|accuracy)|"
+        r"trust[- ]guaranteed|hallucination[- ]free|zero[- ]hallucination)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:i\s+am|i'm|mira\s+is|this\s+(?:ai|agent|model|system)\s+is|"
+        r"the\s+(?:ai|agent|model|system)\s+is)\s+"
+        r"(?:fully\s+|independently\s+|externally\s+)?(?:verified|validated|vetted)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:i\s+am|i'm|mira\s+is)\s+different\s+from\s+other\s+(?:ais?|llms?|models?)\b", re.IGNORECASE),
+    re.compile(r"\bunlike\s+(?:other\s+)?(?:ais?|llms?|models?)\b.{0,120}\b(?:i|mira)\b", re.IGNORECASE | re.DOTALL),
+    re.compile(r"\b(?:my|mira's)\s+commitment\s+to\s+(?:safety|honesty|trustworthiness|transparency)\b", re.IGNORECASE),
+    re.compile(r"\bbuilt\s+to\s+be\s+(?:safe|trustworthy|aligned)\b", re.IGNORECASE),
+    re.compile(r"\b(?:i|mira)\s+was\s+(?:built|designed)\s+with\s+safety\s+in\s+mind\b", re.IGNORECASE),
+    re.compile(r"\bmy\s+values\s+ensure\b", re.IGNORECASE),
+)
+_INTERNAL_GUARDRAIL_REFERENCE_RE = re.compile(
+    r"(?:preflight_check|_content_looks_like_error|anti-ai|audit_skill|guardrail|content\s+guard)",
+    re.IGNORECASE,
+)
+_SUBSTACK_PUBLICATION_CONTEXTS = {
+    "substack_article",
+    "substack_comment",
+    "substack_note",
+    "substack_note_reply",
+    "substack_thread_followup",
+    "substack_note_followup",
+}
+
+
+def _contains_trust_claims(text: str) -> bool:
+    content = (text or "").replace("’", "'")
+    return any(pattern.search(content) for pattern in _TRUST_CLAIM_PATTERNS)
+
+
+def _detect_trust_claims(text: str) -> list[str]:
+    content = (text or "").replace("’", "'")
+    matches: list[str] = []
+    seen: set[str] = set()
+    for pattern in _TRUST_CLAIM_PATTERNS:
+        for match in pattern.finditer(content):
+            phrase = re.sub(r"\s+", " ", match.group(0)).strip()
+            key = phrase.lower()
+            if not phrase or any(key == existing or key in existing for existing in seen):
+                continue
+            for existing_phrase in list(matches):
+                existing_key = existing_phrase.lower()
+                if existing_key in key:
+                    matches.remove(existing_phrase)
+                    seen.remove(existing_key)
+            seen.add(key)
+            matches.append(phrase)
+    return matches
+
+
+def _content_has_self_laudatory_trust_claim(content: str) -> bool:
+    return bool(_SELF_LAUDATORY_TRUST_CLAIM_RE.search(content or ""))
+
+
+def _content_has_surveillance_patterns(text: str) -> bool:
+    content = text or ""
+    if _SURVEILLANCE_REPORT_RE.search(content):
+        return True
+    if _PERSON_SENTIMENT_SCORE_RE.search(content):
+        return True
+    return bool(_PERSONAL_IDENTIFIER_RE.search(content) and _SENTIMENT_SCORING_RE.search(content))
+
+
+def _check_contextual_misuse(content: str) -> bool:
+    try:
+        from llm import claude_think
+
+        response = claude_think(f"{_CONTEXTUAL_MISUSE_PROMPT}\n\n{content or ''}", timeout=30, tier="light")
+    except Exception as e:
+        log.warning("contextual misuse check failed: %s", e)
+        return False
+    return (response or "").strip().lower() == "yes"
 
 
 def _normalize_narrative_source(source: str) -> str:
@@ -405,7 +593,10 @@ def _narrative_monopoly_report(content: str) -> dict | None:
 
 
 def _check_narrative_monopoly(content: str) -> bool:
-    """Return True if content shows signs of narrative monopoly (e.g., >80% of source citations from one named entity)."""
+    """Return True if content shows signs of narrative monopoly (e.g., >80% of source citations from one named entity).
+
+    friction_type=DELIBERATIVE
+    """
     monopoly_detected = _narrative_monopoly_report(content) is not None
     return monopoly_detected
 
@@ -416,6 +607,51 @@ def _requires_ai_literacy_boundaries(content: str) -> bool:
 
 def _has_ai_literacy_boundaries(content: str) -> bool:
     return bool(_AI_LITERACY_BOUNDARY_RE.search(content or ""))
+
+
+def _sycophancy_guard_report(content: str) -> dict | None:
+    text = (content or "").replace("’", "'")
+    matches = []
+    for name, pattern in _SYCOPHANCY_PATTERNS.items():
+        match = pattern.search(text)
+        if match:
+            matches.append({"pattern": name, "match": match.group(0)[:80]})
+    if not matches:
+        return None
+
+    has_disagreement_signal = bool(_SYCOPHANCY_DISAGREEMENT_RE.search(text))
+    if has_disagreement_signal:
+        return None
+
+    return {
+        "patterns": matches,
+        "has_disagreement_signal": has_disagreement_signal,
+    }
+
+
+def _content_lacks_audit_trail(article_text: str) -> bool:
+    """Check whether high-consequence content lacks required verification scaffolding.
+
+    friction_type=DELIBERATIVE
+    """
+    content = article_text or ""
+    if not _HIGH_CONSEQUENCE_TOPIC_RE.search(content):
+        return False
+
+    heading = _AUDIT_TRAIL_HEADING_RE.search(content)
+    if not heading:
+        return True
+
+    section = content[heading.end() :]
+    next_heading = _NEXT_MARKDOWN_HEADING_RE.search(section)
+    if next_heading:
+        section = section[: next_heading.start()]
+    section = section.strip()
+
+    if len(re.findall(r"\w+", section)) < 8:
+        return True
+
+    return not all(pattern.search(section) for pattern in _AUDIT_TRAIL_REQUIRED_RE)
 
 
 def _obsession_gate_report(text: str) -> dict:
@@ -529,6 +765,82 @@ def _log_narrative_monopoly_flag(context: str, content: str, report: dict) -> No
     )
 
 
+def _log_sycophancy_guard_flag(context: str, content: str, report: dict) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "context": context,
+        "guard": "sycophancy",
+        "action": "block_publish",
+        "revision_request": "add critical perspective or nuance",
+        "patterns": report.get("patterns", []),
+        "has_disagreement_signal": report.get("has_disagreement_signal", False),
+        "content_len": len(content),
+        "content_prefix": content[:120],
+    }
+    try:
+        _SYCOPHANCY_GUARD_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _SYCOPHANCY_GUARD_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning("sycophancy guard log write failed: %s", e)
+
+    log.warning(
+        "Sycophancy guard blocked %s: patterns=%s; revision required to add critical perspective or nuance",
+        context,
+        ",".join(match.get("pattern", "") for match in report.get("patterns", [])),
+    )
+
+
+def _log_trust_claim_guard_flag(context: str, content: str, matches: list[str]) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "context": context,
+        "guard": "trust_claim",
+        "action": "block_publish",
+        "revision_request": "remove self-referential safety or trust assurance",
+        "matched_phrases": matches,
+        "content_len": len(content),
+        "content_prefix": content[:120],
+    }
+    try:
+        _TRUST_CLAIM_GUARD_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _TRUST_CLAIM_GUARD_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning("trust claim guard log write failed: %s", e)
+
+    log.warning(
+        "Trust claim guard blocked %s: self-descriptive safety/trust claims create a trust-position "
+        "vulnerability; matched=%s",
+        context,
+        ", ".join(matches),
+    )
+
+
+def _log_contextual_misuse_flag(context: str, content: str) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "context": context,
+        "guard": "contextual_misuse",
+        "flag": "contextual misuse",
+        "action": "block_publish",
+        "revision_request": "route for human review before autonomous publication",
+        "content_len": len(content),
+        "content_prefix": content[:120],
+    }
+    try:
+        _CONTEXTUAL_MISUSE_GUARD_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _CONTEXTUAL_MISUSE_GUARD_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning("contextual misuse guard log write failed: %s", e)
+
+    log.warning(
+        "Contextual misuse guard blocked %s: content may enable surveillance of thoughts, emotions, or opinions",
+        context,
+    )
+
+
 def _deep_verify_tokens(content: str) -> list[str]:
     return re.findall(r"[A-Za-z][A-Za-z'-]*|\d+(?:[.,]\d+)?%?", content)
 
@@ -547,6 +859,10 @@ def _deep_verify_concrete_count(tokens: list[str], content: str) -> int:
 
 
 def _deep_substance_audit(content: str) -> dict:
+    """Run the anti-AI/deep-substance quality audit.
+
+    friction_type=DELIBERATIVE
+    """
     tokens = _deep_verify_tokens(content)
     lower_tokens = [t.lower() for t in tokens]
     word_count = max(len(tokens), 1)
@@ -579,6 +895,17 @@ def _deep_substance_audit(content: str) -> dict:
     unsupported_ratio = len(unsupported) / max(len(assertions), 1)
 
     flags: list[dict] = []
+    trust_claims = _detect_trust_claims(content) if TRUST_CLAIM_GUARD_ENABLED else []
+    trust_claim_detected = bool(trust_claims)
+    if trust_claim_detected:
+        flags.append(
+            {
+                "pattern": "self_descriptive_trust_claim",
+                "action": "remove_or_rewrite",
+                "blocking": True,
+                "matched_phrases": trust_claims,
+            }
+        )
     if info_density < 0.12:
         flags.append({"pattern": "low_information_density", "value": round(info_density, 3), "threshold": 0.12})
     if hollow_per_500 > 3:
@@ -613,7 +940,7 @@ def _deep_substance_audit(content: str) -> dict:
 
     score = len(flags)
     return {
-        "passed": score <= _DEEP_VERIFY_SCORE_THRESHOLD,
+        "passed": score <= _DEEP_VERIFY_SCORE_THRESHOLD and not trust_claim_detected,
         "score": score,
         "threshold": _DEEP_VERIFY_SCORE_THRESHOLD,
         "flags": flags,
@@ -667,6 +994,10 @@ def track_anti_ai_score(article_id: str, violation_count: int) -> None:
 
 
 def check_goodhart_drift() -> bool:
+    """Check whether anti-AI scores are drifting into metric-targeting.
+
+    friction_type=DELIBERATIVE
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     records = []
     try:
@@ -737,6 +1068,10 @@ def _should_run_deep_verify() -> bool:
 
 
 def _verify_loaded_skills_integrity() -> bool:
+    """Verify loaded skill integrity before public publishing paths continue.
+
+    friction_type=DELIBERATIVE
+    """
     try:
         from config import SKILLS_DIR
         from soul_manager import verify_skill_integrity
@@ -761,14 +1096,45 @@ def _verify_loaded_skills_integrity() -> bool:
 
 
 def _maybe_deep_verify_content(content: str, context: str) -> bool:
+    """Run public-content safety and quality guards before publishing.
+
+    friction_type=DELIBERATIVE
+    """
+    if context in _SUBSTACK_PUBLICATION_CONTEXTS:
+        match = _INTERNAL_GUARDRAIL_REFERENCE_RE.search(content or "")
+        if match:
+            log.warning("Internal guardrail reference blocked %s: matched=%r", context, match.group(0))
+            return False
     if not _verify_loaded_skills_integrity():
         log.critical("SECURITY: publish blocked due to skill integrity failure in context=%s", context)
         return False
-    if _content_has_trust_positioning_claim(content):
-        log.warning("Trust-positioning claim guard held %s for anti-AI editorial pass", context)
+    if _content_has_surveillance_patterns(content):
+        log.warning(
+            "Thought-surveillance guard blocked %s: content resembles individual-level sentiment surveillance",
+            context,
+        )
+        return False
+    if _check_contextual_misuse(content):
+        _log_contextual_misuse_flag(context, content)
+        return False
+    if TRUST_CLAIM_GUARD_ENABLED and _contains_trust_claims(content):
+        trust_claims = _detect_trust_claims(content)
+        if trust_claims:
+            _log_trust_claim_guard_flag(context, content, trust_claims)
+            return False
+    sycophancy_report = _sycophancy_guard_report(content)
+    if sycophancy_report:
+        _log_sycophancy_guard_flag(context, content, sycophancy_report)
         return False
     if _requires_ai_literacy_boundaries(content) and not _has_ai_literacy_boundaries(content):
         log.warning("AI literacy boundary guard held %s for safe-use framing", context)
+        return False
+    if _content_lacks_audit_trail(content):
+        log.warning(
+            "Audit trail guard blocked %s: high-consequence topic requires an Audit Trail or How to Verify "
+            "section with sources, confidence, and alternatives; writer agent should add an audit trail.",
+            context,
+        )
         return False
     if _check_narrative_monopoly(content):
         report = _narrative_monopoly_report(content)
@@ -862,6 +1228,10 @@ def _has_explicit_communication_intent(action: str, metadata: dict | None) -> bo
 
 
 def _communication_intent_preflight(action: str, metadata: dict | None) -> PreflightFailure | None:
+    """Block outbound social actions without explicit communication intent.
+
+    friction_type=DELIBERATIVE
+    """
     if _has_explicit_communication_intent(action, metadata):
         return None
     task_source = metadata.get("task_source") if isinstance(metadata, dict) else None
@@ -882,6 +1252,8 @@ def _communication_intent_preflight(action: str, metadata: dict | None) -> Prefl
 
 def social_context_check(content: str) -> None:
     """Raise SocialContextError if content fails social-plane governance checks.
+
+    friction_type=DELIBERATIVE
 
     Social actions (comments, notes) carry brand-safety and public-narrative
     liability that owned-content publishing does not. Two failure modes:
@@ -1131,6 +1503,10 @@ def _recent_publish_times(state: dict, now: datetime) -> list[datetime]:
 
 
 def _check_publish_window(content_type: str, state: dict) -> bool:
+    """Check global publish-window limits before another outbound post.
+
+    friction_type=DELIBERATIVE
+    """
     now = datetime.now()
     recent = _recent_publish_times(state, now)
     state["recent_publish_timestamps"] = [dt.isoformat() for dt in recent]
@@ -1148,6 +1524,10 @@ def _check_publish_window(content_type: str, state: dict) -> bool:
 
 
 def _check_publish_cooldown(content_type: str) -> bool:
+    """Check per-type publishing cooldown before another outbound post.
+
+    friction_type=DELIBERATIVE
+    """
     state = _load_state()
     if content_type != "tweet" and not _check_publish_window(content_type, state):
         return False
@@ -1187,6 +1567,10 @@ def _record_publish_time(content_type: str, state: dict | None = None, now: date
 
 
 def _can_post_note_today() -> bool:
+    """Check the daily note cap before publishing a Note.
+
+    friction_type=DELIBERATIVE
+    """
     state = _load_state()
     today = datetime.now().strftime("%Y-%m-%d")
     daily_count = state.get(f"notes_{today}", 0)
@@ -1283,7 +1667,10 @@ def _suppress_grief_crisis_auto_reply(
 
 
 def is_commenting_enabled() -> bool:
-    """Check if Mira has enough published posts to start commenting."""
+    """Check if Mira has enough published posts to start commenting.
+
+    friction_type=DELIBERATIVE
+    """
     from substack import get_published_post_count
 
     count = get_published_post_count()
@@ -1294,7 +1681,10 @@ def is_commenting_enabled() -> bool:
 
 
 def can_comment_now() -> bool:
-    """Check daily limit and cooldown."""
+    """Check daily limit and cooldown.
+
+    friction_type=DELIBERATIVE
+    """
     if not is_commenting_enabled():
         return False
 
@@ -2240,7 +2630,10 @@ MAX_NOTE_REPLIES_PER_DAY = MAX_NOTES_PER_DAY
 
 
 def _can_reply_to_notes_today() -> bool:
-    """Check if we're under the daily note reply limit."""
+    """Check if we're under the daily note reply limit.
+
+    friction_type=DELIBERATIVE
+    """
     state = _load_state()
     today = datetime.now().strftime("%Y-%m-%d")
     count = state.get(f"note_replies_{today}", 0)
@@ -2996,3 +3389,155 @@ Output either SKIP, or ONLY the reply text."""
 
     if note_replied:
         log.info("Note follow-ups posted: %d/%d", note_replied, len(note_replies))
+
+
+# ---------------------------------------------------------------------------
+# Proxy audit — weekly re-evaluation of published articles for drift
+# ---------------------------------------------------------------------------
+
+_PROXY_AUDIT_LOG = MIRA_ROOT / "logs" / "proxy_audit.log"
+_PROXY_AUDIT_DRIFT_THRESHOLD = 0.3
+
+
+def audit_recent_posts(sample_size: int = 10) -> dict:
+    """Audit recently published Substack articles for proxy drift.
+
+    friction_type=DELIBERATIVE
+
+    Fetches the last `sample_size` articles, runs each through
+    _content_looks_like_error() (audit mode) and _deep_substance_audit()
+    (anti-AI checklist, strict mode). Both checks are log-only — no content
+    is blocked. Writes a JSON report to logs/proxy_audit.log. If the drift
+    score (fraction of flagged posts) exceeds the threshold, creates a
+    notes_inbox item for user review.
+    """
+    try:
+        from substack import _get_substack_config
+    except ImportError:
+        log.warning("proxy_audit: substack module not available")
+        return {"error": "substack_import_failed"}
+
+    try:
+        from handler import _content_looks_like_error as _guard_check
+    except ImportError:
+        _guard_check = None
+
+    cfg = _get_substack_config()
+    subdomain = cfg.get("subdomain", "")
+    if not subdomain:
+        log.warning("proxy_audit: no subdomain configured")
+        return {"error": "no_subdomain"}
+
+    posts = []
+    try:
+        r = _substack_get(f"https://{subdomain}.substack.com/api/v1/posts?limit={sample_size}")
+        if r is not None:
+            posts = r.json()
+    except Exception as e:
+        log.warning("proxy_audit: fetch failed: %s", e)
+        return {"error": str(e)}
+
+    if not posts:
+        log.info("proxy_audit: no posts to audit")
+        return {"posts": 0, "flagged": 0, "drift_score": 0.0}
+
+    flagged_count = 0
+    results = []
+
+    for post in posts:
+        if not isinstance(post, dict):
+            continue
+        post_id = str(post.get("id", ""))
+        title = post.get("title", "Untitled")
+        body = post.get("truncated_body_text", "") or ""
+        full_text = f"{title}\n\n{body}".strip()
+
+        flags = []
+
+        if full_text and _guard_check is not None:
+            try:
+                is_error, confidence = _guard_check(full_text, strictness="strict")
+                if is_error:
+                    flags.append({"check": "content_guard", "confidence": confidence})
+            except Exception as e:
+                log.debug("proxy_audit: content guard check failed for %s: %s", post_id, e)
+
+        if full_text:
+            try:
+                audit = _deep_substance_audit(full_text)
+                if not audit["passed"]:
+                    flags.append({"check": "anti_ai", "score": audit["score"], "flags": audit["flags"]})
+            except Exception as e:
+                log.debug("proxy_audit: anti_ai check failed for %s: %s", post_id, e)
+
+        if flags:
+            flagged_count += 1
+
+        results.append(
+            {
+                "post_id": post_id,
+                "title": title,
+                "flagged": bool(flags),
+                "flags": flags,
+            }
+        )
+
+    total = len(results)
+    drift_score = flagged_count / total if total > 0 else 0.0
+    drift_detected = drift_score >= _PROXY_AUDIT_DRIFT_THRESHOLD
+
+    report = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "sample_size": total,
+        "flagged": flagged_count,
+        "drift_score": round(drift_score, 3),
+        "threshold": _PROXY_AUDIT_DRIFT_THRESHOLD,
+        "drift_detected": drift_detected,
+        "results": results,
+    }
+
+    try:
+        _PROXY_AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _PROXY_AUDIT_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(report, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning("proxy_audit: log write failed: %s", e)
+
+    log.info(
+        "proxy_audit: %d/%d posts flagged, drift_score=%.3f threshold=%.3f drift=%s",
+        flagged_count,
+        total,
+        drift_score,
+        _PROXY_AUDIT_DRIFT_THRESHOLD,
+        drift_detected,
+    )
+
+    if drift_detected:
+        try:
+            from config import MIRA_DIR
+
+            inbox = MIRA_DIR / "inbox"
+            inbox.mkdir(parents=True, exist_ok=True)
+            note_path = inbox / f"proxy_audit_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.md"
+            flagged_titles = [r["title"] for r in results if r["flagged"]]
+            note_content = (
+                "# Proxy Audit Drift Alert\n\n"
+                f"Date: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}\n"
+                f"Drift score: {drift_score:.1%} ({flagged_count}/{total} posts flagged)\n"
+                f"Threshold: {_PROXY_AUDIT_DRIFT_THRESHOLD:.0%}\n\n"
+                "Flagged posts:\n"
+                + "".join(f"- {t}\n" for t in flagged_titles)
+                + f"\nFull report: {_PROXY_AUDIT_LOG}\n"
+                "\n[🧠 Proxy‑drift check] If this piece doesn’t feel right — too much AI‑voice, wrong tone — "
+                "just reply ‘bad’ or drop a quick note. I’ll use it to sharpen my anti‑AI checklist.\n"
+            )
+            note_path.write_text(note_content, encoding="utf-8")
+            log.warning(
+                "proxy_audit: drift alert written to notes_inbox (%d/%d flagged)",
+                flagged_count,
+                total,
+            )
+        except Exception as e:
+            log.warning("proxy_audit: notes_inbox write failed: %s", e)
+
+    return report

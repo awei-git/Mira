@@ -190,6 +190,74 @@ def test_read_rate_limit_does_not_block_user_reply(monkeypatch, tmp_path: Path):
     assert calls["append_user_reply"]["content"] == "还在吗"
 
 
+def test_task_reply_response_trims_large_thread_history(monkeypatch, tmp_path: Path):
+    import control.db as control_db
+    import control.repository as control_repository
+
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
+    monkeypatch.setattr(server, "ICLOUD_COMMAND_FALLBACK_ENABLED", False)
+
+    class FakeTx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def append_user_reply(self, **kwargs):
+            messages = [
+                {
+                    "id": f"m{i}",
+                    "sender": "agent" if i % 2 else "ang",
+                    "content": f"message {i}",
+                    "timestamp": f"2026-07-09T02:{i:02d}:00Z",
+                    "kind": "text",
+                }
+                for i in range(25)
+            ]
+            messages.append(
+                {
+                    "id": kwargs["message_id"],
+                    "sender": kwargs["sender"],
+                    "content": kwargs["content"],
+                    "timestamp": kwargs["created_at"],
+                    "kind": "text",
+                }
+            )
+            return {
+                "id": kwargs["task_id"],
+                "type": "discussion",
+                "title": "Mira",
+                "status": "queued",
+                "tags": ["daily-collab"],
+                "origin": "user",
+                "pinned": True,
+                "quick": False,
+                "parent_id": None,
+                "created_at": "2026-07-09T02:00:00Z",
+                "updated_at": kwargs["created_at"],
+                "messages": messages,
+                "error": None,
+                "result_path": None,
+            }
+
+    monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
+
+    resp = client.post("/api/ang/tasks/disc_daily_collab/reply", json={"content": "hello"})
+
+    assert resp.status_code == 200
+    messages = resp.json()["item"]["messages"]
+    assert len(messages) == server.WRITE_RESPONSE_MESSAGES
+    assert messages[0]["id"] == "m6"
+    assert messages[-1]["content"] == "hello"
+
+
 def test_liveness_endpoints_bypass_read_rate_limit(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
     monkeypatch.setattr(server, "_READ_RATE_LIMIT", 1)

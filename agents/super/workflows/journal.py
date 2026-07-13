@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import sys
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -45,8 +46,10 @@ from workflows.helpers import (
     _append_to_daily_feed,
     harvest_observations,
 )
+from agents.shared.agency_report import get_autonomous_actions_since, format_autonomous_agency_report
 
 log = logging.getLogger("mira")
+_PREFLIGHT_BLOCK_LOG = Path("/tmp/mira-preflight-blocks.jsonl")
 
 
 from evolution import traced  # noqa: E402
@@ -95,6 +98,70 @@ def _format_daily_shared_memory(user_id: str) -> str:
         f"> [{source}, joint attention {score:.2f}] {content}\n\n"
         "What do you think about this now?"
     )
+
+
+def _post_weekly_preflight_block_summary(state: dict, user_id: str) -> None:
+    week_key = datetime.now(timezone.utc).strftime("%G-W%V")
+    if state.get("preflight_block_summary_week") == week_key:
+        return
+    if not _PREFLIGHT_BLOCK_LOG.exists():
+        return
+
+    entries = []
+    for line in _PREFLIGHT_BLOCK_LOG.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict):
+            entries.append(rec)
+    if not entries:
+        _PREFLIGHT_BLOCK_LOG.write_text("", encoding="utf-8")
+        state["preflight_block_summary_week"] = week_key
+        return
+
+    reason_counts = Counter(str(rec.get("reason") or "unknown") for rec in entries)
+    rule_counts = Counter(str(rec.get("rule_triggered") or "unknown") for rec in entries)
+    repeated_rules = [(rule, count) for rule, count in rule_counts.most_common() if count >= 2]
+    latest_timestamp = max(str(rec.get("timestamp") or "") for rec in entries)
+
+    lines = [
+        "# Preflight Block Summary",
+        "",
+        f"Week: {week_key}",
+        f"Total blocks: {len(entries)}",
+        f"Latest block: {latest_timestamp or 'unknown'}",
+        "",
+        "## Blocks by reason",
+    ]
+    lines.extend(f"- {reason}: {count}" for reason, count in reason_counts.most_common())
+    lines.extend(["", "## Rule patterns"])
+    if repeated_rules:
+        lines.extend(f"- {rule}: {count} blocks" for rule, count in repeated_rules)
+    else:
+        lines.append("- No repeated rule triggers.")
+    lines.extend(["", "## Recent blocked snippets"])
+    for rec in entries[-5:]:
+        reason = str(rec.get("reason") or "unknown")
+        preview = re.sub(r"\s+", " ", str(rec.get("content_preview") or "")).strip()
+        lines.append(f"- {reason}: {preview[:180]}")
+
+    try:
+        from notes_bridge import send_to_outbox
+
+        sent = send_to_outbox(
+            "\n".join(lines),
+            metadata={"title": "Preflight Block Summary", "kind": "preflight_block_summary", "user_id": user_id},
+        )
+        if sent:
+            _PREFLIGHT_BLOCK_LOG.write_text("", encoding="utf-8")
+            state["preflight_block_summary_week"] = week_key
+            log.info("Preflight block summary sent to Notes: %s", sent)
+    except Exception as e:
+        log.warning("Failed to post preflight block summary: %s", e)
 
 
 def _format_mira_day_home_digest(today: str, journal_content: str, spark_count: int = 0) -> str:
@@ -168,6 +235,7 @@ def do_journal(user_id: str = "ang"):
 
     # --- Pick a 杂.md fragment as journal seed ---
     state = load_state(user_id=user_id)
+    _post_weekly_preflight_block_summary(state, user_id)
     za_fragment = _mine_za_one(state)
     save_state(state, user_id=user_id)
 
@@ -358,6 +426,18 @@ def do_journal(user_id: str = "ang"):
         log.error("Journal: Claude returned empty")
         return
 
+    # Autonomous Agency Report — collect scheduled/proactive actions since last journal
+    agency_section = ""
+    try:
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        _agency_state = load_state(user_id=user_id)
+        _last_ts_str = _agency_state.get(f"journal_{yesterday}")
+        _last_run = datetime.fromisoformat(_last_ts_str) if _last_ts_str else None
+        _autonomous_actions = get_autonomous_actions_since(_last_run, user_id=user_id)
+        agency_section = format_autonomous_agency_report(_autonomous_actions)
+    except Exception as _e:
+        log.debug("Autonomous agency report failed: %s", _e)
+
     # Save journal
     security_prefix = f"{security_alerts}\n\n" if security_alerts else ""
     journal_content = f"# Journal {today}\n\n{security_prefix}{journal_text}"
@@ -367,6 +447,8 @@ def do_journal(user_id: str = "ang"):
     garden_section = _format_joint_garden_section()
     if garden_section:
         journal_content = f"{journal_content}\n\n{garden_section}"
+    if agency_section:
+        journal_content = f"{journal_content}\n\n{agency_section}"
     atomic_write(journal_path, journal_content)
     mira_day_content = _format_mira_day_home_digest(today, journal_content, spark_count=len(spark_entries))
     log.info("Journal saved: %s", journal_path.name)

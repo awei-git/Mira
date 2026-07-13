@@ -210,6 +210,30 @@ def test_append_user_reply_requeues_completed_or_feed_item(monkeypatch):
     assert events[0][0][:3] == ("feed_market_1", "ang", "message.created")
 
 
+def test_append_user_reply_requeues_daily_discussion_even_if_working(monkeypatch):
+    from control.repository import ControlRepository
+
+    conn = FakeConn()
+    repo = ControlRepository(conn)
+    monkeypatch.setattr(repo, "_record_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(repo, "get_item", lambda user_id, task_id: {"id": task_id, "status": "queued"})
+
+    item = repo.append_user_reply(
+        user_id="ang",
+        task_id="disc_daily_collab",
+        message_id="msg_daily",
+        sender="ang",
+        content="still here?",
+        created_at="2026-07-08T01:44:00Z",
+    )
+
+    update_query, update_params = conn.cursor_obj.queries[2]
+    assert "WHEN %s THEN 'queued'" in update_query
+    assert "WHEN %s THEN NULL" in update_query
+    assert update_params[1:6] == (True, True, True, True, True)
+    assert item == {"id": "disc_daily_collab", "status": "queued"}
+
+
 def test_upsert_agent_feed_defaults_to_done():
     from control.repository import ControlRepository
 
@@ -395,6 +419,49 @@ def test_overlay_running_task_projects_status_card(tmp_path):
     assert "locating Tetra synthesis" in message_params[3]
 
 
+def test_overlay_daily_collab_completed_projects_verified():
+    from control.repository import ControlRepository
+
+    conn = FakeConn()
+    repo = ControlRepository(conn)
+
+    repo.overlay_task_record(
+        {
+            "task_id": "disc_daily_collab",
+            "user_id": "ang",
+            "content_preview": "conversation",
+            "status": "completed_unverified",
+            "tags": ["daily-collab", "mira", "conversation"],
+            "completed_at": "2026-07-01T03:50:11Z",
+        }
+    )
+
+    params = next(params for query, params in conn.cursor_obj.queries if "INSERT INTO" in query)
+    assert params["status"] == "verified"
+
+
+def test_overlay_task_record_projects_parked_as_archived():
+    from control.repository import ControlRepository
+
+    conn = FakeConn()
+    repo = ControlRepository(conn)
+
+    repo.overlay_task_record(
+        {
+            "task_id": "req_old_failure",
+            "user_id": "ang",
+            "content_preview": "old failure",
+            "status": "parked",
+            "failure_class": "worker_crash",
+            "completed_at": "2026-06-26T14:42:07Z",
+        }
+    )
+
+    params = next(params for query, params in conn.cursor_obj.queries if "INSERT INTO" in query)
+    assert params["status"] == "archived"
+    assert params["retryable"] is False
+
+
 def test_overlay_task_record_does_not_overwrite_newer_user_reply():
     from control.repository import ControlRepository
 
@@ -417,5 +484,10 @@ def test_overlay_task_record_does_not_overwrite_newer_user_reply():
     assert "tasks.origin = 'user'" in upsert_query
     assert "tasks.status IN ('queued', 'dispatched', 'running', 'working')" in upsert_query
     assert "tasks.updated_at > EXCLUDED.updated_at" in upsert_query
+    assert (
+        "tasks.status IN ('done', 'verified', 'failed', 'timeout', 'blocked', 'needs-input', 'archived')"
+        in upsert_query
+    )
+    assert "EXCLUDED.status IN ('queued', 'dispatched', 'running', 'working')" in upsert_query
     assert "tasks.type IN ('discussion', 'feed')" in upsert_query
     assert "tasks.origin = 'agent'" in upsert_query

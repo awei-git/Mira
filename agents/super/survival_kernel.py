@@ -202,6 +202,7 @@ def _cycle_env() -> dict:
     env = dict(os.environ)
     for k in ("CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE", "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"):
         env.pop(k, None)
+    env.update(MIRA_BACKGROUND_DAEMON="1")
     return env
 
 

@@ -1,10 +1,13 @@
 """Briefing output helpers for the explorer agent."""
 
+import logging
 import re
 from collections import Counter
 from importlib import util as importlib_util
 from pathlib import Path
 from urllib.parse import urlparse
+
+log = logging.getLogger("mira")
 
 _SHARED_CONFIG_PATH = Path(__file__).resolve().parent.parent / "shared" / "config.py"
 _spec = importlib_util.spec_from_file_location("_mira_shared_config", _SHARED_CONFIG_PATH)
@@ -129,6 +132,46 @@ _BENCHMARK_CLAIM_PATTERN = re.compile(
     r".{0,120}\b\d+(?:\.\d+)?\s*%?",
     re.IGNORECASE,
 )
+_PRICE_FACT_PATTERN = re.compile(
+    r"(?<!\w)(?:[$€£¥]\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:k|m|bn|million|billion|trillion))?|"
+    r"\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|JPY|CNY|dollars?|euros?|yuan))\b",
+    re.IGNORECASE,
+)
+_DATE_FACT_PATTERN = re.compile(
+    r"\b(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:,\s*\d{4})?|"
+    r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2}/\d{2,4}|Q[1-4]\s+(?:19|20)\d{2}|(?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+_NUMBER_FACT_PATTERN = re.compile(
+    r"(?<![\w$€£¥])\d[\d,]*(?:\.\d+)?(?:\s?(?:%|percent|bps|x|k|m|bn|million|billion|trillion|thousand))?",
+    re.IGNORECASE,
+)
+_CAPITALIZED_FACT_PATTERN = re.compile(
+    r"\b(?:[A-Z][A-Za-z0-9&'.-]+|[A-Z]{2,})"
+    r"(?:\s+(?:[A-Z][A-Za-z0-9&'.-]+|[A-Z]{2,}|of|and|the|for|in|on|at|to|de|la|&)){0,5}\b"
+)
+_CAPITALIZED_FACT_STOPWORDS = {
+    "A",
+    "An",
+    "And",
+    "But",
+    "For",
+    "From",
+    "If",
+    "In",
+    "It",
+    "Its",
+    "Of",
+    "On",
+    "Or",
+    "That",
+    "The",
+    "This",
+    "To",
+    "With",
+}
+_RAW_ARTICLE_TEXT_FIELDS = ("raw_text", "raw_extracted_text", "extracted_text", "article_text")
+_ARTICLE_SUMMARY_FIELDS = ("summary_text", "vlm_summary", "summary")
 _TEMPORAL_SPLIT_PATTERN = re.compile(
     r"\b(?:temporal split|time-based split|chronological split|sequential split)\b",
     re.IGNORECASE,
@@ -484,6 +527,97 @@ def _format_yaml_field(key: str, values: list[str]) -> str:
     return f"{key}:\n" + "\n".join(f"  - {value}" for value in values)
 
 
+def _extract_facts(text) -> list[str]:
+    facts = []
+    seen = set()
+    for pattern in (_PRICE_FACT_PATTERN, _DATE_FACT_PATTERN, _NUMBER_FACT_PATTERN, _CAPITALIZED_FACT_PATTERN):
+        for match in pattern.finditer(str(text or "")):
+            fact = re.sub(r"\s+", " ", match.group(0)).strip(" \t\r\n.,;:()[]{}")
+            if not fact or fact in _CAPITALIZED_FACT_STOPWORDS:
+                continue
+            key = fact.lower()
+            if key in seen or any(key in existing for existing in seen):
+                continue
+            seen.add(key)
+            facts.append(fact)
+    return facts
+
+
+def _verify_completeness(raw_text, summary_text) -> list[str]:
+    summary_lower = str(summary_text or "").lower()
+    return [fact for fact in _extract_facts(raw_text) if fact.lower() not in summary_lower]
+
+
+def _first_text_field(item: dict, fields: tuple[str, ...]) -> str:
+    for field in fields:
+        value = item.get(field)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _yaml_quote(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _append_metadata_warning(content: str, warning: str) -> str:
+    warning_line = f"  - {_yaml_quote(warning)}"
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end != -1:
+            lines = content[4:end].rstrip().splitlines()
+            for index, line in enumerate(lines):
+                if line == "completeness_warnings: []":
+                    lines[index] = "completeness_warnings:"
+                    lines.insert(index + 1, warning_line)
+                    frontmatter = "\n".join(lines)
+                    return f"---\n{frontmatter}\n---{content[end + 4:]}"
+                if line == "completeness_warnings:":
+                    insert_at = index + 1
+                    while insert_at < len(lines) and lines[insert_at].startswith("  - "):
+                        insert_at += 1
+                    lines.insert(insert_at, warning_line)
+                    frontmatter = "\n".join(lines)
+                    return f"---\n{frontmatter}\n---{content[end + 4:]}"
+
+            frontmatter = "\n".join(lines).strip()
+            frontmatter = (
+                f"{frontmatter}\ncompleteness_warnings:\n{warning_line}"
+                if frontmatter
+                else f"completeness_warnings:\n{warning_line}"
+            )
+            return f"---\n{frontmatter}\n---{content[end + 4:]}"
+
+    return f"---\ncompleteness_warnings:\n{warning_line}\n---\n\n{content}"
+
+
+def _completeness_warnings(feed_items: list) -> list[str]:
+    warnings = []
+    for item in feed_items:
+        if not isinstance(item, dict):
+            continue
+        raw_text = _first_text_field(item, _RAW_ARTICLE_TEXT_FIELDS)
+        summary_text = _first_text_field(item, _ARTICLE_SUMMARY_FIELDS)
+        if not raw_text or not summary_text:
+            continue
+        missing = _verify_completeness(raw_text, summary_text)
+        if not missing:
+            continue
+        title = str(item.get("title") or item.get("url") or "untitled article").strip()
+        url = str(item.get("url") or "").strip()
+        shown = missing[:12]
+        suffix = f"; +{len(missing) - len(shown)} more" if len(missing) > len(shown) else ""
+        warning = f"VLM summary completeness warning for {title[:120]}: missing facts: {', '.join(shown)}{suffix}"
+        warnings.append(warning)
+        log.warning(
+            "VLM summary completeness warning: title=%s url=%s missing_facts=%s",
+            title[:120],
+            url,
+            ", ".join(shown),
+        )
+    return warnings
+
+
 def _set_epistemic_frontmatter(frontmatter: str, audit: dict) -> str:
     lines = []
     skip_bias_items = False
@@ -731,6 +865,7 @@ def _benchmark_split_method_audit(briefing: str) -> dict:
 def apply_source_diversity_note(briefing: str, feed_items: list) -> str:
     briefing = _annotate_signal_provenance(briefing, feed_items)
     briefing = _annotate_benchmark_claim_splits(briefing, feed_items)
+    completeness_warnings = _completeness_warnings(feed_items)
     audit = _audit_source_diversity(feed_items)
     narrative_audit = _audit_narrative_source_diversity(briefing, feed_items)
     selection_bias_audit = screen_selection_bias(briefing, feed_items)
@@ -792,6 +927,10 @@ def apply_source_diversity_note(briefing: str, feed_items: list) -> str:
         notes.append(BENCHMARK_COMPARISON_WARNING)
 
     if not notes:
-        return annotate_epistemic_metadata(briefing, epistemic_audit)
+        content = annotate_epistemic_metadata(briefing, epistemic_audit)
+    else:
+        content = annotate_epistemic_metadata("\n\n".join(notes) + "\n\n" + briefing, epistemic_audit)
 
-    return annotate_epistemic_metadata("\n\n".join(notes) + "\n\n" + briefing, epistemic_audit)
+    for warning in completeness_warnings:
+        content = _append_metadata_warning(content, warning)
+    return content

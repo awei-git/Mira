@@ -162,7 +162,7 @@ def get_failure_summary(days: int = 7) -> str:
     return "\n".join(lines)
 
 
-def resolve_failure(slug: str, step: str, resolution: str) -> bool:
+def resolve_failure(slug: str, step: str, resolution: str, error_type: str | None = None) -> bool:
     """Mark the most recent matching failure as resolved.
 
     Rewrites the log file atomically with the resolution added.
@@ -185,7 +185,12 @@ def resolve_failure(slug: str, step: str, resolution: str) -> bool:
                 for i in range(len(lines) - 1, -1, -1):
                     try:
                         rec = json.loads(lines[i])
-                        if rec.get("slug") == slug and rec.get("step") == step and not rec.get("resolution"):
+                        if (
+                            rec.get("slug") == slug
+                            and rec.get("step") == step
+                            and not rec.get("resolution")
+                            and (error_type is None or rec.get("error_type") == error_type)
+                        ):
                             rec["resolution"] = resolution
                             lines[i] = json.dumps(rec, ensure_ascii=False) + "\n"
                             resolved = True

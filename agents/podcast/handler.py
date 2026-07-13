@@ -1978,6 +1978,20 @@ if __name__ == "__main__":
             )
             if rss_result:
                 _log.info("RSS published: %s", rss_result)
+                try:
+                    shared = str(Path(__file__).resolve().parent.parent.parent / "lib")
+                    if shared not in _sys.path:
+                        _sys.path.insert(0, shared)
+                    from ops.failure_log import resolve_failure
+
+                    resolve_failure(
+                        slug,
+                        f"podcast_{lang}",
+                        f"RSS published successfully: {rss_result}",
+                        error_type="rss_publish_failed",
+                    )
+                except Exception as e:
+                    _log.debug("RSS failure reconciliation failed: %s", e)
             else:
                 _log.warning("RSS publish returned None for %s", title)
         except Exception as e:

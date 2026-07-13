@@ -18,6 +18,10 @@ from pathlib import Path
 log = logging.getLogger("publisher.substack")
 
 
+class PublishGuardError(RuntimeError):
+    """Raised when a mandatory publish guard blocks a Substack publish."""
+
+
 def _log_guard(guard_name: str, result: str, content: str) -> None:
     try:
         from config import MIRA_ROOT
@@ -196,6 +200,49 @@ def publish_to_substack(
     from substack import PublishBlockedError, _content_has_unverified_security_claims, _security_preamble
     from substack_format import _md_to_html, _html_to_prosemirror, _get_cover_image, _upload_image_to_substack
 
+    _pf_result = None
+    guard_payload = {
+        "instruction": f"Publish '{title}' to Substack",
+        "title": title,
+        "content": article_text,
+        "platform": "substack",
+        "agent_id": "publisher",
+        "task_id": title[:60],
+        "pipeline_stage": "preflight_check",
+    }
+
+    try:
+        import sys as _sys_guard
+
+        _shared_dir = Path(__file__).resolve().parent.parent / "shared"
+        if str(_shared_dir) not in _sys_guard.path:
+            _sys_guard.path.insert(0, str(_shared_dir))
+        from handler import _content_looks_like_error
+    except ImportError as exc:
+        raise PublishGuardError("Content guard unavailable: _content_looks_like_error") from exc
+
+    is_error, guard_confidence = _content_looks_like_error(article_text)
+    _log_guard("content_looks_like_error", "catch" if is_error else "pass", article_text)
+    if is_error:
+        msg = f"Content guard blocked publish: content looks like an error (confidence={guard_confidence:.2f})"
+        _log_guard_fired("content_looks_like_error", "publisher", title[:60], msg)
+        _log_scaffolding_rejection("publisher", title, "content_looks_like_error", article_text)
+        raise PublishGuardError(msg)
+
+    try:
+        from publish.preflight import preflight_check
+    except ImportError as exc:
+        raise PublishGuardError("Preflight check unavailable: preflight_check") from exc
+
+    pf = preflight_check("publish", guard_payload)
+    _pf_result = pf
+    _log_guard("preflight_check", "pass" if pf.passed else "catch", article_text)
+    if not pf.passed:
+        msg = f"Preflight blocked publish: {'; '.join(pf.blocking_reasons)}"
+        _log_guard_fired("preflight_check", "publisher", title[:60], "; ".join(pf.blocking_reasons))
+        _log_scaffolding_rejection("publisher", title, "preflight_check", article_text)
+        raise PublishGuardError(msg)
+
     # Safety: refuse to publish when running under pytest. Tests must mock
     # this function explicitly. Added 2026-04-07 after a test harness path
     # accidentally published a bogus "Approved Title" draft to production.
@@ -210,33 +257,6 @@ def publish_to_substack(
         return msg
 
     _write_publish_audit("publish_article", "substack", title, audit_context)
-
-    _pf_result = None
-    # Preflight check
-    try:
-        from publish.preflight import preflight_check
-
-        pf = preflight_check(
-            "publish",
-            {
-                "instruction": f"Publish '{title}' to Substack",
-                "title": title,
-                "content": article_text,
-                "platform": "substack",
-                "agent_id": "publisher",
-                "task_id": title[:60],
-                "pipeline_stage": "preflight_check",
-            },
-        )
-        _pf_result = pf
-        _log_guard("preflight_check", "pass" if pf.passed else "catch", article_text)
-        if not pf.passed:
-            msg = f"Preflight blocked publish: {'; '.join(pf.blocking_reasons)}"
-            _log_guard_fired("preflight_check", "publisher", title[:60], "; ".join(pf.blocking_reasons))
-            _log_scaffolding_rejection("publisher", title, "preflight_check", article_text)
-            return msg
-    except ImportError:
-        pass
 
     try:
         from config import PUBLISH_OBSESSION_GATE_ENABLED

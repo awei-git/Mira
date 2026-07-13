@@ -400,6 +400,25 @@ def run_daily_digest(max_kols: int | None = None, dry_run: bool = False, user_id
     return report_path
 
 
+def handle(
+    workspace: Path,
+    task_id: str,
+    content: str,
+    sender: str,
+    thread_id: str,
+    *,
+    tier: str = "light",
+    user_id: str = "ang",
+    **_: object,
+) -> str:
+    """Standard agent entrypoint for registry dispatch."""
+    dry_run = "dry run" in content.lower() or "--dry-run" in content
+    report_path = run_daily_digest(dry_run=dry_run, user_id=user_id or sender or "ang")
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "output.md").write_text(report_path.read_text(encoding="utf-8"), encoding="utf-8")
+    return f"KOL digest written: {report_path}"
+
+
 def _dry_run_items(kols: list[dict], now_iso: str) -> list[KolItem]:
     items = []
     for kol in kols[:4]:

@@ -15,6 +15,7 @@ _INTERNAL_STATUS_MAP = {
     "blocked": "failed",
     "timeout": "failed",
     "cancelled": "failed",
+    "parked": "archived",
 }
 
 
@@ -55,6 +56,31 @@ def _message_from_row(row: dict) -> dict:
     return msg
 
 
+def _project_messages(rows: list[dict]) -> list[dict]:
+    projected = []
+    last_agent_text: tuple[str, str, str] | None = None
+    for row in rows:
+        msg = _message_from_row(row)
+        agent_text = (
+            str(msg.get("sender") or "") == "agent"
+            and str(msg.get("kind") or "") == "text"
+            and str(msg.get("content") or "").strip()
+        )
+        if agent_text:
+            fingerprint = (
+                str(msg.get("sender") or ""),
+                str(msg.get("kind") or ""),
+                str(msg.get("content") or "").strip(),
+            )
+            if fingerprint == last_agent_text:
+                continue
+            last_agent_text = fingerprint
+        else:
+            last_agent_text = None
+        projected.append(msg)
+    return projected
+
+
 def item_from_rows(task: dict, messages: list[dict]) -> dict:
     error = None
     if task.get("error_message") or app_status(task.get("status")) == "failed":
@@ -77,7 +103,7 @@ def item_from_rows(task: dict, messages: list[dict]) -> dict:
         "parent_id": task.get("parent_id"),
         "created_at": task.get("created_at") or task.get("updated_at") or "",
         "updated_at": task.get("updated_at") or task.get("created_at") or "",
-        "messages": [_message_from_row(m) for m in messages],
+        "messages": _project_messages(messages),
         "error": error,
         "result_path": task.get("result_path"),
         "task_type": task.get("task_type"),

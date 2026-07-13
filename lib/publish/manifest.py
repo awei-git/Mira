@@ -63,7 +63,7 @@ def _save(data: dict):
     tmp.rename(p)
 
 
-# Status progression: approved → published → podcast_en → podcast_zh → complete
+# Status progression: approval_required → approved → published → podcast_en → podcast_zh → complete
 _STATUS_ORDER = ["approved", "published", "podcast_en", "podcast_zh", "complete"]
 
 
@@ -103,6 +103,21 @@ def update_manifest(slug: str, **fields) -> dict:
 
     _save(manifest)
     return entry
+
+
+def approve_for_publish(slug: str, *, approved_by: str = "human", note: str = "", **fields) -> dict:
+    """Mark a draft as explicitly approved for public publication."""
+    payload = dict(fields)
+    payload.update(
+        {
+            "status": "approved",
+            "human_approved_at": _utc_iso(),
+            "publication_approved_by": approved_by,
+            "publication_approval_note": note,
+            "publication_gate": "human_approved",
+        }
+    )
+    return update_manifest(slug, **payload)
 
 
 def get_next_pending(target_status: str) -> dict | None:
@@ -155,6 +170,8 @@ def get_stuck_articles(timeout_minutes: int = 120) -> list[dict]:
     now = datetime.now(timezone.utc)
     for entry in manifest.get("articles", {}).values():
         status = entry.get("status", "")
+        if str(status).startswith("parked_"):
+            continue
         # Terminal or explicitly parked statuses are not "stuck".
         # blocked_language = semantic block (CJK body during English-only window);
         # get_next_pending won't pick these up, so they're not waiting on pipeline.
@@ -163,6 +180,7 @@ def get_stuck_articles(timeout_minutes: int = 120) -> list[dict]:
             "skip",
             "skipped",
             "deleted",
+            "approval_required",
             "published",
             "podcast_en",
             "blocked_language",

@@ -47,12 +47,14 @@ from config import (
     RESEARCH_TOPIC,
     RESEARCH_LOG_TIME,
     SOUL_QUESTION_TIME,
+    DAILY_COLLAB_TIME,
     BOOK_REVIEW_TIME,
     SKILL_STUDY_SOURCE_GROUPS,
     SKILL_STUDY_COOLDOWN_HOURS,
     SKILL_STUDY_TIME,
     LOG_RETENTION_DAYS,
     DATA_DIR,
+    MIRA_DIR,
     SOUL_DIR,
 )
 
@@ -315,6 +317,80 @@ def should_soul_question(user_id: str | None = None) -> bool:
 
     state = _load_state(user_id=user_id)
     return not state.get(f"soul_question_{now.strftime('%Y-%m-%d')}")
+
+
+def should_daily_collab(user_id: str | None = None) -> bool:
+    """Check whether Mira should send today's proactive collab message."""
+    now = datetime.now()
+    scheduled = datetime.combine(now.date(), DAILY_COLLAB_TIME)
+    if now < scheduled or now.hour >= 23:
+        return False
+
+    user = user_id or "ang"
+    state = _load_state(user_id=user)
+    if not state.get(f"daily_collab_{now.strftime('%Y-%m-%d')}"):
+        return True
+    return not _has_recent_daily_collab_message(user_id=user)
+
+
+def _has_recent_daily_collab_message(*, user_id: str, max_age_hours: int = 18) -> bool:
+    item_path = MIRA_DIR / "users" / user_id / "items" / "disc_daily_collab.json"
+    try:
+        item = json.loads(item_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    cutoff = datetime.now() - timedelta(hours=max_age_hours)
+    for msg in item.get("messages", []):
+        if msg.get("sender") != "agent":
+            continue
+        try:
+            sent_at = datetime.fromisoformat(str(msg.get("timestamp", "")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if sent_at.tzinfo is not None:
+            sent_at = sent_at.astimezone().replace(tzinfo=None)
+        if sent_at >= cutoff:
+            return True
+    return False
+
+
+def _should_daily_collab_review() -> bool:
+    """Write one compact weekly relationship review on Monday evening."""
+    now = datetime.now()
+    if now.weekday() != 0:
+        return False
+    if not (20 <= now.hour <= 23):
+        return False
+    state = _load_state(user_id="ang")
+    week_key = f"daily_collab_review_{now.strftime('%Y-W%W')}"
+    return not state.get(week_key)
+
+
+def _should_daily_collab_operator_brief() -> bool:
+    """Write one compact V5 operator brief when there is actionable signal."""
+    now = datetime.now()
+    if not (18 <= now.hour <= 23):
+        return False
+    state = _load_state(user_id="ang")
+    today_key = f"daily_collab_operator_brief_{now.strftime('%Y-%m-%d')}"
+    if state.get(today_key):
+        return False
+    try:
+        from daily_collab import build_daily_collab_operator_brief, has_operator_delivery, operator_delivery_key
+
+        _, metrics = build_daily_collab_operator_brief()
+        if not (
+            metrics.get("act_signals")
+            or metrics.get("budget_signals")
+            or metrics.get("candidate_article_seeds")
+            or metrics.get("recent_incidents")
+            or (isinstance(metrics.get("writing_triage"), dict) and metrics["writing_triage"].get("parked_count"))
+        ):
+            return False
+        return not has_operator_delivery(operator_delivery_key(metrics))
+    except Exception as exc:
+        log.debug("daily collab operator brief trigger failed: %s", exc)
+        return False
 
 
 def should_book_review() -> bool:

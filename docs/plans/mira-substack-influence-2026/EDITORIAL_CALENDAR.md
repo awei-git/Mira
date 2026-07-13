@@ -121,6 +121,6 @@ For each flagship:
   - one surprising fact
   - one counterintuitive takeaway
   - one wildcard
-- 1 short cross-post for X/Bluesky/LinkedIn if available.
+- 1 short cross-post for another working surface if available.
 - 3 relationship comments tied to the essay's topic.
 - 1 follow-up Note 72 hours later: "what readers pushed back on."

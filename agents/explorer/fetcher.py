@@ -385,9 +385,16 @@ def fetch_github_trending(days_back: int = 7, language: str | None = None, per_p
 
 def fetch_hackernews(count: int = 30, min_points: int = 0) -> list[dict]:
     """Fetch HN front page stories via Algolia Search API."""
-    params = f"tags=front_page&hitsPerPage={count}"
-    if min_points:
-        params += f"&numericFilters=points>{min_points}"
+    try:
+        requested_count = max(1, int(count))
+    except (TypeError, ValueError):
+        requested_count = 30
+    try:
+        min_score = max(0, int(min_points or 0))
+    except (TypeError, ValueError):
+        min_score = 0
+
+    params = urllib.parse.urlencode({"tags": "front_page", "hitsPerPage": requested_count})
     url = f"https://hn.algolia.com/api/v1/search?{params}"
     try:
         data = json.loads(_http_get(url, timeout=15))
@@ -397,13 +404,20 @@ def fetch_hackernews(count: int = 30, min_points: int = 0) -> list[dict]:
 
     items = []
     for h in data.get("hits", []):
+        score = h.get("points", 0) or 0
+        try:
+            score = int(score)
+        except (TypeError, ValueError):
+            score = 0
+        if min_score and score < min_score:
+            continue
         items.append(
             {
                 "source": "hackernews",
                 "title": h.get("title", ""),
-                "summary": f"Score: {h.get('points', 0)} | Comments: {h.get('num_comments', 0)}",
+                "summary": f"Score: {score} | Comments: {h.get('num_comments', 0)}",
                 "url": h.get("url") or f"https://news.ycombinator.com/item?id={h['objectID']}",
-                "score": h.get("points", 0),
+                "score": score,
                 "hn_url": f"https://news.ycombinator.com/item?id={h['objectID']}",
                 "raw_source_hash": _source_hash(h),
             }

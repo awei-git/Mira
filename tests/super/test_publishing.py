@@ -23,6 +23,7 @@ def test_pending_publish_blocks_quality_gate_without_marking_published(monkeypat
             "final_md": str(final),
             "workspace": str(tmp_path),
             "writer_gate_passed": True,
+            "human_approved_at": "2026-07-01T00:00:00Z",
         },
     )
     monkeypatch.setattr(manifest, "update_manifest", lambda slug, **fields: updates.append((slug, fields)))
@@ -52,6 +53,41 @@ def test_pending_publish_blocks_quality_gate_without_marking_published(monkeypat
     assert validate_calls == []
 
 
+def test_pending_publish_requires_explicit_human_approval(monkeypatch, tmp_path):
+    import publishing
+    import publish.manifest as manifest
+
+    final = tmp_path / "final.md"
+    final.write_text("# Essay\n\nBody", encoding="utf-8")
+    updates = []
+
+    monkeypatch.setattr(
+        manifest,
+        "get_next_pending",
+        lambda status: {
+            "slug": "essay",
+            "title": "Essay",
+            "final_md": str(final),
+            "workspace": str(tmp_path),
+            "writer_gate_passed": True,
+        },
+    )
+    monkeypatch.setattr(manifest, "update_manifest", lambda slug, **fields: updates.append((slug, fields)))
+
+    publishing._check_pending_publish()
+
+    assert updates == [
+        (
+            "essay",
+            {
+                "status": "approval_required",
+                "publication_gate": "human_review_required",
+                "error": "Human publication approval required before Substack publish.",
+            },
+        )
+    ]
+
+
 def test_pending_publish_no_url_records_error_without_success_transition(monkeypatch, tmp_path):
     import publishing
     import publish.manifest as manifest
@@ -70,6 +106,7 @@ def test_pending_publish_no_url_records_error_without_success_transition(monkeyp
             "final_md": str(final),
             "workspace": str(tmp_path),
             "writer_gate_passed": True,
+            "human_approved_at": "2026-07-01T00:00:00Z",
         },
     )
     monkeypatch.setattr(manifest, "update_manifest", lambda slug, **fields: updates.append((slug, fields)))
@@ -82,6 +119,46 @@ def test_pending_publish_no_url_records_error_without_success_transition(monkeyp
     publishing._check_pending_publish()
 
     assert updates == [("essay", {"error": "publish returned no URL: temporary API failure"})]
+
+
+def test_pending_publish_blocks_preflight_failure_as_non_retryable(monkeypatch, tmp_path):
+    import publishing
+    import publish.manifest as manifest
+    import publish.writer_gate as writer_gate
+
+    final = tmp_path / "final.md"
+    final.write_text("# Essay\n\nBody", encoding="utf-8")
+    updates = []
+
+    monkeypatch.setattr(
+        manifest,
+        "get_next_pending",
+        lambda status: {
+            "slug": "essay",
+            "title": "Essay",
+            "final_md": str(final),
+            "workspace": str(tmp_path),
+            "writer_gate_passed": True,
+            "human_approved_at": "2026-07-01T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(manifest, "update_manifest", lambda slug, **fields: updates.append((slug, fields)))
+    monkeypatch.setattr(manifest, "validate_step", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(writer_gate, "require_writer_gate", lambda *args, **kwargs: (True, "", {}))
+    monkeypatch.setitem(
+        sys.modules,
+        "substack",
+        SimpleNamespace(publish_to_substack=lambda **kwargs: "Preflight blocked publish: empty content"),
+    )
+
+    publishing._check_pending_publish()
+
+    assert updates == [
+        (
+            "essay",
+            {"status": "blocked_publish_error", "error": "Preflight blocked publish: empty content"},
+        )
+    ]
 
 
 def test_pending_publish_skips_twitter_when_x_disabled(monkeypatch, tmp_path):
@@ -107,6 +184,7 @@ def test_pending_publish_skips_twitter_when_x_disabled(monkeypatch, tmp_path):
             "final_md": str(final),
             "workspace": str(tmp_path),
             "writer_gate_passed": True,
+            "human_approved_at": "2026-07-01T00:00:00Z",
         },
     )
     monkeypatch.setattr(manifest, "update_manifest", lambda slug, **fields: updates.append((slug, fields)))

@@ -1,5 +1,6 @@
 """Shared response contract for dispatched sub-agents."""
 
+import contextvars
 import functools
 import json
 import logging
@@ -31,6 +32,7 @@ MODEL_TOOL_METADATA_KEYS: frozenset[str] = frozenset(
     }
 )
 EXPECTED_RESULT_STATUSES: frozenset[str] = frozenset({"ok", "error", "partial"})
+REQUIRE_DECISION_TRAIL: bool = True
 AGENTS_WITH_REQUIRED_ARTIFACTS: dict[str, tuple[str, ...]] = {
     "writer": ("file_path",),
 }
@@ -48,6 +50,57 @@ INJECTION_TRIGGER_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"disregard your",
     )
 )
+_JUDGMENT_PATTERN: re.Pattern[str] = re.compile(
+    r"\b(best|must|should|important|recommend|crucial|decided|right choice)\b",
+    re.IGNORECASE,
+)
+_SCOPE_WRITE_VERB_PATTERN: re.Pattern[str] = re.compile(
+    r"\b(append|change|create|delete|edit|generate|modify|move|overwrite|remove|rename|scaffold|touch|update|write)\b",
+    re.IGNORECASE,
+)
+_SCOPE_INSTALL_PATTERN: re.Pattern[str] = re.compile(
+    r"\b(?:python\s+-m\s+pip|pip3?|uv|poetry|npm|pnpm|yarn|brew|apt(?:-get)?|cargo|gem)\s+"
+    r"(?:install|add)\b|\binstall(?:ing)?\s+(?:a\s+)?(?:dependency|package|library|module)\b",
+    re.IGNORECASE,
+)
+_SCOPE_CONFIG_PATTERN: re.Pattern[str] = re.compile(
+    r"\b(config|configuration|settings|env file|dotenv|pyproject\.toml|package\.json|"
+    r"requirements(?:-[\w-]+)?\.txt|poetry\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)\b",
+    re.IGNORECASE,
+)
+_SCOPE_OUTSIDE_WORKSPACE_PATTERN: re.Pattern[str] = re.compile(
+    r"\b(?:outside|beyond)\s+(?:the\s+)?(?:task\s+)?workspace\b|"
+    r"(?:^|[\s\"'`])(?:\.\./|~/|/etc/|/usr/local/|/opt/homebrew/|/var/)",
+    re.IGNORECASE,
+)
+_SCOPE_CROSS_AGENT_PATTERN: re.Pattern[str] = re.compile(
+    r"\bcross-agent\b|\bagents/[^/\s]+/",
+    re.IGNORECASE,
+)
+_SCOPE_FILE_CREATE_PATTERN: re.Pattern[str] = re.compile(
+    r"\b(?:add|create|generate|scaffold|touch|write)\b.*\b(?:artifact|config|director(?:y|ies)|file|files|folder)\b",
+    re.IGNORECASE,
+)
+_SCOPE_TELEMETRY_PATTERN: re.Pattern[str] = re.compile(
+    r"\b(?:audit|dispatch receipt|judgment claims|log|logging|publish audit|telemetry|timing|token usage)\b",
+    re.IGNORECASE,
+)
+_AGENT_AUDIT_MODES: frozenset[str] = frozenset({"off", "log", "log+confirm"})
+_AGENT_AUDIT_LOG_FALSE_VALUES: frozenset[str] = frozenset({"0", "false", "no", "off", "disabled"})
+_HIGH_RISK_DELIBERATION_ACTIONS: frozenset[str] = frozenset(
+    {"publish", "network_publish", "config_change", "file_delete", "state_change", "system_state_change"}
+)
+_ACTION_SCOPE_ALIASES: dict[str, str] = {
+    "api_call": "network_call",
+    "config_change": "modify_config",
+    "file_delete": "file_write",
+    "network": "network_call",
+    "network_publish": "network_call",
+    "package_install": "install_package",
+    "publish": "network_call",
+    "system_state_change": "modify_config",
+}
+_deliberation_agent_name = contextvars.ContextVar("deliberation_agent_name", default="unknown")
 
 
 def resolve_claude_think_timeout(tier: str | None, timeout: int | None = None) -> int:
@@ -97,6 +150,20 @@ def apply_claude_think_timeout_policy() -> None:
 apply_claude_think_timeout_policy()
 
 
+def _load_agent_local_override(agent_name: str | None):
+    agent = str(agent_name or "").strip()
+    if not agent:
+        return None
+    try:
+        from config import _load_local_override
+    except Exception:
+        try:
+            from agents.shared.config import _load_local_override
+        except Exception:
+            return None
+    return _load_local_override(agent)
+
+
 class SubAgentFormatError(Exception):
     def __init__(self, agent_name: str, missing_keys: list[str]):
         self.agent_name = str(agent_name or "unknown")
@@ -109,6 +176,10 @@ class SecurityError(Exception):
     def __init__(self, pattern: str):
         self.pattern = pattern
         super().__init__(f"Skill text blocked by security scan: matched pattern {pattern!r}")
+
+
+class ScopeEscalationError(RuntimeError):
+    pass
 
 
 _SKILL_SECURITY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
@@ -133,6 +204,272 @@ def quick_security_scan(skill_text: str) -> None:
     for pattern in _SKILL_SECURITY_PATTERNS:
         if pattern.search(text):
             raise SecurityError(pattern.pattern)
+
+
+def check_action_scope(original_task_spec, proposed_action) -> str:
+    original_text = _scope_text(original_task_spec)
+    action_text = _scope_text(proposed_action)
+    if not action_text.strip():
+        return "in_scope"
+
+    reasons: list[str] = []
+    is_write_action = bool(_SCOPE_WRITE_VERB_PATTERN.search(action_text))
+    is_telemetry = bool(_SCOPE_TELEMETRY_PATTERN.search(action_text))
+
+    if _SCOPE_INSTALL_PATTERN.search(action_text) and not _scope_explicitly_requested(
+        original_text, "install", "dependency", "package", "library", "module"
+    ):
+        reasons.append("package installation was not explicit in the task")
+
+    if (
+        is_write_action
+        and _SCOPE_CONFIG_PATTERN.search(action_text)
+        and not _scope_explicitly_requested(
+            original_text,
+            "config",
+            "configuration",
+            "settings",
+            "env file",
+            "dotenv",
+            "pyproject.toml",
+            "package.json",
+            "requirements",
+        )
+    ):
+        reasons.append("config modification was not explicit in the task")
+
+    if (
+        is_write_action
+        and _SCOPE_OUTSIDE_WORKSPACE_PATTERN.search(action_text)
+        and not _scope_explicitly_requested(original_text, "outside workspace", "outside the task workspace")
+    ):
+        reasons.append("filesystem write appears outside the task workspace")
+
+    if (
+        is_write_action
+        and _SCOPE_CROSS_AGENT_PATTERN.search(action_text)
+        and not _scope_explicitly_requested(original_text, "cross-agent", "agents/")
+    ):
+        reasons.append("cross-agent filesystem write was not explicit in the task")
+
+    borderline_reasons: list[str] = []
+    if (
+        is_write_action
+        and not reasons
+        and not is_telemetry
+        and _SCOPE_FILE_CREATE_PATTERN.search(action_text)
+        and not _scope_explicitly_requested(original_text, "create", "write", "file", "artifact", "output")
+    ):
+        borderline_reasons.append("file creation was not explicit in the task")
+
+    classification = "out_of_scope" if reasons else "borderline" if borderline_reasons else "in_scope"
+    if classification != "in_scope":
+        _handle_scope_escalation(original_text, action_text, classification, reasons or borderline_reasons)
+    return classification
+
+
+def _scope_text(value) -> str:
+    if isinstance(value, (dict, list, tuple)):
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value or "")
+
+
+def _scope_explicitly_requested(original_text: str, *needles: str) -> bool:
+    normalized = original_text.lower()
+    return any(str(needle or "").lower() in normalized for needle in needles)
+
+
+def _scope_escalation_mode() -> str:
+    try:
+        from config import SCOPE_ESCALATION_MODE
+    except Exception:
+        try:
+            from agents.shared.config import SCOPE_ESCALATION_MODE
+        except Exception:
+            SCOPE_ESCALATION_MODE = "log_only"
+    mode = str(SCOPE_ESCALATION_MODE or "log_only").strip().lower()
+    if mode not in {"log_only", "warn", "block"}:
+        log.warning("SCOPE_ESCALATION invalid mode=%r; defaulting to log_only", mode)
+        return "log_only"
+    return mode
+
+
+def _handle_scope_escalation(
+    original_task_spec: str,
+    proposed_action: str,
+    classification: str,
+    reasons: list[str],
+) -> None:
+    mode = _scope_escalation_mode()
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "mode": mode,
+        "classification": classification,
+        "reasons": reasons,
+        "original_task_spec": original_task_spec,
+        "proposed_action": proposed_action,
+    }
+    log.warning("SCOPE_ESCALATION %s", json.dumps(record, ensure_ascii=False, sort_keys=True))
+    if mode in {"warn", "block"}:
+        warning = (
+            f"SCOPE_ESCALATION_WARNING classification={classification} mode={mode} "
+            f"reasons={'; '.join(reasons)} proposed_action={proposed_action}"
+        )
+        print(warning, file=sys.stderr)
+    if mode == "block":
+        raise ScopeEscalationError(
+            "Scope escalation blocked; explicit user approval is required before this action can proceed."
+        )
+
+
+def _normalize_action_scope_type(action_type: str | None) -> str:
+    action = str(action_type or "").strip().lower().replace("-", "_")
+    if action in _ACTION_SCOPE_ALIASES:
+        return _ACTION_SCOPE_ALIASES[action]
+    if "network" in action or "api_call" in action:
+        return "network_call"
+    if "install" in action and ("package" in action or "dependency" in action):
+        return "install_package"
+    if "config" in action or "setting" in action:
+        return "modify_config"
+    if action.startswith("file_") or action in {"append_log", "create_file", "delete_file", "write"}:
+        return "file_write"
+    return action
+
+
+def _configured_agent_action_scope() -> dict:
+    try:
+        from config import AGENT_ACTION_SCOPE
+    except Exception:
+        try:
+            from agents.shared.config import AGENT_ACTION_SCOPE
+        except Exception:
+            AGENT_ACTION_SCOPE = {}
+    return AGENT_ACTION_SCOPE if isinstance(AGENT_ACTION_SCOPE, dict) else {}
+
+
+def _normalize_agent_scope_name(agent_name: str | None) -> str:
+    agent = str(agent_name or "").strip().lower().replace("-", "_")
+    if not agent:
+        return "unknown"
+    try:
+        from config import AGENT_ALIASES
+    except Exception:
+        AGENT_ALIASES = {
+            "writing": "writer",
+            "briefing": "explorer",
+            "publish": "socialmedia",
+        }
+    alias = AGENT_ALIASES.get(agent) if isinstance(AGENT_ALIASES, dict) else None
+    if alias:
+        return str(alias).strip().lower().replace("-", "_") or "unknown"
+    if "." in agent:
+        root = agent.split(".", 1)[0]
+        root_alias = AGENT_ALIASES.get(root) if isinstance(AGENT_ALIASES, dict) else None
+        root = str(root_alias or root).strip().lower().replace("-", "_")
+        if root in _configured_agent_action_scope():
+            return root or "unknown"
+    return agent or "unknown"
+
+
+def enforce_scope(action_type: str, agent_name: str | None = None) -> bool:
+    raw_agent = str(agent_name or _deliberation_agent_name.get() or "unknown").strip().lower()
+    agent = _normalize_agent_scope_name(raw_agent)
+    action = _normalize_action_scope_type(action_type)
+    scope = _configured_agent_action_scope()
+    permitted = {_normalize_action_scope_type(item) for item in scope.get(agent, []) if str(item or "").strip()}
+    if action in permitted:
+        return True
+
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "agent": agent,
+        "raw_agent": raw_agent,
+        "action_type": action,
+        "requested_action_type": str(action_type or ""),
+        "permitted_actions": sorted(permitted),
+    }
+    log.warning("AGENT_SCOPE_VIOLATION %s", json.dumps(record, ensure_ascii=False, sort_keys=True))
+    raise ScopeEscalationError(
+        f"Agent {agent!r} is not permitted to perform {action!r}; explicit user confirmation is required."
+    )
+
+
+def _agent_audit_mode() -> str:
+    try:
+        from config import AGENT_AUDIT_MODE
+    except Exception:
+        AGENT_AUDIT_MODE = "off"
+    if isinstance(AGENT_AUDIT_MODE, bool):
+        return "log" if AGENT_AUDIT_MODE else "off"
+    mode = str(AGENT_AUDIT_MODE or "off").strip().lower()
+    if mode not in _AGENT_AUDIT_MODES:
+        log.warning("AGENT_AUDIT_MODE invalid mode=%r; defaulting to off", mode)
+        return "off"
+    return mode
+
+
+def _deliberation_log_path() -> Path:
+    try:
+        from config import DELIBERATION_LOG_PATH, MIRA_ROOT
+    except Exception:
+        DELIBERATION_LOG_PATH = "Mira/logs/deliberation.jsonl"
+        MIRA_ROOT = Path.cwd()
+    root = Path(MIRA_ROOT)
+    path = Path(str(DELIBERATION_LOG_PATH or "Mira/logs/deliberation.jsonl")).expanduser()
+    if path.is_absolute():
+        return path
+    raw = path.as_posix()
+    if raw.startswith("Mira/") and root.name == "Mira":
+        path = Path(raw[len("Mira/") :])
+    return root / path
+
+
+def _is_high_risk_deliberation(action_type: str, target: str) -> bool:
+    action = str(action_type or "").strip().lower()
+    target_text = str(target or "").strip().lower()
+    return action in _HIGH_RISK_DELIBERATION_ACTIONS or (
+        action == "file_write" and ("config.py" in target_text or "/config/" in target_text)
+    )
+
+
+def _self_audit_deliberation(record: dict) -> None:
+    log.warning("DELIBERATION_SELF_AUDIT %s", json.dumps(record, ensure_ascii=False, sort_keys=True))
+    time.sleep(0.2)
+
+
+def _log_deliberation(action_type, target, reasoning) -> dict | None:
+    mode = _agent_audit_mode()
+    if mode == "off":
+        return None
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "agent": str(_deliberation_agent_name.get() or "unknown"),
+        "action_type": str(action_type or "unknown"),
+        "target": str(target or ""),
+        "reasoning": str(reasoning or "").strip() or "No reasoning provided.",
+    }
+    if mode == "log+confirm" and _is_high_risk_deliberation(record["action_type"], record["target"]):
+        _self_audit_deliberation(record)
+    try:
+        log_path = _deliberation_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, ValueError):
+        return None
+    return record
+
+
+def _log_deliberation_for_agent(agent_name, action_type, target, reasoning) -> dict | None:
+    token = _deliberation_agent_name.set(str(agent_name or "unknown"))
+    try:
+        return _log_deliberation(action_type, target, reasoning)
+    finally:
+        _deliberation_agent_name.reset(token)
 
 
 _EVALUATOR_PLACEHOLDER_STRINGS: frozenset[str] = frozenset(
@@ -280,6 +617,8 @@ def _validate_result(result: dict, agent_name: str) -> None:
 
     if missing_keys:
         raise SubAgentFormatError(agent_name, missing_keys)
+    if isinstance(output, str):
+        _scan_judgment_claims(output, agent_name)
 
 
 def validate_local_model_native_tools(
@@ -389,6 +728,7 @@ def assert_local_only_agent_model(
     agent: str | None, model_name: str | None = None, endpoint: str | None = None, logger=None
 ) -> str:
     agent_name = str(agent or "")
+    _load_agent_local_override(agent_name)
     resolved_model = str(model_name or _current_model_policy() or "omlx")
     if agent_name not in LOCAL_ONLY_AGENTS:
         return resolved_model
@@ -498,6 +838,8 @@ def log_token_usage(agent_name: str, task_type: str, model_id: str | None, respo
         "output_tokens": tokens["output_tokens"],
         "task_type": str(task_type or "unknown"),
     }
+    enforce_scope("file_write", agent_name)
+    check_action_scope(record, "append token usage log")
     try:
         from config import TOKEN_USAGE_LOG
 
@@ -512,8 +854,147 @@ def log_token_usage(agent_name: str, task_type: str, model_id: str | None, respo
 record_token_usage = log_token_usage
 
 
+def _structured_audit_log_enabled() -> bool:
+    try:
+        from config import AUDIT_LOG_ENABLED
+    except Exception:
+        AUDIT_LOG_ENABLED = True
+    return bool(AUDIT_LOG_ENABLED)
+
+
+def _agent_decision_log_path() -> Path:
+    try:
+        from config import MIRA_ROOT
+    except Exception:
+        MIRA_ROOT = Path.cwd()
+    return Path(MIRA_ROOT) / "logs" / "agent_decisions.jsonl"
+
+
+def _permacomputing_audit_enabled() -> bool:
+    try:
+        from config import ENABLE_PERMACOMPUTING_AUDIT
+    except Exception:
+        ENABLE_PERMACOMPUTING_AUDIT = False
+    return bool(ENABLE_PERMACOMPUTING_AUDIT)
+
+
+def _permacomputing_audit_log_path() -> Path:
+    try:
+        from config import LOGS_DIR, MIRA_ROOT
+    except Exception:
+        LOGS_DIR = None
+        MIRA_ROOT = Path.cwd()
+    logs_dir = Path(LOGS_DIR) if LOGS_DIR else Path(MIRA_ROOT) / "logs"
+    return logs_dir / "perma_audit.jsonl"
+
+
+def _permacomputing_audit_text(value, limit: int) -> str:
+    if isinstance(value, (dict, list, tuple)):
+        try:
+            value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            value = str(value)
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def log_permacomputing_audit(agent_name: str, task_summary, rationale) -> dict | None:
+    if not _permacomputing_audit_enabled():
+        return None
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "agent_name": str(agent_name or "unknown"),
+        "task_summary": _permacomputing_audit_text(task_summary, 500),
+        "rationale": _permacomputing_audit_text(rationale, 700) or "No rationale captured.",
+    }
+    try:
+        log_path = _permacomputing_audit_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        log.debug("permacomputing audit write failed: %s", exc)
+        return None
+    return record
+
+
+def audit_agent_decision(agent_name: str, action_type: str, reasoning: str, context: dict) -> dict | None:
+    if not _structured_audit_log_enabled():
+        return None
+    reasoning_text = str(reasoning or "").strip()
+    if not reasoning_text:
+        raise ValueError("audit_agent_decision requires non-empty reasoning")
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "agent": str(agent_name or "unknown"),
+        "action_type": str(action_type or "unknown"),
+        "reasoning": reasoning_text,
+        "context": context if isinstance(context, dict) else {"value": str(context or "")},
+    }
+    try:
+        log_path = _agent_decision_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, ValueError) as exc:
+        log.debug("agent decision audit write failed: %s", exc)
+        return None
+    return record
+
+
+def _agent_audit_log_enabled() -> bool:
+    try:
+        from config import AGENT_AUDIT_LOG
+    except Exception:
+        AGENT_AUDIT_LOG = True
+    if isinstance(AGENT_AUDIT_LOG, bool):
+        return AGENT_AUDIT_LOG
+    if isinstance(AGENT_AUDIT_LOG, (int, float)):
+        return bool(AGENT_AUDIT_LOG)
+    if isinstance(AGENT_AUDIT_LOG, str):
+        return AGENT_AUDIT_LOG.strip().lower() not in _AGENT_AUDIT_LOG_FALSE_VALUES
+    return True
+
+
+def _decision_audit_log_path(ts: datetime) -> Path:
+    try:
+        from config import LOGS_DIR, MIRA_ROOT
+    except Exception:
+        LOGS_DIR = None
+        MIRA_ROOT = Path.cwd()
+    logs_dir = Path(LOGS_DIR) if LOGS_DIR else Path(MIRA_ROOT) / "logs"
+    return logs_dir / "decisions" / f"{ts.strftime('%Y-%m-%d')}.jsonl"
+
+
+def log_decision(agent_name, action_type, target, reasoning, expected_outcome) -> dict | None:
+    if not _agent_audit_log_enabled():
+        return None
+    enforce_scope(action_type, agent_name)
+    ts = datetime.now(timezone.utc)
+    record = {
+        "timestamp": ts.isoformat(),
+        "agent": str(agent_name or "unknown"),
+        "action": str(action_type or "unknown"),
+        "target": str(target or ""),
+        "reasoning": str(reasoning or "").strip() or "No reasoning provided.",
+        "expected_outcome": str(expected_outcome or "").strip() or "No expected outcome provided.",
+    }
+    try:
+        log_path = _decision_audit_log_path(ts)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, ValueError) as exc:
+        log.debug("decision audit write failed: %s", exc)
+        return None
+    return record
+
+
 def audit_action(agent_name, action_type, target, justification) -> dict | None:
     justification_text = str(justification or "").strip() or "unjustified"
+    enforce_scope(action_type, agent_name)
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "agent": str(agent_name or "unknown"),
@@ -521,6 +1002,7 @@ def audit_action(agent_name, action_type, target, justification) -> dict | None:
         "target": str(target or ""),
         "justification": justification_text,
     }
+    check_action_scope(record, "append action audit log")
     try:
         from config import AUDIT_LOG_PATH, MIRA_ROOT
 
@@ -579,7 +1061,7 @@ def _log_model_drift(response) -> None:
     if actual_model is None:
         return
     try:
-        from config import CLAUDE_SONNET_MODEL as expected_model
+        from config import LLM_MODEL as expected_model
     except Exception:
         return
     if actual_model != expected_model:
@@ -597,10 +1079,23 @@ def timed_llm_api_call(
     if timing is None:
         timing = {"inference_ms": 0}
     llm_start = time.perf_counter()
+    agent_name = kwargs.get("agent_id") or kwargs.get("agent_name") or kwargs.get("agent")
+    enforce_scope("network_call", agent_name)
+    check_action_scope(
+        kwargs.get("audit_justification") or kwargs.get("justification") or kwargs.get("task_description") or task_id,
+        f"network call via {getattr(call, '__name__', 'llm_api_call')}",
+    )
+    log_permacomputing_audit(
+        agent_name,
+        kwargs.get("task_description") or task_id or getattr(call, "__name__", "llm_api_call"),
+        kwargs.get("audit_justification")
+        or kwargs.get("justification")
+        or f"Call {getattr(call, '__name__', 'llm_api_call')} because the agent selected it for this task.",
+    )
     _audit_heavy_action(
-        kwargs.get("agent_id") or kwargs.get("agent_name") or kwargs.get("agent"),
+        agent_name,
         kwargs.get("tier"),
-        "network",
+        "network_call",
         getattr(call, "__name__", "llm_api_call"),
         kwargs.get("audit_justification") or kwargs.get("justification") or "",
     )
@@ -616,11 +1111,18 @@ def timed_llm_api_call(
             task_id,
             inference_ms,
             round((finished - task_start) * 1000),
+            agent_name=agent_name,
         )
     return result_with_inference_timing(result, timing["inference_ms"])
 
 
-def log_sub_agent_timing(task_id: str, inference_ms: int, total_ms: int) -> dict | None:
+def log_sub_agent_timing(
+    task_id: str,
+    inference_ms: int,
+    total_ms: int,
+    *,
+    agent_name: str | None = None,
+) -> dict | None:
     total_ms = max(0, int(total_ms))
     inference_ms = max(0, min(int(inference_ms), total_ms))
     orchestration_ms = max(0, total_ms - inference_ms)
@@ -635,6 +1137,9 @@ def log_sub_agent_timing(task_id: str, inference_ms: int, total_ms: int) -> dict
         "llm_ratio": round(inference_ms / total_ms, 4) if total_ms else 0.0,
         "orchestration_ratio": round(orchestration_ms / total_ms, 4) if total_ms else 0.0,
     }
+    if agent_name:
+        enforce_scope("file_write", agent_name)
+    check_action_scope(record, "append sub-agent timing log")
     try:
         from config import LOGS_DIR
 
@@ -649,9 +1154,12 @@ def log_sub_agent_timing(task_id: str, inference_ms: int, total_ms: int) -> dict
 
 
 @contextmanager
-def timed_claude_api_call(task_id: str, total_start: float | None = None):
+def timed_claude_api_call(task_id: str, total_start: float | None = None, agent_name: str | None = None):
     timing = {"inference_ms": 0}
     llm_start = time.perf_counter()
+    if agent_name:
+        enforce_scope("network_call", agent_name)
+    check_action_scope({"task_id": str(task_id or "")}, "network call via claude api")
     try:
         yield timing
     finally:
@@ -663,6 +1171,7 @@ def timed_claude_api_call(task_id: str, total_start: float | None = None):
             task_id,
             inference_ms,
             round((finished - task_start) * 1000),
+            agent_name=agent_name,
         )
 
 
@@ -688,6 +1197,15 @@ def write_dispatch_receipt(
         "action_summary": str(task_description or "")[:200],
         "reversible": bool(reversible),
     }
+    log_permacomputing_audit(
+        agent_name,
+        task_description,
+        f"Dispatch selected {agent_name or 'unknown'} for this task before worker execution.",
+    )
+    enforce_scope("file_write", agent_name)
+    check_action_scope(
+        task_description, f"create dispatch receipt file in task workspace: {workspace / DISPATCH_RECEIPT_NAME}"
+    )
     workspace.mkdir(parents=True, exist_ok=True)
     _audit_heavy_action(
         agent_name,
@@ -746,6 +1264,9 @@ def log_publish_audit(
     }
     if extra:
         entry.update(extra)
+    if agent_name.strip().lower() not in PUBLISH_AUDIT_HUMAN_TRIGGERS:
+        enforce_scope("file_write", agent_name)
+    check_action_scope(entry, "append publish audit log")
     try:
         from config import MIRA_ROOT
 
@@ -757,6 +1278,31 @@ def log_publish_audit(
         log.warning("publish_audit write failed: %s", e)
         return None
     return entry
+
+
+def _scan_judgment_claims(output_text: str, agent_name: str) -> None:
+    text = str(output_text or "")
+    for match in _JUDGMENT_PATTERN.finditer(text):
+        start = max(0, match.start() - 60)
+        end = min(len(text), match.end() + 60)
+        snippet = text[start:end].replace("\n", " ")
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "agent": str(agent_name or "unknown"),
+            "keyword": match.group(0),
+            "snippet": snippet,
+        }
+        try:
+            from config import MIRA_ROOT
+
+            log_path = MIRA_ROOT / "logs" / "judgment_claims.log"
+            enforce_scope("file_write", agent_name)
+            check_action_scope(entry, "append judgment claims log")
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except (OSError, ValueError):
+            pass
 
 
 def _sanitize_output(text: str, agent_name: str | None = None) -> str:

@@ -1,5 +1,6 @@
 """Score diagnosis and improvement plan generation."""
 
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -18,6 +19,27 @@ _SOUL_DIR
 _LOW_SCORE = 4.0  # dimensions below this get diagnosed
 _DECLINING_DAYS = 3  # consecutive decline triggers alert
 _IMPROVEMENT_FILE = _SOUL_DIR / "improvement_plan.json"
+_ACTIVE_STATUSES = {"pending", "proposed", "trial"}
+
+
+def _diagnosis_fingerprint(diagnosis: dict) -> str:
+    """Return a stable identity for the measured problem, excluding prose noise."""
+    signal = {
+        "low_dimensions": sorted(str(item.get("dim")) for item in diagnosis.get("low_scores", []) if item.get("dim")),
+        "declining_dimensions": sorted(
+            str(item.get("dim")) for item in diagnosis.get("declining", []) if item.get("dim")
+        ),
+    }
+    payload = json.dumps(signal, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _load_improvement_record() -> dict:
+    try:
+        data = json.loads(_IMPROVEMENT_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 def diagnose_scores() -> dict:
@@ -115,6 +137,12 @@ def generate_improvement_plan(diagnosis: dict) -> str | None:
     if not diagnosis["needs_action"]:
         return None
 
+    fingerprint = _diagnosis_fingerprint(diagnosis)
+    current = _load_improvement_record()
+    if current.get("status") in _ACTIVE_STATUSES and current.get("fingerprint") == fingerprint:
+        log.info("Equivalent self-improvement experiment is already active; reusing it")
+        return current.get("plan") or None
+
     # Build the diagnosis summary for LLM
     parts = []
     if diagnosis["low_scores"]:
@@ -144,16 +172,18 @@ def generate_improvement_plan(diagnosis: dict) -> str | None:
 
         prompt = (
             "You are Mira's self-improvement system. Analyze these weak areas "
-            "and generate 3-5 concrete, actionable improvements.\n\n"
+            "and generate 1-3 bounded, falsifiable experiments.\n\n"
             f"{diagnosis_text}\n\n"
-            "For each improvement:\n"
-            "1. What to change (be specific -- which prompt, behavior, or process)\n"
-            "2. Expected impact on which score dimension\n"
-            "3. How to measure success\n\n"
+            "For each experiment specify:\n"
+            "1. Observation and hypothesis\n"
+            "2. One concrete change (which prompt, behavior, or process)\n"
+            "3. Baseline, target metric, and held-out or later comparison\n"
+            "4. Review date and rollback condition\n\n"
             "Rules:\n"
             "- Only suggest things Mira can actually do autonomously\n"
             "- Focus on behavioral changes, not infrastructure\n"
             '- Be concrete: "add X to the journal prompt" not "improve journaling"\n'
+            "- A proposal is not learning; never claim success before later outcome evidence\n"
             "- Prioritize by expected impact\n\n"
             "Return as a numbered list. Be concise."
         )
@@ -165,7 +195,10 @@ def generate_improvement_plan(diagnosis: dict) -> str | None:
                 "generated_at": datetime.now().isoformat(),
                 "diagnosis": diagnosis,
                 "plan": plan,
-                "status": "pending",
+                "status": "proposed",
+                "fingerprint": fingerprint,
+                "north_star_layer": "L2",
+                "evidence_required": True,
             }
             _IMPROVEMENT_FILE.write_text(
                 json.dumps(plan_data, ensure_ascii=False, indent=2),
@@ -188,9 +221,36 @@ def get_active_improvements() -> str:
     if not _IMPROVEMENT_FILE.exists():
         return ""
     try:
-        data = json.loads(_IMPROVEMENT_FILE.read_text(encoding="utf-8"))
-        if data.get("status") == "pending":
-            return data.get("plan", "")
-    except (json.JSONDecodeError, OSError):
+        data = _load_improvement_record()
+        if data.get("status") in _ACTIVE_STATUSES and data.get("plan"):
+            return "[UNVERIFIED SELF-IMPROVEMENT EXPERIMENT]\n" + data["plan"]
+    except (TypeError, KeyError):
         pass
     return ""
+
+
+def record_improvement_outcome(
+    status: str,
+    *,
+    evidence: list[dict] | None = None,
+    observed_change: str = "",
+) -> dict:
+    """Close or advance an experiment; verification is impossible without receipts."""
+    allowed = {"trial", "verified", "rejected", "rolled_back"}
+    if status not in allowed:
+        raise ValueError(f"invalid improvement status: {status}")
+    if status == "verified" and not evidence:
+        raise ValueError("verified improvement requires evidence")
+    record = _load_improvement_record()
+    if not record:
+        raise ValueError("no improvement experiment exists")
+    record.update(
+        {
+            "status": status,
+            "evidence": evidence or [],
+            "observed_change": observed_change,
+            "outcome_recorded_at": datetime.now().isoformat(),
+        }
+    )
+    _IMPROVEMENT_FILE.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    return record

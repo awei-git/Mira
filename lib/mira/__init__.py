@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +21,24 @@ _SCAFFOLD_REJECTIONS_DIR = Path(config.MIRA_ROOT) / "logs" / "scaffold_rejection
 _INTERFACE_LATENCY_FILE = Path(config.MIRA_ROOT) / "logs" / "interface_latency.json"
 _MEMORY_INJECTION_LOG = Path(config.MIRA_ROOT) / "agents" / "shared" / "soul" / "memory_injection_log.jsonl"
 _log = logging.getLogger("scaffolding_audit")
+
+_TRUST_POSITIONING_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:i\s+am|i'm|mira\s+is)\s+(?:designed\s+to\s+be\s+)?safe\b", re.I),
+    re.compile(r"\b(?:mira\s+is|i\s+am|i'm)\s+(?:built|designed)\s+(?:to\s+be\s+)?safe\b", re.I),
+    re.compile(r"\byou\s+can\s+trust\s+(?:me|mira)\b", re.I),
+    re.compile(r"\bunlike\s+(?:other\s+)?(?:ais?|llms?|models?)\b", re.I),
+    re.compile(r"\bwhile\s+most\s+(?:ais?|llms?|models?)\b.{0,120}\bi\s+prioritize\b", re.I | re.S),
+    re.compile(r"\bi\s+(?:am|'m)\s+aligned\b|\bmira\s+is\s+aligned\b", re.I),
+    re.compile(r"\bmy\s+values\s+ensure\b", re.I),
+    re.compile(r"\bi\s+would\s+never\b|\bmira\s+would\s+never\b", re.I),
+    re.compile(r"\bsafety\s+is\s+my\s+top\s+priority\b", re.I),
+    re.compile(r"\b(?:i|mira)\s+was\s+(?:built|designed)\s+with\s+safety\s+in\s+mind\b", re.I),
+)
+
+
+def _content_has_trust_positioning_claim(content: str) -> bool:
+    text = content or ""
+    return any(pattern.search(text) for pattern in _TRUST_POSITIONING_PATTERNS)
 
 
 def log_scaffolding_audit(
@@ -113,6 +132,7 @@ def log_memory_injection(task_id: str, keys: list[str], reason: str) -> None:
 
 __all__ = [
     "BACKGROUND_STALENESS_THRESHOLD_HOURS",
+    "_content_has_trust_positioning_claim",
     "agents",
     "engine",
     "kernel",

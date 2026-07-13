@@ -44,6 +44,7 @@ class AgentManifest:
         self.keywords: list[str] = data.get("keywords", [])
         self.handles: list[str] = data.get("handles", [])
         self.tier: str = data.get("tier", "light")
+        self.model_backend: str | None = data.get("model_backend")
         self.timeout_category: str = data.get("timeout_category", "short")
         self.entry_point: str = data.get("entry_point", "handler.py:handle")
         self.requires_workspace: bool = data.get("requires_workspace", True)
@@ -96,6 +97,21 @@ class AgentRegistry:
         manifest = self._manifests.get(name)
         return manifest.timeout_category if manifest else "short"
 
+    def get_model_backend(self, name: str) -> str | None:
+        """Return configured model backend for an agent, or None for default."""
+        manifest = self._manifests.get(name)
+        if manifest and manifest.model_backend:
+            return manifest.model_backend
+        try:
+            from config import AGENT_REGISTRY
+        except ImportError:
+            return None
+        agent_config = AGENT_REGISTRY.get(name) if isinstance(AGENT_REGISTRY, dict) else None
+        if not isinstance(agent_config, dict):
+            return None
+        backend = agent_config.get("model_backend")
+        return str(backend).strip() if backend else None
+
     def get_agent_descriptions(self) -> str:
         """Format all agent descriptions for the LLM planner prompt."""
         lines = []
@@ -138,7 +154,12 @@ class AgentRegistry:
             raise ImportError(f"Cannot create module spec for {file_path}")
 
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
         self._modules[name] = module
         return module
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -33,6 +34,10 @@ def test_daily_output_verifiers_accept_real_outputs(monkeypatch, tmp_path):
     items_dir = bridge_dir / "users" / "ang" / "items"
     items_dir.mkdir(parents=True)
     (items_dir / "soul_question_20260501.json").write_text("{}", encoding="utf-8")
+    (items_dir / "disc_daily_collab.json").write_text(
+        json.dumps({"messages": [{"sender": "agent", "timestamp": "2026-05-01T16:00:00Z"}]}),
+        encoding="utf-8",
+    )
 
     monkeypatch.setattr(daily_tasks, "JOURNAL_DIR", journal_dir)
     monkeypatch.setattr(daily_tasks, "MIRA_DIR", bridge_dir)
@@ -40,6 +45,15 @@ def test_daily_output_verifiers_accept_real_outputs(monkeypatch, tmp_path):
     assert daily_tasks._verify_journal({}, "2026-05-01")
     assert daily_tasks._verify_zhesi({}, "2026-05-01")
     assert daily_tasks._verify_soul_question({}, "2026-05-01")
+    assert daily_tasks._verify_daily_collab({}, "2026-05-01")
+
+
+def test_daily_collab_verifier_rejects_state_marker_without_thread_message(monkeypatch, tmp_path):
+    bridge_dir = tmp_path / "bridge"
+    (bridge_dir / "users" / "ang" / "items").mkdir(parents=True)
+    monkeypatch.setattr(daily_tasks, "MIRA_DIR", bridge_dir)
+
+    assert not daily_tasks._verify_daily_collab({"daily_collab_2026-05-01": "done"}, "2026-05-01")
 
 
 def test_self_evolve_verifier_uses_data_proposals(monkeypatch, tmp_path):

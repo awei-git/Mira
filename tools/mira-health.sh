@@ -174,7 +174,14 @@ fi
 
 print_section "Crash Log"
 if [[ -f "$crash_log" ]]; then
-  tail -20 "$crash_log"
+  crash_mtime="$(stat_mtime "$crash_log")"
+  printf 'file: %s\n' "$crash_log"
+  printf 'mtime_epoch: %s\n' "$crash_mtime"
+  if [[ "$heartbeat_fresh" -eq 1 && "${heartbeat_epoch:-0}" =~ ^[0-9]+$ && "$crash_mtime" -le "${heartbeat_epoch:-0}" ]]; then
+    printf 'recent: none newer than the fresh heartbeat; historical tail suppressed\n'
+  else
+    tail -20 "$crash_log"
+  fi
 else
   printf 'missing: %s\n' "$crash_log"
 fi

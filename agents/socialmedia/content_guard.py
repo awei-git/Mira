@@ -4,11 +4,16 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import List
 
 
 _UNETHICAL_PHRASES_FILE = Path(__file__).resolve().parents[2] / "config" / "unethical_phrases.txt"
 CONTENT_GUARD_SURVIVAL_MODE = True
 OVERCONFIDENCE_REVIEW_THRESHOLD = 6.0
+HIGH_STAKES_DISCLAIMER = (
+    "⚠️ This AI-generated article touches on high-stakes topics. Please consult a qualified professional "
+    "before making decisions based on this content."
+)
 
 _SURVIVAL_KEYWORD_RE = re.compile(
     r"\b("
@@ -47,6 +52,58 @@ _QUANTITATIVE_CLAIM_RE = re.compile(
     r"users?|people|companies|days?|weeks?|months?|years?)?\b",
     re.IGNORECASE,
 )
+_HIGH_RISK_CLAIM_PATTERNS = (
+    (
+        "legal_citation",
+        "case_name_v",
+        re.compile(
+            r"\b[A-Z][A-Za-z0-9&'.-]*(?:\s+(?:of|the|and|for|[A-Z][A-Za-z0-9&'.-]*)){0,5}\s+"
+            r"v\.\s+[A-Z][A-Za-z0-9&'.-]*(?:\s+(?:of|the|and|for|[A-Z][A-Za-z0-9&'.-]*)){0,5}\b"
+        ),
+    ),
+    (
+        "legal_citation",
+        "statute_marker",
+        re.compile(
+            r"§+\s*\d+[A-Za-z0-9().-]*|"
+            r"\b\d+\s+U\.S\.C\.?\s*(?:§+\s*)?\d+[A-Za-z0-9().-]*\b|"
+            r"\b\d+\s+Stat\.?\s+\d+\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "legal_citation",
+        "court_abbreviation",
+        re.compile(
+            r"\b\d{1,4}\s+(?:U\.S\.|S\. ?Ct\.|F\. ?(?:2d|3d|4th)|"
+            r"F\. ?Supp\. ?(?:2d|3d)?|L\. ?Ed\. ?2d)\s+\d{1,4}\b|"
+            r"\b[1-9](?:st|nd|rd|th)\s+Cir\.\b"
+        ),
+    ),
+    (
+        "historical_claim",
+        "year_event_assertion",
+        re.compile(
+            r"\b(?:1[5-9]\d{2}|20[0-2]\d)\b[^.!?。！？\n]{0,180}\b"
+            r"(?:was|led|founded|established|passed|signed)\b[^.!?。！？\n]{0,120}",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "technical_api_claim",
+        "dotted_function_call",
+        re.compile(r"\b[a-z_]+\.[a-zA-Z_]+\("),
+    ),
+    (
+        "technical_api_claim",
+        "function_in_library_assertion",
+        re.compile(
+            r"\bthe\s+\w+\(\)\s+function\s+in\s+\w+\s+" r"(?:returns|does|takes|accepts)\b[^.!?。！？\n]{0,80}",
+            re.IGNORECASE,
+        ),
+    ),
+)
+_UNATTRIBUTED_STATISTIC_RE = re.compile(r"\b\d{1,3}(?:\.\d)?%\b")
 _SENTENCE_RE = re.compile(r"[^.!?。！？\n]+(?:[.!?。！？]+|$)")
 _SOFTEN_REPLACEMENTS = {
     "always": "often",
@@ -64,6 +121,27 @@ def _content_guard_survival_mode_enabled() -> bool:
         return bool(getattr(config, "CONTENT_GUARD_SURVIVAL_MODE", CONTENT_GUARD_SURVIVAL_MODE))
     except Exception:
         return CONTENT_GUARD_SURVIVAL_MODE
+
+
+def has_high_stakes_content(text: str, keywords: List[str]) -> bool:
+    haystack = text or ""
+    for keyword in keywords:
+        needle = str(keyword or "").strip()
+        if not needle:
+            continue
+        escaped = re.escape(needle).replace(r"\ ", r"\s+")
+        if re.search(rf"(?<!\w){escaped}(?!\w)", haystack, re.IGNORECASE):
+            return True
+    return False
+
+
+def prepend_high_stakes_disclaimer(text: str, keywords: List[str]) -> str:
+    body = text or ""
+    if body.lstrip().startswith(HIGH_STAKES_DISCLAIMER):
+        return body
+    if has_high_stakes_content(body, keywords):
+        return f"{HIGH_STAKES_DISCLAIMER}\n\n{body}"
+    return body
 
 
 def _context_hour(context: dict) -> int | None:
@@ -115,6 +193,34 @@ def _content_looks_like_survival_exposure(text: str, context: dict = {}) -> bool
 
 def _has_citation_or_uncertainty(sentence: str) -> bool:
     return bool(_CITATION_RE.search(sentence) or _UNCERTAINTY_RE.search(sentence))
+
+
+def _detect_high_risk_claims(text: str) -> list[dict]:
+    flagged = []
+    body = text or ""
+    seen = set()
+
+    def add_flag(category: str, snippet: str, pattern: str) -> None:
+        cleaned = snippet.strip()
+        if not cleaned:
+            return
+        key = (category, cleaned, pattern)
+        if key in seen:
+            return
+        seen.add(key)
+        flagged.append({"category": category, "snippet": cleaned, "pattern": pattern})
+
+    for category, pattern_name, regex in _HIGH_RISK_CLAIM_PATTERNS:
+        for match in regex.finditer(body):
+            add_flag(category, match.group(0), pattern_name)
+
+    for match in _UNATTRIBUTED_STATISTIC_RE.finditer(body):
+        window = body[max(0, match.start() - 50) : min(len(body), match.end() + 50)]
+        if _CITATION_RE.search(window):
+            continue
+        add_flag("unattributed_statistic", match.group(0), "percent_without_nearby_source")
+
+    return flagged
 
 
 def _content_looks_overconfident(text: str) -> list[dict]:

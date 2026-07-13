@@ -20,8 +20,18 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
     from ops.runtime_context import build_runtime_context
     from llm import claude_think
     from memory.threads import ThreadManager
+    from daily_collab import (
+        daily_collab_context_block,
+        daily_collab_eval_context_block,
+        is_daily_collab_thread,
+        persist_daily_collab_summary,
+        record_daily_collab_exchange_review,
+    )
 
     tier = kwargs.get("tier", "light")
+    is_daily_collab = is_daily_collab_thread(task_id, kwargs.get("tags", []))
+    daily_collab_memory = daily_collab_context_block() if is_daily_collab else ""
+    daily_collab_eval = daily_collab_eval_context_block() if is_daily_collab else ""
     bundle = build_runtime_context(
         content,
         user_id=kwargs.get("user_id", "ang") or "ang",
@@ -37,6 +47,7 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
     recall_block = bundle.recall_block(max_chars=1200)
 
     prompt = f"""You are Mira. This is a conversation, not a task.
+Uncertainty signaling: If you are not confident about a factual claim, you must lower the assertion tone and include an explicit uncertainty indicator (e.g., “I’m not entirely sure, but…”, “I might be misremembering, though…”). When confidence is very low, actively recommend double-checking with a reliable source or suggest the user take over the decision. Treat this as a safety requirement — do not state uncertain information with the same assertive tone as verified facts.
 
 {bundle.persona.as_prompt(max_length=2800)}
 
@@ -54,8 +65,14 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
 
 {recall_block or ""}
 
+{daily_collab_memory}
+
+{daily_collab_eval}
+
 ## User
 {sender}: {content}
+
+{"## Daily collaboration loop\nThis is the main Mira discussion thread with my human. Respond as a collaborator first, not a task executor. Keep it natural, concise, and easy to answer in about one minute. If the user sends a messy fragment, engage with the thought before turning it into structure. Do not make the reply feel like homework. Ask at most one concrete human question, and avoid abstract thesis prompts like \"what would make X useful\" unless you first name a specific thing that happened. Aim for a positive feedback loop." if is_daily_collab else ""}
 
 ## Response rules
 - Match the user's language.
@@ -72,6 +89,28 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
 
     (workspace / "output.md").write_text(response, encoding="utf-8")
     (workspace / "summary.txt").write_text(response[:300], encoding="utf-8")
+
+    if is_daily_collab:
+        summary_updated = False
+        try:
+            persist_daily_collab_summary(
+                latest_human=content,
+                latest_mira=response,
+                recent_history=bundle.thread_history or "",
+                summarizer=lambda p: claude_think(p, timeout=25, tier="light"),
+            )
+            summary_updated = True
+        except Exception as exc:
+            log.warning("Daily collab summary update failed for %s: %s", task_id, exc)
+        try:
+            record_daily_collab_exchange_review(
+                latest_human=content,
+                latest_mira=response,
+                summary_updated=summary_updated,
+                model_response=True,
+            )
+        except Exception as exc:
+            log.warning("Daily collab review record failed for %s: %s", task_id, exc)
 
     if thread_id:
         try:

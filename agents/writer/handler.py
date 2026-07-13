@@ -14,8 +14,9 @@ import logging
 import re
 import shutil
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from random import random
 from typing import Literal
 
 import config as _config
@@ -46,6 +47,16 @@ _EPISTEMIC_BIAS_PATH = Path(__file__).resolve().parent / "checklists" / "epistem
 _SUBSTACK_VOICE_PATH = Path(__file__).resolve().parent / "voice" / "substack_voice.md"
 _SPEAKER_IDENTITY_PATH = Path(__file__).resolve().parents[1] / "shared" / "soul" / "identity.md"
 _PATTERN_LOG_PATH = Path(__file__).resolve().parent / "pattern_log.jsonl"
+_ANTI_AI_SCORES_LOG_PATH = Path(__file__).resolve().parent / "logs" / "anti_ai_scores.jsonl"
+_ANTI_AI_STRUCTURED_LOG_PATH = (
+    Path(getattr(_config, "MIRA_ROOT", Path(__file__).resolve().parents[2])) / "logs" / "writer_anti_ai.log"
+)
+_PROXY_DRIFT_LOG_PATH = (
+    Path(getattr(_config, "MIRA_ROOT", Path(__file__).resolve().parents[2])) / "logs" / "proxy_drift.json"
+)
+_CONTENT_QUALITY_LOG_PATH = (
+    Path(getattr(_config, "MIRA_ROOT", Path(__file__).resolve().parents[2])) / "data" / "content_quality_log.jsonl"
+)
 _PATTERN_LOG_HEADER = "# productive-error log — see reading note 2026-05-16"
 _ANTI_AI_SCAN_THRESHOLD = 0.0
 _TECH_INDUSTRY_TERMS = (
@@ -187,6 +198,28 @@ _BANNED_FAKE_TRANSITIONS = (
     "let's ",
     "让我们",
 )
+_OVERCONTRACTION_RE = re.compile(
+    r"\b(?:it|that|there|what|who|where|how|here|this)['’]s\b|"
+    r"\bi['’]m\b|"
+    r"\b(?:you|we|they)['’]re\b|"
+    r"\b(?:i|you|we|they)['’]ve\b|"
+    r"\b(?:i|you|he|she|we|they|it|that|there|this)['’](?:ll|d)\b|"
+    r"\b(?:isn|aren|wasn|weren|don|doesn|didn|haven|hasn|hadn|can|couldn|shouldn|wouldn|won)['’]t\b",
+    re.IGNORECASE,
+)
+_UNCONTRACTED_AUXILIARY_RE = re.compile(
+    r"\b(?:it is|it has|that is|there is|there are|what is|who is|where is|how is|here is|this is|"
+    r"i am|you are|we are|they are|i have|you have|we have|they have|"
+    r"i will|you will|he will|she will|we will|they will|it will|"
+    r"do not|does not|did not|is not|are not|was not|were not|have not|has not|had not|"
+    r"cannot|can not|could not|should not|would not|will not)\b",
+    re.IGNORECASE,
+)
+_OVERCONCRETE_MARKER_RE = re.compile(
+    r"\b(?:for example|for instance|such as|a concrete example|concrete example|in practice|say,|"
+    r"like an?|like the|like this|like that)\b|例如|比如|譬如|举个例子|具体来说",
+    re.IGNORECASE,
+)
 _CONFIDENCE_SCORE_RE = re.compile(
     r"\[(?:C|confidence)[:\s]*[1-5]\b|\bconfidence[:\s]+[1-5]\b",
     re.IGNORECASE,
@@ -234,6 +267,15 @@ _OBSESSION_GAP_KEYWORDS = (
     "design critique",
     "personal essay",
 )
+_ANTI_AI_RULE_NAME_BY_SPAN_TYPE = {
+    "em_dash_density": "长破折号密度",
+    "parallelism": "机械对位结构",
+    "abstract_noun_cluster": "抽象名词簇",
+    "banned_chinese_phrase": "硬禁词与句式",
+    "banned_chinese_pattern": "硬禁词与句式",
+    "banned_english_phrase": "万能开头 / 总结式结尾",
+    "banned_fake_transition": "假情绪与假停顿",
+}
 AntiAiMode = Literal["strict", "relaxed"]
 SourceType = Literal["ai", "human_raw"]
 
@@ -668,6 +710,215 @@ def _append_anti_ai_pattern_log(article: str, counts: Counter[str]) -> None:
         log.warning("failed to append anti-AI pattern log: %s", e)
 
 
+def _append_anti_ai_score_log(article_title: str, scan: dict) -> None:
+    patterns_flagged = sorted(_anti_ai_pattern_counts(scan))
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "article_title": article_title,
+        "patterns_flagged": patterns_flagged,
+        "severity_score": scan.get("score", 0.0),
+    }
+    try:
+        _ANTI_AI_SCORES_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _ANTI_AI_SCORES_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log.warning("failed to append anti-AI score log: %s", e)
+
+
+def _anti_ai_rule_names(scan: dict) -> list[str]:
+    rules: list[str] = []
+    seen: set[str] = set()
+    for span in scan.get("flagged_spans", []):
+        if not isinstance(span, dict):
+            continue
+        span_type = str(span.get("type") or "").strip()
+        rule_name = _ANTI_AI_RULE_NAME_BY_SPAN_TYPE.get(span_type, span_type)
+        if rule_name and rule_name not in seen:
+            seen.add(rule_name)
+            rules.append(rule_name)
+    return rules
+
+
+def _anti_ai_flagged_snippet(scan: dict) -> str:
+    for span in scan.get("flagged_spans", []):
+        if not isinstance(span, dict):
+            continue
+        text = re.sub(r"\s+", " ", str(span.get("text") or "")).strip()
+        if text:
+            return text[:100]
+    return ""
+
+
+def _append_writer_anti_ai_log(task_id: str, initial_scan: dict, final_scan: dict) -> None:
+    observed_scan = final_scan if final_scan.get("flagged_spans") else initial_scan
+    passed = float(final_scan.get("score", 0.0) or 0.0) <= float(final_scan.get("threshold", 0.0) or 0.0)
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "task_id": str(task_id or "unknown"),
+        "rules_triggered": _anti_ai_rule_names(observed_scan),
+        "result": "pass" if passed else "fail",
+        "flagged_text_snippet": _anti_ai_flagged_snippet(observed_scan),
+    }
+    try:
+        _ANTI_AI_STRUCTURED_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _ANTI_AI_STRUCTURED_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log.warning("failed to append writer anti-AI log: %s", e)
+
+
+def log_anti_ai_pass(article_id: str, passed: bool) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "passed": bool(passed),
+    }
+    try:
+        _PROXY_DRIFT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = json.loads(_PROXY_DRIFT_LOG_PATH.read_text(encoding="utf-8")) if _PROXY_DRIFT_LOG_PATH.exists() else []
+        if not isinstance(data, list):
+            data = []
+        data.append(entry)
+        _PROXY_DRIFT_LOG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning("failed to append anti-AI proxy drift log for %s: %s", article_id or "unknown", e)
+
+
+def _parse_anti_ai_log_timestamp(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _anti_ai_log_result_failed(value: object) -> bool:
+    return str(value or "").strip().lower() in {"fail", "failed", "reject", "rejected", "blocked"}
+
+
+def check_anti_ai_drift(now: datetime | None = None) -> dict[str, object]:
+    """Alert when the anti-AI gate's current 30-day rejection rate jumps month over month."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    current_start = now - timedelta(days=30)
+    previous_start = current_start - timedelta(days=30)
+    totals = {
+        "previous_total": 0,
+        "previous_failures": 0,
+        "current_total": 0,
+        "current_failures": 0,
+    }
+    if not _ANTI_AI_STRUCTURED_LOG_PATH.exists():
+        return {**totals, "alert_emitted": False, "reason": "log_missing"}
+
+    try:
+        lines = _ANTI_AI_STRUCTURED_LOG_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError as e:
+        log.warning("anti-AI drift check could not read log: %s", e)
+        return {**totals, "alert_emitted": False, "reason": "log_read_failed"}
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entry = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        timestamp = _parse_anti_ai_log_timestamp(entry.get("timestamp"))
+        if timestamp is None or timestamp < previous_start or timestamp > now:
+            continue
+        failed = _anti_ai_log_result_failed(entry.get("result"))
+        if timestamp < current_start:
+            totals["previous_total"] += 1
+            totals["previous_failures"] += int(failed)
+        else:
+            totals["current_total"] += 1
+            totals["current_failures"] += int(failed)
+
+    previous_rate = totals["previous_failures"] / totals["previous_total"] if totals["previous_total"] else 0.0
+    current_rate = totals["current_failures"] / totals["current_total"] if totals["current_total"] else 0.0
+    if not totals["previous_total"] or not totals["current_total"]:
+        return {
+            **totals,
+            "previous_rate": round(previous_rate, 4),
+            "current_rate": round(current_rate, 4),
+            "relative_increase": 0.0,
+            "alert_emitted": False,
+            "reason": "insufficient_data",
+        }
+
+    if previous_rate > 0:
+        relative_increase = (current_rate - previous_rate) / previous_rate
+        should_alert = relative_increase > 0.20
+    else:
+        relative_increase = 1.0 if current_rate > 0 else 0.0
+        should_alert = current_rate > 0.20
+
+    result = {
+        **totals,
+        "previous_rate": round(previous_rate, 4),
+        "current_rate": round(current_rate, 4),
+        "relative_increase": round(relative_increase, 4),
+        "alert_emitted": False,
+    }
+    if not should_alert:
+        return result
+
+    message = (
+        "Anti-AI drift alert: writer checklist rejection rate rose from "
+        f"{previous_rate:.1%} to {current_rate:.1%} over the last two 30-day windows. "
+        "Review anti-ai.md for definitional drift before the gate silently tightens."
+    )
+    try:
+        from notes_bridge import send_to_outbox
+
+        send_to_outbox(
+            message,
+            metadata={
+                "type": "alert",
+                "source": "writer_anti_ai_drift",
+                "previous_rate": round(previous_rate, 4),
+                "current_rate": round(current_rate, 4),
+                "relative_increase": round(relative_increase, 4),
+            },
+        )
+        result["alert_emitted"] = True
+    except Exception as e:
+        log.warning("anti-AI drift alert outbox write failed: %s", e)
+        result["alert_error"] = str(e)
+    return result
+
+
+def _anti_ai_violation_count(scan: dict) -> int:
+    total = 0
+    for span in scan.get("flagged_spans", []):
+        if not isinstance(span, dict):
+            continue
+        count = span.get("count")
+        total += count if isinstance(count, int) and count > 0 else 1
+    return total
+
+
+def _append_content_quality_log(article_id: str, violation_count: int) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "article_id": article_id,
+        "violation_count": violation_count,
+    }
+    try:
+        _CONTENT_QUALITY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _CONTENT_QUALITY_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log.warning("failed to append content quality log: %s", e)
+
+
 def scan_anti_ai_patterns(text: str, *, anti_ai_mode: AntiAiMode = "strict") -> dict:
     paragraphs = _paragraph_spans(text)
     flagged_spans: list[dict] = []
@@ -675,8 +926,9 @@ def scan_anti_ai_patterns(text: str, *, anti_ai_mode: AntiAiMode = "strict") -> 
 
     if paragraphs:
         em_dash_count = text.count("—")
-        if em_dash_count:
-            score += em_dash_count
+        em_dash_average = em_dash_count / len(paragraphs)
+        if em_dash_average > 2:
+            score += em_dash_average
             for index, (start, end, paragraph) in enumerate(paragraphs):
                 count = paragraph.count("—")
                 if count:
@@ -687,6 +939,7 @@ def scan_anti_ai_patterns(text: str, *, anti_ai_mode: AntiAiMode = "strict") -> 
                             "start": start,
                             "end": end,
                             "count": count,
+                            "average_per_paragraph": round(em_dash_average, 3),
                             "text": paragraph[:160],
                         }
                     )
@@ -779,6 +1032,217 @@ def scan_anti_ai_patterns(text: str, *, anti_ai_mode: AntiAiMode = "strict") -> 
         "threshold": _ANTI_AI_SCAN_THRESHOLD,
         "flagged_spans": flagged_spans,
     }
+
+
+def _parse_blind_human_score(response: str) -> float | None:
+    cleaned = re.sub(r"\b1\s*[-–]\s*10\b", "", response)
+    patterns = (
+        r"(?:rating|score|rate|give(?: it)?)[^\d]{0,40}(10(?:\.0+)?|[1-9](?:\.\d+)?)",
+        r"(?<![\d.])(10(?:\.0+)?|[1-9](?:\.\d+)?)\s*/\s*10",
+        r"(?<![\d.])(10(?:\.0+)?|[1-9](?:\.\d+)?)(?![\d.])",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            score = float(match.group(1))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= score <= 10:
+            return score
+    return None
+
+
+def _maybe_log_blind_drift_warning(text: str, *, anti_ai_mode: AntiAiMode, article_slug: str | None = None) -> None:
+    scan = scan_anti_ai_patterns(text, anti_ai_mode=anti_ai_mode)
+    checklist_score = max(1.0, min(10.0, 10.0 - float(scan.get("score", 0.0) or 0.0)))
+    if float(scan.get("score", 0.0) or 0.0) > float(scan.get("threshold", 0.0) or 0.0):
+        return
+    try:
+        sample_rate = float(getattr(_config, "DRIFT_CHECK_SAMPLE_RATE", 0.1))
+    except (TypeError, ValueError):
+        sample_rate = 0.1
+    if random() >= min(max(sample_rate, 0.0), 1.0):
+        return
+    prompt = "Read this text and rate how naturally human it reads, 1-10. Explain your rating.\n\n" f"{text}"
+    try:
+        response = claude_think(prompt, timeout=120, tier="light")
+    except Exception as e:
+        log.debug("blind drift evaluator failed for %s: %s", _article_slug(article_slug), e)
+        return
+    explanation = _clean_llm_metadata_response(response or "").strip()
+    naive_score = _parse_blind_human_score(explanation)
+    if naive_score is None:
+        return
+    try:
+        threshold = float(getattr(_config, "DRIFT_DIVERGENCE_THRESHOLD", 3))
+    except (TypeError, ValueError):
+        threshold = 3.0
+    divergence = abs(naive_score - checklist_score)
+    if divergence > threshold:
+        log.warning(
+            "WRITER_DRIFT_WARNING article=%s checklist_score=%.1f naive_score=%.1f divergence=%.1f explanation=%r",
+            _article_slug(article_slug),
+            checklist_score,
+            naive_score,
+            divergence,
+            explanation,
+        )
+
+
+def _sentence_word_counts(text: str) -> list[int]:
+    counts: list[int] = []
+    for sentence in re.split(r"[.!?。！？]+", text):
+        stripped = sentence.strip()
+        if not stripped or re.match(r"^#{1,6}\s", stripped):
+            continue
+        words = re.findall(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)?", stripped)
+        if words:
+            counts.append(len(words))
+    return counts
+
+
+def _paragraph_opener_type(word: str) -> str:
+    opener = word.lower()
+    if opener in {"once", "when", "after", "before", "while", "as"}:
+        return "temporal"
+    if opener in {"but", "yet", "however", "still"}:
+        return "contrast"
+    if opener in {"the", "a", "an"}:
+        return "article"
+    if opener in {"this", "that", "these", "those"}:
+        return "demonstrative"
+    if opener in {"i", "we", "you", "he", "she", "they", "it"}:
+        return "pronoun"
+    if opener in {"in", "on", "at", "by", "with", "from", "for", "to"}:
+        return "preposition"
+    if opener.endswith("ly"):
+        return "adverb"
+    return "other"
+
+
+def _paragraph_opener_types(text: str) -> list[str]:
+    opener_types: list[str] = []
+    for _, _, paragraph in _paragraph_spans(text):
+        stripped = paragraph.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        words = re.findall(r"[A-Za-z]+(?:['’][A-Za-z]+)?", stripped)
+        if len(words) < 5:
+            continue
+        opener_types.append(_paragraph_opener_type(words[0]))
+    return opener_types
+
+
+def scan_overcorrection_patterns(text: str) -> dict:
+    flagged_patterns: list[dict[str, object]] = []
+    sentence_counts = _sentence_word_counts(text)
+    if len(sentence_counts) >= 6 and all(8 <= count <= 15 for count in sentence_counts):
+        flagged_patterns.append(
+            {
+                "type": "sentence_length_entropy_low",
+                "severity": "high",
+                "detail": f"{len(sentence_counts)} sentences all fall between 8 and 15 words",
+                "min_words": min(sentence_counts),
+                "max_words": max(sentence_counts),
+            }
+        )
+
+    contraction_count = len(_OVERCONTRACTION_RE.findall(text))
+    uncontracted_count = len(_UNCONTRACTED_AUXILIARY_RE.findall(text))
+    contraction_total = contraction_count + uncontracted_count
+    contraction_ratio = contraction_count / contraction_total if contraction_total else 0.0
+    if contraction_total >= 8 and contraction_count >= 7 and contraction_ratio > 0.8:
+        flagged_patterns.append(
+            {
+                "type": "forced_contraction_ratio",
+                "severity": "high",
+                "detail": f"{contraction_ratio:.0%} of contraction-capable phrases are contracted",
+                "contractions": contraction_count,
+                "total": contraction_total,
+            }
+        )
+
+    opener_types = _paragraph_opener_types(text)
+    if len(opener_types) >= 4:
+        adjacent_changes = sum(1 for before, after in zip(opener_types, opener_types[1:]) if before != after)
+        unique_ratio = len(set(opener_types)) / len(opener_types)
+        if adjacent_changes == len(opener_types) - 1 and unique_ratio >= 0.8:
+            flagged_patterns.append(
+                {
+                    "type": "mechanical_sentence_opening_variety",
+                    "severity": "high",
+                    "detail": "paragraph opener types rotate without repetition",
+                    "opener_types": opener_types,
+                }
+            )
+
+    concrete_markers = list(_OVERCONCRETE_MARKER_RE.finditer(text))
+    sentence_total = max(len(sentence_counts), 1)
+    concrete_marker_ratio = len(concrete_markers) / sentence_total
+    if len(concrete_markers) >= 4 and concrete_marker_ratio >= 0.25:
+        flagged_patterns.append(
+            {
+                "type": "concrete_noun_stuffing",
+                "severity": "high",
+                "detail": f"{len(concrete_markers)} concrete-example markers across {sentence_total} sentence(s)",
+                "marker_ratio": round(concrete_marker_ratio, 3),
+            }
+        )
+
+    high_intensity_count = sum(1 for item in flagged_patterns if item.get("severity") == "high")
+    return {
+        "score": high_intensity_count,
+        "threshold": 2,
+        "flagged": high_intensity_count >= 2,
+        "flagged_patterns": flagged_patterns,
+    }
+
+
+def _format_overcorrection_guidance(report: dict) -> str:
+    patterns = report.get("flagged_patterns")
+    if not isinstance(patterns, list):
+        return ""
+    lines: list[str] = []
+    for item in patterns:
+        if not isinstance(item, dict):
+            continue
+        pattern_type = str(item.get("type") or "unknown")
+        detail = str(item.get("detail") or "").strip()
+        lines.append(f"- {pattern_type}: {detail}" if detail else f"- {pattern_type}")
+    return "\n".join(lines)
+
+
+def _relax_overcorrections(text: str, report: dict, *, tier: str, timeout: int) -> str:
+    guidance = _format_overcorrection_guidance(report)
+    if not guidance:
+        return text
+    prompt = (
+        "You are Mira's final editor. The draft already passed the anti-AI scanner, but the Goodhart guard "
+        "found overcorrection artifacts from aggressive de-AI processing.\n\n"
+        "Revise lightly to relax those artifacts. Restore natural sentence-length variation, use contractions "
+        "only where they sound natural, stop rotating paragraph openers mechanically, and allow useful abstraction "
+        "instead of forcing every idea into a concrete example.\n\n"
+        "Do not reintroduce em dashes, not-X-but-Y parallelism, generic AI essay shells, banned Chinese phrases, "
+        "raw pipeline artifacts, new claims, new evidence, or a checklist report. Preserve names, sources, factual "
+        "claims, Markdown structure, and the user's requested language.\n\n"
+        "# Goodhart guard findings\n\n"
+        f"{guidance}\n\n"
+        "# Draft\n\n"
+        f"{text}\n\n"
+        "Output only the revised markdown. No preface, no explanation."
+    )
+    try:
+        edited = claude_think(prompt, timeout=timeout, tier=tier)
+    except Exception as e:
+        log.warning("overcorrection_relaxation: LLM call failed (%s) — returning original", e)
+        return text
+    cleaned = _clean_llm_metadata_response(edited or "")
+    if not cleaned or len(cleaned) < len(text) * 0.5:
+        log.warning("overcorrection_relaxation: output invalid; keeping original draft")
+        return text
+    return cleaned
 
 
 def scan_obsession_constraints(text: str) -> dict:
@@ -1022,6 +1486,7 @@ def de_ai_pass(
     anti_ai_mode: AntiAiMode = "strict",
     relaxed: bool = False,
     article_slug: str | None = None,
+    task_id: str | None = None,
 ) -> str:
     """Apply the de-AI editorial pass on a piece of markdown.
 
@@ -1056,8 +1521,25 @@ def de_ai_pass(
         )
         text = _run_de_ai_sections(text, tier="heavy", timeout=max(timeout, 240), anti_ai_mode=anti_ai_mode)
     result = _run_de_ai_sections(text, tier=tier, timeout=timeout, anti_ai_mode=anti_ai_mode)
+    final_scan = scan_anti_ai_patterns(result, anti_ai_mode=anti_ai_mode)
+    if final_scan["score"] <= final_scan["threshold"]:
+        overcorrection_scan = scan_overcorrection_patterns(result)
+        if overcorrection_scan["flagged"]:
+            log.info(
+                "de_ai_pass: overcorrection guard flagged %d high-intensity patterns; relaxing de-AI artifacts",
+                overcorrection_scan["score"],
+            )
+            result = _relax_overcorrections(result, overcorrection_scan, tier=tier, timeout=timeout)
+            final_scan = scan_anti_ai_patterns(result, anti_ai_mode=anti_ai_mode)
+    article_id = _article_slug(article_slug)
+    _append_writer_anti_ai_log(task_id or article_id, scan, final_scan)
+    log_anti_ai_pass(
+        article_id, float(final_scan.get("score", 0.0) or 0.0) <= float(final_scan.get("threshold", 0.0) or 0.0)
+    )
+    _append_anti_ai_score_log(article_id, final_scan)
+    _append_content_quality_log(article_id, _anti_ai_violation_count(final_scan))
     if result != original_text:
-        _append_anti_ai_pattern_log(_article_slug(article_slug), pattern_counts)
+        _append_anti_ai_pattern_log(article_id, pattern_counts)
     return result
 
 
@@ -2140,6 +2622,8 @@ def _handle_quick_write(
         editorial_choices = _collect_editorial_choices(draft_before_de_ai, final_text, anti_ai_mode=anti_ai_mode)
         _append_epistemic_editorial_choice(editorial_choices, draft_before_epistemic, final_text)
         _append_speaker_identity_editorial_choice(editorial_choices, draft_before_speaker_identity, final_text)
+    if not voice_preserving and run_de_ai_checklist and not raw_writing_mode:
+        _maybe_log_blind_drift_warning(final_text, anti_ai_mode=anti_ai_mode, article_slug=title)
     _append_audit_editorial_choice(editorial_choices, draft_before_audit, final_text, audit_report)
     final_text += _build_judgment_disclosure(final_text, editorial_choices)
     if voice_preserving or not run_de_ai_checklist:
@@ -2265,6 +2749,8 @@ def _handle_full_write(
             editorial_choices = _collect_editorial_choices(existing, edited, anti_ai_mode=anti_ai_mode)
             _append_epistemic_editorial_choice(editorial_choices, before_epistemic, edited)
             _append_speaker_identity_editorial_choice(editorial_choices, before_speaker_identity, edited)
+        if not voice_preserving and run_de_ai_checklist and not raw_writing_mode:
+            _maybe_log_blind_drift_warning(edited, anti_ai_mode=anti_ai_mode, article_slug=project_dir.name)
         _append_audit_editorial_choice(editorial_choices, before_audit, edited, audit_report)
         edited += _build_judgment_disclosure(edited, editorial_choices)
         if voice_preserving or not run_de_ai_checklist:

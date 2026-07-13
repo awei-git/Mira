@@ -14,6 +14,7 @@ def test_app_status_maps_runtime_statuses_to_app_surface():
     assert app_status("paused_horizon_limit") == "needs-input"
     assert app_status("blocked") == "failed"
     assert app_status("timeout") == "failed"
+    assert app_status("parked") == "archived"
     assert app_status("surprise-status") == "failed"
 
 
@@ -65,6 +66,35 @@ def test_item_projection_matches_mira_item_shape():
     assert item["verification"] == {"verified": False}
     assert item["outcome_verified"] is False
     assert item["verification_method"] == "file_exists"
+
+
+def test_item_projection_collapses_adjacent_duplicate_agent_text():
+    item = item_from_rows(
+        {
+            "id": "disc_daily_collab",
+            "type": "discussion",
+            "title": "Mira",
+            "status": "done",
+            "tags": ["daily-collab"],
+            "origin": "agent",
+            "pinned": True,
+            "quick": False,
+            "parent_id": None,
+            "created_at": "2026-07-01T00:00:00Z",
+            "updated_at": "2026-07-01T00:04:00Z",
+            "error_message": None,
+            "result_path": None,
+        },
+        [
+            {"id": "u1", "sender": "ang", "content": "reply", "kind": "text", "created_at": "2026-07-01T00:01:00Z"},
+            {"id": "a1", "sender": "agent", "content": "same", "kind": "text", "created_at": "2026-07-01T00:02:00Z"},
+            {"id": "a2", "sender": "agent", "content": "same", "kind": "text", "created_at": "2026-07-01T00:02:01Z"},
+            {"id": "u2", "sender": "ang", "content": "again", "kind": "text", "created_at": "2026-07-01T00:03:00Z"},
+            {"id": "a3", "sender": "agent", "content": "same", "kind": "text", "created_at": "2026-07-01T00:04:00Z"},
+        ],
+    )
+
+    assert [m["id"] for m in item["messages"]] == ["u1", "a1", "u2", "a3"]
 
 
 def test_list_items_limits_messages_per_item(monkeypatch):

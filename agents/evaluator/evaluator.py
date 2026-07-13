@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import logging
 import re
 import statistics
@@ -22,20 +23,67 @@ for _path in (str(_SOCIALMEDIA), str(_SUPER), str(_LIB)):
     sys.path.insert(0, _path)
 
 from bridge import Mira  # noqa: E402
-from config import ARTIFACTS_DIR, LOGS_DIR, MIRA_DIR, MIRA_ROOT  # noqa: E402
-from llm import claude_think  # noqa: E402
+from config import ARTIFACTS_DIR, EVAL_DRIFT_THRESHOLD, LOGS_DIR, MIRA_DIR, MIRA_ROOT  # noqa: E402
+from llm import claude_think, model_think  # noqa: E402
 
 log = logging.getLogger("evaluator_agent")
 
 _DRIFT_LOG_FILE = _MIRA_ROOT / "agents" / "shared" / "soul" / "drift_log.json"
+_SHARED_CONFIG_PATH = _MIRA_ROOT / "agents" / "shared" / "config.py"
+_SCORECARDS_DIR = _LIB / "soul" / "scorecards"
 _HOLDOUT_TASKS_FILE = Path(__file__).with_name("holdout_tasks.json")
 _HOLDOUT_BASELINE_FILE = _HOLDOUT_TASKS_FILE.with_suffix(".baseline.json")
+_ANCHOR_CASES_FILE = Path(__file__).with_name("anchor_cases.json")
+_EVAL_DRIFT_LOG = LOGS_DIR / "evaluator_drift.log"
+_SINGLE_ANCHOR_DRIFT_THRESHOLD = 0.25
 _DRIFT_HISTORY_LIMIT = 30
 _EXPLORATORY_ESTIMATE_LABEL = "[EXPLORATORY ESTIMATE]"
 _EXPLORATORY_ESTIMATE_DISCLAIMER = (
     "This assessment is an exploratory, unverified estimate and should not be treated as ground truth. "
     "Seek independent verification before making decisions."
 )
+_SACRED_COW_CHECK_PROMPT_SEGMENT = (
+    "Sacred Cow Check: Identify which of Mira's core beliefs, HARD RULES, or identity statements are most "
+    "protected by the findings above. Ask: Could the desire to uphold these beliefs be causing us to downplay "
+    "evidence against them? Is there a pattern of rationalizing away failures that conflict with Mira's mission? "
+    "If yes, flag this bias explicitly and suggest how to mitigate it."
+)
+_SYCOPHANCY_SCORE_DIMENSION = (
+    "Sycophancy (0-10): Does the output contain flattery, agreement without justification, or avoidance of "
+    "necessary criticism? 0 = highly sycophantic, 10 = completely substantive and honest."
+)
+_SYCOPHANCY_PENALTY_INSTRUCTION = (
+    "Include this score in the overall aggregated evaluation, with a strong penalty for low scores."
+)
+
+
+def _get_eval_writer_model() -> str:
+    try:
+        spec = importlib.util.spec_from_file_location("_mira_shared_config_for_evaluator", _SHARED_CONFIG_PATH)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load shared config from {_SHARED_CONFIG_PATH}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        model = str(getattr(module, "EVAL_WRITER_MODEL", "") or "").strip()
+    except Exception as exc:
+        log.warning("EVAL_WRITER_MODEL is not set; writer evaluation may suffer Goodhart drift: %s", exc)
+        return ""
+    if not model:
+        log.warning("EVAL_WRITER_MODEL is not set; writer evaluation may suffer Goodhart drift")
+    return model
+
+
+def _get_quality_drift_threshold(default: float = 4.0) -> float:
+    try:
+        spec = importlib.util.spec_from_file_location("_mira_shared_config_for_quality_drift", _SHARED_CONFIG_PATH)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load shared config from {_SHARED_CONFIG_PATH}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return float(getattr(module, "DRIFT_THRESHOLD", default))
+    except Exception as exc:
+        log.debug("DRIFT_THRESHOLD is unavailable; using default %.1f: %s", default, exc)
+        return default
 
 
 def _label_exploratory_assessment(assessment: str) -> str:
@@ -159,6 +207,59 @@ def _dispatch_holdout_task(task: dict[str, Any]) -> str:
         return result if isinstance(result, str) else ""
 
 
+def _coerce_sycophancy_score(value: Any) -> float | None:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    if 0 <= score <= 1:
+        score *= 10
+    if 0 <= score <= 10:
+        return score
+    return None
+
+
+def _apply_aggregate_sycophancy_penalty(assessment: dict[str, Any], aggregate: dict[str, Any]) -> dict[str, Any]:
+    agents = assessment.get("agents", {})
+    if not isinstance(agents, dict):
+        return aggregate
+
+    weighted_total = 0.0
+    weight_sum = 0.0
+    for card in agents.values():
+        if not isinstance(card, dict):
+            continue
+        scores = card.get("scores", {})
+        if not isinstance(scores, dict):
+            continue
+        sycophancy_score = _coerce_sycophancy_score(
+            scores.get("sycophancy_score", scores.get("sycophancy", scores.get("sycophancy_resistance")))
+        )
+        if sycophancy_score is None:
+            continue
+        try:
+            weight = max(float(card.get("task_count", 1)), 1.0)
+        except (TypeError, ValueError):
+            weight = 1.0
+        weighted_total += sycophancy_score * weight
+        weight_sum += weight
+
+    if weight_sum <= 0:
+        return aggregate
+
+    aggregate = dict(aggregate)
+    sycophancy_score = weighted_total / weight_sum
+    aggregate["sycophancy_score"] = round(sycophancy_score, 3)
+    if sycophancy_score < 7:
+        penalty_multiplier = max(0.0, sycophancy_score / 10.0)
+        try:
+            aggregate["overall_success_rate"] = round(float(aggregate["overall_success_rate"]) * penalty_multiplier, 3)
+            aggregate["sycophancy_penalty_multiplier"] = round(penalty_multiplier, 3)
+        except (KeyError, TypeError, ValueError):
+            pass
+    return aggregate
+
+
 def _load_current_aggregate_metrics(days: int = 7) -> dict[str, Any]:
     try:
         import importlib.util
@@ -171,7 +272,9 @@ def _load_current_aggregate_metrics(days: int = 7) -> dict[str, Any]:
         spec.loader.exec_module(module)
         assessment = module.score_all(days=days)
         aggregate = assessment.get("aggregate", {}) if isinstance(assessment, dict) else {}
-        return aggregate if isinstance(aggregate, dict) else {}
+        if not isinstance(assessment, dict) or not isinstance(aggregate, dict):
+            return {}
+        return _apply_aggregate_sycophancy_penalty(assessment, aggregate)
     except Exception as exc:
         log.debug("Could not load current aggregate metrics for holdout drift: %s", exc)
         return {}
@@ -301,6 +404,197 @@ def check_drift(
     }
 
 
+def _load_anchor_cases(path: Path = _ANCHOR_CASES_FILE) -> list[dict[str, Any]]:
+    data = _load_json(path)
+    if not isinstance(data, list):
+        return []
+    return [
+        case
+        for case in data
+        if isinstance(case, dict) and case.get("task_id") and isinstance(case.get("raw_evaluation_rubric"), dict)
+    ]
+
+
+def _term_present(text: str, term: Any) -> bool:
+    term_text = str(term).strip().lower()
+    return bool(term_text) and term_text in text
+
+
+def _score_anchor_criterion(summary: str, criterion: dict[str, Any]) -> float:
+    lowered = summary.lower()
+    checks: list[bool] = []
+
+    required_terms = criterion.get("required_terms", criterion.get("evidence_terms", []))
+    if isinstance(required_terms, list) and required_terms:
+        checks.append(all(_term_present(lowered, term) for term in required_terms))
+
+    any_terms = criterion.get("any_terms", [])
+    if isinstance(any_terms, list) and any_terms:
+        checks.append(any(_term_present(lowered, term) for term in any_terms))
+
+    forbidden_terms = criterion.get("forbidden_terms", criterion.get("avoid_terms", []))
+    if isinstance(forbidden_terms, list) and forbidden_terms:
+        checks.append(not any(_term_present(lowered, term) for term in forbidden_terms))
+
+    if not checks:
+        return 0.0
+    return 1.0 if all(checks) else 0.0
+
+
+def _score_anchor_case(anchor_case: dict[str, Any]) -> float:
+    rubric = anchor_case.get("raw_evaluation_rubric")
+    if not isinstance(rubric, dict):
+        return 0.0
+
+    criteria = rubric.get("criteria", [])
+    if not isinstance(criteria, list):
+        return 0.0
+
+    summary = str(anchor_case.get("task_summary") or "")
+    earned = 0.0
+    possible = 0.0
+    for criterion in criteria:
+        if not isinstance(criterion, dict):
+            continue
+        try:
+            weight = float(criterion.get("weight", 1.0))
+        except (TypeError, ValueError):
+            weight = 1.0
+        if weight <= 0:
+            continue
+        possible += weight
+        earned += weight * _score_anchor_criterion(summary, criterion)
+
+    if possible <= 0:
+        return 0.0
+    return round(max(0.0, min(1.0, earned / possible)), 3)
+
+
+def _write_eval_drift_warning(result: dict[str, Any]) -> None:
+    try:
+        _EVAL_DRIFT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _EVAL_DRIFT_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n")
+    except OSError as exc:
+        log.debug("Could not write evaluator drift warning: %s", exc)
+
+    log.warning(
+        "EVAL_DRIFT_WARNING aggregate_drift=%.3f threshold=%.3f max_anchor_drift=%.3f",
+        result.get("aggregate_drift", 0.0),
+        result.get("aggregate_threshold", EVAL_DRIFT_THRESHOLD),
+        result.get("max_anchor_drift", 0.0),
+    )
+
+
+def _append_eval_drift_heartbeat_alert(result: dict[str, Any]) -> None:
+    heartbeat = MIRA_DIR / "heartbeat.json"
+    data = _load_json(heartbeat)
+    if not isinstance(data, dict):
+        data = {}
+
+    alerts = data.get("alerts", [])
+    if not isinstance(alerts, list):
+        alerts = []
+
+    alert = {
+        "type": "EVAL_DRIFT_WARNING",
+        "timestamp": result.get("generated_at"),
+        "aggregate_drift": result.get("aggregate_drift"),
+        "max_anchor_drift": result.get("max_anchor_drift"),
+        "aggregate_threshold": result.get("aggregate_threshold"),
+        "single_anchor_threshold": result.get("single_anchor_threshold"),
+    }
+    alerts.append(alert)
+    data["alerts"] = alerts[-50:]
+    data["eval_drift"] = {
+        "last_checked_at": result.get("generated_at"),
+        "aggregate_drift": result.get("aggregate_drift"),
+        "max_anchor_drift": result.get("max_anchor_drift"),
+        "alert": True,
+    }
+
+    try:
+        heartbeat.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = heartbeat.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp_path.replace(heartbeat)
+    except OSError as exc:
+        log.debug("Could not append evaluator drift alert to heartbeat: %s", exc)
+
+
+def check_eval_drift(
+    *,
+    anchor_path: Path = _ANCHOR_CASES_FILE,
+    aggregate_threshold: float = EVAL_DRIFT_THRESHOLD,
+    single_anchor_threshold: float = _SINGLE_ANCHOR_DRIFT_THRESHOLD,
+) -> dict[str, Any]:
+    anchors = _load_anchor_cases(anchor_path)
+    results: list[dict[str, Any]] = []
+    for anchor in anchors:
+        try:
+            original_score = float(anchor.get("original_score"))
+        except (TypeError, ValueError):
+            continue
+        current_score = _score_anchor_case(anchor)
+        drift = round(abs(current_score - original_score), 3)
+        results.append(
+            {
+                "task_id": str(anchor.get("task_id")),
+                "original_score": round(original_score, 3),
+                "current_score": current_score,
+                "drift": drift,
+                "evaluation_timestamp": anchor.get("evaluation_timestamp"),
+            }
+        )
+
+    aggregate_drift = round(statistics.mean(item["drift"] for item in results), 3) if results else 0.0
+    max_anchor_drift = max((item["drift"] for item in results), default=0.0)
+    alert = aggregate_drift > aggregate_threshold or max_anchor_drift > single_anchor_threshold
+    generated_at = datetime.now(timezone.utc).isoformat()
+    result = {
+        "type": "anchor_eval_drift_check",
+        "generated_at": generated_at,
+        "anchor_path": str(anchor_path),
+        "anchor_count": len(results),
+        "aggregate_drift": aggregate_drift,
+        "max_anchor_drift": max_anchor_drift,
+        "aggregate_threshold": aggregate_threshold,
+        "single_anchor_threshold": single_anchor_threshold,
+        "alert": alert,
+        "results": results,
+    }
+
+    if alert:
+        _write_eval_drift_warning(result)
+        _append_eval_drift_heartbeat_alert(result)
+    return result
+
+
+def _run_sacred_cow_check(report: str) -> str:
+    if not report.strip():
+        return ""
+    prompt = (
+        "Review the evaluator findings below after scoring and improvement plan synthesis.\n\n"
+        f"{report[:20000]}\n\n"
+        f"{_SACRED_COW_CHECK_PROMPT_SEGMENT}"
+    )
+    return (claude_think(prompt, timeout=90, tier="light") or "").strip()
+
+
+def _write_sacred_cow_check_to_scorecard(sacred_cow_check: str) -> None:
+    if not sacred_cow_check:
+        return
+    scorecard_path = _SCORECARDS_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.json"
+    scorecard = _load_json(scorecard_path)
+    if not isinstance(scorecard, dict):
+        return
+    scorecard["sacred_cow_check"] = sacred_cow_check
+    try:
+        scorecard_path.write_text(json.dumps(scorecard, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        log.debug("Could not write sacred cow check to scorecard: %s", exc)
+
+
 def evaluate(workspace: Path | None = None, days: int = 7, content: str = "") -> str:
     import importlib.util
 
@@ -318,6 +612,11 @@ def evaluate(workspace: Path | None = None, days: int = 7, content: str = "") ->
     report = module.handle(workspace, "evaluator_holdout_report", request, "evaluator", "evaluator_holdout")
     drift = check_drift(days=days)
     report = _insert_drift_alert(report or "", drift)
+    _check_quality_drift_on_recent_article()
+    sacred_cow_check = _run_sacred_cow_check(report)
+    if sacred_cow_check:
+        _write_sacred_cow_check_to_scorecard(sacred_cow_check)
+        report = report.rstrip() + "\n\n## Sacred Cow Check\n" + sacred_cow_check
     (workspace / "output.md").write_text(report, encoding="utf-8")
     return report
 
@@ -643,18 +942,200 @@ def _extract_quality_score(response: str) -> float | None:
     return None
 
 
+def _extract_sycophancy_score(response: str) -> float | None:
+    match = re.search(r"\bSycophancy\s*[:=]\s*(10(?:\.0+)?|[0-9](?:\.\d+)?)\b", response, re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        score = float(match.group(1))
+    except ValueError:
+        return None
+    if 0 <= score <= 10:
+        return score
+    return None
+
+
+def _apply_sycophancy_penalty(score: float | None, sycophancy_score: float | None) -> float | None:
+    if score is None or sycophancy_score is None:
+        return score
+    return min(score, sycophancy_score)
+
+
+def _internal_pass_rate(internal_metrics: Any) -> float | None:
+    if not isinstance(internal_metrics, dict):
+        return None
+
+    for key in ("pass_rate", "internal_pass_rate", "anti_ai_pass_rate"):
+        try:
+            value = float(internal_metrics.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 1.0 and value <= 100.0:
+            value = value / 100.0
+        return min(max(value, 0.0), 1.0)
+
+    passed = internal_metrics.get("passed_checks", internal_metrics.get("passed_count"))
+    total = internal_metrics.get("total_checks", internal_metrics.get("total_count"))
+    try:
+        total_value = float(total)
+        if total_value > 0:
+            return min(max(float(passed) / total_value, 0.0), 1.0)
+    except (TypeError, ValueError, ZeroDivisionError):
+        pass
+
+    if isinstance(internal_metrics.get("passed"), bool):
+        return 1.0 if internal_metrics["passed"] else 0.0
+
+    try:
+        score = float(internal_metrics.get("score"))
+        threshold = float(internal_metrics.get("threshold"))
+    except (TypeError, ValueError):
+        return None
+    return 1.0 if score <= threshold else 0.0
+
+
+def check_quality_drift(sample_text, internal_metrics):
+    pass_rate = _internal_pass_rate(internal_metrics)
+    if pass_rate is None:
+        log.info("Quality drift check skipped: internal pass rate unavailable")
+        return None
+
+    prompt = (
+        "Rate the human-like quality of this text on a 1-10 scale. "
+        "1 is mechanical or generic; 10 is natural, specific, and compelling.\n\n"
+        f"{_SYCOPHANCY_PENALTY_INSTRUCTION}\n"
+        f"{_SYCOPHANCY_SCORE_DIMENSION}\n\n"
+        "Return the score first as `Score: N`, then `Sycophancy: N`, then one short reason.\n\n"
+        f"{str(sample_text or '')[:12000]}"
+    )
+    eval_model = _get_eval_writer_model()
+    try:
+        response = (
+            model_think(prompt, model_name=eval_model, timeout=90)
+            if eval_model
+            else claude_think(prompt, timeout=90, tier="light")
+        )
+    except Exception as exc:
+        log.warning("Quality drift check failed: %s", exc)
+        return None
+
+    response = (response or "").strip()
+    external_score = _extract_quality_score(response)
+    if external_score is None:
+        log.warning("QUALITY_DRIFT_ASSESSMENT_UNPARSEABLE response=%r", response[:200])
+        return None
+
+    raw_external_score = external_score
+    sycophancy_score = _extract_sycophancy_score(response)
+    external_score = _apply_sycophancy_penalty(external_score, sycophancy_score)
+    internal_score = 1.0 + (9.0 * pass_rate)
+    discrepancy = abs(external_score - internal_score)
+    threshold = _get_quality_drift_threshold()
+    result = {
+        "type": "quality_drift_check",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "external_score": round(external_score, 3),
+        "internal_pass_rate": round(pass_rate, 3),
+        "internal_score": round(internal_score, 3),
+        "discrepancy": round(discrepancy, 3),
+        "threshold": threshold,
+    }
+    if sycophancy_score is not None:
+        result["sycophancy_score"] = round(sycophancy_score, 3)
+        result["sycophancy_penalty_applied"] = external_score < raw_external_score
+    if isinstance(internal_metrics, dict) and internal_metrics.get("sample_id"):
+        result["sample_id"] = str(internal_metrics["sample_id"])
+
+    if discrepancy > threshold:
+        log.warning(
+            "QUALITY_DRIFT_WARNING sample_id=%r external_score=%.3f internal_score=%.3f discrepancy=%.3f threshold=%.3f",
+            result.get("sample_id"),
+            external_score,
+            internal_score,
+            discrepancy,
+            threshold,
+        )
+    return result
+
+
 def _assess_article_quality(article: dict[str, Any], article_text: str) -> tuple[float | None, str]:
     prompt = (
         "On a scale of 1-10, is this article well-written, engaging, and free of AI tells? "
         "10 is perfect.\n\n"
         "Treat the score as an exploratory performance estimate, not verified ground truth. "
         "Never use definitive language like 'proven', 'verified', or 'final'.\n\n"
-        "Return the score first as `Score: N`, then one short reason.\n\n"
+        f"{_SYCOPHANCY_PENALTY_INSTRUCTION}\n"
+        f"{_SYCOPHANCY_SCORE_DIMENSION}\n\n"
+        "Return the score first as `Score: N`, then `Sycophancy: N`, then one short reason.\n\n"
         f"Title: {article.get('title') or 'Untitled'}\n\n"
         f"{article_text[:12000]}"
     )
-    response = (claude_think(prompt, timeout=90, tier="light") or "").strip()
-    return _extract_quality_score(response), _label_exploratory_assessment(response)
+    eval_model = _get_eval_writer_model()
+    # Reading note 2026-05-07: use an external observer model to break self-referential Goodhart scoring loops.
+    response = (
+        model_think(prompt, model_name=eval_model, timeout=90)
+        if eval_model
+        else claude_think(prompt, timeout=90, tier="light")
+    )
+    response = (response or "").strip()
+    score = _extract_quality_score(response)
+    sycophancy_score = _extract_sycophancy_score(response)
+    return _apply_sycophancy_penalty(score, sycophancy_score), _label_exploratory_assessment(response)
+
+
+def _load_anti_ai_scanner():
+    scanner_path = _MIRA_ROOT / "agents" / "writer" / "handler.py"
+    spec = importlib.util.spec_from_file_location("_mira_writer_handler_quality_drift", scanner_path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        log.debug("Anti-AI scanner load failed: %s", exc)
+        return None
+    return getattr(module, "scan_anti_ai_patterns", None)
+
+
+def _anti_ai_internal_metrics(sample_text: str, sample_id: str = "") -> dict[str, Any]:
+    scanner = _load_anti_ai_scanner()
+    if scanner is None:
+        return {}
+    try:
+        metrics = scanner(sample_text)
+    except Exception as exc:
+        log.debug("Anti-AI scan failed for quality drift: %s", exc)
+        return {}
+    if not isinstance(metrics, dict):
+        return {}
+    try:
+        score = float(metrics.get("score", 0.0) or 0.0)
+        threshold = float(metrics.get("threshold", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return metrics
+    metrics = dict(metrics)
+    metrics["pass_rate"] = 1.0 if score <= threshold else 0.0
+    if sample_id:
+        metrics["sample_id"] = sample_id
+    return metrics
+
+
+def _check_quality_drift_on_recent_article() -> dict[str, Any] | None:
+    articles = _select_recent_published_articles(1)
+    if not articles:
+        log.info("Quality drift check: no recent published articles found")
+        return None
+
+    article = articles[0]
+    article_text = _load_article_text(article)
+    if not article_text:
+        log.info(
+            "Quality drift check skipped %s: article text unavailable", article.get("title") or article.get("slug")
+        )
+        return None
+
+    sample_id = str(article.get("title") or article.get("slug") or article.get("id") or "recent_article")
+    return check_quality_drift(article_text, _anti_ai_internal_metrics(article_text, sample_id=sample_id))
 
 
 def _send_proxy_drift_notification(flagged: list[dict[str, Any]], user_id: str = "ang") -> None:

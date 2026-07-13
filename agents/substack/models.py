@@ -24,6 +24,7 @@ ARTICLE_STATES = {
 }
 
 PILOT_REVIEW_STATES = {"healthy", "watch", "revise", "blocked"}
+GROWTH_RECOVERY_STATES = {"active", "watch", "complete", "paused", "blocked"}
 
 
 CONTENT_SERIES = {
@@ -217,6 +218,34 @@ class PilotReview:
         if review.status not in PILOT_REVIEW_STATES:
             review.status = "watch"
         return review
+
+
+@dataclass
+class GrowthRecoverySprint:
+    """Active Substack distribution recovery experiment."""
+
+    id: str
+    status: str = "active"
+    started_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+    anchor_article: dict[str, Any] = field(default_factory=dict)
+    baseline: dict[str, Any] = field(default_factory=dict)
+    weekly_targets: dict[str, int] = field(default_factory=dict)
+    weeks: list[dict[str, Any]] = field(default_factory=list)
+    next_actions: list[str] = field(default_factory=list)
+    guardrails: list[str] = field(default_factory=list)
+    experiment_log: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "GrowthRecoverySprint":
+        known = cls.__dataclass_fields__.keys()
+        sprint = cls(**{k: v for k, v in data.items() if k in known})
+        if sprint.status not in GROWTH_RECOVERY_STATES:
+            sprint.status = "watch"
+        return sprint
 
 
 @dataclass

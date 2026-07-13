@@ -34,6 +34,15 @@ from persona.persona_context import get_persona_context
 from memory.soul import load_soul, format_soul, recall_context
 from llm import claude_act, claude_think, ClaudeTimeoutError
 from writing_workflow import run_full_pipeline
+from daily_collab import (
+    build_daily_collab_article_discussion_message,
+    daily_collab_context_block,
+    daily_collab_eval_context_block,
+    is_daily_collab_thread,
+    persist_daily_collab_summary,
+    record_daily_collab_exchange_review,
+    select_daily_collab_article_seed_for_discussion,
+)
 
 # Import helpers that remain in task_worker.py
 from task_worker import (
@@ -348,6 +357,8 @@ def _fallback_discussion_response(latest_msg: str, item_conversation: str = "") 
     not disappear behind a model/provider failure.
     """
     compact = latest_msg.strip().lower()
+    if any(token in compact for token in ("probe", "phone-path", "clean path", "footer check")):
+        return "Confirmed: this reached the Mira discussion thread."
     if any(token in compact for token in ("arbitrage", "套利")):
         return (
             "可以，但我不能在本地模型过载时假装自己已经扫过实时盘口。现在值得看的套利/相对价值方向有五类："
@@ -365,6 +376,32 @@ def _fallback_discussion_response(latest_msg: str, item_conversation: str = "") 
     if item_conversation:
         return "我收到了，但本地模型刚才过载，没有稳定生成完整回答。我会保留这个上下文，下一轮继续从你的这条回复接着聊，而不是另开一个独立想法。"
     return "我收到了，但本地模型刚才过载，没有稳定生成完整回答；这次不会再静默失败。"
+
+
+def _daily_collab_local_response(latest_msg: str) -> str:
+    """Local no-provider response for small daily-collab prompts."""
+    compact = latest_msg.strip().lower()
+    asks_for_thought = any(
+        token in compact
+        for token in (
+            "new thought",
+            "what are you thinking",
+            "what's on your mind",
+            "whats on your mind",
+            "想法",
+            "今天想",
+        )
+    )
+    if not asks_for_thought:
+        return ""
+    seed = select_daily_collab_article_seed_for_discussion()
+    if seed:
+        return build_daily_collab_article_discussion_message(seed)
+    return (
+        "My new thought today is small but concrete: a useful agent should not measure aliveness by activity. "
+        "It should measure whether a conversation changed the next action. "
+        "If I cannot point to that change, I probably produced motion, not collaboration."
+    )
 
 
 def handle_discussion(task: dict, workspace: Path, task_id: str, thread_id: str, tier: str = "light") -> str:
@@ -392,7 +429,45 @@ def handle_discussion(task: dict, workspace: Path, task_id: str, thread_id: str,
         log.warning("Discussion: no message content found in task")
         return ""
 
+    deterministic_response = _fallback_discussion_response(latest_msg, "")
+    if "probe" in latest_msg.strip().lower() or "phone-path" in latest_msg.strip().lower():
+        response = deterministic_response
+        (workspace / "output.md").write_text(response, encoding="utf-8")
+        _write_result(workspace, task_id, "done", response, tags=["discussion"])
+        return response
+
     item_conversation = _format_item_conversation(messages)
+    tag_set = {str(tag).strip().lower() for tag in task.get("tags", []) if str(tag).strip()}
+    is_daily_collab = is_daily_collab_thread(task_id, tag_set)
+    daily_local_response = _daily_collab_local_response(latest_msg) if is_daily_collab else ""
+    if daily_local_response:
+        response = daily_local_response
+        (workspace / "output.md").write_text(response, encoding="utf-8")
+        _write_result(workspace, task_id, "done", response, tags=["discussion"])
+        summary_updated = False
+        try:
+            persist_daily_collab_summary(
+                latest_human=latest_msg,
+                latest_mira=response,
+                recent_history=item_conversation,
+                summarizer=None,
+            )
+            summary_updated = True
+        except Exception as e:
+            log.warning("Daily collab summary update failed for %s: %s", task_id, e)
+        try:
+            record_daily_collab_exchange_review(
+                latest_human=latest_msg,
+                latest_mira=response,
+                summary_updated=summary_updated,
+                model_response=False,
+            )
+        except Exception as e:
+            log.warning("Daily collab review record failed for %s: %s", task_id, e)
+        return response
+
+    daily_collab_memory = daily_collab_context_block() if is_daily_collab else ""
+    daily_collab_eval = daily_collab_eval_context_block() if is_daily_collab else ""
 
     # Build conversation history from thread inbox/outbox
     conv_history = load_thread_history(thread_id)
@@ -438,12 +513,18 @@ def handle_discussion(task: dict, workspace: Path, task_id: str, thread_id: str,
 
 {f"## Relevant prior context (from past conversations and work){chr(10)}{prior_recall}" if prior_recall else ""}
 
+{daily_collab_memory}
+
+{daily_collab_eval}
+
 {f"## This item's conversation so far{chr(10)}{item_conversation}" if item_conversation else ""}
 
 {conv_history if conv_history else ""}
 
 ## {sender}'s message
 {latest_msg}
+
+{"## Daily collaboration loop\nThis is the main Mira discussion thread with my human. Respond as a collaborator first, not a task executor. Keep it natural, concise, and easy to answer in about one minute. If the user sends a messy fragment, engage with the thought before turning it into structure. Do not make the reply feel like homework. Ask at most one concrete human question, and avoid abstract thesis prompts like \"what would make X useful\" unless you first name a specific thing that happened. Aim for a positive feedback loop." if is_daily_collab else ""}
 
 ## How to respond
 - Voice: honest observation from a limited but curious perspective. Like Klara in "Klara and the Sun" -- you see clearly, you don't pretend to know everything, you notice what others miss.
@@ -459,12 +540,16 @@ def handle_discussion(task: dict, workspace: Path, task_id: str, thread_id: str,
 - Don't start with "That's a great question" or similar filler. Just respond."""
 
     log.info("Discussion using tier=%s", tier)
+    model_response = False
+    discussion_timeout = 12 if is_daily_collab else 45
     try:
-        response = claude_think(prompt, timeout=45, tier=tier)
+        response = claude_think(prompt, timeout=discussion_timeout, tier=tier)
+        model_response = bool(response)
     except ClaudeTimeoutError:
-        log.info("Discussion timed out, retrying with 90s")
+        log.info("Discussion timed out, retrying once")
         try:
-            response = claude_think(prompt, timeout=45, tier=tier)
+            response = claude_think(prompt, timeout=discussion_timeout, tier=tier)
+            model_response = bool(response)
         except ClaudeTimeoutError:
             log.warning("Discussion timed out twice for task %s", task_id)
             response = None
@@ -481,6 +566,29 @@ def handle_discussion(task: dict, workspace: Path, task_id: str, thread_id: str,
     # Write output
     (workspace / "output.md").write_text(response, encoding="utf-8")
     _write_result(workspace, task_id, "done", response, tags=["discussion"])
+
+    if is_daily_collab:
+        summary_updated = False
+        try:
+            summarizer = (lambda p: claude_think(p, timeout=25, tier="light")) if model_response else None
+            persist_daily_collab_summary(
+                latest_human=latest_msg,
+                latest_mira=response,
+                recent_history=item_conversation,
+                summarizer=summarizer,
+            )
+            summary_updated = True
+        except Exception as e:
+            log.warning("Daily collab summary update failed for %s: %s", task_id, e)
+        try:
+            record_daily_collab_exchange_review(
+                latest_human=latest_msg,
+                latest_mira=response,
+                summary_updated=summary_updated,
+                model_response=model_response,
+            )
+        except Exception as e:
+            log.warning("Daily collab review record failed for %s: %s", task_id, e)
 
     log.info("Discussion response (%d chars): %s", len(response), response[:120])
     return response
@@ -1226,7 +1334,7 @@ def _handle_general(workspace: Path, task_id: str, content: str, sender: str, th
 def _handle_autowrite_approval(workspace: Path, task_id: str):
     """Handle approval for an autowrite article -- write to publish manifest."""
     import re as _re
-    from publish.manifest import update_manifest
+    from publish.manifest import approve_for_publish
 
     meta_file = workspace / "autowrite_meta.json"
     if meta_file.exists():
@@ -1236,10 +1344,11 @@ def _handle_autowrite_approval(workspace: Path, task_id: str):
             article_dir = Path(meta.get("workspace", final.parent))
             title = meta.get("title", final.stem)
             slug = meta.get("slug", article_dir.name)
-            update_manifest(
+            approve_for_publish(
                 slug,
+                approved_by="human",
+                note=f"Approved from autowrite task {task_id}.",
                 title=title,
-                status="approved",
                 workspace=str(article_dir),
                 final_md=str(final),
                 item_id=task_id,
@@ -1351,10 +1460,11 @@ def _handle_autowrite_approval(workspace: Path, task_id: str):
     title = title_match.group(1).strip() if title_match else slug.replace("-", " ").title()
 
     # Write to publish manifest (replaces agent_state.json single-slot)
-    update_manifest(
+    approve_for_publish(
         slug,
+        approved_by="human",
+        note=f"Approved from autowrite task {task_id}.",
         title=title,
-        status="approved",
         workspace=str(article_dir or final.parent),
         final_md=str(final),
         item_id=task_id,

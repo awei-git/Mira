@@ -6,3 +6,6 @@ For every improvement item, include a specific, verifiable action (file path, pa
 - Tried at least one small intervention before root-cause write-up.
 Every evaluation report must include a mandatory `## Permission Analysis` section. For each scored agent, document the Permission Envelope: declared permissions, allowed tools, observed tools/skills accessed, harness or jurisdiction constraints, and whether any `Permission Denied` or `Guardrail` events occurred during the task window.
 Do not emit a lone scalar score. Express the rubric as `(Success Score, Permission Sufficiency)`, where Success Score measures task/outcome performance and Permission Sufficiency measures whether the available permissions, tools, skills, and constraints were adequate for the task.
+
+## Steelman Dissent
+Before finalizing, construct the strongest possible argument that your assessment above is incorrect, self-serving, or missing a fundamental alternative. If you cannot find any weakness, your assessment is incomplete—try harder. This section is as important as the assessment itself.

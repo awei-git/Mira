@@ -87,6 +87,10 @@ def _compact(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
+def _cjk_char_count(text: str) -> int:
+    return len(re.findall(r"[\u3400-\u9fff]", text or ""))
+
+
 def _extract_title(article_text: str, fallback: str = "") -> str:
     for line in article_text.splitlines():
         stripped = line.strip()
@@ -174,6 +178,64 @@ def _score_reader_value(article_text: str, subtitle: str, reader_promise: str = 
     return round(min(max(score, 0.0), 10.0), 2)
 
 
+def _has_first_person_voice(article_text: str) -> bool:
+    return bool(re.search(r"\b(I|I'm|I've|I'd|my|me)\b", article_text))
+
+
+def _has_wrong_mira_pov(article_text: str) -> bool:
+    return bool(
+        re.search(
+            r"\bMira(?:'s)?\s+(is|was|has|had|shows|showed|writes|wrote|thinks|thought|needs|needed|fails|failed)\b",
+            article_text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _has_first_hand_operational_anchor(article_text: str, evidence_ledger: list[dict[str, Any]]) -> bool:
+    lower = article_text.lower()
+    textual_anchor = bool(
+        re.search(
+            r"\b(i|my)\s+(traced|caught|noticed|found|realized|ran|tested|changed|failed|broke|published|asked|replied)\b",
+            lower,
+        )
+        or any(
+            phrase in lower
+            for phrase in (
+                "my human",
+                "my pipeline",
+                "my memory",
+                "my monitor",
+                "my app",
+                "my thread",
+                "my task",
+                "my draft",
+            )
+        )
+    )
+    if not textual_anchor:
+        return False
+    strong_sources = {
+        "bridge_item",
+        "control_db",
+        "daily_collab",
+        "incident",
+        "proposal",
+        "review_record",
+        "runtime_log",
+        "task_trace",
+    }
+    for entry in evidence_ledger:
+        if not isinstance(entry, dict):
+            continue
+        source = str(entry.get("source") or "").strip()
+        if source in strong_sources:
+            return True
+        if entry.get("task_id") or entry.get("path"):
+            return True
+    return False
+
+
 def first_person_operational_claims(article_text: str) -> list[str]:
     """Return source-sensitive first-person claims that need evidence."""
     claims = []
@@ -198,6 +260,14 @@ def _ledger_covers_claims(claims: list[str], evidence_ledger: list[dict[str, Any
     ]
     if not usable:
         return False, claims[:5]
+    linked = [_compact(str(entry.get("claim") or "")).lower() for entry in usable if entry.get("claim")]
+    if linked:
+        uncovered = []
+        for claim in claims:
+            normalized_claim = _compact(claim).lower()
+            if not any(link in normalized_claim or normalized_claim in link for link in linked):
+                uncovered.append(claim)
+        return not uncovered, uncovered[:5]
     if len(usable) < min(len(claims), 3):
         return False, claims[len(usable) : len(usable) + 5]
     return True, []
@@ -238,14 +308,26 @@ def evaluate_article_quality(
     claims = first_person_operational_claims(article_text)
     covered, uncovered = _ledger_covers_claims(claims, ledger)
     if not covered:
+        label = (
+            "claim-linked evidence"
+            if any(entry.get("claim") for entry in ledger if isinstance(entry, dict))
+            else "evidence ledger entries"
+        )
         blocking.append(
-            "first-person operational claims need evidence ledger entries: "
-            + " | ".join(claim[:140] for claim in uncovered[:3])
+            f"first-person operational claims need {label}: " + " | ".join(claim[:140] for claim in uncovered[:3])
         )
     if not subtitle:
         blocking.append("subtitle is required")
     if not reader_promise:
         warnings.append("reader_promise missing; include it in the article packet")
+    if _cjk_char_count(article_text) > 40 or _cjk_char_count(article_text) / max(len(article_text), 1) > 0.02:
+        blocking.append("Substack articles must be English-only")
+    if not _has_first_person_voice(article_text):
+        blocking.append("first-person Mira voice is required")
+    if _has_wrong_mira_pov(article_text):
+        blocking.append("Mira must not be described from the outside in Substack essays")
+    if not _has_first_hand_operational_anchor(article_text, ledger):
+        blocking.append("first-hand operational experience is required")
 
     return ArticleQualityReport(
         title=title,

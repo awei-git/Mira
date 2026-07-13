@@ -1107,6 +1107,8 @@ Then provide:
 - **Top 3 strengths**
 - **Top 3 weaknesses**
 - **Specific revision instructions** (quote text, suggest changes)
+- **Blocking issues** labeled P0/P1. PASS is forbidden while any P0/P1 remains.
+- For each factual or first-person operational claim, name the evidence entry that supports it; do not infer coverage from the number of ledger entries.
 
 You MUST identify at least 2 specific weaknesses. If you believe the draft is strong, still enumerate which 2 dimensions are weakest and why. A review that lists no weaknesses will be rejected and re-run. If you find nothing to critique, explain why each standard dimension (argument, structure, evidence, prose) is adequate.
 
@@ -1120,6 +1122,8 @@ READER_HOOK: [score]/10
 VOICE_DISTINCTIVENESS: [score]/10
 TITLE_QUALITY: [score]/10
 EVIDENCE_LEDGER_DISCIPLINE: [score]/10
+VERDICT: HOLD|PASS
+UNRESOLVED_P0_P1: [count]
 
 Be rigorous. Write in the same language as the draft.
 """
@@ -1296,7 +1300,7 @@ def harsh_review_prompt(
     if outline:
         outline_ref = f"\n\n**原始大纲（对照检查遗漏）:**\n{outline[:6000]}\n"
 
-    return f"""你是一位以严苛著称的文学编辑。你的审稿标准极高，从不给面子，只追求作品达到出版水准。
+    return f"""You are a demanding publication editor. Be direct, precise, and useful; severity is not a substitute for evidence.
 你被称为"红笔杀手"——经你手的稿子没有不被改得面目全非的。
 
 评审轮次: {round_num}
@@ -1366,4 +1370,7 @@ OVERALL: [average]/10
 ### 总评
 [一段话：这稿子能发表吗？差在哪？需要几轮大改？]
 
-用中文评审。绝对不要客气。"""
+VERDICT: HOLD|PASS
+UNRESOLVED_P0_P1: [count]
+
+PASS is forbidden while any factual claim lacks support, the title promise is unfulfilled, or a P0/P1 issue remains. Write the review in the same language as the draft. Review the work, not the author's worth."""

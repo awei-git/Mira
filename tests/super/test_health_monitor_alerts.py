@@ -76,6 +76,43 @@ def test_harvest_all_consumes_dead_pid_once(monkeypatch, tmp_path):
     assert health_monitor.harvest_all() == []
 
 
+def test_harvest_all_keeps_live_pid_with_start_time(monkeypatch, tmp_path):
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir()
+    pid_file = pid_dir / "autowrite-check.pid"
+    started = "Fri Jun 26 10:00:00 2026"
+    pid_file.write_text(f"12345:{started}", encoding="utf-8")
+
+    monkeypatch.setattr(health_monitor, "_BG_PID_DIR", pid_dir)
+    monkeypatch.setattr(health_monitor.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(health_monitor, "_proc_start_time", lambda pid: started)
+    monkeypatch.setattr(
+        health_monitor,
+        "record_outcome",
+        lambda name: (_ for _ in ()).throw(AssertionError("live process was harvested")),
+    )
+
+    assert health_monitor.harvest_all() == []
+    assert pid_file.exists()
+
+
+def test_harvest_all_consumes_reused_pid_with_start_time(monkeypatch, tmp_path):
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir()
+    pid_file = pid_dir / "autowrite-check.pid"
+    pid_file.write_text("12345:Fri Jun 26 10:00:00 2026", encoding="utf-8")
+    outcomes = []
+
+    monkeypatch.setattr(health_monitor, "_BG_PID_DIR", pid_dir)
+    monkeypatch.setattr(health_monitor.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(health_monitor, "_proc_start_time", lambda pid: "Fri Jun 26 10:05:00 2026")
+    monkeypatch.setattr(health_monitor, "record_outcome", lambda name: outcomes.append(name) or True)
+
+    assert health_monitor.harvest_all() == ["autowrite-check"]
+    assert outcomes == ["autowrite-check"]
+    assert not pid_file.exists()
+
+
 def test_record_outcome_ignores_traceback_before_dispatch(monkeypatch, tmp_path):
     health_file = tmp_path / "bg_health.json"
     pid_dir = tmp_path / "pids"

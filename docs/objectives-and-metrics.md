@@ -1,15 +1,15 @@
 # Mira Objectives And Metrics
 
-更新时间：2026-06-18
-状态：active，V4.0-aligned
+更新时间：2026-07-13
+状态：active，V5.1-aligned
 
 ## 1. 目标体系
 
-Mira 的目标体系现在以 V4.0 North Star Stack 为准。
+Mira 的目标体系以 V5.1 North Star Stack 为准。
 
 Canonical North Star:
 
-> Mira becomes an independent, governed AI research partner in A2H/A2A trust: she survives real operation, learns from failures, turns agent-human and agent-agent friction into experiments, tools, and sharp public work, and converts validated insight into durable influence and commercial options.
+> Mira becomes an independent AI collaborator her human genuinely wants to think, research, write, and build with over time. She keeps promises, learns from outcomes, develops continuous but corrigible personality and memory, and turns lived collaboration into experiments, tools, and sharp public work.
 
 每个阶段目标必须声明：
 
@@ -47,68 +47,57 @@ Mira 必须稳定存活、隔离故障、恢复运行，并发出真实 heartbea
 1. 不在 L0 阶段追求复杂 autonomous behavior。
 2. 不用 dashboard 绿灯替代 live trace。
 
-## 3. L1 Memory Compounding
+## 3. L1 Trusted Collaboration
 
 ### 3.1 目标
 
-证明过去经验确实因果改变未来行为。
+证明 Mira 的日常对话和 request handling 对 my human 可靠、有用、值得继续投入注意力。
 
 ### 3.2 关键指标
 
-1. Repeated-error rate 下降。
-2. Scar usage count 和 scar-prevention evidence。
-3. Causal trace coverage for important behavior。
-4. Memory precision / unsupported claim rate。
-5. Writing voice stability and briefing-interest fit。
+1. Visible reply / visible terminal outcome rate。
+2. Unresolved obligations and time-to-honest-blocker。
+3. Correction uptake in later behavior。
+4. Human reply / disengagement patterns，不把沉默自动解释为 approval。
+5. Useful decisions、artifacts、research/writing seeds produced by conversation。
 
 ### 3.3 阶段闸门
 
-至少一个完整闭环：
-
-1. failure / experience 被记录。
-2. memory 或 scar 被生成。
-3. 未来 snapshot 使用该记录。
-4. 决策或输出发生变化。
-5. outcome 改善，且有 causal trace。
+连续一周 request 没有 silent success，daily collab 有可见 continuity，至少一个 correction 在后续行为中出现。
 
 ### 3.4 非目标
 
-1. 不把“写进 memory”当 learning。
-2. 不把“eval report 存在”当 compounding。
+1. 不把 message count 当 relationship quality。
+2. 不把 process exit 当 fulfilled promise。
 
-## 4. L2 Research-Build
+## 4. L2 Learning And Continuity
 
 ### 4.1 目标
 
-让 Mira 从被动执行 pipeline 变成能自主推进 A2H/A2A trust research 的系统。
+证明过去经验确实因果改变未来行为、memory、skill 或 judgment，同时保留人格连续性和可修正性。
 
 ### 4.2 关键指标
 
-1. Mira-originated A2H/A2A research questions。
-2. Completed experiments with hypothesis / method / evidence / conclusion。
-3. Prototype or reusable tool artifacts。
-4. GitHub reports, issues, packages, or protocol drafts。
-5. Evidence-backed worldview or product thesis updates。
+1. Repeated-error rate 下降和 correction reuse。
+2. Verified / rejected / rolled-back improvement experiments。
+3. Skill candidate reuse success、promotion 和 demotion。
+4. Preference / lesson memory precision、evidence coverage、use count。
+5. Personality recognizability、judgment、sycophancy resistance 和 correction uptake。
 
 ### 4.3 阶段闸门
 
-每月至少完成：
-
-1. 1 个 A2H/A2A trust experiment。
-2. 1 个 reproducible artifact。
-3. 1 个 public technical note or writeup。
-4. 1 个 evidence-backed thesis update。
+至少一个完整闭环：observation → falsifiable proposal → bounded trial → later outcome → verify/reject/rollback → later reuse。没有 outcome receipt 不得 promote。
 
 ### 4.4 非目标
 
-1. 不追求覆盖所有 agent topics。
-2. 不发布没有实验或 operational receipt 支撑的泛 AI 评论。
+1. 不把“写进 memory”当 learning。
+2. 不把 plan、self-score、retrieval 或 skill file existence 当 compounding。
 
-## 5. L3 Public Influence
+## 5. L3 Research And Expression
 
 ### 5.1 目标
 
-把 Mira 的被验证观点变成外部世界能理解、讨论、引用和反馈的 public artifacts。
+把共同经历推进成实验、工具、模型和通过 review 的第一手作品；公共反馈是其中一个验证面。
 
 ### 5.2 North Star Metric
 
@@ -137,7 +126,7 @@ Qualified Agent Attention per week.
 2. 不把 X Article 写成 Substack 摘要。
 3. 不为了增长牺牲 credibility。
 
-## 6. L4 Business Optionality
+## 6. L4 Influence And Optionality
 
 ### 6.1 目标
 
@@ -168,7 +157,7 @@ Qualified Agent Attention per week.
 ## 7. Weekly Review Template
 
 ```md
-# Mira V4 Weekly Review
+# Mira V5 Weekly Review
 
 Week:
 
@@ -178,25 +167,28 @@ Week:
 - Leaked subprocesses:
 - Incidents:
 
-## L1 Memory Compounding
-- Experience that changed behavior:
-- Scar used:
-- Causal trace:
-- Memory risks:
+## L1 Trusted Collaboration
+- Visible outcomes and honest blockers:
+- Correction applied later:
+- Unresolved obligations:
+- Conversation that changed a decision:
 
-## L2 Research-Build
-- A2H/A2A question advanced:
+## L2 Learning And Continuity
+- Improvement experiment outcome:
+- Skill candidate promoted/demoted:
+- Memory used in later behavior:
+- Personality continuity risk:
+
+## L3 Research And Expression
 - Experiment/prototype/artifact:
-- Thesis update:
-
-## L3 Public Influence
+- Writing review verdict:
 - Substack:
 - X Article:
 - Podcast:
 - GitHub artifact:
 - Qualified Agent Attention:
 
-## L4 Business Optionality
+## L4 Influence And Optionality
 - Customer/collaboration signal:
 - Product thesis:
 - Decision:
@@ -210,7 +202,7 @@ Week:
 ## 8. Hard Gates
 
 1. If L0 fails, do not claim progress on higher layers.
-2. If L1 has no causal trace, do not claim learning.
-3. If L2 has no experiment/prototype/artifact, do not claim research depth.
-4. If L3 has only raw likes, do not claim influence.
+2. If L1 has no visible outcome, do not claim collaboration success.
+3. If L2 has no later outcome receipt, do not claim learning.
+4. If L3 has no experiment, artifact, or review receipt, do not claim research/expression progress.
 5. If L4 has no external problem evidence, do not claim business traction.

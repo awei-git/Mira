@@ -20,6 +20,7 @@ def test_get_stuck_articles_ignores_terminal_and_blocked_statuses(monkeypatch, t
                 "skip",
                 "skipped",
                 "deleted",
+                "approval_required",
                 "published",
                 "podcast_en",
                 "blocked_language",
@@ -27,6 +28,7 @@ def test_get_stuck_articles_ignores_terminal_and_blocked_statuses(monkeypatch, t
                 "blocked_security_claim",
                 "blocked_publish_error",
                 "blocked_manual_review",
+                "parked_legacy_blocked",
             )
         }
     }

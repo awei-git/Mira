@@ -3,7 +3,7 @@
 Supports multiple model "flavors" for different writing styles:
 - Claude: precise, structured, follows instructions well
 - GPT-5: creative, fluent, natural-sounding prose
-- DeepSeek: strong reasoning, good Chinese writing, cost-efficient
+- local oMLX: private fallback for local generation
 """
 
 import json
@@ -12,6 +12,7 @@ import random
 import re
 import threading
 from datetime import datetime, timezone
+from os import getenv
 from pathlib import Path
 
 from config import (
@@ -131,11 +132,31 @@ def _force_local() -> bool:
     return getattr(_model_policy, "value", None) in ("omlx",)
 
 
+def _codex_cli_disabled() -> bool:
+    value = getenv("MIRA_DISABLE_CODEX_CLI", "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    try:
+        from llm_providers import codex as codex_provider
+
+        if codex_provider.codex_circuit_open():
+            return True
+    except Exception as exc:
+        log.debug("Codex CLI circuit check failed: %s", exc)
+    return False
+
+
+def _apply_runtime_route_policy(chain: list[str]) -> list[str]:
+    if _codex_cli_disabled():
+        chain = [candidate for candidate in chain if candidate != "codex"]
+    return list(dict.fromkeys(chain))
+
+
 def _cloud_disabled() -> bool:
     """Deprecated compatibility shim.
 
     Routing is now handled by explicit model policy and fallback chains:
-    Codex subscription -> Claude Code subscription -> DeepSeek -> local.
+    Codex subscription -> Claude Code subscription -> GPT API -> local.
     """
     return False
 
@@ -534,14 +555,19 @@ def _fallback_chain(model_name: str, prompt: str) -> list[str]:
     if requested in {"omlx", "ollama", "local", "localllm"}:
         return _fallback_chain("codex", prompt)
     if requested in {"deepseek", "deepseek-r1"}:
-        return [requested, "codex", "claude", "omlx"]
+        chain = ["codex", "gpt", "claude", "omlx"]
+        return _apply_runtime_route_policy(chain)
     if requested == "claude":
-        return ["claude", "deepseek", "omlx"]
+        chain = ["claude", "codex", "gpt", "omlx"]
+        return _apply_runtime_route_policy(chain)
     if requested in {"codex", "gpt5", "gpt-5", "gpt-5.5", "default"} or requested not in MODELS:
         if _looks_like_chinese_writing(prompt):
-            return ["deepseek", "codex", "claude", "omlx"]
-        return ["codex", "claude", "deepseek", "omlx"]
-    return [requested, "codex", "claude", "deepseek", "omlx"]
+            chain = ["codex", "gpt", "claude", "omlx"]
+        else:
+            chain = ["codex", "claude", "gpt", "omlx"]
+        return _apply_runtime_route_policy(chain)
+    chain = [requested, "codex", "claude", "gpt", "omlx"]
+    return _apply_runtime_route_policy(chain)
 
 
 def _call_think_model(model_name: str, prompt: str, system: str, timeout: int) -> str:
@@ -586,7 +612,7 @@ def model_think(
     """Call a thinking model.
 
     Default route: Codex subscription GPT-5.5 -> Claude Code subscription ->
-    DeepSeek V4 Pro -> local oMLX. Explicit local/privacy policy still wins.
+    GPT API -> local oMLX. Explicit local/privacy policy still wins.
     """
     return _think_with_fallbacks(prompt, model_name=model_name, system=system, timeout=timeout)
 
@@ -597,7 +623,7 @@ def claude_think(
     """Legacy name for the default thinking route.
 
     Most existing callers say claude_think, but Mira's desired default is now
-    Codex subscription first, then Claude Code, DeepSeek, and local oMLX.
+    Codex subscription first, then Claude Code, GPT API, and local oMLX.
     """
     _ = (tier, max_tokens)
     return _think_with_fallbacks(prompt, model_name=DEFAULT_MODEL, timeout=timeout)
