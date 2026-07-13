@@ -75,6 +75,15 @@ def _fallback_think(prompt: str, timeout: int, tier: str = "light") -> str:
         log.error("Fallback model '%s' not in MODELS registry", fallback)
         return ""
     effort = _OPENAI_EFFORT.get(tier, "medium")
+    if cfg["provider"] == "codex_cli":
+        from llm_providers.codex import codex_circuit_open, codex_think
+
+        if codex_circuit_open():
+            log.warning("Claude fallback skipped Codex/GPT subscription because codex_cli circuit is open")
+            return ""
+
+        log.warning("Claude quota hit — falling back to Codex/GPT subscription %s", cfg["model_id"])
+        return codex_think(prompt, model_id=cfg["model_id"], timeout=timeout)
     log.warning("Claude quota hit — falling back to %s/%s (effort=%s)", cfg["provider"], cfg["model_id"], effort)
     return _api_call(cfg["provider"], cfg["model_id"], prompt, timeout=timeout, reasoning_effort=effort)
 
@@ -124,7 +133,7 @@ def claude_think(
             env=env,
         )
     except subprocess.TimeoutExpired:
-        log.error("claude_think timed out (%ds)", timeout)
+        log.warning("claude_think timed out (%ds)", timeout)
         raise ClaudeTimeoutError(f"claude_think timed out after {timeout}s")
     except FileNotFoundError:
         log.error("Claude CLI not found at %s", CLAUDE_BIN)

@@ -74,6 +74,12 @@ def draft_prompt(writing_type: str, round_num: int) -> str:
 
 {lessons_block}
 
+## 写前质量门（不可跳过）
+
+Before drafting, complete this in one sentence: The single non-obvious claim this piece makes is: [CLAIM]. Do not proceed until this is concrete and falsifiable.
+
+Draft the piece such that every paragraph either supports, complicates, or develops [CLAIM].
+
 ## 步骤
 
 1. 读 规格.md 了解所有硬约束（字数、结构、平台）

@@ -1,0 +1,8 @@
+name: briefing
+description: Produce trust-labeled intelligence briefings from source bundles.
+inputs:
+  - sources
+  - interest_profile
+outputs:
+  - briefing.md
+  - source_trust_labels

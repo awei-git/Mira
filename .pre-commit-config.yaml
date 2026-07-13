@@ -6,6 +6,8 @@ repos:
       - id: check-json
       - id: check-added-large-files
         args: ['--maxkb=500']
+        # This is a reviewed source module, not a generated artifact or binary.
+        exclude: ^lib/soul_manager\.py$
       - id: detect-private-key
       - id: end-of-file-fixer
       - id: trailing-whitespace

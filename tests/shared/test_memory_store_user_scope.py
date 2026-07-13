@@ -74,3 +74,40 @@ def test_conn_property_returns_live_connection(monkeypatch):
     monkeypatch.setattr(store, "_get_conn", lambda: sentinel)
 
     assert store.conn is sentinel
+
+
+def test_ensure_migrated_uses_shared_migration_runner(monkeypatch):
+    import agents.shared.migrations.run as migration_run
+    import memory.store as memory_store
+
+    store = memory_store.MemoryStore("postgresql://test")
+    calls: list[str] = []
+
+    monkeypatch.setattr(migration_run, "run_migrations", lambda: calls.append("migrations"))
+    monkeypatch.setattr(store, "_ensure_joint_attention_columns", lambda: calls.append("joint_attention"))
+    monkeypatch.setattr(store, "_ensure_trust_confidence_columns", lambda: calls.append("trust_confidence"))
+
+    store._ensure_migrated()
+
+    assert calls == ["migrations", "joint_attention", "trust_confidence"]
+    assert store._migrated is True
+
+
+def test_ensure_migrated_repairs_columns_when_runner_fails(monkeypatch):
+    import agents.shared.migrations.run as migration_run
+    import memory.store as memory_store
+
+    store = memory_store.MemoryStore("postgresql://test")
+    calls: list[str] = []
+
+    def fail_migration():
+        raise ModuleNotFoundError("migrations.run")
+
+    monkeypatch.setattr(migration_run, "run_migrations", fail_migration)
+    monkeypatch.setattr(store, "_ensure_joint_attention_columns", lambda: calls.append("joint_attention"))
+    monkeypatch.setattr(store, "_ensure_trust_confidence_columns", lambda: calls.append("trust_confidence"))
+
+    store._ensure_migrated()
+
+    assert calls == ["joint_attention", "trust_confidence"]
+    assert store._migrated is True

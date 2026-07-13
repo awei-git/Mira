@@ -92,6 +92,50 @@ def _count_notes_today(today: str) -> int:
     return int(st.get(f"notes_{today}", 0) or 0)
 
 
+def _count_comments_today(today: str) -> int | None:
+    """Read today's outbound comment count from growth_state.json."""
+    state_file = SOCIAL_STATE_DIR / "growth_state.json"
+    if not state_file.exists():
+        return None
+    try:
+        st = json.loads(state_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return int(st.get(f"comments_{today}", 0) or 0)
+
+
+def _engagement_totals() -> dict:
+    """Cumulative earned-engagement from publication_stats.json + notes_state.json.
+
+    Restacks are the compounding discovery signal on Substack — they are the
+    metric to optimize, distinct from outbound effort (comments/notes posted).
+    """
+    out = {
+        "article_likes": 0,
+        "article_restacks": 0,
+        "article_comments": 0,
+        "note_likes": 0,
+        "note_restacks": 0,
+        "note_replies": 0,
+    }
+    stats_file = SOCIAL_STATE_DIR / "publication_stats.json"
+    if stats_file.exists():
+        try:
+            d = json.loads(stats_file.read_text(encoding="utf-8"))
+            for a in d.get("articles", []):
+                out["article_likes"] += a.get("likes", 0) or 0
+                out["article_restacks"] += a.get("restacks", 0) or 0
+                out["article_comments"] += a.get("comments", 0) or 0
+            for n in d.get("notes", []):
+                out["note_likes"] += n.get("likes", 0) or 0
+                out["note_restacks"] += n.get("restacks", 0) or 0
+                out["note_replies"] += n.get("comments", 0) or 0
+        except (json.JSONDecodeError, OSError):
+            pass
+    out["restacks_total"] = out["article_restacks"] + out["note_restacks"]
+    return out
+
+
 def _read_existing_lines() -> list[dict]:
     if not GROWTH_METRICS_FILE.exists():
         return []
@@ -127,6 +171,8 @@ def run_snapshot() -> bool:
     subs, follows = _fetch_profile_counts()
     notes_today = _count_notes_today(today)
     articles_today = _count_articles_today(today)
+    comments_today = _count_comments_today(today)
+    eng = _engagement_totals()
 
     row = {
         "date": today,
@@ -134,8 +180,12 @@ def run_snapshot() -> bool:
         "subscribers": subs,
         "followers": follows,
         "notes_posted_today": notes_today,
-        "comments_posted_today": None,
+        "comments_posted_today": comments_today,
         "articles_posted_today": articles_today,
+        # Earned-engagement (cumulative). restacks_total is the compounding KPI.
+        "restacks_total": eng["restacks_total"],
+        "article_likes_total": eng["article_likes"],
+        "note_engagement_total": eng["note_likes"] + eng["note_restacks"] + eng["note_replies"],
         "notable_engagement": "",
     }
 
@@ -155,12 +205,14 @@ def run_snapshot() -> bool:
     state[f"growth_snapshot_{today}"] = ts
     save_state(state)
     log.info(
-        "growth_snapshot wrote %s subs=%s follows=%s notes=%s articles=%s",
+        "growth_snapshot wrote %s subs=%s follows=%s notes=%s articles=%s comments=%s restacks_total=%s",
         today,
         subs,
         follows,
         notes_today,
         articles_today,
+        comments_today,
+        eng["restacks_total"],
     )
     return True
 

@@ -36,7 +36,7 @@ def test_emit_status_replaces_existing_trailing_status_cards(monkeypatch, tmp_pa
             {
                 "id": "task_1",
                 "messages": [
-                    {"id": "u1", "sender": "ang", "kind": "text", "content": "go"},
+                    {"id": "u1", "sender": "default", "kind": "text", "content": "go"},
                     {"id": "s1", "sender": "agent", "kind": "status_card", "content": "{}"},
                     {"id": "s2", "sender": "agent", "kind": "status_card", "content": "{}"},
                 ],
@@ -88,6 +88,22 @@ def test_heartbeat_activity_reports_current_step(tmp_path):
     assert "Elapsed 5m" in snapshot["status_text"]
 
 
+def test_heartbeat_write_allowed_for_task_worker(tmp_path):
+    import json
+
+    import task_worker
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    heartbeat = task_worker._Heartbeat("task_1", workspace=workspace)
+    heartbeat._write_heartbeat("running")
+
+    data = json.loads((workspace / "heartbeat.json").read_text(encoding="utf-8"))
+    assert data["task_id"] == "task_1"
+    assert data["status"] == "running"
+
+
 def test_daily_zhesi_feed_reply_uses_conversation_fast_path():
     import task_worker
 
@@ -99,6 +115,35 @@ def test_daily_zhesi_feed_reply_uses_conversation_fast_path():
     }
 
     assert task_worker._looks_like_conversation_feed("feed_zhesi_20260505", task)
+
+
+def test_db_daily_collab_message_uses_conversation_fast_path():
+    import task_worker
+
+    task = {
+        "id": "disc_daily_collab",
+        "type": "text",
+        "content": "Start the daily collab loop.",
+        "metadata": {
+            "item_type": "discussion",
+            "tags": ["daily-collab", "mira", "conversation"],
+        },
+        "tags": ["daily-collab", "mira", "conversation"],
+    }
+
+    assert task_worker._looks_like_conversation_feed("disc_daily_collab", task)
+
+
+def test_publication_approval_requires_publish_intent():
+    from task_support import _is_publication_approval
+
+    assert _is_publication_approval("publish this")
+    assert _is_publication_approval("yes publish")
+    assert _is_publication_approval("可以发了")
+    assert not _is_publication_approval("ok")
+    assert not _is_publication_approval("continue")
+    assert not _is_publication_approval("发给我看看")
+    assert not _is_publication_approval("do not publish")
 
 
 def test_market_feed_reply_uses_market_fast_path():
@@ -120,12 +165,12 @@ def test_current_message_overrides_later_agent_thought():
     task = {
         "messages": [
             {"sender": "agent", "content": "今天只聊游牧和农耕。"},
-            {"sender": "ang", "content": "这个应该是conversation的形式"},
+            {"sender": "default", "content": "这个应该是conversation的形式"},
             {"sender": "agent", "content": "另一个自发想法"},
         ]
     }
 
-    updated = task_worker._task_with_current_message(task, "这个应该是conversation的形式", "ang")
+    updated = task_worker._task_with_current_message(task, "这个应该是conversation的形式", "default")
 
     assert updated["current_message"]["content"] == "这个应该是conversation的形式"
     assert updated["messages"][-1]["content"] == "另一个自发想法"

@@ -121,7 +121,7 @@ def _text_similarity(a: str, b: str) -> float:
     return len(intersection) / len(union) if union else 0.0
 
 
-def _check_contradictions_via_db(user_id: str = "ang") -> list[dict]:
+def _check_contradictions_via_db(user_id: str = "default") -> list[dict]:
     """Find potential contradictions using vector similarity in PostgreSQL.
 
     Looks for entry pairs with high semantic similarity that may conflict.
@@ -202,7 +202,7 @@ def _check_contradictions_via_db(user_id: str = "ang") -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def lint_all(user_id: str = "ang") -> dict:
+def lint_all(user_id: str = "default") -> dict:
     """Run all knowledge lint checks. Returns a structured report."""
     log.info("Running knowledge lint...")
 

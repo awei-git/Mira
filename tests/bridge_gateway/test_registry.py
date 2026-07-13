@@ -12,7 +12,7 @@ from bridge_gateway import (
 )
 
 
-def _msg(id_: str, source: str, *, user_id: str = "ang", content: str = "hi") -> BridgeMessage:
+def _msg(id_: str, source: str, *, user_id: str = "default", content: str = "hi") -> BridgeMessage:
     return BridgeMessage(id=id_, user_id=user_id, source=source, content=content)
 
 

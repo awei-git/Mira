@@ -1,0 +1,23 @@
+name: skill_learning
+memory_class: self_modification
+trigger:
+  type: event
+  detail: novel technique in task result
+priority: 50
+version: 1
+max_duration_s: 600
+checkpoint_every: 1
+involved_skills:
+  - skill_learning
+steps:
+  - name: snapshot_recent_task_results
+    type: memory
+  - name: identify_candidate_skill
+    type: deterministic
+  - name: skill_learning_report
+    type: deterministic
+    action: local_report
+  - name: skill_security_audit_gate
+    type: policy
+  - name: experience_record_proposal_gateway
+    type: memory

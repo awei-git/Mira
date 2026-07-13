@@ -54,6 +54,12 @@
     "tags": ["math", "problem-solving", "heuristics", "research", "strategy"]
   },
   {
+    "name": "Multi-Hop Navigation",
+    "description": "Maintain an explicit concept path across multi-step research so each retrieval bridges from the current concept to the target.",
+    "file": "multi-hop-navigation.md",
+    "tags": ["research", "explorer", "retrieval", "multi-hop", "concept-graph"]
+  },
+  {
     "name": "Proof Strategy Selection",
     "description": "Choose the most effective proof technique (direct, contradiction, induction, compactness, etc.) for a given theorem type.",
     "file": "proof-strategy-selection.md",

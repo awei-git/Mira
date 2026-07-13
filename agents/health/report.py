@@ -6,6 +6,17 @@ from datetime import date, datetime, timedelta, timezone
 log = logging.getLogger("health_report")
 
 
+_BAD_INSIGHT_PHRASES = (
+    "what do you want to achieve with this",
+    "what do you want to chieve with this",
+)
+
+
+def _is_bad_daily_insight(text: str) -> bool:
+    normalized = " ".join((text or "").lower().split())
+    return any(phrase in normalized for phrase in _BAD_INSIGHT_PHRASES)
+
+
 def _metric_age_label(metric: dict, now: datetime | None = None) -> str:
     """Return a concise freshness label for a metric row."""
     metric_date = metric.get("date")
@@ -345,7 +356,10 @@ def generate_daily_insight(store, person_id: str, model: str = "omlx") -> str | 
 
         result = model_think(prompt, model_name=model, timeout=60)
         if result and len(result.strip()) > 30:
-            return result.strip()
+            cleaned = result.strip()
+            if not _is_bad_daily_insight(cleaned):
+                return cleaned
+            log.warning("Daily health insight discarded generic prompt artifact")
     except Exception as e:
         log.warning("Daily health insight failed: %s", e)
     return _fallback_daily_insight(store, person_id)

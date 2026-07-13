@@ -1,0 +1,92 @@
+{
+  "provider_effect_adapters": {
+    "deployment": {
+      "bearer_token_env": "MIRA_DEPLOYMENT_ADAPTER_TOKEN",
+      "endpoint_template_env": "MIRA_DEPLOYMENT_ADAPTER_ENDPOINT",
+      "method": "POST",
+      "payload_path": [
+        "data"
+      ],
+      "preview_filename": "self_evolution_production_promotion_preview.json",
+      "type": "http_json"
+    },
+    "deployment_health": {
+      "bearer_token_env": "MIRA_DEPLOYMENT_HEALTH_ADAPTER_TOKEN",
+      "endpoint_template_env": "MIRA_DEPLOYMENT_HEALTH_ADAPTER_ENDPOINT",
+      "method": "POST",
+      "payload_path": [
+        "data"
+      ],
+      "preview_filename": "self_evolution_production_promotion_preview.json",
+      "type": "http_json"
+    },
+    "deployment_rollback": {
+      "bearer_token_env": "MIRA_DEPLOYMENT_ROLLBACK_ADAPTER_TOKEN",
+      "endpoint_template_env": "MIRA_DEPLOYMENT_ROLLBACK_ADAPTER_ENDPOINT",
+      "method": "POST",
+      "payload_path": [
+        "data"
+      ],
+      "preview_filename": "self_evolution_production_promotion_preview.json",
+      "type": "http_json"
+    },
+    "health": {
+      "bearer_token_env": "MIRA_HEALTH_ADAPTER_TOKEN",
+      "endpoint_template_env": "MIRA_HEALTH_ADAPTER_ENDPOINT",
+      "method": "POST",
+      "payload_path": [
+        "data"
+      ],
+      "preview_filename": "health_write_preview.json",
+      "type": "http_json"
+    },
+    "market": {
+      "bearer_token_env": "MIRA_MARKET_ADAPTER_TOKEN",
+      "endpoint_template_env": "MIRA_MARKET_ADAPTER_ENDPOINT",
+      "method": "POST",
+      "payload_path": [
+        "data"
+      ],
+      "preview_filename": "market_alert_preview.json",
+      "type": "http_json"
+    },
+    "rss": {
+      "bearer_token_env": "MIRA_RSS_ADAPTER_TOKEN",
+      "endpoint_template_env": "MIRA_RSS_ADAPTER_ENDPOINT",
+      "method": "POST",
+      "payload_path": [
+        "data"
+      ],
+      "preview_filename": "rss_publish_preview.json",
+      "type": "http_json"
+    },
+    "social": {
+      "bearer_token_env": "MIRA_SOCIAL_ADAPTER_TOKEN",
+      "endpoint_template_env": "MIRA_SOCIAL_ADAPTER_ENDPOINT",
+      "method": "POST",
+      "payload_path": [
+        "data"
+      ],
+      "preview_filename": "social_publish_preview.json",
+      "type": "http_json"
+    },
+    "substack": {
+      "bearer_token_env": "MIRA_SUBSTACK_ADAPTER_TOKEN",
+      "endpoint_template_env": "MIRA_SUBSTACK_ADAPTER_ENDPOINT",
+      "method": "POST",
+      "payload_path": [
+        "data"
+      ],
+      "type": "http_json"
+    },
+    "tts": {
+      "bearer_token_env": "MIRA_TTS_ADAPTER_TOKEN",
+      "endpoint_template_env": "MIRA_TTS_ADAPTER_ENDPOINT",
+      "method": "POST",
+      "payload_path": [
+        "data"
+      ],
+      "type": "hosted_tts_http"
+    }
+  }
+}

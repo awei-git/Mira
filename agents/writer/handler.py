@@ -13,7 +13,10 @@ import json
 import logging
 import re
 import shutil
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from random import random
 from typing import Literal
 
 import config as _config
@@ -35,6 +38,7 @@ except ImportError:
 
 log = logging.getLogger("writer_agent")
 
+_HARD_RULES_PATH = Path(__file__).resolve().parent / "checklists" / "hard-rules.md"
 _ANTI_AI_PATH = Path(__file__).resolve().parent / "checklists" / "anti-ai.md"
 _OBSESSION_CONSTRAINTS_PATH = Path(__file__).resolve().parent / "checklists" / "obsession_constraints.md"
 _REFLECTIVE_SELF_CRITIQUE_PATH = Path(__file__).resolve().parent / "checklists" / "self-edit.md"
@@ -42,6 +46,18 @@ _CEILING_CHECK_PATH = Path(__file__).resolve().parent / "checklists" / "ceiling-
 _EPISTEMIC_BIAS_PATH = Path(__file__).resolve().parent / "checklists" / "epistemic-bias.md"
 _SUBSTACK_VOICE_PATH = Path(__file__).resolve().parent / "voice" / "substack_voice.md"
 _SPEAKER_IDENTITY_PATH = Path(__file__).resolve().parents[1] / "shared" / "soul" / "identity.md"
+_PATTERN_LOG_PATH = Path(__file__).resolve().parent / "pattern_log.jsonl"
+_ANTI_AI_SCORES_LOG_PATH = Path(__file__).resolve().parent / "logs" / "anti_ai_scores.jsonl"
+_ANTI_AI_STRUCTURED_LOG_PATH = (
+    Path(getattr(_config, "MIRA_ROOT", Path(__file__).resolve().parents[2])) / "logs" / "writer_anti_ai.log"
+)
+_PROXY_DRIFT_LOG_PATH = (
+    Path(getattr(_config, "MIRA_ROOT", Path(__file__).resolve().parents[2])) / "logs" / "proxy_drift.json"
+)
+_CONTENT_QUALITY_LOG_PATH = (
+    Path(getattr(_config, "MIRA_ROOT", Path(__file__).resolve().parents[2])) / "data" / "content_quality_log.jsonl"
+)
+_PATTERN_LOG_HEADER = "# productive-error log — see reading note 2026-05-16"
 _ANTI_AI_SCAN_THRESHOLD = 0.0
 _TECH_INDUSTRY_TERMS = (
     "ai",
@@ -122,6 +138,91 @@ _GENERIC_AI_ESSAY_SHELLS = (
     "this article explores",
     "it could be argued",
     "in conclusion",
+    "it's worth noting",
+    "interestingly",
+    "delve into",
+    "unpack",
+    "navigate",
+    "nuanced",
+    "multifaceted",
+    "fundamentally",
+    "essentially",
+    "ultimately",
+    "complex tapestry",
+    "this raises important questions",
+    "in today's rapidly",
+    "in an era of",
+    "in the realm of",
+)
+_BANNED_CHINESE_PHRASES = (
+    "不是",
+    "这是",
+    "值得一提",
+    "引人深思",
+    "令人感慨",
+    "深刻揭示",
+    "不可忽视",
+    "从某种意义上说",
+    "在某种程度上",
+    "的本质是",
+    "所谓",
+    "这提醒我们",
+    "这说明了",
+    "在当今社会",
+    "众所周知",
+    "尤显重要",
+    "发人深省",
+    "让我们看到",
+    "意外的撞上",
+    "意外地撞上",
+    "最聪明",
+    "最硬",
+    "停一会",
+    "停一下",
+    "打动",
+    "不舒服",
+    "不安",
+    "反复读",
+    "精准",
+    "令人不安",
+)
+_BANNED_CHINESE_PATTERNS = (
+    re.compile(r"[一-鿿]+越来越[一-鿿]+[，,][一-鿿]+越来越[一-鿿]+"),
+    re.compile(r"太[^。！？；\n]{1,12}(?:了|啦|啊|呀)"),
+    re.compile(r"[一-鿿]{1,6}了(?:很久|好久|半天)"),
+    re.compile(r"最(?:先|早)[^。！？；\n]{0,16}我"),
+)
+_BANNED_FAKE_TRANSITIONS = (
+    "this is where it gets interesting",
+    "let me ",
+    "let's ",
+    "让我们",
+)
+_OVERCONTRACTION_RE = re.compile(
+    r"\b(?:it|that|there|what|who|where|how|here|this)['’]s\b|"
+    r"\bi['’]m\b|"
+    r"\b(?:you|we|they)['’]re\b|"
+    r"\b(?:i|you|we|they)['’]ve\b|"
+    r"\b(?:i|you|he|she|we|they|it|that|there|this)['’](?:ll|d)\b|"
+    r"\b(?:isn|aren|wasn|weren|don|doesn|didn|haven|hasn|hadn|can|couldn|shouldn|wouldn|won)['’]t\b",
+    re.IGNORECASE,
+)
+_UNCONTRACTED_AUXILIARY_RE = re.compile(
+    r"\b(?:it is|it has|that is|there is|there are|what is|who is|where is|how is|here is|this is|"
+    r"i am|you are|we are|they are|i have|you have|we have|they have|"
+    r"i will|you will|he will|she will|we will|they will|it will|"
+    r"do not|does not|did not|is not|are not|was not|were not|have not|has not|had not|"
+    r"cannot|can not|could not|should not|would not|will not)\b",
+    re.IGNORECASE,
+)
+_OVERCONCRETE_MARKER_RE = re.compile(
+    r"\b(?:for example|for instance|such as|a concrete example|concrete example|in practice|say,|"
+    r"like an?|like the|like this|like that)\b|例如|比如|譬如|举个例子|具体来说",
+    re.IGNORECASE,
+)
+_CONFIDENCE_SCORE_RE = re.compile(
+    r"\[(?:C|confidence)[:\s]*[1-5]\b|\bconfidence[:\s]+[1-5]\b",
+    re.IGNORECASE,
 )
 _FRICTION_FEEDBACK_RE = re.compile(
     r"\b(?:bothered by|can't stand|cannot stand|this keeps happening|the quality is so bad)\b|"
@@ -166,6 +267,15 @@ _OBSESSION_GAP_KEYWORDS = (
     "design critique",
     "personal essay",
 )
+_ANTI_AI_RULE_NAME_BY_SPAN_TYPE = {
+    "em_dash_density": "长破折号密度",
+    "parallelism": "机械对位结构",
+    "abstract_noun_cluster": "抽象名词簇",
+    "banned_chinese_phrase": "硬禁词与句式",
+    "banned_chinese_pattern": "硬禁词与句式",
+    "banned_english_phrase": "万能开头 / 总结式结尾",
+    "banned_fake_transition": "假情绪与假停顿",
+}
 AntiAiMode = Literal["strict", "relaxed"]
 SourceType = Literal["ai", "human_raw"]
 
@@ -306,6 +416,14 @@ def _is_voice_preserving_genre(source_genre: str | None) -> bool:
     genres = getattr(_writer_config, "VOICE_PRESERVING_GENRES", ())
     normalized_genres = {_normalize_source_genre(genre) for genre in genres}
     return bool(source_genre and source_genre in normalized_genres)
+
+
+def _load_hard_rules() -> str:
+    try:
+        return _HARD_RULES_PATH.read_text(encoding="utf-8")
+    except OSError:
+        log.warning("hard-rules.md not found at %s", _HARD_RULES_PATH)
+        return ""
 
 
 def _load_anti_ai() -> str:
@@ -457,6 +575,10 @@ def _assess_obsession_gap(output: str, *, content: str, metadata: dict | None) -
     return artifact_metadata
 
 
+def _has_confidence_scores(text: str) -> bool:
+    return bool(_CONFIDENCE_SCORE_RE.search(text))
+
+
 def _obsession_gap_check(text: str) -> bool:
     if not text or len(text.strip()) < 80:
         return False
@@ -551,6 +673,252 @@ def _paragraph_spans(text: str) -> list[tuple[int, int, str]]:
     return spans
 
 
+def _article_slug(value: str | None) -> str:
+    slug = re.sub(r"[^\w\s\u4e00-\u9fff-]", "", str(value or "")[:60]).strip()
+    slug = re.sub(r"[\s_]+", "-", slug).strip("-")
+    return slug or "untitled"
+
+
+def _anti_ai_pattern_counts(scan: dict) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for span in scan.get("flagged_spans", []):
+        if not isinstance(span, dict):
+            continue
+        pattern = str(span.get("type") or "").strip()
+        if not pattern:
+            continue
+        count = span.get("count")
+        counts[pattern] += count if isinstance(count, int) and count > 0 else 1
+    return counts
+
+
+def _append_anti_ai_pattern_log(article: str, counts: Counter[str]) -> None:
+    if not counts:
+        return
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        needs_header = not _PATTERN_LOG_PATH.exists() or _PATTERN_LOG_PATH.stat().st_size == 0
+        with _PATTERN_LOG_PATH.open("a", encoding="utf-8") as fh:
+            if needs_header:
+                fh.write(f"{_PATTERN_LOG_HEADER}\n")
+            for pattern, count in sorted(counts.items()):
+                fh.write(
+                    json.dumps({"ts": ts, "article": article, "pattern": pattern, "count": count}, ensure_ascii=False)
+                    + "\n"
+                )
+    except OSError as e:
+        log.warning("failed to append anti-AI pattern log: %s", e)
+
+
+def _append_anti_ai_score_log(article_title: str, scan: dict) -> None:
+    patterns_flagged = sorted(_anti_ai_pattern_counts(scan))
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "article_title": article_title,
+        "patterns_flagged": patterns_flagged,
+        "severity_score": scan.get("score", 0.0),
+    }
+    try:
+        _ANTI_AI_SCORES_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _ANTI_AI_SCORES_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log.warning("failed to append anti-AI score log: %s", e)
+
+
+def _anti_ai_rule_names(scan: dict) -> list[str]:
+    rules: list[str] = []
+    seen: set[str] = set()
+    for span in scan.get("flagged_spans", []):
+        if not isinstance(span, dict):
+            continue
+        span_type = str(span.get("type") or "").strip()
+        rule_name = _ANTI_AI_RULE_NAME_BY_SPAN_TYPE.get(span_type, span_type)
+        if rule_name and rule_name not in seen:
+            seen.add(rule_name)
+            rules.append(rule_name)
+    return rules
+
+
+def _anti_ai_flagged_snippet(scan: dict) -> str:
+    for span in scan.get("flagged_spans", []):
+        if not isinstance(span, dict):
+            continue
+        text = re.sub(r"\s+", " ", str(span.get("text") or "")).strip()
+        if text:
+            return text[:100]
+    return ""
+
+
+def _append_writer_anti_ai_log(task_id: str, initial_scan: dict, final_scan: dict) -> None:
+    observed_scan = final_scan if final_scan.get("flagged_spans") else initial_scan
+    passed = float(final_scan.get("score", 0.0) or 0.0) <= float(final_scan.get("threshold", 0.0) or 0.0)
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "task_id": str(task_id or "unknown"),
+        "rules_triggered": _anti_ai_rule_names(observed_scan),
+        "result": "pass" if passed else "fail",
+        "flagged_text_snippet": _anti_ai_flagged_snippet(observed_scan),
+    }
+    try:
+        _ANTI_AI_STRUCTURED_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _ANTI_AI_STRUCTURED_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log.warning("failed to append writer anti-AI log: %s", e)
+
+
+def log_anti_ai_pass(article_id: str, passed: bool) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "passed": bool(passed),
+    }
+    try:
+        _PROXY_DRIFT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = json.loads(_PROXY_DRIFT_LOG_PATH.read_text(encoding="utf-8")) if _PROXY_DRIFT_LOG_PATH.exists() else []
+        if not isinstance(data, list):
+            data = []
+        data.append(entry)
+        _PROXY_DRIFT_LOG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning("failed to append anti-AI proxy drift log for %s: %s", article_id or "unknown", e)
+
+
+def _parse_anti_ai_log_timestamp(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _anti_ai_log_result_failed(value: object) -> bool:
+    return str(value or "").strip().lower() in {"fail", "failed", "reject", "rejected", "blocked"}
+
+
+def check_anti_ai_drift(now: datetime | None = None) -> dict[str, object]:
+    """Alert when the anti-AI gate's current 30-day rejection rate jumps month over month."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    current_start = now - timedelta(days=30)
+    previous_start = current_start - timedelta(days=30)
+    totals = {
+        "previous_total": 0,
+        "previous_failures": 0,
+        "current_total": 0,
+        "current_failures": 0,
+    }
+    if not _ANTI_AI_STRUCTURED_LOG_PATH.exists():
+        return {**totals, "alert_emitted": False, "reason": "log_missing"}
+
+    try:
+        lines = _ANTI_AI_STRUCTURED_LOG_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError as e:
+        log.warning("anti-AI drift check could not read log: %s", e)
+        return {**totals, "alert_emitted": False, "reason": "log_read_failed"}
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entry = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        timestamp = _parse_anti_ai_log_timestamp(entry.get("timestamp"))
+        if timestamp is None or timestamp < previous_start or timestamp > now:
+            continue
+        failed = _anti_ai_log_result_failed(entry.get("result"))
+        if timestamp < current_start:
+            totals["previous_total"] += 1
+            totals["previous_failures"] += int(failed)
+        else:
+            totals["current_total"] += 1
+            totals["current_failures"] += int(failed)
+
+    previous_rate = totals["previous_failures"] / totals["previous_total"] if totals["previous_total"] else 0.0
+    current_rate = totals["current_failures"] / totals["current_total"] if totals["current_total"] else 0.0
+    if not totals["previous_total"] or not totals["current_total"]:
+        return {
+            **totals,
+            "previous_rate": round(previous_rate, 4),
+            "current_rate": round(current_rate, 4),
+            "relative_increase": 0.0,
+            "alert_emitted": False,
+            "reason": "insufficient_data",
+        }
+
+    if previous_rate > 0:
+        relative_increase = (current_rate - previous_rate) / previous_rate
+        should_alert = relative_increase > 0.20
+    else:
+        relative_increase = 1.0 if current_rate > 0 else 0.0
+        should_alert = current_rate > 0.20
+
+    result = {
+        **totals,
+        "previous_rate": round(previous_rate, 4),
+        "current_rate": round(current_rate, 4),
+        "relative_increase": round(relative_increase, 4),
+        "alert_emitted": False,
+    }
+    if not should_alert:
+        return result
+
+    message = (
+        "Anti-AI drift alert: writer checklist rejection rate rose from "
+        f"{previous_rate:.1%} to {current_rate:.1%} over the last two 30-day windows. "
+        "Review anti-ai.md for definitional drift before the gate silently tightens."
+    )
+    try:
+        from notes_bridge import send_to_outbox
+
+        send_to_outbox(
+            message,
+            metadata={
+                "type": "alert",
+                "source": "writer_anti_ai_drift",
+                "previous_rate": round(previous_rate, 4),
+                "current_rate": round(current_rate, 4),
+                "relative_increase": round(relative_increase, 4),
+            },
+        )
+        result["alert_emitted"] = True
+    except Exception as e:
+        log.warning("anti-AI drift alert outbox write failed: %s", e)
+        result["alert_error"] = str(e)
+    return result
+
+
+def _anti_ai_violation_count(scan: dict) -> int:
+    total = 0
+    for span in scan.get("flagged_spans", []):
+        if not isinstance(span, dict):
+            continue
+        count = span.get("count")
+        total += count if isinstance(count, int) and count > 0 else 1
+    return total
+
+
+def _append_content_quality_log(article_id: str, violation_count: int) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "article_id": article_id,
+        "violation_count": violation_count,
+    }
+    try:
+        _CONTENT_QUALITY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _CONTENT_QUALITY_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log.warning("failed to append content quality log: %s", e)
+
+
 def scan_anti_ai_patterns(text: str, *, anti_ai_mode: AntiAiMode = "strict") -> dict:
     paragraphs = _paragraph_spans(text)
     flagged_spans: list[dict] = []
@@ -559,8 +927,8 @@ def scan_anti_ai_patterns(text: str, *, anti_ai_mode: AntiAiMode = "strict") -> 
     if paragraphs:
         em_dash_count = text.count("—")
         em_dash_average = em_dash_count / len(paragraphs)
-        if anti_ai_mode == "strict" and em_dash_average > 2:
-            score += em_dash_average - 2
+        if em_dash_average > 2:
+            score += em_dash_average
             for index, (start, end, paragraph) in enumerate(paragraphs):
                 count = paragraph.count("—")
                 if count:
@@ -571,29 +939,13 @@ def scan_anti_ai_patterns(text: str, *, anti_ai_mode: AntiAiMode = "strict") -> 
                             "start": start,
                             "end": end,
                             "count": count,
-                            "text": paragraph[:160],
-                        }
-                    )
-        elif anti_ai_mode == "relaxed":
-            for index, (start, end, paragraph) in enumerate(paragraphs):
-                count = paragraph.count("—")
-                if count > 5:
-                    score += count - 5
-                    flagged_spans.append(
-                        {
-                            "type": "em_dash_density",
-                            "paragraph": index,
-                            "start": start,
-                            "end": end,
-                            "count": count,
+                            "average_per_paragraph": round(em_dash_average, 3),
                             "text": paragraph[:160],
                         }
                     )
 
     for pattern in _PARALLELISM_PATTERNS:
         matches = list(pattern.finditer(text))
-        if anti_ai_mode == "relaxed" and pattern.pattern.startswith("不是"):
-            matches = matches[1:]
         for match in matches:
             score += 1.0
             flagged_spans.append(
@@ -626,11 +978,271 @@ def scan_anti_ai_patterns(text: str, *, anti_ai_mode: AntiAiMode = "strict") -> 
                     }
                 )
 
+    lower = text.lower()
+    for phrase in _BANNED_CHINESE_PHRASES:
+        for match in re.finditer(re.escape(phrase), text):
+            score += 1.5
+            flagged_spans.append(
+                {
+                    "type": "banned_chinese_phrase",
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": phrase,
+                }
+            )
+
+    for pattern in _BANNED_CHINESE_PATTERNS:
+        for match in pattern.finditer(text):
+            score += 1.5
+            flagged_spans.append(
+                {
+                    "type": "banned_chinese_pattern",
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": match.group(0)[:80],
+                }
+            )
+
+    for phrase in _GENERIC_AI_ESSAY_SHELLS:
+        for match in re.finditer(re.escape(phrase), lower):
+            score += 1.5
+            flagged_spans.append(
+                {
+                    "type": "banned_english_phrase",
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": phrase,
+                }
+            )
+
+    for phrase in _BANNED_FAKE_TRANSITIONS:
+        for match in re.finditer(re.escape(phrase), lower):
+            score += 1.0
+            flagged_spans.append(
+                {
+                    "type": "banned_fake_transition",
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": phrase,
+                }
+            )
+
     return {
         "score": round(score, 3),
         "threshold": _ANTI_AI_SCAN_THRESHOLD,
         "flagged_spans": flagged_spans,
     }
+
+
+def _parse_blind_human_score(response: str) -> float | None:
+    cleaned = re.sub(r"\b1\s*[-–]\s*10\b", "", response)
+    patterns = (
+        r"(?:rating|score|rate|give(?: it)?)[^\d]{0,40}(10(?:\.0+)?|[1-9](?:\.\d+)?)",
+        r"(?<![\d.])(10(?:\.0+)?|[1-9](?:\.\d+)?)\s*/\s*10",
+        r"(?<![\d.])(10(?:\.0+)?|[1-9](?:\.\d+)?)(?![\d.])",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            score = float(match.group(1))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= score <= 10:
+            return score
+    return None
+
+
+def _maybe_log_blind_drift_warning(text: str, *, anti_ai_mode: AntiAiMode, article_slug: str | None = None) -> None:
+    scan = scan_anti_ai_patterns(text, anti_ai_mode=anti_ai_mode)
+    checklist_score = max(1.0, min(10.0, 10.0 - float(scan.get("score", 0.0) or 0.0)))
+    if float(scan.get("score", 0.0) or 0.0) > float(scan.get("threshold", 0.0) or 0.0):
+        return
+    try:
+        sample_rate = float(getattr(_config, "DRIFT_CHECK_SAMPLE_RATE", 0.1))
+    except (TypeError, ValueError):
+        sample_rate = 0.1
+    if random() >= min(max(sample_rate, 0.0), 1.0):
+        return
+    prompt = "Read this text and rate how naturally human it reads, 1-10. Explain your rating.\n\n" f"{text}"
+    try:
+        response = claude_think(prompt, timeout=120, tier="light")
+    except Exception as e:
+        log.debug("blind drift evaluator failed for %s: %s", _article_slug(article_slug), e)
+        return
+    explanation = _clean_llm_metadata_response(response or "").strip()
+    naive_score = _parse_blind_human_score(explanation)
+    if naive_score is None:
+        return
+    try:
+        threshold = float(getattr(_config, "DRIFT_DIVERGENCE_THRESHOLD", 3))
+    except (TypeError, ValueError):
+        threshold = 3.0
+    divergence = abs(naive_score - checklist_score)
+    if divergence > threshold:
+        log.warning(
+            "WRITER_DRIFT_WARNING article=%s checklist_score=%.1f naive_score=%.1f divergence=%.1f explanation=%r",
+            _article_slug(article_slug),
+            checklist_score,
+            naive_score,
+            divergence,
+            explanation,
+        )
+
+
+def _sentence_word_counts(text: str) -> list[int]:
+    counts: list[int] = []
+    for sentence in re.split(r"[.!?。！？]+", text):
+        stripped = sentence.strip()
+        if not stripped or re.match(r"^#{1,6}\s", stripped):
+            continue
+        words = re.findall(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)?", stripped)
+        if words:
+            counts.append(len(words))
+    return counts
+
+
+def _paragraph_opener_type(word: str) -> str:
+    opener = word.lower()
+    if opener in {"once", "when", "after", "before", "while", "as"}:
+        return "temporal"
+    if opener in {"but", "yet", "however", "still"}:
+        return "contrast"
+    if opener in {"the", "a", "an"}:
+        return "article"
+    if opener in {"this", "that", "these", "those"}:
+        return "demonstrative"
+    if opener in {"i", "we", "you", "he", "she", "they", "it"}:
+        return "pronoun"
+    if opener in {"in", "on", "at", "by", "with", "from", "for", "to"}:
+        return "preposition"
+    if opener.endswith("ly"):
+        return "adverb"
+    return "other"
+
+
+def _paragraph_opener_types(text: str) -> list[str]:
+    opener_types: list[str] = []
+    for _, _, paragraph in _paragraph_spans(text):
+        stripped = paragraph.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        words = re.findall(r"[A-Za-z]+(?:['’][A-Za-z]+)?", stripped)
+        if len(words) < 5:
+            continue
+        opener_types.append(_paragraph_opener_type(words[0]))
+    return opener_types
+
+
+def scan_overcorrection_patterns(text: str) -> dict:
+    flagged_patterns: list[dict[str, object]] = []
+    sentence_counts = _sentence_word_counts(text)
+    if len(sentence_counts) >= 6 and all(8 <= count <= 15 for count in sentence_counts):
+        flagged_patterns.append(
+            {
+                "type": "sentence_length_entropy_low",
+                "severity": "high",
+                "detail": f"{len(sentence_counts)} sentences all fall between 8 and 15 words",
+                "min_words": min(sentence_counts),
+                "max_words": max(sentence_counts),
+            }
+        )
+
+    contraction_count = len(_OVERCONTRACTION_RE.findall(text))
+    uncontracted_count = len(_UNCONTRACTED_AUXILIARY_RE.findall(text))
+    contraction_total = contraction_count + uncontracted_count
+    contraction_ratio = contraction_count / contraction_total if contraction_total else 0.0
+    if contraction_total >= 8 and contraction_count >= 7 and contraction_ratio > 0.8:
+        flagged_patterns.append(
+            {
+                "type": "forced_contraction_ratio",
+                "severity": "high",
+                "detail": f"{contraction_ratio:.0%} of contraction-capable phrases are contracted",
+                "contractions": contraction_count,
+                "total": contraction_total,
+            }
+        )
+
+    opener_types = _paragraph_opener_types(text)
+    if len(opener_types) >= 4:
+        adjacent_changes = sum(1 for before, after in zip(opener_types, opener_types[1:]) if before != after)
+        unique_ratio = len(set(opener_types)) / len(opener_types)
+        if adjacent_changes == len(opener_types) - 1 and unique_ratio >= 0.8:
+            flagged_patterns.append(
+                {
+                    "type": "mechanical_sentence_opening_variety",
+                    "severity": "high",
+                    "detail": "paragraph opener types rotate without repetition",
+                    "opener_types": opener_types,
+                }
+            )
+
+    concrete_markers = list(_OVERCONCRETE_MARKER_RE.finditer(text))
+    sentence_total = max(len(sentence_counts), 1)
+    concrete_marker_ratio = len(concrete_markers) / sentence_total
+    if len(concrete_markers) >= 4 and concrete_marker_ratio >= 0.25:
+        flagged_patterns.append(
+            {
+                "type": "concrete_noun_stuffing",
+                "severity": "high",
+                "detail": f"{len(concrete_markers)} concrete-example markers across {sentence_total} sentence(s)",
+                "marker_ratio": round(concrete_marker_ratio, 3),
+            }
+        )
+
+    high_intensity_count = sum(1 for item in flagged_patterns if item.get("severity") == "high")
+    return {
+        "score": high_intensity_count,
+        "threshold": 2,
+        "flagged": high_intensity_count >= 2,
+        "flagged_patterns": flagged_patterns,
+    }
+
+
+def _format_overcorrection_guidance(report: dict) -> str:
+    patterns = report.get("flagged_patterns")
+    if not isinstance(patterns, list):
+        return ""
+    lines: list[str] = []
+    for item in patterns:
+        if not isinstance(item, dict):
+            continue
+        pattern_type = str(item.get("type") or "unknown")
+        detail = str(item.get("detail") or "").strip()
+        lines.append(f"- {pattern_type}: {detail}" if detail else f"- {pattern_type}")
+    return "\n".join(lines)
+
+
+def _relax_overcorrections(text: str, report: dict, *, tier: str, timeout: int) -> str:
+    guidance = _format_overcorrection_guidance(report)
+    if not guidance:
+        return text
+    prompt = (
+        "You are Mira's final editor. The draft already passed the anti-AI scanner, but the Goodhart guard "
+        "found overcorrection artifacts from aggressive de-AI processing.\n\n"
+        "Revise lightly to relax those artifacts. Restore natural sentence-length variation, use contractions "
+        "only where they sound natural, stop rotating paragraph openers mechanically, and allow useful abstraction "
+        "instead of forcing every idea into a concrete example.\n\n"
+        "Do not reintroduce em dashes, not-X-but-Y parallelism, generic AI essay shells, banned Chinese phrases, "
+        "raw pipeline artifacts, new claims, new evidence, or a checklist report. Preserve names, sources, factual "
+        "claims, Markdown structure, and the user's requested language.\n\n"
+        "# Goodhart guard findings\n\n"
+        f"{guidance}\n\n"
+        "# Draft\n\n"
+        f"{text}\n\n"
+        "Output only the revised markdown. No preface, no explanation."
+    )
+    try:
+        edited = claude_think(prompt, timeout=timeout, tier=tier)
+    except Exception as e:
+        log.warning("overcorrection_relaxation: LLM call failed (%s) — returning original", e)
+        return text
+    cleaned = _clean_llm_metadata_response(edited or "")
+    if not cleaned or len(cleaned) < len(text) * 0.5:
+        log.warning("overcorrection_relaxation: output invalid; keeping original draft")
+        return text
+    return cleaned
 
 
 def scan_obsession_constraints(text: str) -> dict:
@@ -639,7 +1251,7 @@ def scan_obsession_constraints(text: str) -> dict:
 
     for index, (start, end, paragraph) in enumerate(paragraphs):
         em_dash_count = paragraph.count("—")
-        if em_dash_count > 1:
+        if em_dash_count:
             violations.append(
                 {
                     "trigger": "em_dash_overuse",
@@ -787,24 +1399,37 @@ def _de_ai_section(text: str, *, tier: str, timeout: int, anti_ai_mode: AntiAiMo
     if not text or len(text.strip()) < 80:
         return text
     voice = _load_substack_voice()
+    hard_rules = _load_hard_rules()
     strict_rules = (
-        "1. Em-dash overuse: max one em dash per paragraph. Prefer commas, periods, or sentence restructuring.\n"
-        "2. Repetitive 'not X but Y' / 'the real question is...' reversals. Rewrite most of them.\n"
-        "3. Abstract concept labels such as 'structural', 'architecture of', 'fundamentally'. Make them concrete.\n"
+        "1. HARD BAN: zero em dashes. Rewrite every '—' with commas, periods, or sentence restructuring.\n"
+        "2. HARD BAN: zero '不是' and zero '这是'. Rewrite every instance.\n"
+        "3. HARD BAN: zero '不是X而是Y' / 'not X but Y' parallelism. Rewrite every instance.\n"
+        "4. HARD BAN: zero '打动', '不舒服', '不安', '反复读', fake long pauses such as '停了很久', and generic '太X了' intensifiers.\n"
+        "5. Abstract concept labels such as 'structural', 'architecture of', 'fundamentally'. Make them concrete.\n"
     )
     relaxed_rules = (
         "1. Preserve raw, vulnerable, unpolished draft energy where it helps the piece.\n"
-        "2. Allow up to five em dashes per paragraph; edit only beyond that or when punctuation obscures meaning.\n"
-        "3. Allow one 'not X but Y' / '不是X而是Y' contrast per article when it carries real judgment.\n"
-        "4. Allow structural abstract nouns when they carry the author's thought; do not force a mandatory concrete rewrite.\n"
+        "2. HARD BAN: zero em dashes. Rewrite every '—' with commas, periods, or sentence restructuring.\n"
+        "3. HARD BAN: zero '不是' and zero '这是'. Rewrite every instance.\n"
+        "4. HARD BAN: zero '不是X而是Y' / 'not X but Y' parallelism. Rewrite every instance.\n"
+        "5. HARD BAN: zero '打动', '不舒服', '不安', '反复读', fake long pauses such as '停了很久', and generic '太X了' intensifiers.\n"
+        "6. Allow structural abstract nouns when they carry the author's thought; do not force a mandatory concrete rewrite.\n"
+        "7. Add natural Chinese sentence particles such as '呢', '吗', '吧', '呀', or '啊' where a sentence genuinely sounds too flat.\n"
     )
     mode_rules = strict_rules if anti_ai_mode == "strict" else relaxed_rules
     prompt = (
         "You are Mira's final Substack editor.\n\n"
         "Edit, do not rewrite. Preserve concrete references, names, judgments, reading reactions, "
         "emotional register, section order, and factual claims.\n\n"
+        f"## HARD RULES (non-negotiable, apply before all other guidance)\n{hard_rules}\n\n"
         "Voice guide:\n"
         f"{voice[:5000]}\n\n"
+        "Friction triage before smoothing:\n"
+        "Silently classify each rough spot as productive friction to preserve or consumptive friction to remove before smoothing text.\n"
+        "Preserve or sharpen productive friction such as unusual syntax, emotional resistance, image logic, argument tension, or voice-bearing ambiguity.\n"
+        "Remove consumptive friction such as boilerplate transitions, repetitive structures, vague abstraction, accidental awkwardness, formatting cleanup, or pipeline residue.\n"
+        "Do not optimize for smoothness alone.\n"
+        "If unsure, preserve roughness unless it blocks comprehension or matches a hard anti-AI/pipeline-artifact guard.\n\n"
         "Fix AI-shaped writing patterns:\n"
         f"{mode_rules}"
         "Always block raw markdown concatenation artifacts and content that looks like errors, stack traces, or pipeline output.\n"
@@ -860,6 +1485,8 @@ def de_ai_pass(
     timeout: int = 120,
     anti_ai_mode: AntiAiMode = "strict",
     relaxed: bool = False,
+    article_slug: str | None = None,
+    task_id: str | None = None,
 ) -> str:
     """Apply the de-AI editorial pass on a piece of markdown.
 
@@ -882,7 +1509,9 @@ def de_ai_pass(
         return text
     if relaxed:
         anti_ai_mode = "relaxed"
+    original_text = text
     scan = scan_anti_ai_patterns(text, anti_ai_mode=anti_ai_mode)
+    pattern_counts = _anti_ai_pattern_counts(scan)
     if scan["score"] > scan["threshold"]:
         log.info(
             "de_ai_pass: anti-AI scan score %.3f exceeded threshold %.3f (%d spans)",
@@ -891,7 +1520,59 @@ def de_ai_pass(
             len(scan["flagged_spans"]),
         )
         text = _run_de_ai_sections(text, tier="heavy", timeout=max(timeout, 240), anti_ai_mode=anti_ai_mode)
-    return _run_de_ai_sections(text, tier=tier, timeout=timeout, anti_ai_mode=anti_ai_mode)
+    result = _run_de_ai_sections(text, tier=tier, timeout=timeout, anti_ai_mode=anti_ai_mode)
+    final_scan = scan_anti_ai_patterns(result, anti_ai_mode=anti_ai_mode)
+    if final_scan["score"] <= final_scan["threshold"]:
+        overcorrection_scan = scan_overcorrection_patterns(result)
+        if overcorrection_scan["flagged"]:
+            log.info(
+                "de_ai_pass: overcorrection guard flagged %d high-intensity patterns; relaxing de-AI artifacts",
+                overcorrection_scan["score"],
+            )
+            result = _relax_overcorrections(result, overcorrection_scan, tier=tier, timeout=timeout)
+            final_scan = scan_anti_ai_patterns(result, anti_ai_mode=anti_ai_mode)
+    article_id = _article_slug(article_slug)
+    _append_writer_anti_ai_log(task_id or article_id, scan, final_scan)
+    log_anti_ai_pass(
+        article_id, float(final_scan.get("score", 0.0) or 0.0) <= float(final_scan.get("threshold", 0.0) or 0.0)
+    )
+    _append_anti_ai_score_log(article_id, final_scan)
+    _append_content_quality_log(article_id, _anti_ai_violation_count(final_scan))
+    if result != original_text:
+        _append_anti_ai_pattern_log(article_id, pattern_counts)
+    return result
+
+
+def _certainty_calibration_pass(text: str, *, tier: str = "light", timeout: int = 120) -> str:
+    if _has_confidence_scores(text):
+        return text
+    prompt = (
+        "You are Mira's certainty-calibration editor.\n\n"
+        "For each factual claim in the draft, rate your confidence on a 1–5 scale and add a compact "
+        "inline annotation in the form [C:N] immediately after the claim. "
+        "For claims rated ≤3, rephrase with hedging such as 'may', 'likely', or 'the evidence suggests'. "
+        "For claims rated ≤2, prepend a short disclaimer such as 'I'm not fully sure, but…' or flag "
+        "explicitly for human verification. Preserve all other content, structure, and language.\n\n"
+        "Output only the edited markdown. No preface, no explanation.\n\n"
+        "# Draft\n\n"
+        f"{text}"
+    )
+    try:
+        edited = claude_think(prompt, timeout=timeout, tier=tier)
+    except Exception as e:
+        log.warning("certainty_calibration_pass: LLM call failed (%s) — returning original", e)
+        return text
+    if not edited:
+        return text
+    cleaned = _clean_llm_metadata_response(edited)
+    if len(cleaned) < len(text) * 0.5:
+        log.warning(
+            "certainty_calibration_pass: output too short (%d < 50%% of %d) — returning original",
+            len(cleaned),
+            len(text),
+        )
+        return text
+    return cleaned
 
 
 def _obsession_friction_points(report: str) -> list[dict[str, str]]:
@@ -932,6 +1613,7 @@ def _obsessive_revise(
     tier: str = "light",
     timeout: int = 180,
     anti_ai_mode: AntiAiMode = "strict",
+    article_slug: str | None = None,
 ) -> str:
     if not draft or len(draft.strip()) < 80:
         return draft
@@ -978,7 +1660,7 @@ def _obsessive_revise(
     if not cleaned or len(cleaned) < len(draft) * 0.5:
         log.warning("obsessive_revise: revision output invalid; keeping original draft")
         return draft
-    return de_ai_pass(cleaned, tier=tier, timeout=timeout, anti_ai_mode=anti_ai_mode)
+    return de_ai_pass(cleaned, tier=tier, timeout=timeout, anti_ai_mode=anti_ai_mode, article_slug=article_slug)
 
 
 def minimal_voice_preserving_editorial_pass(text: str, *, tier: str = "light", timeout: int = 120) -> str:
@@ -1522,7 +2204,9 @@ def _ceiling_handoff(output: str, *, content: str, tier: str = "light", timeout:
         "# Finished output\n\n"
         f"{output[:12000]}\n\n"
         "Return only JSON with these keys: boundary, assessment, bothered_detail, friction_points, publication_blocking. "
-        "Use boundary as either 'exceptional' or 'adequate'. friction_points must be a list of 2-4 concrete strings. "
+        "Use boundary as either 'exceptional' or 'adequate'. friction_points must be a list of objects shaped "
+        '{"fragment":"...","kind":"originality_preserving|tool_eliminable|human_handoff",'
+        '"rationale":"one-sentence reason","recommended_action":"preserve|fix|ask_human"}. '
         "publication_blocking must be false."
     )
     try:
@@ -1553,6 +2237,21 @@ def _ceiling_handoff(output: str, *, content: str, tier: str = "light", timeout:
             "friction_points": [],
             "publication_blocking": False,
         }
+    raw_points = parsed.get("friction_points")
+    if isinstance(raw_points, list):
+        parsed["friction_points"] = [
+            (
+                {
+                    "fragment": point,
+                    "kind": "human_handoff",
+                    "rationale": "Unclassified legacy ceiling output",
+                    "recommended_action": "ask_human",
+                }
+                if isinstance(point, str)
+                else point
+            )
+            for point in raw_points
+        ]
     parsed["publication_blocking"] = False
     log.info("ceiling_handoff: %s", json.dumps(parsed, ensure_ascii=False)[:2000])
     return parsed
@@ -1761,7 +2460,7 @@ def handle(
     raw_writing_mode = RAW_WRITING_MODE_ALLOWED and isinstance(metadata, dict) and bool(metadata.get("raw"))
     bundle = build_runtime_context(
         content,
-        user_id=kwargs.get("user_id", "ang") or "ang",
+        user_id=kwargs.get("user_id", "default") or "default",
         thread_id=thread_id,
         persona_domains=["taste", "style", "writing"],
         recall_top_k=5,
@@ -1867,9 +2566,24 @@ def _handle_quick_write(
     if voice_preserving:
         final_text = minimal_voice_preserving_editorial_pass(final_text, tier="light", timeout=180)
     elif not raw_writing_mode and run_de_ai_checklist:
-        final_text = de_ai_pass(final_text, tier="light", timeout=180, relaxed=anti_ai_mode == "relaxed")
+        final_text = de_ai_pass(
+            final_text,
+            tier="light",
+            timeout=180,
+            relaxed=anti_ai_mode == "relaxed",
+            article_slug=title,
+        )
         if getattr(_config, "WRITER_OBSESSION_MODE", False):
-            final_text = _obsessive_revise(final_text, tier="light", timeout=180, anti_ai_mode=anti_ai_mode)
+            final_text = _obsessive_revise(
+                final_text,
+                tier="light",
+                timeout=180,
+                anti_ai_mode=anti_ai_mode,
+                article_slug=title,
+            )
+        if not _has_confidence_scores(final_text):
+            log.info("certainty_calibration: no confidence scores found; running calibration pass")
+            final_text = _certainty_calibration_pass(final_text, tier="light", timeout=120)
     metadata = _assess_obsession_gap(final_text, content=content, metadata=metadata)
     if _obsession_gap_check(final_text):
         metadata["needs_obsession"] = True
@@ -1908,6 +2622,8 @@ def _handle_quick_write(
         editorial_choices = _collect_editorial_choices(draft_before_de_ai, final_text, anti_ai_mode=anti_ai_mode)
         _append_epistemic_editorial_choice(editorial_choices, draft_before_epistemic, final_text)
         _append_speaker_identity_editorial_choice(editorial_choices, draft_before_speaker_identity, final_text)
+    if not voice_preserving and run_de_ai_checklist and not raw_writing_mode:
+        _maybe_log_blind_drift_warning(final_text, anti_ai_mode=anti_ai_mode, article_slug=title)
     _append_audit_editorial_choice(editorial_choices, draft_before_audit, final_text, audit_report)
     final_text += _build_judgment_disclosure(final_text, editorial_choices)
     if voice_preserving or not run_de_ai_checklist:
@@ -1976,9 +2692,24 @@ def _handle_full_write(
         if voice_preserving:
             edited = minimal_voice_preserving_editorial_pass(edited, tier="light", timeout=240)
         elif not raw_writing_mode and run_de_ai_checklist:
-            edited = de_ai_pass(edited, tier="light", timeout=240, relaxed=anti_ai_mode == "relaxed")
+            edited = de_ai_pass(
+                edited,
+                tier="light",
+                timeout=240,
+                relaxed=anti_ai_mode == "relaxed",
+                article_slug=project_dir.name,
+            )
             if getattr(_config, "WRITER_OBSESSION_MODE", False):
-                edited = _obsessive_revise(edited, tier="light", timeout=240, anti_ai_mode=anti_ai_mode)
+                edited = _obsessive_revise(
+                    edited,
+                    tier="light",
+                    timeout=240,
+                    anti_ai_mode=anti_ai_mode,
+                    article_slug=project_dir.name,
+                )
+            if not _has_confidence_scores(edited):
+                log.info("certainty_calibration: no confidence scores found; running calibration pass")
+                edited = _certainty_calibration_pass(edited, tier="light", timeout=120)
         metadata = _assess_obsession_gap(edited, content=content, metadata=metadata)
         if _obsession_gap_check(edited):
             metadata["needs_obsession"] = True
@@ -2018,6 +2749,8 @@ def _handle_full_write(
             editorial_choices = _collect_editorial_choices(existing, edited, anti_ai_mode=anti_ai_mode)
             _append_epistemic_editorial_choice(editorial_choices, before_epistemic, edited)
             _append_speaker_identity_editorial_choice(editorial_choices, before_speaker_identity, edited)
+        if not voice_preserving and run_de_ai_checklist and not raw_writing_mode:
+            _maybe_log_blind_drift_warning(edited, anti_ai_mode=anti_ai_mode, article_slug=project_dir.name)
         _append_audit_editorial_choice(editorial_choices, before_audit, edited, audit_report)
         edited += _build_judgment_disclosure(edited, editorial_choices)
         if voice_preserving or not run_de_ai_checklist:
@@ -2090,7 +2823,7 @@ def compile_book(
         if source_type == "human_raw":
             edited = _format_human_raw_notes(raw)
         else:
-            edited = de_ai_pass(raw, tier=tier, timeout=per_chapter_timeout)
+            edited = de_ai_pass(raw, tier=tier, timeout=per_chapter_timeout, article_slug=ch.stem)
         parts.append(edited)
         if edited != raw:
             edited_count += 1

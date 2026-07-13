@@ -87,7 +87,7 @@ def test_execute_request_verify_accepts_existing_verified_payload():
         item={
             "id": "request_verify:t1",
             "task_id": "t1",
-            "user_id": "ang",
+            "user_id": "default",
             "payload": {"verification": {"verified": True, "summary": "artifact exists"}},
         },
     )
@@ -108,7 +108,7 @@ def test_execute_request_verify_rejects_unverified_payload():
         item={
             "id": "request_verify:t1",
             "task_id": "t1",
-            "user_id": "ang",
+            "user_id": "default",
             "payload": {"verification": {"verified": False, "summary": "semantic intent not checked"}},
         },
     )

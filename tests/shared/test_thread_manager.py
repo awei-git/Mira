@@ -17,7 +17,7 @@ import memory.threads as tm
 
 def _fresh_manager():
     """Create a ThreadManager with clean state."""
-    users_dir = _test_dir / "users" / "ang"
+    users_dir = _test_dir / "users" / "default"
     threads_dir = users_dir / "threads"
     if threads_dir.exists():
         for path in sorted(threads_dir.rglob("*"), reverse=True):
@@ -26,7 +26,7 @@ def _fresh_manager():
             elif path.is_dir():
                 path.rmdir()
     threads_dir.mkdir(parents=True, exist_ok=True)
-    return tm.ThreadManager(user_id="ang", bridge_dir=_test_dir)
+    return tm.ThreadManager(user_id="default", bridge_dir=_test_dir)
 
 
 def test_create_thread():
@@ -73,7 +73,7 @@ def test_index_persistence():
     mgr = _fresh_manager()
     mgr.create_thread("Persist Test")
     # Reload
-    mgr2 = tm.ThreadManager(user_id="ang", bridge_dir=_test_dir)
+    mgr2 = tm.ThreadManager(user_id="default", bridge_dir=_test_dir)
     threads = mgr2.list_threads()
     assert len(threads) == 1
     assert threads[0]["title"] == "Persist Test"
@@ -84,7 +84,7 @@ def test_index_atomic_write():
     mgr = _fresh_manager()
     mgr.create_thread("Atomic Test")
     # If atomic, index file should exist and be valid JSON
-    index_file = _test_dir / "users" / "ang" / "threads" / "index.json"
+    index_file = _test_dir / "users" / "default" / "threads" / "index.json"
     assert index_file.exists()
     data = json.loads(index_file.read_text(encoding="utf-8"))
     assert len(data) == 1
@@ -95,7 +95,7 @@ def test_thread_memory_is_user_scoped():
     tid = mgr.create_thread("Scoped Memory")
     mgr.append_thread_memory(tid, "Private entry")
 
-    user_mem = _test_dir / "users" / "ang" / "threads" / tid / "memory.md"
+    user_mem = _test_dir / "users" / "default" / "threads" / tid / "memory.md"
     legacy_mem = _test_dir / "threads" / tid / "memory.md"
     assert user_mem.exists()
     assert not legacy_mem.exists()
@@ -106,7 +106,7 @@ def test_legacy_global_memory_is_still_readable():
     legacy_thread_dir.mkdir(parents=True, exist_ok=True)
     (legacy_thread_dir / "memory.md").write_text("# Thread Memory\n\n- old entry\n", encoding="utf-8")
 
-    mgr = tm.ThreadManager(user_id="ang", bridge_dir=_test_dir)
+    mgr = tm.ThreadManager(user_id="default", bridge_dir=_test_dir)
     mem = mgr.get_thread_memory("legacy1234")
 
     assert "old entry" in mem

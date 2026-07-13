@@ -1,0 +1,44 @@
+{
+  "provider_effect_resolvers": {
+    "health": {
+      "bearer_token_env": "MIRA_HEALTH_RESOLVER_TOKEN",
+      "endpoint_template_env": "MIRA_HEALTH_RESOLVER_ENDPOINT",
+      "payload_path": [
+        "data"
+      ],
+      "type": "http_json"
+    },
+    "market": {
+      "bearer_token_env": "MIRA_MARKET_RESOLVER_TOKEN",
+      "endpoint_template_env": "MIRA_MARKET_RESOLVER_ENDPOINT",
+      "payload_path": [
+        "data"
+      ],
+      "type": "http_json"
+    },
+    "rss": {
+      "bearer_token_env": "MIRA_RSS_RESOLVER_TOKEN",
+      "endpoint_template_env": "MIRA_RSS_RESOLVER_ENDPOINT",
+      "payload_path": [
+        "data"
+      ],
+      "type": "http_json"
+    },
+    "social": {
+      "bearer_token_env": "MIRA_SOCIAL_RESOLVER_TOKEN",
+      "endpoint_template_env": "MIRA_SOCIAL_RESOLVER_ENDPOINT",
+      "payload_path": [
+        "data"
+      ],
+      "type": "http_json"
+    },
+    "substack": {
+      "bearer_token_env": "MIRA_SUBSTACK_RESOLVER_TOKEN",
+      "endpoint_template_env": "MIRA_SUBSTACK_RESOLVER_ENDPOINT",
+      "payload_path": [
+        "data"
+      ],
+      "type": "http_json"
+    }
+  }
+}

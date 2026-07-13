@@ -1,0 +1,23 @@
+name: research_deep_dive
+memory_class: epistemic
+trigger:
+  type: event
+  detail: research queue + slot
+priority: 30
+version: 1
+max_duration_s: 1200
+checkpoint_every: 1
+involved_skills:
+  - research_deep_dive
+steps:
+  - name: snapshot_research_queue_prior_briefings
+    type: memory
+  - name: scope_questions_and_sources
+    type: deterministic
+  - name: research_report
+    type: deterministic
+    action: local_report
+  - name: evidence_quality_gate
+    type: eval
+  - name: experience_record_proposal_gateway
+    type: memory

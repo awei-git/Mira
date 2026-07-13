@@ -30,9 +30,30 @@ from config import (
     BROWSER_DOMCONTENTLOADED_TIMEOUT_MS,
     BROWSER_SCROLL_WAIT_MS,
     BROWSER_TYPING_DELAY_MS,
+    SURFER_ALLOW_BROWSER_LOCAL_AI,
 )
 
 log = logging.getLogger("surfer.browser")
+
+_BROWSER_LOCAL_AI_PATTERNS = (
+    r"\bwindow\s*\.\s*ai\b",
+    r"\bself\s*\.\s*ai\b",
+    r"\bglobalThis\s*\.\s*ai\b",
+    r"\bchrome\s*\.\s*ai\b",
+    r"\bLanguageModel\b",
+    r"\bSummarizer\b",
+    r"\bTranslator\b",
+    r"\bWriter\b",
+    r"\bRewriter\b",
+    r"\bProofreader\b",
+    r"\bnavigator\s*\.\s*gpu\b",
+    r"\brequestAdapter\b",
+)
+_BROWSER_LOCAL_AI_RE = re.compile("|".join(_BROWSER_LOCAL_AI_PATTERNS))
+_BROWSER_LOCAL_AI_BLOCKED = (
+    "[JS Blocked: browser-native AI/WebGPU local inference is disabled for surfer. "
+    "Route private/local inference through Mira's secret/oMLX path.]"
+)
 
 
 @dataclass
@@ -192,6 +213,8 @@ class BrowserSession:
     def evaluate(self, js_code: str) -> str:
         """Run JavaScript in the page context and return the result as string."""
         self._ensure_page()
+        if not SURFER_ALLOW_BROWSER_LOCAL_AI and _BROWSER_LOCAL_AI_RE.search(js_code):
+            return _BROWSER_LOCAL_AI_BLOCKED
         try:
             result = self._page.evaluate(js_code)
             return json.dumps(result, ensure_ascii=False, default=str) if result is not None else ""

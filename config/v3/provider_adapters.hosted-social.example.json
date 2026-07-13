@@ -1,0 +1,13 @@
+{
+  "provider_effect_adapters": {
+    "social": {
+      "bearer_token_env": "MIRA_SOCIAL_ADAPTER_TOKEN",
+      "endpoint_template_env": "MIRA_SOCIAL_ADAPTER_ENDPOINT",
+      "method": "POST",
+      "payload_path": [
+        "data"
+      ],
+      "type": "hosted_social_http"
+    }
+  }
+}

@@ -1,10 +1,13 @@
 """Briefing output helpers for the explorer agent."""
 
+import logging
 import re
 from collections import Counter
 from importlib import util as importlib_util
 from pathlib import Path
 from urllib.parse import urlparse
+
+log = logging.getLogger("mira")
 
 _SHARED_CONFIG_PATH = Path(__file__).resolve().parent.parent / "shared" / "config.py"
 _spec = importlib_util.spec_from_file_location("_mira_shared_config", _SHARED_CONFIG_PATH)
@@ -15,8 +18,10 @@ _spec.loader.exec_module(_shared_config)
 EXPLORE_SOURCE_DIVERSITY_MIN_ENTITIES = _shared_config.EXPLORE_SOURCE_DIVERSITY_MIN_ENTITIES
 EXPLORER_NARRATIVE_SOURCE_MIN_TYPES = _shared_config.EXPLORER_NARRATIVE_SOURCE_MIN_TYPES
 EXPLORER_CORPORATE_PR_MAX_RATIO = _shared_config.EXPLORER_CORPORATE_PR_MAX_RATIO
+SOURCE_TRUST_TIERS = getattr(_shared_config, "SOURCE_TRUST_TIERS", {})
 ENABLE_EPISTEMIC_FILTER = getattr(_shared_config, "ENABLE_EPISTEMIC_FILTER", True)
 EPISTEMIC_CONFIDENCE_THRESHOLD = getattr(_shared_config, "EPISTEMIC_CONFIDENCE_THRESHOLD", "medium")
+TRUST_CAVEAT = "community-aggregated signal — verify against primary source"
 
 
 _AI_TECH_KEYWORDS = (
@@ -110,6 +115,71 @@ _AI_FUTURE_EFFECT_PATTERN = re.compile(
     r"\b(?:ai|artificial intelligence|llm|agent|model|automation)\b|人工智能|大模型|模型"
 )
 _URL_PATTERN = re.compile(r"https?://[^\s)\]>]+")
+_PROVENANCE_LABEL_PATTERN = re.compile(r"^\s*(?:[-*]\s*)?\[(?:HARD|SOFT):[^\]]+\]", re.IGNORECASE)
+BENCHMARK_COMPARISON_WARNING = "Note: benchmark comparisons may not be valid — split methods differ or unspecified."
+BENCHMARK_RESULT_SCHEMA = {
+    "paper": "string",
+    "model": "string",
+    "benchmark": "string",
+    "metric": "string",
+    "value": "string",
+    "split_method": "iid_random (IID random split)|temporal (temporal/sliding-window split)|task_held_out|cross_dataset|unreported",
+}
+_BENCHMARK_SPLIT_METHOD_PATTERN = re.compile(r'"?\bsplit_method\b"?\s*:\s*"?([^"\n,}\]]+)', re.IGNORECASE)
+_BENCHMARK_RESULT_HEADING_PATTERN = re.compile(r"\bbenchmark_(?:result|claim)s?\b", re.IGNORECASE)
+_BENCHMARK_CLAIM_PATTERN = re.compile(
+    r"\b(?:achieves?|scores?|reaches?|gets?|beats?|outperforms?|accuracy|f1|auc|bleu|mmlu|swe-bench|benchmark)\b"
+    r".{0,120}\b\d+(?:\.\d+)?\s*%?",
+    re.IGNORECASE,
+)
+_PRICE_FACT_PATTERN = re.compile(
+    r"(?<!\w)(?:[$€£¥]\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:k|m|bn|million|billion|trillion))?|"
+    r"\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|JPY|CNY|dollars?|euros?|yuan))\b",
+    re.IGNORECASE,
+)
+_DATE_FACT_PATTERN = re.compile(
+    r"\b(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:,\s*\d{4})?|"
+    r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2}/\d{2,4}|Q[1-4]\s+(?:19|20)\d{2}|(?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+_NUMBER_FACT_PATTERN = re.compile(
+    r"(?<![\w$€£¥])\d[\d,]*(?:\.\d+)?(?:\s?(?:%|percent|bps|x|k|m|bn|million|billion|trillion|thousand))?",
+    re.IGNORECASE,
+)
+_CAPITALIZED_FACT_PATTERN = re.compile(
+    r"\b(?:[A-Z][A-Za-z0-9&'.-]+|[A-Z]{2,})"
+    r"(?:\s+(?:[A-Z][A-Za-z0-9&'.-]+|[A-Z]{2,}|of|and|the|for|in|on|at|to|de|la|&)){0,5}\b"
+)
+_CAPITALIZED_FACT_STOPWORDS = {
+    "A",
+    "An",
+    "And",
+    "But",
+    "For",
+    "From",
+    "If",
+    "In",
+    "It",
+    "Its",
+    "Of",
+    "On",
+    "Or",
+    "That",
+    "The",
+    "This",
+    "To",
+    "With",
+}
+_RAW_ARTICLE_TEXT_FIELDS = ("raw_text", "raw_extracted_text", "extracted_text", "article_text")
+_ARTICLE_SUMMARY_FIELDS = ("summary_text", "vlm_summary", "summary")
+_TEMPORAL_SPLIT_PATTERN = re.compile(
+    r"\b(?:temporal split|time-based split|chronological split|sequential split)\b",
+    re.IGNORECASE,
+)
+_BENCHMARK_SPLIT_FLAG_PATTERN = re.compile(r"\[split:(?:temporal|unspecified)\]", re.IGNORECASE)
+
+SOFT_SIGNAL_SOURCES = ["github.com/trending", "huggingface.co/trending", "reddit.com"]
+HARD_SIGNAL_SOURCES = ["arxiv.org", "paperswithcode.com/sota"]
 
 _CORPORATE_DOMAINS = (
     "about.fb.com",
@@ -278,6 +348,118 @@ def _domain_matches(host: str, domains: tuple[str, ...]) -> bool:
     return any(host == domain or host.endswith(f".{domain}") for domain in domains)
 
 
+def _source_text(item: dict) -> str:
+    return " ".join(str(item.get(field, "")) for field in ("source", "url", "title", "summary", "description")).lower()
+
+
+def _signal_provenance_label(item: dict) -> str | None:
+    text = _source_text(item)
+    source_name = str(item.get("source", "")).strip().lower()
+    url = str(item.get("url", "")).strip()
+    host = urlparse(url).netloc.lower().removeprefix("www.") if url else ""
+    path = urlparse(url).path.strip("/") if url else ""
+
+    if (
+        any(source in text for source in SOFT_SIGNAL_SOURCES)
+        or source_name in {"github_trending", "huggingface"}
+        or "reddit.com" in host
+    ):
+        if "github" in text:
+            return "[SOFT: GitHub trending]"
+        if "huggingface" in text:
+            return "[SOFT: HuggingFace trending]"
+        if "reddit" in text or "reddit.com" in host:
+            return "[SOFT: Reddit]"
+        return "[SOFT: popularity signal]"
+
+    if any(source in text for source in HARD_SIGNAL_SOURCES) or source_name == "arxiv" or host.endswith("arxiv.org"):
+        if host.endswith("arxiv.org"):
+            paper_id = path.rsplit("/", 1)[-1] if path else ""
+            return f"[HARD: arxiv {paper_id}]" if paper_id else "[HARD: arxiv]"
+        if "paperswithcode.com/sota" in text:
+            return "[HARD: Papers with Code SOTA]"
+        return "[HARD: research signal]"
+
+    return None
+
+
+def _source_trust_tier(item: dict) -> str | None:
+    source = str(item.get("source", "")).strip().lower()
+    normalized = source.replace(" ", "_")
+    candidates = [normalized]
+    if normalized.startswith("r/"):
+        candidates.append("reddit")
+    if normalized == "hackernews":
+        candidates.append("hacker_news")
+    if normalized == "hacker_news":
+        candidates.append("hackernews")
+
+    for candidate in candidates:
+        tier = SOURCE_TRUST_TIERS.get(candidate)
+        if tier:
+            return tier
+    return None
+
+
+def _trust_caveat(item: dict) -> str | None:
+    tier = _source_trust_tier(item)
+    if tier in ("community", "aggregator"):
+        return TRUST_CAVEAT
+    return None
+
+
+def _annotate_signal_provenance(briefing: str, feed_items: list) -> str:
+    labels = []
+    for item in feed_items:
+        if not isinstance(item, dict):
+            continue
+        label = _signal_provenance_label(item)
+        caveat = _trust_caveat(item)
+        if not label and not caveat:
+            continue
+        title = str(item.get("title", "")).strip()
+        url = str(item.get("url", "")).strip()
+        labels.append((label, caveat, title, url))
+
+    if not labels:
+        return briefing
+
+    source_lines = briefing.splitlines()
+    lines = []
+    for index, line in enumerate(source_lines):
+        stripped = line.strip()
+        if not stripped:
+            lines.append(line)
+            continue
+        has_provenance_label = bool(_PROVENANCE_LABEL_PATTERN.search(line))
+
+        label = None
+        caveat = None
+        for candidate_label, candidate_caveat, title, url in labels:
+            if (url and url in line) or (title and title in line):
+                label = candidate_label
+                caveat = candidate_caveat
+                break
+
+        prefix = line[: len(line) - len(line.lstrip())]
+        body = line[len(prefix) :]
+        if label and not has_provenance_label:
+            if body.startswith("- "):
+                line = f"{prefix}- {label} {body[2:]}"
+            elif body.startswith("* "):
+                line = f"{prefix}* {label} {body[2:]}"
+            else:
+                line = f"{prefix}{label} {body}"
+        lines.append(line)
+        if caveat and "trust_caveat:" not in line:
+            next_line = source_lines[index + 1].strip() if index + 1 < len(source_lines) else ""
+            if not next_line.startswith("trust_caveat:"):
+                caveat_prefix = f"{prefix}    " if label or body.startswith(("- ", "* ")) else prefix
+                lines.append(f"{caveat_prefix}trust_caveat: {caveat}")
+
+    return "\n".join(lines)
+
+
 def _is_platform_vendor_item(item: dict) -> bool:
     host = _source_entity(item)
     source_name = host.split("/", 1)[0].split(".", 1)[0]
@@ -343,6 +525,97 @@ def _format_yaml_field(key: str, values: list[str]) -> str:
     if not values:
         return f"{key}: []"
     return f"{key}:\n" + "\n".join(f"  - {value}" for value in values)
+
+
+def _extract_facts(text) -> list[str]:
+    facts = []
+    seen = set()
+    for pattern in (_PRICE_FACT_PATTERN, _DATE_FACT_PATTERN, _NUMBER_FACT_PATTERN, _CAPITALIZED_FACT_PATTERN):
+        for match in pattern.finditer(str(text or "")):
+            fact = re.sub(r"\s+", " ", match.group(0)).strip(" \t\r\n.,;:()[]{}")
+            if not fact or fact in _CAPITALIZED_FACT_STOPWORDS:
+                continue
+            key = fact.lower()
+            if key in seen or any(key in existing for existing in seen):
+                continue
+            seen.add(key)
+            facts.append(fact)
+    return facts
+
+
+def _verify_completeness(raw_text, summary_text) -> list[str]:
+    summary_lower = str(summary_text or "").lower()
+    return [fact for fact in _extract_facts(raw_text) if fact.lower() not in summary_lower]
+
+
+def _first_text_field(item: dict, fields: tuple[str, ...]) -> str:
+    for field in fields:
+        value = item.get(field)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _yaml_quote(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _append_metadata_warning(content: str, warning: str) -> str:
+    warning_line = f"  - {_yaml_quote(warning)}"
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end != -1:
+            lines = content[4:end].rstrip().splitlines()
+            for index, line in enumerate(lines):
+                if line == "completeness_warnings: []":
+                    lines[index] = "completeness_warnings:"
+                    lines.insert(index + 1, warning_line)
+                    frontmatter = "\n".join(lines)
+                    return f"---\n{frontmatter}\n---{content[end + 4:]}"
+                if line == "completeness_warnings:":
+                    insert_at = index + 1
+                    while insert_at < len(lines) and lines[insert_at].startswith("  - "):
+                        insert_at += 1
+                    lines.insert(insert_at, warning_line)
+                    frontmatter = "\n".join(lines)
+                    return f"---\n{frontmatter}\n---{content[end + 4:]}"
+
+            frontmatter = "\n".join(lines).strip()
+            frontmatter = (
+                f"{frontmatter}\ncompleteness_warnings:\n{warning_line}"
+                if frontmatter
+                else f"completeness_warnings:\n{warning_line}"
+            )
+            return f"---\n{frontmatter}\n---{content[end + 4:]}"
+
+    return f"---\ncompleteness_warnings:\n{warning_line}\n---\n\n{content}"
+
+
+def _completeness_warnings(feed_items: list) -> list[str]:
+    warnings = []
+    for item in feed_items:
+        if not isinstance(item, dict):
+            continue
+        raw_text = _first_text_field(item, _RAW_ARTICLE_TEXT_FIELDS)
+        summary_text = _first_text_field(item, _ARTICLE_SUMMARY_FIELDS)
+        if not raw_text or not summary_text:
+            continue
+        missing = _verify_completeness(raw_text, summary_text)
+        if not missing:
+            continue
+        title = str(item.get("title") or item.get("url") or "untitled article").strip()
+        url = str(item.get("url") or "").strip()
+        shown = missing[:12]
+        suffix = f"; +{len(missing) - len(shown)} more" if len(missing) > len(shown) else ""
+        warning = f"VLM summary completeness warning for {title[:120]}: missing facts: {', '.join(shown)}{suffix}"
+        warnings.append(warning)
+        log.warning(
+            "VLM summary completeness warning: title=%s url=%s missing_facts=%s",
+            title[:120],
+            url,
+            ", ".join(shown),
+        )
+    return warnings
 
 
 def _set_epistemic_frontmatter(frontmatter: str, audit: dict) -> str:
@@ -517,10 +790,86 @@ def _format_source_type_counts(counts: dict) -> str:
     return ", ".join(f"{source_type}={count}" for source_type, count in sorted(counts.items()))
 
 
+def _benchmark_claim_context(line: str, feed_items: list) -> str:
+    context = [line]
+    for item in feed_items:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip()
+        url = str(item.get("url", "")).strip()
+        if (title and title in line) or (url and url in line):
+            context.append(
+                " ".join(str(item.get(field, "")) for field in ("source", "title", "summary", "description", "query"))
+            )
+            break
+    return " ".join(context)
+
+
+def _benchmark_split_flag(text: str) -> str:
+    if _TEMPORAL_SPLIT_PATTERN.search(text):
+        return "[split:temporal]"
+    return "[split:unspecified]"
+
+
+def _annotate_benchmark_claim_splits(briefing: str, feed_items: list) -> str:
+    lines = []
+    for line in briefing.splitlines():
+        if _BENCHMARK_CLAIM_PATTERN.search(line) and not _BENCHMARK_SPLIT_FLAG_PATTERN.search(line):
+            split_flag = _benchmark_split_flag(_benchmark_claim_context(line, feed_items))
+            line = f"{line} {split_flag}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _normalize_split_method(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+    if not normalized:
+        return "unreported"
+    if normalized in {"iid", "iid_random", "random", "random_split", "random_iid", "iid_random_split"}:
+        return "iid_random"
+    if normalized in {"temporal", "temporal_split", "time", "time_based", "time_based_split", "sliding_window"}:
+        return "temporal"
+    if normalized in {
+        "task_held_out",
+        "task_held_out_split",
+        "task_heldout",
+        "held_out_task",
+        "heldout_task",
+        "task_holdout",
+    }:
+        return "task_held_out"
+    if normalized in {"cross_dataset", "cross_dataset_split", "dataset_held_out", "held_out_dataset"}:
+        return "cross_dataset"
+    if normalized in {"unreported", "not_reported", "unspecified", "unknown", "not_specified"}:
+        return "unreported"
+    return normalized
+
+
+def _benchmark_split_method_audit(briefing: str) -> dict:
+    methods = [
+        _normalize_split_method(match.group(1).strip(" '\"`"))
+        for match in _BENCHMARK_SPLIT_METHOD_PATTERN.finditer(briefing)
+    ]
+    benchmark_claims = _BENCHMARK_CLAIM_PATTERN.findall(briefing)
+    has_benchmark_aggregation = (
+        len(methods) > 1 or len(benchmark_claims) > 1 or bool(_BENCHMARK_RESULT_HEADING_PATTERN.search(briefing))
+    )
+    if not has_benchmark_aggregation:
+        return {"flagged": False, "methods": methods}
+
+    unique_methods = set(methods)
+    flagged = not methods or "unreported" in unique_methods or len(unique_methods) > 1
+    return {"flagged": flagged, "methods": methods}
+
+
 def apply_source_diversity_note(briefing: str, feed_items: list) -> str:
+    briefing = _annotate_signal_provenance(briefing, feed_items)
+    briefing = _annotate_benchmark_claim_splits(briefing, feed_items)
+    completeness_warnings = _completeness_warnings(feed_items)
     audit = _audit_source_diversity(feed_items)
     narrative_audit = _audit_narrative_source_diversity(briefing, feed_items)
     selection_bias_audit = screen_selection_bias(briefing, feed_items)
+    benchmark_audit = _benchmark_split_method_audit(briefing)
     epistemic_audit = detect_survivorship_bias(briefing)
     notes = []
 
@@ -574,7 +923,14 @@ def apply_source_diversity_note(briefing: str, feed_items: list) -> str:
             "Treat practical claims as hypotheses unless base rates or independent corroboration are present."
         )
 
-    if not notes:
-        return annotate_epistemic_metadata(briefing, epistemic_audit)
+    if benchmark_audit["flagged"] and BENCHMARK_COMPARISON_WARNING not in briefing:
+        notes.append(BENCHMARK_COMPARISON_WARNING)
 
-    return annotate_epistemic_metadata("\n\n".join(notes) + "\n\n" + briefing, epistemic_audit)
+    if not notes:
+        content = annotate_epistemic_metadata(briefing, epistemic_audit)
+    else:
+        content = annotate_epistemic_metadata("\n\n".join(notes) + "\n\n" + briefing, epistemic_audit)
+
+    for warning in completeness_warnings:
+        content = _append_metadata_warning(content, warning)
+    return content

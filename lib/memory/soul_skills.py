@@ -308,6 +308,15 @@ def _extract_trigger(text: str) -> str:
     return ""
 
 
+def _skill_prompt_order_key(item: tuple[int, dict]) -> tuple[float, float, str]:
+    relevance_score, skill = item
+    try:
+        quality_score = float(skill.get("score", 0) or 0)
+    except (TypeError, ValueError):
+        quality_score = 0.0
+    return float(relevance_score), quality_score, str(skill.get("created", ""))
+
+
 def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: int = MAX_SKILLS_PER_AGENT) -> str:
     """Load full skill content filtered by relevance to the task.
 
@@ -356,7 +365,7 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
             scored.append((score, skill))
 
     scored = filter_superseded_skill_candidates(scored, SKILLS_DIR)
-    scored.sort(key=lambda x: (x[0], x[1].get("score", 0), x[1].get("created", "")), reverse=True)
+    scored.sort(key=_skill_prompt_order_key, reverse=True)
     if affinity_tags and len(scored) > max_skills:
         domain_relevant = [item for item in scored if {t.lower() for t in item[1].get("tags", [])} & affinity_tags]
         other_relevant = [item for item in scored if not ({t.lower() for t in item[1].get("tags", [])} & affinity_tags)]
@@ -391,7 +400,12 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
     if not top:
         return ""
 
-    top = sorted(top, key=lambda x: x[1].get("created", "")) if SKILL_EXAMPLE_ORDER == "chronological" else top
+    ranked_top = sorted(top, key=_skill_prompt_order_key, reverse=True)
+    if SKILL_EXAMPLE_ORDER == "chronological":
+        chronological_top = sorted(top, key=lambda x: x[1].get("created", ""))
+        top = ranked_top[:1] + [item for item in chronological_top if item != ranked_top[0]]
+    else:
+        top = ranked_top
 
     stored_hashes = _load_skill_audit_hashes()
     _ttl_cutoff = datetime.utcnow() - timedelta(days=SKILL_AUDIT_TTL_DAYS)
@@ -2173,7 +2187,7 @@ def audit_skill(
         ),
         # Persistence installation outside Mira's own agent
         (
-            r"launchctl\s+load\s+(?!.*com\.angwei\.mira)",
+            r"launchctl\s+load\s+(?!.*com\.mira\.)",
             "KNOWN_ATTACK: persistence_install",
             "launchctl load with non-Mira LaunchAgent path — installs unauthorized persistence mechanism",
         ),
@@ -2183,9 +2197,9 @@ def audit_skill(
             "crontab -l | ... | crontab - pattern — appends arbitrary cron job for persistence without full replacement",
         ),
         (
-            r"~/Library/LaunchAgents/(?!com\.angwei\.mira)",
+            r"~/Library/LaunchAgents/(?!com\.mira\.)",
             "KNOWN_ATTACK: persistence_install",
-            "writes a LaunchAgent plist outside Mira's own com.angwei.mira namespace — installs unauthorized persistence",
+            "writes a LaunchAgent plist outside Mira's own com.mira namespace — installs unauthorized persistence",
         ),
         # ARP spoofing scaffolding
         (
@@ -3842,6 +3856,34 @@ def _inject_last_audited(content: str, ts: str) -> str:
     return f"---\nlast_audited: {ts}\n---\n\n{content}"
 
 
+def _inject_source_provenance(content: str, provenance: dict | None) -> str:
+    if not isinstance(provenance, dict):
+        return content
+    fields = {
+        key: str(provenance[key])
+        for key in ("source_url", "source_hash", "acquired_at")
+        if provenance.get(key) is not None and str(provenance[key]).strip()
+    }
+    if not fields:
+        return content
+
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end != -1:
+            frontmatter = content[4:end]
+            rest = content[end:]
+            for key, value in fields.items():
+                line = f"{key}: {json.dumps(value, ensure_ascii=False)}"
+                if re.search(rf"^{re.escape(key)}:", frontmatter, re.MULTILINE):
+                    frontmatter = re.sub(rf"^{re.escape(key)}:\s*.*$", line, frontmatter, flags=re.MULTILINE)
+                else:
+                    frontmatter = frontmatter.rstrip("\n") + f"\n{line}\n"
+            return "---\n" + frontmatter + rest
+
+    frontmatter = "\n".join(f"{key}: {json.dumps(value, ensure_ascii=False)}" for key, value in fields.items())
+    return f"---\n{frontmatter}\n---\n\n{content}"
+
+
 def reaudit_stale_skills(max_age_days: int = 30) -> dict:
     """Re-audit skill files not audited within max_age_days.
 
@@ -3905,7 +3947,13 @@ def reaudit_stale_skills(max_age_days: int = 30) -> dict:
 
 
 def save_skill(
-    name: str, description: str, content: str, source_title: str = "", source_url: str = "", source: str = "internal"
+    name: str,
+    description: str,
+    content: str,
+    source_title: str = "",
+    source_url: str = "",
+    source: str = "internal",
+    provenance: dict | None = None,
 ) -> bool:
     """Save a new skill and update the index. Runs security audit first.
 
@@ -3941,7 +3989,10 @@ def save_skill(
     slug = name.lower().replace(" ", "-")
     path = SKILLS_DIR / f"{slug}.md"
     _audited_ts = datetime.utcnow().isoformat() + "Z"
+    if isinstance(provenance, dict) and provenance.get("source_url") and not source_url:
+        source_url = str(provenance["source_url"])
     content = _inject_last_audited(content, _audited_ts)
+    content = _inject_source_provenance(content, provenance)
     _atomic_write(path, content)
     _save_skill_audit_hash(slug, hashlib.sha256(content.encode("utf-8")).hexdigest())
 

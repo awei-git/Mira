@@ -113,7 +113,7 @@ def test_full_assessment_report():
         workspace=ws,
         task_id=f"test_{uuid.uuid4().hex[:8]}",
         content="Run assessment days=7",
-        sender="ang",
+        sender="default",
         thread_id="",
     )
     assert result, "Evaluator returned empty"

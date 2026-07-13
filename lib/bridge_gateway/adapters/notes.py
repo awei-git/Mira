@@ -45,7 +45,7 @@ log = logging.getLogger("mira.bridge_gateway.notes")
 class NotesBridgeAdapter(BridgeAdapter):
     name = "notes"
 
-    def __init__(self, bridge_dir: Path | str | None = None, user_id: str = "ang"):
+    def __init__(self, bridge_dir: Path | str | None = None, user_id: str = "default"):
         self._bridge_dir = Path(bridge_dir) if bridge_dir else MIRA_DIR
         self._user_id = user_id
         from bridge import Mira  # lazy: see top-of-file note

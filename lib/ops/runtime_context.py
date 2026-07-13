@@ -88,7 +88,7 @@ class RuntimeContextBundle:
 def build_runtime_context(
     query: str,
     *,
-    user_id: str = "ang",
+    user_id: str = "default",
     thread_id: str = "",
     persona_domains: list[str] | None = None,
     include_journals: int = 0,

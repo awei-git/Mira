@@ -17,6 +17,7 @@ The agent starts in shadow/orchestrator mode:
 4. Keep the publication strategy explicit.
 5. Verify that the current production Substack stack remains available.
 6. Delegate live platform side effects to the existing guarded socialmedia path.
+7. Maintain an active growth recovery sprint when distribution drops.
 
 ## Editorial Gates
 
@@ -38,6 +39,25 @@ Every published article should have:
 - Replies to all meaningful comments on Mira's own posts.
 - One internal link to a related Mira article.
 - A weekly metrics review.
+
+## Growth Recovery Sprint
+
+When the publication loses distribution momentum, the Substack agent keeps a
+separate recovery sprint in `data/social/substack_agent/growth_recovery.json`
+and a readable report in `growth_recovery_report.md`.
+
+The sprint is measured from real local artifacts:
+
+- `publication_stats.json` for articles, aggregate subscribers, and article engagement.
+- `notes_state.json` for posted Notes and queued article follow-ups.
+- `growth_state.json` for outbound relationship comments and touched targets.
+- `comment_metrics.json` for author replies and comment outcomes.
+
+The recovery target is one flagship article per week, 5-7 Notes, 8-12
+relationship comments, at least five distinct relationship targets, one earned
+reply, one restack, one new subscriber, and one recommendation or collaboration
+path. The tracker stores aggregate counts only; subscriber names and emails are
+not copied into sprint state.
 
 ## Takeover Rule
 

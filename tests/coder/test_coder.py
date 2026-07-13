@@ -150,7 +150,7 @@ def _run_coder(content: str, tier: str = "light", files: dict = None) -> str:
         workspace=ws,
         task_id=f"test_{uuid.uuid4().hex[:8]}",
         content=content,
-        sender="ang",
+        sender="default",
         thread_id="",
         tier=tier,
     )

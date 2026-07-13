@@ -1,0 +1,109 @@
+pipelines:
+  feeds:
+    produces:
+      - path_template: "runtime://fetcher.items"
+        format: "list[feed_item]"
+        frequency: "per explore run"
+      - path_template: "data/feeds/feed_stats.json"
+        format: "json"
+        frequency: "per explore run"
+    consumes: []
+  explorer:
+    produces:
+      - path_template: "{workspace}/output.md"
+        format: "markdown"
+        frequency: "per task step"
+      - path_template: "{artifacts_dir}/briefings/{date}{slot_suffix}.md"
+        format: "markdown"
+        frequency: "per explore run"
+      - path_template: "{artifacts_dir}/briefings/{date}{slot_suffix}_source_check.md"
+        format: "markdown"
+        frequency: "per empty explore run"
+      - path_template: "data/soul/reading_notes/{date}*.md"
+        format: "markdown"
+        frequency: "per insight extraction"
+      - path_template: "runtime://daily_feed/feed_explore_{date_compact}"
+        format: "mira_feed_item"
+        frequency: "per explore run"
+    consumes:
+      - path_template: "runtime://fetcher.items"
+        format: "list[feed_item]"
+        expected_from_pipeline: "feeds"
+      - path_template: "data/feeds/feed_stats.json"
+        format: "json"
+        expected_from_pipeline: "feeds"
+  briefing:
+    produces:
+      - path_template: "{workspace}/output.md"
+        format: "markdown"
+        frequency: "per task step"
+    consumes:
+      - path_template: "{workspace}/output.md"
+        format: "markdown"
+        expected_from_pipeline: "explorer"
+      - path_template: "{artifacts_dir}/briefings/{date}*.md"
+        format: "markdown"
+        expected_from_pipeline: "explorer"
+  writer:
+    produces:
+      - path_template: "{artifacts_dir}/writings/{slug}/final.md"
+        format: "markdown"
+        frequency: "per writing project"
+      - path_template: "{workspace}/autowrite_meta.json"
+        format: "json"
+        frequency: "per autowrite run"
+      - path_template: "{artifacts_dir}/writings/publish_manifest.json"
+        format: "json"
+        frequency: "per approved publish candidate"
+      - path_template: "{workspace}/output.md"
+        format: "markdown"
+        frequency: "per task step"
+    consumes:
+      - path_template: "data/soul/reading_notes/{date}*.md"
+        format: "markdown"
+        expected_from_pipeline: "explorer"
+      - path_template: "{artifacts_dir}/briefings/{date}*.md"
+        format: "markdown"
+        expected_from_pipeline: "explorer"
+  socialmedia:
+    produces:
+      - path_template: "{artifacts_dir}/writings/_published/{date}_{slug}.md"
+        format: "markdown_with_frontmatter"
+        frequency: "per Substack publish"
+      - path_template: "data/social/notes_state.json"
+        format: "json"
+        frequency: "per article note queue or notes cycle"
+      - path_template: "{workspace}/output.md"
+        format: "markdown"
+        frequency: "per task step"
+    consumes:
+      - path_template: "{artifacts_dir}/writings/{slug}/final.md"
+        format: "markdown"
+        expected_from_pipeline: "writer"
+      - path_template: "{artifacts_dir}/writings/publish_manifest.json"
+        format: "json"
+        expected_from_pipeline: "writer"
+      - path_template: "{workspace}/output.md"
+        format: "markdown"
+        expected_from_pipeline: "writer"
+  podcast:
+    produces:
+      - path_template: "{artifacts_dir}/audio/podcast/{language}/{slug}/episode.mp3"
+        format: "audio/mpeg"
+        frequency: "per podcast episode"
+    consumes:
+      - path_template: "{artifacts_dir}/writings/_published/{date}_{slug}.md"
+        format: "markdown_with_frontmatter"
+        expected_from_pipeline: "socialmedia"
+  notes:
+    produces:
+      - path_template: "data/social/notes_state.json"
+        format: "json"
+        frequency: "per queued or posted note"
+    consumes:
+      - path_template: "data/social/notes_state.json"
+        format: "json"
+        expected_from_pipeline: "socialmedia"
+      - path_template: "{artifacts_dir}/briefings/{date}*.md"
+        format: "markdown"
+        expected_from_pipeline: "explorer"

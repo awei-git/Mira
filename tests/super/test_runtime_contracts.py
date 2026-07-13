@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,12 +17,26 @@ from execution.plan_state import initialize_plan_artifacts, mark_step_finished
 
 
 def _patch_task_worker_test_side_effects(monkeypatch):
+    verified_payload = {
+        "status": "verified",
+        "verified": True,
+        "artifact_type": "file",
+        "target": "output.md",
+        "summary": "test verifier stub",
+        "checks": [{"name": "test stub", "passed": True, "message": "verification mocked"}],
+        "proxy_checked": "test stub",
+        "property_assumed": "test output exists",
+        "unverified_assumptions": [],
+    }
+
     monkeypatch.setattr("task_worker._emit_status", lambda *args, **kwargs: None)
     monkeypatch.setattr("task_support._append_exec_log", lambda *args, **kwargs: None)
     monkeypatch.setattr("task_worker._record_premortem", lambda *args, **kwargs: None)
     monkeypatch.setattr("task_worker._record_postmortem", lambda *args, **kwargs: None)
     monkeypatch.setattr("task_support._verify_output", lambda *args, **kwargs: None)
-    monkeypatch.setattr("task_worker.save_episode", lambda *args, **kwargs: None)
+    monkeypatch.setattr("task_result._step_verification_payload", lambda *args, **kwargs: dict(verified_payload))
+    monkeypatch.setattr("task_result._verify_step_artifact", lambda *args, **kwargs: True)
+    monkeypatch.setattr(task_worker, "save_episode", lambda *args, **kwargs: None, raising=False)
     monkeypatch.setattr("task_result.append_trace", lambda *args, **kwargs: None)
     monkeypatch.setattr("memory.soul.auto_flush", lambda *args, **kwargs: None)
 
@@ -63,7 +78,7 @@ def test_writer_handler_matches_production_contract(tmp_path, monkeypatch):
 
     workspace = tmp_path / "task"
     workspace.mkdir()
-    summary = handler(workspace, "task123", "写一篇关于测试修复的文章", "ang", "thread1")
+    summary = handler(workspace, "task123", "写一篇关于测试修复的文章", "default", "thread1")
 
     assert summary
     assert "Writing project complete" in summary
@@ -103,6 +118,19 @@ def test_execute_plan_steps_backfills_needs_input_result(tmp_path, monkeypatch):
 
     monkeypatch.setattr("agent_registry.get_registry", lambda: FakeRegistry())
     _patch_task_worker_test_side_effects(monkeypatch)
+    failed_payload = {
+        "status": "failed",
+        "verified": False,
+        "artifact_type": "file",
+        "target": "output.md",
+        "summary": "generic_request: output.md missing or below 40 bytes.",
+        "checks": [{"name": "output.md exists", "passed": False, "message": "missing"}],
+        "proxy_checked": "output.md exists + minimum size",
+        "property_assumed": "test output exists",
+        "unverified_assumptions": [],
+    }
+    monkeypatch.setattr("task_result._step_verification_payload", lambda *args, **kwargs: dict(failed_payload))
+    monkeypatch.setattr("task_result._verify_step_artifact", task_worker._verify_step_artifact)
 
     plan = [
         {
@@ -117,7 +145,7 @@ def test_execute_plan_steps_backfills_needs_input_result(tmp_path, monkeypatch):
         workspace,
         "task123",
         "把文章发到 Substack",
-        "ang",
+        "default",
         "thread1",
         None,
         False,
@@ -168,7 +196,7 @@ def test_execute_plan_steps_backfills_done_result(tmp_path, monkeypatch):
         workspace,
         "task124",
         "写一篇短文",
-        "ang",
+        "default",
         "thread1",
         None,
         False,
@@ -231,7 +259,7 @@ def test_execute_plan_steps_rewrites_done_without_output_to_error(tmp_path, monk
         workspace,
         "task126",
         "做点事情",
-        "ang",
+        "default",
         "thread1",
         None,
         False,
@@ -288,7 +316,7 @@ def test_execute_plan_steps_passes_tier_and_thread_context(tmp_path, monkeypatch
         workspace,
         "task125",
         "聊聊这个问题",
-        "ang",
+        "default",
         "thread99",
         None,
         False,
@@ -341,7 +369,7 @@ def test_execute_plan_steps_respects_registry_preflight(tmp_path, monkeypatch):
         workspace,
         "task127",
         "",
-        "ang",
+        "default",
         "thread1",
         None,
         False,
@@ -390,7 +418,7 @@ def test_execute_plan_steps_preflight_classification_does_not_depend_on_message_
         workspace,
         "task127b",
         "write it",
-        "ang",
+        "default",
         "thread1",
         None,
         False,
@@ -448,7 +476,7 @@ def test_execute_plan_steps_fails_closed_on_preflight_exception(tmp_path, monkey
         workspace,
         "task128",
         "write it",
-        "ang",
+        "default",
         "thread1",
         None,
         False,
@@ -501,7 +529,7 @@ def test_execute_plan_steps_falls_back_when_preflight_load_errors(tmp_path, monk
         workspace,
         "task128b",
         "write it",
-        "ang",
+        "default",
         "thread1",
         None,
         False,
@@ -557,7 +585,7 @@ def test_execute_plan_steps_blocks_when_required_preflight_load_fails(tmp_path, 
         workspace,
         "task128c",
         "write it",
-        "ang",
+        "default",
         "thread1",
         None,
         False,
@@ -613,7 +641,7 @@ def test_execute_plan_steps_writes_plan_and_step_state_artifacts(tmp_path, monke
         workspace,
         "task129a",
         "写一篇短文",
-        "ang",
+        "default",
         "thread1",
         None,
         False,
@@ -653,6 +681,38 @@ def test_write_result_backfills_canonical_contract_for_legacy_calls(tmp_path, mo
     assert result["next_action"] == "proceed-to-next-step"
     assert result["verification"]["status"] == "not-run"
     assert any(Path(item["path"]).name == "output.md" for item in result["artifacts_produced"])
+
+
+def test_write_result_preserves_short_discussion_reply(tmp_path, monkeypatch):
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    _patch_task_worker_test_side_effects(monkeypatch)
+    monkeypatch.setitem(sys.modules, "post_hooks", SimpleNamespace(spawn_post_hooks=lambda *args, **kwargs: None))
+    monkeypatch.setattr(
+        task_worker,
+        "claude_think",
+        lambda *args, **kwargs: pytest.fail("discussion replies should not use reasoning rewrite"),
+    )
+
+    reply = "Confirmed-still in the Mira thread."
+    (workspace / "output.md").write_text(reply, encoding="utf-8")
+
+    task_worker._write_result(
+        workspace,
+        "disc_daily_collab",
+        "done",
+        reply,
+        tags=["discussion", "daily-collab"],
+        agent="discussion",
+    )
+
+    result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
+    assert (workspace / "output.md").read_text(encoding="utf-8") == reply
+    assert not (workspace / "raw_response.md").exists()
+    assert result["status"] == "completed_unverified"
+    assert result["summary"] == reply
+    assert "silent_completion_suspected" not in result
+    assert "reasoning" not in result
 
 
 def test_ensure_step_result_reuses_cached_verification(tmp_path, monkeypatch):
@@ -740,7 +800,7 @@ def test_execute_plan_steps_marks_fallback_exception_as_failed(tmp_path, monkeyp
         workspace,
         "task129b",
         "write it",
-        "ang",
+        "default",
         "thread1",
         None,
         False,
@@ -805,7 +865,7 @@ def test_execute_plan_steps_does_not_fallback_for_local_write_handler_failure(tm
         workspace,
         "task129c",
         "convert local file",
-        "ang",
+        "default",
         "thread1",
         None,
         False,
@@ -855,7 +915,7 @@ def test_execute_plan_steps_initializes_artifacts_once(tmp_path, monkeypatch):
             "prediction": {"difficulty": "easy", "failure_modes": [], "success_criteria": "draft returned"},
         }
     ]
-    task_worker._execute_plan(plan, workspace, "task129c", "写一篇短文", "ang", "thread1")
+    task_worker._execute_plan(plan, workspace, "task129c", "写一篇短文", "default", "thread1")
 
     assert calls == ["task129c"]
 
@@ -887,7 +947,7 @@ def test_local_only_agent_without_user_model_restriction_uses_omlx(tmp_path, mon
             "prediction": {"difficulty": "easy", "failure_modes": [], "success_criteria": "sleep data returned"},
         }
     ]
-    task_worker._execute_plan(plan, workspace, "task129d", "sleep data", "ang", "thread1", model_restriction=None)
+    task_worker._execute_plan(plan, workspace, "task129d", "sleep data", "default", "thread1", model_restriction=None)
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
     assert result["status"] in {"done", "verified"}
@@ -905,7 +965,7 @@ def test_mark_step_finished_preserves_terminal_plan_status(tmp_path):
         workspace,
         task_id="task129d",
         workflow_id="task129d",
-        user_id="ang",
+        user_id="default",
         request="two step task",
         plan=plan,
     )
@@ -970,7 +1030,7 @@ def test_socialmedia_handle_reuses_preflight_cache(tmp_path, monkeypatch):
 
     record_writer_gate(workspace, channel="substack", task_id="task129", artifact_path="article.md")
 
-    passed, msg = preflight(workspace, "task129", "publish it", "ang", "thread1")
+    passed, msg = preflight(workspace, "task129", "publish it", "default", "thread1")
     assert passed, msg
 
     monkeypatch.setitem(
@@ -984,7 +1044,7 @@ def test_socialmedia_handle_reuses_preflight_cache(tmp_path, monkeypatch):
         lambda source, content: (_ for _ in ()).throw(AssertionError("handle should reuse preflight cache")),
     )
 
-    result = handler(workspace, "task129", "publish it", "ang", "thread1")
+    result = handler(workspace, "task129", "publish it", "default", "thread1")
 
     assert result is not None
     # Full autonomy: handler auto-publishes via publish_to_substack (mocked).
@@ -1012,7 +1072,7 @@ def test_socialmedia_preflight_blocks_without_writer_gate(tmp_path, monkeypatch)
     workspace = tmp_path / "task"
     workspace.mkdir()
 
-    passed, msg = preflight(workspace, "task_no_gate", "publish it", "ang", "thread1")
+    passed, msg = preflight(workspace, "task_no_gate", "publish it", "default", "thread1")
 
     assert not passed
     assert "writer gate missing" in msg
@@ -1026,7 +1086,7 @@ def test_podcast_preflight_requires_real_article(tmp_path):
     workspace = tmp_path / "podcast"
     workspace.mkdir()
 
-    passed, msg = preflight(workspace, "task130", "make a podcast", "ang", "thread1")
+    passed, msg = preflight(workspace, "task130", "make a podcast", "default", "thread1")
     assert passed is False
     assert "PREFLIGHT BLOCKED [podcast]" in msg
 
@@ -1040,7 +1100,7 @@ def test_podcast_preflight_accepts_workspace_article(tmp_path):
     workspace.mkdir()
     (workspace / "output.md").write_text("# Test Essay\n\n" + ("Body text. " * 20), encoding="utf-8")
 
-    passed, msg = preflight(workspace, "task131", "make a podcast from the current draft", "ang", "thread1")
+    passed, msg = preflight(workspace, "task131", "make a podcast from the current draft", "default", "thread1")
     assert passed is True, msg
 
 
@@ -1067,7 +1127,7 @@ def test_video_preflight_allows_review_phase_with_saved_state(tmp_path):
         encoding="utf-8",
     )
 
-    passed, msg = preflight(workspace, "task132", "revise the opening", "ang", "thread1")
+    passed, msg = preflight(workspace, "task132", "revise the opening", "default", "thread1")
     assert passed is True, msg
 
 
@@ -1083,7 +1143,7 @@ def test_video_preflight_allows_done_phase_follow_up(tmp_path):
         encoding="utf-8",
     )
 
-    passed, msg = preflight(workspace, "task132b", "再给我看看结果", "ang", "thread1")
+    passed, msg = preflight(workspace, "task132b", "再给我看看结果", "default", "thread1")
     assert passed is True, msg
 
 
@@ -1095,7 +1155,7 @@ def test_photo_preflight_requires_inputs_or_style_context(tmp_path):
     workspace = tmp_path / "photo_task"
     workspace.mkdir()
 
-    passed, msg = preflight(workspace, "task133", "修图", "ang", "thread1")
+    passed, msg = preflight(workspace, "task133", "修图", "default", "thread1")
     assert passed is False
     assert "PREFLIGHT BLOCKED [photo]" in msg
 
@@ -1110,7 +1170,7 @@ def test_photo_preflight_blocks_preset_without_style(tmp_path):
     workspace = tmp_path / "photo_task"
     workspace.mkdir()
 
-    passed, msg = preflight(workspace, "task134", "导出preset", "ang", "thread1")
+    passed, msg = preflight(workspace, "task134", "导出preset", "default", "thread1")
     assert passed is False
     assert "style profile" in msg
     monkeypatch.undo()
@@ -1127,7 +1187,7 @@ def test_photo_preflight_accepts_reference_dir_for_style_learning(tmp_path):
     workspace = tmp_path / "photo_task"
     workspace.mkdir()
 
-    passed, msg = preflight(workspace, "task135", f'学习风格 "{ref_dir}"', "ang", "thread1")
+    passed, msg = preflight(workspace, "task135", f'学习风格 "{ref_dir}"', "default", "thread1")
     assert passed is True, msg
 
 
@@ -1153,7 +1213,7 @@ def test_photo_preflight_allows_style_learning_recovery_with_new_path(tmp_path):
     new_ref_dir.mkdir()
     (new_ref_dir / "sample.jpg").write_text("fake image", encoding="utf-8")
 
-    passed, msg = preflight(workspace, "task136", f'学习风格 "{new_ref_dir}"', "ang", "thread1")
+    passed, msg = preflight(workspace, "task136", f'学习风格 "{new_ref_dir}"', "default", "thread1")
     assert passed is True, msg
 
 
@@ -1165,7 +1225,7 @@ def test_secret_preflight_blocks_missing_explicit_file_reference(tmp_path):
     workspace = tmp_path / "secret_task"
     workspace.mkdir()
 
-    passed, msg = preflight(workspace, "task137", "@file:/definitely/missing/file.pdf 帮我总结", "ang", "thread1")
+    passed, msg = preflight(workspace, "task137", "@file:/definitely/missing/file.pdf 帮我总结", "default", "thread1")
     assert passed is False
     assert "PREFLIGHT BLOCKED [secret]" in msg
 
@@ -1178,7 +1238,7 @@ def test_secret_preflight_allows_plain_private_question(tmp_path):
     workspace = tmp_path / "secret_task"
     workspace.mkdir()
 
-    passed, msg = preflight(workspace, "task138", "帮我算一下今年的税务影响", "ang", "thread1")
+    passed, msg = preflight(workspace, "task138", "帮我算一下今年的税务影响", "default", "thread1")
     assert passed is True, msg
 
 
@@ -1193,8 +1253,8 @@ def test_health_preflight_blocks_missing_checkup_dir(tmp_path):
     passed, msg = preflight(
         workspace,
         "task139",
-        "体检报告上传\n路径: users/ang/health/checkups/missing",
-        "ang",
+        "体检报告上传\n路径: users/default/health/checkups/missing",
+        "default",
         "thread1",
     )
     assert passed is False
@@ -1207,7 +1267,7 @@ def test_health_preflight_accepts_existing_checkup_dir(tmp_path, monkeypatch):
     assert preflight is not None
 
     bridge = tmp_path / "bridge"
-    checkup_dir = bridge / "users" / "ang" / "health" / "checkups" / "2026-04-05"
+    checkup_dir = bridge / "users" / "default" / "health" / "checkups" / "2026-04-05"
     checkup_dir.mkdir(parents=True)
     (checkup_dir / "report.jpg").write_text("fake image", encoding="utf-8")
     workspace = tmp_path / "task"
@@ -1217,8 +1277,8 @@ def test_health_preflight_accepts_existing_checkup_dir(tmp_path, monkeypatch):
     passed, msg = preflight(
         workspace,
         "task140",
-        "体检报告上传\n路径: users/ang/health/checkups/2026-04-05",
-        "ang",
+        "体检报告上传\n路径: users/default/health/checkups/2026-04-05",
+        "default",
         "thread1",
     )
     assert passed is True, msg
@@ -1248,7 +1308,7 @@ def test_legacy_publish_uses_registry_preflight_and_preserves_needs_input(tmp_pa
     monkeypatch.setattr("handlers_legacy._update_thread_memory", lambda *args, **kwargs: None)
     _patch_task_worker_test_side_effects(monkeypatch)
 
-    handlers_legacy._handle_publish(workspace, "task141", "publish this", "ang", "thread1")
+    handlers_legacy._handle_publish(workspace, "task141", "publish this", "default", "thread1")
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
     assert result["status"] == "needs-input"
@@ -1277,7 +1337,7 @@ def test_legacy_secret_respects_registry_preflight_block(tmp_path, monkeypatch):
     monkeypatch.setattr("handlers_legacy._update_thread_memory", lambda *args, **kwargs: None)
     _patch_task_worker_test_side_effects(monkeypatch)
 
-    handlers_legacy._handle_secret(workspace, "task142", "@file:/missing.pdf 帮我看", "ang", "thread1")
+    handlers_legacy._handle_secret(workspace, "task142", "@file:/missing.pdf 帮我看", "default", "thread1")
 
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
     assert result["status"] == "failed"
@@ -1322,4 +1382,7 @@ def test_autowrite_approval_prefers_metadata_file(tmp_path, monkeypatch):
     result = json.loads((workspace / "result.json").read_text(encoding="utf-8"))
     assert captured["slug"] == "title-slug"
     assert captured["fields"]["status"] == "approved"
+    assert captured["fields"]["human_approved_at"]
+    assert captured["fields"]["publication_approved_by"] == "human"
+    assert captured["fields"]["publication_gate"] == "human_approved"
     assert result["status"] == "completed_unverified"

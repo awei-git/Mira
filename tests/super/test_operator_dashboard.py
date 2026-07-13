@@ -21,7 +21,7 @@ def test_build_operator_summary_aggregates_runtime_signals(monkeypatch, tmp_path
             [
                 {
                     "task_id": "task-running",
-                    "user_id": "ang",
+                    "user_id": "default",
                     "status": "running",
                     "content_preview": "Investigate backlog",
                     "started_at": "2026-04-05T00:00:00Z",
@@ -36,7 +36,7 @@ def test_build_operator_summary_aggregates_runtime_signals(monkeypatch, tmp_path
             {
                 "task_id": "task-failed",
                 "workflow_id": "task-failed",
-                "user_id": "ang",
+                "user_id": "default",
                 "status": "failed",
                 "failure_class": "worker_crash",
                 "summary": "boom",
@@ -114,7 +114,7 @@ def test_build_operator_summary_aggregates_runtime_signals(monkeypatch, tmp_path
         lambda: {"daily_stats": {"failed": 1}, "processes": [{"name": "self-evolve"}]},
     )
 
-    summary = od.build_operator_summary(user_id="ang")
+    summary = od.build_operator_summary(user_id="default")
 
     assert summary["tasks"]["active"][0]["task_id"] == "task-running"
     assert summary["tasks"]["failed_recent"][0]["task_id"] == "task-failed"
@@ -123,6 +123,28 @@ def test_build_operator_summary_aggregates_runtime_signals(monkeypatch, tmp_path
     assert summary["backlog"]["counts"]["approved"] == 1
     assert summary["recent_incidents"][0]["pipeline"] == "publish"
     assert summary["latest_restore_drill"]["ok"] is True
+
+
+def test_recent_incidents_ignore_resolved_failures(monkeypatch):
+    import operator_dashboard as od
+
+    monkeypatch.setattr(
+        od,
+        "load_recent_failures",
+        lambda days=7, limit=50: [
+            {
+                "timestamp": "2026-05-18T07:49:52Z",
+                "pipeline": "podcast",
+                "step": "podcast_zh",
+                "slug": "essay",
+                "error_type": "tts_failed",
+                "error_message": "MiniMax credit exhausted",
+                "resolution": "Routed ZH TTS through Gemini fallback and throttled alerts.",
+            }
+        ],
+    )
+
+    assert od._recent_incidents() == []
 
 
 def test_operator_dashboard_filters_ephemeral_restore_and_stale_processes(monkeypatch, tmp_path: Path):
@@ -169,7 +191,7 @@ def test_operator_dashboard_filters_ephemeral_restore_and_stale_processes(monkey
         },
     )
 
-    summary = od.build_operator_summary(user_id="ang")
+    summary = od.build_operator_summary(user_id="default")
 
     assert summary["latest_restore_drill"]["backup_dir"] == str(backup_dir)
     assert summary["health"]["processes"][0]["name"] == "analyst-1800"

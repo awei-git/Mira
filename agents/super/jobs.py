@@ -123,8 +123,10 @@ def _dispatch_scheduled_jobs(session_new: list[dict]):
 
 def _record_scheduled_job_dispatch(job, payload, user_id: str | None = None):
     """Persist dispatch state for jobs whose triggers are pure checks."""
+    trigger = getattr(job, "trigger", "")
+    state_key_pattern = getattr(job, "state_key_pattern", "")
     if job.name not in {"backlog-executor", "restore-dry-run", "health-check", "health-weekly"} and not (
-        job.trigger == "cooldown" and job.state_key_pattern
+        trigger == "cooldown" and state_key_pattern
     ):
         return
 

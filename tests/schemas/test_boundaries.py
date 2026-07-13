@@ -28,7 +28,7 @@ def test_bridge_item_preserves_extras():
 def test_task_request_roundtrip():
     src = {
         "task_id": "t1",
-        "user_id": "ang",
+        "user_id": "default",
         "content": "write about X",
         "tags": ["writing"],
         "created_at": "2026-04-17T12:00:00+00:00",
@@ -53,14 +53,14 @@ def test_task_result_custom_failure_class():
 
 
 def test_agent_state_handles_none_last_tick():
-    st = AgentState.from_dict({"user_id": "ang"})
+    st = AgentState.from_dict({"user_id": "default"})
     assert st.last_tick_at is None
     assert st.session_started_at.tzinfo is not None
 
 
 def test_agent_state_roundtrip_with_session_context():
     src = {
-        "user_id": "ang",
+        "user_id": "default",
         "active_workflow_id": "w-42",
         "pending_tasks": ["t1", "t2"],
         "session_context": {"mode": "explore", "counter": 3},

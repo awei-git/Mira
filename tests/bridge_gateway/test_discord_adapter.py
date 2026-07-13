@@ -22,7 +22,7 @@ def test_disabled_without_channel_id():
 
 
 def test_read_incoming_tags_reader_feedback(monkeypatch):
-    adapter = DiscordBridgeAdapter(token="Bot abc", channel_id=111, user_id="ang")
+    adapter = DiscordBridgeAdapter(token="Bot abc", channel_id=111, user_id="default")
 
     payload = [
         {
@@ -47,11 +47,11 @@ def test_read_incoming_tags_reader_feedback(monkeypatch):
     msgs = adapter.read_incoming()
     assert [m.content for m in msgs] == ["great post", "boring"]
     assert all("reader_feedback" in m.tags for m in msgs)
-    assert all(m.user_id == "ang" for m in msgs)
+    assert all(m.user_id == "default" for m in msgs)
 
 
 def test_read_incoming_advances_after_cursor(monkeypatch):
-    adapter = DiscordBridgeAdapter(token="Bot abc", channel_id=111, user_id="ang")
+    adapter = DiscordBridgeAdapter(token="Bot abc", channel_id=111, user_id="default")
 
     calls = []
 
@@ -121,7 +121,7 @@ class _FakeResp(io.BytesIO):
         self.close()
 
 
-def _msg(*, id_: str = "o1", user_id: str = "ang", content: str = "hi"):
+def _msg(*, id_: str = "o1", user_id: str = "default", content: str = "hi"):
     from bridge_gateway import BridgeMessage
 
     return BridgeMessage(id=id_, user_id=user_id, source="discord", content=content)

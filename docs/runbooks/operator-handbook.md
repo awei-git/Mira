@@ -1,6 +1,6 @@
 # Mira Operator Handbook
 
-Entry point for V2 operations. Use this first, then jump to the specific runbook.
+Entry point for V4 operations. Use this first, then jump to the specific runbook.
 
 ## Symptom
 
@@ -8,9 +8,10 @@ Mira looks stuck, misses a publish/task, sends a wrong status, or the iOS app sh
 
 ## 5-Step Diagnostic
 
-1. Check V2 gates:
+1. Check the current plan and live runtime gates:
    ```bash
-   python3 -m agents.super.cli.v2_status --gates
+   cat docs/CURRENT_PLAN.md
+   PYTHONPATH=lib .venv/bin/python agents/super/cli/v3_status.py --actions
    ```
 2. Check service heartbeat and current task status:
    ```bash

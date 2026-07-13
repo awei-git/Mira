@@ -1,0 +1,48 @@
+name: article_creation
+memory_class: creative
+trigger:
+  type: event
+  detail: writing queue + cooldown
+priority: 30
+version: 1
+max_duration_s: 1800
+checkpoint_every: 1
+involved_skills:
+  - article_writing
+  - personal_voice
+risk_actions:
+  publish_substack_idempotent: publish_public
+effect_steps:
+  publish_substack_idempotent: publish_substack
+steps:
+  - name: preflight_substack_twitter
+    type: deterministic
+  - name: snapshot_voice_scars_audience_outcomes
+    type: memory
+  - name: select_idea
+    type: deterministic
+  - name: research_outline
+    type: deterministic
+  - name: outline_quality_gate
+    type: eval
+  - name: draft
+    type: deterministic
+    action: article_draft
+  - name: de_ai_editorial
+    type: deterministic
+  - name: content_hard_policy
+    type: policy
+  - name: quality_eval
+    type: eval
+  - name: publish_preflight
+    type: deterministic
+    action: article_publish_guard
+  - name: publish_substack_idempotent
+    type: deterministic
+    action: article_publish_guard
+  - name: social_promo_idempotent
+    type: deterministic
+  - name: write_output_folder
+    type: deterministic
+  - name: experience_record_proposal_gateway
+    type: memory

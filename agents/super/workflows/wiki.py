@@ -116,7 +116,7 @@ Reply with ONLY the category name, nothing else.
 # ---------------------------------------------------------------------------
 
 
-def do_wiki_update(trigger: str = "journal", new_content: str = "", user_id: str = "ang"):
+def do_wiki_update(trigger: str = "journal", new_content: str = "", user_id: str = "default"):
     """Update the wiki with today's knowledge.
 
     Called after journal (daily) or manually.
@@ -187,7 +187,7 @@ def do_wiki_update(trigger: str = "journal", new_content: str = "", user_id: str
     log.info("Wiki update done: %d updates, %d creates", updates_done, creates_done)
 
 
-def _create_new_page(candidate: dict, user_id: str = "ang"):
+def _create_new_page(candidate: dict, user_id: str = "default"):
     """Create a new wiki page from a candidate topic."""
     topic = candidate["topic"]
     slug = candidate["slug"]
@@ -260,7 +260,7 @@ def _categorize_topic(topic: str, description: str) -> str:
     return "general"
 
 
-def _create_wiki_links(slug: str, source_notes: list[dict], user_id: str = "ang"):
+def _create_wiki_links(slug: str, source_notes: list[dict], user_id: str = "default"):
     """Create knowledge links between a wiki page and its source notes."""
     try:
         from knowledge.links import add_link
@@ -285,7 +285,7 @@ def _create_wiki_links(slug: str, source_notes: list[dict], user_id: str = "ang"
 # ---------------------------------------------------------------------------
 
 
-def do_wiki_maintenance(user_id: str = "ang"):
+def do_wiki_maintenance(user_id: str = "default"):
     """Weekly wiki health check — run during reflect.
 
     - Refresh cross-links between pages

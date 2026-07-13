@@ -124,14 +124,16 @@ def _probe_endpoint(provider: str) -> bool:
                 return False
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8", errors="replace")[:500]
+        circuit = _provider_circuit_for_http_error(provider, e.code, error_body)
+        if circuit:
+            reason, hours = circuit
+            _open_provider_circuit(provider, reason=reason, hours=hours)
+            _probed_providers[provider] = False
+            return False
         if e.code == 429:
-            # Rate limited = endpoint is alive, schema OK
+            # Plain rate limiting can still prove endpoint/schema liveness.
             _probed_providers[provider] = True
             return True
-        if provider == "deepseek" and e.code == 402:
-            _open_provider_circuit(
-                provider, reason=_http_error_reason(error_body, default="Insufficient Balance"), hours=6
-            )
         log.warning("Endpoint probe failed: %s HTTP %d", provider, e.code)
         _probed_providers[provider] = False
         return False
@@ -213,7 +215,12 @@ def _api_call(
             _log_usage(provider, model_used, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
             return content.strip()
     except urllib.error.HTTPError as e:
-        error_body = redact_secrets(e.read().decode("utf-8", errors="replace")[:300])
+        raw_error_body = e.read().decode("utf-8", errors="replace")[:500]
+        circuit = _provider_circuit_for_http_error(provider, e.code, raw_error_body)
+        if circuit:
+            reason, hours = circuit
+            _open_provider_circuit(provider, reason=reason, hours=hours)
+        error_body = redact_secrets(raw_error_body[:300])
         log.error("API %s/%s HTTP %d: %s", provider, model_id, e.code, error_body)
         return ""
     except Exception as e:
@@ -232,3 +239,17 @@ def _http_error_reason(body: str, *, default: str) -> str:
         if message:
             return message[:120]
     return default
+
+
+def _provider_circuit_for_http_error(provider: str, code: int, body: str) -> tuple[str, int] | None:
+    """Return a user-visible circuit reason and hours for provider exhaustion."""
+    text = body.lower()
+    if code == 402:
+        return (_http_error_reason(body, default="Insufficient Balance"), 6)
+    if code != 429:
+        return None
+    if any(marker in text for marker in ("insufficient_quota", "quota", "billing", "balance", "credit")):
+        return (_http_error_reason(body, default="API quota exceeded"), 6)
+    if provider in _API_ENDPOINTS:
+        return (_http_error_reason(body, default="API rate limited"), 1)
+    return None

@@ -99,7 +99,7 @@ def load_state(user_id: str | None = None) -> dict:
 
     # Backward compatibility: first per-user read can still see migrated keys
     # from the old flat state file until that user writes its own namespace.
-    if user_id != "ang":
+    if user_id != "default":
         return {}
     return {key: value for key, value in state.items() if _is_legacy_user_state_key(key)}
 

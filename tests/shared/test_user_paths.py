@@ -10,9 +10,9 @@ _SHARED = _HERE.parent
 def test_user_paths_keep_ang_legacy_locations():
     import user_paths
 
-    assert user_paths.user_journal_dir("ang").name == "journal"
-    assert user_paths.user_reading_notes_dir("ang").name == "reading_notes"
-    assert user_paths.artifact_name_for_user("2026-04-05_journal.md", "ang") == "2026-04-05_journal.md"
+    assert user_paths.user_journal_dir("default").name == "journal"
+    assert user_paths.user_reading_notes_dir("default").name == "reading_notes"
+    assert user_paths.artifact_name_for_user("2026-04-05_journal.md", "default") == "2026-04-05_journal.md"
 
 
 def test_user_paths_namespace_non_default_users():

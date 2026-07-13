@@ -1,0 +1,37 @@
+analyst:
+  - agents.analyst.handler
+coder:
+  - agents.coder.handler
+discussion:
+  - agents.discussion.handler
+evaluator:
+  - agents.evaluator.handler
+explorer:
+  - agents.explorer.handler
+general:
+  - agents.general.handler
+health:
+  - agents.health.handler
+kol:
+  - agents.kol.handler
+photo:
+  - agents.photo.handler
+podcast:
+  - agents.podcast.handler
+reader:
+  - agents.reader.handler
+researcher:
+  - agents.researcher.handler
+secret:
+  - agents.secret.handler
+socialmedia:
+  - agents.socialmedia.handler
+substack:
+  - agents.substack.handler
+super: []
+surfer:
+  - agents.surfer.handler
+video:
+  - agents.video.handler
+writer:
+  - agents.writer.handler

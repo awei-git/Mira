@@ -19,6 +19,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+_MIRA_ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[2]
+if str(_MIRA_ROOT_FOR_IMPORTS) not in sys.path:
+    sys.path.insert(0, str(_MIRA_ROOT_FOR_IMPORTS))
+_SHARED_DIR_FOR_IMPORTS = _MIRA_ROOT_FOR_IMPORTS / "agents" / "shared"
+if str(_SHARED_DIR_FOR_IMPORTS) not in sys.path:
+    sys.path.insert(0, str(_SHARED_DIR_FOR_IMPORTS))
+
+from agents.shared.mira import verify_task_handoff
 from config import (
     CONTROL_RUNTIME_DB_ENABLED,
     LOGS_DIR,
@@ -28,6 +36,10 @@ from config import (
     MAX_CONCURRENT_TASKS,
     TASK_MAX_RETRIES,
     MAX_SUBTASK_DEPTH,
+    AGENT_REGISTRY,
+    PEER_VERIFY_ENABLED,
+    PEER_VERIFY_THRESHOLD,
+    PEER_VERIFY_TIMEOUT,
 )
 from execution.runtime_contract import derive_workflow_id, normalize_task_status
 
@@ -80,6 +92,31 @@ def _resolve_timeout(tags: list[str]) -> float:
 log = logging.getLogger("mira")
 
 
+def _merge_tags(existing: list[str] | None, incoming: list[str] | None) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for tag in list(existing or []) + list(incoming or []):
+        text = str(tag or "").strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(text)
+    return merged
+
+
+def _is_conversation_record(rec) -> bool:
+    tag_keys = {str(tag or "").strip().casefold().replace("_", "-") for tag in getattr(rec, "tags", []) or []}
+    return (
+        getattr(rec, "task_id", "") == "disc_daily_collab"
+        or "discussion" in tag_keys
+        or "daily-collab" in tag_keys
+        or "daily collab" in tag_keys
+    )
+
+
 class TaskDepthExceeded(Exception):
     pass
 
@@ -92,6 +129,14 @@ HISTORY_FILE = TASKS_DIR / "history.jsonl"
 TIMING_STATS_FILE = TASKS_DIR / "timing_stats.jsonl"
 ROUTING_AUDIT_FILE = LOGS_DIR / "routing_audit.jsonl"
 _STUCK_TASK_STATES = {"accepted", "in-progress", "in_progress", "dispatched", "running", "working"}
+UNRESOLVED_TASK_STATUSES = {"failed", "timeout", "blocked", "completed_unverified"}
+UNRESOLVED_TASK_WARN_THRESHOLD = 3
+MAX_DISPATCH_HOPS = 3
+FRICTION_DIRECT = "direct"
+FRICTION_INFRASTRUCTURE = "infrastructure_friction"
+PEER_VERIFIER_AGENT = "evaluator"
+_TIER_RANK = {"light": 0, "heavy": 1}
+_PEER_VERIFY_TERMINAL_STATUSES = {"done", "verified", "completed_unverified"}
 
 # Path to the worker script (same directory as this file)
 WORKER_SCRIPT = Path(__file__).resolve().parent / "task_worker.py"
@@ -126,6 +171,137 @@ def _parse_task_timestamp(value) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _coerce_dispatch_hops(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _classify_dispatch_hops(dispatch_hops: int) -> str:
+    return FRICTION_INFRASTRUCTURE if dispatch_hops >= MAX_DISPATCH_HOPS else FRICTION_DIRECT
+
+
+def _record_agent_label(rec: dict) -> str:
+    for key in ("agent", "execution_agent", "task_type"):
+        value = str(rec.get(key) or "").strip()
+        if value:
+            return value
+    tags = rec.get("tags") or []
+    if isinstance(tags, list) and tags:
+        value = str(tags[0] or "").strip()
+        if value:
+            return value
+    return "unknown"
+
+
+def _agent_tier(agent_name: str) -> str:
+    name = str(agent_name or "").strip()
+    if not name:
+        return ""
+    try:
+        from agent_registry import get_registry
+
+        manifest = get_registry().get_manifest(name)
+        if manifest and manifest.tier:
+            return str(manifest.tier).strip().lower()
+    except Exception:
+        pass
+    agent_config = AGENT_REGISTRY.get(name) if isinstance(AGENT_REGISTRY, dict) else None
+    if isinstance(agent_config, dict):
+        return str(agent_config.get("tier") or "").strip().lower()
+    return ""
+
+
+def _record_agent_tier(rec) -> str:
+    candidates = [getattr(rec, "agent", ""), getattr(rec, "task_type", "")]
+    candidates.extend(getattr(rec, "tags", []) or [])
+    for candidate in candidates:
+        tier = _agent_tier(candidate)
+        if tier:
+            return tier
+    return ""
+
+
+def _tier_meets_threshold(agent_tier: str, threshold: str) -> bool:
+    tier = str(agent_tier or "").strip().lower()
+    limit = str(threshold or "heavy").strip().lower()
+    if limit in {"off", "none", "disabled"}:
+        return False
+    if limit not in _TIER_RANK:
+        limit = "heavy"
+    return tier in _TIER_RANK and _TIER_RANK[tier] >= _TIER_RANK[limit]
+
+
+def _coerce_peer_verify_timeout(value) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 30
+
+
+def _normalize_peer_decision(value) -> str:
+    text = str(value or "").strip().lower().replace("_", "-")
+    if text in {"pass", "passed", "ok", "approve", "approved"}:
+        return "pass"
+    if text in {"fail", "failed", "block", "blocked", "reject", "rejected"}:
+        return "fail"
+    if text in {"flag", "flagged", "warning", "warn", "needs-review"}:
+        return "flag"
+    return ""
+
+
+def _parse_peer_verification(raw: str) -> dict:
+    text = str(raw or "").strip()
+    parsed = None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        decision = _normalize_peer_decision(parsed.get("decision") or parsed.get("status") or parsed.get("assessment"))
+        reason = str(parsed.get("reason") or parsed.get("summary") or parsed.get("rationale") or "").strip()
+        warnings = parsed.get("warnings") or parsed.get("flags") or []
+    else:
+        lowered = text.lower()
+        if "fail" in lowered or "reject" in lowered or "block" in lowered:
+            decision = "fail"
+        elif "flag" in lowered or "warning" in lowered or "concern" in lowered:
+            decision = "flag"
+        elif "pass" in lowered or "ok" in lowered:
+            decision = "pass"
+        else:
+            decision = "flag"
+        reason = text
+        warnings = []
+    if not decision:
+        decision = "flag"
+    if isinstance(warnings, str):
+        warnings = [warnings]
+    elif not isinstance(warnings, list):
+        warnings = []
+    return {
+        "decision": decision,
+        "reason": (reason or "Peer verifier returned an unclear assessment.")[:1000],
+        "warnings": [str(item).strip()[:500] for item in warnings if str(item).strip()][:5],
+        "verifier_agent": PEER_VERIFIER_AGENT,
+        "verifier_tier": "light",
+    }
+
+
+def _truncate_peer_text(value, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n\n[truncated]"
+
+
+def _write_result_payload(result_file: Path, data: dict) -> None:
+    tmp_path = result_file.with_suffix(".peer.tmp")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(result_file)
 
 
 def _task_transition_time(rec: dict) -> datetime | None:
@@ -258,14 +434,17 @@ def _patch_metadata(workspace: Path, patch: dict) -> None:
         pass
 
 
-def _write_completion_metadata(workspace: Path) -> None:
-    completed_ts = datetime.now(timezone.utc).timestamp()
+def _write_completion_metadata(workspace: Path, completed_at=None) -> None:
+    parsed_completed_at = _parse_task_timestamp(completed_at)
+    completed_ts = (
+        parsed_completed_at.timestamp() if parsed_completed_at is not None else datetime.now(timezone.utc).timestamp()
+    )
     patch = {"completed_at": completed_ts}
     meta_file = workspace / "metadata.json"
     try:
         if meta_file.exists():
             queued_at = json.loads(meta_file.read_text(encoding="utf-8")).get("queued_at")
-            if queued_at:
+            if queued_at is not None:
                 patch["latency_s"] = round(completed_ts - float(queued_at), 1)
     except (OSError, json.JSONDecodeError, TypeError):
         pass
@@ -329,7 +508,7 @@ def _message_from_workspace(workspace: Path):
         thread_id=data.get("thread_id", ""),
         sender=data.get("sender", "user"),
         content=data.get("content", ""),
-        user_id=data.get("user_id", "ang"),
+        user_id=data.get("user_id", "default"),
         user_role=data.get("user_role", "admin"),
         model_restriction=data.get("model_restriction"),
         content_filter=data.get("content_filter", False),
@@ -337,6 +516,31 @@ def _message_from_workspace(workspace: Path):
         workflow_id=data.get("workflow_id", ""),
         to_dict=lambda: data,
     )
+
+
+def _original_intent_from_payload(msg, payload: dict) -> str:
+    for value in (
+        payload.get("original_intent"),
+        getattr(msg, "original_intent", None),
+        getattr(getattr(msg, "root_task", None), "description", None),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    root_task = payload.get("root_task")
+    if isinstance(root_task, dict):
+        value = root_task.get("description")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("original_intent", "root_task_description"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    return str(payload.get("content") or getattr(msg, "content", "") or "").strip()
 
 
 @dataclass
@@ -348,9 +552,9 @@ class TaskRecord:
     sender: str
     content_preview: str  # first 80 chars of message
     pid: int
-    status: str  # dispatched | running | completed_unverified | verified | needs-input | blocked | failed | timeout
+    status: str  # dispatched | running | completed_unverified | verified | needs-input | blocked | failed | timeout | parked
     started_at: str
-    user_id: str = "ang"
+    user_id: str = "default"
     completed_at: str = ""
     workspace: str = ""
     summary: str = ""
@@ -360,6 +564,10 @@ class TaskRecord:
     failure_class: str = ""
     timeout_alerted_at: str = ""
     task_type: str = ""
+    agent: str = ""
+    dispatch_hops: int = 0
+    friction_classification: str = ""
+    optimized_routing_suggestion: str = ""
     verification: dict | None = None
     outcome_verified: bool = False
     verification_method: str = ""
@@ -426,6 +634,55 @@ class TaskManager:
         """Check if all concurrent task slots are occupied."""
         return self.get_active_count() >= MAX_CONCURRENT_TASKS
 
+    def _record_for_task_id(self, task_id: str) -> TaskRecord | None:
+        for rec in self._records:
+            if rec.task_id == task_id:
+                return rec
+        return None
+
+    def _verify_handoff_before_dispatch(self, consumer_task_id: str, task_chain: list[str]) -> bool:
+        if not task_chain:
+            return True
+
+        producer_task_id = task_chain[-1]
+        producer = self._record_for_task_id(producer_task_id)
+        output_path = Path(producer.workspace) / "output.md" if producer and producer.workspace else None
+        if output_path is None:
+            reason = f"producer task record missing or has no workspace: {producer_task_id}"
+            ok = False
+        else:
+            ok, reason = verify_task_handoff(str(output_path))
+
+        if ok:
+            return True
+
+        log.warning(
+            "Blocked task handoff producer=%s consumer=%s output=%s reason=%s",
+            producer_task_id,
+            consumer_task_id,
+            output_path or "",
+            reason,
+        )
+        if producer is not None:
+            producer.status = "blocked"
+            producer.failure_class = "handoff_verification_failed"
+            producer.summary = f"Handoff verification failed before {consumer_task_id}: {reason}"
+            producer.completed_at = producer.completed_at or _utc_iso()
+            if producer.workspace:
+                _write_completion_metadata(Path(producer.workspace), producer.completed_at)
+            self._append_trace(
+                producer,
+                "handoff.blocked",
+                {
+                    "consumer_task_id": consumer_task_id,
+                    "output_path": str(output_path or ""),
+                    "reason": reason,
+                },
+            )
+            self._mirror_record(producer, event_type="task.handoff_blocked")
+            self._save_status()
+        return False
+
     def dispatch(
         self,
         msg,
@@ -458,6 +715,9 @@ class TaskManager:
                 chain_str,
             )
             raise TaskDepthExceeded(f"Subtask depth {depth} reached limit {MAX_SUBTASK_DEPTH}. Chain: {chain_str}")
+
+        if not self._verify_handoff_before_dispatch(msg.id, chain):
+            return ""
 
         if self.is_busy():
             log.info(
@@ -503,9 +763,11 @@ class TaskManager:
         msg_file = workspace_dir / "message.json"
         msg_payload = dict(msg.to_dict())
         msg_payload["workflow_id"] = workflow_id
-        msg_payload["user_id"] = getattr(msg, "user_id", "ang") or "ang"
+        msg_payload["user_id"] = getattr(msg, "user_id", "default") or "default"
+        msg_payload["tags"] = list(getattr(msg, "tags", []) or [])
         msg_payload["subtask_depth"] = depth
         msg_payload["task_chain"] = chain + [msg.id]
+        msg_payload["original_intent"] = _original_intent_from_payload(msg, msg_payload)
         msg_file.write_text(json.dumps(msg_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # Spawn worker as a detached process
@@ -542,16 +804,18 @@ class TaskManager:
             workflow_id=workflow_id,
             msg_id=msg.id,
             thread_id=msg.thread_id,
-            user_id=getattr(msg, "user_id", "ang") or "ang",
+            user_id=getattr(msg, "user_id", "default") or "default",
             sender=msg.sender,
             content_preview=msg.content[:80],
             pid=proc.pid,
             status="dispatched",
             started_at=run_started_at,
             workspace=str(workspace_dir),
-            tags=classify_task(msg.content),
+            tags=list(getattr(msg, "tags", None) or classify_task(msg.content)),
             attempt_count=attempt_count,
             max_attempts=max_attempts or TASK_MAX_RETRIES,
+            dispatch_hops=len(chain),
+            friction_classification=_classify_dispatch_hops(len(chain)),
         )
         _append_routing_audit(
             task_type=record.tags[0] if record.tags else "general",
@@ -585,6 +849,191 @@ class TaskManager:
         except Exception as e:
             log.warning("DBOS dispatch workflow start failed for %s: %s", record.task_id, e)
 
+    def _should_peer_verify(self, rec: TaskRecord) -> tuple[bool, str]:
+        if not PEER_VERIFY_ENABLED:
+            return False, ""
+        if normalize_task_status(rec.status) not in _PEER_VERIFY_TERMINAL_STATUSES:
+            return False, ""
+        if (rec.agent or "").strip() == PEER_VERIFIER_AGENT:
+            return False, ""
+        agent_tier = _record_agent_tier(rec)
+        if not _tier_meets_threshold(agent_tier, PEER_VERIFY_THRESHOLD):
+            return False, agent_tier
+        return True, agent_tier
+
+    def _peer_verification_output(self, workspace: Path, result_payload: dict) -> str:
+        output_file = workspace / "output.md"
+        if output_file.exists():
+            try:
+                return output_file.read_text(encoding="utf-8")
+            except OSError:
+                pass
+        for key in ("output", "summary"):
+            value = result_payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return rec.summary if (rec := result_payload.get("summary")) else ""
+
+    def _run_peer_verification(self, rec: TaskRecord, result_payload: dict, workspace: Path) -> dict:
+        should_verify, agent_tier = self._should_peer_verify(rec)
+        if not should_verify:
+            return {}
+
+        msg = _message_from_workspace(workspace)
+        task_spec = getattr(msg, "content", "") if msg else ""
+        if not task_spec:
+            task_spec = rec.content_preview
+        output = self._peer_verification_output(workspace, result_payload)
+        prompt = f"""You are the evaluator agent performing a quick peer verification.
+Do not redo the task. Check only whether the specialist output matches the original task spec and whether there are obvious hallucinations, missing requested actions, or unsupported completion claims.
+
+Return only JSON with this shape:
+{{"decision":"pass|fail|flag","reason":"...","warnings":["..."]}}
+
+Use "pass" when the output is responsive and has no obvious sanity issues.
+Use "fail" when the output clearly does not satisfy the task, is empty, or claims completion without evidence.
+Use "flag" when the output is mostly usable but needs a warning annotation.
+
+Original task spec:
+{_truncate_peer_text(task_spec, 4000)}
+
+Specialist agent: {rec.agent or rec.task_type or "unknown"}
+Specialist tier: {agent_tier}
+Task status: {rec.status}
+Result summary:
+{_truncate_peer_text(rec.summary, 1500)}
+
+Specialist output:
+{_truncate_peer_text(output, 12000)}
+"""
+        try:
+            from llm import claude_think
+
+            raw = claude_think(prompt, timeout=_coerce_peer_verify_timeout(PEER_VERIFY_TIMEOUT), tier="light")
+        except Exception as exc:
+            log.warning("Peer verification unavailable for task %s: %s", rec.task_id, exc)
+            return {
+                "decision": "flag",
+                "reason": f"Peer verification unavailable: {exc}",
+                "warnings": ["verification_timeout_or_error"],
+                "verifier_agent": PEER_VERIFIER_AGENT,
+                "verifier_tier": "light",
+                "source_agent": rec.agent or rec.task_type or "unknown",
+                "source_tier": agent_tier,
+                "threshold": PEER_VERIFY_THRESHOLD,
+            }
+
+        assessment = _parse_peer_verification(raw or "")
+        assessment.update(
+            {
+                "source_agent": rec.agent or rec.task_type or "unknown",
+                "source_tier": agent_tier,
+                "threshold": PEER_VERIFY_THRESHOLD,
+            }
+        )
+        return assessment
+
+    def _apply_peer_verification(self, rec: TaskRecord, result_payload: dict, assessment: dict) -> None:
+        if not assessment:
+            return
+
+        decision = str(assessment.get("decision") or "flag").strip().lower()
+        result_payload["peer_verification"] = assessment
+        existing_verification = rec.verification if isinstance(rec.verification, dict) else {}
+        rec.verification = {**existing_verification, "peer_verification": assessment}
+        result_payload["verification"] = rec.verification
+
+        if decision == "pass":
+            log.info("Peer verification passed task=%s agent=%s", rec.task_id, assessment.get("source_agent"))
+            return
+
+        reason = str(assessment.get("reason") or "").strip() or "output did not pass peer sanity check"
+        if decision == "fail":
+            rec.status = "blocked"
+            rec.failure_class = "peer_verification_failed"
+            rec.summary = f"Peer verification failed: {reason}"
+            rec.outcome_verified = False
+            rec.verification_method = "peer_verification_failed"
+            result_payload["status"] = rec.status
+            result_payload["summary"] = rec.summary
+            result_payload["failure_class"] = rec.failure_class
+            result_payload["outcome_verified"] = rec.outcome_verified
+            result_payload["verification_method"] = rec.verification_method
+            log.warning("Peer verification failed task=%s reason=%s", rec.task_id, reason)
+            return
+
+        warning = f"Peer verification flagged: {reason}"
+        rec.summary = f"{rec.summary} {warning}".strip() if rec.summary else warning
+        result_payload["summary"] = rec.summary
+        result_payload["peer_verification_warning"] = warning
+        if not rec.verification_method:
+            rec.verification_method = "peer_verification_flagged"
+            result_payload["verification_method"] = rec.verification_method
+        log.warning("Peer verification flagged task=%s reason=%s", rec.task_id, reason)
+
+    def _run_sycophancy_audit(self, rec: TaskRecord, result_payload: dict, workspace: Path) -> None:
+        try:
+            from soul_manager import audit_sycophancy
+        except Exception as exc:
+            log.warning("SYCOPHANCY_AUDIT unavailable task=%s error=%s", rec.task_id, exc)
+            return
+
+        msg = _message_from_workspace(workspace)
+        message_payload = msg.to_dict() if msg else {}
+        task_context = {
+            "task_id": rec.task_id,
+            "workflow_id": rec.workflow_id,
+            "orchestrator_framing": message_payload.get("original_intent")
+            or message_payload.get("content")
+            or rec.content_preview,
+            "summary": rec.summary,
+            "status": rec.status,
+            "agent": rec.agent or rec.task_type or "unknown",
+            "task_type": rec.task_type,
+            "tags": rec.tags or [],
+        }
+        response_text = self._peer_verification_output(workspace, result_payload)
+        try:
+            report = audit_sycophancy(response_text, task_context)
+        except Exception as exc:
+            log.warning("SYCOPHANCY_AUDIT failed task=%s error=%s", rec.task_id, exc)
+            return
+
+        flagged_patterns = list(getattr(report, "flagged_patterns", []) or [])
+        if not flagged_patterns:
+            return
+
+        report_payload = asdict(report) if hasattr(report, "__dataclass_fields__") else dict(report)
+        existing_verification = rec.verification if isinstance(rec.verification, dict) else {}
+        rec.verification = {**existing_verification, "sycophancy_audit": report_payload}
+        result_payload["verification"] = rec.verification
+        result_payload["sycophancy_audit_warning"] = {
+            "score": report_payload.get("score"),
+            "flagged_patterns": flagged_patterns,
+        }
+        self._append_trace(
+            rec,
+            "task.sycophancy_warning",
+            {
+                "agent": rec.agent or rec.task_type or "unknown",
+                "score": report_payload.get("score"),
+                "flagged_patterns": flagged_patterns,
+                "details": report_payload.get("details", {}),
+                "evaluator_escalation_candidate": True,
+            },
+        )
+        try:
+            _write_result_payload(workspace / "result.json", result_payload)
+        except OSError as exc:
+            log.debug("SYCOPHANCY_AUDIT result payload update failed task=%s error=%s", rec.task_id, exc)
+        log.warning(
+            "SYCOPHANCY_AUDIT warning task=%s agent=%s score=%s flags=%s",
+            rec.task_id,
+            rec.agent or rec.task_type or "unknown",
+            report_payload.get("score"),
+            ",".join(flagged_patterns),
+        )
+
     # ------------------------------------------------------------------
     # Check / collect
     # ------------------------------------------------------------------
@@ -603,6 +1052,7 @@ class TaskManager:
                 "timeout",
                 "needs-input",
                 "blocked",
+                "parked",
             ):
                 continue
 
@@ -682,7 +1132,7 @@ class TaskManager:
                         timeout_item = bridge.get_item(f"timeout-{rec.task_id}")
                         if timeout_item:
                             msgs = timeout_item.get("messages", [])
-                            user_replies = [m for m in msgs if m.get("sender") in ("ang", "iphone", "user")]
+                            user_replies = [m for m in msgs if m.get("sender") in ("default", "iphone", "user")]
                             if user_replies:
                                 last_reply = user_replies[-1].get("content", "").lower().strip()
                                 if "kill" in last_reply or "停" in last_reply or "stop" in last_reply:
@@ -691,6 +1141,7 @@ class TaskManager:
                                     rec.status = "timeout"
                                     rec.completed_at = _utc_iso()
                                     rec.summary = "Task killed by user after timeout"
+                                    _write_completion_metadata(Path(rec.workspace), rec.completed_at)
                                     completed.append(rec)
                                     self._mirror_record(rec, event_type="task.timeout")
                                 # If user said 'wait', just let it keep running
@@ -732,13 +1183,20 @@ class TaskManager:
                 rec.failure_class = data.get("failure_class", "")
                 rec.workflow_id = data.get("workflow_id", rec.workflow_id) or rec.workflow_id
                 rec.task_type = data.get("task_type", rec.task_type) or rec.task_type
+                rec.agent = data.get("agent") or data.get("execution_agent") or rec.agent
+                rec.dispatch_hops = _coerce_dispatch_hops(data.get("dispatch_hops", rec.dispatch_hops))
+                rec.friction_classification = data.get("friction_classification") or _classify_dispatch_hops(
+                    rec.dispatch_hops
+                )
+                rec.optimized_routing_suggestion = data.get("optimized_routing_suggestion", "")
                 rec.verification = data.get("verification") if isinstance(data.get("verification"), dict) else None
                 rec.outcome_verified = bool(data.get("outcome_verified", False))
                 rec.verification_method = (
                     data.get("verification_method", rec.verification_method) or rec.verification_method
                 )
                 if data.get("tags"):
-                    rec.tags = data["tags"]
+                    rec.tags = _merge_tags(rec.tags, data["tags"])
+                self._run_sycophancy_audit(rec, data, ws)
                 self._append_trace(
                     rec,
                     "task.result_collected",
@@ -747,11 +1205,14 @@ class TaskManager:
                         "summary": rec.summary,
                         "failure_class": rec.failure_class,
                         "task_type": rec.task_type,
+                        "agent": rec.agent,
+                        "dispatch_hops": rec.dispatch_hops,
+                        "friction_classification": rec.friction_classification,
                         "outcome_verified": rec.outcome_verified,
                         "verification_method": rec.verification_method,
                     },
                 )
-                _write_completion_metadata(ws)
+                _write_completion_metadata(ws, rec.completed_at)
                 return True
             except (json.JSONDecodeError, OSError) as e:
                 log.error("Failed to read result for task %s: %s", rec.task_id, e)
@@ -767,7 +1228,7 @@ class TaskManager:
                 "task.legacy_output_collected",
                 {"status": rec.status, "summary": rec.summary},
             )
-            _write_completion_metadata(ws)
+            _write_completion_metadata(ws, rec.completed_at)
             return True
 
         # Process died without producing output — check stderr for crash info
@@ -794,7 +1255,7 @@ class TaskManager:
             "task.worker_crashed",
             {"status": rec.status, "summary": rec.summary, "failure_class": rec.failure_class},
         )
-        _write_completion_metadata(ws)
+        _write_completion_metadata(ws, rec.completed_at)
         return False
 
     def _kill_task(self, rec: TaskRecord):
@@ -847,6 +1308,57 @@ class TaskManager:
         summary.txt is a meta-description; only use as fallback when no output.md.
         """
         ws = Path(rec.workspace)
+        result_data = None
+        result_file = ws / "result.json"
+        if result_file.exists():
+            try:
+                data = json.loads(result_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    result_data = data
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        def _verification_receipt(content: str, *, output_exists: bool) -> str:
+            if _is_conversation_record(rec):
+                return content
+            status = normalize_task_status(rec.status)
+            outcome_unverified = (
+                isinstance(result_data, dict) and result_data.get("outcome_verified") is False and output_exists
+            )
+            if status != "completed_unverified" and not outcome_unverified:
+                return content
+
+            if isinstance(result_data, dict):
+                verification = result_data.get("verification")
+                if not isinstance(verification, dict):
+                    verification = {}
+                next_action = str(result_data.get("next_action") or "").strip()
+            else:
+                verification = rec.verification if isinstance(rec.verification, dict) else {}
+                next_action = ""
+
+            proxy_checked = str(verification.get("proxy_checked") or "none").strip() or "none"
+            evidence_gap = str(
+                verification.get("summary") or rec.summary or "outcome verification was not available"
+            ).strip()
+            assumptions = verification.get("unverified_assumptions") or []
+            if isinstance(assumptions, list):
+                assumptions_text = ", ".join(str(item).strip() for item in assumptions if str(item).strip())
+            else:
+                assumptions_text = str(assumptions).strip()
+            assumptions_text = assumptions_text or "none"
+            next_action = next_action or "none"
+
+            receipt = "\n".join(
+                [
+                    "Verification: unverified",
+                    f"Checked: {proxy_checked}",
+                    f"Evidence gap: {evidence_gap}",
+                    f"Unverified assumptions: {assumptions_text}",
+                    f"Next action: {next_action}",
+                ]
+            )
+            return f"{receipt}\n\n{content}"
 
         # Build a relative path from bridge root (for iOS file links)
         bridge_root = MIRA_DIR
@@ -860,18 +1372,19 @@ class TaskManager:
             content = output_file.read_text(encoding="utf-8").strip()
             if content:
                 if len(content) <= 4000:
-                    return content
-                return (
+                    return _verification_receipt(content, output_exists=True)
+                truncated = (
                     content[:3000] + f"\n\n... (全文太长，已截断)\n\n"
                     f"完整内容: [{rel_ws / 'output.md'}](file://{rel_ws / 'output.md'})"
                 )
+                return _verification_receipt(truncated, output_exists=True)
 
         # No output.md — try summary.txt
         summary_file = ws / "summary.txt"
         if summary_file.exists():
             summary = summary_file.read_text(encoding="utf-8").strip()
             if summary:
-                return summary
+                return _verification_receipt(summary, output_exists=False)
 
         return rec.summary or "任务完成，但没有产生输出。"
 
@@ -894,6 +1407,7 @@ class TaskManager:
                 "timeout",
                 "needs-input",
                 "blocked",
+                "parked",
             ):
                 return r
         return None
@@ -927,6 +1441,8 @@ class TaskManager:
             rec.completed_at = _utc_iso()
             rec.summary = reason
             rec.failure_class = "cancelled"
+            if rec.workspace:
+                _write_completion_metadata(Path(rec.workspace), rec.completed_at)
             self._save_status()
             self._append_history([rec])
             self._mirror_record(rec, event_type="task.cancelled")
@@ -934,9 +1450,79 @@ class TaskManager:
             return rec
         return None
 
+    def park_task(self, task_id: str, *, reason: str = "Parked after review") -> TaskRecord | None:
+        """Mark a known task as reviewed and intentionally not actionable now."""
+        for rec in self._records:
+            if rec.task_id != task_id:
+                continue
+            if normalize_task_status(rec.status) in ("dispatched", "running"):
+                self._kill_task(rec)
+            rec.status = "parked"
+            rec.completed_at = rec.completed_at or _utc_iso()
+            rec.summary = reason
+            rec.failure_class = rec.failure_class or "parked"
+            if rec.workspace:
+                _write_completion_metadata(Path(rec.workspace), rec.completed_at)
+            self._append_trace(rec, "task.parked", {"reason": reason})
+            self._save_status()
+            self._append_history([rec])
+            self._mirror_record(rec, event_type="task.parked")
+            log.info("Parked task %s", task_id)
+            return rec
+        return None
+
     def get_active_count(self) -> int:
         """Number of currently running tasks."""
         return sum(1 for r in self._records if r.status in ("dispatched", "running"))
+
+    def get_unresolved_inventory(self, max_items=5) -> dict:
+        """Return a compact inventory of terminal records that still need attention."""
+        try:
+            limit = max(0, int(max_items))
+        except (TypeError, ValueError):
+            limit = 5
+
+        unresolved = []
+        for rec in self._records:
+            status = normalize_task_status(rec.status)
+            if status not in UNRESOLVED_TASK_STATUSES:
+                continue
+            if status == "completed_unverified" and _is_conversation_record(rec):
+                continue
+            agent_type = rec.task_type or (rec.tags[0] if rec.tags else "") or "unknown"
+            failure_class = rec.failure_class or "unknown"
+            unresolved.append((rec, status, agent_type, failure_class))
+
+        by_status: dict[str, int] = {}
+        by_agent_type: dict[str, int] = {}
+        by_failure_class: dict[str, int] = {}
+        oldest_completed_at = ""
+        for rec, status, agent_type, failure_class in unresolved:
+            by_status[status] = by_status.get(status, 0) + 1
+            by_agent_type[agent_type] = by_agent_type.get(agent_type, 0) + 1
+            by_failure_class[failure_class] = by_failure_class.get(failure_class, 0) + 1
+            if rec.completed_at and (not oldest_completed_at or rec.completed_at < oldest_completed_at):
+                oldest_completed_at = rec.completed_at
+
+        unresolved.sort(key=lambda item: item[0].completed_at or item[0].started_at or "")
+        return {
+            "count": len(unresolved),
+            "by_status": by_status,
+            "by_agent_type": by_agent_type,
+            "by_failure_class": by_failure_class,
+            "oldest_completed_at": oldest_completed_at,
+            "tasks": [
+                {
+                    "task_id": rec.task_id,
+                    "status": status,
+                    "agent_type": agent_type,
+                    "failure_class": failure_class,
+                    "completed_at": rec.completed_at,
+                    "summary": rec.summary,
+                }
+                for rec, status, agent_type, failure_class in unresolved[:limit]
+            ],
+        }
 
     def get_status_summary(self) -> dict:
         """Return agent status summary for heartbeat/display.
@@ -946,6 +1532,7 @@ class TaskManager:
             active_count: int — number of running tasks
             active_tasks: list — preview of active task content
             last_completed: str — timestamp of most recent completion
+            unresolved_inventory: dict — unresolved terminal task inventory
         """
         active = [r for r in self._records if r.status in ("dispatched", "running")]
         completed = [r for r in self._records if r.completed_at]
@@ -986,6 +1573,7 @@ class TaskManager:
                 for r in active
             ],
             "last_completed": completed[0].completed_at if completed else "",
+            "unresolved_inventory": self.get_unresolved_inventory(),
         }
 
     # ------------------------------------------------------------------
@@ -1003,7 +1591,7 @@ class TaskManager:
                 if "tags" not in rec:
                     rec["tags"] = []
                 if "user_id" not in rec:
-                    rec["user_id"] = "ang"
+                    rec["user_id"] = "default"
                 if "workflow_id" not in rec:
                     rec["workflow_id"] = derive_workflow_id(
                         task_id=rec.get("task_id", ""),
@@ -1019,6 +1607,15 @@ class TaskManager:
                     rec["timeout_alerted_at"] = ""
                 if "task_type" not in rec:
                     rec["task_type"] = ""
+                if "agent" not in rec:
+                    rec["agent"] = ""
+                if "dispatch_hops" not in rec:
+                    rec["dispatch_hops"] = 0
+                rec["dispatch_hops"] = _coerce_dispatch_hops(rec.get("dispatch_hops", 0))
+                if not rec.get("friction_classification"):
+                    rec["friction_classification"] = _classify_dispatch_hops(rec["dispatch_hops"])
+                if "optimized_routing_suggestion" not in rec:
+                    rec["optimized_routing_suggestion"] = ""
                 if "verification" not in rec:
                     rec["verification"] = None
                 if "outcome_verified" not in rec:
@@ -1145,7 +1742,7 @@ class TaskManager:
             from evolution import record_task_outcome
 
             for rec in records:
-                if rec.status in ("done", "verified", "completed_unverified", "failed", "timeout"):
+                if rec.status in ("done", "verified", "completed_unverified", "failed", "timeout", "parked"):
                     agent = rec.tags[0] if rec.tags else "general"
                     record_task_outcome(
                         task_id=rec.task_id,

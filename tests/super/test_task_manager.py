@@ -77,12 +77,12 @@ def test_terminal_projection_writes_agent_message_to_control_db(monkeypatch):
     monkeypatch.setattr(control.db, "transaction", fake_transaction)
     monkeypatch.setattr(control.repository, "ControlRepository", FakeRepo)
 
-    rec = SimpleNamespace(task_id="disc_123", user_id="ang", summary="done")
+    rec = SimpleNamespace(task_id="disc_123", user_id="default", summary="done")
     talk._project_record_to_control_db(rec, "done", agent_message="final answer")
 
     assert calls == [
         (
-            ("ang", "disc_123", "done"),
+            ("default", "disc_123", "done"),
             {
                 "summary": "done",
                 "error_code": None,
@@ -96,6 +96,41 @@ def test_terminal_projection_writes_agent_message_to_control_db(monkeypatch):
             },
         )
     ]
+
+
+def test_daily_collab_projection_omits_status_footer(monkeypatch):
+    import talk
+
+    class FakeTaskManager:
+        def get_reply_content(self, rec):
+            return "one conversational reply"
+
+        def get_status_summary(self):
+            raise AssertionError("conversation projection should not append status footer")
+
+    class FakeBridge:
+        def __init__(self):
+            self.updated = []
+            self.tags = []
+
+        def update_status(self, item_id, status, agent_message="", error=None):
+            self.updated.append((item_id, status, agent_message, error))
+
+        def set_tags(self, item_id, tags):
+            self.tags.append((item_id, tags))
+
+    monkeypatch.setattr(talk, "CONTROL_RUNTIME_DB_ENABLED", False)
+    rec = SimpleNamespace(
+        task_id="disc_daily_collab",
+        status="completed_unverified",
+        tags=["daily-collab", "mira", "conversation"],
+    )
+
+    bridge = FakeBridge()
+    talk._project_record_to_bridge(bridge, FakeTaskManager(), rec)
+
+    assert bridge.updated == [("disc_daily_collab", "done", "one conversational reply", None)]
+    assert bridge.tags == [("disc_daily_collab", ["daily-collab", "mira", "conversation"])]
 
 
 def test_dispatch_records_message_user_id(monkeypatch, tmp_path):
@@ -137,6 +172,45 @@ def test_dispatch_records_message_user_id(monkeypatch, tmp_path):
     assert (Path(mgr._records[0].workspace) / ".task_id").read_text(encoding="utf-8").strip() == "req_123"
 
 
+def test_dispatch_persists_message_tags(monkeypatch, tmp_path):
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+    monkeypatch.setattr(task_manager, "WORKER_SCRIPT", tmp_path / "task_worker.py")
+
+    class FakeProcess:
+        pid = 4322
+
+    monkeypatch.setattr(task_manager.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+    mgr = task_manager.TaskManager()
+    msg = SimpleNamespace(
+        id="disc_daily_collab",
+        thread_id="disc_daily_collab",
+        sender="default",
+        content="one small thought",
+        user_id="default",
+        tags=["daily-collab", "mira", "conversation"],
+        to_dict=lambda: {
+            "id": "disc_daily_collab",
+            "thread_id": "disc_daily_collab",
+            "sender": "default",
+            "content": "one small thought",
+            "user_id": "default",
+        },
+    )
+
+    task_id = mgr.dispatch(msg, tmp_path / "workspace")
+
+    assert task_id == "disc_daily_collab"
+    workspace = Path(mgr._records[0].workspace)
+    payload = json.loads((workspace / "message.json").read_text(encoding="utf-8"))
+    assert payload["tags"] == ["daily-collab", "mira", "conversation"]
+    assert mgr._records[0].tags == ["daily-collab", "mira", "conversation"]
+
+
 def test_load_status_backfills_missing_user_id(monkeypatch, tmp_path):
     import task_manager
 
@@ -171,7 +245,7 @@ def test_load_status_backfills_missing_user_id(monkeypatch, tmp_path):
     mgr = task_manager.TaskManager()
 
     assert len(mgr._records) == 1
-    assert mgr._records[0].user_id == "ang"
+    assert mgr._records[0].user_id == "default"
     assert mgr._records[0].workflow_id == "req_legacy"
     assert mgr._records[0].attempt_count == 1
     assert mgr._records[0].failure_class == ""
@@ -198,13 +272,13 @@ def test_dispatch_allows_explicit_retry_attempts(monkeypatch, tmp_path):
         thread_id="req_retry",
         sender="user",
         content="retry me",
-        user_id="ang",
+        user_id="default",
         to_dict=lambda: {
             "id": "req_retry",
             "thread_id": "req_retry",
             "sender": "user",
             "content": "retry me",
-            "user_id": "ang",
+            "user_id": "default",
         },
     )
 
@@ -238,13 +312,13 @@ def test_dispatch_avoids_unowned_stale_workspace(monkeypatch, tmp_path):
         thread_id="req_todo_1cacf0e3",
         sender="user",
         content="new task",
-        user_id="ang",
+        user_id="default",
         to_dict=lambda: {
             "id": "req_todo_1cacf0e3",
             "thread_id": "req_todo_1cacf0e3",
             "sender": "user",
             "content": "new task",
-            "user_id": "ang",
+            "user_id": "default",
         },
     )
 
@@ -328,7 +402,7 @@ def test_check_tasks_records_timeout_alert_once(monkeypatch, tmp_path):
     created = []
 
     class FakeBridge:
-        def __init__(self, root, user_id="ang"):
+        def __init__(self, root, user_id="default"):
             self.user_id = user_id
 
         def create_item(self, *args, **kwargs):
@@ -438,6 +512,131 @@ def test_collect_result_treats_legacy_output_fallback_as_unverified(monkeypatch,
     assert rec.status == "completed_unverified"
 
 
+def test_unresolved_inventory_skips_completed_conversation(monkeypatch, tmp_path):
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+
+    mgr = task_manager.TaskManager()
+    mgr._records = [
+        task_manager.TaskRecord(
+            task_id="disc_daily_collab",
+            workflow_id="disc_daily_collab",
+            msg_id="disc_daily_collab",
+            thread_id="disc_daily_collab",
+            sender="default",
+            content_preview="chat",
+            pid=1,
+            status="completed_unverified",
+            started_at="2026-07-01T03:49:38Z",
+            completed_at="2026-07-01T03:50:11Z",
+            tags=["daily-collab", "mira", "conversation"],
+            summary="No footer now.",
+        ),
+        task_manager.TaskRecord(
+            task_id="req_failed",
+            workflow_id="req_failed",
+            msg_id="req_failed",
+            thread_id="req_failed",
+            sender="default",
+            content_preview="failed",
+            pid=2,
+            status="failed",
+            started_at="2026-07-01T03:00:00Z",
+            completed_at="2026-07-01T03:01:00Z",
+            summary="real failure",
+            failure_class="worker_crash",
+        ),
+    ]
+
+    inventory = mgr.get_unresolved_inventory()
+
+    assert inventory["count"] == 1
+    assert inventory["tasks"][0]["task_id"] == "req_failed"
+
+
+def test_park_task_preserves_record_but_removes_from_unresolved_inventory(monkeypatch, tmp_path):
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+    monkeypatch.setattr(task_manager, "CONTROL_RUNTIME_DB_ENABLED", False)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    mgr = task_manager.TaskManager()
+    rec = task_manager.TaskRecord(
+        task_id="req_old_failure",
+        workflow_id="req_old_failure",
+        msg_id="req_old_failure",
+        thread_id="req_old_failure",
+        sender="default",
+        content_preview="old failure",
+        pid=123,
+        status="failed",
+        started_at="2026-06-26T14:40:00Z",
+        completed_at="2026-06-26T14:42:07Z",
+        workspace=str(workspace),
+        summary="Worker crashed",
+        failure_class="worker_crash",
+        attempt_count=2,
+        max_attempts=2,
+    )
+    mgr._records = [rec]
+    mgr._save_status()
+
+    parked = mgr.park_task("req_old_failure", reason="Reviewed and parked")
+
+    assert parked is rec
+    assert rec.status == "parked"
+    assert rec.failure_class == "worker_crash"
+    assert rec.summary == "Reviewed and parked"
+    assert mgr.can_retry(rec) is False
+    assert mgr.find_failed_task("req_old_failure") is rec
+    assert mgr.get_unresolved_inventory()["count"] == 0
+    assert "completed_at" in json.loads((workspace / "metadata.json").read_text(encoding="utf-8"))
+    history_lines = (tmp_path / "tasks" / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json.loads(history_lines[-1])["status"] == "parked"
+
+
+def test_check_tasks_skips_parked_records(monkeypatch, tmp_path):
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+    monkeypatch.setattr(task_manager, "CONTROL_RUNTIME_DB_ENABLED", False)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    mgr = task_manager.TaskManager()
+    rec = task_manager.TaskRecord(
+        task_id="req_parked",
+        workflow_id="req_parked",
+        msg_id="req_parked",
+        thread_id="req_parked",
+        sender="default",
+        content_preview="parked",
+        pid=999999,
+        status="parked",
+        started_at="2026-06-26T14:40:00Z",
+        completed_at="2026-06-26T14:42:07Z",
+        workspace=str(workspace),
+        summary="Reviewed and parked",
+        failure_class="worker_crash",
+    )
+    mgr._records = [rec]
+
+    completed = mgr.check_tasks()
+
+    assert completed == []
+    assert rec.status == "parked"
+    assert rec.summary == "Reviewed and parked"
+
+
 def test_collect_result_preserves_verification_metadata(monkeypatch, tmp_path):
     import task_manager
 
@@ -488,6 +687,88 @@ def test_collect_result_preserves_verification_metadata(monkeypatch, tmp_path):
     assert rec.verification_method == "file_exists"
 
 
+def test_collect_result_merges_result_tags_with_routing_tags(monkeypatch, tmp_path):
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "result.json").write_text(
+        json.dumps(
+            {
+                "task_id": "disc_daily_collab",
+                "status": "completed_unverified",
+                "summary": "done",
+                "completed_at": "2026-04-05T00:05:00Z",
+                "tags": ["daily collab", "AI narratives"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mgr = task_manager.TaskManager()
+    rec = task_manager.TaskRecord(
+        task_id="disc_daily_collab",
+        workflow_id="disc_daily_collab",
+        msg_id="disc_daily_collab",
+        thread_id="disc_daily_collab",
+        sender="default",
+        content_preview="collab",
+        pid=123,
+        status="running",
+        started_at="2026-04-05T00:00:00Z",
+        workspace=str(workspace),
+        tags=["daily-collab", "mira", "conversation"],
+    )
+
+    mgr._collect_result(rec)
+
+    assert rec.tags == ["daily-collab", "mira", "conversation", "daily collab", "AI narratives"]
+
+
+def test_daily_collab_reply_omits_verification_receipt(monkeypatch, tmp_path):
+    import task_manager
+
+    monkeypatch.setattr(task_manager, "TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_manager, "STATUS_FILE", tmp_path / "tasks" / "status.json")
+    monkeypatch.setattr(task_manager, "HISTORY_FILE", tmp_path / "tasks" / "history.jsonl")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "output.md").write_text("one conversational reply", encoding="utf-8")
+    (workspace / "result.json").write_text(
+        json.dumps(
+            {
+                "status": "completed_unverified",
+                "outcome_verified": False,
+                "verification": {"summary": "not required"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rec = task_manager.TaskRecord(
+        task_id="disc_daily_collab",
+        workflow_id="disc_daily_collab",
+        msg_id="disc_daily_collab",
+        thread_id="disc_daily_collab",
+        sender="default",
+        content_preview="collab",
+        pid=123,
+        status="completed_unverified",
+        started_at="2026-04-05T00:00:00Z",
+        workspace=str(workspace),
+        tags=["daily-collab", "mira", "conversation"],
+    )
+
+    reply = task_manager.TaskManager().get_reply_content(rec)
+
+    assert reply == "one conversational reply"
+
+
 def test_check_tasks_wait_reply_keeps_running_status(monkeypatch, tmp_path):
     import sys
     import types
@@ -499,7 +780,7 @@ def test_check_tasks_wait_reply_keeps_running_status(monkeypatch, tmp_path):
     monkeypatch.setattr(task_manager, "_resolve_timeout", lambda tags: 1)
 
     class FakeBridge:
-        def __init__(self, root, user_id="ang"):
+        def __init__(self, root, user_id="default"):
             self.user_id = user_id
 
         def create_item(self, *args, **kwargs):
@@ -608,7 +889,7 @@ def test_worker_crash_auto_retries_from_message_json(monkeypatch, tmp_path):
                 "thread_id": "req_retry_crash",
                 "sender": "user",
                 "content": "retry crash",
-                "user_id": "ang",
+                "user_id": "default",
             }
         ),
         encoding="utf-8",

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from mira.agents.base import StepInput, StepOutput
 from mira.engine.pipeline import Pipeline, Step, Trigger
+from mira.kernel.causal import confirm_ablation_evidence
 from mira.kernel.delta import MemoryAction
 from mira.kernel.snapshot import MemorySnapshot
 
@@ -34,7 +35,20 @@ def _execute(input: StepInput, memory: MemorySnapshot) -> StepOutput:
     wants_concise = any("concise" in hint.lower() for hint in memory.hints)
     prefix = "Short answer:" if wants_concise else "I read this as:"
     reply = f"{prefix} {message.strip()}"
-    return StepOutput(payload={"reply": reply, "used_memory": wants_concise})
+    payload = {"reply": reply, "used_memory": wants_concise}
+    if wants_concise and memory.causal_context:
+        counterfactual_reply = f"I read this as: {message.strip()}"
+        payload["_causal_evidence"] = [
+            confirm_ablation_evidence(
+                memory_id=memory.causal_context[0],
+                run_id=input.run_id,
+                pipeline=input.pipeline,
+                normal_decision=reply,
+                counterfactual_decision=counterfactual_reply,
+                effect_ids=[f"effect:{input.run_id}:concise_reply"],
+            )
+        ]
+    return StepOutput(payload=payload)
 
 
 def _quality(input: StepInput, memory: MemorySnapshot) -> StepOutput:

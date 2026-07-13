@@ -18,7 +18,7 @@ def test_build_runtime_context_formats_memory_recall(monkeypatch):
             return "persona"
 
     class FakeStore:
-        def recall(self, query: str, top_k: int = 5, user_id: str = "ang"):
+        def recall(self, query: str, top_k: int = 5, user_id: str = "default"):
             return [
                 {
                     "content": "Important lesson about planning and retries.",
@@ -42,7 +42,7 @@ def test_build_runtime_context_formats_memory_recall(monkeypatch):
 
     bundle = rc.build_runtime_context(
         "planning retries",
-        user_id="ang",
+        user_id="default",
         thread_id="thread1",
         include_journals=1,
         include_briefings=1,

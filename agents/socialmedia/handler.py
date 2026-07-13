@@ -8,43 +8,43 @@ Usage from task_worker:
 """
 
 import hashlib
+import inspect
 import json
 import logging
 import re
 from datetime import datetime, timezone
+from importlib import util as importlib_util
 from pathlib import Path
 
 from config import (
     ARTIFACTS_DIR,
     WRITINGS_OUTPUT_DIR,
+    MIRA_DIR,
     SUBSTACK_PUBLISHING_DISABLED,
     MIRA_ROOT,
     STRICT_HALLUCINATION_GUARD,
+    PUBLISH_AUTO_CONFIDENCE_THRESHOLD,
 )
-from content_guard import _content_looks_like_survival_exposure, _content_looks_like_unethical_context
-from publish.preflight import preflight_check
+from content_guard import (
+    _content_looks_like_survival_exposure,
+    _content_looks_like_unethical_context,
+    _detect_high_risk_claims,
+)
+from publish.preflight import log_rejection, preflight_check
 from publish.writer_gate import require_writer_gate
 from llm import claude_think
 from mira import log_scaffolding_audit, write_scaffold_rejection
+from sub_agent import infer_publish_dispatch_path, log_publish_audit
 
 log = logging.getLogger("publisher")
 
-_AUDIT_LOG = MIRA_ROOT / "logs" / "publish_audit.log"
 _GUARDS_LOG = MIRA_ROOT / "logs" / "guards.log"
-_KNOWN_HUMAN_SENDERS = {"ang", "weiang0212", "user"}
+_PERMACOMPUTING_AUDIT_LOG = MIRA_ROOT / "logs" / "permacomputing_audit.log"
+_KNOWN_HUMAN_SENDERS = {"default", "user"}
 
 
 def _dispatch_path(sender: str) -> str:
-    s = sender.lower()
-    if s in _KNOWN_HUMAN_SENDERS:
-        return "direct"
-    if "bridge" in s:
-        return "bridge"
-    if "notes" in s:
-        return "notes"
-    if s in {"agent", "mira", "schedule", "scheduler", "cron"}:
-        return "schedule"
-    return "schedule"
+    return infer_publish_dispatch_path(sender)
 
 
 def _log_guard(guard_name: str, result: str, content: str) -> None:
@@ -64,26 +64,66 @@ def _log_guard(guard_name: str, result: str, content: str) -> None:
 
 
 def _write_publish_audit(sender: str, action: str, platform: str, title: str, judgment_rationale: str = "") -> None:
+    log_publish_audit(
+        sender,
+        dispatch_path=_dispatch_path(sender),
+        autonomous=sender.lower() not in _KNOWN_HUMAN_SENDERS,
+        action=action,
+        platform=platform,
+        title=title,
+        extra={
+            "writer_gate_passed": True,
+            "judgment_rationale": judgment_rationale,
+        },
+    )
+
+
+def _reasoning_summary(article_text: str) -> str:
+    sentences = [s.strip().lstrip("#").strip() for s in re.split(r"(?<=[。.!?！？])\s+|\n+", article_text) if s.strip()]
+    if not sentences:
+        return ""
+    for sentence in sentences:
+        if _THESIS_RE.search(sentence):
+            return sentence[:300]
+    return sentences[0][:300]
+
+
+def _audit_article_title(title: str, article_text: str) -> str:
+    if title:
+        return title
+    for line in article_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip()
+    return ""
+
+
+def log_permacomputing_audit(action: str, details: dict) -> dict | None:
     entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "agent": sender,
-        "dispatch_path": _dispatch_path(sender),
-        "autonomous": sender.lower() not in _KNOWN_HUMAN_SENDERS,
-        "action": action,
-        "platform": platform,
-        "title": title,
-        "writer_gate_passed": True,
-        "judgment_rationale": judgment_rationale,
+        "datetime": datetime.now(timezone.utc).isoformat(),
+        "agent_name": str(details.get("agent_name") or "unknown"),
+        "action_type": str(action or details.get("action_type") or "unknown"),
+        "article_title": str(details.get("article_title") or ""),
+        "reasoning_summary": str(details.get("reasoning_summary") or ""),
+        "content_guard": details.get("content_guard") or {},
+        "preflight": details.get("preflight") or {},
     }
+    for key in ("platform", "result"):
+        if key in details:
+            entry[key] = details[key]
     try:
-        _AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with _AUDIT_LOG.open("a", encoding="utf-8") as f:
+        _PERMACOMPUTING_AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _PERMACOMPUTING_AUDIT_LOG.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as _e:
-        log.warning("publish_audit write failed: %s", _e)
+        log.warning("permacomputing_audit write failed: %s", _e)
+        return None
+    return entry
 
 
 _SCAFFOLDING_CATCHES_LOG = MIRA_ROOT / "logs" / "scaffolding_catches.jsonl"
+_SCAFFOLDING_REJECTIONS_LOG = MIRA_ROOT / "logs" / "scaffolding_rejections.jsonl"
+_GUARD_FIRES_LOG = MIRA_ROOT / "logs" / "guard_fires.jsonl"
 
 
 def _append_scaffolding_catch(guard_name: str, reason: str, content_length: int, agent: str = "") -> None:
@@ -100,6 +140,42 @@ def _append_scaffolding_catch(guard_name: str, reason: str, content_length: int,
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as _e:
         log.warning("scaffolding_catches write failed: %s", _e)
+
+
+def _append_scaffolding_rejection(agent: str, task_id: str, guard_name: str, reason: str, content: str) -> None:
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "agent": agent,
+        "task_id": task_id,
+        "guard_name": guard_name,
+        "trigger_reason": reason,
+        "content_length": len(content),
+        "first_100_chars": content[:100],
+    }
+    try:
+        _SCAFFOLDING_REJECTIONS_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _SCAFFOLDING_REJECTIONS_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as _e:
+        log.warning("scaffolding_rejections write failed: %s", _e)
+
+
+def _log_guard_fired(guard: str, agent: str, task_id: str, reason: str = "") -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": "GUARD_FIRED",
+        "guard": guard,
+        "agent": agent,
+        "task_id": task_id,
+        "reason": reason,
+    }
+    log.warning("GUARD_FIRED", extra={k: v for k, v in entry.items() if k != "event"})
+    try:
+        _GUARD_FIRES_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _GUARD_FIRES_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as _e:
+        log.warning("guard_fires write failed: %s", _e)
 
 
 # ---------------------------------------------------------------------------
@@ -129,8 +205,33 @@ _SYSTEM_ERROR_SIGNATURE_RE = re.compile(
     r"\b[A-Za-z]:\\[^\s]+",
     re.IGNORECASE,
 )
+_SUBTLE_ERROR_ANOMALY_RE = re.compile(
+    r"\b(?:preflight blocked|needs[_\s-]?approval|guard flagged|guard_fired|"
+    r"content_looks_like_error|scaffold(?:ing)? rejection)\b|发布被拒绝",
+    re.IGNORECASE,
+)
 _MIN_PUBLISH_CHARS = 1
 _PREFLIGHT_CACHE = ".socialmedia_preflight.json"
+
+
+def _publish_to_substack_with_audit(publish_to_substack, *, title, subtitle, article_text, workspace, audit_context):
+    kwargs = {
+        "title": title,
+        "subtitle": subtitle,
+        "article_text": article_text,
+        "workspace": workspace,
+    }
+    try:
+        parameters = inspect.signature(publish_to_substack).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_audit_context = "audit_context" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+    if accepts_audit_context:
+        kwargs["audit_context"] = audit_context
+    return publish_to_substack(**kwargs)
+
 
 EVIDENCE_FLOOR_RATIO = 0.2
 
@@ -163,38 +264,156 @@ def _content_lacks_verifiability(text: str) -> bool:
     return claim_count >= 2 and ratio < EVIDENCE_FLOOR_RATIO
 
 
-def _content_looks_like_error(text: str) -> tuple[bool, str]:
-    """Return (True, reason) if text looks like an error message, not publishable content.
+def _resolve_content_guard_strictness(strictness: str = "medium") -> str:
+    configured = strictness
+    if strictness == "medium":
+        try:
+            import config as _config
+
+            configured = getattr(_config, "CONTENT_GUARD_STRICTNESS", strictness)
+        except Exception:
+            configured = strictness
+        if configured == strictness:
+            shared_config = Path(__file__).resolve().parent.parent / "shared" / "config.py"
+            try:
+                spec = importlib_util.spec_from_file_location("_mira_shared_config", shared_config)
+                if spec is not None and spec.loader is not None:
+                    module = importlib_util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    configured = getattr(module, "CONTENT_GUARD_STRICTNESS", strictness)
+            except Exception:
+                configured = strictness
+    resolved = str(configured or "medium").strip().lower()
+    return resolved if resolved in {"low", "medium", "high"} else "medium"
+
+
+def _content_error_guard_verdict(text: str, strictness: str = "medium") -> tuple[bool, str, float]:
+    """Return (is_error, reason, confidence) for publishable content checks.
 
     This is the code-level enforcement of CLAUDE.md rule:
     'Substack 发布前必须确认内容 — 如果内容看起来是错误信息或过短，强制拒绝发布'
     """
+    strictness = _resolve_content_guard_strictness(strictness)
     stripped = text.strip()
+
+    def reject(trigger_rule: str, reason: str, confidence: float) -> tuple[bool, str, float]:
+        _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
+        log_rejection("_content_looks_like_error", trigger_rule, text, reason)
+        return True, reason, confidence
+
     if len(stripped) < _MIN_PUBLISH_CHARS:
-        if _SYSTEM_ERROR_SIGNATURE_RE.search(stripped):
+        if strictness != "low" and _SYSTEM_ERROR_SIGNATURE_RE.search(stripped):
             reason = f"内容过短且包含系统错误特征（{len(stripped)} 字符）"
-            _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
-            return True, reason
-        return False, ""
+            return reject("short_system_error_signature", reason, 1.0)
+        return False, "", 0.8 if strictness == "low" else 0.0
     lower = stripped.lower()
     early_section = lower[: max(200, len(lower) // 5)]
     if _SYSTEM_ERROR_SIGNATURE_RE.search(early_section):
+        if strictness == "low":
+            return False, "", 0.45
         reason = "内容包含系统错误特征，疑似上一步的错误信息"
-        _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
-        return True, reason
+        return reject("early_system_error_signature", reason, 1.0)
     for kw in _ERROR_KEYWORDS:
         if kw in lower:
             # Only flag if the error keyword appears early (first 20% of content)
             # to avoid false positives for articles that discuss errors
             if kw in early_section:
+                if strictness == "low":
+                    return False, "", 0.65
                 reason = f"内容包含错误关键词「{kw}」，疑似上一步的错误信息"
-                _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
-                return True, reason
+                return reject(f"early_error_keyword:{kw}", reason, 0.95)
     if _content_lacks_verifiability(stripped):
+        if strictness == "low":
+            return False, "", 0.75
         reason = f"内容存在大量断言但缺少可验证来源（evidence_floor={EVIDENCE_FLOOR_RATIO}）"
-        _append_scaffolding_catch("content_looks_like_error", reason, len(stripped))
-        return True, reason
-    return False, ""
+        return reject("verifiability_floor", reason, 0.9)
+    if strictness == "high":
+        if _SUBTLE_ERROR_ANOMALY_RE.search(lower):
+            reason = "内容包含发布流程异常标记，疑似上一步的守卫或审批信息"
+            return reject("publish_flow_anomaly_marker", reason, 0.95)
+        if _SYSTEM_ERROR_SIGNATURE_RE.search(lower):
+            reason = "内容后文包含系统错误特征，疑似混入上一步的错误信息"
+            return reject("late_system_error_signature", reason, 0.95)
+        late_keywords = [kw for kw in _ERROR_KEYWORDS if kw in lower and kw not in early_section]
+        if late_keywords:
+            reason = f"内容后文包含错误关键词「{late_keywords[0]}」，疑似混入上一步的错误信息"
+            return reject(f"late_error_keyword:{late_keywords[0]}", reason, 0.9)
+    if _SYSTEM_ERROR_SIGNATURE_RE.search(lower):
+        return False, "", 0.6
+    if any(kw in lower for kw in _ERROR_KEYWORDS):
+        return False, "", 0.7
+    return False, "", 1.0
+
+
+def _high_risk_claim_warning(text: str) -> dict:
+    flagged_claims = _detect_high_risk_claims(text)
+    if not flagged_claims:
+        return {}
+    return {
+        "type": "high_risk_claims",
+        "categories": sorted({claim["category"] for claim in flagged_claims}),
+        "flagged_claims": flagged_claims,
+    }
+
+
+def _content_looks_like_error(
+    text: str, strictness: str = "medium", include_warnings: bool = False
+) -> tuple[bool, float] | tuple[bool, float, dict]:
+    is_error, _reason, confidence = _content_error_guard_verdict(text, strictness)
+    if include_warnings:
+        return is_error, confidence, _high_risk_claim_warning(text)
+    return is_error, confidence
+
+
+def _route_low_confidence_publish_prompt(
+    *,
+    task_id: str,
+    sender: str,
+    platform: str,
+    title: str,
+    article_text: str,
+    confidence: float,
+    threshold: float,
+) -> str:
+    safe_task_id = re.sub(r"[^A-Za-z0-9_.-]", "_", task_id or "publish")[:80]
+    digest = hashlib.sha1(article_text.encode("utf-8", errors="replace")).hexdigest()[:8]
+    item_id = f"publish_guard_low_confidence_{safe_task_id}_{digest}"
+    excerpt = " ".join((article_text or "").strip().split())[:1000]
+    prompt = (
+        "Guard flagged low-confidence pass.\n\n"
+        f"Confidence: {confidence:.2f}\n"
+        f"Threshold: {threshold:.2f}\n"
+        f"Platform: {platform}\n"
+        f"Title: {title or '(untitled)'}\n"
+        f"Sender: {sender}\n"
+        f"Task: {task_id}\n\n"
+        "Publish anyway? Reply `go` to publish manually, or `no-go` to cancel.\n\n"
+        f"Excerpt:\n{excerpt}"
+    )
+    try:
+        from bridge import Mira
+
+        bridge = Mira(MIRA_DIR, user_id="default")
+        if bridge.item_exists(item_id):
+            bridge.append_message(item_id, "agent", prompt)
+        else:
+            bridge.create_discussion(
+                item_id,
+                "Publish decision requested",
+                prompt,
+                sender="agent",
+                tags=["mira", "guard", "publish", "needs-decision"],
+            )
+    except Exception as exc:
+        log.error("low-confidence publish prompt failed: %s", exc)
+        return (
+            "NEEDS_APPROVAL: Guard flagged low-confidence publish pass "
+            f"(confidence={confidence:.2f}, threshold={threshold:.2f}); prompt delivery failed: {exc}"
+        )
+    return (
+        "NEEDS_APPROVAL: Guard flagged low-confidence publish pass "
+        f"(confidence={confidence:.2f}, threshold={threshold:.2f}); sent go/no-go prompt."
+    )
 
 
 _TRENDING_KEYWORD_RE = re.compile(
@@ -360,9 +579,11 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
     if cached:
         plan = cached.get("plan", {})
         article_text = cached.get("article_text", "")
+        preflight_result = cached.get("preflight", {"passed": True, "summary": "passed"})
     else:
         plan = _plan_publish(content)
         article_text = ""
+        preflight_result = {"passed": None, "summary": "not run by socialmedia preflight hook"}
     if not plan:
         return None
 
@@ -385,7 +606,22 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
     # This is the code-level enforcement of CLAUDE.md: 发布前必须确认内容.
     # Guards against pipeline errors (e.g., podcast agent returns error string,
     # which gets chained to publish agent and published verbatim).
-    is_error, error_reason = _content_looks_like_error(article_text)
+    is_error, error_reason, guard_confidence = _content_error_guard_verdict(article_text)
+    high_risk_claim_warning = _high_risk_claim_warning(article_text)
+    content_guard_results = {
+        "content_looks_like_error": {
+            "passed": not is_error,
+            "reason": error_reason,
+            "confidence": guard_confidence,
+        }
+    }
+    if high_risk_claim_warning:
+        content_guard_results["content_looks_like_error"]["warning"] = high_risk_claim_warning
+        log.warning(
+            "HIGH_RISK_CLAIMS_DETECTED categories=%s count=%s",
+            high_risk_claim_warning["categories"],
+            len(high_risk_claim_warning["flagged_claims"]),
+        )
     _log_guard("content_looks_like_error", "catch" if is_error else "pass", article_text)
     if is_error:
         survival_context = {"sender": sender, "task_id": task_id, **kwargs}
@@ -416,19 +652,20 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
                 f"内容预览（前 150 字符）：{article_text[:150]!r}\n\n"
                 f"请检查上一步是否成功完成，确认内容正确后再重试。"
             )
-            log.warning(
-                "GUARD_FIRED",
-                extra={
-                    "guard": "content_looks_like_error",
-                    "agent": sender,
-                    "task_id": task_id,
-                    "reason": error_reason,
-                },
+            _log_guard_fired("content_looks_like_error", sender, task_id, error_reason)
+            _append_scaffolding_rejection(
+                sender,
+                task_id,
+                "content_looks_like_error",
+                error_reason,
+                article_text,
             )
             (workspace / "output.md").write_text(msg, encoding="utf-8")
             return None  # None → task_worker marks as status="error"
 
-    if _content_looks_like_unethical_context(article_text):
+    unethical_context = _content_looks_like_unethical_context(article_text)
+    content_guard_results["content_looks_like_unethical_context"] = {"passed": not unethical_context}
+    if unethical_context:
         reason = "content suggests surveillance, thought-monitoring, or student-scoring use context"
         _chash = hashlib.sha1(article_text.encode("utf-8", errors="replace")).hexdigest()[:8]
         _log_guard("content_looks_like_unethical_context", "catch", article_text)
@@ -457,6 +694,10 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
 
     judgment_rationale = _judgment_outsourcing_rationale(article_text)
     is_judgment_outsourcing = _content_looks_like_judgment_outsourcing(article_text)
+    content_guard_results["content_looks_like_judgment_outsourcing"] = {
+        "passed": not is_judgment_outsourcing,
+        "reason": "" if not is_judgment_outsourcing else judgment_rationale,
+    }
     _log_guard(
         "content_looks_like_judgment_outsourcing",
         "catch" if is_judgment_outsourcing else "pass",
@@ -477,19 +718,15 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
         )
         write_scaffold_rejection(sender, "publish_handle", judgment_rationale, article_text)
         msg = f"🚫 发布被拒绝：{judgment_rationale}"
-        log.warning(
-            "GUARD_FIRED",
-            extra={
-                "guard": "content_looks_like_judgment_outsourcing",
-                "agent": sender,
-                "task_id": task_id,
-                "reason": judgment_rationale,
-            },
-        )
+        _log_guard_fired("content_looks_like_judgment_outsourcing", sender, task_id, judgment_rationale)
         (workspace / "output.md").write_text(msg, encoding="utf-8")
         return None
 
     is_suspicious, smell_reasons = _content_smells_like_hallucination(article_text)
+    content_guard_results["content_smells_like_hallucination"] = {
+        "passed": not is_suspicious,
+        "reasons": smell_reasons,
+    }
     if is_suspicious:
         log.warning("Content smells like hallucination: %s", smell_reasons)
         if STRICT_HALLUCINATION_GUARD:
@@ -498,6 +735,19 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
             msg = f"🚫 发布被拒绝：{reason}"
             (workspace / "output.md").write_text(msg, encoding="utf-8")
             return None
+
+    if guard_confidence < PUBLISH_AUTO_CONFIDENCE_THRESHOLD:
+        result = _route_low_confidence_publish_prompt(
+            task_id=task_id,
+            sender=sender,
+            platform=platform,
+            title=title,
+            article_text=article_text,
+            confidence=guard_confidence,
+            threshold=PUBLISH_AUTO_CONFIDENCE_THRESHOLD,
+        )
+        (workspace / "output.md").write_text(result[len("NEEDS_APPROVAL:") :].strip(), encoding="utf-8")
+        return result
 
     _words = len(article_text.split())
     if _words < 200 or "\n\n" not in article_text:
@@ -520,22 +770,49 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
         from substack import publish_to_substack
 
         _write_publish_audit(sender, "publish_article", platform, title, judgment_rationale)
+        audit_context = {
+            "triggering_agent_name": sender,
+            "dispatch_path": _dispatch_path(sender),
+            "autonomous": sender.lower() not in _KNOWN_HUMAN_SENDERS,
+            "logged": True,
+        }
         log.info("Auto-publishing manual request '%s' to Substack", title)
-        result = publish_to_substack(
+        result = _publish_to_substack_with_audit(
+            publish_to_substack,
             title=title,
             subtitle=subtitle,
             article_text=article_text,
             workspace=workspace,
+            audit_context=audit_context,
         )
     elif platform == "substack_note":
         _write_publish_audit(sender, "publish_note", platform, title, judgment_rationale)
-        result = _handle_note(content, article_text, workspace)
+        audit_context = {
+            "triggering_agent_name": sender,
+            "dispatch_path": _dispatch_path(sender),
+            "autonomous": sender.lower() not in _KNOWN_HUMAN_SENDERS,
+            "logged": True,
+        }
+        result = _handle_note(content, article_text, workspace, audit_context=audit_context)
     else:
         result = f"平台 '{platform}' 暂不支持"
 
-    if (platform == "substack" and result.startswith("已发布到 Substack!")) or (
-        platform == "substack_note" and result.startswith(("已发布 Note", "## Notes 补发结果"))
-    ):
+    state_change_succeeded = (
+        platform == "substack" and isinstance(result, str) and result.startswith("已发布到 Substack!")
+    ) or (platform == "substack_note" and isinstance(result, str) and result.startswith(("已发布 Note", "## Notes 补发结果")))
+    if state_change_succeeded:
+        log_permacomputing_audit(
+            "publish" if platform == "substack" else "publish_note",
+            {
+                "agent_name": sender,
+                "article_title": _audit_article_title(title, article_text),
+                "reasoning_summary": _reasoning_summary(article_text),
+                "content_guard": content_guard_results,
+                "preflight": preflight_result,
+                "platform": platform,
+                "result": result[:500],
+            },
+        )
         result += _PROXY_DRIFT_CHECK
 
     actual_result = result[len("NEEDS_APPROVAL:") :] if result.startswith("NEEDS_APPROVAL:") else result
@@ -559,7 +836,14 @@ def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_i
     if not article_text:
         return False, f"PREFLIGHT BLOCKED [publish]: 找不到要发布的内容: {source}"
 
-    is_error, error_reason = _content_looks_like_error(article_text)
+    is_error, error_reason, _guard_confidence = _content_error_guard_verdict(article_text)
+    high_risk_claim_warning = _high_risk_claim_warning(article_text)
+    if high_risk_claim_warning:
+        log.warning(
+            "HIGH_RISK_CLAIMS_DETECTED categories=%s count=%s",
+            high_risk_claim_warning["categories"],
+            len(high_risk_claim_warning["flagged_claims"]),
+        )
     _log_guard("content_looks_like_error", "catch" if is_error else "pass", article_text)
     if is_error:
         survival_context = {"sender": sender, "task_id": task_id, **kwargs}
@@ -585,14 +869,13 @@ def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_i
                 content_hash=_chash,
             )
             write_scaffold_rejection(sender, "publish_preflight", error_reason, article_text)
-            log.warning(
-                "GUARD_FIRED",
-                extra={
-                    "guard": "content_looks_like_error",
-                    "agent": sender,
-                    "task_id": task_id,
-                    "reason": error_reason,
-                },
+            _log_guard_fired("content_looks_like_error", sender, task_id, error_reason)
+            _append_scaffolding_rejection(
+                sender,
+                task_id,
+                "content_looks_like_error",
+                error_reason,
+                article_text,
             )
             return False, f"PREFLIGHT BLOCKED [publish]: {error_reason}"
 
@@ -642,15 +925,7 @@ def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_i
             "content_looks_like_judgment_outsourcing", judgment_rationale, len(article_text), sender
         )
         write_scaffold_rejection(sender, "publish_preflight", judgment_rationale, article_text)
-        log.warning(
-            "GUARD_FIRED",
-            extra={
-                "guard": "content_looks_like_judgment_outsourcing",
-                "agent": sender,
-                "task_id": task_id,
-                "reason": judgment_rationale,
-            },
-        )
+        _log_guard_fired("content_looks_like_judgment_outsourcing", sender, task_id, judgment_rationale)
         return False, f"PREFLIGHT BLOCKED [publish]: {judgment_rationale}"
 
     is_suspicious, smell_reasons = _content_smells_like_hallucination(article_text)
@@ -670,11 +945,21 @@ def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_i
             "content": article_text,
             "platform": platform,
             "channel": platform,
+            "agent_id": sender,
+            "task_id": task_id,
+            "pipeline_stage": "preflight_check",
         },
     )
     _log_guard("preflight_check", "pass" if result.passed else "catch", article_text)
     if result.passed:
-        _write_preflight_cache(workspace, plan, article_text)
+        preflight_result = {
+            "passed": True,
+            "summary": result.summary(),
+            "action_type": action_type,
+        }
+        if high_risk_claim_warning:
+            preflight_result["warnings"] = [high_risk_claim_warning]
+        _write_preflight_cache(workspace, plan, article_text, preflight_result)
         return True, ""
     _chash = hashlib.sha1(article_text.encode("utf-8", errors="replace")).hexdigest()[:8]
     log_scaffolding_audit(
@@ -687,17 +972,21 @@ def preflight(workspace: Path, task_id: str, content: str, sender: str, thread_i
     )
     _append_scaffolding_catch("preflight_check", result.summary(), len(article_text), sender)
     write_scaffold_rejection(sender, "preflight_check", result.summary(), article_text)
-    log.warning(
-        "GUARD_FIRED",
-        extra={"guard": "preflight_check", "agent": sender, "task_id": task_id, "reason": result.summary()},
-    )
+    _log_guard_fired("preflight_check", sender, task_id, result.summary())
+    _append_scaffolding_rejection(sender, task_id, "preflight_check", result.summary(), article_text)
     return False, result.summary()
 
 
-def _write_preflight_cache(workspace: Path, plan: dict, article_text: str) -> None:
+def _write_preflight_cache(
+    workspace: Path, plan: dict, article_text: str, preflight_result: dict | None = None
+) -> None:
     cache_file = workspace / _PREFLIGHT_CACHE
     cache_file.write_text(
-        json.dumps({"plan": plan, "article_text": article_text}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {"plan": plan, "article_text": article_text, "preflight": preflight_result or {}},
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
@@ -717,7 +1006,13 @@ def _load_preflight_cache(workspace: Path) -> dict | None:
     return data
 
 
-def _handle_note(content: str, inline_text: str | None, workspace: Path) -> str:
+def _handle_note(
+    content: str,
+    inline_text: str | None,
+    workspace: Path,
+    *,
+    audit_context: dict | None = None,
+) -> str:
     """Handle a Substack Notes publish request.
 
     Supports:
@@ -745,7 +1040,7 @@ def _handle_note(content: str, inline_text: str | None, workspace: Path) -> str:
 
     # Otherwise post the inline text as a Note
     if inline_text and len(inline_text) > 10:
-        result = post_note(inline_text)
+        result = post_note(inline_text, audit_context=audit_context)
         if result:
             return f"已发布 Note (id={result.get('id')}): {inline_text[:100]}"
         return "Note 发布失败"

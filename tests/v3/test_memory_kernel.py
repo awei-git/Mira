@@ -74,6 +74,43 @@ def test_consolidator_applies_relationship_and_skill_trace():
     assert "updated relationship:wa" in result.applied
 
 
+def test_consolidator_preserves_hypothesis_experiment_metadata():
+    kernel = MemoryKernel()
+    delta = MemoryDelta(
+        pipeline="self_evolution",
+        run_id="run_hypothesis",
+        memory_class="self_modification",
+        what_happened="formed experiment hypothesis",
+        what_mattered="dashboard review needs experiment controls",
+        what_changed="future self-evolution review can inspect windows and rollback",
+        actions=[
+            MemoryAction(
+                "form_hypothesis",
+                "hypothesis:self_evolution_pack_coverage",
+                "Executable V3.1 self-evolution packs reduce unreviewed implementation drift.",
+                metadata={
+                    "baseline_window": "prior week",
+                    "test_window": "current canary",
+                    "min_n": "3",
+                    "current_metric": "2/3 canary runs",
+                    "rollback_plan": "rollback on hard gate failure",
+                    "evidence_ref": "run_hypothesis",
+                },
+            )
+        ],
+    )
+
+    MemoryConsolidator().apply_delta(kernel, delta)
+
+    hypothesis = kernel.hypothesis("hypothesis:self_evolution_pack_coverage")
+    assert hypothesis is not None
+    assert hypothesis.baseline_window == "prior week"
+    assert hypothesis.test_window == "current canary"
+    assert hypothesis.min_n == 3
+    assert hypothesis.current_metric == "2/3 canary runs"
+    assert hypothesis.rollback_plan == "rollback on hard gate failure"
+
+
 def test_json_and_sqlite_kernel_stores_round_trip(tmp_path: Path):
     kernel = MemoryKernel()
     kernel.relationship_model.notes.append("WA prefers concise output.")

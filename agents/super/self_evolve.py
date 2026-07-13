@@ -90,6 +90,28 @@ _RELEVANCE_KEYWORDS = [
 _MAX_AUTO_IMPLEMENTS_PER_DAY = 1
 
 
+def _self_evolution_model() -> str:
+    """Return the dashboard-configured model route for self-evolution."""
+    assignment_path = _MIRA_ROOT / "data" / "v3" / "model_assignments.json"
+    try:
+        overrides = json.loads(assignment_path.read_text(encoding="utf-8")) if assignment_path.exists() else {}
+        row = overrides.get("self_evolution") if isinstance(overrides, dict) else None
+        if isinstance(row, dict) and row.get("model"):
+            return str(row["model"])
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+
+    try:
+        from mira.configuration import default_v3_config
+
+        for assignment in default_v3_config().models:
+            if assignment.agent == "self_evolution":
+                return assignment.model
+    except Exception:
+        pass
+    return "codex"
+
+
 # ---------------------------------------------------------------------------
 # Step 1: Harvest today's reading notes
 # ---------------------------------------------------------------------------
@@ -212,11 +234,11 @@ def _load_architecture_context() -> str:
 
 
 def compare_note_to_architecture(note: dict, arch_context: str) -> dict | None:
-    """Use claude_think to compare a reading note against Mira's architecture.
+    """Use the configured self-evolution model to compare a note against Mira's architecture.
 
     Returns a proposal dict or None if no improvement is identified.
     """
-    from llm import claude_think
+    from llm import model_think
 
     prompt = f"""You are Mira's self-evolution module. Your job: read a reading note and compare it to Mira's own architecture to find a specific, concrete improvement.
 
@@ -234,6 +256,7 @@ Title: {note['title']}
    - What the change is (be specific: add a check, change a parameter, add a config option, etc.)
    - Why this improves Mira (cite the reading note's insight)
    - Risk level: "low" (config tweak, adding a check, parameter adjustment), "medium" (new function, changed logic), "high" (new agent, architecture change, changed data flow)
+    - If the proposal uses solver disagreement, variance, diversity, or divergence as evidence, treat it only as a discovery proxy. The proposal must specify the downstream objective it improves, such as verified task completion, fewer crashes, better routing, better human feedback, or better reward distribution. Reject proposals whose only benefit is increasing disagreement/diversity. Include an anti-gaming rationale explaining why this change will not merely optimize the divergence proxy.
 3. If no clear improvement: say "NO_IMPROVEMENT" and briefly explain why.
 
 Respond in this exact JSON format (no markdown fences):
@@ -248,7 +271,7 @@ Respond in this exact JSON format (no markdown fences):
 }}"""
 
     try:
-        response = claude_think(prompt, timeout=120, tier="light")
+        response = model_think(prompt, model_name=_self_evolution_model(), timeout=120)
         if not response or "NO_IMPROVEMENT" in response:
             return None
 
@@ -305,21 +328,80 @@ def save_proposal(proposal: dict, date: str) -> Path:
     return filepath
 
 
+def _touches_evaluation_scaffold(proposal: dict) -> bool:
+    """Return whether a proposal affects evaluation or self-evolution scaffolding."""
+    scaffold_markers = (
+        "tests/",
+        "agents/evaluator/",
+        "calibration",
+        "proxy_drift",
+        "self_evolve.py",
+        ".output_quality",
+        "runtime/verifiers.py",
+    )
+    for path in proposal.get("files_affected", []) or []:
+        normalized = str(path).replace("\\", "/").lower()
+        if any(marker in normalized for marker in scaffold_markers):
+            return True
+    return False
+
+
+def _has_independent_behavioral_verification(proposal: dict) -> bool:
+    """Return whether a proposal names concrete verification outside evaluator scaffolding."""
+    text = " ".join(
+        str(proposal.get(field, "")) for field in ("diff_description", "description") if proposal.get(field)
+    ).lower()
+    if not text:
+        return False
+
+    patterns = (
+        r"\bruntime trace assertion\b",
+        r"\bruntime trace\b.{0,80}\b(assert|check|verify|test)\b",
+        r"\b(assert|check|verify|test)\b.{0,80}\bruntime trace\b",
+        r"\buser[- ]visible output\b.{0,80}\b(assert|check|verify|test)\b",
+        r"\b(assert|check|verify|test)\b.{0,80}\buser[- ]visible output\b",
+        r"\btask workspace existence\b.{0,80}\b(assert|check|verify|test)\b",
+        r"\b(assert|check|verify|test)\b.{0,80}\btask workspace existence\b",
+        r"\bintegration test\b.{0,120}\b(non[- ]evaluator|non[- ]evaluation|agents/(?!evaluator/)|runtime/(?!verifiers\.py)|lib/|web/|scripts/)\b",
+    )
+    negation_pattern = re.compile(r"\b(no|not|without|missing|lack|lacks|lacking)\b.{0,40}$")
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            prefix = text[max(0, match.start() - 50) : match.start()]
+            if not negation_pattern.search(prefix):
+                return True
+    return False
+
+
 def _enqueue_backlog_action(proposal: dict, proposal_path: Path):
     """Mirror actionable proposals into the governed action backlog."""
     try:
         from ops.backlog import ActionBacklog, ActionItem
 
         risk = str(proposal.get("risk_level", "medium"))
+        status = "approved" if risk == "low" else "proposed"
+        priority = "high" if risk == "low" else "medium"
+        executor = "self_evolve_proposal" if risk == "low" else ""
+        description = proposal.get("description", "")[:500]
+        if (
+            risk == "low"
+            and _touches_evaluation_scaffold(proposal)
+            and not _has_independent_behavioral_verification(proposal)
+        ):
+            status = "proposed"
+            priority = "medium"
+            executor = ""
+            reason = "requires manual review: evaluation scaffold change without independent behavioral verification"
+            description = f"{description}\n\n{reason}" if description else reason
         backlog = ActionBacklog()
         backlog.add(
             ActionItem(
                 title=proposal.get("title", proposal_path.stem),
-                description=proposal.get("description", "")[:500],
+                description=description,
                 source="self_evolve",
-                status="approved" if risk == "low" else "proposed",
-                priority="high" if risk == "low" else "medium",
-                executor="self_evolve_proposal" if risk == "low" else "",
+                status=status,
+                priority=priority,
+                executor=executor,
                 payload={"proposal_path": str(proposal_path)},
             )
         )
@@ -625,7 +707,12 @@ def run_evolve(dry_run: bool = False) -> dict:
     # Step 4: Auto-implement low-risk (max 1 per day)
     implementations = []
     if not dry_run:
-        low_risk = [(p, path) for p, path in zip(proposals, saved_paths) if p.get("risk_level") == "low"]
+        low_risk = [
+            (p, path)
+            for p, path in zip(proposals, saved_paths)
+            if p.get("risk_level") == "low"
+            and not (_touches_evaluation_scaffold(p) and not _has_independent_behavioral_verification(p))
+        ]
         if low_risk:
             # Pick the first low-risk proposal
             proposal, path = low_risk[0]
@@ -634,7 +721,7 @@ def run_evolve(dry_run: bool = False) -> dict:
             implementations.append(impl_result)
             log.info("Implementation result: %s", impl_result)
         else:
-            log.info("No low-risk proposals — skipping auto-implementation")
+            log.info("No auto-eligible low-risk proposals — skipping auto-implementation")
     else:
         log.info("Dry run — skipping auto-implementation")
 
@@ -648,7 +735,7 @@ def run_evolve(dry_run: bool = False) -> dict:
 
     state = load_state()
     state[f"self_evolve_{today}"] = datetime.now().isoformat()
-    state[f"self_evolve_{today}_actor"] = "self-evolve/claude-think"
+    state[f"self_evolve_{today}_actor"] = f"self-evolve/{_self_evolution_model()}"
     save_state(state)
 
     log.info("=== Self-Evolution complete: %d proposals, %d implementations ===", len(proposals), len(implementations))

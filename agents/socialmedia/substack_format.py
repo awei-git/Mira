@@ -10,9 +10,10 @@ import logging
 import os
 import re
 import tempfile
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
-import urllib.error
 from pathlib import Path
 
 log = logging.getLogger("publisher.substack")
@@ -127,6 +128,16 @@ def _md_to_html_local(markdown_text: str) -> str:
             out.append("<hr />")
             continue
 
+        m_img = _re.match(r"^!\[([^\]]*)\]\(([^)]+)\)$", stripped)
+        if m_img:
+            flush_paragraph()
+            close_list()
+            close_blockquote()
+            alt = _html_mod.escape(m_img.group(1).strip(), quote=True)
+            src = _html_mod.escape(m_img.group(2).strip(), quote=True)
+            out.append(f'<img src="{src}" alt="{alt}" />')
+            continue
+
         if stripped.startswith("# "):
             flush_paragraph()
             close_list()
@@ -230,11 +241,23 @@ def _html_to_prosemirror(html: str) -> dict:
 
     content = []
     # Split by top-level tags
-    tag_pattern = _re.compile(r"<(h[1-6]|p|blockquote|ul|ol|hr)(?:\s[^>]*)?>(.+?)</\1>|<hr\s*/?>", _re.DOTALL)
+    tag_pattern = _re.compile(
+        r"<(h[1-6]|p|blockquote|ul|ol|hr)(?:\s[^>]*)?>(.+?)</\1>|<img\s+([^>]*?)\s*/?>|<hr\s*/?>",
+        _re.DOTALL,
+    )
 
     for match in tag_pattern.finditer(html):
         if match.group(0).startswith("<hr"):
             content.append({"type": "horizontal_rule"})
+            continue
+        if match.group(0).startswith("<img"):
+            attrs_text = match.group(3) or ""
+            src_m = _re.search(r'src="([^"]*)"', attrs_text)
+            alt_m = _re.search(r'alt="([^"]*)"', attrs_text)
+            src = src_m.group(1) if src_m else ""
+            alt = alt_m.group(1) if alt_m else ""
+            if src:
+                content.append({"type": "image", "attrs": {"src": src, "alt": alt, "title": None}})
             continue
         tag = match.group(1)
         inner = match.group(2).strip()
@@ -342,6 +365,18 @@ def _get_cover_image(title: str, article_text: str, workspace: Path) -> str | No
     Priority: personal photos > DALL-E.
     Returns local file path or None.
     """
+    for candidate in (
+        workspace / "cover.png",
+        workspace / "cover.jpg",
+        workspace / "cover.jpeg",
+    ):
+        if candidate.exists():
+            return str(candidate)
+
+    hero_images = sorted(workspace.glob("*hero*.png")) + sorted(workspace.glob("*hero*.jpg"))
+    if hero_images:
+        return str(hero_images[0])
+
     # Always try personal photo library first
     personal = _pick_personal_cover()
     if personal:
@@ -516,32 +551,46 @@ Output ONLY the DALL-E prompt, nothing else. Keep it under 150 words."""
 
 def _upload_image_to_substack(image_path: str, subdomain: str, cookie: str) -> str | None:
     """Upload a local image to Substack. Returns the hosted image URL."""
-    try:
-        with open(image_path, "rb") as f:
-            image_bytes = f.read()
+    with open(image_path, "rb") as f:
+        image_bytes = f.read()
 
-        b64_image = b"data:image/png;base64," + base64.b64encode(image_bytes)
+    b64_image = b"data:image/png;base64," + base64.b64encode(image_bytes)
+    payload = urllib.parse.urlencode({"image": b64_image.decode()}).encode("utf-8")
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Cookie": f"substack.sid={cookie}",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    }
 
-        # Substack image upload endpoint
-        req = urllib.request.Request(
-            f"https://{subdomain}.substack.com/api/v1/image",
-            data=urllib.parse.urlencode({"image": b64_image.decode()}).encode("utf-8"),
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Cookie": f"substack.sid={cookie}",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            },
-            method="POST",
-        )
+    for attempt in range(1, 4):
+        try:
+            req = urllib.request.Request(
+                f"https://{subdomain}.substack.com/api/v1/image",
+                data=payload,
+                headers=headers,
+                method="POST",
+            )
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
 
-        image_url = result.get("url", "")
-        if image_url:
-            log.info("Uploaded image to Substack: %s", image_url[:80])
-        return image_url or None
+            image_url = result.get("url", "")
+            if image_url:
+                log.info("Uploaded image to Substack: %s", image_url[:80])
+            return image_url or None
 
-    except Exception as e:
-        log.error("Substack image upload failed: %s", e)
-        return None
+        except urllib.error.HTTPError as e:
+            if e.code in {429, 500, 502, 503, 504} and attempt < 3:
+                log.warning("Substack image upload transient HTTP %d; retry %d/3", e.code, attempt + 1)
+                time.sleep(attempt * 2)
+                continue
+            log.error("Substack image upload failed: HTTP %d: %s", e.code, e.reason)
+            return None
+        except Exception as e:
+            if attempt < 3:
+                log.warning("Substack image upload failed transiently; retry %d/3: %s", attempt + 1, e)
+                time.sleep(attempt * 2)
+                continue
+            log.error("Substack image upload failed: %s", e)
+            return None
+    return None

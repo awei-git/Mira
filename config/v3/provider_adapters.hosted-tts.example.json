@@ -1,0 +1,15 @@
+{
+  "provider_effect_adapters": {
+    "tts": {
+      "audio_base64_field": "audio_base64",
+      "audio_url_field": "audio_url",
+      "bearer_token_env": "MIRA_TTS_ADAPTER_TOKEN",
+      "endpoint_template_env": "MIRA_TTS_ADAPTER_ENDPOINT",
+      "method": "POST",
+      "payload_path": [
+        "data"
+      ],
+      "type": "hosted_tts_http"
+    }
+  }
+}

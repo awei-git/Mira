@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib.util
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -21,8 +23,8 @@ def _make_client(
 ) -> TestClient:
     bridge = tmp_path / "bridge"
     users_dir = bridge / "users"
-    (users_dir / "ang" / "items").mkdir(parents=True)
-    (users_dir / "ang" / "commands").mkdir(parents=True)
+    (users_dir / "default" / "items").mkdir(parents=True)
+    (users_dir / "default" / "commands").mkdir(parents=True)
     (users_dir / "liquan" / "items").mkdir(parents=True)
     icloud = tmp_path / "icloud"
     bridge.mkdir(exist_ok=True)
@@ -35,15 +37,60 @@ def _make_client(
     monkeypatch.setattr(server, "_ICLOUD_ARTIFACTS", icloud)
     monkeypatch.setattr(server, "WEBGUI_TOKEN", token)
     monkeypatch.setattr(server, "WEBGUI_ALLOW_LOOPBACK_WITHOUT_TOKEN", allow_loopback)
-    monkeypatch.setattr(server, "get_known_user_ids", lambda: ["ang", "liquan"])
-    monkeypatch.setattr(server, "is_known_user", lambda user_id: user_id in {"ang", "liquan"})
+    monkeypatch.setattr(server, "get_known_user_ids", lambda: ["default", "liquan"])
+    monkeypatch.setattr(server, "is_known_user", lambda user_id: user_id in {"default", "liquan"})
     monkeypatch.setattr(server, "get_user_config", lambda user_id: {"display_name": user_id.title()})
     server._rate_buckets.clear()
     return TestClient(server.app)
 
 
-def _command_files(tmp_path: Path, user_id: str = "ang") -> list[Path]:
+def _command_files(tmp_path: Path, user_id: str = "default") -> list[Path]:
     return sorted((tmp_path / "bridge" / "users" / user_id / "commands").glob("*.json"))
+
+
+def test_writing_pipeline_outcome_counts_checks_and_advancements(tmp_path: Path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "bg-writing-pipeline.log").write_text(
+        "\n".join(
+            [
+                "2026-05-15 23:58:00,000 [INFO] Canonical writing pipeline advanced 9 project(s)",
+                "2026-05-16 08:00:00,000 [INFO] Canonical writing pipeline advanced 0 project(s)",
+                "2026-05-16 09:00:00,000 [INFO] Canonical writing pipeline advanced 2 project(s)",
+                "2026-05-16 10:00:00,000 [INFO] unrelated",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    outcome = server._writing_pipeline_outcome(logs, "2026-05-16")
+
+    assert outcome["checks"] == 2
+    assert outcome["advanced"] == 2
+    assert outcome["last_checked_at"] == "2026-05-16 09:00:00"
+    assert outcome["last_advanced_at"] == "2026-05-16 09:00:00"
+    assert outcome["summary"] == "advanced 2 projects across 2 checks"
+
+
+def test_writing_pipeline_outcome_explains_noop_checks(tmp_path: Path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "bg-writing-pipeline.log").write_text(
+        "\n".join(
+            [
+                "2026-05-16 08:00:00,000 [INFO] Canonical writing pipeline advanced 0 project(s)",
+                "2026-05-16 08:01:00,000 [INFO] Canonical writing pipeline advanced 0 project(s)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    outcome = server._writing_pipeline_outcome(logs, "2026-05-16")
+
+    assert outcome["checks"] == 2
+    assert outcome["advanced"] == 0
+    assert outcome["summary"] == "advanced 0 projects across 2 checks"
+    assert "scheduler checks, not completed writing" in outcome["action"]
 
 
 def test_web_api_rejects_unknown_user(monkeypatch, tmp_path: Path):
@@ -55,14 +102,14 @@ def test_web_api_rejects_unknown_user(monkeypatch, tmp_path: Path):
 
 def test_web_api_allows_loopback_without_token(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path, token="", allow_loopback=True)
-    resp = client.get("/api/ang/items")
+    resp = client.get("/api/default/items")
     assert resp.status_code == 200
     assert resp.json() == []
 
 
 def test_concurrent_todo_deletes_keep_json_valid(monkeypatch, tmp_path: Path):
     _make_client(monkeypatch, tmp_path)
-    path = tmp_path / "bridge" / "users" / "ang" / "todos.json"
+    path = tmp_path / "bridge" / "users" / "default" / "todos.json"
     path.write_text(
         json.dumps(
             [
@@ -75,7 +122,7 @@ def test_concurrent_todo_deletes_keep_json_valid(monkeypatch, tmp_path: Path):
     )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        list(pool.map(lambda todo_id: server.delete_todo("ang", todo_id), ["todo_a", "todo_b"]))
+        list(pool.map(lambda todo_id: server.delete_todo("default", todo_id), ["todo_a", "todo_b"]))
 
     todos = json.loads(path.read_text(encoding="utf-8"))
     assert [t["id"] for t in todos] == ["todo_c"]
@@ -83,8 +130,8 @@ def test_concurrent_todo_deletes_keep_json_valid(monkeypatch, tmp_path: Path):
 
 def test_web_api_requires_token_when_configured(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path, token="secret-token", allow_loopback=True)
-    blocked = client.get("/api/ang/items")
-    allowed = client.get("/api/ang/items", headers={"X-Mira-Token": "secret-token"})
+    blocked = client.get("/api/default/items")
+    allowed = client.get("/api/default/items", headers={"X-Mira-Token": "secret-token"})
     assert blocked.status_code == 401
     assert allowed.status_code == 200
 
@@ -133,25 +180,93 @@ def test_read_rate_limit_does_not_block_user_reply(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
     monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
 
-    assert client.get("/api/ang/items").status_code == 200
-    assert client.get("/api/ang/items").status_code == 429
+    assert client.get("/api/default/items").status_code == 200
+    assert client.get("/api/default/items").status_code == 429
 
-    resp = client.post("/api/ang/tasks/feed_chat_20260504/reply", json={"content": "还在吗"})
+    resp = client.post("/api/default/tasks/feed_chat_20260504/reply", json={"content": "还在吗"})
 
     assert resp.status_code == 200
     assert calls["append_user_reply"]["task_id"] == "feed_chat_20260504"
     assert calls["append_user_reply"]["content"] == "还在吗"
 
 
+def test_task_reply_response_trims_large_thread_history(monkeypatch, tmp_path: Path):
+    import control.db as control_db
+    import control.repository as control_repository
+
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
+    monkeypatch.setattr(server, "ICLOUD_COMMAND_FALLBACK_ENABLED", False)
+
+    class FakeTx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def append_user_reply(self, **kwargs):
+            messages = [
+                {
+                    "id": f"m{i}",
+                    "sender": "agent" if i % 2 else "default",
+                    "content": f"message {i}",
+                    "timestamp": f"2026-07-09T02:{i:02d}:00Z",
+                    "kind": "text",
+                }
+                for i in range(25)
+            ]
+            messages.append(
+                {
+                    "id": kwargs["message_id"],
+                    "sender": kwargs["sender"],
+                    "content": kwargs["content"],
+                    "timestamp": kwargs["created_at"],
+                    "kind": "text",
+                }
+            )
+            return {
+                "id": kwargs["task_id"],
+                "type": "discussion",
+                "title": "Mira",
+                "status": "queued",
+                "tags": ["daily-collab"],
+                "origin": "user",
+                "pinned": True,
+                "quick": False,
+                "parent_id": None,
+                "created_at": "2026-07-09T02:00:00Z",
+                "updated_at": kwargs["created_at"],
+                "messages": messages,
+                "error": None,
+                "result_path": None,
+            }
+
+    monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
+
+    resp = client.post("/api/default/tasks/disc_daily_collab/reply", json={"content": "hello"})
+
+    assert resp.status_code == 200
+    messages = resp.json()["item"]["messages"]
+    assert len(messages) == server.WRITE_RESPONSE_MESSAGES
+    assert messages[0]["id"] == "m6"
+    assert messages[-1]["content"] == "hello"
+
+
 def test_liveness_endpoints_bypass_read_rate_limit(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
     monkeypatch.setattr(server, "_READ_RATE_LIMIT", 1)
 
-    assert client.get("/api/ang/items").status_code == 200
-    assert client.get("/api/ang/items").status_code == 429
+    assert client.get("/api/default/items").status_code == 200
+    assert client.get("/api/default/items").status_code == 429
 
     assert client.get("/api/heartbeat").status_code == 200
-    assert client.get("/api/ang/manifest").status_code == 200
+    assert client.get("/api/default/manifest").status_code == 200
 
 
 def test_profiles_are_filtered_to_known_users(monkeypatch, tmp_path: Path):
@@ -160,14 +275,14 @@ def test_profiles_are_filtered_to_known_users(monkeypatch, tmp_path: Path):
         tmp_path,
         profiles={
             "profiles": [
-                {"id": "ang", "display_name": "Ang", "agent_name": "Mira"},
+                {"id": "default", "display_name": "Default User", "agent_name": "Mira"},
                 {"id": "intruder", "display_name": "Intruder", "agent_name": "Mallory"},
             ]
         },
     )
     resp = client.get("/api/profiles")
     assert resp.status_code == 200
-    assert resp.json() == {"profiles": [{"id": "ang", "display_name": "Ang", "agent_name": "Mira"}]}
+    assert resp.json() == {"profiles": [{"id": "default", "display_name": "Default User", "agent_name": "Mira"}]}
 
 
 def test_heartbeat_top_level_status_uses_task_manager(monkeypatch, tmp_path: Path):
@@ -210,14 +325,676 @@ def test_heartbeat_top_level_status_uses_task_manager(monkeypatch, tmp_path: Pat
 def test_v3_dashboard_endpoint_returns_config(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
 
-    resp = client.get("/api/ang/v3")
+    resp = client.get("/api/default/v3")
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["dashboard"]["hard_policy_count"] == 45
+    assert body["dashboard"]["hard_policy_count"] == 43
     assert body["dashboard"]["soft_policy_count"] == 9
-    assert len(body["dashboard"]["active_pipelines"]) == 20
+    assert len(body["dashboard"]["active_pipelines"]) == 21
     assert body["config"]["policy_parameters"]["max_concurrent_pipelines"] == 5
+
+
+def test_backend_dashboard_endpoint_returns_technical_snapshot(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+
+    resp = client.get("/api/default/backend-dashboard")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["profile"]["id"] == "default"
+    assert body["service"]["web"]["port"] == server.WEBGUI_PORT
+    assert body["policies"]["hard"] == 43
+    assert body["policies"]["soft"] == 9
+    assert len(body["pipelines"]) == 21
+    allowed_statuses = {"green", "red", "yellow", "blue", "gray"}
+    for pipeline in body["pipelines"]:
+        for step in pipeline["steps"]:
+            assert step["status"] in allowed_statuses
+            assert step["model"] or step["model_source"] == "no LLM"
+    assert set(body["memory"]) == {"status", "kernel", "ledger", "commits", "effects", "queues"}
+    memory_counts = body["memory"]["status"]["counts"]
+    assert {
+        "ledger_window",
+        "commit_window",
+        "effect_window",
+        "review_queue",
+        "recent_app_items",
+        "kernel_records",
+    } <= set(memory_counts)
+    assert memory_counts["ledger"] == memory_counts["ledger_window"]
+    assert memory_counts["commits"] == memory_counts["commit_window"]
+    assert memory_counts["effects"] == memory_counts["effect_window"]
+    assert memory_counts["queued"] == memory_counts["review_queue"]
+    assert memory_counts["items"] == memory_counts["recent_app_items"]
+    assert {"artifacts", "recent_items", "jobs"} <= set(body["outputs"])
+    assert {"north_star", "scorecard", "lanes", "recent"} <= set(body["public_influence"])
+    assert "security" in body
+    assert "agent_stats" in body["outputs"]["jobs"]
+    assert {"kernel", "ledger", "commits", "effect_log", "eval_history", "snapshots", "artifacts"} <= set(body["paths"])
+
+
+def test_backend_dashboard_explains_stale_secret_preflight_failure():
+    from mira.kernel.delta import MemoryDeltaProposal
+    from mira.kernel.ledger import ExperienceRecord
+    from mira.pipelines import PIPELINE_CATALOG
+
+    failure = "PREFLIGHT BLOCKED [secret]: missing file"
+    record = ExperienceRecord(
+        id="communication_test_failure",
+        pipeline="communication",
+        trigger="event",
+        intent="test communication failure",
+        outcome="failed",
+        delta=MemoryDeltaProposal(
+            pipeline="communication",
+            run_id="communication_test_failure",
+            memory_class="operational",
+            what_happened="Task task142 finished with status failed",
+            what_mattered=failure,
+            what_changed="Future communication snapshots include task outcome task142",
+            what_failed=failure,
+            actions=[],
+        ),
+        causal_links=[],
+        confidence=1.0,
+        memory_class="operational",
+        timestamp=datetime.now(timezone.utc) - timedelta(days=2),
+    )
+
+    rows = server._pipeline_status_rows(
+        "default",
+        {"communication": PIPELINE_CATALOG["communication"]},
+        [record],
+        [],
+        [],
+        {"jobs": []},
+        {"models": []},
+    )
+
+    assert rows[0]["status_text"] == "stale secret preflight: missing file"
+    assert "task142 failed during execute_agent" in rows[0]["status_detail"]
+    assert "referenced a local file that Mira could not find" in rows[0]["status_detail"]
+    assert "stale ledger evidence" in rows[0]["status_detail"]
+    assert rows[0]["error"] == failure
+    execute_step = next(step for step in rows[0]["steps"] if step["name"] == "execute_agent")
+    final_step = next(step for step in rows[0]["steps"] if step["name"] == "experience_record_proposal")
+    assert execute_step["status"] == "yellow"
+    assert "task142 failed during execute_agent" in execute_step["error"]
+    assert final_step["status"] == "gray"
+    assert final_step["error"] == ""
+    assert rows[0]["outputs"][0]["title"] == "task142: stale secret preflight: missing file"
+    assert rows[0]["outputs"][0]["status"] == "stale_blocked"
+    assert rows[0]["outputs"][0]["href"].endswith(
+        "/api/default/backend-dashboard/pipeline-records/communication_test_failure"
+    )
+
+
+def test_backend_dashboard_uses_podcast_artifacts_as_pipeline_evidence(monkeypatch, tmp_path: Path):
+    from mira.pipelines import PIPELINE_CATALOG
+
+    monkeypatch.setattr(server, "_ICLOUD_ARTIFACTS", tmp_path)
+    user_root = tmp_path / "default"
+    writings = user_root / "writings"
+    audio = user_root / "audio" / "podcast"
+    (audio / "en" / "episode-slug").mkdir(parents=True)
+    (audio / "zh" / "episode-slug").mkdir(parents=True)
+    writings.mkdir(parents=True)
+    (audio / "en" / "episode-slug" / "episode.mp3").write_bytes(b"mp3")
+    (audio / "zh" / "episode-slug" / "episode.mp3").write_bytes(b"mp3")
+    (writings / "publish_manifest.json").write_text(
+        json.dumps(
+            {
+                "articles": {
+                    "essay": {
+                        "title": "Essay",
+                        "status": "complete",
+                        "podcast_slug": "episode-slug",
+                        "timestamps": {
+                            "podcast_en": "2026-05-15T16:36:46Z",
+                            "podcast_zh": "2026-05-15T17:06:13Z",
+                            "complete": "2026-05-15T17:06:59Z",
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = server._pipeline_status_rows(
+        "default",
+        {"podcast_production": PIPELINE_CATALOG["podcast_production"]},
+        [],
+        [],
+        [],
+        {"jobs": []},
+        {"models": []},
+    )
+
+    assert rows[0]["status"] == "green"
+    assert rows[0]["last_success_at"] == "2026-05-15T17:06:59Z"
+    assert rows[0]["outputs"][0]["status"] == "done"
+    assert rows[0]["outputs"][0]["title"] == "Essay (EN+ZH)"
+    assert rows[0]["outputs"][0]["href"] == "/api/default/artifacts/audio/podcast/en/episode-slug/episode.mp3"
+    tts_step = next(
+        step for step in rows[0]["steps"] if step["name"] == "language_detect_tts_route_synthesis_postprocess"
+    )
+    assert tts_step["model"] == "EN: Gemini 3.1 Flash TTS Preview / ZH: MiniMax Speech 2.8 HD"
+    assert tts_step["model_source"] == "step policy"
+    assert tts_step["model_recorded"] is False
+
+
+def test_backend_dashboard_counts_observed_output_as_pipeline_evidence(monkeypatch):
+    from mira.pipelines import PIPELINE_CATALOG
+
+    monkeypatch.setattr(
+        server,
+        "_pipeline_outputs",
+        lambda user_id, pipeline_name, recent_records=None: [
+            {
+                "title": "background health log",
+                "status": "observed",
+                "updated_at": "2026-05-27T02:07:24+00:00",
+                "href": "",
+                "error": "",
+            }
+        ],
+    )
+
+    rows = server._pipeline_status_rows(
+        "default",
+        {"system_health": PIPELINE_CATALOG["system_health"]},
+        [],
+        [],
+        [],
+        {"jobs": [{"name": "restore-dry-run", "enabled": True, "status": "pending"}]},
+        {"models": []},
+    )
+
+    assert rows[0]["status"] == "green"
+    assert rows[0]["status_text"] == "success"
+    assert rows[0]["last_run"] == "2026-05-27T02:07:24+00:00"
+    assert rows[0]["last_success_at"] == "2026-05-27T02:07:24+00:00"
+
+
+def test_backend_dashboard_links_research_outputs(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(server, "_ICLOUD_ARTIFACTS", tmp_path)
+    project = tmp_path / "default" / "research" / "research_2026-05-16"
+    project.mkdir(parents=True)
+    (project / "output.md").write_text("research result", encoding="utf-8")
+
+    outputs = server._pipeline_outputs("default", "research_deep_dive")
+
+    assert outputs[0]["title"] == "research_2026-05-16"
+    assert outputs[0]["status"] == "ready"
+    assert outputs[0]["href"] == "/api/default/artifacts/research/research_2026-05-16/output.md"
+
+
+def test_backend_dashboard_surfaces_social_partial_blockers(monkeypatch, tmp_path: Path):
+    data_root = tmp_path / "mira" / "data"
+    social = data_root / "social"
+    logs = data_root / "logs"
+    social.mkdir(parents=True)
+    logs.mkdir(parents=True)
+    monkeypatch.setattr(server, "SOCIAL_STATE_DIR", social)
+    monkeypatch.setattr(server, "LOGS_DIR", logs)
+    (logs / "bg-substack-growth.log").write_text(
+        "2026-05-16 22:08:45,352 [ERROR] Tweet failed (HTTP 403): SpendCapReached reset_date 2026-05-27\n"
+        "2026-05-16 22:11:15,974 [WARNING] Bluesky cycle skipped: bluesky not configured\n",
+        encoding="utf-8",
+    )
+    (social / "notes_state.json").write_text(
+        json.dumps({"history": [{"text": "latest note", "date": "2026-05-16T22:00:00", "link": ""}]}),
+        encoding="utf-8",
+    )
+
+    outputs = server._pipeline_outputs("default", "social_proactive")
+
+    assert outputs[0]["status"] == "blocked_external_api"
+    assert "2026-05-27" in outputs[0]["error"]
+    assert any(row["status"] == "posted_note" for row in outputs)
+
+
+def test_backend_dashboard_summarizes_public_influence_lanes(monkeypatch, tmp_path: Path):
+    real_datetime = server.datetime
+
+    class FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = real_datetime(2026, 6, 18, 16, 0, 0, tzinfo=timezone.utc)
+            return base if tz else base.replace(tzinfo=None)
+
+    social = tmp_path / "social"
+    logs = tmp_path / "logs"
+    soul = tmp_path / "soul"
+    artifacts = tmp_path / "artifacts"
+    podcast_repos = tmp_path / "podcast_repos"
+    social.mkdir()
+    logs.mkdir()
+    soul.mkdir()
+    (podcast_repos / "marginalia_zh").mkdir(parents=True)
+    (artifacts / "audio" / "marginalia" / "zh" / "mira-marginalia-2026-w25").mkdir(parents=True)
+    (podcast_repos / "marginalia_zh" / "feed.xml").write_text("<rss />", encoding="utf-8")
+    (artifacts / "audio" / "marginalia" / "zh" / "mira-marginalia-2026-w25" / "episode.mp3").write_bytes(b"mp3")
+    monkeypatch.setattr(server, "SOCIAL_STATE_DIR", social)
+    monkeypatch.setattr(server, "LOGS_DIR", logs)
+    monkeypatch.setattr(server, "SOUL_DIR", soul)
+    monkeypatch.setattr(server, "ARTIFACTS_DIR", artifacts)
+    monkeypatch.setattr(server, "PODCAST_REPOS_DIR", podcast_repos)
+    monkeypatch.setattr(server, "datetime", FrozenDateTime)
+    (social / "publication_stats.json").write_text(
+        json.dumps(
+            {
+                "fetched_at": "2026-06-18T02:01:32Z",
+                "subscribers": {
+                    "total": 37,
+                    "paid": 0,
+                    "delta_30d": 18,
+                    "subscribers": [
+                        {"name": "Reader A", "activity_rating": 5, "signup_at": "2026-06-17T10:00:00Z"},
+                        {"name": "Reader B", "activity_rating": 0, "signup_at": "2026-06-16T10:00:00Z"},
+                    ],
+                },
+                "articles": [
+                    {
+                        "title": "Why the Trusted System Becomes the Attack Surface",
+                        "slug": "trusted-system",
+                        "post_date": "2026-06-15T21:03:20Z",
+                        "views": 25,
+                        "likes": 3,
+                        "comments": 4,
+                        "restacks": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (social / "notes_state.json").write_text(
+        json.dumps(
+            {
+                "history": [
+                    {
+                        "text": "A note about agent trust.",
+                        "date": "2026-06-18T13:02:22Z",
+                        "link": "https://uncountablemira.substack.com/p/trusted-system",
+                        "likes": 2,
+                        "comments": 1,
+                        "restacks": 1,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (social / "twitter_state.json").write_text(
+        json.dumps(
+            {
+                "tweet_history": [{"text": "x post", "date": "2026-06-18T14:00:00Z"}],
+                "x_article_history": [
+                    {
+                        "title": "Agents Do Not Need More Trust. They Need Better Receipts.",
+                        "article_id": "article-123",
+                        "post_id": "post-456",
+                        "published_at": "2026-06-18T15:10:00Z",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (social / "comment_metrics.json").write_text(
+        json.dumps(
+            {
+                "244": {
+                    "posted_at": "2026-06-14T12:00:00Z",
+                    "metrics": {
+                        "likes": 2,
+                        "author_reply": True,
+                        "other_replies": 3,
+                        "follows_attributed": 1,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (social / "reply_tracking.json").write_text(
+        json.dumps({"seen_reply_ids": [1, 2, 3], "last_checked": "2026-06-18T12:00:00Z"}),
+        encoding="utf-8",
+    )
+    (soul / "mira_marginalia_state.json").write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "completed_days": [1, 2, 3, 4, 5, 6, 7],
+                "episode_slug": "mira-marginalia-2026-w25",
+                "final_title": "读完之后留下的刺",
+                "podcast_feed_url": "https://awei-git.github.io/MiraMarginalia/feed.xml",
+                "book": {"title": "A Book"},
+                "updated_at": "2026-06-18T15:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = server._public_influence_summary("default")
+
+    lanes = {lane["id"]: lane for lane in summary["lanes"]}
+    assert lanes["substack"]["status"] == "green"
+    assert lanes["substack"]["primary_metric"] == "37 subscriber(s)"
+    assert lanes["x_articles"]["status"] == "green"
+    assert "1 article(s)" in lanes["x_articles"]["primary_metric"]
+    assert lanes["x_articles"]["signals"][0]["value"] == "Agents Do Not Need More Trust. They Need Better Receipts."
+    assert lanes["marginalia"]["status"] == "green"
+    assert lanes["marginalia"]["primary_metric"] == "7/7 daily notes"
+    assert lanes["github_podcast"]["status"] == "green"
+    assert summary["scorecard"][0]["value"] >= 14
+    substack = summary["platforms"]["substack"]
+    assert substack["subscribers"] == 37
+    assert substack["subscriber_delta_30d"] == 18
+    assert substack["followers"] is None
+    assert substack["article_views"] == 25
+    assert substack["article_comments"] == 4
+    assert substack["notes_engagement"] == 4
+    assert substack["relationship_comments"]["author_replies"] == 1
+    x_platform = summary["platforms"]["x"]
+    assert x_platform["article_count"] == 1
+    assert x_platform["latest_article_post_id"] == "post-456"
+    assert substack["relationship_comments"]["other_replies"] == 3
+    assert "Substack follower count" in substack["data_gaps"][0]
+
+
+def test_backend_dashboard_does_not_invent_step_usage_from_pipeline_aggregate():
+    from mira.pipelines import PIPELINE_CATALOG
+
+    rows = server._pipeline_status_rows(
+        "default",
+        {"article_creation": PIPELINE_CATALOG["article_creation"]},
+        [],
+        [],
+        [],
+        {
+            "jobs": [
+                {
+                    "name": "writing-pipeline",
+                    "enabled": True,
+                    "status": "done",
+                    "usage": {
+                        "calls": 2,
+                        "tokens": 12000,
+                        "cost_usd": 0.42,
+                        "models": {"claude-sonnet-4-6": {"calls": 2, "tokens": 12000, "cost_usd": 0.42}},
+                    },
+                }
+            ]
+        },
+        {"models": [{"agent": "writer", "model": "claude-sonnet-4-6"}]},
+    )
+
+    assert rows[0]["usage"]["tokens"] == 12000
+    draft_step = next(step for step in rows[0]["steps"] if step["name"] == "draft")
+    assert draft_step["tokens"] == 0
+    assert draft_step["cost_usd"] == 0
+    assert draft_step["usage_recorded"] is False
+    assert draft_step["usage_scope"] == "pipeline aggregate only; exact per-step usage is not instrumented"
+    assert draft_step["model"] == "claude-sonnet-4-6"
+    assert draft_step["model_recorded"] is False
+    assert draft_step["model_source"] == "agent policy"
+
+
+def test_backend_dashboard_uses_latest_effect_status_for_pipeline_attention(monkeypatch, tmp_path: Path):
+    from mira.engine.effect_log import EffectLog
+    from mira.pipelines import PIPELINE_CATALOG
+
+    monkeypatch.setattr(server, "_ICLOUD_ARTIFACTS", tmp_path / "artifacts")
+    effects = EffectLog(tmp_path / "effects.jsonl")
+    effects.plan(
+        idempotency_key="article:publish:1",
+        run_id="run_1",
+        pipeline="article_creation",
+        action="publish_substack",
+        target="article-1",
+    )
+    effects.mark_executing("article:publish:1")
+    effects.plan(
+        idempotency_key="article:publish:1",
+        run_id="run_1",
+        pipeline="article_creation",
+        action="publish_substack",
+        target="article-1",
+        detail="staged publish side effect",
+    )
+    effects.plan(
+        idempotency_key="article:publish:1",
+        run_id="run_1",
+        pipeline="article_creation",
+        action="publish_substack",
+        target="article-1",
+        detail="latest staged publish side effect",
+    )
+
+    rows = server._pipeline_status_rows(
+        "default",
+        {"article_creation": PIPELINE_CATALOG["article_creation"]},
+        [],
+        [],
+        effects.list(),
+        {"jobs": []},
+        {"models": []},
+    )
+
+    assert rows[0]["error"] == ""
+    assert rows[0]["status_text"] != "publish_substack executing"
+
+
+def test_book_reading_pipeline_labels_match_actual_refinement_flow():
+    from mira.pipelines import PIPELINE_CATALOG
+
+    step_names = [step.name for step in PIPELINE_CATALOG["book_reading_notes"].steps]
+
+    assert "compile_notes_de_ai" not in step_names
+    assert "voice_refinement_pass" in step_names
+    assert "epub_language_cleanup" in step_names
+
+    rows = server._pipeline_status_rows(
+        "default",
+        {"book_reading_notes": PIPELINE_CATALOG["book_reading_notes"]},
+        [],
+        [],
+        [],
+        {"jobs": []},
+        {"models": [{"agent": "reader", "model": "claude-sonnet-4-6"}]},
+    )
+    draft_step = next(step for step in rows[0]["steps"] if step["name"] == "draft_reading_report")
+    refine_step = next(step for step in rows[0]["steps"] if step["name"] == "voice_refinement_pass")
+    cleanup_step = next(step for step in rows[0]["steps"] if step["name"] == "epub_language_cleanup")
+    assert draft_step["model"] == "gpt5 / claude heavy fallback"
+    assert refine_step["model"] == "claude heavy tier"
+    assert cleanup_step["model"] == "deepseek cleanup when translation is needed"
+
+
+def test_codex_cli_observations_are_reported_from_runtime_logs(tmp_path: Path):
+    from datetime import date
+
+    log_path = tmp_path / "bg-daily-research.log"
+    today = date.today().isoformat()
+    log_path.write_text(
+        f"{today} 14:35:21,575 [INFO] Codex CLI call: gpt-5.5 -> 546 chars\n"
+        f"{today} 14:36:07,093 [INFO] Codex CLI call: gpt-5.5 -> 551 chars\n"
+        "2020-01-01 00:00:00,000 [INFO] Codex CLI call: old-model -> 100 chars\n",
+        encoding="utf-8",
+    )
+
+    rows = server._codex_cli_observations(tmp_path, days=2)
+
+    assert rows[today]["calls"] == 2
+    assert rows[today]["output_chars"] == 1097
+    assert rows[today]["models"]["gpt-5.5"] == {"calls": 2, "output_chars": 1097}
+
+
+def test_codex_cli_provider_writes_usage_record(monkeypatch, tmp_path: Path):
+    import llm
+    import llm_providers.codex as codex
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        out_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        out_path.write_text("codex answer", encoding="utf-8")
+        return Result()
+
+    monkeypatch.setattr(codex.subprocess, "run", fake_run)
+    monkeypatch.setattr(llm, "LOGS_DIR", tmp_path)
+    monkeypatch.setattr(llm, "TOKEN_USAGE_LOG_PATH", tmp_path / "token_usage.jsonl")
+    llm.set_usage_agent("codex-test")
+
+    result = codex.codex_think("hello world", model_id="gpt-5.5", timeout=5)
+
+    usage_files = list(tmp_path.glob("usage_*.jsonl"))
+    assert result == "codex answer"
+    assert len(usage_files) == 1
+    record = json.loads(usage_files[0].read_text(encoding="utf-8").splitlines()[0])
+    assert record["agent"] == "codex-test"
+    assert record["provider"] == "codex_cli"
+    assert record["model"] == "gpt-5.5"
+    assert record["estimated"] is True
+    assert record["total_tokens"] > 0
+
+
+def test_security_alert_summary_includes_concrete_skill_audit_action():
+    item = {
+        "id": "skill_audit_blocked_test",
+        "type": "alert",
+        "title": "Skill audit blocked: adversarial-market-flywheel",
+        "status": "failed",
+        "tags": ["security", "skill_audit", "error"],
+        "updated_at": "2026-05-15T23:05:23.686Z",
+        "messages": [
+            {
+                "content": json.dumps(
+                    {
+                        "event": "skill_audit_blocked",
+                        "skill_name": "adversarial-market-flywheel",
+                        "failed_check": "missing_epistemic_audit_metadata",
+                        "failed_checks": ["missing_epistemic_audit_metadata"],
+                    }
+                )
+            }
+        ],
+    }
+
+    summary = server._dashboard_item_summary("default", item)
+
+    assert "keep 'adversarial-market-flywheel' blocked" in summary["action"]
+    assert "provenance" in summary["action"]
+    assert "re-run the skill audit" in summary["action"]
+
+
+def test_backend_dashboard_shell_and_static_assets_are_served(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+
+    shell = client.get("/backend/pipelines")
+    asset = client.get("/backend-assets/app.js")
+
+    assert shell.status_code == 200
+    assert '<script type="module" src="/backend-assets/app.js"></script>' in shell.text
+    assert asset.status_code == 200
+    assert "loadDashboard" in asset.text
+
+
+def test_backend_dashboard_model_update_persists_override(monkeypatch, tmp_path: Path):
+    import mira.runtime as runtime
+
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
+    config_root = tmp_path / "v3-config"
+    monkeypatch.setattr(runtime, "default_v3_paths", lambda: SimpleNamespace(root=config_root))
+
+    resp = client.post(
+        "/api/default/backend-dashboard/models/writer",
+        json={"model": "claude-sonnet-4-6", "token_budget": 128000},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["assignment"]["model"] == "claude-sonnet-4-6"
+    overrides = json.loads((config_root / "model_assignments.json").read_text(encoding="utf-8"))
+    assert overrides["writer"]["token_budget"] == 128000
+    assert overrides["writer"]["updated_by"] == "default"
+
+
+def test_backend_dashboard_exposes_self_evolution_model_row(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+
+    resp = client.get("/api/default/backend-dashboard")
+
+    assert resp.status_code == 200
+    models = {row["agent"]: row for row in resp.json()["models"]}
+    assert models["self_evolution"]["model"] == "codex"
+
+
+def test_usage_history_labels_subscription_and_api_sources(monkeypatch, tmp_path: Path):
+    from datetime import date
+
+    import config
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    today = date.today().isoformat()
+    (logs / f"usage_{today}.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "agent": "self-evolve",
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-6",
+                        "total_tokens": 100,
+                        "cost_usd": 0.001,
+                        "estimated": True,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "agent": "self-evolve",
+                        "provider": "deepseek",
+                        "model": "deepseek-v4-pro",
+                        "total_tokens": 200,
+                        "cost_usd": 0.002,
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "LOGS_DIR", logs)
+    monkeypatch.setattr(server, "_codex_cli_observations", lambda logs_dir, days=30: {})
+
+    history = server._usage_history(days=1)
+
+    sources = history["totals"]["today"]["sources"]
+    assert sources["Claude Code subscription estimate"]["calls"] == 1
+    assert sources["deepseek API"]["calls"] == 1
+    claude_model = history["totals"]["today"]["models"]["claude-sonnet-4-6"]
+    assert claude_model["sources"]["Claude Code subscription estimate"]["tokens"] == 100
+
+
+def test_backend_dashboard_model_update_rejects_unknown_model(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
+
+    resp = client.post(
+        "/api/default/backend-dashboard/models/writer",
+        json={"model": "../../not-a-model", "token_budget": 128000},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Unknown model option"
 
 
 def test_safe_join_rejects_parent_traversal(tmp_path: Path):
@@ -229,11 +1006,11 @@ def test_safe_join_rejects_parent_traversal(tmp_path: Path):
 
 def test_artifact_routes_reject_unknown_top_level_sections(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
-    secret_dir = tmp_path / "icloud" / "ang" / "secrets"
+    secret_dir = tmp_path / "icloud" / "default" / "secrets"
     secret_dir.mkdir(parents=True)
     (secret_dir / "notes.txt").write_text("classified", encoding="utf-8")
 
-    resp = client.get("/api/ang/artifacts/secrets")
+    resp = client.get("/api/default/artifacts/secrets")
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Artifact section not found"
 
@@ -247,10 +1024,10 @@ def test_artifact_routes_allow_listed_shared_sections_only(monkeypatch, tmp_path
     shared_secret.mkdir(parents=True)
     (shared_secret / "ops.md").write_text("do not expose", encoding="utf-8")
 
-    shared_root = client.get("/api/ang/artifacts/shared")
-    allowed = client.get("/api/ang/artifacts/shared/briefings")
-    blocked = client.get("/api/ang/artifacts/shared/internal")
-    file_read = client.get("/api/ang/artifacts/shared/briefings/daily.md")
+    shared_root = client.get("/api/default/artifacts/shared")
+    allowed = client.get("/api/default/artifacts/shared/briefings")
+    blocked = client.get("/api/default/artifacts/shared/internal")
+    file_read = client.get("/api/default/artifacts/shared/briefings/daily.md")
 
     assert shared_root.status_code == 200
     shared_entries = shared_root.json()
@@ -268,11 +1045,23 @@ def test_artifact_routes_allow_listed_shared_sections_only(monkeypatch, tmp_path
     assert file_read.text == "shared briefing"
 
 
+def test_artifact_routes_serve_nested_audio_files(monkeypatch, tmp_path: Path):
+    client = _make_client(monkeypatch, tmp_path)
+    episode = tmp_path / "icloud" / "default" / "audio" / "podcast" / "en" / "episode-slug" / "episode.mp3"
+    episode.parent.mkdir(parents=True)
+    episode.write_bytes(b"mp3")
+
+    resp = client.get("/api/default/artifacts/audio/podcast/en/episode-slug/episode.mp3")
+
+    assert resp.status_code == 200
+    assert resp.content == b"mp3"
+
+
 def test_reply_requires_existing_item_and_does_not_enqueue_command(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
     monkeypatch.setattr(server, "ICLOUD_COMMAND_FALLBACK_ENABLED", True)
 
-    resp = client.post("/api/ang/items/missing/reply", json={"content": "hello"})
+    resp = client.post("/api/default/items/missing/reply", json={"content": "hello"})
 
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Item not found"
@@ -283,7 +1072,7 @@ def test_tasks_endpoint_uses_control_projection_without_mutating_bridge(monkeypa
     import control.repository as control_repository
 
     client = _make_client(monkeypatch, tmp_path)
-    item_path = tmp_path / "bridge" / "users" / "ang" / "items" / "req_123.json"
+    item_path = tmp_path / "bridge" / "users" / "default" / "items" / "req_123.json"
     item_path.write_text(
         json.dumps(
             {
@@ -330,15 +1119,57 @@ def test_tasks_endpoint_uses_control_projection_without_mutating_bridge(monkeypa
     monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
     monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
 
-    resp = client.get("/api/ang/tasks")
+    resp = client.get("/api/default/tasks")
 
     assert resp.status_code == 200
     assert resp.json()["items"] == [{"id": "req_123", "type": "request", "title": "Existing task", "status": "working"}]
     assert resp.json()["last_event_id"] == 42
-    assert calls["sync"][0] == "ang"
-    assert calls["list"] == ("ang", False, 200, 20)
+    assert calls["sync"][0] == "default"
+    assert calls["list"] == ("default", False, 200, 20)
     assert item_path.read_text(encoding="utf-8") == before
     assert _command_files(tmp_path) == []
+
+
+def test_tasks_endpoint_hides_internal_liveness_items(monkeypatch, tmp_path: Path):
+    import control.db as control_db
+    import control.repository as control_repository
+
+    client = _make_client(monkeypatch, tmp_path)
+
+    class FakeTx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def list_items(self, user_id, *, include_archived=False, limit=200, messages_per_item=None):
+            return [
+                {
+                    "id": "mira_liveness_task_dispatch",
+                    "type": "discussion",
+                    "title": "Output Liveness: task_dispatch stale",
+                    "status": "done",
+                    "tags": ["system", "liveness"],
+                },
+                {"id": "req_123", "type": "request", "title": "Existing task", "status": "working"},
+            ]
+
+        def last_event_id(self, user_id):
+            return 42
+
+    monkeypatch.setattr(control_repository, "sync_user_from_legacy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
+    monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
+
+    resp = client.get("/api/default/tasks")
+
+    assert resp.status_code == 200
+    assert resp.json()["items"] == [{"id": "req_123", "type": "request", "title": "Existing task", "status": "working"}]
 
 
 def test_task_detail_endpoint_uses_control_projection(monkeypatch, tmp_path: Path):
@@ -370,12 +1201,12 @@ def test_task_detail_endpoint_uses_control_projection(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
     monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
 
-    resp = client.get("/api/ang/tasks/req_123?messages_per_item=12")
+    resp = client.get("/api/default/tasks/req_123?messages_per_item=12")
 
     assert resp.status_code == 200
     assert resp.json()["item"]["id"] == "req_123"
-    assert calls["sync"][0] == "ang"
-    assert calls["get"] == ("ang", "req_123", 12)
+    assert calls["sync"][0] == "default"
+    assert calls["get"] == ("default", "req_123", 12)
     assert _command_files(tmp_path) == []
 
 
@@ -408,14 +1239,14 @@ def test_threads_endpoint_uses_control_projection(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
     monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
 
-    resp = client.get("/api/ang/threads?limit=10&messages_per_item=3")
+    resp = client.get("/api/default/threads?limit=10&messages_per_item=3")
 
     assert resp.status_code == 200
     assert resp.json()["threads"] == [
         {"id": "req_123", "type": "request", "title": "Existing task", "status": "working"}
     ]
-    assert calls["sync"][0] == "ang"
-    assert calls["list"] == ("ang", False, 10, 3)
+    assert calls["sync"][0] == "default"
+    assert calls["list"] == ("default", False, 10, 3)
     assert _command_files(tmp_path) == []
 
 
@@ -423,7 +1254,7 @@ def test_tasks_write_endpoint_is_flagged_off_by_default(monkeypatch, tmp_path: P
     client = _make_client(monkeypatch, tmp_path)
     monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", False)
 
-    resp = client.post("/api/ang/tasks", json={"title": "New task", "content": "do it"})
+    resp = client.post("/api/default/tasks", json={"title": "New task", "content": "do it"})
 
     assert resp.status_code == 409
     assert resp.json()["detail"] == "Control API writes are disabled"
@@ -481,7 +1312,7 @@ def test_tasks_write_endpoint_projects_to_db_and_exports_compat(monkeypatch, tmp
     monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
 
     resp = client.post(
-        "/api/ang/tasks",
+        "/api/default/tasks",
         json={"title": "New task", "content": "do it", "quick": True, "tags": ["api"], "client_request_id": "abc123"},
     )
 
@@ -495,7 +1326,7 @@ def test_tasks_write_endpoint_projects_to_db_and_exports_compat(monkeypatch, tmp
     cmd = json.loads(commands[0].read_text(encoding="utf-8"))
     assert cmd["type"] == "new_request"
     assert cmd["item_id"] == "req_abc123"
-    item_path = tmp_path / "bridge" / "users" / "ang" / "items" / "req_abc123.json"
+    item_path = tmp_path / "bridge" / "users" / "default" / "items" / "req_abc123.json"
     assert item_path.exists()
     assert json.loads(item_path.read_text(encoding="utf-8"))["status"] == "queued"
 
@@ -542,7 +1373,7 @@ def test_legacy_request_endpoint_uses_canonical_api_when_icloud_commands_disable
     monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
     monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
 
-    resp = client.post("/api/ang/request", json={"title": "Old client", "content": "do it"})
+    resp = client.post("/api/default/request", json={"title": "Old client", "content": "do it"})
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "queued"
@@ -590,11 +1421,11 @@ def test_task_pin_endpoint_updates_db_and_compat_item(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
     monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
 
-    resp = client.post("/api/ang/tasks/req_123/pin", json={"pinned": True})
+    resp = client.post("/api/default/tasks/req_123/pin", json={"pinned": True})
 
     assert resp.status_code == 200
     assert resp.json()["pinned"] is True
-    compat_item = tmp_path / "bridge" / "users" / "ang" / "items" / "req_123.json"
+    compat_item = tmp_path / "bridge" / "users" / "default" / "items" / "req_123.json"
     assert json.loads(compat_item.read_text(encoding="utf-8"))["pinned"] is True
     cmd = json.loads(_command_files(tmp_path)[0].read_text(encoding="utf-8"))
     assert cmd["type"] == "pin"
@@ -644,7 +1475,7 @@ def test_task_cancel_endpoint_updates_runtime_db_and_exports_compat(monkeypatch,
     monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
     monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
 
-    resp = client.post("/api/ang/tasks/req_cancel/cancel")
+    resp = client.post("/api/default/tasks/req_cancel/cancel")
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "cancelled"
@@ -658,7 +1489,7 @@ def test_task_retry_requires_runtime_db(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(server, "CONTROL_API_WRITES_ENABLED", True)
     monkeypatch.setattr(server, "CONTROL_RUNTIME_DB_ENABLED", False)
 
-    resp = client.post("/api/ang/tasks/req_retry/retry")
+    resp = client.post("/api/default/tasks/req_retry/retry")
 
     assert resp.status_code == 409
     assert resp.json()["detail"] == "Control runtime DB dispatch is disabled"
@@ -712,12 +1543,12 @@ def test_task_retry_endpoint_requeues_task(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(control_repository, "ControlRepository", FakeRepo)
     monkeypatch.setattr(control_db, "transaction", lambda: FakeTx())
 
-    resp = client.post("/api/ang/tasks/req_retry/retry")
+    resp = client.post("/api/default/tasks/req_retry/retry")
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "queued"
     assert calls["reset_for_retry"] == "req_retry"
-    assert calls["update_task_status"][0:3] == ("ang", "req_retry", "queued")
+    assert calls["update_task_status"][0:3] == ("default", "req_retry", "queued")
     assert calls["update_task_status"][3]["summary"] == "Retry requested"
 
 
@@ -725,7 +1556,7 @@ def test_v2_status_card_creates_app_visible_item(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
 
     resp = client.post(
-        "/api/ang/v2-status/cards",
+        "/api/default/v2-status/cards",
         json={
             "card_type": "decision",
             "title": "Cutover ready",
@@ -743,16 +1574,16 @@ def test_v2_status_card_creates_app_visible_item(monkeypatch, tmp_path: Path):
     assert item["channel"] == "v2_status"
     assert item["card_type"] == "decision"
     assert item["reply_options"] == ["GO", "WAIT", "ABORT"]
-    item_path = tmp_path / "bridge" / "users" / "ang" / "items" / f"{body['item_id']}.json"
+    item_path = tmp_path / "bridge" / "users" / "default" / "items" / f"{body['item_id']}.json"
     assert item_path.exists()
-    manifest = json.loads((tmp_path / "bridge" / "users" / "ang" / "manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((tmp_path / "bridge" / "users" / "default" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["items"][0]["id"] == body["item_id"]
 
 
 def test_v2_status_reply_validates_options_and_records_command(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
     created = client.post(
-        "/api/ang/v2-status/cards",
+        "/api/default/v2-status/cards",
         json={
             "card_type": "decision",
             "title": "Cutover ready",
@@ -762,10 +1593,10 @@ def test_v2_status_reply_validates_options_and_records_command(monkeypatch, tmp_
     ).json()
     card_id = created["item_id"]
 
-    bad = client.post(f"/api/ang/v2-status/cards/{card_id}/reply", json={"reply": "MAYBE"})
+    bad = client.post(f"/api/default/v2-status/cards/{card_id}/reply", json={"reply": "MAYBE"})
     assert bad.status_code == 422
 
-    ok = client.post(f"/api/ang/v2-status/cards/{card_id}/reply", json={"reply": "go"})
+    ok = client.post(f"/api/default/v2-status/cards/{card_id}/reply", json={"reply": "go"})
     assert ok.status_code == 200
     item = ok.json()["item"]
     assert item["status"] == "done"
@@ -810,7 +1641,7 @@ def test_share_requires_existing_item_and_does_not_enqueue_command(monkeypatch, 
     client = _make_client(monkeypatch, tmp_path)
     monkeypatch.setattr(server, "ICLOUD_COMMAND_FALLBACK_ENABLED", True)
 
-    resp = client.post("/api/ang/items/missing/share")
+    resp = client.post("/api/default/items/missing/share")
 
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Item not found"
@@ -820,7 +1651,7 @@ def test_share_requires_existing_item_and_does_not_enqueue_command(monkeypatch, 
 def test_reply_enqueues_command_for_existing_item(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
     monkeypatch.setattr(server, "ICLOUD_COMMAND_FALLBACK_ENABLED", True)
-    item_path = tmp_path / "bridge" / "users" / "ang" / "items" / "req_123.json"
+    item_path = tmp_path / "bridge" / "users" / "default" / "items" / "req_123.json"
     item_path.write_text(
         json.dumps(
             {
@@ -833,7 +1664,7 @@ def test_reply_enqueues_command_for_existing_item(monkeypatch, tmp_path: Path):
         encoding="utf-8",
     )
 
-    resp = client.post("/api/ang/items/req_123/reply", json={"content": "hello"})
+    resp = client.post("/api/default/items/req_123/reply", json={"content": "hello"})
 
     assert resp.status_code == 200
     commands = _command_files(tmp_path)
@@ -845,11 +1676,11 @@ def test_reply_enqueues_command_for_existing_item(monkeypatch, tmp_path: Path):
 
 def test_operator_endpoint_prefers_cached_dashboard(monkeypatch, tmp_path: Path):
     client = _make_client(monkeypatch, tmp_path)
-    dashboard_path = tmp_path / "bridge" / "users" / "ang" / "operator" / "dashboard.json"
+    dashboard_path = tmp_path / "bridge" / "users" / "default" / "operator" / "dashboard.json"
     dashboard_path.parent.mkdir(parents=True, exist_ok=True)
-    dashboard_path.write_text(json.dumps({"user_id": "ang", "tasks": {"active": []}}), encoding="utf-8")
+    dashboard_path.write_text(json.dumps({"user_id": "default", "tasks": {"active": []}}), encoding="utf-8")
 
-    resp = client.get("/api/ang/operator")
+    resp = client.get("/api/default/operator")
 
     assert resp.status_code == 200
-    assert resp.json()["user_id"] == "ang"
+    assert resp.json()["user_id"] == "default"

@@ -46,6 +46,9 @@ class Pipeline:
     checkpoint_every: int
     memory_class: MemoryClass
     involved_skills: list[str] = field(default_factory=list)
+    required_capabilities: dict[str, bool] = field(default_factory=dict)
+    risk_actions: dict[str, str] = field(default_factory=dict)
+    effect_steps: dict[str, str] = field(default_factory=dict)
 
     def step_index(self, name: str) -> int:
         for i, step in enumerate(self.steps):

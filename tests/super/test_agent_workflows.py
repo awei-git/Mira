@@ -18,6 +18,12 @@ from pathlib import Path
 
 import pytest
 
+ROOT = Path(__file__).resolve().parent.parent.parent
+for path in (ROOT / "agents" / "explorer", ROOT / "agents" / "shared"):
+    path_text = str(path)
+    if path_text not in sys.path:
+        sys.path.insert(0, path_text)
+
 from agent_registry import AgentRegistry
 
 # ---------------------------------------------------------------------------
@@ -55,7 +61,7 @@ def _call_agent(agent_name: str, content: str, tier: str = "light") -> str:
     kwargs = {
         "workspace": workspace,
         "task_id": task_id,
-        "sender": "ang",
+        "sender": "default",
         "thread_id": "",
     }
     # Some handlers use 'content', others 'instruction'

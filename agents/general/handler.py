@@ -90,7 +90,7 @@ def handle(
     """Handle a general request. Returns output text or None on failure."""
     bundle = build_runtime_context(
         content,
-        user_id="ang",
+        user_id="default",
         thread_id=thread_id,
     )
     # Respect explicitly supplied thread state from the caller.
@@ -148,6 +148,6 @@ def handle(
         if not summary:
             summary = result[:300]
 
-        return summary
+        return result
 
     return None

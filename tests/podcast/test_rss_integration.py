@@ -87,6 +87,26 @@ def test_lang_config_repo_dirs_are_persistent():
     assert en["repo_dir"] == PODCAST_REPOS_DIR / "en"
 
 
+def test_marginalia_channel_config():
+    from config import PODCAST_REPOS_DIR
+    from rss import _get_config, _load_or_create_feed
+
+    cfg = _get_config("marginalia_zh")
+    assert cfg["repo"] == "awei-git/MiraMarginalia"
+    assert cfg["audio_lang"] == "zh"
+    assert cfg["repo_dir"] == PODCAST_REPOS_DIR / "marginalia_zh"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        rss = _load_or_create_feed(Path(tmpdir) / "feed.xml", lang="marginalia_zh")
+        channel = rss.find("channel")
+        assert channel.findtext("title") == "米拉的页边小记"
+        assert channel.findtext("link") == "https://awei-git.github.io/MiraMarginalia"
+        assert channel.findtext("language") == "zh-CN"
+        owner = channel.find("itunes:owner")
+        assert owner is not None
+        assert owner.findtext("itunes:email") == "noreply@github.com"
+
+
 # ---------------------------------------------------------------------------
 # 3. File naming — must use slug, never "episode.mp3"
 # ---------------------------------------------------------------------------
@@ -239,6 +259,28 @@ def test_description_not_raw_dialogue():
     src = inspect.getsource(publish_episode)
     # Must use LLM (claude_think) for description, not regex extraction
     assert "claude_think" in src, "publish_episode doesn't use LLM for description generation"
+
+
+def test_feed_verification_accepts_raw_feed_when_pages_is_stale():
+    """GitHub Pages can lag the pushed feed; raw main feed proves the commit landed."""
+    from rss import _get_config, _raw_feed_url, _verify_feed_contains_slug
+
+    cfg = _get_config("en")
+    feed_url = f"{cfg['pages_url']}/feed.xml"
+    raw_url = _raw_feed_url(cfg)
+    slug = "what-the-ai-interface-is-really-promising"
+
+    def fake_fetch(url):
+        if url == feed_url:
+            return "<rss><channel></channel></rss>"
+        if url == raw_url:
+            return f"<rss><channel><guid>{slug}</guid></channel></rss>"
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    verified, source = _verify_feed_contains_slug(slug, feed_url, cfg, fetch_text=fake_fetch)
+
+    assert verified is True
+    assert source == "raw"
 
 
 # ---------------------------------------------------------------------------

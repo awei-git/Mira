@@ -1,0 +1,9 @@
+name: deterministic_reference
+description: Record deterministic execution references for replay and comparison.
+inputs:
+  - reference_inputs
+  - execution_context
+outputs:
+  - deterministic_reference.md
+  - replay_steps
+  - evidence_handles

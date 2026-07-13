@@ -28,7 +28,7 @@ from llm import claude_think
 log = logging.getLogger("task_worker")
 
 
-def _items_dir(user_id: str = "ang") -> Path:
+def _items_dir(user_id: str = "default") -> Path:
     return MIRA_DIR / "users" / user_id / "items"
 
 
@@ -41,7 +41,7 @@ def _legacy_thread_dirs(user_id: str) -> list[Path]:
     ]
 
 
-def load_task_conversation(task_id: str, user_id: str = "ang") -> str:
+def load_task_conversation(task_id: str, user_id: str = "default") -> str:
     """Load conversation history from an item (or legacy task) JSON.
 
     With the new protocol, all messages are in a single items/<id>.json file.
@@ -104,7 +104,7 @@ def load_task_conversation(task_id: str, user_id: str = "ang") -> str:
     return "\n".join(lines)
 
 
-def load_thread_history(thread_id: str, limit: int = 20, user_id: str = "ang") -> str:
+def load_thread_history(thread_id: str, limit: int = 20, user_id: str = "default") -> str:
     """Load recent messages from a thread for context injection."""
     if not thread_id:
         return ""
@@ -146,7 +146,7 @@ def load_thread_history(thread_id: str, limit: int = 20, user_id: str = "ang") -
     return "\n".join(lines)
 
 
-def load_thread_memory(thread_id: str, user_id: str = "ang") -> str:
+def load_thread_memory(thread_id: str, user_id: str = "default") -> str:
     """Load per-thread memory if it exists."""
     if not thread_id:
         return ""

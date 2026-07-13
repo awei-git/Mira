@@ -52,11 +52,11 @@ def _elapsed_minutes(since: str) -> float:
         return 0.0
 
 
-def _state_file(user_id: str = "ang") -> Path:
-    return MIRA_DIR / "users" / (user_id or "ang") / "state" / "emptiness.json"
+def _state_file(user_id: str = "default") -> Path:
+    return MIRA_DIR / "users" / (user_id or "default") / "state" / "emptiness.json"
 
 
-def load_emptiness(user_id: str = "ang") -> dict:
+def load_emptiness(user_id: str = "default") -> dict:
     state_file = _state_file(user_id)
     if state_file.exists():
         try:
@@ -71,7 +71,7 @@ def load_emptiness(user_id: str = "ang") -> dict:
     return _default_state()
 
 
-def save_emptiness(state: dict, user_id: str = "ang"):
+def save_emptiness(state: dict, user_id: str = "default"):
     state_file = _state_file(user_id)
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -99,7 +99,7 @@ def _default_state() -> dict:
 # ---------------------------------------------------------------------------
 
 
-def tick(user_id: str = "ang") -> float:
+def tick(user_id: str = "default") -> float:
     """Advance the emptiness value based on elapsed time and pending questions.
 
     Call this once per agent cycle (every 30s) during idle periods.
@@ -131,7 +131,7 @@ def tick(user_id: str = "ang") -> float:
     return new_value
 
 
-def check_threshold(user_id: str = "ang") -> bool:
+def check_threshold(user_id: str = "default") -> bool:
     """Returns True if emptiness has crossed the threshold and thinking is due.
 
     Three modes (checked in order):
@@ -151,7 +151,7 @@ def check_threshold(user_id: str = "ang") -> bool:
     return False
 
 
-def get_think_mode(user_id: str = "ang") -> str | None:
+def get_think_mode(user_id: str = "default") -> str | None:
     """Determine which thinking mode to use based on current state.
 
     Returns: "chat", "question", "connection", "auto_question",
@@ -197,7 +197,7 @@ def get_think_mode(user_id: str = "ang") -> str | None:
     return None
 
 
-def after_think(user_id: str = "ang"):
+def after_think(user_id: str = "default"):
     """Call after a think session to reduce emptiness."""
     state = load_emptiness(user_id=user_id)
     decay = state.get("decay_after_think", DEFAULT_DECAY_AFTER_THINK)
@@ -208,7 +208,7 @@ def after_think(user_id: str = "ang"):
     log.info("Emptiness after think: %.1f (decayed %.1f)", state["emptiness_value"], decay)
 
 
-def on_external_input(user_id: str = "ang"):
+def on_external_input(user_id: str = "default"):
     """Call when external input arrives to reset the emptiness clock.
 
     External input takes full priority — we don't self-awaken when there's
@@ -226,7 +226,7 @@ def on_external_input(user_id: str = "ang"):
 # ---------------------------------------------------------------------------
 
 
-def add_question(text: str, priority: float = 5.0, source: str = "", user_id: str = "ang") -> str:
+def add_question(text: str, priority: float = 5.0, source: str = "", user_id: str = "default") -> str:
     """Add a pending question to the queue. Returns the question ID."""
     state = load_emptiness(user_id=user_id)
 
@@ -259,7 +259,7 @@ def add_question(text: str, priority: float = 5.0, source: str = "", user_id: st
     return q_id
 
 
-def get_active_questions(limit: int = 5, user_id: str = "ang") -> list[dict]:
+def get_active_questions(limit: int = 5, user_id: str = "default") -> list[dict]:
     """Return unresolved questions sorted by priority (descending)."""
     state = load_emptiness(user_id=user_id)
     active = [q for q in state.get("pending_questions", []) if not q.get("resolved")]
@@ -267,7 +267,7 @@ def get_active_questions(limit: int = 5, user_id: str = "ang") -> list[dict]:
     return active[:limit]
 
 
-def mark_thought(q_id: str, user_id: str = "ang"):
+def mark_thought(q_id: str, user_id: str = "default"):
     """Record that a question was thought about (but not resolved)."""
     state = load_emptiness(user_id=user_id)
     for q in state.get("pending_questions", []):
@@ -278,7 +278,7 @@ def mark_thought(q_id: str, user_id: str = "ang"):
     save_emptiness(state, user_id=user_id)
 
 
-def resolve_question(q_id: str, user_id: str = "ang"):
+def resolve_question(q_id: str, user_id: str = "default"):
     """Mark a question as resolved."""
     state = load_emptiness(user_id=user_id)
     for q in state.get("pending_questions", []):
@@ -290,7 +290,7 @@ def resolve_question(q_id: str, user_id: str = "ang"):
     save_emptiness(state, user_id=user_id)
 
 
-def start_continuation(thought_id: int, preview: str = "", user_id: str = "ang"):
+def start_continuation(thought_id: int, preview: str = "", user_id: str = "default"):
     """Start tracking a thought chain for cross-cycle continuation."""
     state = load_emptiness(user_id=user_id)
     state["thought_continuation"] = {
@@ -302,7 +302,7 @@ def start_continuation(thought_id: int, preview: str = "", user_id: str = "ang")
     save_emptiness(state, user_id=user_id)
 
 
-def advance_continuation(thought_id: int, preview: str = "", user_id: str = "ang"):
+def advance_continuation(thought_id: int, preview: str = "", user_id: str = "default"):
     """Advance the continuation counter after a thinking round."""
     state = load_emptiness(user_id=user_id)
     cont = state.get("thought_continuation", {})
@@ -313,14 +313,14 @@ def advance_continuation(thought_id: int, preview: str = "", user_id: str = "ang
     save_emptiness(state, user_id=user_id)
 
 
-def end_continuation(user_id: str = "ang"):
+def end_continuation(user_id: str = "default"):
     """End the current thought continuation (crystallized or max rounds reached)."""
     state = load_emptiness(user_id=user_id)
     state.pop("thought_continuation", None)
     save_emptiness(state, user_id=user_id)
 
 
-def get_continuation(user_id: str = "ang") -> dict | None:
+def get_continuation(user_id: str = "default") -> dict | None:
     """Get the current thought continuation state, or None."""
     state = load_emptiness(user_id=user_id)
     cont = state.get("thought_continuation")
@@ -390,7 +390,7 @@ def passes_quality_gate(thought_text: str) -> bool:
     return connected
 
 
-def get_status_str(user_id: str = "ang") -> str:
+def get_status_str(user_id: str = "default") -> str:
     """Return a one-line status string for logging/display."""
     state = load_emptiness(user_id=user_id)
     value = state.get("emptiness_value", 0.0)

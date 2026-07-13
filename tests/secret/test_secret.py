@@ -127,7 +127,7 @@ def test_secret_answers_question():
         workspace=ws,
         task_id=f"test_{uuid.uuid4().hex[:8]}",
         content="What is 7 * 8? Reply with just the number.",
-        sender="ang",
+        sender="default",
         thread_id="",
     )
     assert result, "Secret agent returned empty"
@@ -145,7 +145,7 @@ def test_secret_does_not_write_output():
         workspace=ws,
         task_id=f"test_{uuid.uuid4().hex[:8]}",
         content="Say hello in exactly 3 words.",
-        sender="ang",
+        sender="default",
         thread_id="",
     )
     assert result, "Secret agent returned empty"

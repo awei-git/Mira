@@ -128,7 +128,38 @@ def format_calibration_prompt(entries: list[dict[str, Any]]) -> str:
     )
 
 
-def send_guard_calibration_prompt(user_id: str = "ang", sample_size: int | None = None) -> bool:
+def _write_calibration_outbox(item_id: str, message: str, user_id: str, entries: list[dict[str, Any]]) -> bool:
+    outbox = MIRA_DIR / "outbox"
+    path = outbox / f"{item_id}.json"
+    try:
+        outbox.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            return False
+
+        payload = {
+            "id": item_id,
+            "sender": "agent",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "content": message,
+            "type": "message",
+            "thread_id": item_id,
+            "priority": "normal",
+            "metadata": {
+                "kind": "guard_calibration_prompt",
+                "item_id": item_id,
+                "user_id": user_id,
+                "sample_count": len(entries),
+                "calibration_entries": entries,
+            },
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
+    except OSError as exc:
+        log.warning("Guard calibration outbox write failed: %s", exc)
+        return False
+
+
+def send_guard_calibration_prompt(user_id: str = "default", sample_size: int | None = None) -> bool:
     size = sample_size or CALIBRATION_PROMPT_SAMPLE_SIZE
     entries = _select_guard_entries(max(1, int(size)))
     if not entries:
@@ -138,19 +169,28 @@ def send_guard_calibration_prompt(user_id: str = "ang", sample_size: int | None 
     now = datetime.now()
     item_id = f"guard_calibration_{now.strftime('%G_W%V')}"
     bridge = Mira(MIRA_DIR, user_id=user_id)
+    message = format_calibration_prompt(entries)
     if bridge.item_exists(item_id):
-        log.info("Guard calibration prompt already exists for %s", now.strftime("%G-W%V"))
-        return False
+        outbox_posted = _write_calibration_outbox(item_id, message, user_id, entries)
+        if not outbox_posted:
+            log.info("Guard calibration prompt already exists for %s", now.strftime("%G-W%V"))
+        return outbox_posted
 
     item = bridge.create_discussion(
         item_id,
         f"Weekly guard calibration {now.strftime('%G-W%V')}",
-        format_calibration_prompt(entries),
+        message,
         sender="agent",
         tags=["mira", "guard", "calibration", "substack"],
     )
     item["calibration_entries"] = entries
     bridge._write_item(item)
     bridge._update_manifest(item)
+
+    outbox_posted = _write_calibration_outbox(item_id, message, user_id, entries)
+    if not outbox_posted:
+        log.info("Guard calibration discussion recorded for %s", now.strftime("%G-W%V"))
+        return False
+
     log.info("Guard calibration prompt posted with %d entries", len(entries))
     return True

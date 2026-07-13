@@ -27,7 +27,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
-from agents.shared.config import ARTIFACTS_DIR, FEEDS_DIR
+from config import ARTIFACTS_DIR, FEEDS_DIR
 
 logger = logging.getLogger("mira.app_sync")
 

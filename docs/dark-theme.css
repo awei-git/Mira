@@ -1,0 +1,43 @@
+/* Mira shared dark theme — used for pandoc HTML conversions.
+   Base #0f1117, cards #13151a, borders #2a2d35, text #e0e0e0, muted #9ca3af. */
+:root {
+  --bg: #0f1117; --fg: #e0e0e0; --muted: #9ca3af; --border: #2a2d35;
+  --blue: #60a5fa; --blue-bg: #1e293b; --red: #f87171; --red-bg: #2a1a1a;
+  --orange: #fbbf24; --orange-bg: #2a2213; --green: #4ade80; --green-bg: #1a2a1a;
+  --gold: #f59e0b; --gold-bg: #2a2213; --code-bg: #1a1d27;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px; color: var(--fg); background: var(--bg);
+  line-height: 1.7; max-width: 900px; margin: 0 auto; padding: 40px 40px 120px;
+}
+h1 { font-size: 28px; margin: 32px 0 12px; color: #f0f0f0; }
+h2 { font-size: 22px; margin: 40px 0 14px; padding-bottom: 6px; border-bottom: 2px solid var(--border); color: #f0f0f0; }
+h3 { font-size: 17px; margin: 28px 0 10px; color: var(--fg); }
+h4 { font-size: 14px; margin: 20px 0 8px; color: var(--muted); }
+p { margin-bottom: 10px; }
+ul, ol { padding-left: 24px; margin-bottom: 12px; }
+li { margin-bottom: 6px; }
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+strong { color: #f0f0f0; }
+em { color: var(--muted); }
+blockquote { border-left: 3px solid var(--gold); background: var(--gold-bg); padding: 12px 18px; margin: 16px 0; border-radius: 0 6px 6px 0; }
+code { font-family: "SF Mono","Fira Code","Consolas",monospace; font-size: 13px; background: var(--code-bg); padding: 2px 6px; border-radius: 3px; }
+pre { background: var(--code-bg); padding: 16px; border-radius: 6px; overflow-x: auto; margin: 14px 0; font-size: 13px; line-height: 1.5; border: 1px solid var(--border); }
+pre code { background: none; padding: 0; font-size: 13px; }
+table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+th, td { text-align: left; padding: 8px 12px; border: 1px solid var(--border); }
+th { background: #1a1d27; font-weight: 600; color: #f0f0f0; }
+tr:nth-child(even) { background: #13151a; }
+hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+nav#TOC { position: fixed; top: 0; left: 0; width: 280px; height: 100vh; overflow-y: auto; padding: 20px 16px; background: #13151a; border-right: 1px solid var(--border); font-size: 12px; line-height: 1.5; z-index: 10; }
+nav#TOC ul { list-style: none; padding-left: 0; }
+nav#TOC ul ul { padding-left: 14px; }
+nav#TOC li { margin-bottom: 3px; }
+nav#TOC a { color: var(--muted); font-size: 12px; }
+nav#TOC a:hover { color: var(--gold); }
+body:has(nav#TOC) { margin-left: 300px; }
+@media (max-width: 900px) { nav#TOC { display: none; } body { margin-left: 0; padding: 20px; } }

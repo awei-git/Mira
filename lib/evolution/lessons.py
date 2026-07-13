@@ -16,7 +16,7 @@ from .experience import load_experiences
 log = logging.getLogger("mira.evolution")
 
 
-def extract_lessons(days: int = 1, user_id: str = "ang") -> str:
+def extract_lessons(days: int = 1, user_id: str = "default") -> str:
     """Distill recent experiences into reusable lessons using oMLX.
 
     Called from journal workflow (daily). Returns extracted text, also

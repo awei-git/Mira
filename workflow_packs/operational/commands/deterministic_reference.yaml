@@ -1,0 +1,23 @@
+name: deterministic_reference
+memory_class: operational
+trigger:
+  type: manual
+  detail: deterministic steps reference
+priority: 50
+version: 1
+max_duration_s: 300
+checkpoint_every: 1
+involved_skills:
+  - deterministic_reference
+steps:
+  - name: snapshot_reference_inputs
+    type: memory
+  - name: record_deterministic_steps
+    type: deterministic
+  - name: reference_report
+    type: deterministic
+    action: local_report
+  - name: replayability_gate
+    type: eval
+  - name: experience_record_proposal_gateway
+    type: memory

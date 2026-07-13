@@ -1,0 +1,10 @@
+name: self_evolution
+description: Convert observed mismatches into low-risk experiment records before any code or policy change.
+inputs:
+  - scars
+  - failure_signatures
+  - eval_calibration
+outputs:
+  - self_evolution_experiment.md
+  - hypothesis_record
+  - rollback_plan

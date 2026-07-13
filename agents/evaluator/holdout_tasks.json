@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "explain_recursion_plainly",
+      "agent": "general",
+      "prompt": "Explain recursion to a beginner in plain English. Include a simple base case and recursive case example. Do not modify files.",
+      "threshold": 0.75,
+      "drop_threshold": 0.1,
+      "criteria": {
+        "required_terms": ["base case", "recursive case", "function"],
+        "forbidden_terms": ["I can't"],
+        "min_length": 250
+      }
+    },
+    {
+      "id": "debug_python_mutable_default",
+      "agent": "coder",
+      "prompt": "Debug this Python snippet and provide a corrected version. Do not modify files.\n\n```python\ndef add_item(item, items=[]):\n    items.append(item)\n    return items\n\nprint(add_item('a'))\nprint(add_item('b'))\n```",
+      "threshold": 0.75,
+      "drop_threshold": 0.1,
+      "criteria": {
+        "required_terms": ["mutable default", "None", "append"],
+        "forbidden_terms": ["syntax error"],
+        "min_length": 250
+      }
+    },
+    {
+      "id": "summarize_tradeoff_caching",
+      "agent": "general",
+      "prompt": "Summarize the tradeoff between caching results and always recomputing them. Mention latency, staleness, and invalidation. Do not modify files.",
+      "threshold": 0.75,
+      "drop_threshold": 0.1,
+      "criteria": {
+        "required_terms": ["latency", "staleness", "invalidation"],
+        "forbidden_terms": ["always best"],
+        "min_length": 220
+      }
+    }
+  ]
+}

@@ -38,7 +38,7 @@ def test_insert_metric_skips_exact_duplicate():
     store._conn = FakeConnection(duplicate=True)
 
     inserted = store.insert_metric(
-        "ang",
+        "default",
         "readiness_score",
         66,
         source="oura",
@@ -56,7 +56,7 @@ def test_insert_metric_returns_true_for_new_row():
     store._conn = FakeConnection(duplicate=False)
 
     inserted = store.insert_metric(
-        "ang",
+        "default",
         "readiness_score",
         66,
         source="oura",

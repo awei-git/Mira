@@ -16,6 +16,12 @@ from pathlib import Path
 from action_backlog import format_action_items, upsert_pilot_action_items
 from compatibility import check_current_stack
 from editorial import build_editorial_packages
+from growth_recovery import (
+    format_growth_recovery_report,
+    load_or_create_growth_recovery,
+    refresh_growth_recovery_progress,
+    write_growth_recovery_report,
+)
 from metrics_review import build_pilot_review, format_pilot_review
 from storage import SubstackStore
 from topic_backlog import build_editorial_calendar, discover_topics_from_writer_ideas
@@ -45,6 +51,22 @@ def _is_live_socialmedia_request(text: str) -> bool:
     return any(pattern in lower for pattern in live_patterns)
 
 
+def _is_growth_recovery_request(text: str) -> bool:
+    lower = text.lower()
+    return any(
+        pattern in lower
+        for pattern in (
+            "growth recovery",
+            "recovery sprint",
+            "substack recovery",
+            "distribution recovery",
+            "gain growth again",
+            "track growth",
+            "growth tracker",
+        )
+    )
+
+
 def _delegate_to_socialmedia(workspace: Path, task_id: str, content: str, sender: str, thread_id: str, **kwargs):
     """Delegate live platform side effects to the existing production handler."""
     social_path = str(_SOCIALMEDIA_DIR)
@@ -67,6 +89,12 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
     if _is_live_socialmedia_request(content):
         return _delegate_to_socialmedia(workspace, task_id, content, sender, thread_id, **kwargs)
 
+    if _is_growth_recovery_request(content):
+        sprint = load_or_create_growth_recovery(store)
+        store.save_growth_recovery(sprint)
+        write_growth_recovery_report(store, sprint)
+        return _write_output(workspace, format_growth_recovery_report(sprint))
+
     if any(token in lower for token in ("compat", "current stack", "cover current", "status")):
         report = check_current_stack()
         return _write_output(workspace, _format_compatibility_report(report))
@@ -85,6 +113,12 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
                     *format_action_items(backlog_items),
                 ]
             )
+        sprint = store.load_growth_recovery()
+        if sprint is not None:
+            sprint = refresh_growth_recovery_progress(sprint)
+            store.save_growth_recovery(sprint)
+            write_growth_recovery_report(store, sprint)
+            report = "\n".join([report, "", "## Growth Recovery Sprint", format_growth_recovery_report(sprint)])
         return _write_output(workspace, report)
 
     if any(token in lower for token in ("calendar", "plan", "topic", "growth", "monetization", "substack", "workflow")):

@@ -98,3 +98,33 @@ def test_deduplicate():
     ]
     unique = deduplicate(records)
     assert len(unique) == 2
+
+
+def test_durable_lesson_needs_evidence_before_promotion():
+    from memory.schema import MemoryRecord
+
+    lesson = MemoryRecord(
+        content="Short daily-collab hooks get more replies.",
+        memory_type="lesson",
+        source="reflection",
+        confidence=0.9,
+    )
+    assert not lesson.can_promote()
+
+    lesson.evidence_ids.append("review:2026-w28")
+    assert lesson.can_promote()
+
+
+def test_preference_is_a_first_class_memory_type():
+    from memory.schema import MemoryRecord
+
+    preference = MemoryRecord(
+        content="My human prefers concise daily messages.",
+        memory_type="preference",
+        source="user_correction",
+        evidence_ids=["disc_daily_collab:42"],
+    )
+    assert preference.can_promote()
+    preference.mark_used()
+    assert preference.use_count == 1
+    assert preference.last_used_at

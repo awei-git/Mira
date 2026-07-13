@@ -2,7 +2,7 @@
 
 - **Date**: 2026-05-01
 - **Status**: planning
-- **Owner**: Ang + Mira
+- **Owner**: Default User + Mira
 - **Scope**: Mira super-agent task orchestration, routing, verification, workflow durability, and eventing
 - **Related plan**: `docs/plans/api-control-plane-refactor/PLAN.md`
 

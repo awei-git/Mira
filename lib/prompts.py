@@ -89,6 +89,21 @@ Before treating any platform narrative, trend claim, or extracted technique as a
 
 Flagged claims may still be reported, but label them with `epistemic_confidence: low|medium|high` and keep them separate from high-confidence extractions."""
 
+SOFT_SIGNAL_SOURCES = ["github.com/trending", "huggingface.co/trending", "reddit.com"]
+HARD_SIGNAL_SOURCES = ["arxiv.org", "paperswithcode.com/sota"]
+
+SIGNAL_PROVENANCE_CLASSIFICATION = """## Signal Provenance Classification
+
+Before summarizing each item, classify the source signal:
+- HARD: peer-reviewed, executable, cryptographically anchored, reproducible benchmark, execution-based eval, or commit-history evidence.
+- SOFT: popularity metric, trending list, community vote, community endorsement, GitHub stars, Reddit upvotes, or HuggingFace trending.
+
+Use these lookup tables when the URL/source matches:
+- SOFT_SIGNAL_SOURCES: github.com/trending, huggingface.co/trending, reddit.com
+- HARD_SIGNAL_SOURCES: arxiv.org, paperswithcode.com/sota
+
+Prepend the trust tier to each briefing bullet or item summary, with the source reason inside the label, for example `[SOFT: GitHub trending]` or `[HARD: arxiv 2504.xxxxx]`. Keep the label when synthesizing so downstream analyst and writer agents inherit the epistemological context."""
+
 INCENTIVE_STRUCTURE_CHECK = (
     "For each major claim about AI capabilities, AI impact, or contested technology trends — identify the "
     "incentive structure: (1) who benefits commercially if this narrative is true, (2) whether opposing sources "
@@ -96,6 +111,20 @@ INCENTIVE_STRUCTURE_CHECK = (
     "benchmarks, adversarially-reviewed results, sources with no stake in the outcome). Mark claims as "
     "INCENTIVE-SATURATED if all available sources share aligned commercial motivation."
 )
+
+COUNTEREXAMPLE_ABSORPTION_CHECK = (
+    "For each major framework, institution, expert claim, model, or trend narrative, ask: (1) what observation "
+    "would falsify or materially weaken it, (2) has the system changed after past failures or counterexamples, "
+    "(3) if no update mechanism is visible, label it as brittle rather than merely true/false."
+)
+
+LENSES = [
+    "structural: map the underlying forces or constraints that make this development possible or inevitable.",
+    "temporal: focus on what has changed since the last time this topic appeared — what has accelerated, stalled, or reversed.",
+    "adversarial: lead with what this development makes harder or destroys.",
+    "comparative: anchor the story in contrast — what does this displace, outperform, or contradict?",
+    "first-principles: strip the jargon and rebuild from the simplest true statement about what is actually happening.",
+]
 
 
 def _get_scheduled_jobs_context() -> str:
@@ -196,7 +225,6 @@ The scheduler creates macOS LaunchAgent jobs that run automatically.
 
 To use it, run Python with the scheduler module:
 ```python
-import sys; sys.path.insert(0, '/Users/angwei/Sandbox/Mira/agents/shared')
 from scheduler import schedule_interval, schedule_calendar, schedule_once, remove, list_jobs, format_jobs_summary, get_log
 
 # Run every 5 minutes:
@@ -223,9 +251,12 @@ Use the language that matches the request — if the user wrote in Chinese, resp
 """
 
 
-def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "", recent_topics: str = "") -> str:
+def explore_prompt(
+    soul_context: str, feed_items: str, source_slot: str = "", recent_topics: str = "", analytical_lens: str = ""
+) -> str:
     """Prompt for filtering and ranking feed items."""
     slot_note = f"\n（本次探索主题：{source_slot}）\n" if source_slot else ""
+    lens_note = f"\n**本次视角**: {analytical_lens}\n" if analytical_lens else ""
     dedup_note = ""
     if recent_topics:
         dedup_note = f"""
@@ -246,6 +277,8 @@ def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "", re
 
 {SELECTION_BIAS_SCREEN}
 
+{SIGNAL_PROVENANCE_CLASSIFICATION}
+
 ## 最重要的规则：你在聊天，不是写报告
 
 想象你是一个很懂技术的朋友，晚上发微信跟我聊今天看到了什么好玩的。
@@ -262,17 +295,19 @@ def explore_prompt(soul_context: str, feed_items: str, source_slot: str = "", re
 - "对了这两个其实有关系：如果小模型的 CoT 也是演的，那本地 agent 的可靠性就更成问题了"
 
 ## 内容
-
+{lens_note}
 1. 挑 5-7 个最有意思的，用你自己的话讲核心想法
 2. 每条附上链接，但融在话里面，不要单独一行列出来
 3. **源头激励预检**：在综合之前，先对每个来源问一句：这个来源的生产级激励是什么？是学术、独立新闻/个人、商业/厂商、SEO 流量、赞助内容，还是未知？给每个来源一个单行 incentive tag，只能用 `[academic]`、`[independent]`、`[commercial/vendor]`、`[SEO-optimized]`、`[sponsored]`、`[unknown]`。不要只看有没有标广告；要判断内容-广告融合是否可能影响了它选择写什么、不写什么。
 4. 综合时把这些 tag 融进正文引用里，例如：`HuggingFace blog [commercial/vendor] — 性能说法可能也在服务产品定位`。商业/厂商、SEO、赞助来源的 claim 不要丢掉，但要当作可能被生产侧目标塑形的材料来加权和标注。
 5. **AI 影响力声明标注**：对于涉及 AI 对人类、就业、社会影响的声明，在该声明末尾附加一行动机标注（英文，方括号内）。格式：`[source motivation: <independent academic | platform vendor | VC-backed lab | regulator | no clear stake>]`。若声明结论结构性地有利于来源方（例如平台供应商声称"AI 不会取代你"，或 VC 支持的实验室放大存在性风险以助于融资），补充标注 `[aligned incentive]`；若结论与来源方利益相悖，补充标注 `[against incentive — higher credibility]`；若来源方立场不明，标注 `[unknown stake]`。此标注不过滤声明——它帮助下游消费者（写手、分析师）校准可信度。
 6. **Incentive-structure check**：{INCENTIVE_STRUCTURE_CHECK}
-7. 有能学到的技法就顺嘴提，没有就不提，不要硬凑
-8. 条与条之间自然过渡，不要每条都是独立段落
-9. 标一条最想深挖的，说清楚为什么
-10. 最后一句你的真实感想
+7. **Counterexample absorption check**：{COUNTEREXAMPLE_ABSORPTION_CHECK}
+8. **模板压力自检**：在确定 5-7 条之前，先问：如果今天不是按“口语聊天 + 5-7 个有意思的东西 + 最想深挖一条”这个格式写，哪些 item 会变得更重要？如果有一条因为不够好聊、跨不进叙事、或不适合“有意思”口吻而被压低，但它会改变主人对外部世界的判断或行动，把它纳入简报，并在这条旁边加一个短的行内标记，例如 `[模板压力修正：这条不够好聊，但会影响判断/行动]`；不要另起单独小节。如果自检没有改变选题，保持原选择，也不要添加任何模板压力标记。不要为了形式多样而硬塞。
+9. 有能学到的技法就顺嘴提，没有就不提，不要硬凑
+10. 条与条之间自然过渡，不要每条都是独立段落
+11. 标一条最想深挖的，说清楚为什么
+12. 最后一句你的真实感想
 
 ## 互动推荐（如果有的话）
 
@@ -862,6 +897,10 @@ def analyze_writing_prompt(idea: str) -> str:
 **Idea:**
 {idea}
 
+Hard language rule:
+- If the idea targets Substack, set "language" to "en" even when the source notes or title are Chinese.
+- For Substack, the final title, subtitle, headings, and body must be English.
+
 Respond in JSON format ONLY (no markdown fences, no explanation):
 {{
     "type": "novel|essay|blog|technical|poetry",
@@ -904,6 +943,10 @@ A writing project has been initiated. Propose a detailed writing plan.
 
 ---
 
+Language rule:
+- If this is a Substack project, plan an English piece. Chinese source notes are background only.
+- Do not preserve a Chinese idea title as the publication title; propose an English title/deck direction.
+
 Create a detailed plan with these sections:
 
 ## 大纲 (Outline)
@@ -915,7 +958,7 @@ Word count, tone, POV, style guidelines, constraints.
 ## 描述 (Description)
 How this piece should feel to the reader. What makes it work. The core insight or emotional arc.
 
-Write in the language matching the idea. Be specific and actionable.
+Write in English for Substack projects; otherwise match the idea language. Be specific and actionable.
 """
 
 
@@ -942,7 +985,7 @@ Your job:
 3. Propose specific improvements
 4. Write your OWN revised version (大纲 + 规格 + 描述)
 
-Be constructive but direct. Write in the language matching the idea.
+Be constructive but direct. Write in English for Substack projects; otherwise match the idea language.
 """
 
 
@@ -976,7 +1019,7 @@ Output with these exact sections:
 ## 描述 (Description)
 
 This plan goes to the user for approval, then to writers. Make it clear and actionable.
-Write in the language matching the idea.
+Write in English for Substack projects; otherwise match the idea language. Do not preserve a Chinese source title as the publication title for Substack.
 """
 
 
@@ -999,9 +1042,14 @@ Context:
 ---
 {substack_guidance}
 
+Before drafting, complete this in one sentence: The single non-obvious claim this piece makes is: [CLAIM]. Do not proceed until this is concrete and falsifiable.
+
+Draft the piece such that every paragraph either supports, complicates, or develops [CLAIM].
+
 Write the COMPLETE piece following the plan. Rules:
 - Follow the plan's structure, specifications, and description closely
-- Write in the language specified in the plan
+- For Substack projects, write the title, subtitle, section headers, and body in English even if source notes are Chinese
+- For non-Substack projects, write in the language specified in the plan
 - Produce the COMPLETE work, not an outline or summary
 - Let your unique voice come through — the plan is a guide, not a cage
 - No meta-commentary — just the actual writing
@@ -1046,7 +1094,7 @@ Review round: {round_num}
 
 For each criterion: score (1-10), why (1-2 sentences), specific improvement suggestion.
 
-Also assess **Confidence Calibration** (not a scored criterion — reported separately): penalize (1) facts asserted without a verifiable source when one is expected, and (2) omission of uncertainty markers ("likely", "unclear", "I cannot verify") on claims that are genuinely uncertain.
+Also assess **Confidence Calibration** (weight: 10% — reported separately): penalize (1) facts asserted without a verifiable source or explicit retrieval when one is expected, and (2) omission of uncertainty markers ("likely", "unclear", "I cannot verify") on claims that are genuinely uncertain.
 
 Also assess these Substack quality gates:
 - **Reader Hook**: title + first two sentences would make a stranger keep reading.
@@ -1058,6 +1106,10 @@ Then provide:
 - **Top 3 strengths**
 - **Top 3 weaknesses**
 - **Specific revision instructions** (quote text, suggest changes)
+- **Blocking issues** labeled P0/P1. PASS is forbidden while any P0/P1 remains.
+- For each factual or first-person operational claim, name the evidence entry that supports it; do not infer coverage from the number of ledger entries.
+
+You MUST identify at least 2 specific weaknesses. If you believe the draft is strong, still enumerate which 2 dimensions are weakest and why. A review that lists no weaknesses will be rejected and re-run. If you find nothing to critique, explain why each standard dimension (argument, structure, evidence, prose) is adequate.
 
 Format scores as:
 SCORES:
@@ -1069,6 +1121,8 @@ READER_HOOK: [score]/10
 VOICE_DISTINCTIVENESS: [score]/10
 TITLE_QUALITY: [score]/10
 EVIDENCE_LEDGER_DISCIPLINE: [score]/10
+VERDICT: HOLD|PASS
+UNRESOLVED_P0_P1: [count]
 
 Be rigorous. Write in the same language as the draft.
 """
@@ -1245,7 +1299,7 @@ def harsh_review_prompt(
     if outline:
         outline_ref = f"\n\n**原始大纲（对照检查遗漏）:**\n{outline[:6000]}\n"
 
-    return f"""你是一位以严苛著称的文学编辑。你的审稿标准极高，从不给面子，只追求作品达到出版水准。
+    return f"""You are a demanding publication editor. Be direct, precise, and useful; severity is not a substitute for evidence.
 你被称为"红笔杀手"——经你手的稿子没有不被改得面目全非的。
 
 评审轮次: {round_num}
@@ -1315,4 +1369,7 @@ OVERALL: [average]/10
 ### 总评
 [一段话：这稿子能发表吗？差在哪？需要几轮大改？]
 
-用中文评审。绝对不要客气。"""
+VERDICT: HOLD|PASS
+UNRESOLVED_P0_P1: [count]
+
+PASS is forbidden while any factual claim lacks support, the title promise is unfulfilled, or a P0/P1 issue remains. Write the review in the same language as the draft. Review the work, not the author's worth."""

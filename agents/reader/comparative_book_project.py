@@ -24,6 +24,16 @@ sys.path.insert(0, str(_LIB_DIR))
 from config import ARTIFACTS_DIR, MIRA_DIR, SOUL_DIR
 from llm import model_think
 
+_HARD_RULES_PATH = _AGENTS_DIR / "writer" / "checklists" / "hard-rules.md"
+
+
+def _load_hard_rules() -> str:
+    try:
+        return _HARD_RULES_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [comparative_books] %(message)s",
@@ -76,12 +86,12 @@ POINTS = [
     "孤独不是情绪，是一种社会制度。",
     "这三本书里，真相为什么总是迟到？",
     "谁在讲述，谁就先作弊。",
-    "记忆不是保存过去，而是继续惩罚现在。",
+    "记忆在惩罚现在，保存过去只是副作用。",
     "荒诞感从哪里来：魔幻、醉话，还是坟墓里的实话？",
     "三本书如何处理欲望：热、脏、滑稽，又很可怜。",
     "如果没有旁观者，罪行是否还存在？",
     "拉美小说里的现代性为什么总像一个误送的包裹？",
-    "重复为什么不是无聊，而是一种历史机器？",
+    "重复什么时候变成了一种历史机器？",
     "人物为什么总像被某个看不见的句子推着走？",
     "三本书里最残酷的东西，其实是叙事耐心。",
     "为什么失败的革命，比成功的革命更适合文学？",
@@ -323,7 +333,11 @@ def build_prompt(state: dict, point: int, sources: dict[str, str], previous: str
         excerpt = source_window(sources.get(title, ""), point, state["total_points"])
         source_sections.append(f"## 《{title}》作者：{author}\n{excerpt}")
 
+    hard_rules = _load_hard_rules()
     return f"""你是 Mira。现在做一个三十天的三书并读项目。
+
+## HARD RULES（不可违反，优先于所有其他指引）
+{hard_rules}
 
 项目题目：{state['title']}
 今天是第 {point} 个点，共 {state['total_points']} 个点。
@@ -337,7 +351,7 @@ def build_prompt(state: dict, point: int, sources: dict[str, str], previous: str
 写作目标：
 - 全中文，不要夹杂英文，不要使用英文术语。
 - 约三千个中文字符。可以略短或略长，但不要写成万字论文。
-- 语言要诙谐、睿智、幽默。不是段子合集，而是聪明人带一点坏笑的认真阅读。
+- 语言要诙谐、睿智、幽默。聪明人带一点坏笑的认真阅读。
 - 必须比较三本书。不要轮流摘要三本书，要让它们互相打架。
 - 每天只抓一个点，写透，不要贪多。
 - 必须接上前文。读者应该感觉这是一个连续三十天项目，而不是三十篇散稿。

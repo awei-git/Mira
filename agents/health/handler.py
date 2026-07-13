@@ -41,8 +41,8 @@ def handle(
     store = HealthStore(DATABASE_URL)
 
     # Resolve person_id: sender from iOS is device name (e.g. "iphone"),
-    # but we need the user_id (e.g. "ang"). Extract from workspace path
-    # which is .../users/{user_id}/tasks/... or fall back to "ang".
+    # but we need the user_id (e.g. "default"). Extract from workspace path
+    # which is .../users/{user_id}/tasks/... or fall back to "default".
     user_id = _resolve_user_id(workspace, sender)
 
     # Classify the input
@@ -115,7 +115,7 @@ def _resolve_user_id(workspace: Path, sender: str) -> str:
     """Map device sender name to user_id.
 
     The iOS app sends device name as sender (e.g. "iphone", "ipad").
-    We need the bridge user_id (e.g. "ang", "liquan") for DB queries.
+    We need the bridge user_id (e.g. "default", "liquan") for DB queries.
     Extract from workspace path which contains .../users/{user_id}/...
     """
     # Device names that aren't real user IDs
@@ -131,7 +131,7 @@ def _resolve_user_id(workspace: Path, sender: str) -> str:
             if candidate and not candidate.startswith("."):
                 return candidate
 
-    return "ang"  # Safe default
+    return "default"  # Safe default
 
 
 def _classify(content: str, sender: str) -> dict:

@@ -113,6 +113,19 @@ BACKGROUND_JOBS: list[JobSpec] = [
         description="Fetch feeds and generate briefings",
     ),
     JobSpec(
+        name="kol-digest",
+        command=["kol-digest"],
+        trigger="time_window",
+        trigger_name="should_kol_digest",
+        window_start=7,
+        window_end=11,
+        priority=12,
+        blocking_group="heavy",
+        bg_name_pattern="kol-digest",
+        session_action="kol_digest",
+        description="Monitor known KOL publications, podcasts, and web-indexed X",
+    ),
+    JobSpec(
         name="writing-pipeline",
         command=["writing-pipeline"],
         trigger="conditional",  # always runs, internal logic decides
@@ -131,7 +144,8 @@ BACKGROUND_JOBS: list[JobSpec] = [
         window_end=22,
         state_key_pattern="last_autowrite_check",
         blocking_group="heavy",
-        description="Check for auto-writing opportunities",
+        description="Legacy autonomous article-topic check; disabled in V5 because essays must grow from discussion.",
+        enabled=False,
     ),
     # === Reflection & Growth ===
     JobSpec(
@@ -198,6 +212,37 @@ BACKGROUND_JOBS: list[JobSpec] = [
         bg_name_pattern="soul-question-{user_id}",
         blocking_group="light",
         description="Daily soul question for self-examination",
+    ),
+    JobSpec(
+        name="daily-collab",
+        command=["daily-collab"],
+        trigger="time_window",
+        trigger_name="should_daily_collab",
+        window_start=11,
+        window_end=23,
+        state_key_pattern="daily_collab_{date}",
+        per_user=True,
+        bg_name_pattern="daily-collab-{user_id}",
+        blocking_group="light",
+        description="Daily proactive message in the single collaboration thread",
+    ),
+    JobSpec(
+        name="daily-collab-review",
+        command=["daily-collab-review"],
+        trigger="conditional",
+        trigger_name="_should_daily_collab_review",
+        state_key_pattern="daily_collab_review_{date}",
+        blocking_group="light",
+        description="Weekly review of the Mira discussion loop",
+    ),
+    JobSpec(
+        name="daily-collab-operator-brief",
+        command=["daily-collab-operator-brief"],
+        trigger="conditional",
+        trigger_name="_should_daily_collab_operator_brief",
+        state_key_pattern="daily_collab_operator_brief_{date}",
+        blocking_group="light",
+        description="Compact V5 truth-status brief for the single Mira discussion thread",
     ),
     JobSpec(
         name="spark-check",
@@ -304,6 +349,21 @@ BACKGROUND_JOBS: list[JobSpec] = [
         state_key_pattern="book_review_{date}",
         blocking_group="heavy",
         description="Daily book review",
+    ),
+    JobSpec(
+        name="mira-marginalia",
+        command=[],
+        trigger="time_window",
+        trigger_name="should_mira_marginalia",
+        window_start=9,
+        window_end=13,
+        state_key_pattern="mira_marginalia_{date}",
+        priority=34,
+        blocking_group="heavy",
+        bg_name_pattern="mira-marginalia",
+        launcher="script",
+        script_path="../reader/mira_marginalia.py",
+        description="Weekly nonfiction marginalia notes and 15-minute Chinese podcast",
     ),
     JobSpec(
         name="comparative-book-project",
@@ -468,8 +528,9 @@ BACKGROUND_JOBS: list[JobSpec] = [
 # ---------------------------------------------------------------------------
 
 PIPELINE_CHAINS: dict[str, list[str]] = {
-    "explore": ["autowrite-check"],
-    "autowrite-check": ["writing-pipeline"],
+    # V5: exploration may inform the single discussion thread, but it must not
+    # silently trigger article generation. Public essays grow from conversation
+    # and still enter the explicit writing-pipeline once a draft/approval exists.
     # writing-pipeline runs continuously; publish is handled by _check_pending_publish
 }
 

@@ -15,7 +15,7 @@ secrets.yml schema:
       discord:
         bot_token: "Bot abcd..."
         channel_id: 1234567890123456789
-        user_id: "ang"  # BridgeMessage.user_id to stamp inbound with
+        user_id: "default"  # BridgeMessage.user_id to stamp inbound with
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class DiscordBridgeAdapter(BridgeAdapter):
         *,
         token: str | None = None,
         channel_id: int | None = None,
-        user_id: str = "ang",
+        user_id: str = "default",
         enable_replies: bool = False,
         inbound_tag: str = "reader_feedback",
     ) -> None:

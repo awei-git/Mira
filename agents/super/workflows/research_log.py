@@ -118,7 +118,7 @@ def _gather_today_commits(window_hours: int = 30) -> list[str]:
     """Best-effort scan of git commits in the Mira repo touching research/."""
     import subprocess
 
-    repo_root = _AGENTS_DIR.parent  # /Users/angwei/Sandbox/Mira
+    repo_root = _AGENTS_DIR.parent
     try:
         out = subprocess.run(
             [
@@ -355,7 +355,7 @@ def _extract_needs(log_text: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def _mark_run_in_global_state(today: str, user_id: str = "ang") -> None:
+def _mark_run_in_global_state(today: str, user_id: str = "default") -> None:
     """Set research_log_<date>=true in scheduler state so the trigger
     stops re-firing after success.
     """
@@ -368,7 +368,7 @@ def _mark_run_in_global_state(today: str, user_id: str = "ang") -> None:
     save_state(state, user_id=user_id)
 
 
-def do_research_log(user_id: str = "ang") -> None:
+def do_research_log(user_id: str = "default") -> None:
     """Generate and push today's research log.
 
     Idempotent: skips if a log already exists for today.

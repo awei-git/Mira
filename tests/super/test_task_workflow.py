@@ -57,7 +57,7 @@ def test_start_dispatch_workflow_returns_handle_id(monkeypatch):
     workflow_id = task_workflow.start_dispatch_workflow(
         {
             "task_id": "req_1",
-            "user_id": "ang",
+            "user_id": "default",
             "workflow_id": "req_1",
             "status": "dispatched",
             "pid": 123,
@@ -68,7 +68,7 @@ def test_start_dispatch_workflow_returns_handle_id(monkeypatch):
 
     assert workflow_id == "wf_123"
     assert (
-        "ang",
+        "default",
         "req_1",
         "workflow.dispatch_recorded",
         "dispatched",

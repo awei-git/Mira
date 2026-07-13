@@ -67,7 +67,7 @@ def test_enqueue_request_verify_marks_verified_when_task_verifier_passed(monkeyp
 
     row = {
         "id": "request_verify:task_verified",
-        "user_id": "ang",
+        "user_id": "default",
         "task_id": "task_verified",
         "kind": "request_verify",
         "executor": "request_verify.apply",
@@ -85,7 +85,7 @@ def test_enqueue_request_verify_marks_verified_when_task_verifier_passed(monkeyp
     item = repo.enqueue_request_verify(
         {
             "id": "task_verified",
-            "user_id": "ang",
+            "user_id": "default",
             "status": "verified",
             "title": "Build the report",
             "task_type": "file_artifact",
@@ -114,7 +114,7 @@ def test_enqueue_request_verify_leaves_unverified_task_in_backlog(monkeypatch):
     repo.enqueue_request_verify(
         {
             "id": "task_unverified",
-            "user_id": "ang",
+            "user_id": "default",
             "status": "completed_unverified",
             "title": "Draft something",
             "outcome_verified": False,
@@ -132,7 +132,7 @@ def test_claim_backlog_item(monkeypatch):
     import control.repository as repository
     from control.repository import ControlRepository
 
-    claimed = {"id": "request_verify:t1", "task_id": "t1", "user_id": "ang", "status": "in_progress"}
+    claimed = {"id": "request_verify:t1", "task_id": "t1", "user_id": "default", "status": "in_progress"}
     cursor = FakeDictCursor(
         one=[
             {"id": "request_verify:t1"},
@@ -154,14 +154,14 @@ def test_claim_task_for_dispatch_is_atomic(monkeypatch):
     repo = ControlRepository(conn)
     monkeypatch.setattr(repo, "_record_event", lambda *args, **kwargs: events.append((args, kwargs)))
 
-    assert repo.claim_task_for_dispatch("ang", "req_1") is True
+    assert repo.claim_task_for_dispatch("default", "req_1") is True
 
     query, params = conn.cursor_obj.queries[0]
     assert "status = 'dispatched'" in query
     assert "AND status = 'queued'" in query
     assert "AND origin = 'user'" in query
-    assert params[-2:] == ("req_1", "ang")
-    assert events[0][0][:3] == ("req_1", "ang", "task.dispatch_claimed")
+    assert params[-2:] == ("req_1", "default")
+    assert events[0][0][:3] == ("req_1", "default", "task.dispatch_claimed")
 
 
 def test_release_dispatch_claim_only_requeues_unstarted_claim(monkeypatch):
@@ -172,14 +172,14 @@ def test_release_dispatch_claim_only_requeues_unstarted_claim(monkeypatch):
     repo = ControlRepository(conn)
     monkeypatch.setattr(repo, "_record_event", lambda *args, **kwargs: events.append((args, kwargs)))
 
-    repo.release_dispatch_claim("ang", "req_1", reason="spawn failed")
+    repo.release_dispatch_claim("default", "req_1", reason="spawn failed")
 
     query, params = conn.cursor_obj.queries[0]
     assert "status = 'queued'" in query
     assert "status = 'dispatched'" in query
     assert "worker_pid IS NULL" in query
-    assert params[-2:] == ("req_1", "ang")
-    assert events[0][0][:3] == ("req_1", "ang", "task.dispatch_claim_released")
+    assert params[-2:] == ("req_1", "default")
+    assert events[0][0][:3] == ("req_1", "default", "task.dispatch_claim_released")
     assert events[0][1]["payload"] == {"reason": "spawn failed"}
 
 
@@ -193,10 +193,10 @@ def test_append_user_reply_requeues_completed_or_feed_item(monkeypatch):
     monkeypatch.setattr(repo, "get_item", lambda user_id, task_id: {"id": task_id, "status": "queued"})
 
     item = repo.append_user_reply(
-        user_id="ang",
+        user_id="default",
         task_id="feed_market_1",
         message_id="msg_1",
-        sender="ang",
+        sender="default",
         content="answer this",
         created_at="2026-05-02T13:21:06Z",
     )
@@ -207,7 +207,31 @@ def test_append_user_reply_requeues_completed_or_feed_item(monkeypatch):
     assert "worker_pid = CASE" in update_query
     assert "origin = 'user'" in update_query
     assert item == {"id": "feed_market_1", "status": "queued"}
-    assert events[0][0][:3] == ("feed_market_1", "ang", "message.created")
+    assert events[0][0][:3] == ("feed_market_1", "default", "message.created")
+
+
+def test_append_user_reply_requeues_daily_discussion_even_if_working(monkeypatch):
+    from control.repository import ControlRepository
+
+    conn = FakeConn()
+    repo = ControlRepository(conn)
+    monkeypatch.setattr(repo, "_record_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(repo, "get_item", lambda user_id, task_id: {"id": task_id, "status": "queued"})
+
+    item = repo.append_user_reply(
+        user_id="default",
+        task_id="disc_daily_collab",
+        message_id="msg_daily",
+        sender="default",
+        content="still here?",
+        created_at="2026-07-08T01:44:00Z",
+    )
+
+    update_query, update_params = conn.cursor_obj.queries[2]
+    assert "WHEN %s THEN 'queued'" in update_query
+    assert "WHEN %s THEN NULL" in update_query
+    assert update_params[1:6] == (True, True, True, True, True)
+    assert item == {"id": "disc_daily_collab", "status": "queued"}
 
 
 def test_upsert_agent_feed_defaults_to_done():
@@ -218,7 +242,7 @@ def test_upsert_agent_feed_defaults_to_done():
     repo = ControlRepository(conn)
 
     repo.upsert_bridge_item(
-        "ang",
+        "default",
         {
             "id": "feed_report_1",
             "type": "feed",
@@ -241,7 +265,7 @@ def test_upsert_agent_feed_replaces_stale_generated_messages():
     repo = ControlRepository(conn)
 
     repo.upsert_bridge_item(
-        "ang",
+        "default",
         {
             "id": "feed_zhesi_20260502",
             "type": "feed",
@@ -260,7 +284,7 @@ def test_upsert_agent_feed_replaces_stale_generated_messages():
     )
     assert "sender <> %s" in delete_query
     assert "id = ANY(%s)" in delete_query
-    assert delete_params == ("feed_zhesi_20260502", "ang", "ang", ["latest_a", "latest_b"])
+    assert delete_params == ("feed_zhesi_20260502", "default", "default", ["latest_a", "latest_b"])
 
 
 def test_upsert_discussion_preserves_message_history():
@@ -271,7 +295,7 @@ def test_upsert_discussion_preserves_message_history():
     repo = ControlRepository(conn)
 
     repo.upsert_bridge_item(
-        "ang",
+        "default",
         {
             "id": "discussion_1",
             "type": "discussion",
@@ -293,7 +317,7 @@ def test_upsert_legacy_item_does_not_stomp_newer_control_row():
     repo = ControlRepository(conn)
 
     repo.upsert_bridge_item(
-        "ang",
+        "default",
         {
             "id": "feed_market_1",
             "type": "feed",
@@ -316,7 +340,7 @@ def test_upsert_status_card_keeps_user_origin_for_reopened_thread():
     repo = ControlRepository(conn)
 
     repo.upsert_bridge_item(
-        "ang",
+        "default",
         {
             "id": "feed_market_1",
             "type": "feed",
@@ -340,7 +364,7 @@ def test_upsert_agent_feed_done_does_not_close_reopened_user_thread():
     repo = ControlRepository(conn)
 
     repo.upsert_bridge_item(
-        "ang",
+        "default",
         {
             "id": "health_today_ang",
             "type": "feed",
@@ -379,7 +403,7 @@ def test_overlay_running_task_projects_status_card(tmp_path):
     repo.overlay_task_record(
         {
             "task_id": "req_progress",
-            "user_id": "ang",
+            "user_id": "default",
             "content_preview": "tetra synthesis",
             "status": "running",
             "started_at": "2026-05-02T14:23:52Z",
@@ -391,8 +415,51 @@ def test_overlay_running_task_projects_status_card(tmp_path):
         (query, params) for query, params in conn.cursor_obj.queries if "INSERT INTO mira_control.messages" in query
     )
     assert "status_card" in message_query
-    assert message_params[:3] == ("req_progress_status", "req_progress", "ang")
+    assert message_params[:3] == ("req_progress_status", "req_progress", "default")
     assert "locating Tetra synthesis" in message_params[3]
+
+
+def test_overlay_daily_collab_completed_projects_verified():
+    from control.repository import ControlRepository
+
+    conn = FakeConn()
+    repo = ControlRepository(conn)
+
+    repo.overlay_task_record(
+        {
+            "task_id": "disc_daily_collab",
+            "user_id": "default",
+            "content_preview": "conversation",
+            "status": "completed_unverified",
+            "tags": ["daily-collab", "mira", "conversation"],
+            "completed_at": "2026-07-01T03:50:11Z",
+        }
+    )
+
+    params = next(params for query, params in conn.cursor_obj.queries if "INSERT INTO" in query)
+    assert params["status"] == "verified"
+
+
+def test_overlay_task_record_projects_parked_as_archived():
+    from control.repository import ControlRepository
+
+    conn = FakeConn()
+    repo = ControlRepository(conn)
+
+    repo.overlay_task_record(
+        {
+            "task_id": "req_old_failure",
+            "user_id": "default",
+            "content_preview": "old failure",
+            "status": "parked",
+            "failure_class": "worker_crash",
+            "completed_at": "2026-06-26T14:42:07Z",
+        }
+    )
+
+    params = next(params for query, params in conn.cursor_obj.queries if "INSERT INTO" in query)
+    assert params["status"] == "archived"
+    assert params["retryable"] is False
 
 
 def test_overlay_task_record_does_not_overwrite_newer_user_reply():
@@ -404,7 +471,7 @@ def test_overlay_task_record_does_not_overwrite_newer_user_reply():
     repo.overlay_task_record(
         {
             "task_id": "self_audit_20260503",
-            "user_id": "ang",
+            "user_id": "default",
             "content_preview": "自检报告",
             "status": "completed_unverified",
             "started_at": "2026-05-03T12:02:35Z",
@@ -417,5 +484,10 @@ def test_overlay_task_record_does_not_overwrite_newer_user_reply():
     assert "tasks.origin = 'user'" in upsert_query
     assert "tasks.status IN ('queued', 'dispatched', 'running', 'working')" in upsert_query
     assert "tasks.updated_at > EXCLUDED.updated_at" in upsert_query
+    assert (
+        "tasks.status IN ('done', 'verified', 'failed', 'timeout', 'blocked', 'needs-input', 'archived')"
+        in upsert_query
+    )
+    assert "EXCLUDED.status IN ('queued', 'dispatched', 'running', 'working')" in upsert_query
     assert "tasks.type IN ('discussion', 'feed')" in upsert_query
     assert "tasks.origin = 'agent'" in upsert_query

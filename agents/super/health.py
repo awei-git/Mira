@@ -62,7 +62,9 @@ def _run_health_check():
 
         secrets = yaml.safe_load(SECRETS_FILE.read_text(encoding="utf-8")) or {}
         oura_cfg = secrets.get("api_keys", {}).get("oura", {})
-        oura_users = {"ang": oura_cfg} if isinstance(oura_cfg, str) else oura_cfg if isinstance(oura_cfg, dict) else {}
+        oura_users = (
+            {"default": oura_cfg} if isinstance(oura_cfg, str) else oura_cfg if isinstance(oura_cfg, dict) else {}
+        )
         from oura import fetch_and_store as oura_fetch
 
         for uid, token in oura_users.items():
@@ -84,7 +86,7 @@ def _run_health_check():
     user_ids = (
         sorted(d.name for d in users_dir.iterdir() if d.is_dir() and not d.name.startswith("."))
         if users_dir.exists()
-        else ["ang"]
+        else ["default"]
     )
 
     # --- 3. Refresh health_summary.json for each user (iOS dashboard) ---
@@ -146,16 +148,18 @@ def _run_health_check():
             item_tags.append("alert")
         title = "今日健康" if alerts else "今日健康洞察"
         _write_health_feed(bridge, f"health_today_{uid}", title, combined, item_tags)
-        # Compatibility alias for existing clients that still request the old
-        # health_insight_<user> item directly. Keep it unpinned so migrated
-        # clients can prefer health_today_<user> without hiding the legacy card.
+        # Keep a digest-only compatibility alias for direct legacy lookups, but
+        # archive it so list UIs cannot show a duplicate or stale thread.
         _write_health_feed(
             bridge,
             f"health_insight_{uid}",
             title,
             combined,
             item_tags,
+            update_manifest=False,
             pinned=False,
+            preserve_thread=False,
+            status_override="archived",
         )
 
         # Best-effort cleanup: archive the legacy split alert item so it doesn't linger.
@@ -178,6 +182,28 @@ def _message_ts(message: dict) -> str:
 def _is_user_message(message: dict, user_id: str) -> bool:
     sender = str(message.get("sender") or "")
     return sender not in {"agent", "health_agent"} or sender == user_id
+
+
+_INTENT_CLARIFICATION_REPLY = "What do you want to achieve with this?"
+
+
+def _is_disposable_health_message(message: dict, digest_id: str) -> bool:
+    """Return True for generated health thread noise owned by refresh jobs."""
+    if message.get("id") == digest_id:
+        return True
+    if message.get("sender") == "health_agent":
+        return True
+    if message.get("kind") == "status_card":
+        return True
+
+    content = str(message.get("content") or "").strip()
+    if content == _INTENT_CLARIFICATION_REPLY:
+        return True
+    if message.get("kind") == "error" and "health produced no verifiable output" in content:
+        return True
+    if content.startswith("处理失败: health produced no verifiable output"):
+        return True
+    return False
 
 
 def _has_unanswered_user_reply(messages: list[dict], digest_id: str, user_id: str) -> bool:
@@ -205,6 +231,8 @@ def _write_health_feed(
     *,
     update_manifest: bool = True,
     pinned: bool = True,
+    preserve_thread: bool = True,
+    status_override: str | None = None,
 ):
     """Write a stable health feed item without discarding conversation history.
 
@@ -226,14 +254,13 @@ def _write_health_feed(
         {},
     )
     digest_timestamp = existing_digest.get("timestamp") or existing_digest.get("created_at") or now
-    messages = [
-        msg
-        for msg in previous_messages
-        if isinstance(msg, dict)
-        and msg.get("id") != digest_id
-        and msg.get("sender") != "health_agent"
-        and msg.get("kind") != "status_card"
-    ]
+    messages = []
+    if preserve_thread:
+        messages = [
+            msg
+            for msg in previous_messages
+            if isinstance(msg, dict) and not _is_disposable_health_message(msg, digest_id)
+        ]
     messages.append(
         {
             "id": digest_id,
@@ -250,7 +277,7 @@ def _write_health_feed(
         "id": item_id,
         "type": "feed",
         "title": title,
-        "status": "queued" if has_unanswered_reply else "done",
+        "status": status_override or ("queued" if has_unanswered_reply else "done"),
         "tags": tags,
         "origin": "user" if has_unanswered_reply else "agent",
         "pinned": pinned,
@@ -292,7 +319,7 @@ def _run_health_weekly_report():
     user_ids = (
         sorted(d.name for d in users_dir.iterdir() if d.is_dir() and not d.name.startswith("."))
         if users_dir.exists()
-        else ["ang"]
+        else ["default"]
     )
 
     for uid in user_ids:

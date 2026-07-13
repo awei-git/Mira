@@ -1,0 +1,32 @@
+name: intelligence_briefing
+memory_class: epistemic
+trigger:
+  type: schedule
+  detail: morning
+priority: 30
+version: 1
+max_duration_s: 900
+checkpoint_every: 1
+involved_skills:
+  - briefing
+  - signal_detection
+steps:
+  - name: preflight_eight_sources
+    type: deterministic
+  - name: snapshot_interests_gaps
+    type: memory
+  - name: fetch_sources_parallel
+    type: deterministic
+    action: briefing_fetch_sources
+  - name: dedup_trust_classification
+    type: deterministic
+    action: briefing_dedup_trust_classification
+  - name: write_briefing_trust_labeled
+    type: deterministic
+    action: briefing_write
+  - name: signal_quality_gate
+    type: eval
+  - name: store_push
+    type: deterministic
+  - name: experience_record_selective_proposal
+    type: memory

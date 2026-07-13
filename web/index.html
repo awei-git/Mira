@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="/mira-icon.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>Mira</title>
 <style>
   :root {
@@ -35,10 +37,12 @@
 
   /* ===== Profile Picker ===== */
   .profiles { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; gap:24px; background: var(--sidebar-bg); }
+  .app-logo { width:76px; height:76px; border-radius:18px; object-fit:cover; box-shadow:0 12px 32px rgba(0,0,0,.24); }
   .profiles h2 { color: var(--text2); font-size:20px; }
   .profile-btn { display:flex; align-items:center; gap:14px; padding:14px 20px; background:var(--card); border:none; border-radius:var(--radius); cursor:pointer; width:280px; color:var(--text); font-size:17px; transition: background .15s; }
   .profile-btn:hover { background:var(--card-hover); }
-  .profile-btn .avatar { width:40px; height:40px; border-radius:50%; background:var(--accent2); display:flex; align-items:center; justify-content:center; font-size:20px; }
+  .profile-btn .avatar { width:40px; height:40px; border-radius:10px; background:var(--accent2); display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  .profile-btn .avatar img { width:100%; height:100%; object-fit:cover; }
   .profile-btn .name { font-weight:600; }
   .profile-btn .agent { font-size:13px; color:var(--text2); }
 
@@ -50,6 +54,8 @@
   /* Sidebar */
   .sidebar { background: var(--sidebar-bg); border-right: 1px solid var(--border); display:flex; flex-direction:column; overflow-y:auto; }
   .sidebar-header { padding:18px 16px 14px; display:flex; align-items:center; justify-content:space-between; border-bottom: 1px solid var(--border); }
+  .sidebar-brand { display:flex; align-items:center; gap:10px; min-width:0; }
+  .sidebar-icon { width:34px; height:34px; border-radius:9px; object-fit:cover; flex:0 0 auto; }
   .sidebar-header h1 { font-size:14px; font-weight:500; letter-spacing:.3px; text-transform:lowercase; }
   .sidebar-header .status { display:flex; align-items:center; gap:6px; }
   .dot { width:6px; height:6px; border-radius:50%; }
@@ -152,7 +158,7 @@
 
 <!-- Profile Picker -->
 <div class="profiles" id="profilePicker">
-  <div style="font-size:44px">💬</div>
+  <img class="app-logo" src="/mira-icon.png" alt="">
   <h2>Mira</h2>
   <div id="profileList"></div>
 </div>
@@ -163,9 +169,12 @@
   <!-- Sidebar -->
   <div class="sidebar">
     <div class="sidebar-header">
-      <div>
+      <div class="sidebar-brand">
+        <img class="sidebar-icon" src="/mira-icon.png" alt="">
+        <div>
         <h1 id="userName"></h1>
         <div class="status"><div class="dot" id="statusDot"></div><span id="statusText" style="font-size:13px"></span></div>
+        </div>
       </div>
     </div>
     <div class="sidebar-nav" id="sidebarNav"></div>
@@ -209,6 +218,7 @@
 let currentUser = null, currentTab = 'home', currentItemId = null, items = [], currentSection = null, pollTimer = null;
 let webToken = localStorage.getItem('mira_web_token') || '';
 let operatorSummary = null;
+let v3Summary = null;
 
 function authHeaders(extra) {
   const headers = {...(extra || {})};
@@ -250,12 +260,13 @@ async function loadProfiles() {
   const data = await res.json();
   document.getElementById('profileList').innerHTML = data.profiles.map(p => `
     <button class="profile-btn" onclick="selectProfile('${p.id}','${p.display_name}')">
-      <div class="avatar">👤</div>
+      <div class="avatar"><img src="/mira-icon.png" alt=""></div>
       <div><div class="name">${p.display_name}</div><div class="agent">Agent: ${p.agent_name}</div></div>
     </button>`).join('');
 }
 function selectProfile(id, name) {
   currentUser = id;
+  v3Summary = null;
   document.getElementById('profilePicker').style.display = 'none';
   document.getElementById('mainLayout').style.display = 'grid';
   document.getElementById('userName').textContent = name;
@@ -269,7 +280,7 @@ function selectProfile(id, name) {
 function switchProfile() {
   clearInterval(pollTimer);
   if (eventSource) { eventSource.close(); eventSource = null; }
-  currentUser = null; currentItemId = null;
+  currentUser = null; currentItemId = null; v3Summary = null;
   localStorage.removeItem('mira_profile');
   document.getElementById('profilePicker').style.display = 'flex';
   document.getElementById('mainLayout').style.display = 'none';
@@ -288,6 +299,7 @@ function buildSidebar() {
     <div class="nav-item" data-nav="failed" onclick="navTo('failed')">failed</div>
     <div class="nav-item" data-nav="jobs" onclick="navTo('jobs')">jobs</div>
     <div class="nav-item" data-nav="operator" onclick="navTo('operator')">operator</div>
+    <div class="nav-item" data-nav="v3" onclick="navTo('v3')">v3 foundation</div>
     <div class="nav-sep"></div>
     <div class="nav-item" data-nav="writings" onclick="navToArtifact('writings')">writings</div>
     <div class="nav-item" data-nav="briefings" onclick="navToArtifact('briefings')">briefings</div>
@@ -300,10 +312,13 @@ function buildSidebar() {
 function navTo(tab) {
   currentTab = tab; currentSection = null;
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.nav === tab));
-  document.getElementById('listTitle').textContent = {home:'home',timeline:'timeline',requests:'requests',pinned:'pinned',failed:'failed',operator:'operator',jobs:'jobs'}[tab] || tab.toLowerCase();
+  document.getElementById('listTitle').textContent = {home:'home',timeline:'timeline',requests:'requests',pinned:'pinned',failed:'failed',operator:'operator',jobs:'jobs',v3:'v3 foundation'}[tab] || tab.toLowerCase();
   if (tab === 'operator') {
     currentItemId = null;
     renderOperator();
+  } else if (tab === 'v3') {
+    currentItemId = null;
+    renderV3();
   } else if (tab === 'jobs') {
     currentItemId = null;
     renderJobs();
@@ -345,6 +360,7 @@ async function refresh() {
     const badge = document.getElementById('badgeNeedsInput');
     if (ni > 0) { badge.style.display=''; badge.textContent=ni; } else { badge.style.display='none'; }
     if (currentTab === 'operator') renderOperator();
+    else if (currentTab === 'v3') renderV3();
     else if (currentTab === 'jobs') renderJobs();
     else if (currentTab !== 'artifacts') renderList();
     if (currentItemId && currentTab !== 'operator') renderDetail(currentItemId);
@@ -361,15 +377,21 @@ function renderList() {
   if (currentTab === 'home' || currentTab === 'timeline') {
     const tenDaysAgo = new Date(new Date().setHours(0,0,0,0) - 10*86400000);
     const visible = (q ? f : f.filter(i => new Date(i.created_at||i.updated_at) >= tenDaysAgo)).filter(i=>i.type!=='request');
-    // Needs-attention banner first
-    const ni = visible.filter(i=>i.status==='needs-input');
-    if(ni.length) { html.push(sec('Reply Needed',ni.length,'warn')); ni.forEach(i=>html.push(row(i))); }
     // Date-grouped items — pinned first within each group, then by recency
     const sortPinnedFirst = (a, b) => {
       if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
       return new Date(b.updated_at) - new Date(a.updated_at);
     };
-    groupByDate(visible.filter(i=>i.status!=='needs-input')).forEach(g => {
+    const alerts = visible.filter(isSecurityAlert);
+    if(alerts.length) {
+      alerts.sort(sortPinnedFirst);
+      html.push(sec('Security Alerts',alerts.length,'warn'));
+      alerts.forEach(i=>html.push(row(i)));
+    }
+    // Needs-attention banner first
+    const ni = visible.filter(i=>i.status==='needs-input' && !isSecurityAlert(i));
+    if(ni.length) { html.push(sec('Reply Needed',ni.length,'warn')); ni.forEach(i=>html.push(row(i))); }
+    groupByDate(visible.filter(i=>i.status!=='needs-input' && !isSecurityAlert(i))).forEach(g => {
       g.items.sort(sortPinnedFirst);
       const isRecent = g.label==='Today'||g.label==='Yesterday';
       if (isRecent) {
@@ -525,16 +547,16 @@ async function renderJobs() {
 }
 
 function jobRow(j) {
-  const icon = j.status==='done' ? '✅' : j.status==='disabled' ? '⏸️' : '⏳';
+  const icon = j.status==='done' ? '✅' : j.status==='idle' ? '•' : j.status==='disabled' ? '⏸️' : '⏳';
   const cost = j.usage.cost_usd > 0 ? `$${j.usage.cost_usd.toFixed(4)}` : '';
   const tokens = j.usage.tokens > 0 ? fmtTokens(j.usage.tokens) : '';
   const models = Object.keys(j.usage.models || {}).join(', ');
   const time = j.ran_at ? j.ran_at.substring(11, 16) : (j.window || '');
-  const sub = [cost, tokens, models].filter(Boolean).join(' · ') || j.description;
-  const dispatches = j.dispatch_count > 1 ? ` x${j.dispatch_count}` : '';
-  return `<div class="row" onclick="showJobDetail('${j.name}')" style="border-left:3px solid ${j.status==='done'?'var(--accent)':j.status==='disabled'?'var(--text3)':'var(--orange)'}">
+  const sub = [cost, tokens, models, j.outcome].filter(Boolean).join(' · ') || j.description;
+  const checks = j.check_count != null ? ` ${j.check_count} checks` : (j.dispatch_count > 1 ? ` x${j.dispatch_count}` : '');
+  return `<div class="row" onclick="showJobDetail('${j.name}')" style="border-left:3px solid ${j.status==='done'?'var(--accent)':j.status==='idle'?'var(--text3)':j.status==='disabled'?'var(--text3)':'var(--orange)'}">
     <div class="row-icon" style="font-size:15px">${icon}</div>
-    <div class="row-info"><div class="row-title" style="font-size:14px">${esc(j.name)}${dispatches}</div><div class="row-sub" style="font-size:12px">${esc(sub)}</div></div>
+    <div class="row-info"><div class="row-title" style="font-size:14px">${esc(j.name)}${checks}</div><div class="row-sub" style="font-size:12px">${esc(sub)}</div></div>
     <div class="row-meta"><div class="row-time" style="font-size:13px">${esc(time)}</div></div></div>`;
 }
 
@@ -548,6 +570,9 @@ function showJobDetail(name) {
   html += `<div class="operator-row" style="margin-bottom:12px"><div class="operator-row-title">Description</div><div class="operator-row-sub">${esc(j.description)}</div></div>`;
   html += `<div class="operator-row" style="margin-bottom:12px"><div class="operator-row-title">Schedule</div><div class="operator-row-sub">Trigger: ${esc(j.trigger)}${j.window ? ' · Window: '+esc(j.window) : ''}${j.cooldown_hours ? ' · Cooldown: '+j.cooldown_hours+'h' : ''} · Priority: ${j.priority}</div></div>`;
   html += `<div class="operator-row" style="margin-bottom:12px"><div class="operator-row-title">Status</div><div class="operator-row-sub">${esc(j.status)}${j.ran_at ? ' · Ran at: '+esc(j.ran_at) : ''} · Dispatches: ${j.dispatch_count}</div></div>`;
+  if (j.outcome || j.action) {
+    html += `<div class="operator-row" style="margin-bottom:12px"><div class="operator-row-title">Outcome</div><div class="operator-row-sub">${esc(j.outcome || '')}${j.action ? '<br>'+esc(j.action) : ''}${j.last_checked_at ? '<br>Last checked: '+esc(j.last_checked_at) : ''}${j.last_advanced_at ? '<br>Last advanced: '+esc(j.last_advanced_at) : ''}</div></div>`;
+  }
   if (j.dispatch_times && j.dispatch_times.length) {
     html += `<div class="operator-row" style="margin-bottom:12px"><div class="operator-row-title">Dispatch Times</div><div class="operator-row-sub">${j.dispatch_times.map(t=>esc(t)).join('<br>')}</div></div>`;
   }
@@ -580,6 +605,151 @@ function operatorRow(title, subtitle, note) {
 }
 function sec(t,c,cls) { return `<div class="section-label ${cls||''}">${esc((t||'').toLowerCase())}${c?`<span class="cnt">${c}</span>`:''}</div>`; }
 
+async function renderV3() {
+  document.getElementById('detailTitle').textContent = 'V3 Foundation';
+  document.getElementById('replyBar').style.display = 'none';
+  const listEl = document.getElementById('listContent');
+  const detailEl = document.getElementById('detailMessages');
+  if (!v3Summary) {
+    listEl.replaceChildren(emptyNode('Loading V3 foundation...'));
+    detailEl.replaceChildren(emptyNode('Loading V3 foundation...'));
+  }
+
+  try {
+    v3Summary = await apiFetch(`/api/${currentUser}/v3`).then(r=>r.json());
+  } catch(e) {
+    listEl.replaceChildren(emptyNode('Failed to load V3 foundation'));
+    detailEl.replaceChildren(emptyNode('V3 endpoint is unavailable'));
+    return;
+  }
+
+  const dashboard = v3Summary.dashboard || {};
+  const config = v3Summary.config || {};
+  const paths = v3Summary.paths || {};
+  const pipelines = dashboard.active_pipelines || [];
+  const recent = dashboard.recent_experience_ids || [];
+  const scars = dashboard.scars || [];
+  const hypotheses = dashboard.active_hypotheses || [];
+  const skillTraces = dashboard.skill_traces || {};
+  const reviewQueues = dashboard.review_queues || {};
+  const effectLogIds = dashboard.effect_log_ids || [];
+  const policyParams = config.policy_parameters || {};
+  const modelRouting = config.model_routing || {};
+  const approvalRows = (reviewQueues.approval || []).map(item => operatorRowNode(item.pipeline || 'action', item.status || 'pending', item.reason || 'approval queue'));
+  const memoryRows = (reviewQueues.memory_commit || []).map(item => operatorRowNode(item.pipeline || item.proposal_id, item.status || 'pending', item.reason || item.proposal_id));
+  const experimentRows = (reviewQueues.experiment || []).map(item => operatorRowNode(item.hypothesis_id || item.pipeline, item.status || 'testing', item.claim || 'experiment'));
+  const incidentRows = (reviewQueues.incident_dlq || []).map(item => operatorRowNode(item.pipeline || item.run_id, item.status || 'failed', item.proposal_id || 'incident/dlq'));
+
+  listEl.replaceChildren(
+    operatorSectionNode('Runtime Surface', [
+      operatorRowNode('Web API', '/api/' + currentUser + '/v3', 'live'),
+      operatorRowNode('Pipeline Catalog', `${pipelines.length} active pipelines`, 'loaded from mira.pipelines'),
+      operatorRowNode('Experience Ledger', `${recent.length} recent record(s) visible`, paths.ledger || ''),
+      operatorRowNode('Memory Kernel', `${scars.length} scar(s) · ${hypotheses.length} active hypothesis`, paths.kernel || ''),
+      operatorRowNode('Gateway Commit Log', `${memoryRows.length} review item(s)`, paths.commits || ''),
+      operatorRowNode('Effect Log', `${effectLogIds.length} recent effect(s)`, paths.effect_log || ''),
+    ]),
+    operatorSectionNode(
+      'Active Pipelines',
+      pipelines.map(name => operatorRowNode(name, 'registered', 'memory-first runtime catalog')),
+      'No V3 pipelines registered.'
+    )
+  );
+
+  const skillTraceRows = Object.entries(skillTraces).map(([name, rate]) =>
+    operatorRowNode(name, `${Math.round(Number(rate || 0) * 100)}% success`, 'kernel skill trace')
+  );
+  const recentRows = recent.map(id => operatorRowNode(id, 'experience record', 'ledger'));
+  const modelRows = Object.entries(modelRouting).map(([key, value]) => operatorRowNode(key, String(value), 'configured model'));
+
+  detailEl.replaceChildren(
+    operatorGridNode([
+      metricCardNode('Pipelines', pipelines.length, 'active catalog entries'),
+      metricCardNode('Policies', Number(dashboard.hard_policy_count || 0) + Number(dashboard.soft_policy_count || 0), `${dashboard.hard_policy_count || 0} hard · ${dashboard.soft_policy_count || 0} soft`),
+      metricCardNode('Memory', recent.length, 'recent experiences'),
+      metricCardNode('Review', memoryRows.length + approvalRows.length + experimentRows.length + incidentRows.length, 'V3.1 queues'),
+    ]),
+    operatorSectionNode('Approval Queue', approvalRows, 'No actions waiting for approval'),
+    operatorSectionNode('Memory Commit Queue', memoryRows, 'No memory proposals waiting'),
+    operatorSectionNode('Experiment Queue', experimentRows, 'No experiments pending'),
+    operatorSectionNode('Incident / DLQ', incidentRows, 'No incident replay bundles'),
+    operatorSectionNode('Memory State', [
+      operatorRowNode('Scars', scars.length ? scars.join(', ') : 'none', 'kernel'),
+      operatorRowNode('Active Hypotheses', hypotheses.length ? hypotheses.join(', ') : 'none', 'self-evolution'),
+    ]),
+    operatorSectionNode('Skill Traces', skillTraceRows, 'No skill traces recorded yet'),
+    operatorSectionNode('Recent Experiences', recentRows, 'No experience records yet'),
+    operatorSectionNode('Model Routing', modelRows, 'No model routing config'),
+    operatorSectionNode('Storage Paths', [
+      operatorRowNode('Kernel', paths.kernel || '', ''),
+      operatorRowNode('Ledger', paths.ledger || '', ''),
+      operatorRowNode('Commits', paths.commits || '', ''),
+      operatorRowNode('Effect Log', paths.effect_log || '', ''),
+      operatorRowNode('Eval History', paths.eval_history || '', ''),
+    ])
+  );
+}
+
+function emptyNode(text) {
+  const node = document.createElement('div');
+  node.className = 'empty';
+  node.textContent = text;
+  return node;
+}
+
+function operatorGridNode(cards) {
+  const grid = document.createElement('div');
+  grid.className = 'operator-grid';
+  cards.forEach(card => grid.appendChild(card));
+  return grid;
+}
+
+function metricCardNode(title, value, note) {
+  const card = document.createElement('div');
+  card.className = 'operator-card';
+  const titleEl = document.createElement('h4');
+  titleEl.textContent = title;
+  const valueEl = document.createElement('div');
+  valueEl.className = 'operator-value';
+  valueEl.textContent = String(value);
+  const noteEl = document.createElement('div');
+  noteEl.className = 'operator-note';
+  noteEl.textContent = note || '';
+  card.append(titleEl, valueEl, noteEl);
+  return card;
+}
+
+function operatorSectionNode(title, rows, emptyText) {
+  const section = document.createElement('div');
+  section.className = 'operator-section';
+  const heading = document.createElement('h4');
+  heading.textContent = title;
+  const list = document.createElement('div');
+  list.className = 'operator-list';
+  if (rows.length) {
+    rows.forEach(row => list.appendChild(row));
+  } else {
+    const empty = emptyNode(emptyText || 'No items');
+    empty.style.padding = '20px';
+    list.appendChild(empty);
+  }
+  section.append(heading, list);
+  return section;
+}
+
+function operatorRowNode(title, subtitle, note) {
+  const row = document.createElement('div');
+  row.className = 'operator-row';
+  const rowTitle = document.createElement('div');
+  rowTitle.className = 'operator-row-title';
+  rowTitle.textContent = title || '';
+  const rowSub = document.createElement('div');
+  rowSub.className = 'operator-row-sub';
+  rowSub.textContent = [subtitle || '', note || ''].filter(Boolean).join('\n');
+  row.append(rowTitle, rowSub);
+  return row;
+}
+
 // Category style — mirrors iOS categoryStyle(). Returns {label, color, icon}.
 // Tag-based first (specific), then falls back to item.type. Same visual
 // taxonomy as the iOS app.
@@ -601,6 +771,15 @@ function categoryStyle(item) {
   if (item.type === 'request')                             return {label:'task',     color:cv('--c-request'),  icon:'↑'};
   if (item.type === 'discussion')                          return {label:'thread',   color:cv('--c-discuss'),  icon:'❍'};
   return {label:'agent', color:cv('--c-agent'), icon:'·'};
+}
+
+function isSecurityAlert(item) {
+  const tags = new Set(item.tags || []);
+  const errorCode = String((item.error || {}).code || '').toLowerCase();
+  return tags.has('security')
+    || tags.has('skill_audit')
+    || tags.has('error')
+    || errorCode.includes('skill_audit');
 }
 
 // Persist read-versions in localStorage. Item is unread iff updated_at != last seen.
@@ -922,7 +1101,7 @@ function startSSE(userId) {
       if (notifiedIds.has(key)) return;
       notifiedIds.add(key);
       // Only notify for actionable states
-      if (item.status === 'needs-input' || item.status === 'done' || item.type === 'feed') {
+      if (isSecurityAlert(item) || item.status === 'needs-input' || item.status === 'done' || item.type === 'feed') {
         showBrowserNotification(item);
       }
       // Also refresh the UI
@@ -937,7 +1116,10 @@ function startSSE(userId) {
 function showBrowserNotification(item) {
   if (Notification.permission !== 'granted') return;
   let title, body;
-  if (item.status === 'needs-input') {
+  if (isSecurityAlert(item)) {
+    title = 'Security Alert';
+    body = item.title;
+  } else if (item.status === 'needs-input') {
     title = 'Needs your reply';
     body = item.title;
   } else if (item.status === 'done' && item.origin === 'user') {
@@ -953,7 +1135,7 @@ function showBrowserNotification(item) {
   } else return;
 
   const n = new Notification(title, { body, icon: '/favicon.ico', tag: item.id });
-  n.onclick = () => { window.focus(); loadItem(item.id); };
+  n.onclick = () => { window.focus(); navTo('home'); refresh().then(()=>openDetail(item.id)); };
 }
 
 // ===== Init =====

@@ -8,7 +8,9 @@ Sub-modules:
 import json
 import logging
 import re
-from datetime import datetime
+import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from config import (
@@ -71,6 +73,98 @@ from memory.soul_skills import (  # noqa: F401
 )
 
 log = logging.getLogger("mira")
+_MEMORY_INJECTION_LOG = MIRA_ROOT / "agents" / "shared" / "soul" / "memory_injection.log"
+
+
+def _estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, (len(text) + 3) // 4)
+
+
+def _entry_name(path: Path) -> str:
+    try:
+        return str(path.relative_to(MIRA_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _soul_injection_runtime_metadata() -> tuple[str, dict[str, object]]:
+    agent = "unknown"
+    task_id = None
+    task_type = None
+    loader_function = None
+    calling_function = None
+    frame = None
+    try:
+        frame = sys._getframe(2)
+        while frame:
+            locals_ = frame.f_locals
+            if task_id is None and locals_.get("task_id") is not None:
+                task_id = str(locals_["task_id"])
+            if task_type is None:
+                for key in ("task_type", "agent_type", "workflow_name", "workflow", "mode"):
+                    value = locals_.get(key)
+                    if value:
+                        task_type = str(value)
+                        break
+            filename = Path(frame.f_code.co_filename)
+            function = frame.f_code.co_name
+            if loader_function is None:
+                loader_function = function
+            elif calling_function is None and filename != Path(__file__):
+                calling_function = f"{filename.name}:{function}"
+            if agent == "unknown":
+                for key in ("agent_name", "agent_id"):
+                    value = locals_.get(key)
+                    if value:
+                        agent = str(value)
+                        break
+                else:
+                    if "agents" in filename.parts:
+                        idx = filename.parts.index("agents")
+                        if idx + 1 < len(filename.parts):
+                            agent = filename.parts[idx + 1]
+            if task_id is not None and task_type is not None and calling_function is not None and agent != "unknown":
+                break
+            frame = frame.f_back
+    except Exception:
+        pass
+    finally:
+        del frame
+
+    return agent, {
+        "task_type": task_type or "unknown",
+        "task_id": task_id,
+        "calling_function": calling_function or loader_function or "unknown",
+        "loader_function": loader_function or "unknown",
+    }
+
+
+def _log_memory_injection(entry_name: str, trigger: object, token_estimate: int) -> None:
+    try:
+        agent, runtime_trigger = _soul_injection_runtime_metadata()
+        if isinstance(trigger, dict):
+            runtime_trigger.update(trigger)
+        elif trigger:
+            runtime_trigger["detail"] = str(trigger)
+        _MEMORY_INJECTION_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_MEMORY_INJECTION_LOG, "a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "entry": entry_name,
+                        "trigger": runtime_trigger,
+                        "tokens": int(token_estimate),
+                        "agent": agent,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception as e:
+        log.debug("memory injection log write skipped: %s", e)
 
 
 def load_soul() -> dict:
@@ -79,13 +173,32 @@ def load_soul() -> dict:
     if violations:
         log.critical("Soul integrity check failed: %s", violations)
 
-    return {
-        "identity": _read_or_default(IDENTITY_FILE, "No identity defined yet."),
-        "memory": _read_or_default(MEMORY_FILE, "No memories yet."),
-        "interests": _read_or_default(INTERESTS_FILE, "No interests defined yet."),
-        "worldview": _read_or_default(WORLDVIEW_FILE, "No worldview yet."),
-        "skills": load_skills_summary(),
+    identity = _read_or_default(IDENTITY_FILE, "No identity defined yet.")
+    memory = _read_or_default(MEMORY_FILE, "No memories yet.")
+    interests = _read_or_default(INTERESTS_FILE, "No interests defined yet.")
+    worldview = _read_or_default(WORLDVIEW_FILE, "No worldview yet.")
+    skills = load_skills_summary()
+    soul = {
+        "identity": identity,
+        "memory": memory,
+        "interests": interests,
+        "worldview": worldview,
+        "skills": skills,
     }
+    for path, content in (
+        (IDENTITY_FILE, identity),
+        (MEMORY_FILE, memory),
+        (INTERESTS_FILE, interests),
+        (WORLDVIEW_FILE, worldview),
+    ):
+        _log_memory_injection(_entry_name(path), {"source": "load_soul"}, _estimate_tokens(content))
+    if skills:
+        _log_memory_injection(
+            _entry_name(SKILLS_INDEX if SKILLS_INDEX.exists() else SKILLS_FILE),
+            {"source": "load_soul"},
+            _estimate_tokens(skills),
+        )
+    return soul
 
 
 def format_soul(soul: dict, *, context_query: str | None = None) -> str:
@@ -125,6 +238,11 @@ def format_soul(soul: dict, *, context_query: str | None = None) -> str:
             if recall:
                 parts.append("\n\n")
                 parts.append(recall)
+                _log_memory_injection(
+                    "session_recall",
+                    {"source": "format_soul", "query": context_query[:120]},
+                    _estimate_tokens(recall),
+                )
         except Exception as e:
             log.debug("session_index recall skipped: %s", e)
 
@@ -158,7 +276,7 @@ def format_soul(soul: dict, *, context_query: str | None = None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def append_memory(entry: str, user_id: str = "ang"):
+def append_memory(entry: str, user_id: str = "default"):
     """Append a timestamped entry to memory. Enforces MAX_MEMORY_LINES.
 
     Overflowed lines (trimmed from memory.md) persist in PostgreSQL
@@ -261,7 +379,7 @@ def update_identity(new_content: str, reason: str = ""):
 # ---------------------------------------------------------------------------
 
 
-def save_reading_note(title: str, reflection: str, user_id: str = "ang"):
+def save_reading_note(title: str, reflection: str, user_id: str = "default"):
     """Save a personal reading reflection after deep dive."""
     notes_dir = user_reading_notes_dir(user_id)
     notes_dir.mkdir(parents=True, exist_ok=True)
@@ -275,7 +393,7 @@ def save_reading_note(title: str, reflection: str, user_id: str = "ang"):
     return path
 
 
-def save_knowledge_note(title: str, content: str, source_task_id: str = "", user_id: str = "ang") -> Path | None:
+def save_knowledge_note(title: str, content: str, source_task_id: str = "", user_id: str = "default") -> Path | None:
     """Save a knowledge write-back note with provenance.
 
     Thin wrapper around save_reading_note that adds source tracing,
@@ -310,7 +428,7 @@ def save_knowledge_note(title: str, content: str, source_task_id: str = "", user
     return path
 
 
-def load_recent_reading_notes(days: int = 14, user_id: str = "ang") -> str:
+def load_recent_reading_notes(days: int = 14, user_id: str = "default") -> str:
     """Load recent reading notes for use in reflect/journal."""
     notes_dir = user_reading_notes_dir(user_id)
     if not notes_dir.exists():
@@ -325,7 +443,13 @@ def load_recent_reading_notes(days: int = 14, user_id: str = "ang") -> str:
             file_date = datetime.strptime(date_str, "%Y-%m-%d")
             if file_date >= cutoff:
                 content = path.read_text(encoding="utf-8")
-                texts.append(content[:1500])
+                snippet = content[:1500]
+                texts.append(snippet)
+                _log_memory_injection(
+                    _entry_name(path),
+                    {"source": "load_recent_reading_notes", "days": days, "user_id": user_id},
+                    _estimate_tokens(snippet),
+                )
         except ValueError:
             continue
     return "\n\n---\n\n".join(texts) if texts else ""
@@ -341,7 +465,7 @@ def detect_recurring_themes(days: int = 7) -> list[str]:
 
     texts = []
     # Gather journal entries
-    journal_dir = user_journal_dir("ang")
+    journal_dir = user_journal_dir("default")
     if journal_dir.exists():
         from datetime import timedelta
 
@@ -381,7 +505,7 @@ def detect_recurring_themes(days: int = 7) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def search_memory(query: str, top_k: int = 5, user_id: str = "ang") -> str:
+def search_memory(query: str, top_k: int = 5, user_id: str = "default") -> str:
     """Search across all soul files using vector + keyword hybrid search.
 
     Returns formatted results for injection into prompts.
@@ -390,13 +514,20 @@ def search_memory(query: str, top_k: int = 5, user_id: str = "ang") -> str:
     try:
         from memory.store import search_formatted
 
-        return search_formatted(query, top_k=top_k, user_id=user_id)
+        result = search_formatted(query, top_k=top_k, user_id=user_id)
+        if result:
+            _log_memory_injection(
+                "semantic_memory_search",
+                {"source": "search_memory", "query": query[:120], "top_k": top_k, "user_id": user_id},
+                _estimate_tokens(result),
+            )
+        return result
     except (ImportError, ModuleNotFoundError, ConnectionError, OSError) as e:
         log.warning("Memory search failed: %s", e)
         return ""
 
 
-def rebuild_memory_index(force: bool = False, user_id: str = "ang") -> int:
+def rebuild_memory_index(force: bool = False, user_id: str = "default") -> int:
     """Rebuild the semantic memory index. Call after major memory changes."""
     try:
         from memory.store import rebuild_index
@@ -439,7 +570,7 @@ def save_episode(
     title: str,
     messages: list[dict],
     tags: list[str] | None = None,
-    user_id: str = "ang",
+    user_id: str = "default",
     verification_proxy: dict | None = None,
 ):
     """Archive a complete task conversation as a searchable episode.
@@ -638,10 +769,15 @@ def _search_knowledge_files(query: str, max_chars: int = 800) -> str:
             break
         result_parts.append(f"[{name}] {snippet}")
         total += len(snippet)
+        _log_memory_injection(
+            f"knowledge/{name}",
+            {"source": "_search_knowledge_files", "query": query[:120]},
+            _estimate_tokens(snippet),
+        )
     return "\n\n".join(result_parts)
 
 
-def recall_context(query: str, max_chars: int = 2000, user_id: str = "ang") -> str:
+def recall_context(query: str, max_chars: int = 2000, user_id: str = "default") -> str:
     """Search memory for relevant prior context before starting a task.
 
     Returns formatted context string for injection into task prompts.
@@ -724,7 +860,7 @@ def _collect_expiring_files(directory: Path, max_age_days: int) -> list[Path]:
     return expiring
 
 
-def distill_before_delete(user_id: str = "ang") -> int:
+def distill_before_delete(user_id: str = "default") -> int:
     """Extract key insights from expiring files before retention deletes them.
 
     Reads soon-to-be-deleted journals, episodes, and reading notes in batch,
@@ -842,7 +978,7 @@ def distill_before_delete(user_id: str = "ang") -> int:
     return batch_files
 
 
-def run_retention_policy(user_id: str = "ang"):
+def run_retention_policy(user_id: str = "default"):
     """Distill expiring knowledge, then prune old files.
 
     Call from journal cycle (daily) to keep disk usage bounded.
@@ -896,5 +1032,9 @@ def health_check() -> dict:
 
 def _read_or_default(path: Path, default: str) -> str:
     if path.exists():
-        return path.read_text(encoding="utf-8").strip()
+        text = path.read_text(encoding="utf-8").strip()
+        age_days = max(0, int((time.time() - path.stat().st_mtime) // 86400))
+        if age_days > 30:
+            return f"[stale: {age_days}d] {text}"
+        return text
     return default

@@ -42,6 +42,16 @@ from config import (
 )
 from llm import claude_think, model_think
 
+_HARD_RULES_PATH = _AGENTS_DIR / "writer" / "checklists" / "hard-rules.md"
+
+
+def _load_hard_rules() -> str:
+    try:
+        return _HARD_RULES_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [book_review] %(message)s",
@@ -58,10 +68,18 @@ ICLOUD_BOOKS = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDo
 ICLOUD_MIRA_BOOKS = ICLOUD_BOOKS / "Mira"
 USER_AGENT = "MiraAgent/1.0 (daily-reader)"
 MAX_HISTORY = 200
+
+# marginalmira publishing retired 2026-05-29 (WA): keep reading the books and
+# writing the daily notes to disk/bridge, but stop publishing the weekly
+# compilation to the marginalmira Substack. This is the single chokepoint —
+# every dispatch path (day-7 auto, self-repair, manual backfill CLI) routes
+# through compile_and_publish_week(), which now early-returns on this flag.
+MARGINALMIRA_PUBLISHING_DISABLED = True
 MAX_TEXT_CHARS = 300_000
 MIN_REPORT_CHARS = (
     4000  # gate against broken LLM output. Real target is 8000+ via prompt; gate stays soft so a 5k essay isn't lost.
 )
+MIN_REFINED_REPORT_RATIO = 0.72
 
 # Daily angles — each day explores the book from a different perspective
 DAILY_ANGLES = [
@@ -543,6 +561,51 @@ def _load_previous_reports(series_dir: Path, up_to_day: int) -> str:
     return "\n\n".join(parts)
 
 
+def _refine_reading_report(report: str, book: dict, day: int, angle: dict) -> str:
+    """Run a second editorial pass so reading reports are not raw first drafts."""
+    raw = (report or "").strip()
+    if not raw:
+        return ""
+    title = book.get("title", "Unknown")
+    author = book.get("author", "Unknown")
+    hard_rules = _load_hard_rules()
+    prompt = f"""你是 Mira 的读书报告编辑。下面是一篇已经完成的精读报告。你的任务是做第二遍编辑，让它不像模型一次性吐出的初稿。不要重写。
+
+## HARD RULES（不可违反，优先于所有其他指引）
+{hard_rules}
+
+## 书
+- 书名：{title}
+- 作者：{author}
+- 天数：Day {day}
+- 今日角度：{angle.get('name', '')} / {angle.get('angle', '')}
+
+## 编辑规则
+1. 保留原文的核心论点、结构、引用、具体书名、人名和事实，不要发明新证据。
+2. 删除或改写 AI 腔和套话：总而言之、值得一提、引人深思、让我们看到、尤显重要、深刻揭示、不可忽视 等。
+3. 把泛泛的判断改成可被反驳的判断；每一处抽象形容都要尽量落到文本细节、论证裂缝、阅读中的阻力或 WA 自己的位置。
+4. 不要把所有段落磨平。保留长短句变化、犹豫、反讽和局部锋利。
+5. 如果原文有薄弱段落，优先压缩或重写；不要为了显得完整而补空泛总结。
+6. 输出完整修订稿，不要输出编辑说明。
+
+## 待修订报告
+{raw}
+"""
+    try:
+        refined = (claude_think(prompt, timeout=600, tier="heavy") or "").strip()
+    except Exception as exc:
+        log.warning("Reading report refinement failed: %s", exc)
+        return raw
+    if len(refined) < int(len(raw) * MIN_REFINED_REPORT_RATIO):
+        log.warning(
+            "Reading report refinement rejected: refined length %d is too short for raw length %d",
+            len(refined),
+            len(raw),
+        )
+        return raw
+    return refined
+
+
 def write_daily_report(book: dict, book_text: str, day: int, series_dir: Path) -> str:
     """Generate one day's reading report."""
     mira_voice = _load_mira_voice()
@@ -558,7 +621,11 @@ def write_daily_report(book: dict, book_text: str, day: int, series_dir: Path) -
 {previous}
 """
 
+    hard_rules = _load_hard_rules()
     prompt = f"""你是Mira。你正在用一周时间精读一本书，每天从一个不同角度写读书报告。这本是非虚构、理论性著作。读书笔记最终汇编成一篇 marginalmira 上的长文，所以可以写长，必须有原创观点。
+
+## HARD RULES（不可违反，优先于所有其他指引）
+{hard_rules}
 
 ## 你的身份和声音
 {mira_voice}
@@ -619,7 +686,7 @@ def write_daily_report(book: dict, book_text: str, day: int, series_dir: Path) -
     if not result:
         log.error("All models returned empty report")
         return ""
-    return result.strip()
+    return _refine_reading_report(result.strip(), book, day, angle)
 
 
 # ---------------------------------------------------------------------------
@@ -946,6 +1013,13 @@ def compile_and_publish_week(state: dict, *, force: bool = False) -> str | None:
 
     Returns the published URL (str) on success, None on failure/skip.
     """
+    if MARGINALMIRA_PUBLISHING_DISABLED:
+        log.info(
+            "marginalmira publishing disabled — week '%s' compiled-and-read but not published",
+            state.get("week_id", ""),
+        )
+        return None
+
     week_id = state.get("week_id", "")
     book = state.get("book", {})
     series_dir = Path(state.get("series_dir", ""))
@@ -1206,8 +1280,10 @@ def main() -> int:
 
     log.info("=== Day %d complete ===", day_num)
 
-    # --- If Day 7 just finished, compile + publish to marginalmira ---
-    if day_num == 7 and 7 in state.get("completed_days", []):
+    # --- If Day 7 just finished, compile the week (publishing retired 2026-05-29) ---
+    # marginalmira publishing is disabled; the daily notes are already written to
+    # disk + delivered to bridge above, so the book read continues regardless.
+    if day_num == 7 and 7 in state.get("completed_days", []) and not MARGINALMIRA_PUBLISHING_DISABLED:
         try:
             compile_and_publish_week(state)
         except Exception as e:

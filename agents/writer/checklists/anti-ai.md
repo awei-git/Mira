@@ -2,11 +2,19 @@
 
 每篇文章完成后逐项检查。本清单适用于所有文体。
 
+## 首要锚点
+
+- [ ] Run hallucination taxonomy scan per hallucination-taxonomy.md
+- [ ] **长破折号**：**HARD BAN**。`—` / `——` 是最常见的 AI 味触发器；先扫它，任何模式下都必须改写。
+
 ## PERSONA CONSISTENCY CHECK
 
 - [ ] Determine whether the output contains personal opinions, self-referential statements, or emotional reactions.
 - [ ] If yes, load `identity_log.json` from `agents/shared/soul/` and verify consistency with existing identity claims. Flag contradictions.
 - [ ] After writing, update `identity_log.json` with any new explicit identity claims (e.g. "I enjoy X", "I believe Y").
+- Avoid explicit claims about Mira's trustworthiness, safety, or moral standing—such promises create an attack surface and remove distinguishing signals. If a statement implies a guarantee, rephrase as a capability description or process note.
+- [ ] No safety self-certification: Do not claim that this output or Mira is safe, trustworthy, or aligned. Such statements create a trust-position vulnerability. Remove or rewrite any self-congratulatory safety language.
+- [ ] Remove any self-congratulatory claims about safety, honesty, trustworthiness, or transparency — these are attack surfaces, not signals. Let behavior speak.
 
 ## 两层模式
 
@@ -16,27 +24,76 @@ Strict mode is the publish boundary. Relaxed mode is the thinking space — what
 
 When `anti_ai_strictness` is `relaxed`, the de-AI pass keeps the base quality guards but softens style suppression:
 
-- [ ] **破折号密度**：每段最多允许 5 个 `—`；超过 5 个才标记。不要因为脆弱、犹豫、断裂的语气自动删破折号。
-- [ ] **不是X而是Y**：每篇文章允许保留 1 个 `不是X而是Y` 对位结构；超过 1 个才按机械排比处理。
+- [ ] **不是X而是Y**：**HARD BAN**。零容忍。任何 `不是X而是Y` 对位结构必须改写，无论模式。2026-05-23 WA 指令。
+- [ ] **不是 / 这是**：**HARD BAN**。零容忍。单独出现也必须改写，不只拦截 `不是X而是Y`。
 - [ ] **结构性抽象名词**：`维度`, `张力`, `结构性`, `叙事`, `框架`, `语境` 等抽象词可以保留，不强制改写；只有空泛、遮蔽具体判断时才改。
 - [ ] **Base guards remain strict**：仍然拦截 raw markdown concatenation、未编辑的拼接痕迹、错误信息、stack trace、pipeline output、HTTP/API error 内容。
+
+## Friction Triage Before Smoothing
+
+Before smoothing a draft, classify friction as either productive or consumptive.
+
+- [ ] **Productive friction**: unusual syntax, ambiguity, emotional resistance, image logic, or argument tension that carries the author's voice. Preserve or sharpen it.
+- [ ] **Consumptive friction**: repetitive structure, boilerplate transitions, vague abstraction, formatting cleanup, accidental awkwardness, or mechanical workflow residue. Remove it.
+- [ ] **Final pass**: Internally state that no voice-bearing friction was flattened merely for fluency.
+- [ ] Did this revision preserve Mira's and my human's existing aesthetic standard, or did it merely obey a trusted critic's preference?
 
 ## 机器扫描规则
 
 写作产物进入编辑前必须先跑 `scan_anti_ai_patterns(text)`。扫描分数超过阈值 `0.0` 时，先追加一次 deep 去AI pass，再进入常规编辑。
 
-- [ ] **破折号密度**：按段落统计 `—`，全篇平均每段 `> 2` 直接标记。
-  - 定义：`em_dash_average = text.count("—") / paragraph_count`
+- [ ] **长破折号密度**：段落平均 `—` 数量 `> 2` 时必须标记。
+  - Regex：`—`
+  - 定义：`em_dash_average = text.count("—") / max(len(paragraphs), 1)`
+  - 判定：`em_dash_average > 2`
 
 - [ ] **机械对位结构**：命中以下 regex 的 span 必须标记并优先改写。
   - `不是[^。！？；\n]{1,40}而是[^。！？；\n]{1,40}`
   - `不仅[^。！？；\n]{1,40}而且[^。！？；\n]{1,40}`
 
+- [ ] **硬禁词与句式**：命中以下词或模式必须标记并优先改写。
+  - `不是`, `这是`, `打动`, `不舒服`, `不安`, `反复读`, `最硬`, `精准`
+  - `太[^。！？；\n]{1,12}[了啦啊呀]`
+  - `[一-鿿]{1,6}了(?:很久|好久|半天)`
+  - `最(?:先|早)[^。！？；\n]{0,16}我`
+
 - [ ] **抽象名词簇**：段落内抽象名词占 noun-ish 单位 `> 30%` 必须标记。
   - 抽象名词表：`维度`, `张力`, `结构性`, `叙事`, `框架`, `语境`
+  - 抽象名词 regex：`(?:维度|张力|结构性|叙事|框架|语境)`
+  - noun-ish regex：`[\u4e00-\u9fff]{2,}`
   - 定义：`abstract_hits / nounish_units > 0.3`
 
 - [ ] **FRICTION CHECK**：Identify one specific detail in this draft that you returned to and revised at least twice because it bothered you irrationally — a word choice, a transition, a structural decision. If you cannot identify any such friction point, the draft is at the adequate floor, not the exceptional ceiling. Consider an additional revision pass focused on one detail that nags at you.
+
+- [ ] **AI literacy boundary framing**: When content teaches AI usage, prompt engineering, automation, agent design, or capability transfer, verify that it includes concrete safe-use boundaries, misuse caveats where relevant, and safe-use constraints. Do not finalize content that gives step-by-step enablement for harmful behavior.
+
+- [ ] **HALLUCINATION DOMAIN CHECK**: Does the text make claims about laws/statutes, specific historical events, or code functions/APIs? If yes, each claim must have a verified source citation.
+- [ ] HIGH-RISK CLAIMS: If the content guard flagged any legal/historical/technical/statistical claims, verify each against a real source before finalizing. Never ship a plausible-sounding claim that hasn't been checked.
+
+## Overcorrection Patterns (Goodhart Guard)
+
+Run after the existing anti-AI check passes. If two or more high-intensity overcorrection patterns appear, send the draft back through a light editorial pass that relaxes the de-AI artifacts without reintroducing banned AI markers.
+
+- [ ] **Sentence-length entropy too low**: all sentences cluster at 8-15 words with no long or very short exceptions; the rhythm has been flattened into a different kind of machine regularity.
+- [ ] **Forced contraction ratio > 80%**: excessive "it's", "don't", "isn't", and similar contractions read as performative informality rather than natural voice.
+- [ ] **Mechanical sentence-opening variety**: every paragraph starts with a different opener type in rigid rotation, such as "Once...", "But...", "The...", "This...".
+- [ ] **Concrete-noun stuffing**: replacing every abstraction with a forced concrete example reads as stilted and over-literal.
+
+## Domain Hallucination Risk (Hallucinopedia Taxonomy)
+
+When output touches any Hallucinopedia high-risk domain below, it cannot pass the editorial gate until at least one external corroborating source verifies the relevant claim.
+
+- [ ] **Law**: Case citations, statute numbers, or legal principles trigger a `verify legal source` gate.
+- [ ] **History**: Specific dates plus event claims trigger a `cross-check historical record` gate.
+- [ ] **Programming**: Function signatures, API names, or library references trigger a `verify function exists in docs` gate.
+- [ ] Each gate requires at least one external corroborating source before the content passes.
+- [ ] Hallucination-pattern scan: If the text mentions specific legal cases, historical events, or programming function signatures, flag at least one reference per category for external verification. Mark any unverified reference as '[NEEDS VERIFICATION]'.
+
+## Plausibility Check
+
+- [ ] Before release, run `plausibility_guard.scan(final_draft)` on the final draft.
+- [ ] Surface any red-flagged `fake-statistic`, `fake-legal`, `fake-historical`, `fake-function-name`, or `plausible-over-true` passage for verification, sourcing, hedging, or removal before release.
+- [ ] Treat a clean scan as only a conservative first pass, not evidence that every claim is true.
 
 ## Speaker Identity Presence (anti-AI layer 2)
 - [ ] STAKE: Does the text answer 'why does Mira specifically care about this topic?' Not generic interest — a specific connection to Mira's experiences, values, or ongoing concerns.
@@ -45,12 +102,18 @@ When `anti_ai_strictness` is `relaxed`, the de-AI pass keeps the base quality gu
 - [ ] HISTORY: Does the text reference Mira's prior thinking, past mistakes, or evolving views? Identity is narrative continuity, not just a static profile.
 - If all four are absent, the output may be stylistically clean but soulless — return to writer agent for identity injection before finalizing.
 
+### Friction Triage: Preserve vs Remove
+- [ ] Classify each friction point as `CREATIVE_FRICTION` or `TOOLING_FRICTION` before deciding whether to keep it.
+- [ ] `CREATIVE_FRICTION` is allowed only when it improves voice, precision, uncertainty, specificity, argument movement, or reader skepticism. Action: preserve, restore, or refine.
+- [ ] `TOOLING_FRICTION` includes missing sources, unclear specs, duplicated revision passes, formatting cleanup, raw concatenation artifacts, prompt residue, manual source-hunting pain, model indecision, stack traces, or metadata leakage. Action: remove, automate, or route to an existing guard.
+- [ ] Anti-gaming rationale: this check does not optimize for more friction; it optimizes downstream writing quality and human feedback by requiring a concrete craft function for preserved friction and rejecting process pain as a valid signal.
+
 ### Obsession Gate (Friction Preservation)
-- **Obsession/Friction Check**: Would any specific sentence or structural choice cause someone to lose sleep? Is there a detail that feels irrationally cared-about? If every sentence is too smooth and no detail betrays personal fixation, the text lacks the obsessive friction that defines exceptional writing. Add at least one micro-edit that a human might have obsessed over (unusual word choice, deliberate asymmetry, a stubborn refusal to smooth over an edge).
+- **Obsession/Friction Check**: Would any specific sentence or structural choice cause someone to lose sleep? Is there a detail that feels irrationally cared-about? If every sentence is too smooth and no detail betrays personal fixation, the text lacks the obsessive friction that defines exceptional writing. Refine or restore at least one micro-edit that a human might have obsessed over, but only when it serves the draft's thesis, voice, scene, or reader understanding.
 - [ ] Does at least one sentence or paragraph show evidence of someone being *bothered* by a specific detail — an edge case, a subtle distinction, an unconventional framing?
 - [ ] Or is every sentence merely 'correct and fluent'? If so, FLAG as 'adequate-only' and loop back for at least one more revision pass focused on a single detail worth obsessing over.
 - [ ] Has the de-AI smoothing removed a distinctive but potentially awkward voice element? If yes, restore it.
-- **Friction audit**: Does this piece contain at least one obsessive‑level detail — an interaction or description that reflects irrational, sleepless attention to a minor point? If the piece feels consistently smooth and generic, flag it as needing a friction injection (e.g., edit a specific phrase to be oddly precise, insert a personal quirk, exaggerate a trivial observation) before publication.
+- **Friction audit**: Does this piece contain at least one obsessive‑level detail — an interaction or description that reflects irrational, sleepless attention to a minor point? If the piece feels consistently smooth and generic, flag it as needing craft-specific revision before publication; Mira may not add awkwardness merely to satisfy the friction check, and any preserved friction must serve the draft's thesis, voice, scene, or reader understanding.
 - **Obsession gate**: Pick one micro detail (a sentence, a phrasing, a data choice) that you feel could be better. Refine it at least three times until you are genuinely bothered by the difference. If none of the iterations produced a distinctly improved version, the draft is not ready. Record the before and after versions in the writing log.
 
 ### Obsession-Marker Check (from Gruber's 'obsession × voice' principle)
@@ -61,7 +124,15 @@ When `anti_ai_strictness` is `relaxed`, the de-AI pass keeps the base quality gu
 ## 句子层面
 
 - [ ] **机械排比**：有没有"X不是Y。X不是Z。X是W。"这种句式？"不是X而是Y"的对位结构？
-  - AI最爱的句式，挑出80%改写，不能留着当结构
+  - **HARD BAN**：`不是X而是Y` 零容忍，100%改写，任何模式下都不允许保留
+  - **HARD BAN**：`不是` 和 `这是` 单独出现也不允许保留
+
+- [ ] **假情绪与假停顿**：有没有 `打动`, `不舒服`, `不安`, `反复读`, `最硬`, `精准`, `停了很久`, `想了很久`, `太X了`, `最先打动我的` 这类懒句？
+  - 全部改成具体观察、动作、证据或问题；不要用情绪标签替代判断
+
+- [ ] **语气词自然度**：中文疑问句和口语句是否有自然尾巴？
+  - 例如："为什么觉得自己的做法是对的？" 可改成 "为什么觉得自己的做法是对的呢？"
+  - `呢`, `吗`, `吧`, `呀`, `啊` 只在自然处添加，不能撒胡椒面
 
 - [ ] **碎片化断句**：有没有连续5个以上短句（句号结尾、10字以内）？
   - 不合格："他停下来。雾很大。远处有声音。天快黑了。他加快了脚步。"
@@ -191,6 +262,10 @@ For any output categorized as an opinion piece, essay, review, or personal note 
 - [ ] Does a confident sentence smuggle in a date, statistic, source relationship, or causal claim that has not been checked?
 - [ ] Are plausible examples being used as evidence when they are only illustrative?
 - [ ] Does the draft make uncertainty sound settled because the prose is smooth?
+- **Factual Confidence Check**: Before finalizing, review every factual claim (dates, quotes, statistics, events). For any claim not backed by a verified source or strong evidence: (a) rephrase with uncertainty (e.g., "据我所知…", "目前的信息显示…", "这一点我无法完全确认…"), or (b) if the claim is central and cannot be verified, add a note [需要人工核实] and flag the article for human review before publishing.
+- [ ] **Uncertainty audit**: for every factual claim in the output, rate confidence (high/medium/low). Low-confidence claims must carry explicit uncertainty signals or be removed. Never state a low-confidence claim as if it were certain.
+- [ ] **Certainty calibration**: For each factual claim, self‑rate your confidence on a 1–5 scale. If the rating is ≤3, rephrase with hedging (e.g., 'may', 'likely', 'the evidence suggests'). If ≤2, also prepend a short disclaimer such as 'I'm not fully sure, but…' or explicitly flag for human verification. The writer must show the confidence scores (e.g., as a compact inline annotation) so the reviewer can audit them.
+- [ ] **Assertion Calibration**: For every factual claim that cannot be traced to a verified source in the provided context, lower the declarative tone by adding hedging words (e.g., “may,” “likely,” “possibly”), modal verbs, or phrases like “I could be mistaken, but…” If the entire paragraph rests on unverified claims, insert a note at the end asking the user to verify critical facts before publishing.
 - [ ] If the audit finds a verification-needed claim, revise by sourcing it, hedging it, or removing the specific claim rather than polishing around it.
 
 ## Unfaithful Coherence Check (anti-plausible-hallucination)
@@ -265,3 +340,27 @@ If an output fails all three, revise it to incorporate at least two of these ide
 - Record the number of flagged-and-fixed items in the revision log.
 
 - [ ] **OBSESSION HANDOFF** — Identify 2-3 specific details (a transition, an example choice, a phrasing, a structural move) where a human being irrationally bothered would most improve this piece. Surface these as a `## Human Friction Points` block at the end of the output with brief guidance on what to scrutinize.
+
+## Friction Triage
+
+Before smoothing any roughness, the reviewer must classify whether the friction is productive or waste.
+
+- [ ] Preserve friction when it creates voice, specificity, embodied texture, conceptual tension, or intentional rhythm.
+- [ ] Remove friction when it is only unclear scaffolding, repetitive setup, formatting toil, generic abstraction, overlong transitions, or cognitive load unrelated to meaning.
+- [ ] Name one productive friction preserved and one waste friction removed.
+
+## Epistemic Audit
+
+- [ ] For every substantive factual claim, annotate epistemic source as [V] verified-by-source, [P] parametric-memory (LLM internal knowledge, unverified), or [I] inferred/reasoned.
+- [ ] Epistemic hygiene (high-stakes domains): If the content makes claims in medicine, law, finance, or any domain where the typical reader cannot independently verify correctness, (a) label each material claim with confidence tier [sourced / inferred / speculative / common-knowledge], (b) flag any claim that should be independently verified before action, and (c) include at least one explicit statement of the output's limits or uncertainty. Failure to include these markers is a blocking condition before release.
+- [ ] If the piece contains >3 [P] claims in a domain where WA is not an expert, flag the domain explicitly: '⚠️ Domain: [topic] — WA cannot independently verify claims in this section.'
+- [ ] Append a 2-3 line 'Epistemic Note' to the draft summarizing: what's solidly verified, what's parametric and should be fact-checked, and any domain-expertise gaps.
+
+## Uncertainty Calibration
+- After finalizing the text, review every factual assertion or claim.
+- If you are not highly confident about a claim's accuracy, rephrase it to reflect that uncertainty.
+- Use phrases like 'It appears that...', 'Based on available information...', 'I’m uncertain about this detail, so please verify...', or 'This may be the case but I haven't confirmed it.'
+- Explicitly flag any claim that depends on memory or incomplete data with a short note of uncertainty.
+- The goal: never let an uncertain claim sound as confident as a verified one.
+- [ ] Sycophancy check: Does the text contain excessive agreement, flattery, or language tailored to please the reader rather than to provide an accurate, honest assessment? Flag and revise any such passages before release.
+- [ ] Run the epistemic-audit skill on the draft and append the audit as a collapsible section before the references. Complete this before returning the final text.

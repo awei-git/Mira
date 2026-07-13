@@ -1,0 +1,13 @@
+{
+  "provider_effect_adapters": {
+    "market": {
+      "bearer_token_env": "MIRA_MARKET_ADAPTER_TOKEN",
+      "endpoint_template_env": "MIRA_MARKET_ADAPTER_ENDPOINT",
+      "method": "POST",
+      "payload_path": [
+        "data"
+      ],
+      "type": "hosted_market_http"
+    }
+  }
+}

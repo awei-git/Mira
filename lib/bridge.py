@@ -41,7 +41,7 @@ class Message:
     priority: str = "normal"
     metadata: dict = field(default_factory=dict)
     # User access control (set by super agent before dispatch)
-    user_id: str = "ang"
+    user_id: str = "default"
     user_role: str = "admin"
     model_restriction: str | None = None
     content_filter: bool = False
@@ -61,7 +61,7 @@ class Message:
                 thread_id=data.get("thread_id", ""),
                 priority=data.get("priority", "normal"),
                 metadata=data.get("metadata", {}),
-                user_id=data.get("user_id", "ang"),
+                user_id=data.get("user_id", "default"),
                 user_role=data.get("user_role", "admin"),
                 model_restriction=data.get("model_restriction"),
                 content_filter=data.get("content_filter", False),
@@ -86,11 +86,11 @@ class Mira(Bridge):
     """Mira agent bridge — wraps MiraBridge with Mira defaults.
 
     Default bridge_dir = MIRA_DIR from config.
-    Default user_id = "ang".
+    Default user_id = "default".
     Adds v1 backward-compatible method aliases.
     """
 
-    def __init__(self, bridge_dir: Path = MIRA_DIR, user_id: str = "ang"):
+    def __init__(self, bridge_dir: Path = MIRA_DIR, user_id: str = "default"):
         super().__init__(bridge_dir, user_id)
 
     @classmethod

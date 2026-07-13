@@ -46,6 +46,24 @@ def test_as_prompt():
     assert len(prompt) > 50
     assert "Identity" in prompt
     assert "Mira" in prompt
+    assert "curious" in prompt
+
+
+def test_persona_prompt_keeps_voice_when_identity_is_long():
+    from persona.persona_context import PersonaContext
+
+    ctx = PersonaContext(
+        identity="identity " * 600,
+        worldview="worldview",
+        beliefs="beliefs",
+        interests="interests",
+        tone="## Voice\nSpecific, curious, willing to disagree.",
+        boundaries="boundaries",
+    )
+
+    prompt = ctx.as_prompt(max_length=1200)
+
+    assert "Specific, curious" in prompt
 
 
 def test_domain_filter():

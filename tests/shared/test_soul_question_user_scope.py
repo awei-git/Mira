@@ -29,10 +29,10 @@ def test_soul_question_history_is_user_scoped(tmp_path, monkeypatch):
         lambda user_id: tmp_path / user_id / "soul_questions_history.json",
     )
 
-    soul_question._save_history(["q1"], user_id="ang")
+    soul_question._save_history(["q1"], user_id="default")
     soul_question._save_history(["q2"], user_id="liquan")
 
-    assert soul_question._load_history(user_id="ang") == ["q1"]
+    assert soul_question._load_history(user_id="default") == ["q1"]
     assert soul_question._load_history(user_id="liquan") == ["q2"]
 
 

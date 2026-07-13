@@ -1,0 +1,31 @@
+name: a2a_trust_experiment
+memory_class: epistemic
+trigger:
+  type: manual
+  detail: strategic north star research loop
+priority: 20
+version: 1
+max_duration_s: 900
+checkpoint_every: 1
+required_capabilities:
+  local_files: true
+involved_skills:
+  - research
+  - source_proximity_verification
+  - contract_first_api_design
+steps:
+  - name: select_a2a_trust_question
+    type: deterministic
+  - name: design_reproducible_experiment
+    type: deterministic
+  - name: run_experiment
+    type: deterministic
+    action: a2a_experiment
+  - name: extract_tool_or_validator
+    type: deterministic
+  - name: public_feedback_plan
+    type: deterministic
+  - name: strategic_scorecard_update
+    type: eval
+  - name: experience_record_proposal_gateway
+    type: memory

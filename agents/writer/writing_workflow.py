@@ -99,6 +99,38 @@ def _save_project(ws: Path, p: dict):
     )
 
 
+def _is_substack_project_text(text: str) -> bool:
+    return bool(re.search(r"(^|\n)\s*-?\s*\**platform\**\s*:\s*substack\b|\bSubstack\b", text or "", re.I))
+
+
+def _force_substack_english_idea(body: str) -> str:
+    """Normalize Substack idea metadata so source-language notes cannot drive draft language."""
+    if not _is_substack_project_text(body):
+        return body
+
+    normalized = body
+    if re.search(r"(?im)^\s*-\s*\*\*language\*\*\s*:", normalized):
+        normalized = re.sub(r"(?im)^\s*-\s*\*\*language\*\*\s*:.*$", "- **language**: en", normalized)
+    elif re.search(r"(?im)^\s*language\s*:", normalized):
+        normalized = re.sub(r"(?im)^\s*language\s*:.*$", "language: en", normalized)
+    else:
+        normalized += "\n\n- **language**: en"
+
+    policy = (
+        "Language policy: final Substack title, subtitle, section headers, and body must be English. "
+        "Chinese source notes are background only; translate the ideas, not the surface language."
+    )
+    if policy not in normalized:
+        normalized += f"\n\n{policy}"
+    return normalized
+
+
+def _force_substack_english_analysis(analysis: dict, body: str) -> dict:
+    if _is_substack_project_text(body):
+        analysis["language"] = "en"
+    return analysis
+
+
 def _vdir(ws: Path, v: int) -> Path:
     d = ws / "versions" / f"v{v}"
     d.mkdir(parents=True, exist_ok=True)
@@ -113,6 +145,7 @@ def _vdir(ws: Path, v: int) -> Path:
 def start_project(title: str, body: str, workspace: Path):
     """Initialize a writing project: ANALYZE -> PLAN -> post for user approval."""
     log.info("Starting writing project: %s", title)
+    body = _force_substack_english_idea(body)
     workspace.mkdir(parents=True, exist_ok=True)
 
     # --- Analyze ---
@@ -183,6 +216,7 @@ def _analyze(body: str) -> dict:
     analysis["type"] = t
     analysis["type_name"] = WRITING_CRITERIA[t]["name"]
     analysis["criteria"] = WRITING_CRITERIA[t]["criteria"]
+    analysis = _force_substack_english_analysis(analysis, body)
     return analysis
 
 
@@ -490,6 +524,30 @@ def _write_drafts(soul_ctx: str, plan: str, idea: str, vd: Path, writers: list[s
 # ---------------------------------------------------------------------------
 
 
+def _count_review_weakness_items(review: str) -> int:
+    if not review:
+        return 0
+    numbered_items = re.findall(r"(?m)^\s*\d+[.)]\s+\S+", review)
+    critique_sentences = re.findall(
+        r"[^.!?\n]*(?:weak|lacks|unclear|missing|should|but)[^.!?\n]*[.!?]?",
+        review,
+        flags=re.IGNORECASE,
+    )
+    return len(numbered_items) + sum(1 for sentence in critique_sentences if sentence.strip())
+
+
+def _review_verdict_summary(review: str) -> dict[str, object]:
+    """Aggregate reviewer receipts; one HOLD keeps the draft on hold."""
+    verdicts = [value.upper() for value in re.findall(r"VERDICT:\s*(HOLD|PASS)", review or "", re.I)]
+    unresolved = [int(value) for value in re.findall(r"UNRESOLVED_P0_P1:\s*(\d+)", review or "", re.I)]
+    clear_pass = bool(verdicts) and all(value == "PASS" for value in verdicts) and sum(unresolved) == 0
+    return {
+        "verdict": "PASS" if clear_pass else "HOLD",
+        "reviewer_verdicts": verdicts,
+        "unresolved_p0_p1": sum(unresolved),
+    }
+
+
 def _review_cycle(vd: Path, drafts: dict[str, str], criteria: dict, reviewers: list[str]) -> str:
     """Run MIN_REVIEW_ROUNDS of review/revise. Returns final draft."""
     reviews_dir = vd / "reviews"
@@ -506,11 +564,23 @@ def _review_cycle(vd: Path, drafts: dict[str, str], criteria: dict, reviewers: l
 
         def _do_review(rv: str) -> tuple[str, str, float]:
             style = MODELS.get(rv, {}).get("style", "")
-            review = model_think(
-                review_draft_prompt(draft_text, criteria, rnd, prev, style),
-                model_name=rv,
-                timeout=300,
-            )
+            review = ""
+            for retry in range(3):
+                injected_note = ""
+                if retry:
+                    injected_note = "\n\nYour previous review identified fewer than 2 specific weaknesses. Dig deeper."
+                review = (
+                    model_think(
+                        review_draft_prompt(draft_text, criteria, rnd, prev + injected_note, style),
+                        model_name=rv,
+                        timeout=300,
+                    )
+                    or ""
+                )
+                if _count_review_weakness_items(review) >= 2:
+                    break
+                if retry < 2:
+                    log.warning("Review from %s in round %d had fewer than 2 weaknesses; retrying", rv, rnd)
             score = 0.0
             if review:
                 sm = re.search(r"OVERALL:\s*([\d.]+)", review)
@@ -565,12 +635,13 @@ def _review_cycle(vd: Path, drafts: dict[str, str], criteria: dict, reviewers: l
 
         combined = "\n\n---\n\n".join(round_reviews)
         _save_review(reviews_dir, rnd, round_scores, {"current": combined})
+        verdict = _review_verdict_summary(combined)
 
         avg = sum(round_scores.values()) / max(len(round_scores), 1)
         log.info("Round %d avg score: %.1f/10", rnd, avg)
 
-        if avg >= WRITING_MIN_SCORE_3RD_ROUND and rnd >= 3:
-            log.info("Score >= %.1f at round %d, stopping early", WRITING_MIN_SCORE_3RD_ROUND, rnd)
+        if avg >= WRITING_MIN_SCORE_3RD_ROUND and rnd >= 3 and verdict["verdict"] == "PASS":
+            log.info("Review PASS with score >= %.1f at round %d, stopping early", WRITING_MIN_SCORE_3RD_ROUND, rnd)
             break
 
         # Revise (skip on last round)
@@ -596,10 +667,12 @@ def _review_cycle(vd: Path, drafts: dict[str, str], criteria: dict, reviewers: l
 
 def _save_review(reviews_dir: Path, rnd: int, scores: dict, reviews: dict):
     """Persist review data for a round."""
+    combined = "\n".join(str(value) for value in reviews.values())
     data = {
         "round": rnd,
         "scores": scores,
         "reviews": {k: v[:5000] for k, v in reviews.items()},
+        **_review_verdict_summary(combined),
     }
     (reviews_dir / f"round_{rnd:02d}.json").write_text(
         json.dumps(data, indent=2, ensure_ascii=False),
@@ -882,6 +955,7 @@ def run_full_pipeline(
 
     log.info("Full writing pipeline: '%s' → %s", title, ws)
 
+    body = _force_substack_english_idea(body)
     plan_body = body
     if context_note:
         plan_body = f"{body}\n\n## Context\n{context_note}"
@@ -990,23 +1064,41 @@ def run_full_pipeline(
 
 
 def find_active_projects() -> list[tuple[Path, dict]]:
-    """Find all writing projects awaiting user input."""
-    if not WORKSPACE_DIR.exists():
-        return []
+    """Find writing projects that are not fully settled.
 
+    Historical interactive projects live under WORKSPACE_DIR. Current
+    autowrite projects live under WRITINGS_OUTPUT_DIR. Scanning only the former
+    made the scheduler look healthy while the real article library stalled.
+    """
     active = []
-    for d in WORKSPACE_DIR.iterdir():
-        if not d.is_dir():
+    seen: set[Path] = set()
+    for root in (WORKSPACE_DIR, _WRITINGS_ROOT):
+        if not root.exists():
             continue
-        pf = d / "project.json"
-        if not pf.exists():
-            continue
-        try:
-            p = json.loads(pf.read_text(encoding="utf-8"))
-            if p.get("phase") in ("plan_ready", "draft_ready", "FORCED_DECISION"):
-                active.append((d, p))
-        except Exception:
-            continue
+        for d in root.iterdir():
+            if not d.is_dir():
+                continue
+            resolved = d.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            pf = d / "project.json"
+            if not pf.exists():
+                continue
+            try:
+                p = json.loads(pf.read_text(encoding="utf-8"))
+                if p.get("phase") in (
+                    "plan_ready",
+                    "draft_ready",
+                    "FORCED_DECISION",
+                    "writing",
+                    "reviewing",
+                    "revising",
+                    "error",
+                ):
+                    active.append((d, p))
+            except Exception:
+                continue
     return active
 
 

@@ -20,12 +20,14 @@ from pathlib import Path
 from config import (
     EPISODES_DIR,
     JOURNAL_DIR,
+    SOUL_DIR,
     SKILLS_DIR,
     WRITINGS_OUTPUT_DIR,
     CATALOG_FILE,
 )
 
 log = logging.getLogger("mira.self_iteration")
+_SKILL_CANDIDATES_DIR = SOUL_DIR / "skill_candidates"
 
 
 # ---------------------------------------------------------------------------
@@ -96,10 +98,8 @@ If the failure is trivial (typo, transient network error, etc.), set worth_extra
         return None
 
 
-def save_failure_lesson(lesson: dict):
-    """Save an extracted failure lesson as a skill."""
-    from memory.soul_skills import save_skill
-
+def save_failure_lesson(lesson: dict) -> bool:
+    """Security-audit and queue a failure lesson for a later reuse trial."""
     name = lesson["name"]
     content = f"""# {name}
 
@@ -112,8 +112,21 @@ def save_failure_lesson(lesson: dict):
 
 {lesson.get('content', '')}
 """
-    save_skill(name, lesson.get("description", ""), content)
-    log.info("Saved failure lesson as skill: %s", name)
+    queued = queue_skill_candidates(
+        [
+            {
+                **lesson,
+                "content": content,
+                "validation_test": "Apply to a later comparable failure and verify non-recurrence.",
+            }
+        ],
+        source_title=f"task failure: {name}",
+    )
+    if queued:
+        log.info("Queued failure lesson as a skill candidate: %s", name)
+    else:
+        log.warning("Failure lesson '%s' was not queued; security audit rejected it", name)
+    return bool(queued)
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +180,8 @@ For each genuinely new technique worth remembering, output a JSON array:
     "name": "kebab-case-name",
     "description": "one-line description of the technique",
     "content": "Detailed description of the technique: what it is, when to use it, how to execute it. 100-200 words. Be specific enough to be actionable.",
-    "tags": ["writing", "craft", ...]
+    "tags": ["writing", "craft", ...],
+    "validation_test": "How to test this technique in a different artifact and compare review outcomes"
   }}
 ]
 
@@ -231,6 +245,66 @@ def save_article_skills(skills: list[dict], source_title: str):
         # Only write per-agent copy after gate passes
         path.write_text(content, encoding="utf-8")
         log.info("Saved writer craft skill: %s (from '%s')", name, source_title)
+
+
+def queue_skill_candidates(skills: list[dict], source_title: str) -> list[dict]:
+    """Audit and queue observed techniques without enabling them as skills.
+
+    One successful article is evidence that a technique appeared, not that it
+    generalizes. Promotion stays explicit and will pass through ``save_skill``
+    (and therefore a second security audit) after a reuse trial succeeds.
+    """
+    from memory.soul_skills import SkillAuditFailedError, audit_skill
+
+    queued: list[dict] = []
+    for skill in skills:
+        name = str(skill.get("name") or "").strip()
+        if not name:
+            continue
+        content = str(skill.get("content") or "").strip()
+        try:
+            audit = audit_skill(name, content, source="agent_generated")
+        except SkillAuditFailedError as exc:
+            log.warning("Skill candidate '%s' failed security audit: %s", name, exc)
+            continue
+        if audit.get("requires_review") or audit.get("passed") is False:
+            log.warning("Skill candidate '%s' requires security review; not queued", name)
+            continue
+
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "skill"
+        candidate_path = _SKILL_CANDIDATES_DIR / f"{slug}.json"
+        previous: dict = {}
+        if candidate_path.exists():
+            try:
+                previous = json.loads(candidate_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                previous = {}
+        observations = list(previous.get("observations") or [])
+        observations.append({"source_title": source_title, "observed_at": datetime.now().isoformat()})
+
+        candidate = {
+            "name": name,
+            "description": str(skill.get("description") or ""),
+            "content": content,
+            "tags": list(skill.get("tags") or []),
+            "source_title": source_title,
+            "status": "candidate",
+            "created_at": previous.get("created_at") or datetime.now().isoformat(),
+            "observations": observations,
+            "validation_test": str(
+                skill.get("validation_test") or "Use in a second artifact and compare review outcomes."
+            ),
+            "security_audit": {"passed": True, "result": audit.get("result", "PASS")},
+        }
+        _SKILL_CANDIDATES_DIR.mkdir(parents=True, exist_ok=True)
+        candidate_path.write_text(json.dumps(candidate, ensure_ascii=False, indent=2), encoding="utf-8")
+        queued.append(candidate)
+    return queued
+
+
+def queue_article_skill_candidates(skills: list[dict], source_title: str) -> list[dict]:
+    """Backward-compatible named route for writing craft candidates."""
+    return queue_skill_candidates(skills, source_title)
 
 
 # ---------------------------------------------------------------------------
@@ -298,11 +372,11 @@ def daily_postmortem(claude_fn=None) -> str:
 
 
 def on_article_complete(title: str, final_text: str, type_key: str = "essay", claude_fn=None):
-    """Hook called after an article is finalized. Extracts craft skills."""
+    """Hook called after an article is finalized. Queues craft-skill trials."""
     try:
         skills = distill_article_skills(title, final_text, type_key, claude_fn)
         if skills:
-            save_article_skills(skills, title)
-            log.info("Distilled %d craft skills from '%s'", len(skills), title)
+            queued = queue_article_skill_candidates(skills, title)
+            log.info("Queued %d/%d craft-skill candidates from '%s'", len(queued), len(skills), title)
     except Exception as e:
         log.warning("Article skill distillation failed for '%s': %s", title, e)

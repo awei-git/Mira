@@ -49,7 +49,7 @@ def workflow_trace(
     Builds a unique task_id from `name` + timestamp + optional user, so
     every cycle of the workflow becomes one trajectory. Usage:
 
-        def do_journal(user_id="ang"):
+        def do_journal(user_id="default"):
             with workflow_trace("journal", user_id=user_id) as trace:
                 trace.add_user("daily journal cycle")
                 # ...existing body...
@@ -67,7 +67,7 @@ def workflow_trace(
 def traced(name: str, *, agent: str = "super", budget_seconds: float | None = None):
     """Decorator form — easiest wiring for existing `do_X` functions.
 
-    Automatically picks up `user_id` kwarg (default "ang") so the task_id
+    Automatically picks up `user_id` kwarg (default "default") so the task_id
     is disambiguated per user when the agent runs multi-tenant.
 
     Marks `completed=True` and `outcome_verified` based on whether the

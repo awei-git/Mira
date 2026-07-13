@@ -11,7 +11,7 @@ def test_record_auth_event_writes_provider_state(monkeypatch, tmp_path):
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "MIRA_DIR", tmp_path / "bridge")
-    monkeypatch.setattr(config, "get_known_user_ids", lambda: ["ang"])
+    monkeypatch.setattr(config, "get_known_user_ids", lambda: ["default"])
 
     auth_health.record_auth_event("anthropic_oauth", "oauth_auth_failure", status="failed", detail="rate limit")
 
@@ -20,13 +20,13 @@ def test_record_auth_event_writes_provider_state(monkeypatch, tmp_path):
     assert state["event"] == "oauth_auth_failure"
     assert (tmp_path / "auth_state" / "events.jsonl").exists()
     item = json.loads(
-        (tmp_path / "bridge" / "users" / "ang" / "items" / "auth_alert_anthropic_oauth.json").read_text(
+        (tmp_path / "bridge" / "users" / "default" / "items" / "auth_alert_anthropic_oauth.json").read_text(
             encoding="utf-8"
         )
     )
     assert item["status"] == "needs-input"
     assert item["tags"][:2] == ["auth_alert", "anthropic_oauth"]
-    assert (tmp_path / "bridge" / "users" / "ang" / "manifest.json").exists()
+    assert (tmp_path / "bridge" / "users" / "default" / "manifest.json").exists()
 
 
 def test_run_auth_health_resolves_existing_alert(monkeypatch, tmp_path):
@@ -35,7 +35,7 @@ def test_run_auth_health_resolves_existing_alert(monkeypatch, tmp_path):
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "MIRA_DIR", tmp_path / "bridge")
-    monkeypatch.setattr(config, "get_known_user_ids", lambda: ["ang"])
+    monkeypatch.setattr(config, "get_known_user_ids", lambda: ["default"])
     monkeypatch.setattr(
         auth_health,
         "check_anthropic_oauth",
@@ -51,7 +51,7 @@ def test_run_auth_health_resolves_existing_alert(monkeypatch, tmp_path):
     auth_health.run_auth_health_checks()
 
     item = json.loads(
-        (tmp_path / "bridge" / "users" / "ang" / "items" / "auth_alert_anthropic_oauth.json").read_text(
+        (tmp_path / "bridge" / "users" / "default" / "items" / "auth_alert_anthropic_oauth.json").read_text(
             encoding="utf-8"
         )
     )

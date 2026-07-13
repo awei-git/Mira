@@ -32,7 +32,7 @@ from sub_agent import assert_local_only_agent_model
 log = logging.getLogger("task_worker")
 
 # Re-used by other modules in this package
-_ACTIVE_USER_ID_REF = {"value": "ang"}
+_ACTIVE_USER_ID_REF = {"value": "default"}
 
 
 def _get_active_user_id() -> str:
@@ -40,7 +40,7 @@ def _get_active_user_id() -> str:
 
 
 def _set_active_user_id_ref(user_id: str):
-    _ACTIVE_USER_ID_REF["value"] = user_id or "ang"
+    _ACTIVE_USER_ID_REF["value"] = user_id or "default"
 
 
 def _utc_iso() -> str:
@@ -385,6 +385,53 @@ def _is_approval(content: str) -> bool:
     return False
 
 
+_PUBLICATION_APPROVAL_PHRASES = [
+    "publish",
+    "publish it",
+    "publish this",
+    "approve publish",
+    "approve publication",
+    "approved for publication",
+    "yes publish",
+    "go ahead publish",
+    "ship it",
+    "发吧",
+    "可以发",
+    "可以发了",
+    "发布",
+    "确认发布",
+    "同意发布",
+]
+
+_PUBLICATION_REJECTION_PHRASES = [
+    "do not publish",
+    "don't publish",
+    "not publish",
+    "no publish",
+    "cancel publish",
+    "别发",
+    "别发布",
+    "不要发",
+    "不要发布",
+    "不发",
+    "不发布",
+    "取消发布",
+]
+
+
+def _is_publication_approval(content: str) -> bool:
+    """Detect explicit approval for a public publication side effect."""
+    stripped = content.strip().lower()
+    if not stripped or len(stripped) > 100:
+        return False
+    if any(phrase in stripped for phrase in _PUBLICATION_REJECTION_PHRASES):
+        return False
+    return any(
+        stripped == phrase or stripped.startswith(phrase) or phrase in stripped
+        for phrase in _PUBLICATION_APPROVAL_PHRASES
+    )
+
+
 _REJECTION_PHRASES = [
     "reject",
     "cancel",
@@ -501,7 +548,7 @@ def _invoke_registry_handler(
     sender: str,
     thread_id: str,
     tier: str,
-    user_id: str = "ang",
+    user_id: str = "default",
     agent_id: str = None,
 ):
     """Invoke a registry-loaded handler with optional runtime context kwargs."""
@@ -530,6 +577,80 @@ def _invoke_registry_handler(
         except TypeError:
             kwargs["thread_memory"] = load_thread_memory(thread_id)
 
+    state_inputs_requested = []
+    state_inputs_present = []
+    if needs_thread_history:
+        state_inputs_requested.append("thread_history")
+        if kwargs.get("thread_history"):
+            state_inputs_present.append("thread_history")
+    if needs_thread_memory:
+        state_inputs_requested.append("thread_memory")
+        if kwargs.get("thread_memory"):
+            state_inputs_present.append("thread_memory")
+
+    try:
+        from agent_registry import get_registry
+
+        registry = get_registry()
+        declared_permissions = registry.get_permissions(agent_id) if agent_id else []
+        allowed_tools = registry.get_allowed_tools(agent_id) if agent_id else None
+    except Exception as e:
+        log.debug("Handoff receipt metadata lookup failed for %s: %s", agent_id, e)
+        declared_permissions = []
+        allowed_tools = None
+
+    receipt = {
+        "receipt_version": 1,
+        "timestamp": _utc_iso(),
+        "task_id": task_id,
+        "thread_id": thread_id,
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "tier": tier,
+        "declared_permissions": declared_permissions,
+        "allowed_tools": allowed_tools,
+        "state_inputs_requested": state_inputs_requested,
+        "state_inputs_present": state_inputs_present,
+        "workspace_path": str(workspace),
+    }
+    try:
+        with open(workspace / "handoff_receipts.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(receipt, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.debug("Handoff receipt write failed for %s: %s", task_id, e)
+
+    try:
+        from runtime.trace import append_trace
+
+        append_trace(task_id, "handoff.receipt", receipt)
+    except Exception as e:
+        log.debug("Trace append failed for %s: %s", task_id, e)
+
+    audit = {
+        "task_id": task_id,
+        "thread_id": thread_id,
+        "sender": sender,
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "tier": tier,
+        "needs_thread_history": needs_thread_history,
+        "has_thread_history": bool(kwargs.get("thread_history")),
+        "needs_thread_memory": needs_thread_memory,
+        "has_thread_memory": bool(kwargs.get("thread_memory")),
+    }
+    if thread_id and needs_thread_history and not kwargs["thread_history"]:
+        log.warning("Handoff thread context missing: %s", audit)
+        event_type = "handoff.context_missing"
+    else:
+        log.debug("Handoff context audit: %s", audit)
+        event_type = "handoff.context_audit"
+    try:
+        from runtime.trace import append_trace
+
+        append_trace(task_id, event_type, audit)
+    except Exception as e:
+        log.debug("Trace append failed for %s: %s", task_id, e)
+
     return handler_fn(workspace, task_id, instruction, sender, thread_id, **kwargs)
 
 
@@ -541,7 +662,7 @@ def _invoke_registry_preflight(
     sender: str,
     thread_id: str,
     tier: str,
-    user_id: str = "ang",
+    user_id: str = "default",
 ):
     """Invoke an optional registry preflight hook with matching runtime kwargs."""
     kwargs = {}

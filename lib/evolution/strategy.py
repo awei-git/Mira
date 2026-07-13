@@ -17,7 +17,7 @@ from .experience import load_experiences
 log = logging.getLogger("mira.evolution")
 
 
-def propose_strategy_variant(dimension: str = "", user_id: str = "ang") -> dict | None:
+def propose_strategy_variant(dimension: str = "", user_id: str = "default") -> dict | None:
     """Analyze reward trends and propose a strategy change for A/B testing.
 
     Called from weekly reflect. Compares this week vs last week.

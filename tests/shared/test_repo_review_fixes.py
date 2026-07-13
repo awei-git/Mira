@@ -70,7 +70,7 @@ def test_general_preflight_blocks_effectful_intent():
     assert spec and spec.loader
     spec.loader.exec_module(module)
 
-    passed, reason = module.preflight(Path("/tmp"), "task1", "publish this to Substack", "ang", "thread1")
+    passed, reason = module.preflight(Path("/tmp"), "task1", "publish this to Substack", "default", "thread1")
 
     assert passed is False
     assert "specialized agent" in reason
@@ -81,7 +81,7 @@ def test_recall_context_passes_user_id(monkeypatch):
 
     captured = {}
 
-    def fake_search_memory(query, top_k=5, user_id="ang"):
+    def fake_search_memory(query, top_k=5, user_id="default"):
         captured["query"] = query
         captured["top_k"] = top_k
         captured["user_id"] = user_id
@@ -104,7 +104,7 @@ def test_lint_all_passes_user_id_to_contradiction_check(monkeypatch):
     monkeypatch.setattr(knowledge_lint, "_check_orphan_skills", lambda: [])
     monkeypatch.setattr(knowledge_lint, "_check_duplicates_in_memory", lambda: [])
 
-    def fake_contradictions(user_id="ang"):
+    def fake_contradictions(user_id="default"):
         captured["user_id"] = user_id
         return []
 

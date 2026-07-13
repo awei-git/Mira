@@ -1,0 +1,10 @@
+name: weekly_reflection
+description: Compare weekly deltas, scars, hypotheses, and calibration changes.
+inputs:
+  - weekly_experiences
+  - scars
+  - hypotheses
+outputs:
+  - weekly_reflection.md
+  - delta_summary
+  - next_questions

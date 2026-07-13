@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "purpose": "Backend-only implementation details for hard rules. Do not inject this file into agent prompts or other LLM context.",
+  "checks": {
+    "publish_guardrails": {
+      "function_names": [
+        "_content_looks_like_error",
+        "preflight_check"
+      ],
+      "quality_gate": "block low-quality publish content",
+      "cooldown": "publish cooldown"
+    },
+    "skill_security_audit": {
+      "function_name": "soul_manager.audit_skill",
+      "blocked_categories": [
+        "unauthorized_network_calls",
+        "dangerous_code_execution",
+        "obfuscated_payloads",
+        "privilege_escalation",
+        "credential_theft"
+      ],
+      "failure_action": "block_and_log"
+    },
+    "code_transparency_audit": {
+      "function_name": "soul_manager.audit_code_transparency",
+      "required_disclosures": [
+        "edge_cases_considered",
+        "boundary_conditions",
+        "assumptions_made"
+      ]
+    },
+    "deterministic_web_extraction": {
+      "primary_methods": [
+        "structured_apis",
+        "dom_extraction",
+        "rss_atom_feeds",
+        "machine_readable_data_formats"
+      ],
+      "vlm_fallback_label": "VLM-interpreted \u2014 not deterministically verified",
+      "vlm_fallback_requirement": "degrade confidence or scope when deterministic verification is unavailable"
+    },
+    "code_review_depth": {
+      "minimum_source_references": 1,
+      "accepted_reference_types": [
+        "line_number",
+        "function_name"
+      ],
+      "minimum_correctness_claims": 1,
+      "reject_holistic_approval_only": true
+    },
+    "comprehension_gate": {
+      "name": "Feynman gate",
+      "require_problem_first_reconstruction": true,
+      "reject_diff_walkthrough_only": true
+    }
+  },
+  "thresholds": {
+    "explore_cooldown_minutes": 480,
+    "task_timeout_seconds": 900,
+    "task_timeout_long_seconds": 3600,
+    "claude_timeout_think_seconds": 120,
+    "claude_timeout_plan_seconds": 300,
+    "claude_timeout_act_seconds": 600,
+    "writer_claude_timeout_seconds": 1200,
+    "heartbeat_staleness_threshold_seconds": 300,
+    "bridge_stale_threshold_seconds": 600
+  },
+  "procedures": {
+    "operational_audit_before_code_dive": {
+      "trigger_terms": [
+        "task pending",
+        "no reply",
+        "stuck",
+        "hang",
+        "doesn't free up",
+        "didn't run",
+        "lost",
+        "broken",
+        "\u4e22\u4e86",
+        "\u6302\u7740",
+        "\u4e0d\u52a8"
+      ],
+      "steps": [
+        {
+          "order": 1,
+          "command": "cat heartbeat.json",
+          "check": "timestamp within heartbeat_staleness_threshold_seconds"
+        },
+        {
+          "order": 2,
+          "command": "ps -ef | grep -E \"task_worker|core\\\\.py\"",
+          "check": "python process is running"
+        },
+        {
+          "order": 3,
+          "command": "tail /tmp/mira-crash.log",
+          "check": "preflight is not failing in a loop"
+        },
+        {
+          "order": 4,
+          "command": "ls -lt data/tasks/",
+          "check": "new task workspaces are being created"
+        },
+        {
+          "order": 5,
+          "command": "re-check heartbeat and task workspace creation after shipped fix",
+          "check": "new code path is running"
+        }
+      ]
+    }
+  }
+}

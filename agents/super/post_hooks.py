@@ -149,7 +149,14 @@ def _run_auto_flush(task_id: str, status: str, summary: str, tags: list[str] | N
         return False
 
 
+def _should_skip_v3_experience_write() -> bool:
+    return bool(os.getenv("PYTEST_CURRENT_TEST"))
+
+
 def _run_v3_experience_write(task_id: str, status: str, summary: str, tags: list[str] | None) -> bool:
+    if _should_skip_v3_experience_write():
+        log.info("skipping v3 experience write during pytest")
+        return False
     try:
         from mira.runtime import record_task_completion
 

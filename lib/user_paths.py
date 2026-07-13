@@ -6,7 +6,7 @@ from pathlib import Path
 
 from config import JOURNAL_DIR, MIRA_DIR, READING_NOTES_DIR
 
-DEFAULT_USER_ID = "ang"
+DEFAULT_USER_ID = "default"
 
 
 def normalize_user_id(user_id: str | None = None) -> str:

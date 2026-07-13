@@ -70,7 +70,7 @@ def _decision(item: dict, *, now: datetime) -> CleanupDecision | None:
     if status == "archived":
         return None
 
-    if re.match(r"^req_liveness_[0-9a-f]+$", item_id):
+    if re.match(r"^(req|mira)_liveness_[0-9a-zA-Z_-]+$", item_id) or item_id.startswith("output_stale_"):
         return CleanupDecision(item_id, "archive", "internal liveness alert noise", status, "archived")
     if re.match(r"^req_watchdog_[0-9a-f]+$", item_id):
         return CleanupDecision(item_id, "archive", "superseded watchdog alert", status, "archived")
@@ -103,7 +103,7 @@ def _decision(item: dict, *, now: datetime) -> CleanupDecision | None:
     return None
 
 
-def plan_cleanup(user_id: str = "ang") -> list[CleanupDecision]:
+def plan_cleanup(user_id: str = "default") -> list[CleanupDecision]:
     bridge = Mira(MIRA_DIR, user_id=user_id)
     now = datetime.now(timezone.utc)
     decisions = [d for item in _read_items(bridge) if (d := _decision(item, now=now))]
@@ -111,7 +111,7 @@ def plan_cleanup(user_id: str = "ang") -> list[CleanupDecision]:
 
 
 def apply_cleanup(
-    decisions: list[CleanupDecision], *, user_id: str = "ang", dry_run: bool = True
+    decisions: list[CleanupDecision], *, user_id: str = "default", dry_run: bool = True
 ) -> list[CleanupDecision]:
     if dry_run:
         return decisions
@@ -130,7 +130,7 @@ def apply_cleanup(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--user", default="ang")
+    parser.add_argument("--user", default="default")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
 

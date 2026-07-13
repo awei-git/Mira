@@ -1,6 +1,6 @@
 # Obsession Constraints
 
-These are WA's personality-driven friction triggers. They are not rational style preferences and are not softened by relaxed anti-AI mode, raw-writing mode, voice-preserving mode, or efficiency optimizations.
+These are my human's personality-driven friction triggers. They are not rational style preferences and are not softened by relaxed anti-AI mode, raw-writing mode, voice-preserving mode, or efficiency optimizations.
 
 Any `obsession-grade` hit blocks finalization until explicitly resolved.
 
@@ -38,4 +38,4 @@ Any `obsession-grade` hit blocks finalization until explicitly resolved.
 
 ## Feedback Ingestion
 
-When WA says a pattern is "bothered by", "can't stand", "this keeps happening", or "the quality is so bad", preserve it as a candidate obsession constraint for review before normal memory decay can flatten it into a generic style preference.
+When my human says a pattern is "bothered by", "can't stand", "this keeps happening", or "the quality is so bad", preserve it as a candidate obsession constraint for review before normal memory decay can flatten it into a generic style preference.

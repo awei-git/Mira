@@ -10,7 +10,15 @@ from typing import Any
 
 from config import SOCIAL_STATE_DIR
 
-from models import ArticleRecord, EditorialPackage, PilotReview, PublicationStrategy, TopicCandidate, utc_now
+from models import (
+    ArticleRecord,
+    EditorialPackage,
+    GrowthRecoverySprint,
+    PilotReview,
+    PublicationStrategy,
+    TopicCandidate,
+    utc_now,
+)
 
 
 def _atomic_write_json(path: Path, data: Any) -> None:
@@ -40,6 +48,7 @@ class SubstackStore:
         self.editorial_packages_path = self.root / "editorial_packages.json"
         self.calendar_path = self.root / "editorial_calendar.json"
         self.pilot_reviews_path = self.root / "pilot_reviews.json"
+        self.growth_recovery_path = self.root / "growth_recovery.json"
 
     def load_strategy(self) -> PublicationStrategy:
         if not self.strategy_path.exists():
@@ -175,6 +184,19 @@ class SubstackStore:
         existing[review.id] = review
         self.save_pilot_reviews(list(existing.values()))
         return created, updated
+
+    def load_growth_recovery(self) -> GrowthRecoverySprint | None:
+        if not self.growth_recovery_path.exists():
+            return None
+        try:
+            data = json.loads(self.growth_recovery_path.read_text(encoding="utf-8"))
+            return GrowthRecoverySprint.from_dict(data) if isinstance(data, dict) and data.get("id") else None
+        except (json.JSONDecodeError, OSError, TypeError):
+            return None
+
+    def save_growth_recovery(self, sprint: GrowthRecoverySprint) -> None:
+        sprint.updated_at = utc_now()
+        _atomic_write_json(self.growth_recovery_path, sprint.to_dict())
 
     def _load_list(self, path: Path) -> list[Any]:
         if not path.exists():

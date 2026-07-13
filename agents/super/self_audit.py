@@ -328,6 +328,8 @@ def check_manifests() -> list[dict]:
     for agent_dir in sorted(_AGENTS_DIR.iterdir()):
         if not agent_dir.is_dir():
             continue
+        if agent_dir.name.startswith("."):
+            continue
         if agent_dir.name in ("shared", "super", "__pycache__"):
             continue
 
@@ -439,7 +441,14 @@ def _finding_priority(finding: dict) -> str:
 def _finding_owner(finding: dict) -> str:
     ftype = str(finding.get("type") or "")
     pattern = str(finding.get("pattern_name") or "")
-    if ftype in {"pipeline_error", "stuck_pipeline", "missing_podcast", "incomplete_podcast"}:
+    if ftype in {
+        "pipeline_error",
+        "parked_publish_item",
+        "stale_publish_manifest_error",
+        "stuck_pipeline",
+        "missing_podcast",
+        "incomplete_podcast",
+    }:
         return "publishing"
     if ftype.startswith("test_"):
         return "test-infra"
@@ -477,6 +486,12 @@ def _finding_verification_criteria(finding: dict) -> list[str]:
         ]
     if ftype == "pipeline_error":
         return ["The publish manifest error is cleared or replaced by an intentional reviewed resolution."]
+    if ftype == "parked_publish_item":
+        return [
+            "The article remains intentionally parked, or a human resolves the blocker and clears the manifest error."
+        ]
+    if ftype == "stale_publish_manifest_error":
+        return ["The published article keeps a valid Substack URL and the stale manifest error is cleared."]
     if ftype in {"missing_podcast", "incomplete_podcast"}:
         return ["The expected podcast artifact exists, or the article is explicitly marked auto_podcast=false."]
     if ftype == "scheduled_process_failure":
@@ -496,7 +511,7 @@ def _finding_verification_criteria(finding: dict) -> list[str]:
 def build_backlog_record(
     finding: dict,
     *,
-    user_id: str = "ang",
+    user_id: str = "default",
     audit_date: str | None = None,
     resolved: bool = False,
     verification_summary: str | None = None,
@@ -540,7 +555,7 @@ def build_backlog_record(
 
 
 def upsert_self_audit_backlog(
-    findings: list[dict], *, user_id: str = "ang", auto_fixed: list[dict] | None = None
+    findings: list[dict], *, user_id: str = "default", auto_fixed: list[dict] | None = None
 ) -> list[dict]:
     """Mirror audit findings into the control-plane backlog.
 
@@ -706,6 +721,44 @@ def _fix_missing_manifest(finding: dict) -> dict | None:
     }
 
 
+_PARKED_PUBLISH_STATUSES = {"blocked_language", "blocked_writer_gate", "blocked_security_claim"}
+
+
+def _publish_manifest_error_finding(slug: str, entry: dict) -> dict | None:
+    """Classify manifest errors without turning parked historical rows into critical incidents."""
+    error = str(entry.get("error") or "").strip()
+    if not error:
+        return None
+
+    status = str(entry.get("status") or "").strip()
+    title = entry.get("title") or slug
+    if status == "skip":
+        return None
+    if status in _PARKED_PUBLISH_STATUSES:
+        return {
+            "type": "parked_publish_item",
+            "severity": "warning",
+            "status": status,
+            "slug": slug,
+            "description": f"Article '{title}' is parked at '{status}': {error}",
+        }
+    if status == "published" and entry.get("substack_url"):
+        return {
+            "type": "stale_publish_manifest_error",
+            "severity": "warning",
+            "status": status,
+            "slug": slug,
+            "description": f"Published article '{title}' still has a stale manifest error: {error}",
+        }
+    return {
+        "type": "pipeline_error",
+        "severity": "critical",
+        "status": status,
+        "slug": slug,
+        "description": f"Article '{title}' has error: {error}",
+    }
+
+
 def check_publish_pipeline() -> list[dict]:
     """Check publish pipeline integrity — articles vs podcasts vs RSS sync."""
     findings = []
@@ -788,14 +841,9 @@ def check_publish_pipeline() -> list[dict]:
 
         # 3. Check manifest for errors
         for slug, entry in manifest.get("articles", {}).items():
-            if entry.get("error"):
-                findings.append(
-                    {
-                        "type": "pipeline_error",
-                        "severity": "critical",
-                        "description": f"Article '{slug}' has error: {entry['error']}",
-                    }
-                )
+            finding = _publish_manifest_error_finding(slug, entry)
+            if finding:
+                findings.append(finding)
 
     except Exception as e:
         log.warning("Pipeline integrity check failed: %s", e)

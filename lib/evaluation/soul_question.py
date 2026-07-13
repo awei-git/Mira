@@ -46,14 +46,14 @@ STATE_FILE = SOUL_DIR / "soul_questions_history.json"
 MAX_HISTORY = 60
 
 
-def _history_file(user_id: str = "ang") -> Path:
+def _history_file(user_id: str = "default") -> Path:
     uid = normalize_user_id(user_id)
-    if uid == "ang":
+    if uid == "default":
         return STATE_FILE
     return user_soul_question_history_file(uid)
 
 
-def _load_history(user_id: str = "ang") -> list[str]:
+def _load_history(user_id: str = "default") -> list[str]:
     history_file = _history_file(user_id)
     if not history_file.exists():
         return []
@@ -64,7 +64,7 @@ def _load_history(user_id: str = "ang") -> list[str]:
         return []
 
 
-def _save_history(questions: list[str], user_id: str = "ang"):
+def _save_history(questions: list[str], user_id: str = "default"):
     # Trim to max
     trimmed = questions[-MAX_HISTORY:]
     history_file = _history_file(user_id)
@@ -75,7 +75,7 @@ def _save_history(questions: list[str], user_id: str = "ang"):
     )
 
 
-def _load_recent_reading_notes(max_notes: int = 5, user_id: str = "ang") -> str:
+def _load_recent_reading_notes(max_notes: int = 5, user_id: str = "default") -> str:
     """Load the most recent reading notes for context."""
     notes_dir = user_reading_notes_dir(user_id)
     if not notes_dir.exists():
@@ -109,7 +109,7 @@ def _load_memory_snippet() -> str:
         return ""
 
 
-def generate_soul_question(history: list[str], user_id: str = "ang") -> str:
+def generate_soul_question(history: list[str], user_id: str = "default") -> str:
     """Ask Claude to generate a deep, non-repetitive soul question."""
     recent_notes = _load_recent_reading_notes(user_id=user_id)
     worldview = _load_worldview_snippet()
@@ -156,7 +156,7 @@ def generate_soul_question(history: list[str], user_id: str = "ang") -> str:
     return result.strip()
 
 
-def send_to_user(question_text: str, user_id: str = "ang"):
+def send_to_user(question_text: str, user_id: str = "default"):
     """Send the soul question to WA via the Mira bridge (as a discussion)."""
     bridge = Mira(MIRA_DIR, user_id=user_id)
     today = datetime.now().strftime("%Y-%m-%d")

@@ -50,7 +50,7 @@ def _append_to_daily_feed(
     content: str,
     source: str = "",
     tags: list[str] | None = None,
-    user_id: str = "ang",
+    user_id: str = "default",
 ):
     """Append content to a daily feed item.
 
@@ -139,7 +139,7 @@ def _log_chat_to_file(date_str: str, content: str, source: str, user_id: str):
         f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def _load_recent_chat(user_id: str = "ang", limit: int = 5) -> list[str]:
+def _load_recent_chat(user_id: str = "default", limit: int = 5) -> list[str]:
     """Load the last N chat messages from today's chat log."""
     import json as _json
 
@@ -203,7 +203,7 @@ def _sync_journals_to_briefings():
 
         user_ids = get_known_user_ids()
     except Exception:
-        user_ids = ["ang"]
+        user_ids = ["default"]
 
     for user_id in user_ids:
         journal_dir = user_journal_dir(user_id)
@@ -759,7 +759,7 @@ def _days_since_last_publish() -> float:
         return 999.0
 
 
-def harvest_observations(output_text: str, source: str = "", user_id: str = "ang"):
+def harvest_observations(output_text: str, source: str = "", user_id: str = "default"):
     """Extract observations, questions, and connections from output text.
 
     Uses local LLM (oMLX, fast, free) to extract structured thoughts.
@@ -894,12 +894,13 @@ def _maybe_create_spontaneous_idea(thought_text: str, source: str = "", user_id:
 {{
     "connected_threads": 2,  // 关联的线索数量
     "threads": ["线索1简述", "线索2简述"],
-    "title": "基于这个连接可以写的文章标题（中文或英文，15字以内）",
-    "thesis": "核心论点（一句话）",
+    "title": "English Substack title, 5-12 words, no Chinese",
+    "thesis": "English core thesis in one sentence",
     "skip": false  // 如果连接很弱或牵强，设为 true
 }}
 
-只输出JSON。如果关联不足2条或连接牵强，connected_threads 设为实际数量，skip 设为 true。"""
+只输出JSON。如果关联不足2条或连接牵强，connected_threads 设为实际数量，skip 设为 true。
+Substack文章一律用英文；中文思考只能作为素材，不能决定最终写作语言。"""
 
     try:
         result = model_think(prompt, model_name="omlx", timeout=30)
@@ -942,7 +943,7 @@ def _maybe_create_spontaneous_idea(thought_text: str, source: str = "", user_id:
     idea_content = f"""# {title}
 
 - **type**: essay
-- **language**: 中文
+- **language**: en
 - **platform**: Substack
 - **target_words**: 2000
 - **deadline**:
@@ -959,6 +960,7 @@ def _maybe_create_spontaneous_idea(thought_text: str, source: str = "", user_id:
 ## Notes
 
 Spontaneous idea — emerged from connecting 2+ existing threads.
+Language policy: final Substack title, subtitle, section headers, and body must be English. Translate Chinese source material into English; do not draft in Chinese.
 Original thought: {thought_text[:500]}
 
 ## Feedback

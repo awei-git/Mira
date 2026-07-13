@@ -1,0 +1,10 @@
+name: health_wellness
+description: Summarize health signals conservatively with missing-data markers.
+inputs:
+  - health_signals
+  - memory_snapshot
+outputs:
+  - health_wellness.md
+  - health_write_preview.json
+  - missing_data
+  - boundary_notes

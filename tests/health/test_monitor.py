@@ -68,7 +68,7 @@ def test_health_query_formats_datetime_records(tmp_path, monkeypatch):
 
     monkeypatch.setattr(handler, "_omlx_call", fake_omlx)
 
-    result = handler._handle_query(StubStore(), tmp_path, "task_sleep", "昨晚睡眠", "ang")
+    result = handler._handle_query(StubStore(), tmp_path, "task_sleep", "昨晚睡眠", "default")
 
     assert result == "昨晚睡眠 7.2 小时。"
     assert "2026-05-02" in captured["prompt"]

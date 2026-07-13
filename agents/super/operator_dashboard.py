@@ -28,7 +28,7 @@ _ONE_SHOT_PROCESS_FAILURE_HOURS = 6
 _ONE_SHOT_PROCESS_RE = re.compile(r"^(autowrite-\d{4}-\d{2}-\d{2}|podcast-|voiceover-)")
 
 
-def build_operator_summary(user_id: str = "ang") -> dict:
+def build_operator_summary(user_id: str = "default") -> dict:
     """Build the current operator dashboard snapshot."""
     task_status = _load_json(STATUS_FILE, default=[])
     active_tasks = []
@@ -36,7 +36,7 @@ def build_operator_summary(user_id: str = "ang") -> dict:
     now = datetime.now(timezone.utc)
 
     for rec in task_status:
-        if rec.get("user_id", "ang") != user_id:
+        if rec.get("user_id", "default") != user_id:
             continue
         status = normalize_task_status(rec.get("status", ""))
         if status not in ("dispatched", "running"):
@@ -104,7 +104,7 @@ def build_operator_summary(user_id: str = "ang") -> dict:
     }
 
 
-def write_operator_summary(user_id: str = "ang", bridge_dir: Path | None = None) -> Path:
+def write_operator_summary(user_id: str = "default", bridge_dir: Path | None = None) -> Path:
     """Write dashboard summary into the user bridge directory."""
     target_root = Path(bridge_dir) if bridge_dir else MIRA_DIR
     out_dir = target_root / "users" / user_id / "operator"
@@ -279,11 +279,33 @@ def _sync_operator_action_backlog(summary: dict) -> dict:
     if not items:
         return {"upserted": 0, "items": []}
     backlog = ActionBacklog()
+    active_by_title = {item.title: item for item in backlog.get_active()}
     saved = []
     for item in items:
+        existing = active_by_title.get(item.title)
+        if existing and _should_suppress_backlog_refresh(existing, item):
+            saved.append({"outcome": "suppressed", "title": existing.title, "status": existing.status})
+            continue
         outcome, stored = backlog.upsert_active(item)
         saved.append({"outcome": outcome, "title": stored.title, "status": stored.status})
-    return {"upserted": len(saved), "items": saved}
+    upserted = sum(1 for item in saved if item["outcome"] in {"created", "updated"})
+    return {"upserted": upserted, "items": saved}
+
+
+def _should_suppress_backlog_refresh(existing: ActionItem, incoming: ActionItem) -> bool:
+    """Avoid turning stable operator incidents into phone-notification spam."""
+    if existing.source != "operator_dashboard" or incoming.source != "operator_dashboard":
+        return False
+    payload = incoming.payload if isinstance(incoming.payload, dict) else {}
+    if payload.get("kind") != "repeated_pipeline_incident":
+        return False
+    existing_payload = existing.payload if isinstance(existing.payload, dict) else {}
+    existing_incident = existing_payload.get("incident") if isinstance(existing_payload.get("incident"), dict) else {}
+    incoming_incident = payload.get("incident") if isinstance(payload.get("incident"), dict) else {}
+    stable_keys = ("pipeline", "step", "error_type")
+    if any(existing_incident.get(key) != incoming_incident.get(key) for key in stable_keys):
+        return False
+    return _is_recent_iso(existing.updated_at or existing.created_at, hours=_ALERT_REPEAT_HOURS)
 
 
 def _operator_action_items(summary: dict) -> list[ActionItem]:
@@ -427,6 +449,8 @@ def _load_bg_health() -> dict:
 def _recent_incidents() -> list[dict]:
     grouped: dict[tuple[str, str, str, str], dict] = {}
     for rec in load_recent_failures(days=7, limit=50):
+        if rec.get("resolution"):
+            continue
         key = (
             rec.get("pipeline", ""),
             rec.get("step", ""),
@@ -518,7 +542,7 @@ def _load_history(*, limit: int, user_id: str) -> list[dict]:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if rec.get("user_id", "ang") == user_id:
+                if rec.get("user_id", "default") == user_id:
                     rows.append(rec)
     except OSError:
         return []

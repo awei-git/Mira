@@ -6,14 +6,14 @@ import json
 def test_icloud_recovery_dry_run_maps_legacy_request(tmp_path):
     from dr.icloud_recovery import import_user_commands
 
-    commands = tmp_path / "users" / "ang" / "commands"
+    commands = tmp_path / "users" / "default" / "commands"
     commands.mkdir(parents=True)
     (commands / "cmd_20260501_abc.json").write_text(
         json.dumps(
             {
                 "id": "abc",
                 "type": "new_request",
-                "sender": "ang",
+                "sender": "default",
                 "title": "Recovered",
                 "content": "recover this",
             }
@@ -21,7 +21,7 @@ def test_icloud_recovery_dry_run_maps_legacy_request(tmp_path):
         encoding="utf-8",
     )
 
-    results = import_user_commands("ang", root=tmp_path, dry_run=True)
+    results = import_user_commands("default", root=tmp_path, dry_run=True)
 
     assert results == [
         {

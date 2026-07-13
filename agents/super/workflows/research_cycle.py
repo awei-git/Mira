@@ -59,7 +59,7 @@ def _save_state(state: dict) -> None:
     atomic_write(STATE_PATH, json.dumps(state, indent=2, ensure_ascii=False))
 
 
-def _mark_dispatched_in_global_state(user_id: str = "ang") -> None:
+def _mark_dispatched_in_global_state(user_id: str = "default") -> None:
     """Set last_research_cycle in the scheduler's global state file so the
     cooldown trigger sees this run. Mirrors how social.do_growth_cycle handles it.
     """
@@ -316,7 +316,7 @@ def _extract_json(text: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-def do_research_cycle(user_id: str = "ang") -> dict:
+def do_research_cycle(user_id: str = "default") -> dict:
     """Advance one research question by one step.
 
     Returns a small dict describing what happened (used by research_log).

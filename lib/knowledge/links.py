@@ -41,7 +41,7 @@ def _ensure_table():
             """
             CREATE TABLE IF NOT EXISTS knowledge_links (
                 id SERIAL PRIMARY KEY,
-                user_id VARCHAR(100) NOT NULL DEFAULT 'ang',
+                user_id VARCHAR(100) NOT NULL DEFAULT 'default',
                 source_type VARCHAR(30) NOT NULL,
                 source_id VARCHAR(200) NOT NULL,
                 target_type VARCHAR(30) NOT NULL,
@@ -53,7 +53,9 @@ def _ensure_table():
             )
         """
         )
-        cur.execute("ALTER TABLE knowledge_links ADD COLUMN IF NOT EXISTS user_id VARCHAR(100) NOT NULL DEFAULT 'ang'")
+        cur.execute(
+            "ALTER TABLE knowledge_links ADD COLUMN IF NOT EXISTS user_id VARCHAR(100) NOT NULL DEFAULT 'default'"
+        )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_kl_user_source ON knowledge_links(user_id, source_type, source_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_kl_user_target ON knowledge_links(user_id, target_type, target_id)")
         conn.commit()
@@ -100,7 +102,7 @@ def add_link(
     relation: str,
     confidence: float = 0.5,
     created_by: str = "auto",
-    user_id: str = "ang",
+    user_id: str = "default",
 ) -> bool:
     """Add a link between two knowledge fragments.
 
@@ -179,7 +181,7 @@ def add_link(
         return False
 
 
-def get_links(source_type: str, source_id: str, user_id: str = "ang") -> list[dict]:
+def get_links(source_type: str, source_id: str, user_id: str = "default") -> list[dict]:
     """Get all outgoing links from a knowledge fragment."""
     conn = _get_conn()
     if not conn:
@@ -224,7 +226,7 @@ def get_links(source_type: str, source_id: str, user_id: str = "ang") -> list[di
         return []
 
 
-def get_backlinks(target_type: str, target_id: str, user_id: str = "ang") -> list[dict]:
+def get_backlinks(target_type: str, target_id: str, user_id: str = "default") -> list[dict]:
     """Get all incoming links to a knowledge fragment."""
     conn = _get_conn()
     if not conn:
@@ -270,7 +272,7 @@ def get_backlinks(target_type: str, target_id: str, user_id: str = "ang") -> lis
 
 
 def auto_link(
-    content: str, source_type: str, source_id: str, top_k: int = 3, min_score: float = 0.5, user_id: str = "ang"
+    content: str, source_type: str, source_id: str, top_k: int = 3, min_score: float = 0.5, user_id: str = "default"
 ) -> int:
     """Automatically discover and create links to related knowledge.
 

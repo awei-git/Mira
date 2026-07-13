@@ -3,10 +3,14 @@
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger("health_ingest")
+
+HEALTH_EXPORT_READ_ATTEMPTS = 5
+HEALTH_EXPORT_RETRY_DELAY_SECONDS = 0.5
 
 
 def expand_health_metrics(metrics: list[dict]) -> list[dict]:
@@ -66,32 +70,33 @@ def ingest_apple_health(bridge_dir: Path, person_id: str, store) -> int:
     if not export_file.exists():
         return 0
 
-    try:
-        data = json.loads(export_file.read_text(encoding="utf-8"))
-    except OSError as e:
-        if e.errno == 11:  # EDEADLK — retry once after brief pause
-            import time
-
-            time.sleep(0.5)
-            try:
-                data = json.loads(export_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError) as e2:
-                from logging_util import throttled_warning
-
-                throttled_warning(
-                    log,
-                    "Health export retry failed for %s: %s",
-                    person_id,
-                    e2,
-                    key=f"health:retry:{person_id}",
-                    interval_seconds=1800,
-                )
+    data = None
+    last_retry_error: Exception | None = None
+    for attempt in range(HEALTH_EXPORT_READ_ATTEMPTS):
+        try:
+            data = json.loads(export_file.read_text(encoding="utf-8"))
+            break
+        except OSError as e:
+            if getattr(e, "errno", None) != 11:
+                log.error("Failed to read health export for %s: %s", person_id, e)
                 return 0
-        else:
-            log.error("Failed to read health export for %s: %s", person_id, e)
-            return 0
-    except json.JSONDecodeError as e:
-        log.error("Failed to parse health export for %s: %s", person_id, e)
+            last_retry_error = e
+        except json.JSONDecodeError as e:
+            last_retry_error = e
+        if attempt < HEALTH_EXPORT_READ_ATTEMPTS - 1:
+            time.sleep(HEALTH_EXPORT_RETRY_DELAY_SECONDS * (attempt + 1))
+
+    if data is None:
+        from logging_util import throttled_warning
+
+        throttled_warning(
+            log,
+            "Health export retry failed for %s: %s",
+            person_id,
+            last_retry_error,
+            key=f"health:retry:{person_id}",
+            interval_seconds=1800,
+        )
         return 0
 
     metrics = expand_health_metrics(data.get("metrics", []))

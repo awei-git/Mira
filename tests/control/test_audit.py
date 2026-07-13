@@ -38,7 +38,7 @@ def test_audit_logger_writes_postgres_and_jsonl(tmp_path):
         "task.created",
         task_id="req_1",
         workflow_id="req_1",
-        user_id="ang",
+        user_id="default",
         payload={"status": "queued"},
     )
 

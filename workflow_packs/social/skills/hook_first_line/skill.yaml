@@ -1,0 +1,9 @@
+name: hook_first_line
+description: Shape proactive social notes around a concrete first line and falsifiable claim.
+inputs:
+  - topic
+  - artifact_reference
+outputs:
+  - hook
+  - claim
+  - social_proactive_note.md

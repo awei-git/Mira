@@ -30,8 +30,8 @@ def _utc_iso() -> str:
 class ThreadManager:
     """Manages conversation threads."""
 
-    def __init__(self, user_id: str = "ang", bridge_dir: Path | None = None):
-        self.user_id = user_id or "ang"
+    def __init__(self, user_id: str = "default", bridge_dir: Path | None = None):
+        self.user_id = user_id or "default"
         self._bridge_dir = Path(bridge_dir) if bridge_dir else MIRA_DIR
         self._legacy_threads_dir = self._bridge_dir / "threads"
         self._threads_dir = self._bridge_dir / "users" / self.user_id / "threads"

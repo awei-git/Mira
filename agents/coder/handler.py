@@ -24,6 +24,9 @@ from pathlib import Path
 _SHARED_DIR = Path(__file__).resolve().parent.parent / "shared"
 if str(_SHARED_DIR) not in sys.path:
     sys.path.insert(0, str(_SHARED_DIR))
+_LIB_DIR = Path(__file__).resolve().parents[2] / "lib"
+if str(_LIB_DIR) not in sys.path:
+    sys.path.append(str(_LIB_DIR))
 
 try:
     import config as _config
@@ -34,15 +37,33 @@ try:
     CODER_REQUIRE_HUMAN_REVIEW = getattr(_config, "CODER_REQUIRE_HUMAN_REVIEW", True)
     MIN_DIFF_REVIEW_SECONDS = getattr(_config, "MIN_DIFF_REVIEW_SECONDS", 30)
     CODER_SKEPTICAL_REVIEW = getattr(_config, "CODER_SKEPTICAL_REVIEW", False)
+    MAX_AI_CODE_LINES_PER_TASK = getattr(_config, "MAX_AI_CODE_LINES_PER_TASK", 200)
+    MAX_AUTO_EDITS_PER_FILE = getattr(_config, "MAX_AUTO_EDITS_PER_FILE", 5)
+    AGENT_EDIT_CHURN_THRESHOLD = getattr(_config, "AGENT_EDIT_CHURN_THRESHOLD", 7)
+    AGENT_CODE_ENTROPY_ALERT_THRESHOLD = getattr(_config, "AGENT_CODE_ENTROPY_ALERT_THRESHOLD", 0.7)
+    CODE_GEN_UNREVIEWED_WARNING_THRESHOLD = getattr(_config, "CODE_GEN_UNREVIEWED_WARNING_THRESHOLD", 500)
 except ImportError:
     from config import MIRA_DIR, TASKS_DIR, _cfg
 
     CODER_REQUIRE_HUMAN_REVIEW = True
     MIN_DIFF_REVIEW_SECONDS = 30
     CODER_SKEPTICAL_REVIEW = False
+    MAX_AI_CODE_LINES_PER_TASK = 200
+    MAX_AUTO_EDITS_PER_FILE = 5
+    AGENT_EDIT_CHURN_THRESHOLD = 7
+    AGENT_CODE_ENTROPY_ALERT_THRESHOLD = 0.7
+    CODE_GEN_UNREVIEWED_WARNING_THRESHOLD = 500
+from agent_code_entropy import is_legibility_risk, record_code_change
 from diff_trust_guard import score_diff_surface_quality
+from edit_churn import check_churn_threshold, record_agent_edit
+from unreviewed_code_tracker import get_unreviewed_total, log_code_change
 from memory.soul import load_soul, format_soul, load_skills_for_task
 from llm import claude_act, claude_think
+
+try:
+    from soul_manager import audit_code_transparency
+except ImportError:
+    audit_code_transparency = None
 
 try:
     from llm_port import LLMMessage, LLMRequest, get_provider
@@ -142,7 +163,50 @@ _NO_TEST_DIFF_WARNING = (
     "CAUTION: This code change does not modify any test files. The diff may appear coherent "
     "but could contain subtle errors. Please review thoroughly."
 )
+_CODE_ENTROPY_ALERT_MESSAGE = (
+    "Agent code entropy threshold reached: human review recommended before more auto-modifications"
+)
+_TEACH_BACK_HEADING_RE = re.compile(r"^#{2,6}\s+(?:Teach-Back|Feynman Comprehension)\s*$", re.I | re.M)
+_NEXT_HEADING_RE = re.compile(r"^#{2,6}\s+\S", re.M)
+_FEYNMAN_STOPWORDS = frozenset(
+    {
+        "about",
+        "after",
+        "again",
+        "before",
+        "between",
+        "could",
+        "from",
+        "have",
+        "into",
+        "only",
+        "other",
+        "should",
+        "that",
+        "their",
+        "there",
+        "this",
+        "through",
+        "under",
+        "when",
+        "where",
+        "which",
+        "with",
+        "without",
+        "would",
+    }
+)
+_FEYNMAN_TRADEOFF_RE = re.compile(
+    r"\b(?:because|tradeoff|trade-off|rather than|instead of|avoid|preserve|constraint|risk|chosen|balance)\b",
+    re.I,
+)
+_FEYNMAN_REPRODUCE_RE = re.compile(
+    r"\b(?:approach|first|then|so that|ensure|invariant|input|output|edge case|fallback|validate|verify)\b",
+    re.I,
+)
 _MIRA_ROOT = Path(__file__).resolve().parents[2]
+_EDIT_LEDGER_PATH = _MIRA_ROOT / "logs" / "edit_ledger.json"
+_AUTO_EDIT_CODE_SUFFIXES = _SNAPSHOT_SUFFIXES - {".md", ".txt"}
 _PROTECTED_PATH_PREFIXES = ("agents/super/", "agents/coder/", "agents/shared/soul/")
 
 # System prompt injected before every coding task
@@ -167,6 +231,11 @@ _CODER_SYSTEM = """You are Mira's coding agent. Your primary job: debug, review,
 5. **No secrets**: Never hardcode API keys, passwords, or credentials in code.
 6. **Report clearly**: State what you found, what you changed, and what to watch for.
 7. **Diff integrity checklist (mandatory):** When you present a code change (as a diff or patch), you must include a section titled `## Verification Steps`. This section must list 2-3 specific, actionable checks that a reviewer can perform to verify the correctness of the change (e.g., 'Confirm that the function returns early when input is None', not 'Check that the code looks good'). The checklist must focus on logic, edge cases, and side effects—not formatting or style.
+8. **Teach-back gate (mandatory):** When you generate or recommend code changes, include `## Teach-Back`: explain the solution logic from the problem statement in plain language, including tradeoffs and enough steps to reproduce the approach without seeing the code. Do not walk through the diff line by line.
+9. **Code transparency audit (mandatory):** When you generate or recommend code changes, include these required sections: `## Edge Cases Considered`, `## Boundary Conditions`, and `## Assumptions Made`. Each section must contain explicit, non-empty disclosure. Missing or empty sections are flagged by `soul_manager.audit_code_transparency()`.
+10. **Structured rationale comments (mandatory):** For every code change you make, insert a comment on the line above or at the end of the changed block formatted as:
+`// AGENT-RATIONALE: <why this change is needed, what tradeoffs were considered, and any assumptions made>`
+This applies to all edits, including one-line fixes. Never leave a code edit unexplained.
 
 ## Output format
 For debug/review tasks, structure your response as:
@@ -330,6 +399,10 @@ def _diff_trust_threshold() -> float:
     except (TypeError, ValueError):
         threshold = _DIFF_TRUST_DEFAULT_THRESHOLD
     return max(0.0, min(1.0, threshold))
+
+
+def _diff_trust_warning_needed(diff_text: str) -> bool:
+    return score_diff_surface_quality(diff_text) > _diff_trust_threshold()
 
 
 def _strip_inline_comment(line: str) -> str:
@@ -623,6 +696,87 @@ def _audit_passed(audit_result: str) -> bool:
     return bool(_AUDIT_SAFE_RE.match(audit_result or ""))
 
 
+def _format_code_transparency_warning(result: str, task_id: str) -> str | None:
+    if audit_code_transparency is None:
+        log.warning("CODE_TRANSPARENCY_AUDIT unavailable for task %s", task_id)
+        return (
+            "\n\nWARNING: CODE_TRANSPARENCY_AUDIT could not run; required edge-case, "
+            "boundary-condition, and assumptions disclosures were not independently checked."
+        )
+
+    audit_result = audit_code_transparency(result, agent_name="coder", task_id=task_id)
+    if not audit_result.get("warning"):
+        return None
+
+    missing = [str(section) for section in audit_result.get("missing_sections", [])]
+    empty = [str(section) for section in audit_result.get("empty_sections", [])]
+    details = []
+    if missing:
+        details.append(f"missing: {', '.join(missing)}")
+    if empty:
+        details.append(f"empty: {', '.join(empty)}")
+    return (
+        "\n\nWARNING: CODE_TRANSPARENCY_AUDIT flagged this code output. "
+        f"Required disclosure sections are incomplete ({'; '.join(details)})."
+    )
+
+
+def _feynman_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9_]{3,}", text or "")
+        if token.lower() not in _FEYNMAN_STOPWORDS
+    }
+
+
+def _feynman_comprehension_gate(diff: str, explanation: str, problem_statement: str) -> bool:
+    explanation = " ".join((explanation or "").split())
+    if len(explanation) < 180:
+        return False
+
+    explanation_tokens = _feynman_tokens(explanation)
+    problem_tokens = _feynman_tokens(problem_statement)
+    diff_tokens = _feynman_tokens(diff)
+    if not explanation_tokens:
+        return False
+
+    problem_overlap = explanation_tokens & problem_tokens
+    diff_overlap_ratio = len(explanation_tokens & diff_tokens) / max(len(explanation_tokens), 1)
+    references_problem = len(problem_overlap) >= min(3, max(1, len(problem_tokens)))
+    states_tradeoffs = bool(_FEYNMAN_TRADEOFF_RE.search(explanation))
+    reproducible = len(_FEYNMAN_REPRODUCE_RE.findall(explanation)) >= 2
+    diff_paraphrase = diff_overlap_ratio > 0.45 and len(problem_overlap) < 4
+    line_walkthrough = bool(re.search(r"\b(?:diff|line|file|function)\b", explanation, re.I)) and not states_tradeoffs
+    return references_problem and states_tradeoffs and reproducible and not diff_paraphrase and not line_walkthrough
+
+
+def _extract_feynman_explanation(text: str) -> str:
+    match = _TEACH_BACK_HEADING_RE.search(text or "")
+    if not match:
+        return ""
+    start = match.end()
+    next_match = _NEXT_HEADING_RE.search(text, start)
+    end = next_match.start() if next_match else len(text)
+    return text[start:end].strip()
+
+
+def _feynman_revision_prompt(base_prompt: str, diff_text: str, result: str) -> str:
+    return f"""{base_prompt}
+
+The proposed code change is blocked until you can teach back the approach from the original problem.
+Revise output.md to include a section titled `## Teach-Back` that explains the solution logic in plain language.
+Do not walk through the diff line by line. Explain the problem constraints, the chosen approach, design tradeoffs,
+and enough steps that someone could reproduce the approach without seeing the code. Update the workspace only if
+the explanation reveals a real issue with the prior implementation.
+
+## Proposed Diff
+{diff_text}
+
+## Previous Output
+{result}
+"""
+
+
 def _needs_fix_audit(result: str, original_snapshot: str, modified_snapshot: str) -> bool:
     return original_snapshot != modified_snapshot or _looks_like_diff_presentation(result)
 
@@ -653,6 +807,280 @@ def _capture_review_files(workspace: Path) -> dict[str, bytes]:
 
 def _changed_review_paths(before: dict[str, bytes], after: dict[str, bytes]) -> list[str]:
     return sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
+
+
+def _edit_ledger_key(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(_MIRA_ROOT).as_posix()
+    except (OSError, ValueError):
+        return path.resolve().as_posix()
+
+
+def _is_auto_edit_code_path(path: Path) -> bool:
+    key = _edit_ledger_key(path)
+    return key != "logs/edit_ledger.json" and path.suffix.lower() in _AUTO_EDIT_CODE_SUFFIXES
+
+
+def _auto_edit_code_paths(workspace: Path, before: dict[str, bytes], after: dict[str, bytes]) -> list[str]:
+    return [rel for rel in _changed_review_paths(before, after) if _is_auto_edit_code_path(workspace / rel)]
+
+
+def _auto_edit_threshold() -> int:
+    try:
+        return max(0, int(MAX_AUTO_EDITS_PER_FILE))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _agent_edit_churn_threshold() -> int:
+    try:
+        return max(0, int(AGENT_EDIT_CHURN_THRESHOLD))
+    except (TypeError, ValueError):
+        return 7
+
+
+def _load_edit_ledger() -> dict:
+    try:
+        ledger = json.loads(_EDIT_LEDGER_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"files": {}}
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("Could not load edit ledger %s: %s", _EDIT_LEDGER_PATH, e)
+        return {"files": {}}
+    if not isinstance(ledger, dict):
+        return {"files": {}}
+    if isinstance(ledger.get("files"), dict):
+        return ledger
+    files = {}
+    for key, value in ledger.items():
+        if isinstance(value, int):
+            files[key] = {"auto_edit_count": value, "attempts": []}
+        elif isinstance(value, dict):
+            files[key] = value
+    return {"files": files}
+
+
+def _edit_count(entry) -> int:
+    raw_count = entry.get("auto_edit_count", entry.get("count", 0)) if isinstance(entry, dict) else entry
+    try:
+        return max(0, int(raw_count))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _write_edit_ledger(ledger: dict) -> None:
+    _EDIT_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _EDIT_LEDGER_PATH.write_text(json.dumps(ledger, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _append_edit_attempt(
+    files: dict,
+    key: str,
+    task_id: str,
+    status: str,
+    threshold: int,
+    count_before: int,
+) -> None:
+    entry = files.get(key)
+    if not isinstance(entry, dict):
+        entry = {"auto_edit_count": _edit_count(entry)}
+    attempts = entry.get("attempts")
+    if not isinstance(attempts, list):
+        attempts = []
+    attempt = {
+        "task_id": task_id,
+        "status": status,
+        "threshold": threshold,
+        "count_before": count_before,
+        "ts": time.time(),
+    }
+    if status == "applied":
+        entry["auto_edit_count"] = count_before + 1
+        attempt["count_after"] = count_before + 1
+    else:
+        entry["auto_edit_count"] = count_before
+    attempts.append(attempt)
+    entry["attempts"] = attempts
+    files[key] = entry
+
+
+def _auto_edit_limit_refusal(workspace: Path, rel_paths: list[str], task_id: str) -> str | None:
+    if not rel_paths:
+        return None
+    threshold = _auto_edit_threshold()
+    ledger = _load_edit_ledger()
+    files = ledger.setdefault("files", {})
+    if not isinstance(files, dict):
+        files = {}
+        ledger["files"] = files
+
+    blocked = []
+    for rel in rel_paths:
+        key = _edit_ledger_key(workspace / rel)
+        count = _edit_count(files.get(key))
+        if count >= threshold:
+            blocked.append((rel, key, count))
+    if not blocked:
+        return None
+
+    for _rel, key, count in blocked:
+        _append_edit_attempt(files, key, task_id, "blocked", threshold, count)
+    try:
+        _write_edit_ledger(ledger)
+    except OSError as e:
+        log.warning("Could not write edit ledger %s: %s", _EDIT_LEDGER_PATH, e)
+
+    blocked_summary = ", ".join(f"{rel} ({count}/{threshold})" for rel, _key, count in blocked)
+    log.warning("Auto-edit limit blocked task %s for %s", task_id, blocked_summary)
+    return (
+        f"AUTO_EDIT_LIMIT_REACHED: refused agent-initiated code change for {blocked_summary}. "
+        "This file has reached MAX_AUTO_EDITS_PER_FILE; human review is required before further changes."
+    )
+
+
+def _record_auto_edits_applied(workspace: Path, rel_paths: list[str], task_id: str) -> None:
+    if not rel_paths:
+        return
+    threshold = _auto_edit_threshold()
+    ledger = _load_edit_ledger()
+    files = ledger.setdefault("files", {})
+    if not isinstance(files, dict):
+        files = {}
+        ledger["files"] = files
+    for rel in rel_paths:
+        key = _edit_ledger_key(workspace / rel)
+        _append_edit_attempt(files, key, task_id, "applied", threshold, _edit_count(files.get(key)))
+    try:
+        _write_edit_ledger(ledger)
+    except OSError as e:
+        log.warning("Could not write edit ledger %s: %s", _EDIT_LEDGER_PATH, e)
+
+
+def _agent_edit_churn_refusal(workspace: Path, rel_paths: list[str], agent_id: str) -> str | None:
+    if not rel_paths:
+        return None
+    threshold = _agent_edit_churn_threshold()
+    blocked = []
+    for rel in rel_paths:
+        key = _edit_ledger_key(workspace / rel)
+        if not check_churn_threshold(key, threshold=threshold):
+            blocked.append(rel)
+    if not blocked:
+        return None
+    blocked_summary = ", ".join(blocked)
+    log.warning("Agent edit churn blocked agent %s for %s", agent_id, blocked_summary)
+    return (
+        f"AGENT_EDIT_CHURN_REVIEW_REQUIRED: refused agent-initiated code change for {blocked_summary}. "
+        f"This file has reached AGENT_EDIT_CHURN_THRESHOLD ({threshold}) agent-only edits; "
+        "mandatory human review is required before further changes."
+    )
+
+
+def _record_agent_churn_edits(workspace: Path, rel_paths: list[str], agent_id: str) -> None:
+    for rel in rel_paths:
+        try:
+            record_agent_edit(_edit_ledger_key(workspace / rel), agent_id)
+        except OSError as e:
+            log.warning("Could not record agent edit churn for %s: %s", rel, e)
+
+
+def _unreviewed_warning_threshold() -> int:
+    try:
+        return max(0, int(CODE_GEN_UNREVIEWED_WARNING_THRESHOLD))
+    except (TypeError, ValueError):
+        return 500
+
+
+def _agent_code_entropy_threshold() -> float:
+    try:
+        return max(0.0, float(AGENT_CODE_ENTROPY_ALERT_THRESHOLD))
+    except (TypeError, ValueError):
+        return 0.7
+
+
+def _code_lines_added_by_path(workspace: Path, before: dict[str, bytes], after: dict[str, bytes]) -> dict[str, int]:
+    lines_by_path: dict[str, int] = {}
+    for rel in _auto_edit_code_paths(workspace, before, after):
+        before_lines = _decode_diff_bytes(before.get(rel))
+        after_lines = _decode_diff_bytes(after.get(rel))
+        fromfile = f"a/{rel}" if rel in before else "/dev/null"
+        tofile = f"b/{rel}" if rel in after else "/dev/null"
+        diff_text = "\n".join(
+            difflib.unified_diff(before_lines, after_lines, fromfile=fromfile, tofile=tofile, lineterm="")
+        )
+        lines_added = _count_added_lines(diff_text)
+        if lines_added > 0:
+            lines_by_path[_edit_ledger_key(workspace / rel)] = lines_added
+    return lines_by_path
+
+
+def _track_unreviewed_code_changes(
+    workspace: Path,
+    before: dict[str, bytes],
+    after: dict[str, bytes],
+    agent_id: str,
+    task_id: str,
+) -> None:
+    lines_by_path = _code_lines_added_by_path(workspace, before, after)
+    if not lines_by_path:
+        return
+    try:
+        for file_path, lines_added in lines_by_path.items():
+            log_code_change(file_path, lines_added, agent_id)
+        unreviewed_total = get_unreviewed_total()
+    except Exception as e:
+        log.warning("Could not update unreviewed code tracker for task %s: %s", task_id, e)
+        return
+
+    threshold = _unreviewed_warning_threshold()
+    if unreviewed_total > threshold:
+        log.warning(
+            "CODE_GEN_UNREVIEWED_WARNING: %s unreviewed AI-generated code lines exceed threshold %s after task %s",
+            unreviewed_total,
+            threshold,
+            task_id,
+        )
+
+
+def _post_agent_code_entropy_alert(task_id: str, threshold: float) -> None:
+    notes_inbox = MIRA_DIR / "inbox"
+    try:
+        notes_inbox.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        note_path = notes_inbox / f"agent_code_entropy_{timestamp}.md"
+        note_path.write_text(
+            f"{_CODE_ENTROPY_ALERT_MESSAGE}\n\n" f"Task: {task_id}\n" f"Threshold: {threshold:.2f}\n",
+            encoding="utf-8",
+        )
+    except OSError as e:
+        log.warning("Could not write agent code entropy alert to notes_inbox: %s", e)
+
+
+def _track_agent_code_entropy_changes(
+    before: dict[str, bytes], after: dict[str, bytes], rel_paths: list[str], task_id: str
+) -> None:
+    if not rel_paths:
+        return
+    blocks: list[str] = []
+    for rel in sorted(set(rel_paths)):
+        if before.get(rel) == after.get(rel):
+            continue
+        before_lines = _decode_diff_bytes(before.get(rel))
+        after_lines = _decode_diff_bytes(after.get(rel))
+        fromfile = f"a/{rel}" if rel in before else "/dev/null"
+        tofile = f"b/{rel}" if rel in after else "/dev/null"
+        blocks.extend(difflib.unified_diff(before_lines, after_lines, fromfile=fromfile, tofile=tofile, lineterm=""))
+    diff_text = "\n".join(blocks)
+    if not diff_text.strip():
+        return
+    try:
+        record_code_change(diff_text)
+        threshold = _agent_code_entropy_threshold()
+        if is_legibility_risk(threshold):
+            log.warning("AGENT_CODE_ENTROPY_ALERT: %s", _CODE_ENTROPY_ALERT_MESSAGE)
+            _post_agent_code_entropy_alert(task_id, threshold)
+    except Exception as e:
+        log.warning("Could not update agent code entropy tracker for task %s: %s", task_id, e)
 
 
 def _decode_diff_bytes(content: bytes | None) -> list[str]:
@@ -707,9 +1135,19 @@ def _human_review_marker(task_id: str) -> str:
     return f"[coder-human-review:{safe_task_id}]"
 
 
-def _human_review_prompt(task_id: str, diff_text: str) -> str:
+def _human_review_prompt(task_id: str, diff_text: str, protected_paths: list[str] | None = None) -> str:
+    if protected_paths:
+        return (
+            f"{_human_review_marker(task_id)}\n"
+            f"{send_confirmation('Review the proposed diff below before it can be applied.', protected_paths)}\n\n"
+            "```diff\n"
+            f"{diff_text.strip()}\n"
+            "```"
+        )
+    diff_trust_warning = f"{_DIFF_TRUST_WARNING}\n\n" if _diff_trust_warning_needed(diff_text) else ""
     return (
         f"{_human_review_marker(task_id)}\n"
+        f"{diff_trust_warning}"
         "NEEDS_APPROVAL: The coder agent generated a code change. "
         "Review the proposed diff below and reply exactly `approve` to apply it "
         "or `reject` to discard it.\n\n"
@@ -720,10 +1158,10 @@ def _human_review_prompt(task_id: str, diff_text: str) -> str:
 
 
 def _bridge_user_id(sender: str) -> str:
-    candidate = (sender or "ang").strip() or "ang"
+    candidate = (sender or "default").strip() or "default"
     if (MIRA_DIR / "users" / candidate).exists():
         return candidate
-    return "ang"
+    return "default"
 
 
 def _send_human_review_request(task_id: str, thread_id: str, sender: str, prompt: str) -> tuple[str, str]:
@@ -810,8 +1248,14 @@ def _poll_legacy_review_decision(user_id: str, item_id: str) -> str | None:
     return None
 
 
-def _wait_for_human_review(task_id: str, thread_id: str, sender: str, diff_text: str) -> bool:
-    prompt = _human_review_prompt(task_id, diff_text)
+def _wait_for_human_review(
+    task_id: str,
+    thread_id: str,
+    sender: str,
+    diff_text: str,
+    protected_paths: list[str] | None = None,
+) -> bool:
+    prompt = _human_review_prompt(task_id, diff_text, protected_paths)
     marker = _human_review_marker(task_id)
     user_id, item_id = _send_human_review_request(task_id, thread_id, sender, prompt)
     log.info("Coder agent waiting for human review approval on task %s", task_id)
@@ -918,6 +1362,22 @@ Write results to {workspace}/output.md when done.
     result = claude_act(prompt, cwd=workspace, tier=tier, agent_id=agent_id)
     modified_snapshot = _snapshot_workspace(workspace)
     modified_review_snapshot = _capture_review_files(workspace)
+    if result:
+        result, modified_snapshot, modified_review_snapshot, validation_error = _regenerate_after_compile_failure(
+            workspace,
+            task_id,
+            prompt,
+            result,
+            review_snapshot,
+            modified_review_snapshot,
+            modified_snapshot,
+            python_snapshot,
+            tier,
+            agent_id,
+        )
+        if validation_error:
+            _write_failed_result(workspace, task_id, validation_error)
+            return f"FAILED: {validation_error}"
 
     if not result:
         log.warning("Coder agent tool path unavailable for task %s — using analysis fallback", task_id)
@@ -960,6 +1420,21 @@ If the fix requires code changes, provide an exact patch recommendation with fil
             if not result:
                 _restore_review_files(workspace, review_snapshot, modified_review_snapshot)
                 return _format_skeptical_abort("revision failed", high_severity_issues, review_text)
+            result, modified_snapshot, modified_review_snapshot, validation_error = _regenerate_after_compile_failure(
+                workspace,
+                task_id,
+                revision_prompt,
+                result,
+                review_snapshot,
+                modified_review_snapshot,
+                modified_snapshot,
+                python_snapshot,
+                tier,
+                agent_id,
+            )
+            if validation_error:
+                _write_failed_result(workspace, task_id, validation_error)
+                return f"FAILED: {validation_error}"
             if output_file.exists():
                 output_content = output_file.read_text(encoding="utf-8")
                 if len(output_content) > len(result):
@@ -990,6 +1465,21 @@ The first proposed fix did not pass a separate audit. Revise the fix using this 
         if not result:
             log.error("Coder agent revision pass returned empty for task %s", task_id)
             return f"FAILED: audit rejected the proposed fix: {audit_result or 'empty audit result'}"
+        result, modified_snapshot, modified_review_snapshot, validation_error = _regenerate_after_compile_failure(
+            workspace,
+            task_id,
+            revision_prompt,
+            result,
+            review_snapshot,
+            modified_review_snapshot,
+            modified_snapshot,
+            python_snapshot,
+            tier,
+            agent_id,
+        )
+        if validation_error:
+            _write_failed_result(workspace, task_id, validation_error)
+            return f"FAILED: {validation_error}"
         if output_file.exists():
             output_content = output_file.read_text(encoding="utf-8")
             if len(output_content) > len(result):
@@ -1004,30 +1494,119 @@ The first proposed fix did not pass a separate audit. Revise the fix using this 
             _write_failed_result(workspace, task_id, f"Audit rejected the proposed fix: {audit_result}")
             return f"FAILED: audit rejected the proposed fix: {audit_result}"
 
+    feynman_diff = _workspace_review_diff(review_snapshot, modified_review_snapshot)
+    if feynman_diff or _looks_like_diff_presentation(result):
+        feynman_payload = feynman_diff or result
+        feynman_explanation = _extract_feynman_explanation(result)
+        if not _feynman_comprehension_gate(feynman_payload, feynman_explanation, content):
+            feynman_revision_prompt = _feynman_revision_prompt(prompt, feynman_payload, result)
+            result = claude_act(
+                feynman_revision_prompt,
+                cwd=workspace,
+                tier=tier,
+                agent_id=agent_id,
+            )
+            modified_snapshot = _snapshot_workspace(workspace)
+            modified_review_snapshot = _capture_review_files(workspace)
+            if not result:
+                _restore_review_files(workspace, review_snapshot, modified_review_snapshot)
+                _write_failed_result(workspace, task_id, "Feynman comprehension gate failed: missing teach-back")
+                return "FAILED: Feynman comprehension gate failed; re-explain the approach before accepting the change."
+            result, modified_snapshot, modified_review_snapshot, validation_error = _regenerate_after_compile_failure(
+                workspace,
+                task_id,
+                feynman_revision_prompt,
+                result,
+                review_snapshot,
+                modified_review_snapshot,
+                modified_snapshot,
+                python_snapshot,
+                tier,
+                agent_id,
+            )
+            if validation_error:
+                _write_failed_result(workspace, task_id, validation_error)
+                return f"FAILED: {validation_error}"
+            if output_file.exists():
+                output_content = output_file.read_text(encoding="utf-8")
+                if len(output_content) > len(result):
+                    result = output_content
+            if _needs_fix_audit(result, original_snapshot, modified_snapshot) or _changed_review_paths(
+                review_snapshot, modified_review_snapshot
+            ):
+                audit_result = audit_fix(
+                    f"{result}\n\n## Workspace Snapshot After Fix\n{modified_snapshot}",
+                    content,
+                    original_snapshot,
+                    tier=tier,
+                )
+                if not _audit_passed(audit_result):
+                    _restore_review_files(workspace, review_snapshot, modified_review_snapshot)
+                    _write_failed_result(
+                        workspace,
+                        task_id,
+                        f"Audit rejected the Feynman-gate revision: {audit_result}",
+                    )
+                    return f"FAILED: audit rejected the Feynman-gate revision: {audit_result}"
+            feynman_diff = _workspace_review_diff(review_snapshot, modified_review_snapshot)
+            feynman_payload = feynman_diff or result
+            feynman_explanation = _extract_feynman_explanation(result)
+            if not _feynman_comprehension_gate(feynman_payload, feynman_explanation, content):
+                _restore_review_files(workspace, review_snapshot, modified_review_snapshot)
+                _write_failed_result(workspace, task_id, "Feynman comprehension gate failed: insufficient teach-back")
+                return "FAILED: Feynman comprehension gate failed; re-explain the approach before accepting the change."
+
+    auto_edit_code_paths = _auto_edit_code_paths(workspace, review_snapshot, modified_review_snapshot)
+    churn_refusal = _agent_edit_churn_refusal(workspace, auto_edit_code_paths, agent_id)
+    if churn_refusal:
+        _restore_review_files(workspace, review_snapshot, modified_review_snapshot)
+        return churn_refusal
+    auto_edit_refusal = _auto_edit_limit_refusal(workspace, auto_edit_code_paths, task_id)
+    if auto_edit_refusal:
+        _restore_review_files(workspace, review_snapshot, modified_review_snapshot)
+        return auto_edit_refusal
+
     # Post-validation: check written Python files for syntax and import errors
     validation_error = _validate_python_files(workspace, python_snapshot)
     if validation_error:
         _restore_python_files(workspace, python_snapshot)
         _write_failed_result(workspace, task_id, validation_error)
         return f"FAILED: {validation_error}"
-    if CODER_REQUIRE_HUMAN_REVIEW:
-        changed_paths = _changed_review_paths(review_snapshot, modified_review_snapshot)
-        if changed_paths:
-            proposed_diff = _workspace_review_diff(review_snapshot, modified_review_snapshot)
+    changed_paths = _changed_review_paths(review_snapshot, modified_review_snapshot)
+    protected_changed_paths = [path for path in changed_paths if _is_protected_path(path)]
+    if changed_paths and (CODER_REQUIRE_HUMAN_REVIEW or protected_changed_paths):
+        proposed_diff = _workspace_review_diff(review_snapshot, modified_review_snapshot)
+        _restore_review_files(workspace, review_snapshot, modified_review_snapshot)
+        if not _wait_for_human_review(task_id, thread_id, sender, proposed_diff, protected_changed_paths):
+            return "REJECTED: Human review rejected the proposed code change. No code changes were applied."
+        churn_refusal = _agent_edit_churn_refusal(workspace, auto_edit_code_paths, agent_id)
+        if churn_refusal:
+            return churn_refusal
+        auto_edit_refusal = _auto_edit_limit_refusal(workspace, auto_edit_code_paths, task_id)
+        if auto_edit_refusal:
+            return auto_edit_refusal
+        _apply_review_files(workspace, review_snapshot, modified_review_snapshot)
+        validation_error = _validate_python_files(workspace, python_snapshot)
+        if validation_error:
             _restore_review_files(workspace, review_snapshot, modified_review_snapshot)
-            if not _wait_for_human_review(task_id, thread_id, sender, proposed_diff):
-                return "REJECTED: Human review rejected the proposed code change. No code changes were applied."
-            _apply_review_files(workspace, review_snapshot, modified_review_snapshot)
-            validation_error = _validate_python_files(workspace, python_snapshot)
-            if validation_error:
-                _restore_review_files(workspace, review_snapshot, modified_review_snapshot)
-                _write_failed_result(workspace, task_id, validation_error)
-                return f"FAILED: {validation_error}"
+            _write_failed_result(workspace, task_id, validation_error)
+            return f"FAILED: {validation_error}"
+        _record_agent_churn_edits(workspace, auto_edit_code_paths, agent_id)
+        _record_auto_edits_applied(workspace, auto_edit_code_paths, task_id)
+        _track_unreviewed_code_changes(workspace, review_snapshot, modified_review_snapshot, agent_id, task_id)
+        _track_agent_code_entropy_changes(review_snapshot, modified_review_snapshot, auto_edit_code_paths, task_id)
+    elif auto_edit_code_paths:
+        _record_agent_churn_edits(workspace, auto_edit_code_paths, agent_id)
+        _record_auto_edits_applied(workspace, auto_edit_code_paths, task_id)
+        _track_unreviewed_code_changes(workspace, review_snapshot, modified_review_snapshot, agent_id, task_id)
+        _track_agent_code_entropy_changes(review_snapshot, modified_review_snapshot, auto_edit_code_paths, task_id)
+    generated_diff = _workspace_review_diff(review_snapshot, modified_review_snapshot)
+    diff_for_surface_quality = generated_diff or result
+    if generated_diff or _looks_like_diff_presentation(result):
+        if _diff_trust_warning_needed(diff_for_surface_quality) and _DIFF_TRUST_WARNING not in result:
+            result = f"{_DIFF_TRUST_WARNING}\n\n{result}"
     if _looks_like_diff_presentation(result):
         affected_paths = _extract_diff_paths(result)
-        surface_quality_score = score_diff_surface_quality(result)
-        if surface_quality_score > _diff_trust_threshold() and _DIFF_TRUST_WARNING not in result:
-            result = f"{_DIFF_TRUST_WARNING}\n\n{result}"
         if not any("test" in path.lower() or "tests" in path.lower() for path in affected_paths):
             result = f"{_NO_TEST_DIFF_WARNING}\n\n{result}"
     diff_plausibility_score = _diff_plausibility_score(original_snapshot, modified_snapshot, content)
@@ -1039,6 +1618,38 @@ The first proposed fix did not pass a separate audit. Revise the fix using this 
             "cosmetic changes dominate a claimed logical fix; deep review recommended."
         )
     _record_diff_presented(thread_id, task_id, workspace, result)
+
+    _ai_line_count = _count_added_lines(_workspace_review_diff(review_snapshot, modified_review_snapshot))
+    if _ai_line_count > MAX_AI_CODE_LINES_PER_TASK:
+        _exceedance_msg = (
+            f"AI_CODE_LINES_EXCEEDED: task {task_id} generated {_ai_line_count} added lines "
+            f"(threshold: {MAX_AI_CODE_LINES_PER_TASK}). "
+            "Split into sub-tasks under the threshold for adequate human review."
+        )
+        log.warning(_exceedance_msg)
+        _ai_lines_log = _MIRA_ROOT / "logs" / "coder_ai_lines.jsonl"
+        try:
+            _ai_lines_log.parent.mkdir(parents=True, exist_ok=True)
+            with _ai_lines_log.open("a", encoding="utf-8") as _lf:
+                _lf.write(
+                    json.dumps(
+                        {
+                            "task_id": task_id,
+                            "added_lines": _ai_line_count,
+                            "threshold": MAX_AI_CODE_LINES_PER_TASK,
+                            "ts": time.time(),
+                        }
+                    )
+                    + "\n"
+                )
+        except OSError as _le:
+            log.warning("Could not write AI lines log: %s", _le)
+        result = f"⚠️  {_exceedance_msg}\n\n{result}"
+
+    if _changed_review_paths(review_snapshot, modified_review_snapshot) or _looks_like_diff_presentation(result):
+        code_transparency_warning = _format_code_transparency_warning(result, task_id)
+        if code_transparency_warning:
+            result = result.rstrip() + code_transparency_warning
 
     bug_report_warning = _validate_bug_report_fields(result, task_id)
     if bug_report_warning:
@@ -1061,7 +1672,26 @@ def _snapshot_python_files(workspace: Path) -> dict[Path, bytes]:
 
 def _validate_python_files(workspace: Path, before_snapshot: dict[Path, bytes] | None = None) -> str | None:
     """Check written .py files in workspace for syntax and import errors."""
+    modified_files = _modified_python_files(workspace, before_snapshot)
+    syntax_error = _validate_modified_python_syntax(workspace, before_snapshot)
+    if syntax_error:
+        return syntax_error
+
+    for file_path in modified_files:
+        import_error = _validate_imports(file_path, workspace)
+        if import_error:
+            message = f"Import check failed for {file_path}: {import_error}"
+            log.error(message)
+            return message
+    return None
+
+
+_CODE_SYNTAX_ERROR: str | None = None
+
+
+def _modified_python_files(workspace: Path, before_snapshot: dict[Path, bytes] | None = None) -> list[Path]:
     before_snapshot = before_snapshot or {}
+    modified_files: list[Path] = []
     for file_path in sorted(workspace.rglob("*.py")):
         if not file_path.is_file():
             continue
@@ -1071,22 +1701,85 @@ def _validate_python_files(workspace: Path, before_snapshot: dict[Path, bytes] |
             current = None
         if before_snapshot.get(file_path.resolve()) == current:
             continue
+        modified_files.append(file_path)
+    return modified_files
 
-        try:
-            proc = subprocess.run(["python", "-m", "py_compile", str(file_path)], capture_output=True, text=True)
-        except FileNotFoundError:
-            proc = subprocess.run([sys.executable, "-m", "py_compile", str(file_path)], capture_output=True, text=True)
-        if proc.returncode != 0:
-            error = (proc.stderr or proc.stdout or "unknown py_compile failure").strip()
-            message = f"Syntax check failed for {file_path}: {error}"
-            log.error(message)
-            return message
-        import_error = _validate_imports(file_path, workspace)
-        if import_error:
-            message = f"Import check failed for {file_path}: {import_error}"
-            log.error(message)
-            return message
+
+def _validate_modified_python_syntax(workspace: Path, before_snapshot: dict[Path, bytes] | None = None) -> str | None:
+    modified_files = _modified_python_files(workspace, before_snapshot)
+    if not _verify_code_syntax([str(file_path) for file_path in modified_files]):
+        return f"Syntax check failed: {_CODE_SYNTAX_ERROR or 'unknown py_compile failure'}"
     return None
+
+
+def _regenerate_after_compile_failure(
+    workspace: Path,
+    task_id: str,
+    prompt: str,
+    result: str,
+    review_snapshot: dict[str, bytes],
+    modified_review_snapshot: dict[str, bytes],
+    modified_snapshot: str,
+    python_snapshot: dict[Path, bytes],
+    tier: str,
+    agent_id: str,
+) -> tuple[str | None, str, dict[str, bytes], str | None]:
+    validation_error = _validate_modified_python_syntax(workspace, python_snapshot)
+    if not validation_error:
+        return result, modified_snapshot, modified_review_snapshot, None
+
+    log.error("Coder agent generated non-compiling Python for task %s: %s", task_id, validation_error)
+    _restore_review_files(workspace, review_snapshot, modified_review_snapshot)
+    _restore_python_files(workspace, python_snapshot)
+    retry_prompt = f"""{prompt}
+
+The generated change failed Python syntax verification after it was applied. The generated change has been reverted.
+Regenerate the fix using the py_compile error below as context, then update output.md.
+
+## py_compile Error
+{validation_error}
+"""
+    retry_result = claude_act(retry_prompt, cwd=workspace, tier=tier, agent_id=agent_id)
+    retry_modified_snapshot = _snapshot_workspace(workspace)
+    retry_modified_review_snapshot = _capture_review_files(workspace)
+    if not retry_result:
+        _restore_review_files(workspace, review_snapshot, retry_modified_review_snapshot)
+        _restore_python_files(workspace, python_snapshot)
+        return None, _snapshot_workspace(workspace), _capture_review_files(workspace), validation_error
+
+    retry_error = _validate_modified_python_syntax(workspace, python_snapshot)
+    if retry_error:
+        log.error("Coder agent regenerated non-compiling Python for task %s: %s", task_id, retry_error)
+        _restore_review_files(workspace, review_snapshot, retry_modified_review_snapshot)
+        _restore_python_files(workspace, python_snapshot)
+        return retry_result, _snapshot_workspace(workspace), _capture_review_files(workspace), retry_error
+
+    return retry_result, retry_modified_snapshot, retry_modified_review_snapshot, None
+
+
+def _verify_code_syntax(files: list[str]) -> bool:
+    global _CODE_SYNTAX_ERROR
+    _CODE_SYNTAX_ERROR = None
+    for file_name in files:
+        file_path = Path(file_name)
+        if file_path.suffix != ".py":
+            continue
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-m", "py_compile", str(file_path)],
+                capture_output=True,
+                text=True,
+            )
+        except OSError as e:
+            _CODE_SYNTAX_ERROR = f"{file_path}: {e}"
+            log.error("Syntax check failed for %s: %s", file_path, e)
+            return False
+        if completed.returncode != 0:
+            error = (completed.stderr or completed.stdout or f"exit code {completed.returncode}").strip()
+            _CODE_SYNTAX_ERROR = f"{file_path}: {error}"
+            log.error("Syntax check failed for %s: %s", file_path, error)
+            return False
+    return True
 
 
 def _validate_imports(file_path: Path, workspace: Path) -> str | None:
@@ -1160,6 +1853,10 @@ def _restore_python_files(workspace: Path, before_snapshot: dict[Path, bytes]) -
             file_path.unlink()
         except OSError as e:
             log.error("Failed to remove invalid new file %s after validation failure: %s", file_path, e)
+
+
+def _count_added_lines(diff_text: str) -> int:
+    return sum(1 for line in (diff_text or "").splitlines() if line.startswith("+") and not line.startswith("+++"))
 
 
 def _write_failed_result(workspace: Path, task_id: str, message: str) -> None:

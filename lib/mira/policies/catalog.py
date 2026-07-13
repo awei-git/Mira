@@ -43,8 +43,6 @@ HARD_POLICY_NAMES: dict[str, tuple[str, ...]] = {
         "no_self_verification",
         "escalation_required",
         "kill_switch_paths",
-        "gateway_mediated",
-        "kill_switch",
     ),
 }
 

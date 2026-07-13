@@ -150,6 +150,7 @@ SOURCES_FILE = MIRA_ROOT / "sources.json"
 
 # Calibration / drift monitoring defaults (used by super agent)
 CALIBRATION_INTERVAL_DAYS = 7
+EVAL_WINDOW_DAYS = 7
 CALIBRATION_SAMPLE_SIZE = 4
 BLIND_SPOT_LOOKBACK_DAYS = 30
 BLIND_SPOT_SILENCE_THRESHOLD_DAYS = 3
@@ -331,6 +332,9 @@ OMLX_PORT = _omlx_cfg.get("port", 8800)
 OMLX_DEFAULT_MODEL = _omlx_cfg.get("default_model", "gemma-4-31b-it-4bit")
 OMLX_FALLBACK_MODEL = _omlx_cfg.get("fallback_model", "gemma-4-31b-it-4bit")
 OMLX_EMBED_MODEL = _omlx_cfg.get("embed_model", "nomicai-modernbert-embed-base-4bit")
+OMLX_DISABLE_SERVER_TOOLS = _omlx_cfg.get("disable_server_tools", True)
+OMLX_ALLOW_NATIVE_TOOLS = bool(_omlx_cfg.get("allow_native_tools", False))
+OMLX_ALLOW_NONLOCAL_HOST = bool(_omlx_cfg.get("allow_nonlocal_host", False))
 
 # Legacy aliases — kept only for external callers; prefer OMLX_* names.
 OLLAMA_HOST = OMLX_HOST
@@ -353,6 +357,12 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Local model servers may only request tools through Mira's capability broker,
+# not execute shell/edit_file natively.
+LOCAL_LLM_NATIVE_TOOLS_ALLOWED = _env_bool(
+    "MIRA_LOCAL_LLM_NATIVE_TOOLS_ALLOWED",
+    bool(_cfg.get("local_llm_native_tools_allowed", False)),
+)
 CONTROL_DATABASE_URL = os.environ.get("CONTROL_DATABASE_URL") or _control_cfg.get("database_url") or DATABASE_URL
 CONTROL_DB_SCHEMA = os.environ.get("CONTROL_DB_SCHEMA") or str(
     _control_cfg.get("schema", "mira_control") or "mira_control"
@@ -531,6 +541,11 @@ MODELS = {
         "model_id": _MODEL_VERSION_CFG.get("gpt5", "gpt-5.5"),
         "style": "GPT-5.5 through the Codex subscription CLI",
     },
+    "gpt": {
+        "provider": "openai",
+        "model_id": _MODEL_VERSION_CFG.get("gpt5", "gpt-5.5"),
+        "style": "GPT-5.5 through the OpenAI API",
+    },
     "deepseek": {
         "provider": "deepseek",
         "model_id": _MODEL_VERSION_CFG.get("deepseek_chat", "deepseek-v4-pro"),
@@ -571,8 +586,8 @@ MODELS = {
 # Which models to use for writing tasks (from config.yml)
 _models_cfg = _cfg.get("models", {})
 CLOUD_LLM_ENABLED = _env_bool("MIRA_CLOUD_LLM_ENABLED", bool(_models_cfg.get("cloud_enabled", True)))
-WRITING_MODELS = _models_cfg.get("writing", ["claude", "gpt5", "deepseek", "gemini"])
-REVIEW_MODELS = _models_cfg.get("review", ["claude", "gpt5", "gemini"])
+WRITING_MODELS = _models_cfg.get("writing", ["codex", "claude", "omlx"])
+REVIEW_MODELS = _models_cfg.get("review", ["codex", "claude", "omlx"])
 DEFAULT_MODEL = _models_cfg.get("default", "claude")
 CLAUDE_FALLBACK_MODEL = _models_cfg.get("claude_fallback", "codex")
 HEALTH_REPORT_MODEL = _models_cfg.get("health_report", "gpt5")
@@ -583,6 +598,8 @@ _publishing_cfg = _cfg.get("publishing", {})
 SUBSTACK_PUBLISHING_DISABLED = _publishing_cfg.get("substack_disabled", False)
 STRICT_HALLUCINATION_GUARD = _publishing_cfg.get("strict_hallucination_guard", False)
 CONTENT_GUARD_SURVIVAL_MODE = _publishing_cfg.get("content_guard_survival_mode", True)
+X_PROMOTION_ENABLED = bool(_publishing_cfg.get("x_promotion_enabled", False))
+AUTO_PODCAST_ENABLED = bool(_publishing_cfg.get("auto_podcast_enabled", True))
 
 # Writing workflow
 MIN_REVIEW_ROUNDS = 5
@@ -725,6 +742,14 @@ EXPLORE_ACTIVE_START = _parse_times([_sched.get("explore_start", "08:00")])[0]
 EXPLORE_ACTIVE_END = _parse_times([_sched.get("explore_end", "23:00")])[0]
 # Max explores per day (safety valve)
 EXPLORE_MAX_PER_DAY = _sched.get("explore_max_per_day", 8)
+_explorer_expected_gap_seconds = max(
+    int(EXPLORE_COOLDOWN_MINUTES) * 60 * 2,
+    20 * 60 * 60,
+)
+STALE_THRESHOLDS["explorer"] = max(
+    int(STALE_THRESHOLDS.get("explorer", 0)),
+    int(_explorer_expected_gap_seconds),
+)
 
 REFLECT_DAY = _sched.get("reflect_day", 6)
 REFLECT_TIME = _parse_times([_sched.get("reflect_time", "10:00")])[0]
@@ -742,6 +767,9 @@ ZHESI_TIME = _parse_times([_sched.get("zhesi_time", "09:30")])[0]
 
 # Daily soul question
 SOUL_QUESTION_TIME = _parse_times([_sched.get("soul_question_time", "20:00")])[0]
+
+# Daily collaboration loop
+DAILY_COLLAB_TIME = _parse_times([_sched.get("daily_collab_time", "11:30")])[0]
 
 # Daily book review (weekly reading series)
 BOOK_REVIEW_TIME = _parse_times([_sched.get("book_review_time", "09:00")])[0]
@@ -781,6 +809,7 @@ MAX_MEMORY_LINES = _limits.get("max_memory_lines", 200)
 # ---------------------------------------------------------------------------
 _timeouts = _cfg.get("timeouts", {})
 CLAUDE_TIMEOUT_THINK = _timeouts.get("claude_think", 120)
+CLAUDE_TIMEOUT_THINK_HEAVY = int(os.getenv("CLAUDE_TIMEOUT_THINK_HEAVY", _timeouts.get("claude_think_heavy", 300)))
 CLAUDE_TIMEOUT_PLAN = _timeouts.get("claude_plan", 300)
 CLAUDE_TIMEOUT_ACT = _timeouts.get("claude_act", 600)
 WRITER_CLAUDE_TIMEOUT = _timeouts.get("writer_claude", 1200)
@@ -803,13 +832,14 @@ BROWSER_NETWORKIDLE_TIMEOUT_MS = _timeouts.get("browser_networkidle_ms", 10000)
 BROWSER_DOMCONTENTLOADED_TIMEOUT_MS = _timeouts.get("browser_domcontentloaded_ms", 5000)
 BROWSER_SCROLL_WAIT_MS = _timeouts.get("browser_scroll_wait_ms", 500)
 BROWSER_TYPING_DELAY_MS = _timeouts.get("browser_typing_delay_ms", 50)
+SURFER_ALLOW_BROWSER_LOCAL_AI = bool(_cfg.get("surfer", {}).get("allow_browser_local_ai", False))
 
 # ---------------------------------------------------------------------------
 # API model IDs (from secrets.yml api_models: section; config.yml is legacy fallback)
 # ---------------------------------------------------------------------------
 _api_models = _MODEL_VERSION_CFG
 CLAUDE_SONNET_MODEL = _api_models.get("claude_sonnet", "claude-sonnet-4-6")
-CLAUDE_OPUS_MODEL = _api_models.get("claude_opus", "claude-opus-4-6")
+CLAUDE_OPUS_MODEL = _api_models.get("claude_opus", "claude-opus-4-7")
 
 TIER_MODEL_MAP = {
     "light": os.getenv("MODEL_LIGHT", CLAUDE_SONNET_MODEL),
@@ -821,7 +851,7 @@ DEEPSEEK_CHAT_MODEL = _api_models.get("deepseek_chat", "deepseek-v4-pro")
 DEEPSEEK_REASONER_MODEL = _api_models.get("deepseek_reasoner", "deepseek-reasoner")
 GEMINI_FLASH_MODEL = _api_models.get("gemini_flash", "gemini-3.1-flash-lite-preview")
 GEMINI_PRO_MODEL = _api_models.get("gemini_pro", "gemini-3.1-pro-preview")
-GEMINI_TTS_MODEL = _api_models.get("gemini_tts", "gemini-2.5-flash-preview-tts")
+GEMINI_TTS_MODEL = _api_models.get("gemini_tts", "gemini-3.1-flash-tts-preview")
 GEMINI_VIDEO_MODEL = _api_models.get("gemini_video", "gemini-2.5-pro")
 GEMINI_FRAME_MODEL = _api_models.get("gemini_frame", "gemini-2.5-flash")
 
@@ -864,9 +894,24 @@ PODCAST_PUBLISH_DAY = _rate_limits.get("podcast_publish_day", 4)
 GROWTH_MAX_FOLLOWS_PER_CYCLE = _rate_limits.get("growth_max_follows_per_cycle", 2)
 GROWTH_DISCOVERY_COOLDOWN_DAYS = _rate_limits.get("growth_discovery_cooldown_days", 3)
 GROWTH_MAX_LIKES_PER_CYCLE = _rate_limits.get("growth_max_likes_per_cycle", 20)
+PUBLISH_MAX_PER_WINDOW = _rate_limits.get("publish_max_per_window", 2)
+PUBLISH_WINDOW_MINUTES = _rate_limits.get("publish_window_minutes", 30)
+PUBLISH_COOLDOWN_PER_TYPE = _rate_limits.get(
+    "publish_cooldown_per_type",
+    {"article": 1440, "note": 120, "comment": 30, "tweet": 60},
+)
+_socialmedia_cfg = _cfg.get("socialmedia", {})
+REQUIRE_EXPLICIT_COMMUNICATION_INTENT = bool(_socialmedia_cfg.get("require_explicit_communication_intent", True))
+APPROVED_AUTONOMOUS_COMMUNICATION_SOURCES = set(
+    _socialmedia_cfg.get(
+        "approved_autonomous_communication_sources",
+        ["scheduled_growth", "authorized_substack_workflow"],
+    )
+)
 SELF_EVOLVE_MAX_PER_DAY = _rate_limits.get("self_evolve_max_per_day", 1)
 IPHONE_BRIDGE_WARN_LATENCY_MS = _rate_limits.get("iphone_bridge_warn_latency_ms", 45000)
 BRIDGE_STALE_THRESHOLD = _rate_limits.get("bridge_stale_threshold", 600)
+RAW_WRITING_MODE_ALLOWED = bool(_cfg.get("raw_writing_mode_allowed", True))
 
 # ---------------------------------------------------------------------------
 # Social engineering patterns for skill security audit
@@ -963,10 +1008,176 @@ HEALTH_HISTORY_CAP = _thresholds.get("health_history_cap", 10)
 HEALTH_MAX_ALERTS_PERSONAL = _thresholds.get("health_max_alerts_personal", 10)
 EVALUATOR_MIN_ISSUE_SEVERITY = _thresholds.get("evaluator_min_issue_severity", "medium")
 EVAL_SCORE_TTL_DAYS = _thresholds.get("eval_score_ttl_days", 30)
+EVAL_DRIFT_WINDOW_DAYS = int(_thresholds.get("eval_drift_window_days", 30))
 SUSPENDED_METRICS: list[str] = ["reading_volume", "hallucination_rate", "emotional_range"]
 DISABLED_RUBRICS: set[str] = {"reading_volume", "hallucination_rate", "emotional_range", "rubric_calibration"}
 MISCALIBRATION_FLAG_THRESHOLD: int = _thresholds.get("miscalibration_flag_threshold", 3)
 SCAFFOLDING_CATCH_RATE_WINDOW_HOURS: int = _limits.get("scaffolding_catch_rate_window_hours", 24)
+
+
+class ConfigError(RuntimeError):
+    """Raised when a runtime policy is violated."""
+
+
+# Compatibility exports used by subprocesses that import the canonical
+# lib/config.py directly instead of agents/shared/config.py.
+TOKEN_USAGE_LOG = TOKEN_USAGE_LOG_PATH
+AUDIT_LOG_PATH = LOGS_DIR / "action_audit.jsonl"
+AUDIT_LOG_ENABLED = True
+AGENT_AUDIT_LOG = LOGS_DIR / "agent_audit.jsonl"
+AGENT_AUDIT_MODE = True
+LLM_MODEL = _MODEL_VERSION_CFG.get("claude_sonnet", "claude-sonnet-4-20250514")
+DELIBERATION_MODE = True
+DELIBERATION_LOG_PATH = LOGS_DIR / "deliberation.jsonl"
+HIGH_IMPACT_ACTION_PATTERNS = [
+    "publish",
+    "delete",
+    "rm",
+    "unlink",
+    "skill.save",
+    "skill.enable",
+    "substack.post",
+    "substack.note",
+    "podcast.publish",
+    "email.send",
+]
+SCOPE_ESCALATION_MODE = "log_only"
+SYNTHESIS_PASSTHROUGH_AGENTS = {"coder", "photo", "video", "researcher"}
+PEER_VERIFY_ENABLED = bool(_cfg.get("peer_verify_enabled", False))
+PEER_VERIFY_THRESHOLD = str(_cfg.get("peer_verify_threshold", "heavy"))
+PEER_VERIFY_TIMEOUT = int(_cfg.get("peer_verify_timeout", 30))
+LOCAL_MODEL_ENDPOINT_ALLOWLIST = list(
+    _cfg.get("local_model_endpoint_allowlist", ["localhost", "127.0.0.1", "::1"]) or ["localhost", "127.0.0.1", "::1"]
+)
+
+AGENT_REGISTRY = {
+    name: {
+        "tier": "light",
+        "permissions": {
+            "network": "none",
+            "filesystem": [str(MIRA_ROOT)],
+            "local_llm_only": False,
+        },
+    }
+    for name in ALL_AGENTS
+}
+for _agent_name in ("writer", "analyst", "researcher", "podcast"):
+    AGENT_REGISTRY[_agent_name]["tier"] = "heavy"
+for _agent_name in ("general", "explorer", "analyst", "researcher", "podcast", "socialmedia", "surfer"):
+    AGENT_REGISTRY[_agent_name]["permissions"]["network"] = "any"
+for _agent_name in ("secret", "health"):
+    AGENT_REGISTRY[_agent_name]["permissions"]["local_llm_only"] = True
+AGENT_REGISTRY.update(
+    {
+        "substack": {
+            "tier": "heavy",
+            "permissions": {
+                "network": ["substack.com"],
+                "filesystem": [str(MIRA_ROOT)],
+                "local_llm_only": False,
+            },
+        },
+        "super": {
+            "tier": "light",
+            "permissions": {
+                "network": "none",
+                "filesystem": [str(MIRA_ROOT)],
+                "local_llm_only": False,
+            },
+        },
+    }
+)
+AGENT_ACTION_SCOPE = {name: ["file_write"] for name in ALL_AGENTS}
+for _agent_name in ("general", "explorer", "analyst", "researcher", "podcast", "socialmedia", "surfer"):
+    AGENT_ACTION_SCOPE[_agent_name] = ["file_write", "network_call"]
+AGENT_ACTION_SCOPE.update(
+    {
+        "coder": ["file_write", "install_package", "modify_config"],
+        "substack": ["file_write", "network_call"],
+        "super": ["file_write", "modify_config"],
+        "task_worker": ["file_write", "network_call"],
+    }
+)
+
+PUBLISH_AUTO_CONFIDENCE_THRESHOLD = float(_publishing_cfg.get("auto_confidence_threshold", 0.8))
+PUBLISH_OBSESSION_GATE_ENABLED = bool(_publishing_cfg.get("obsession_gate_enabled", False))
+OBSESSION_GATE_TIMEOUT_HOURS = int(_publishing_cfg.get("obsession_gate_timeout_hours", 24))
+CALIBRATION_PROMPT_SAMPLE_SIZE = int(_thresholds.get("calibration_prompt_sample_size", CALIBRATION_SAMPLE_SIZE))
+MAX_ATTRIBUTION_DEPTH = int(_limits.get("max_attribution_depth", 2))
+VERIFICATION_SPOT_CHECK_RATE = float(_limits.get("verification_spot_check_rate", 0.15))
+PROXY_AUDIT_SAMPLE_RATE = float(_limits.get("proxy_audit_sample_rate", 0.10))
+PROXY_DRIFT_THRESHOLD = float(_thresholds.get("proxy_drift_threshold", 0.20))
+EVAL_DRIFT_THRESHOLD = float(_thresholds.get("eval_drift_threshold", 0.15))
+EVAL_DRIFT_TREND_THRESHOLD = float(_thresholds.get("eval_drift_trend_threshold", 0.02))
+REVIEW_TRUST_INFLATION_THRESHOLD = int(_thresholds.get("review_trust_inflation_threshold", 8))
+SCAFFOLDING_REJECTION_THRESHOLD = float(_thresholds.get("scaffolding_rejection_threshold", 0.20))
+SILENT_COMPLETION_MIN_RATIO = float(_thresholds.get("silent_completion_min_ratio", 0.30))
+SILENT_COMPLETION_HEDGE_PHRASES = list(
+    _thresholds.get(
+        "silent_completion_hedge_phrases",
+        ["unfortunately", "couldn't complete", "i don't know", "unable to", "failed to"],
+    )
+)
+AI_OUTPUT_REVIEW_BUDGET_LINES = int(_thresholds.get("ai_output_review_budget_lines", 120))
+AI_OUTPUT_WARNING_RATIO = float(_thresholds.get("ai_output_warning_ratio", 0.35))
+
+SOCIAL_MAX_COMMENTS_PER_DAY = int(_rate_limits.get("social_max_comments_per_day", 5))
+SOCIAL_MAX_NOTES_PER_DAY = int(_rate_limits.get("social_max_notes_per_day", NOTES_MAX_PER_DAY))
+DEEP_VERIFY_PROBABILITY = float(_thresholds.get("deep_verify_probability", 0.15))
+DEEP_VERIFY_COOLDOWN_MINUTES = int(_thresholds.get("deep_verify_cooldown_minutes", 120))
+ANTI_AI_FLOOR_THRESHOLD = float(_thresholds.get("anti_ai_floor_threshold", 0.20))
+TRUST_CLAIM_GUARD_ENABLED = bool(_thresholds.get("trust_claim_guard_enabled", True))
+REQUIRE_SKILL_COMPREHENSION = bool(_limits.get("require_skill_comprehension", True))
+BLOCK_EXTERNAL_JUDGMENT_SKILLS_WITHOUT_BOUNDARIES = bool(
+    _limits.get("block_external_judgment_skills_without_boundaries", True)
+)
+MAX_AUDIT_BYTES_PER_DAY = int(_limits.get("max_audit_bytes_per_day", 50000))
+MAX_UNREVIEWED_SKILLS = int(_limits.get("max_unreviewed_skills", 5))
+SKILL_AUDIT_OVERRIDE_MODE = str(_limits.get("skill_audit_override_mode", "strict"))
+SKILL_DIGESTION_MINUTES = int(_limits.get("skill_digestion_minutes", 15))
+NARRATIVE_MONOPOLY_SOURCES = tuple(_socialmedia_cfg.get("narrative_monopoly_sources", ()))
+NARRATIVE_MONOPOLY_THRESHOLD = float(_socialmedia_cfg.get("narrative_monopoly_threshold", 0.80))
+
+SKILL_YIELD_FILE = LOGS_DIR / "skill_yield.json"
+SOUL_DETERMINISTIC_AUDIT_ENABLED = bool(_limits.get("soul_deterministic_audit_enabled", True))
+AUDIT_LAG_WARN_SECONDS = int(_limits.get("audit_lag_warn_seconds", 3600))
+AUDIT_LAG_ALERT_HOURS = int(_limits.get("audit_lag_alert_hours", SKILL_AUDIT_LAG_ALERT_HOURS))
+AUDIT_PROMPT_DRIFT = bool(_limits.get("audit_prompt_drift", True))
+SKILL_NETWORK_WHITELIST = list(_limits.get("skill_network_whitelist", []))
+TRUSTED_SKILL_SOURCES = list(_limits.get("trusted_skill_sources", []))
+ALLOW_SURVEILLANCE_DOMAINS = bool(_limits.get("allow_surveillance_domains", False))
+
+EXPERIENCE_DIR = SOUL_DIR / "experiences"
+LESSON_DIR = SOUL_DIR / "lessons"
+VARIANT_DIR = SOUL_DIR / "variants"
+ENABLE_TRAJECTORY_V2 = bool(_cfg.get("enable_trajectory_v2", True))
+TRAJECTORY_FILE = SOUL_DIR / "trajectories.jsonl"
+TOOL_STATS_FILE = SOUL_DIR / "tool_stats.json"
+REWARD_WEIGHTS = {
+    "likes": 2.0,
+    "comments": 5.0,
+    "restacks": 3.0,
+    "views": 0.01,
+    "wa_positive": 10.0,
+    "wa_negative": -15.0,
+    "wa_repeated_failure": -25.0,
+    "success": 1.0,
+    "failure": -3.0,
+    "timeout": -2.0,
+    "tool_success_rate": 2.5,
+    "outcome_verified": 3.0,
+    "substack_new_subs_24h": 2.0,
+    "reader_feedback_positive": 3.0,
+    "reader_feedback_negative": -4.0,
+    "time_cost_penalty": -1.0,
+    "crash_penalty": -5.0,
+}
+
+
+def load_secrets() -> dict:
+    """Return cached secret configuration without logging values."""
+    return dict(_secrets_cfg) if isinstance(_secrets_cfg, dict) else {}
+
 
 # ---------------------------------------------------------------------------
 # Token / output limits (from config.yml token_limits: section)

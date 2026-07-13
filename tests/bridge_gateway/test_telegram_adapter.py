@@ -18,7 +18,7 @@ def test_disabled_without_token():
 
 def test_disabled_when_library_missing(monkeypatch):
     """If `telegram` can't be imported, adapter permanently disables on first use."""
-    adapter = TelegramBridgeAdapter(token="faketoken", chat_ids={"ang": 42})
+    adapter = TelegramBridgeAdapter(token="faketoken", chat_ids={"default": 42})
     # Simulate no library by injecting an import error.
     monkeypatch.setitem(sys.modules, "telegram", None)
     # First operation triggers lazy load which fails.
@@ -27,7 +27,7 @@ def test_disabled_when_library_missing(monkeypatch):
 
 
 def test_send_outgoing_uses_chat_id_mapping(monkeypatch):
-    adapter = TelegramBridgeAdapter(token="faketoken", chat_ids={"ang": 42})
+    adapter = TelegramBridgeAdapter(token="faketoken", chat_ids={"default": 42})
 
     sent = {}
 
@@ -45,13 +45,13 @@ def test_send_outgoing_uses_chat_id_mapping(monkeypatch):
     fake_module = types.SimpleNamespace(Bot=FakeBot)
     monkeypatch.setitem(sys.modules, "telegram", fake_module)
 
-    ok = adapter.send_outgoing(_msg(user_id="ang", content="hello"))
+    ok = adapter.send_outgoing(_msg(user_id="default", content="hello"))
     assert ok is True
     assert sent["chat_id"] == 42 and sent["text"] == "hello"
 
 
 def test_send_outgoing_drops_unknown_user(monkeypatch):
-    adapter = TelegramBridgeAdapter(token="faketoken", chat_ids={"ang": 42})
+    adapter = TelegramBridgeAdapter(token="faketoken", chat_ids={"default": 42})
 
     class FakeBot:
         def __init__(self, token):
@@ -65,7 +65,7 @@ def test_send_outgoing_drops_unknown_user(monkeypatch):
 
 
 def test_read_incoming_decodes_and_dedups_by_offset(monkeypatch):
-    adapter = TelegramBridgeAdapter(token="faketoken", chat_ids={"ang": 42})
+    adapter = TelegramBridgeAdapter(token="faketoken", chat_ids={"default": 42})
 
     class FakeChat:
         id = 42
@@ -107,7 +107,7 @@ def test_read_incoming_decodes_and_dedups_by_offset(monkeypatch):
 
 
 def test_read_incoming_ignores_unregistered_chat(monkeypatch):
-    adapter = TelegramBridgeAdapter(token="faketoken", chat_ids={"ang": 42})
+    adapter = TelegramBridgeAdapter(token="faketoken", chat_ids={"default": 42})
 
     class StrangerChat:
         id = 999
@@ -134,7 +134,7 @@ def test_read_incoming_ignores_unregistered_chat(monkeypatch):
     assert adapter.read_incoming() == []
 
 
-def _msg(*, id_: str = "out1", user_id: str = "ang", content: str = "hi"):
+def _msg(*, id_: str = "out1", user_id: str = "default", content: str = "hi"):
     from bridge_gateway import BridgeMessage
 
     return BridgeMessage(id=id_, user_id=user_id, source="telegram", content=content)

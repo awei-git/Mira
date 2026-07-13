@@ -3,25 +3,41 @@
 Canonical docs live under [`docs/`](./docs/README.md).
 If you are changing runtime behavior, workflow design, goals, or readiness gates, start there before relying on this README.
 
-A local, multi-user AI agent system that runs on your Mac, talks to you through an iPhone app, and autonomously explores, writes, publishes, and monitors health.
+A local, multi-user AI collaborator that runs on your Mac, works with you through an iPhone app, keeps long-term continuity, and turns lived work into research, writing, and governed self-improvement. The canonical direction is the [V5.1 north star](./docs/north-star.md) and [master plan](./docs/v5-master-plan.md).
 
 ## What it does
 
 Mira is a super-agent that wakes every 30 seconds and:
 
-1. **Talks** -- processes per-user messages and todos from the Mira iOS app via MiraBridge
-2. **Responds** -- handles requests from Apple Notes inbox
+1. **Collaborates** -- maintains one continuous Mira thread for conversation, corrections, decisions, and shared attention
+2. **Fulfills requests** -- treats phone/app requests as visible obligations with honest terminal states
 3. **Writes** -- runs a multi-model writing pipeline (plan -> draft -> critique -> revise), with topic overlap detection against published articles, publishes to Substack with auto-generated cover images
 4. **Explores** -- fetches 30+ feed sources (arXiv, Reddit, HuggingFace, Substack, Hacker News, RSS), writes daily briefings, extracts reading notes
 5. **Podcasts** -- generates dual-voice conversation podcasts from published articles (EN: Gemini TTS, ZH: MiniMax TTS), publishes to RSS feeds
 6. **Analyzes** -- pre-market and post-market financial analysis (Tetra integration)
 7. **Health** -- ingests Apple Health + Oura Ring data, runs anomaly detection, generates daily GPT health insights, provides on-demand advice for symptoms and checkup reports
-8. **Reflects** -- weekly memory consolidation with semantic vector index
+8. **Reflects** -- reviews outcomes, runs bounded improvement experiments, and consolidates verified lessons
 9. **Journals** -- daily summary and philosophical reflection
 10. **Grows** -- Substack Notes, reader engagement, publication discovery
-11. **Learns** -- extracts reusable skills from experience (80+ learned skills across writing, coding, research, photography, video editing)
+11. **Learns** -- security-audits candidate skills, tests them on later work, and promotes only outcome-backed changes
 12. **Sparks** -- proactively messages when it has an insight worth discussing
 13. **Mirrors** -- optionally exposes a local Web GUI / HTTP mirror for browser access and lower-latency local reads
+
+## V5.1 operating structure
+
+V5.1 has one operating spine:
+
+`conversation or request → obligation → action → visible outcome → review → verified learning → future behavior`
+
+| System | Responsibility | Success receipt |
+| --- | --- | --- |
+| Collaboration | Daily Mira thread, requests, corrections, and shared attention | A visible result or honest blocker in the same surface |
+| Learning | Bounded self-improvement experiments and skill candidates | A later outcome that verifies, rejects, or rolls back the change |
+| Continuity | Identity, personality, memories, beliefs, and human preferences | Provenance, confidence, evidence, and later use—not raw storage |
+| Creation | Research, experiments, versioned drafts, and artifacts | A first-hand claim, evidence ledger, and review receipt |
+| Governance | Permissions, security audits, review verdicts, and rollback | No irreversible or public action without the required gate |
+
+The goal hierarchy is L0 Survival, L1 Trusted Collaboration, L2 Learning & Continuity, L3 Research & Expression, and L4 Influence & Optionality. Pipeline activity, generated plans, and passing process checks are diagnostic signals—not proof of progress.
 
 ## Architecture
 
@@ -42,6 +58,13 @@ Mira/
 │   ├── analyst/        # Market analysis
 │   ├── researcher/     # Math research
 │   └── coder/          # Programming skills
+├── lib/
+│   ├── evolution/      # Experience, trajectories, learning proposals and trials
+│   ├── evaluation/     # Outcome scoring and improvement lifecycle
+│   └── memory/         # Governed memory schema, retrieval, soul and skills
+├── data/soul/          # Canonical identity, worldview, interests and durable memory
+├── docs/               # North star, current plan, architecture and operating contracts
+├── tests/              # Unit, workflow, runtime and acceptance tests
 ├── web/                # Optional local Web GUI / HTTP mirror
 ├── feeds/              # Feed sources + raw data
 ├── logs/               # Agent logs
@@ -57,7 +80,7 @@ The super agent dispatches all heavy work (writing, exploring, analysis, health 
 
 ## Key subsystems
 
-**Memory** -- Semantic vector index (SQLite + OpenAI embeddings) with hybrid vector+keyword search and temporal decay. Indexes identity, worldview, memory, interests, journal, reading notes, and skills.
+**Memory and continuity** -- Structured facts, beliefs, episodes, task state, human preferences, and verified lessons retain provenance and confidence. Durable lessons need evidence; retrieval counts as compounding only when it changes later behavior.
 
 **Writing pipeline** -- Syncs ideas from Apple Notes, checks for topic overlap against published catalog, advances projects through plan/draft/critique/revision cycles. Publishes to Substack with personal photo covers (DALL-E fallback). Queues promotional Notes for gradual posting.
 
@@ -67,7 +90,7 @@ The super agent dispatches all heavy work (writing, exploring, analysis, health 
 
 **Podcast** -- Converts published articles into dual-voice conversation podcasts. Generates dialogue scripts (host + Mira), synthesizes with language-specific TTS providers, adds music bumpers, publishes to per-language GitHub Pages RSS feeds, and optionally embeds audio in the Substack post.
 
-**Soul** -- Mira has persistent identity, worldview, and learned skills that evolve through reflection and experience. 80+ skills across 12 domains are extracted from task trajectories and stored for reuse.
+**Soul and learning** -- Mira has a persistent but corrigible identity, worldview, interests, and skill corpus. Proposals remain unverified experiments; generated skills are audited into a candidate queue and require a cross-task outcome before promotion.
 
 ## Web GUI and Security
 

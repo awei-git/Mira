@@ -7,17 +7,17 @@ because it works locally and in tests; records are schema-validated at write.
 from __future__ import annotations
 
 import json
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .delta import MemoryDelta
+from .delta import MemoryDelta, MemoryDeltaProposal
+from .ledger_ids import new_id
 from .schema import MemoryClass, to_jsonable, utc_now
 
 
 def new_run_id(prefix: str = "run") -> str:
-    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+    return new_id(prefix)
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,10 @@ class ExperienceRecord:
     causal_links: list[str]
     confidence: float
     memory_class: MemoryClass
+    artifacts: list[str] = field(default_factory=list)
+    eval_refs: list[str] = field(default_factory=list)
+    side_effect_refs: list[str] = field(default_factory=list)
+    memory_commit_id: str | None = None
     id: str = field(default_factory=lambda: new_run_id("exp"))
     timestamp: datetime = field(default_factory=utc_now)
 
@@ -46,24 +50,50 @@ class ExperienceRecord:
             raise ValueError("confidence must be between 0 and 1")
 
     def to_dict(self) -> dict:
-        return to_jsonable(self)
+        data = to_jsonable(self)
+        data["run_id"] = self.id
+        data["actual_outcome"] = self.outcome
+        data["memory_delta_proposal"] = self.delta.to_dict()
+        data["memory_delta_proposal_id"] = self.delta.proposal_id
+        return data
+
+    @property
+    def run_id(self) -> str:
+        return self.id
+
+    @property
+    def actual_outcome(self) -> str:
+        return self.outcome
+
+    @property
+    def memory_delta_proposal(self) -> MemoryDeltaProposal:
+        return self.delta
+
+    @property
+    def memory_delta_proposal_id(self) -> str:
+        return self.delta.proposal_id
 
     @classmethod
     def from_dict(cls, data: dict) -> "ExperienceRecord":
         timestamp = data.get("timestamp")
         if isinstance(timestamp, str):
             timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        delta_body = data.get("memory_delta_proposal") or data.get("delta")
         return cls(
-            id=data["id"],
+            id=data.get("id") or data.get("run_id"),
             pipeline=data["pipeline"],
             trigger=data["trigger"],
             intent=data["intent"],
-            outcome=data["outcome"],
-            delta=MemoryDelta.from_dict(data["delta"]),
+            outcome=data.get("actual_outcome") or data["outcome"],
+            delta=MemoryDelta.from_dict(delta_body),
             causal_links=list(data.get("causal_links", [])),
             confidence=float(data["confidence"]),
             timestamp=timestamp,
             memory_class=data["memory_class"],
+            artifacts=list(data.get("artifacts", [])),
+            eval_refs=list(data.get("eval_refs", [])),
+            side_effect_refs=list(data.get("side_effect_refs", [])),
+            memory_commit_id=data.get("memory_commit_id"),
         )
 
 

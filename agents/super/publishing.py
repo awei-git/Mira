@@ -1,7 +1,7 @@
-"""Publishing pipeline — auto-publish approved articles and trigger podcasts.
+"""Publishing pipeline — auto-publish approved articles and optional follow-ups.
 
-Handles the publish -> podcast_en -> podcast_zh -> complete lifecycle,
-weekly podcast rate limiting, and stuck pipeline detection.
+Handles Substack publishing, optional podcast follow-through, and stuck pipeline
+detection.
 """
 
 import logging
@@ -17,10 +17,38 @@ except (ImportError, ModuleNotFoundError):
 
 from state import load_state, save_state
 from runtime.dispatcher import _dispatch_background
+from config import AUTO_PODCAST_ENABLED, X_PROMOTION_ENABLED
 
 log = logging.getLogger("mira")
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent
+_PIPELINE_STATUS_ORDER = ["approved", "published", "podcast_en", "podcast_zh", "complete"]
+_PODCAST_DISPATCH_COOLDOWN_SECONDS = 6 * 60 * 60
+
+
+def _recent_podcast_dispatch(state: dict, lang: str, slug: str, current_week: str) -> bool:
+    """Prevent one failing podcast step from being relaunched every core cycle."""
+    dispatch = state.get(f"podcast_{lang}_dispatch")
+    if not isinstance(dispatch, dict):
+        return False
+    if dispatch.get("slug") != slug or dispatch.get("week") != current_week:
+        return False
+    try:
+        ts = datetime.fromisoformat(str(dispatch.get("dispatched_at", "")).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds()
+    return age < _PODCAST_DISPATCH_COOLDOWN_SECONDS
+
+
+def _mark_podcast_dispatched(state: dict, lang: str, slug: str, current_week: str) -> None:
+    state[f"podcast_{lang}_dispatch"] = {
+        "slug": slug,
+        "week": current_week,
+        "dispatched_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _check_pending_publish():
@@ -42,11 +70,13 @@ def _check_pending_publish():
             update_manifest(
                 slug,
                 title=legacy.get("title", slug),
-                status="approved",
+                status="approval_required",
                 workspace=workspace,
                 final_md=final_md,
                 item_id=legacy.get("item_id", ""),
-                auto_podcast=legacy.get("auto_podcast", True),
+                auto_podcast=legacy.get("auto_podcast", AUTO_PODCAST_ENABLED),
+                publication_gate="human_review_required",
+                error="Human publication approval required before Substack publish.",
             )
             del state["pending_publish"]
             save_state(state)
@@ -59,6 +89,16 @@ def _check_pending_publish():
         sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
         from substack import publish_to_substack
         from publish.writer_gate import require_writer_gate
+
+        if not _has_publication_approval(entry):
+            update_manifest(
+                entry["slug"],
+                status="approval_required",
+                publication_gate="human_review_required",
+                error="Human publication approval required before Substack publish.",
+            )
+            log.warning("Publish approval required before '%s' can be published", entry.get("title", entry["slug"]))
+            return
 
         final = Path(entry["final_md"])
         if not final.exists():
@@ -147,16 +187,20 @@ def _check_pending_publish():
         if post_url:
             queue_notes_for_article(entry["title"], content[:3000], post_url)
 
-        # Tweet about the new article
-        try:
-            sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
-            from twitter import tweet_for_article
+        # X/Twitter promotion is intentionally optional. Keep Substack publish
+        # healthy even while X is disabled or credentials are stale.
+        if X_PROMOTION_ENABLED:
+            try:
+                sys.path.insert(0, str(_AGENTS_DIR / "socialmedia"))
+                from twitter import tweet_for_article
 
-            tweet_result = tweet_for_article(entry["title"], entry.get("subtitle", ""), post_url, soul_context="")
-            if tweet_result:
-                log.info("Tweeted about '%s'", entry["title"])
-        except Exception as tw_e:
-            log.warning("Twitter promotion failed for '%s': %s", entry["slug"], tw_e)
+                tweet_result = tweet_for_article(entry["title"], entry.get("subtitle", ""), post_url, soul_context="")
+                if tweet_result:
+                    log.info("Tweeted about '%s'", entry["title"])
+            except Exception as tw_e:
+                log.warning("Twitter promotion failed for '%s': %s", entry["slug"], tw_e)
+        else:
+            log.info("Skipping X/Twitter article promotion; publishing.x_promotion_enabled=false")
 
     except Exception as e:
         err = str(e)
@@ -175,13 +219,63 @@ def _extract_substack_url(result: str) -> str:
     return ""
 
 
+def _has_publication_approval(entry: dict) -> bool:
+    """Return True only when a manifest row carries an explicit human publication receipt."""
+    return bool(
+        entry.get("human_approved_at") or entry.get("publication_approved_by") or entry.get("human_approved") is True
+    )
+
+
 def _blocked_publish_status(result: str) -> str:
     text = result or ""
     if "Substack quality gate blocked publish" in text or "writer gate" in text.lower():
         return "blocked_writer_gate"
+    if "Preflight blocked publish" in text:
+        return "blocked_publish_error"
     if "Substack 未配置" in text or "Substack 认证失败" in text or "cookie 已过期" in text:
         return "blocked_manual_review"
     return ""
+
+
+def _week_from_manifest_timestamp(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).strftime("%Y-W%W")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _status_at_least(status: str | None, threshold: str) -> bool:
+    try:
+        return _PIPELINE_STATUS_ORDER.index(str(status or "")) >= _PIPELINE_STATUS_ORDER.index(threshold)
+    except ValueError:
+        return False
+
+
+def _sync_podcast_week_state(state: dict, manifest: dict, current_week: str) -> bool:
+    """Consume weekly podcast quota only after a verified manifest transition."""
+    changed = False
+    for entry in manifest.get("articles", {}).values():
+        if not entry.get("auto_podcast", True):
+            continue
+        timestamps = entry.get("timestamps") or {}
+        status = entry.get("status")
+        if (
+            _status_at_least(status, "podcast_en")
+            and _week_from_manifest_timestamp(timestamps.get("podcast_en")) == current_week
+            and state.get("podcast_en_week") != current_week
+        ):
+            state["podcast_en_week"] = current_week
+            changed = True
+        if (
+            _status_at_least(status, "podcast_zh")
+            and _week_from_manifest_timestamp(timestamps.get("podcast_zh")) == current_week
+            and state.get("podcast_zh_week") != current_week
+        ):
+            state["podcast_zh_week"] = current_week
+            changed = True
+    return changed
 
 
 def _check_pending_podcast():
@@ -193,8 +287,15 @@ def _check_pending_podcast():
     """
     from publish.manifest import get_next_pending, update_manifest, load_manifest
 
+    if not AUTO_PODCAST_ENABLED:
+        log.info("Skipping podcast follow-through; publishing.auto_podcast_enabled=false")
+        return
+
     state = load_state()
     current_week = datetime.now().strftime("%Y-W%W")
+    manifest = load_manifest()
+    if _sync_podcast_week_state(state, manifest, current_week):
+        save_state(state)
     done_en_week = state.get("podcast_en_week")
     done_zh_week = state.get("podcast_zh_week")
 
@@ -247,33 +348,35 @@ def _check_pending_podcast():
             slug = entry["slug"]
             bg_name = f"podcast-en-{slug}"
             if final.exists():
-                log.info(
-                    "Triggering EN podcast for '%s' (week %s, %d candidates)",
-                    entry["title"],
-                    current_week,
-                    len(en_candidates),
-                )
-                _dispatch_background(
-                    bg_name,
-                    [
-                        sys.executable,
-                        str(_AGENTS_DIR / "podcast" / "handler.py"),
-                        "--run",
-                        "conversation",
-                        "--title",
+                if _recent_podcast_dispatch(state, "en", slug, current_week):
+                    log.info("EN podcast for '%s' already dispatched recently; skipping retry", entry["title"])
+                else:
+                    log.info(
+                        "Triggering EN podcast for '%s' (week %s, %d candidates)",
                         entry["title"],
-                        "--file",
-                        str(final),
-                        "--lang",
-                        "en",
-                        "--slug",
-                        slug,
-                    ],
-                )
-                # Mark the week as spent (optimistic — avoids double-dispatch
-                # if dispatch succeeds but generation fails mid-week).
-                state["podcast_en_week"] = current_week
-                save_state(state)
+                        current_week,
+                        len(en_candidates),
+                    )
+                    dispatched = _dispatch_background(
+                        bg_name,
+                        [
+                            sys.executable,
+                            str(_AGENTS_DIR / "podcast" / "handler.py"),
+                            "--run",
+                            "conversation",
+                            "--title",
+                            entry["title"],
+                            "--file",
+                            str(final),
+                            "--lang",
+                            "en",
+                            "--slug",
+                            slug,
+                        ],
+                    )
+                    if dispatched:
+                        _mark_podcast_dispatched(state, "en", slug, current_week)
+                        save_state(state)
             else:
                 update_manifest(slug, error=f"Podcast: final_md not found: {final}")
     else:
@@ -288,31 +391,35 @@ def _check_pending_podcast():
             slug = entry_zh["slug"]
             bg_name = f"podcast-zh-{slug}"
             if final.exists():
-                log.info(
-                    "Triggering ZH podcast for '%s' (week %s, %d candidates)",
-                    entry_zh["title"],
-                    current_week,
-                    len(zh_candidates),
-                )
-                _dispatch_background(
-                    bg_name,
-                    [
-                        sys.executable,
-                        str(_AGENTS_DIR / "podcast" / "handler.py"),
-                        "--run",
-                        "conversation",
-                        "--title",
+                if _recent_podcast_dispatch(state, "zh", slug, current_week):
+                    log.info("ZH podcast for '%s' already dispatched recently; skipping retry", entry_zh["title"])
+                else:
+                    log.info(
+                        "Triggering ZH podcast for '%s' (week %s, %d candidates)",
                         entry_zh["title"],
-                        "--file",
-                        str(final),
-                        "--lang",
-                        "zh",
-                        "--slug",
-                        slug,
-                    ],
-                )
-                state["podcast_zh_week"] = current_week
-                save_state(state)
+                        current_week,
+                        len(zh_candidates),
+                    )
+                    dispatched = _dispatch_background(
+                        bg_name,
+                        [
+                            sys.executable,
+                            str(_AGENTS_DIR / "podcast" / "handler.py"),
+                            "--run",
+                            "conversation",
+                            "--title",
+                            entry_zh["title"],
+                            "--file",
+                            str(final),
+                            "--lang",
+                            "zh",
+                            "--slug",
+                            slug,
+                        ],
+                    )
+                    if dispatched:
+                        _mark_podcast_dispatched(state, "zh", slug, current_week)
+                        save_state(state)
             else:
                 update_manifest(slug, error=f"Podcast: final_md not found: {final}")
     else:

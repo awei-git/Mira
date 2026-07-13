@@ -8,7 +8,7 @@ verification, with 30-minute cooldown between retries.
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -22,7 +22,7 @@ from runtime.dispatcher import _dispatch_background, _is_bg_running
 
 log = logging.getLogger("mira")
 
-DEFAULT_DAILY_USER_ID = "ang"
+DEFAULT_DAILY_USER_ID = "default"
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +74,30 @@ def _verify_soul_question(state, today):
     return bool(state.get(f"soul_question_{today}") or _bridge_item_exists(f"soul_question_{today_compact}"))
 
 
+def _verify_daily_collab(state, today):
+    """Daily collab verifier: require a same-thread agent message today."""
+    item_path = MIRA_DIR / "users" / DEFAULT_DAILY_USER_ID / "items" / "disc_daily_collab.json"
+    try:
+        item = json.loads(item_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    for msg in item.get("messages", []):
+        if msg.get("sender") != "agent":
+            continue
+        raw = str(msg.get("timestamp", ""))
+        if raw.startswith(today):
+            return True
+        try:
+            sent_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - sent_at.astimezone(timezone.utc) <= timedelta(hours=18):
+            return True
+    return False
+
+
 def _verify_analyst(slot):
     """Analyst verifier: state key + briefing file exists."""
 
@@ -111,6 +135,39 @@ def _verify_self_evolve(state, today):
     return any(proposals_dir.glob(f"{today}_*.json"))
 
 
+def _verify_book_review(state, today):
+    """Book review verifier: require a real daily report, not only a state flag."""
+    today_compact = today.replace("-", "")
+    if any((MIRA_DIR / "users" / DEFAULT_DAILY_USER_ID / "items").glob(f"book_day*_{today_compact}.json")):
+        return True
+
+    books_dir = ARTIFACTS_DIR / "books"
+    if books_dir.exists():
+        for report in books_dir.glob("*/day*.md"):
+            try:
+                modified = datetime.fromtimestamp(report.stat().st_mtime).strftime("%Y-%m-%d")
+            except OSError:
+                continue
+            if modified == today and report.stat().st_size > 2000:
+                return True
+
+    return False
+
+
+def _verify_kol_digest(state, today):
+    """KOL digest verifier: require its own state marker plus daily report."""
+    _ = state
+    kol_state_path = DATA_DIR / "kol" / "state.json"
+    try:
+        kol_state = json.loads(kol_state_path.read_text(encoding="utf-8")) if kol_state_path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        kol_state = {}
+    if not kol_state.get("last_kol_digest", "").startswith(today):
+        return False
+    report = DATA_DIR / "kol" / "daily" / f"{today}.md"
+    return report.exists() and report.stat().st_size > 800
+
+
 _DAILY_TASK_CONTRACTS = {
     "zhesi": {
         "dispatch": ("zhesi", ["zhesi"]),
@@ -123,6 +180,12 @@ _DAILY_TASK_CONTRACTS = {
         "window": (10, 22),
         "verify": _verify_soul_question,
         "label": "灵魂提问",
+    },
+    "daily_collab": {
+        "dispatch": ("daily-collab", ["daily-collab"]),
+        "window": (11, 23),
+        "verify": _verify_daily_collab,
+        "label": "Daily Collab",
     },
     # daily-photo disabled 2026-04-29 by WA ("照片这个job就删掉吧 没什么用
     # 你也没有任何进步"). runtime/jobs.py disabled the trigger, but this
@@ -140,6 +203,12 @@ _DAILY_TASK_CONTRACTS = {
         "window": (21, 23),
         "verify": _verify_journal,
         "label": "日记",
+    },
+    "book_review": {
+        "dispatch": ("book-review", ["book-review"]),
+        "window": (9, 15),
+        "verify": _verify_book_review,
+        "label": "每日书评",
     },
     "analyst_pre": {
         "dispatch": ("analyst-0700", ["analyst", "--slot", "0700"]),
@@ -164,6 +233,12 @@ _DAILY_TASK_CONTRACTS = {
         "window": (8, 11),
         "verify": _verify_state_key("growth_snapshot"),
         "label": "增长快照",
+    },
+    "kol_digest": {
+        "dispatch": ("kol-digest", ["kol-digest"]),
+        "window": (7, 11),
+        "verify": _verify_kol_digest,
+        "label": "KOL日报",
     },
 }
 

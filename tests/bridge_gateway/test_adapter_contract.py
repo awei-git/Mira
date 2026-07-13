@@ -11,7 +11,7 @@ from bridge_gateway.adapter import bridge_message_from_dict
 def test_bridge_message_from_dict_parses_iso_timestamp():
     data = {
         "id": "m1",
-        "user_id": "ang",
+        "user_id": "default",
         "source": "telegram",
         "content": "hello",
         "timestamp": "2026-04-16T22:00:00+00:00",
@@ -24,7 +24,7 @@ def test_bridge_message_from_dict_parses_iso_timestamp():
 
 
 def test_bridge_message_from_dict_defaults_missing_fields():
-    msg = bridge_message_from_dict({"id": "m2", "user_id": "ang"})
+    msg = bridge_message_from_dict({"id": "m2", "user_id": "default"})
     assert msg.source == "unknown"
     assert msg.content == ""
     assert msg.tags == []
@@ -34,14 +34,14 @@ def test_telegram_stub_roundtrip():
     adapter = TelegramStubAdapter()
     assert adapter.read_incoming() == []
 
-    adapter.inject(BridgeMessage(id="in1", user_id="ang", source="telegram", content="ping"))
+    adapter.inject(BridgeMessage(id="in1", user_id="default", source="telegram", content="ping"))
     inbound = adapter.read_incoming()
     assert len(inbound) == 1
     assert inbound[0].content == "ping"
     # Second read drains the queue
     assert adapter.read_incoming() == []
 
-    outgoing = BridgeMessage(id="out1", user_id="ang", source="telegram", content="pong")
+    outgoing = BridgeMessage(id="out1", user_id="default", source="telegram", content="pong")
     assert adapter.send_outgoing(outgoing) is True
     assert adapter.sent[0].id == "out1"
 
@@ -50,14 +50,14 @@ def test_telegram_stub_roundtrip():
 
 def test_discord_stub_auto_tags_inbound():
     adapter = DiscordStubAdapter()
-    adapter.inject(BridgeMessage(id="in1", user_id="ang", source="discord", content="great post!"))
+    adapter.inject(BridgeMessage(id="in1", user_id="default", source="discord", content="great post!"))
     inbound = adapter.read_incoming()
     assert "reader_feedback" in inbound[0].tags
 
 
 def test_discord_stub_respects_custom_tag():
     adapter = DiscordStubAdapter(tag_inbound="discord_chat")
-    adapter.inject(BridgeMessage(id="in1", user_id="ang", source="discord", content="hi"))
+    adapter.inject(BridgeMessage(id="in1", user_id="default", source="discord", content="hi"))
     inbound = adapter.read_incoming()
     assert "discord_chat" in inbound[0].tags
     assert "reader_feedback" not in inbound[0].tags
@@ -73,7 +73,7 @@ def test_send_sink_allows_test_to_intercept_outbound():
     adapter = TelegramStubAdapter(send_sink=sink)
     adapter.send_outgoing(
         BridgeMessage(
-            id="o1", user_id="ang", source="telegram", content="through sink", timestamp=datetime.now(timezone.utc)
+            id="o1", user_id="default", source="telegram", content="through sink", timestamp=datetime.now(timezone.utc)
         )
     )
     assert delivered and delivered[0].id == "o1"

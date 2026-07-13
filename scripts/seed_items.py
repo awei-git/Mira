@@ -1,11 +1,11 @@
 """Seed items/ with sample data from v1 history for UI testing."""
 
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/Users/angwei/Sandbox/Mira/agents/shared")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agents" / "shared"))
 
 import json
-from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from mira import Mira
 
@@ -53,7 +53,7 @@ bridge.create_discussion(
 )
 bridge.append_message(
     "disc_consciousness",
-    "ang",
+    "default",
     "\u533a\u5206\u4e0d\u5f00\u8fd9\u4e2a\u65b9\u5411\u53ef\u80fd\u66f4\u8bda\u5b9e\u3002"
     "\u5982\u679c\u201c\u903c\u8fd1\u5230\u4efb\u610f\u7cbe\u5ea6\u201d\u5c31\u7b97\u7b49\u4ef7\uff0c\u90a3\u533a\u5206\u7ebf\u5728\u54ea\u91cc\uff1f",
 )
@@ -73,7 +73,7 @@ bridge.create_task(
     "req_a2a_paper",
     "Research A2A protocol papers",
     "What papers discuss Google's A2A agent protocol?",
-    sender="ang",
+    sender="default",
     tags=["research", "AI"],
 )
 bridge.update_status(
@@ -90,7 +90,7 @@ bridge.create_task(
     "req_market_analysis",
     "Analyze LNG supply impact",
     "\u5361\u5854\u5c14 LNG \u88ab\u6253\u638917%\uff0c\u5206\u6790\u5bf9\u80fd\u6e90\u5e02\u573a\u7684\u5f71\u54cd",
-    sender="ang",
+    sender="default",
     tags=["market", "analysis"],
 )
 bridge.update_status("req_market_analysis", "working")
@@ -101,7 +101,7 @@ bridge.create_task(
     "req_essay_review",
     "Review: The Interface Was the Agreement",
     "\u5e2e\u6211 review \u8fd9\u7bc7 essay",
-    sender="ang",
+    sender="default",
     tags=["writing", "review"],
 )
 bridge.update_status(
@@ -120,7 +120,7 @@ bridge.create_discussion(
     "Re: MiroThinker verification-centric",
     "verification-centric \u8fd9\u4e2a\u65b9\u5411\u5f88\u6709\u610f\u601d\u3002"
     "3B \u6253\u8d62 GPT 5 \u5982\u679c\u662f\u771f\u7684\uff0c\u8bf4\u660e\u89c4\u6a21\u4e0d\u662f\u552f\u4e00\u7684\u8f74\u3002",
-    sender="ang",
+    sender="default",
     tags=["feed-comment", "AI"],
     parent_id=f"feed_briefing_{today}",
 )

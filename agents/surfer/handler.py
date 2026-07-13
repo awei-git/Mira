@@ -14,6 +14,8 @@ through multi-step flows, and take screenshots for visual grounding.
 import json
 import logging
 import sys
+from datetime import datetime, timezone
+from importlib import util as importlib_util
 from pathlib import Path
 
 _SURFER_DIR = Path(__file__).resolve().parent
@@ -32,6 +34,15 @@ from memory.soul import load_soul, format_soul
 from llm import claude_think
 
 log = logging.getLogger("surfer_agent")
+
+_SHARED_CONFIG_PATH = _AGENTS_DIR / "shared" / "config.py"
+_shared_config_spec = importlib_util.spec_from_file_location("_mira_shared_config_for_surfer", _SHARED_CONFIG_PATH)
+if _shared_config_spec is not None and _shared_config_spec.loader is not None:
+    _shared_config = importlib_util.module_from_spec(_shared_config_spec)
+    _shared_config_spec.loader.exec_module(_shared_config)
+    EXTRACTION_FALLBACK_POLICY = getattr(_shared_config, "EXTRACTION_FALLBACK_POLICY", "deterministic_first")
+else:
+    EXTRACTION_FALLBACK_POLICY = "deterministic_first"
 
 # Available browser actions the LLM can choose from
 _ACTIONS_SPEC = """
@@ -66,6 +77,7 @@ Available actions (output ONE as JSON):
 
 {"action": "evaluate", "code": "document.querySelector(...).textContent"}
   Run JavaScript and get the result.
+  Do not use browser built-in AI, Gemini Nano, or WebGPU inference. Route private/local inference through Mira's secret/oMLX path.
 
 {"action": "extract", "instruction": "what to extract from the current page"}
   Extract specific information from the current page text.
@@ -158,9 +170,8 @@ def handle(
 
             # Update page state for next iteration
             if action_type == "extract":
-                # For extract, use LLM to pull specific info from page text
                 page_text = browser.get_page_text()
-                extraction = _extract_info(page_text, action.get("instruction", ""))
+                extraction = extract_with_fallback(browser, page_text, action.get("instruction", ""))
                 page_state = _format_page_state(browser_result, extraction=extraction)
             elif action_type == "screenshot":
                 page_state = _format_page_state(browser_result, screenshot_taken=True)
@@ -293,6 +304,88 @@ Extract ONLY the requested information. Be concise and precise."""
 
     result = claude_think(prompt, timeout=SURFER_EXTRACTION_TIMEOUT)
     return result or "[Extraction failed]"
+
+
+def extract_with_fallback(browser, page_text: str, instruction: str) -> str:
+    url = browser._page.url if getattr(browser, "_page", None) else ""
+    if EXTRACTION_FALLBACK_POLICY == "any":
+        return _extract_info(page_text, instruction)
+
+    fallback_reason = ""
+    try:
+        structured = _extract_structured_dom(browser, instruction)
+        if structured:
+            return structured
+        fallback_reason = "no structured DOM/API data matched extraction instruction"
+    except Exception as e:
+        fallback_reason = f"{type(e).__name__}: {e}"
+
+    _log_deterministic_fallback(url, fallback_reason)
+    return _extract_info(page_text, instruction)
+
+
+def _extract_structured_dom(browser, instruction: str) -> str:
+    if not getattr(browser, "_page", None):
+        return ""
+
+    data = browser._page.evaluate(
+        """() => {
+        const jsonLd = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
+            .map(script => {
+                try { return JSON.parse(script.textContent || ''); }
+                catch (_) { return null; }
+            })
+            .filter(Boolean)
+            .slice(0, 5);
+        const tables = Array.from(document.querySelectorAll('table')).slice(0, 3).map(table => {
+            const rows = Array.from(table.querySelectorAll('tr')).slice(0, 12).map(row =>
+                Array.from(row.querySelectorAll('th,td')).map(cell => cell.textContent.trim()).filter(Boolean)
+            ).filter(row => row.length);
+            return rows;
+        }).filter(rows => rows.length);
+        const meta = {
+            title: document.title || '',
+            description: document.querySelector('meta[name="description"]')?.content || '',
+            ogTitle: document.querySelector('meta[property="og:title"]')?.content || '',
+            ogDescription: document.querySelector('meta[property="og:description"]')?.content || '',
+        };
+        return {jsonLd, tables, meta};
+    }"""
+    )
+
+    instruction_lc = instruction.lower()
+    parts = []
+    if data.get("jsonLd"):
+        parts.append("Structured JSON-LD:\n" + json.dumps(data["jsonLd"], ensure_ascii=False, indent=2)[:4000])
+    if data.get("tables"):
+        parts.append("Structured tables:\n" + json.dumps(data["tables"], ensure_ascii=False, indent=2)[:4000])
+    if (
+        not parts
+        and any(term in instruction_lc for term in ("title", "description", "metadata", "meta", "headline"))
+        and any(data.get("meta", {}).values())
+    ):
+        parts.append("Structured metadata:\n" + json.dumps(data["meta"], ensure_ascii=False, indent=2)[:2000])
+
+    return "\n\n".join(parts)
+
+
+def _log_deterministic_fallback(url: str, fallback_reason: str) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    log.warning(
+        "DETERMINISTIC_FALLBACK: using LLM extraction for %s timestamp=%s url=%s "
+        "extraction_method=%s fallback_reason=%s",
+        url,
+        timestamp,
+        url,
+        "llm",
+        fallback_reason,
+        extra={
+            "timestamp": timestamp,
+            "url": url,
+            "extraction_method": "llm",
+            "fallback_reason": fallback_reason,
+        },
+    )
 
 
 def _format_page_state(result, extraction: str = "", screenshot_taken: bool = False) -> str:

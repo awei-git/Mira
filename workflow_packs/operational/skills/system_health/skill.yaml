@@ -1,0 +1,8 @@
+name: system_health
+description: Convert runtime failures into operational traces and scars when needed.
+inputs:
+  - process_status
+  - failure_events
+outputs:
+  - health_status
+  - memory_delta

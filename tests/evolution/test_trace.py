@@ -109,7 +109,7 @@ def test_traced_decorator_wraps_and_preserves_return(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "ENABLE_TRAJECTORY_V2", True)
 
     @traced("decofn")
-    def compute(user_id: str = "ang", x: int = 2):
+    def compute(user_id: str = "default", x: int = 2):
         return x * 3
 
     assert compute(x=7) == 21
@@ -128,7 +128,7 @@ def test_traced_decorator_flag_off_is_pure_noop(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "ENABLE_TRAJECTORY_V2", False)
 
     @traced("off")
-    def compute(user_id="ang"):
+    def compute(user_id="default"):
         return "yes"
 
     assert compute() == "yes"

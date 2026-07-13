@@ -290,7 +290,7 @@ def _extract_topic_phrases(notes: list[dict]) -> Counter:
     return topics
 
 
-def detect_wiki_candidates(days: int = 14, min_count: int = 2, user_id: str = "ang") -> list[dict]:
+def detect_wiki_candidates(days: int = 14, min_count: int = 2, user_id: str = "default") -> list[dict]:
     """Find topics appearing in 3+ reading notes without a wiki page.
 
     Uses both keyword frequency and vector similarity clustering.
@@ -373,7 +373,7 @@ def detect_wiki_candidates(days: int = 14, min_count: int = 2, user_id: str = "a
     return candidates[:10]  # Top 10
 
 
-def get_notes_for_topic(topic: str, days: int = 30, user_id: str = "ang") -> list[dict]:
+def get_notes_for_topic(topic: str, days: int = 30, user_id: str = "default") -> list[dict]:
     """Find reading notes related to a topic via content search + vector."""
     notes = _load_recent_notes(days)
     matches = []

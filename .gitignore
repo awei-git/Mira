@@ -8,6 +8,9 @@ sources.json
 # Data directory — runtime data is ignored by default. The V2 immutable
 # identity anchor is intentionally versioned because startup verifies it.
 data/*
+!data/kol/
+data/kol/*
+!data/kol/kol_registry.json
 !data/soul/
 data/soul/*
 !data/soul/identity_core.md
@@ -50,6 +53,12 @@ lib/soul/scorecards/*.json
 users/*/manifest.json
 users/*/items/daily_report_*.json
 coattention.md
+Mira-Artifacts/
+agents/.output_quality.jsonl
+agents/evaluator/improvement_history.jsonl
+agents/evaluator/state.json
+lib/soul/improvement_plan.json
+artifacts/writings/drafts/*.x_article_review.json
 
 # Python
 __pycache__/

@@ -20,15 +20,21 @@ import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal, NotRequired, TypedDict
 from urllib import error as url_error
 from urllib import request as url_request
 
 _SHARED = Path(__file__).resolve().parent.parent.parent / "lib"
 _SUPER = Path(__file__).resolve().parent.parent / "super"
+_AGENT_SHARED = Path(__file__).resolve().parent.parent / "shared"
 if str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
 if str(_SUPER) not in sys.path:
     sys.path.insert(0, str(_SUPER))
+if str(_AGENT_SHARED) not in sys.path:
+    sys.path.insert(0, str(_AGENT_SHARED))
+
+from sub_agent import evaluator_output_sanity_failures
 
 log = logging.getLogger("evaluator_agent")
 
@@ -47,19 +53,41 @@ _STATE_FILE = Path(__file__).parent / "state.json"
 RUBRIC_STALENESS_THRESHOLD = 3
 _SPOT_CHECK_LOG = Path(__file__).resolve().parent.parent.parent / "logs" / "evaluator_spot_checks.jsonl"
 _EVALUATION_LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs" / "evaluations"
+_EVALUATOR_LOG = Path(__file__).resolve().parent.parent / "shared" / "soul" / "evaluator_log.jsonl"
 _DRIFT_LOG_FILE = _EVALUATION_LOG_DIR / "drift_log.json"
+_EVAL_DRIFT_LOG = Path(__file__).resolve().parent.parent.parent / "logs" / "eval_drift.log"
 _CONTENT_GUARD_AUDIT_SCHEDULE = {
     "name": "content_guard_completeness_audit",
     "weekday": 0,
 }
+_SCAFFOLDING_REJECTION_THRESHOLD_DEFAULT = 0.2
 VERIFICATION_INDEPENDENCE = True
+_EVAL_TASK_WINDOW_DEFAULT = 20
+_EVAL_SAMPLING_MODE_DEFAULT = "recency"
+_EVAL_SAMPLING_MODES = {"recency", "stratified_by_type", "uniform"}
 
 # ---------------------------------------------------------------------------
 # Per-agent criteria — each agent is scored on what MATTERS for its role
 # All metrics are deterministic (no LLM self-eval)
 # ---------------------------------------------------------------------------
 
-AGENT_CRITERIA = {
+GroundTruthType = Literal["outcome", "consensus_proxy"]
+
+
+class MetricDefinition(TypedDict):
+    description: str
+    metric_type: str
+    ground_truth_type: GroundTruthType
+    ground_truth_available: NotRequired[bool]
+
+
+class AgentCriteria(TypedDict, total=False):
+    description: str
+    metrics: dict[str, MetricDefinition]
+    model: str
+
+
+AGENT_CRITERIA: dict[str, AgentCriteria] = {
     "writer": {
         "description": "Writing pipeline — articles, essays, stories",
         "metrics": {
@@ -67,16 +95,19 @@ AGENT_CRITERIA = {
                 "description": "Articles that made it to Substack (published / attempted)",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "review_convergence": {
                 "description": "Average review score across writing pipeline rounds",
                 "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
+                "ground_truth_available": False,
             },
             "word_count_avg": {
                 "description": "Average article length (proxy for depth)",
                 "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
+                "ground_truth_available": False,
             },
         },
     },
@@ -87,16 +118,19 @@ AGENT_CRITERIA = {
                 "description": "Tasks completed without error / total",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "bug_found_rate": {
                 "description": "For review tasks: issues detected per review",
                 "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
+                "ground_truth_available": False,
             },
             "syntax_valid": {
                 "description": "Generated code passes syntax check",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
         },
     },
@@ -107,16 +141,42 @@ AGENT_CRITERIA = {
                 "description": "Briefings successfully generated / attempts",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "source_diversity": {
                 "description": "Unique sources per briefing",
                 "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
+                "ground_truth_available": False,
             },
             "reading_notes_produced": {
                 "description": "Reading notes extracted per explore cycle",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
+            },
+        },
+    },
+    "substack": {
+        "description": "Substack publication strategy and guarded publishing orchestration",
+        "metrics": {
+            "strategy_report_produced": {
+                "description": "Planning requests that produce a publication strategy artifact",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+                "ground_truth_available": True,
+            },
+            "topic_backlog_quality": {
+                "description": "Topic candidates with thesis, audience fit, and Mira edge",
+                "metric_type": "proxy",
+                "ground_truth_type": "consensus_proxy",
+                "ground_truth_available": False,
+            },
+            "live_publish_delegation": {
+                "description": "Live publishing intents delegated to the guarded socialmedia stack",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
         },
     },
@@ -127,16 +187,19 @@ AGENT_CRITERIA = {
                 "description": "Research tasks completed / attempted",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "iteration_depth": {
                 "description": "Average iterations per research task (more = deeper)",
                 "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
+                "ground_truth_available": False,
             },
             "output_length": {
                 "description": "Average output length (proxy for thoroughness)",
                 "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
+                "ground_truth_available": False,
             },
         },
     },
@@ -147,11 +210,13 @@ AGENT_CRITERIA = {
                 "description": "Analysis tasks completed / attempted",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "output_length": {
                 "description": "Average output length",
                 "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
+                "ground_truth_available": False,
             },
         },
     },
@@ -162,11 +227,13 @@ AGENT_CRITERIA = {
                 "description": "Messages that got a response / total",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "response_time_avg": {
                 "description": "Average seconds to respond",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
         },
     },
@@ -177,11 +244,36 @@ AGENT_CRITERIA = {
                 "description": "Episodes successfully published to RSS",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "audio_generated": {
                 "description": "Audio files successfully generated / attempted",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
+            },
+        },
+    },
+    "kol": {
+        "description": "KOL digest — fixed-source monitoring and daily synthesis",
+        "metrics": {
+            "digest_produced": {
+                "description": "Daily digest artifacts successfully generated",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+                "ground_truth_available": True,
+            },
+            "source_health": {
+                "description": "Tracked source fetch health recorded per run",
+                "metric_type": "outcome",
+                "ground_truth_type": "outcome",
+                "ground_truth_available": True,
+            },
+            "item_relevance": {
+                "description": "Top items aligned to each KOL's declared angle",
+                "metric_type": "proxy",
+                "ground_truth_type": "consensus_proxy",
+                "ground_truth_available": False,
             },
         },
     },
@@ -192,11 +284,13 @@ AGENT_CRITERIA = {
                 "description": "Tasks completed / attempted",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "stayed_local": {
                 "description": "No cloud API calls detected (always should be 100%)",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
         },
     },
@@ -207,11 +301,13 @@ AGENT_CRITERIA = {
                 "description": "Tasks completed without error / total",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "output_length": {
                 "description": "Average output length (proxy for effort)",
                 "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
+                "ground_truth_available": False,
             },
         },
     },
@@ -222,11 +318,13 @@ AGENT_CRITERIA = {
                 "description": "Substack notes successfully posted",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "comments_replied": {
                 "description": "Comments replied to / flagged for reply",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
         },
     },
@@ -237,36 +335,43 @@ AGENT_CRITERIA = {
                 "description": "Tasks routed to correct agent (no re-routes needed)",
                 "metric_type": "proxy",
                 "ground_truth_type": "consensus_proxy",
+                "ground_truth_available": False,
             },
             "plan_quality": {
                 "description": "Multi-step plans that executed without step failures",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "cycle_time": {
                 "description": "Average main loop duration (target: < 5s)",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "crash_rate": {
                 "description": "Cycles that crashed / total cycles",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "heartbeat_uptime": {
                 "description": "Heartbeat updated within 3min window (%)",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "stuck_tasks": {
                 "description": "Tasks stuck in dispatched/running state > 30min",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
             "timeout_rate": {
                 "description": "Tasks that timed out / total dispatched",
                 "metric_type": "outcome",
                 "ground_truth_type": "outcome",
+                "ground_truth_available": True,
             },
         },
     },
@@ -274,7 +379,7 @@ AGENT_CRITERIA = {
 
 _SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2}
 
-SUPER_CRITERIA = {
+SUPER_CRITERIA: AgentCriteria = {
     "description": "Orchestrator — routing, planning, lifecycle",
     "metrics": {
         "routing_accuracy": {
@@ -315,23 +420,61 @@ SUPER_CRITERIA = {
     },
 }
 
-_UNIVERSAL_METRIC_TYPES: dict[str, str] = {
+_UNIVERSAL_GROUND_TRUTH_TYPES: dict[str, GroundTruthType] = {
     "task_success": "outcome",
     "guard_fire_rate": "outcome",
-    "output_length_avg": "proxy",
+    "output_length_avg": "consensus_proxy",
+    "sycophancy_resistance": "consensus_proxy",
 }
 _METRIC_AUDIT_WARNING = "METRIC_AUDIT: all criteria are proxy metrics — no outcome verification available."
 
 
-def _get_metric_type(agent_name: str, metric_key: str) -> str:
-    """Return the metric_type for a metric, falling back to universal defaults."""
+def _rubric_unvalidated_warning(cycle_count: int) -> dict:
+    label = f"[RUBRIC UNVALIDATED — {cycle_count} cycles since last confirmed audit]"
+    return {
+        "type": "RUBRIC_UNVALIDATED",
+        "severity": "WARNING",
+        "cycle_count": cycle_count,
+        "threshold": RUBRIC_STALENESS_THRESHOLD,
+        "message": label,
+    }
+
+
+def _prefix_emitted_scores(result: dict, prefix: str) -> None:
+    def _prefix_scores(scores: object) -> None:
+        if not isinstance(scores, dict):
+            return
+        for key, value in list(scores.items()):
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                scores[key] = f"{prefix} {value}"
+            elif isinstance(value, str) and value and not value.startswith(prefix):
+                scores[key] = f"{prefix} {value}"
+
+    for card in result.get("agents", {}).values():
+        if isinstance(card, dict):
+            _prefix_scores(card.get("scores"))
+    super_card = result.get("super", {})
+    if isinstance(super_card, dict):
+        _prefix_scores(super_card.get("scores"))
+
+
+def _get_ground_truth_type(agent_name: str, metric_key: str) -> GroundTruthType:
+    """Return the ground_truth_type for a metric, falling back to universal defaults."""
     metric_def = AGENT_CRITERIA.get(agent_name, {}).get("metrics", {}).get(metric_key)
     if isinstance(metric_def, dict):
-        metric_type = metric_def.get("metric_type")
-        if metric_type in {"outcome", "proxy"}:
-            return metric_type
-        return "outcome" if metric_def.get("ground_truth_type") == "outcome" else "proxy"
-    return _UNIVERSAL_METRIC_TYPES.get(metric_key, "proxy")
+        ground_truth_type = metric_def.get("ground_truth_type")
+        if ground_truth_type in {"outcome", "consensus_proxy"}:
+            return ground_truth_type
+        if metric_def.get("metric_type") == "outcome":
+            return "outcome"
+    return _UNIVERSAL_GROUND_TRUTH_TYPES.get(metric_key, "consensus_proxy")
+
+
+def _get_metric_type(agent_name: str, metric_key: str) -> str:
+    """Return the legacy metric_type label for a metric."""
+    return "outcome" if _get_ground_truth_type(agent_name, metric_key) == "outcome" else "proxy"
 
 
 def _agent_criteria_metric_types(agent_name: str) -> list[str]:
@@ -341,13 +484,20 @@ def _agent_criteria_metric_types(agent_name: str) -> list[str]:
     return [_get_metric_type(agent_name, key) for key in metrics]
 
 
+def _agent_criteria_ground_truth_types(agent_name: str) -> list[GroundTruthType]:
+    metrics = AGENT_CRITERIA.get(agent_name, {}).get("metrics", {})
+    if not isinstance(metrics, dict):
+        return []
+    return [_get_ground_truth_type(agent_name, key) for key in metrics]
+
+
 def _agent_has_outcome_metric(agent_name: str) -> bool:
-    return any(metric_type == "outcome" for metric_type in _agent_criteria_metric_types(agent_name))
+    return any(ground_truth_type == "outcome" for ground_truth_type in _agent_criteria_ground_truth_types(agent_name))
 
 
 def _append_metric_audit_warning(card: dict, agent_name: str) -> dict:
-    metric_types = _agent_criteria_metric_types(agent_name)
-    if metric_types and all(metric_type == "proxy" for metric_type in metric_types):
+    ground_truth_types = _agent_criteria_ground_truth_types(agent_name)
+    if ground_truth_types and all(ground_truth_type == "consensus_proxy" for ground_truth_type in ground_truth_types):
         card.setdefault("warnings", []).append(_METRIC_AUDIT_WARNING)
     return card
 
@@ -378,14 +528,46 @@ def _load_score_history(agent_name: str) -> list[dict]:
     return records
 
 
-def _record_score(agent_name, score, timestamp):
+def _apply_score_ttl(records: list[dict], agent_name: str, ttl_days: int) -> tuple[list[dict], bool]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
+    active: list[dict] = []
+    stale_count = 0
+    for record in records:
+        ts_str = record.get("timestamp", "")
+        try:
+            ts = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+        except (ValueError, AttributeError):
+            active.append(record)
+            continue
+        if ts < cutoff:
+            stale_count += 1
+        else:
+            active.append(record)
+    if stale_count:
+        log.info(
+            "STALE_SCORES_EXCLUDED agent=%s excluded=%d ttl_days=%d",
+            agent_name,
+            stale_count,
+            ttl_days,
+        )
+    total = len(active) + stale_count
+    low_confidence = total > 0 and stale_count / total > 0.5
+    return active, low_confidence
+
+
+def _record_score(agent_name, score, timestamp, sampling_context: dict | None = None):
     try:
         score_value = float(score)
     except (TypeError, ValueError):
         return
 
     history = _load_score_history(agent_name)
-    history.append({"timestamp": timestamp, "agent": agent_name, "score": score_value})
+    record = {"timestamp": timestamp, "agent": agent_name, "score": score_value}
+    if sampling_context is not None:
+        record["sampling_context"] = sampling_context
+    history.append(record)
     history = history[-_SCORE_HISTORY_LIMIT:]
 
     try:
@@ -397,11 +579,38 @@ def _record_score(agent_name, score, timestamp):
         log.debug("Could not record score history for %s: %s", agent_name, exc)
 
 
-def _detect_drift(agent_name):
+_SPLIT_TYPE_MAP = {
+    "recency": "rolling_window",
+    "uniform": "uniform_sample",
+    "stratified_by_type": "stratified_by_type",
+}
+
+
+def _build_eval_split_meta(days: int, window: int, mode: str, n_tasks: int) -> dict:
+    return {
+        "split_type": _SPLIT_TYPE_MAP.get(mode, mode),
+        "window_hours": days * 24,
+        "boundary_rule": "wall_clock",
+        "n_tasks_included": n_tasks,
+    }
+
+
+def _append_evaluator_log(record: dict) -> None:
+    try:
+        _EVALUATOR_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_EVALUATOR_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.debug("Could not write evaluator log: %s", exc)
+
+
+def _detect_drift(agent_name, history: list[dict] | None = None):
     from soul_manager import detect_agent_drift
 
+    if history is None:
+        history = _load_score_history(agent_name)
     drift = detect_agent_drift(
-        _load_score_history(agent_name),
+        history,
         window_size=DRIFT_WINDOW_SIZE,
         slope_threshold=DRIFT_SLOPE_THRESHOLD,
     )
@@ -433,14 +642,91 @@ def _log_drift_warning(drift: dict) -> None:
         log.debug("Could not write drift log for %s: %s", drift.get("agent"), exc)
 
 
+def _score_record_time(record: dict) -> datetime | None:
+    try:
+        ts = datetime.fromisoformat(str(record.get("timestamp", "")).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
+def _score_record_value(record: dict) -> float | None:
+    try:
+        return float(record.get("score"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _detect_eval_drift_trend(agent_name: str, history: list[dict], window_days: int, threshold: float) -> dict | None:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+    points: list[tuple[datetime, float]] = []
+    for record in history:
+        ts = _score_record_time(record)
+        score = _score_record_value(record)
+        if ts is not None and score is not None and ts >= cutoff:
+            points.append((ts, score))
+
+    points.sort(key=lambda item: item[0])
+    if len(points) < 3:
+        return None
+
+    first_ts = points[0][0]
+    x_values = [(ts - first_ts).total_seconds() / 86400 / max(window_days, 1) for ts, _ in points]
+    y_values = [score for _, score in points]
+    x_mean = sum(x_values) / len(x_values)
+    y_mean = sum(y_values) / len(y_values)
+    denominator = sum((x - x_mean) ** 2 for x in x_values)
+    if denominator == 0:
+        return None
+
+    slope = sum((x - x_mean) * (y - y_mean) for x, y in zip(x_values, y_values)) / denominator
+    deltas = [current - previous for previous, current in zip(y_values, y_values[1:])]
+    if slope <= threshold or not all(delta >= 0 for delta in deltas):
+        return None
+
+    return {
+        "type": "eval_benchmark_staleness_risk",
+        "agent": agent_name,
+        "slope": round(slope, 6),
+        "threshold": threshold,
+        "window_days": window_days,
+        "sample_count": len(points),
+        "first_score": round(y_values[0], 6),
+        "last_score": round(y_values[-1], 6),
+        "message": "steady improvement on fixed evaluator benchmarks may indicate overfitting or benchmark staleness",
+    }
+
+
+def _log_eval_drift_trend_warning(flag: dict) -> None:
+    record = {"timestamp": datetime.now(timezone.utc).isoformat(), **flag}
+    try:
+        _EVAL_DRIFT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_EVAL_DRIFT_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    except OSError as exc:
+        log.debug("Could not write eval drift trend log for %s: %s", flag.get("agent"), exc)
+    log.warning(
+        "EVAL_DRIFT_TREND agent=%s slope=%.6f threshold=%.6f window_days=%d",
+        flag.get("agent"),
+        flag.get("slope", 0.0),
+        flag.get("threshold", 0.0),
+        flag.get("window_days", 0),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Score computation — all deterministic, from task history and logs
 # ---------------------------------------------------------------------------
 
 
-def _load_task_history(days: int = 7) -> list[dict]:
+def _load_task_history(days: int | None = None) -> list[dict]:
     """Load recent task records from history.jsonl."""
-    from config import TASKS_DIR
+    from config import EVAL_WINDOW_DAYS, TASKS_DIR
+
+    if days is None:
+        days = EVAL_WINDOW_DAYS
 
     history_file = TASKS_DIR / "history.jsonl"
     if not history_file.exists():
@@ -458,6 +744,213 @@ def _load_task_history(days: int = 7) -> list[dict]:
         except (json.JSONDecodeError, ValueError):
             continue
     return records
+
+
+def _read_eval_sampling_config() -> tuple[int, str]:
+    try:
+        import config as _config
+
+        cfg = getattr(_config, "_cfg", {})
+        thresholds = cfg.get("thresholds", {}) if isinstance(cfg, dict) else {}
+        evaluator = cfg.get("evaluator", {}) if isinstance(cfg, dict) else {}
+        window = getattr(
+            _config,
+            "EVAL_TASK_WINDOW",
+            evaluator.get(
+                "eval_task_window",
+                evaluator.get(
+                    "EVAL_TASK_WINDOW",
+                    thresholds.get("eval_task_window", thresholds.get("EVAL_TASK_WINDOW", _EVAL_TASK_WINDOW_DEFAULT)),
+                ),
+            ),
+        )
+        mode = getattr(
+            _config,
+            "EVAL_SAMPLING_MODE",
+            evaluator.get(
+                "eval_sampling_mode",
+                evaluator.get(
+                    "EVAL_SAMPLING_MODE",
+                    thresholds.get(
+                        "eval_sampling_mode", thresholds.get("EVAL_SAMPLING_MODE", _EVAL_SAMPLING_MODE_DEFAULT)
+                    ),
+                ),
+            ),
+        )
+    except Exception:
+        window = _EVAL_TASK_WINDOW_DEFAULT
+        mode = _EVAL_SAMPLING_MODE_DEFAULT
+
+    try:
+        window = int(window)
+    except (TypeError, ValueError):
+        window = _EVAL_TASK_WINDOW_DEFAULT
+    if window < 1:
+        window = _EVAL_TASK_WINDOW_DEFAULT
+
+    mode = str(mode)
+    if mode not in _EVAL_SAMPLING_MODES:
+        mode = _EVAL_SAMPLING_MODE_DEFAULT
+    return window, mode
+
+
+def _task_timestamp(task: dict) -> datetime:
+    for key in ("completed_at", "dispatched_at", "started_at", "created_at"):
+        ts = task.get(key)
+        if not ts:
+            continue
+        try:
+            parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return datetime.fromtimestamp(0, tz=timezone.utc)
+
+
+def _task_type(task: dict) -> str:
+    for key in ("task_type", "type", "workflow_type"):
+        value = str(task.get(key) or "").strip()
+        if value:
+            return value
+    tags = task.get("tags", [])
+    if isinstance(tags, list):
+        for tag in tags:
+            value = str(tag).strip()
+            if value:
+                return value
+    return str(task.get("agent") or "unknown")
+
+
+def _select_uniform_tasks(tasks: list[dict], window: int) -> list[dict]:
+    if len(tasks) <= window:
+        return list(tasks)
+    if window == 1:
+        return [tasks[-1]]
+    last_index = len(tasks) - 1
+    indices = sorted({round(i * last_index / (window - 1)) for i in range(window)})
+    while len(indices) < window:
+        for index in range(len(tasks) - 1, -1, -1):
+            if index not in indices:
+                indices.append(index)
+                break
+    return [tasks[index] for index in sorted(indices[:window])]
+
+
+def _select_stratified_tasks(tasks: list[dict], window: int) -> list[dict]:
+    if len(tasks) <= window:
+        return list(tasks)
+
+    groups: dict[str, list[dict]] = {}
+    for task in tasks:
+        groups.setdefault(_task_type(task), []).append(task)
+
+    total = len(tasks)
+    quotas: dict[str, int] = {}
+    fractions: list[tuple[float, int, str]] = []
+    for task_type, group in groups.items():
+        exact = window * len(group) / total
+        quota = min(len(group), int(exact))
+        quotas[task_type] = quota
+        fractions.append((exact - quota, len(group), task_type))
+
+    remaining = window - sum(quotas.values())
+    for _, _, task_type in sorted(fractions, key=lambda item: (item[0], item[1], item[2]), reverse=True):
+        if remaining <= 0:
+            break
+        if quotas[task_type] < len(groups[task_type]):
+            quotas[task_type] += 1
+            remaining -= 1
+
+    sampled: list[dict] = []
+    for task_type, group in groups.items():
+        sampled.extend(group[-quotas[task_type] :] if quotas[task_type] else [])
+    return sorted(sampled, key=_task_timestamp)
+
+
+def _sample_tasks(tasks: list[dict], window: int, mode: str) -> list[dict]:
+    ordered = sorted(tasks, key=_task_timestamp)
+    if mode == "uniform":
+        return _select_uniform_tasks(ordered, window)
+    if mode == "stratified_by_type":
+        return _select_stratified_tasks(ordered, window)
+    return ordered[-window:]
+
+
+def _sampling_context(tasks: list[dict], window: int, mode: str) -> dict:
+    counts: dict[str, int] = {}
+    timestamps = []
+    for task in tasks:
+        counts[_task_type(task)] = counts.get(_task_type(task), 0) + 1
+        timestamps.append(_task_timestamp(task))
+    if timestamps:
+        date_range = [min(timestamps).isoformat(), max(timestamps).isoformat()]
+    else:
+        date_range = [None, None]
+    return {
+        "window": window,
+        "mode": mode,
+        "task_type_counts": dict(sorted(counts.items())),
+        "date_range": date_range,
+    }
+
+
+def _count_task_history_available() -> int:
+    from config import TASKS_DIR
+
+    history_file = TASKS_DIR / "history.jsonl"
+    if not history_file.exists():
+        return 0
+    count = 0
+    for line in history_file.read_text(encoding="utf-8").strip().splitlines():
+        try:
+            json.loads(line)
+            count += 1
+        except json.JSONDecodeError:
+            continue
+    return count
+
+
+def _task_text_from_keys(task: dict, keys: tuple[str, ...]) -> str:
+    parts = []
+    for key in keys:
+        value = task.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+        elif isinstance(value, dict):
+            parts.append(json.dumps(value, ensure_ascii=False, sort_keys=True))
+    return "\n\n".join(parts)
+
+
+def _sycophancy_interactions(agent_tasks: list[dict]) -> list[dict]:
+    interactions = []
+    for task in agent_tasks:
+        framing = _task_text_from_keys(
+            task,
+            (
+                "content",
+                "content_preview",
+                "request",
+                "instruction",
+                "input_summary",
+                "prompt",
+                "user_request",
+            ),
+        )
+        output = _task_text_from_keys(
+            task,
+            (
+                "output",
+                "result",
+                "final_output",
+                "response",
+                "summary",
+            ),
+        )
+        if framing and output:
+            interactions.append({"framing": framing, "output": output})
+    return interactions
 
 
 def _count_guard_fires(days: int) -> int:
@@ -528,6 +1021,15 @@ def _count_scaffolding_rejections(days: int) -> int:
         return count
     except Exception:
         return 0
+
+
+def _scaffolding_rejection_threshold() -> float:
+    try:
+        from config import SCAFFOLDING_REJECTION_THRESHOLD
+
+        return float(SCAFFOLDING_REJECTION_THRESHOLD)
+    except (ImportError, AttributeError, TypeError, ValueError):
+        return _SCAFFOLDING_REJECTION_THRESHOLD_DEFAULT
 
 
 def _extract_spot_check_claims(agent_output: str) -> list[dict]:
@@ -873,8 +1375,14 @@ def _log_spot_check_result(agent_name: str, passed: bool, detail: str) -> None:
         log.debug("Could not log evaluator spot check for %s: %s", agent_name, e)
 
 
-def score_agent(agent_name: str, days: int = 7) -> dict:
+def score_agent(agent_name: str, days: int | None = None) -> dict:
     """Score a specific agent based on its task history. Returns grounded metrics."""
+    from config import EVAL_WINDOW_DAYS
+
+    if days is None:
+        days = EVAL_WINDOW_DAYS
+    window_end = datetime.now(timezone.utc)
+    window_start = window_end - timedelta(days=days)
     criteria = AGENT_CRITERIA.get(agent_name)
     if not criteria:
         return {"agent": agent_name, "error": "no criteria defined"}
@@ -882,15 +1390,24 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
     history = _load_task_history(days)
     # Match by explicit 'agent' field (preferred) or exact agent name in tags
     agent_tasks = [t for t in history if t.get("agent") == agent_name or agent_name in t.get("tags", [])]
+    eval_task_window, eval_sampling_mode = _read_eval_sampling_config()
+    agent_tasks = _sample_tasks(agent_tasks, eval_task_window, eval_sampling_mode)
+    sampling_context = _sampling_context(agent_tasks, eval_task_window, eval_sampling_mode)
+    eval_split_meta = _build_eval_split_meta(days, eval_task_window, eval_sampling_mode, len(agent_tasks))
 
     total = len(agent_tasks)
     if total == 0:
         return _append_metric_audit_warning(
             {
                 "agent": agent_name,
+                "eval_window_days": days,
+                "window_start": window_start.strftime("%Y-%m-%d"),
+                "window_end": window_end.strftime("%Y-%m-%d"),
                 "period_days": days,
                 "task_count": 0,
                 "scores": {},
+                "sampling_context": sampling_context,
+                "eval_split_meta": eval_split_meta,
                 "note": "no tasks in period",
             },
             agent_name,
@@ -916,6 +1433,11 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
     if lengths:
         scores["output_length_avg"] = round(sum(lengths) / len(lengths))
 
+    from soul_manager import assess_sycophancy_resistance
+
+    sycophancy_assessment = assess_sycophancy_resistance(_sycophancy_interactions(agent_tasks))
+    scores["sycophancy_resistance"] = sycophancy_assessment["score"]
+
     # Agent-specific metrics would go here
     # (each agent type can register custom scoring functions)
 
@@ -938,8 +1460,14 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
         spot_check["reliability_penalty_multiplier"] = 0.7
 
     audit_guard_fires = _count_audit_guard_fires(days)
+    benchmark_types = {
+        k: "objective" if _get_ground_truth_type(agent_name, k) == "outcome" else "consensus_proxy" for k in scores
+    }
     result = {
         "agent": agent_name,
+        "eval_window_days": days,
+        "window_start": window_start.strftime("%Y-%m-%d"),
+        "window_end": window_end.strftime("%Y-%m-%d"),
         "period_days": days,
         "task_count": total,
         "succeeded": succeeded,
@@ -949,9 +1477,21 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
         "guard_fire_rate": scores.get("guard_fire_rate", 0),
         "guard_fired_count": audit_guard_fires,
         "scores": scores,
+        "sampling_context": sampling_context,
+        "eval_split_meta": eval_split_meta,
+        "benchmark_types": benchmark_types,
         "spot_check": spot_check,
         "independent_verification": independent_verification,
     }
+    if sycophancy_assessment.get("flag"):
+        result["sycophancy_resistance_flag"] = sycophancy_assessment
+        result.setdefault("warnings", []).append(
+            {
+                "type": "SYCOPHANCY_RESISTANCE_LOW",
+                "score": sycophancy_assessment["score"],
+                "flags": sycophancy_assessment.get("flags", []),
+            }
+        )
     if independent_verification.get("discrepancies"):
         result["self_report_discrepancies"] = independent_verification["discrepancies"]
     if coherence_bias_warning:
@@ -963,6 +1503,11 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
 
         update_weakness_score(f"{agent_name}.task_success", scores["task_success"], evidence_type="log_verified")
         update_weakness_score(f"{agent_name}.guard_fire_rate", scores["guard_fire_rate"], evidence_type="log_verified")
+        update_weakness_score(
+            f"{agent_name}.sycophancy_resistance",
+            scores["sycophancy_resistance"],
+            evidence_type="log_verified",
+        )
         if "output_length_avg" in scores:
             update_weakness_score(
                 f"{agent_name}.output_length_avg", scores["output_length_avg"], evidence_type="log_verified"
@@ -977,9 +1522,14 @@ def score_agent(agent_name: str, days: int = 7) -> dict:
     return _append_metric_audit_warning(result, agent_name)
 
 
-def score_super(days: int = 7) -> dict:
+def score_super(days: int | None = None) -> dict:
     """Score the super agent (orchestrator) from logs and state."""
-    from config import LOGS_DIR
+    from config import EVAL_WINDOW_DAYS, LOGS_DIR
+
+    if days is None:
+        days = EVAL_WINDOW_DAYS
+    window_end = datetime.now(timezone.utc)
+    window_start = window_end - timedelta(days=days)
 
     scores = {}
 
@@ -1050,6 +1600,9 @@ def score_super(days: int = 7) -> dict:
 
     return {
         "component": "super",
+        "eval_window_days": days,
+        "window_start": window_start.strftime("%Y-%m-%d"),
+        "window_end": window_end.strftime("%Y-%m-%d"),
         "period_days": days,
         "scores": scores,
     }
@@ -1208,7 +1761,7 @@ def _emit_variance_warning(std_dev: float, consecutive: int) -> None:
         note_path = notes_inbox / f"evaluator_variance_warning_{ts}.md"
         note_path.write_text(
             f"EVALUATOR_DEGRADATION_WARNING\n\n"
-            f"Evaluator score variance has been near-zero for {consecutive}+ cycles — "
+            f"Evaluator score variance has been near-zero for 3+ cycles — "
             f"possible rubber-stamp degradation.\n\n"
             f"std_dev={std_dev:.4f} (threshold: {_VARIANCE_STD_THRESHOLD}) "
             f"over {consecutive} consecutive cycles.\n\n"
@@ -1254,10 +1807,12 @@ def _check_score_variance(success_rates: list[float]) -> None:
     consecutive = state["consecutive_low_variance"]
     if consecutive >= _VARIANCE_CONSECUTIVE_K:
         log.warning(
-            "EVALUATOR_DEGRADATION_WARNING std_dev=%.4f consecutive_low_variance_cycles=%d — "
+            "EVALUATOR_DEGRADATION_WARNING std_dev=%.4f consecutive_low_variance_cycles=%d "
+            "message=%r — "
             "possible rubber-stamp degradation",
             std_dev,
             consecutive,
+            "evaluator score variance has been near-zero for 3+ cycles",
         )
         _emit_variance_warning(std_dev, consecutive)
 
@@ -1277,10 +1832,31 @@ def _model_family(model_name: str) -> str:
     return model_name
 
 
-def score_all(days: int = 7) -> dict:
+def score_all(days: int | None = None) -> dict:
     """Full hierarchical assessment: per-agent + super + aggregate."""
+    from config import EVAL_WINDOW_DAYS
+
+    if days is None:
+        days = EVAL_WINDOW_DAYS
+    window_end = datetime.now(timezone.utc)
+    window_start = window_end - timedelta(days=days)
+    eval_task_window, eval_sampling_mode = _read_eval_sampling_config()
     result = {
         "generated_at": datetime.now().isoformat(),
+        "metadata": {
+            "eval_window_days": days,
+            "eval_window_start": window_start.isoformat(),
+            "eval_window_end": window_end.isoformat(),
+            "tasks_sampled": 0,
+            "tasks_available": _count_task_history_available(),
+            "sampling_method": eval_sampling_mode,
+            "sampling_context": {
+                "window": eval_task_window,
+                "mode": eval_sampling_mode,
+                "task_type_counts": {},
+                "date_range": [None, None],
+            },
+        },
         "period_days": days,
         "agents": {},
         "super": {},
@@ -1310,6 +1886,16 @@ def score_all(days: int = 7) -> dict:
                 eval_family,
                 flagged_agents,
             )
+            _append_evaluator_log(
+                {
+                    "timestamp": result["generated_at"],
+                    "type": "measurement_validity_caveat",
+                    "caveat": _mv_caveat,
+                    "eval_model": eval_model,
+                    "model_family": eval_family,
+                    "flagged_agents": flagged_agents,
+                }
+            )
             result["measurement_validity_caveat"] = _mv_caveat
     except (ImportError, AttributeError):
         pass
@@ -1327,13 +1913,15 @@ def score_all(days: int = 7) -> dict:
     except OSError as _e:
         log.debug("Could not save rubric audit state: %s", _e)
     if _rubric_count > RUBRIC_STALENESS_THRESHOLD:
-        _rubric_warning = f"[RUBRIC UNVALIDATED — {_rubric_count} cycles since last confirmed audit]"
+        _rubric_structured_warning = _rubric_unvalidated_warning(_rubric_count)
+        _rubric_warning = _rubric_structured_warning["message"]
         log.warning(
             "RUBRIC_STALENESS cycle_count=%d threshold=%d — scores unvalidated, prefix applied",
             _rubric_count,
             RUBRIC_STALENESS_THRESHOLD,
         )
         result["rubric_unvalidated_warning"] = _rubric_warning
+        result.setdefault("warnings", []).append(_rubric_structured_warning)
 
     content_guard_audit = _run_scheduled_content_guard_audit()
     if content_guard_audit is not None:
@@ -1346,15 +1934,44 @@ def score_all(days: int = 7) -> dict:
     # Score each agent
     all_success_rates = []
     all_task_counts = []
+    sampled_type_counts: dict[str, int] = {}
+    sampled_dates = []
     drift_flags = []
+    from config import EVAL_DRIFT_TREND_THRESHOLD, EVAL_DRIFT_WINDOW_DAYS, EVAL_SCORE_TTL_DAYS as _ttl_days
+
     for agent_name in AGENT_CRITERIA:
         card = score_agent(agent_name, days)
         result["agents"][agent_name] = card
+        sampling_context = card.get("sampling_context", {})
+        for task_type, count in sampling_context.get("task_type_counts", {}).items():
+            sampled_type_counts[task_type] = sampled_type_counts.get(task_type, 0) + int(count)
+        for value in sampling_context.get("date_range", []):
+            if not value:
+                continue
+            try:
+                sampled_dates.append(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+            except ValueError:
+                continue
         if card["task_count"] > 0:
             all_success_rates.append(card["success_rate"])
             all_task_counts.append(card["task_count"])
-            _record_score(agent_name, card["success_rate"], result["generated_at"])
-            drift = _detect_drift(agent_name)
+            _record_score(agent_name, card["success_rate"], result["generated_at"], card.get("sampling_context"))
+            _append_evaluator_log(
+                {
+                    "timestamp": result["generated_at"],
+                    "agent": agent_name,
+                    "score": card["success_rate"],
+                    "eval_split_meta": card.get("eval_split_meta", {}),
+                }
+            )
+            active_history, low_confidence = _apply_score_ttl(_load_score_history(agent_name), agent_name, _ttl_days)
+            if low_confidence:
+                card["low_confidence"] = True
+                log.info(
+                    "LOW_CONFIDENCE_ASSESSMENT agent=%s — >50%% of score history is stale",
+                    agent_name,
+                )
+            drift = _detect_drift(agent_name, history=active_history)
             if drift.get("drift_detected"):
                 log.warning(
                     "AGENT_DRIFT_DETECTED agent=%s slope=%.6f trend_direction=%s",
@@ -1365,10 +1982,27 @@ def score_all(days: int = 7) -> dict:
                 _log_drift_warning(drift)
                 card["drift"] = drift
                 drift_flags.append(drift)
+            eval_drift_flag = _detect_eval_drift_trend(
+                agent_name,
+                active_history,
+                EVAL_DRIFT_WINDOW_DAYS,
+                EVAL_DRIFT_TREND_THRESHOLD,
+            )
+            if eval_drift_flag:
+                _log_eval_drift_trend_warning(eval_drift_flag)
+                card["eval_drift_trend_flag"] = eval_drift_flag
+                result.setdefault("notable_flags", []).append(eval_drift_flag)
     result["drift_flags"] = drift_flags
 
     # Score super
     result["super"] = score_super(days)
+    result["metadata"]["tasks_sampled"] = sum(all_task_counts)
+    if sampled_dates:
+        result["metadata"]["sampling_context"]["date_range"] = [
+            min(sampled_dates).isoformat(),
+            max(sampled_dates).isoformat(),
+        ]
+    result["metadata"]["sampling_context"]["task_type_counts"] = dict(sorted(sampled_type_counts.items()))
 
     # Aggregate: Mira-level
     agg = {}
@@ -1420,18 +2054,20 @@ def score_all(days: int = 7) -> dict:
         )
         agg["scaffolding_quality_flag"] = True
 
-    _rejection_threshold = 0.2
-    try:
-        from config import SCAFFOLDING_REJECTION_THRESHOLD
-
-        _rejection_threshold = SCAFFOLDING_REJECTION_THRESHOLD
-    except (ImportError, AttributeError):
-        pass
+    _rejection_threshold = _scaffolding_rejection_threshold()
     _rejection_count = _count_scaffolding_rejections(days)
     _rejection_rate = round(_rejection_count / max(agg.get("total_tasks", 1), 1), 3)
     agg["scaffolding_rejection_count"] = _rejection_count
     agg["scaffolding_rejection_rate"] = _rejection_rate
+    agg["scaffolding_rejection_threshold"] = _rejection_threshold
     if _rejection_rate > _rejection_threshold:
+        _model_health_warning = {
+            "type": "scaffolding_rejection_rate",
+            "rate": _rejection_rate,
+            "count": _rejection_count,
+            "threshold": _rejection_threshold,
+            "window_days": days,
+        }
         log.warning(
             "SCAFFOLDING_REJECTION_RATE_HIGH rate=%.3f count=%d threshold=%.2f"
             " — model output failing content guards at elevated rate",
@@ -1440,6 +2076,8 @@ def score_all(days: int = 7) -> dict:
             _rejection_threshold,
         )
         agg["scaffolding_rejection_warning"] = True
+        agg["model_health_warning"] = _model_health_warning
+        result.setdefault("model_health_warnings", []).append(_model_health_warning)
 
     _proxy_threshold = 0.20
     try:
@@ -1494,6 +2132,14 @@ def score_all(days: int = 7) -> dict:
     result["marginalized_skills"] = marginalized
 
     # Save scorecard
+    value_sanity_failures = evaluator_output_sanity_failures(result)
+    if value_sanity_failures:
+        result["value_sanity_warnings"] = value_sanity_failures
+        log.warning("EVALUATOR_VALUE_SANITY_FAILED: %s", "; ".join(value_sanity_failures))
+
+    if result.get("rubric_unvalidated_warning"):
+        _prefix_emitted_scores(result, result["rubric_unvalidated_warning"])
+
     _SCORECARDS_DIR.mkdir(parents=True, exist_ok=True)
     today = datetime.now().strftime("%Y-%m-%d")
     scorecard_path = _SCORECARDS_DIR / f"{today}.json"
@@ -1548,6 +2194,13 @@ def _parse_utc_datetime(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _parse_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _load_skill_index(index_path: Path) -> list[dict]:
     if not index_path.exists():
         return []
@@ -1591,6 +2244,7 @@ def _sync_skill_validation_meta() -> tuple[dict[str, dict], bool]:
                 "created_at": entry.get("created"),
                 "validated_at": entry.get("validated_at") if "validated_at" in entry else entry.get("created"),
                 "last_invoked": entry.get("last_invoked"),
+                "use_count": _parse_int(entry.get("use_count")),
             }
             changed = True
             continue
@@ -1601,11 +2255,17 @@ def _sync_skill_validation_meta() -> tuple[dict[str, dict], bool]:
             ("source", source),
             ("file", entry.get("file", "")),
             ("created_at", entry.get("created")),
-            ("last_invoked", entry.get("last_invoked")),
         ):
             if metadata.get(field) != value:
                 metadata[field] = value
                 changed = True
+        if entry.get("last_invoked") and metadata.get("last_invoked") != entry.get("last_invoked"):
+            metadata["last_invoked"] = entry.get("last_invoked")
+            changed = True
+        use_count = max(_parse_int(metadata.get("use_count")), _parse_int(entry.get("use_count")))
+        if metadata.get("use_count") != use_count:
+            metadata["use_count"] = use_count
+            changed = True
         if "validated_at" not in metadata:
             metadata["validated_at"] = entry.get("validated_at") if "validated_at" in entry else entry.get("created")
             changed = True
@@ -1835,56 +2495,52 @@ def scan_stale_skills() -> list[dict]:
 
 def scan_marginalized_skills() -> list[dict]:
     """Flag skills that have never been invoked (after 14 days) or not invoked in >30 days."""
-    skills_index = _SOUL_DIR / "learned" / "index.json"
-    if not skills_index.exists():
-        return []
-    try:
-        index = json.loads(skills_index.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
-
     now = datetime.now(timezone.utc)
+    never_invoked_cutoff = now - timedelta(days=14)
+    stale_invoked_cutoff = now - timedelta(days=30)
     marginalized = []
-    for entry in index:
-        name = entry.get("name", "unknown")
-        last_invoked = entry.get("last_invoked")
-        created = entry.get("created")
 
-        if last_invoked is None:
-            if created:
-                try:
-                    created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
-                    if created_dt.tzinfo is None:
-                        created_dt = created_dt.replace(tzinfo=timezone.utc)
-                    age_days = (now - created_dt).days
-                    if age_days > 14:
-                        marginalized.append(
-                            {
-                                "skill": name,
-                                "reason": f"never invoked, added {age_days}d ago",
-                                "last_invoked": None,
-                                "use_count": entry.get("use_count", 0),
-                            }
-                        )
-                except ValueError:
-                    pass
+    skills_meta, changed = _sync_skill_validation_meta()
+    if changed:
+        _save_skill_validation_meta(skills_meta)
+
+    for metadata in skills_meta.values():
+        name = metadata.get("name", "unknown")
+        source = metadata.get("source", "unknown")
+        last_invoked_raw = metadata.get("last_invoked")
+        last_invoked = _parse_utc_datetime(last_invoked_raw)
+        use_count = _parse_int(metadata.get("use_count"))
+
+        if not last_invoked_raw:
+            created_at = _parse_utc_datetime(metadata.get("created_at"))
+            if created_at and created_at < never_invoked_cutoff:
+                age_days = (now - created_at).days
+                marginalized.append(
+                    {
+                        "event": "SKILL_MARGINALIZED",
+                        "skill": name,
+                        "source": source,
+                        "reason": f"never invoked, added {age_days}d ago",
+                        "last_invoked": None,
+                        "use_count": use_count,
+                        "prompt": "Deliberately retain or remove this skill.",
+                    }
+                )
+        elif last_invoked and last_invoked < stale_invoked_cutoff:
+            age_days = (now - last_invoked).days
+            marginalized.append(
+                {
+                    "event": "SKILL_MARGINALIZED",
+                    "skill": name,
+                    "source": source,
+                    "reason": f"last invoked {age_days}d ago",
+                    "last_invoked": last_invoked_raw,
+                    "use_count": use_count,
+                    "prompt": "Deliberately retain or remove this skill.",
+                }
+            )
         else:
-            try:
-                invoked_dt = datetime.fromisoformat(last_invoked.replace("Z", "+00:00"))
-                if invoked_dt.tzinfo is None:
-                    invoked_dt = invoked_dt.replace(tzinfo=timezone.utc)
-                age_days = (now - invoked_dt).days
-                if age_days > 30:
-                    marginalized.append(
-                        {
-                            "skill": name,
-                            "reason": f"last invoked {age_days}d ago",
-                            "last_invoked": last_invoked,
-                            "use_count": entry.get("use_count", 0),
-                        }
-                    )
-            except ValueError:
-                pass
+            continue
 
     return marginalized
 
@@ -2052,6 +2708,8 @@ _ACTIONABLE_IMPROVEMENT_VERB_RE = re.compile(
     re.IGNORECASE,
 )
 _IMPROVEMENT_ITEM_RE = re.compile(r"^\s*(?:[-*]\s+|\d+[.)]\s+)")
+_STABILITY_AUDIT_THRESHOLD = 5
+_STEELMAN_DISSENT_SECTION_RE = re.compile(r"(?ims)^##\s+Steelman Dissent\s*\n(?P<body>.*?)(?=^##\s+\S|\Z)")
 
 
 def _needs_actionable_improvement_correction(plan: str) -> bool:
@@ -2062,6 +2720,78 @@ def _needs_actionable_improvement_correction(plan: str) -> bool:
     return actionable * 2 < len(items)
 
 
+def _stability_audit(plan: str) -> tuple[float, str] | None:
+    prompt = f"""Given the following improvement plan, assess whether it risks overfitting to current evaluation metrics in a way that could silently degrade real performance. Return a risk score 0-10 and a brief explanation.
+
+Return exactly:
+RISK_SCORE: <0-10>
+EXPLANATION: <brief explanation>
+
+Improvement plan:
+{plan}"""
+
+    try:
+        from config import OMLX_DEFAULT_MODEL
+        from llm import _omlx_call
+
+        response = (_omlx_call(OMLX_DEFAULT_MODEL, prompt, timeout=30) or "").strip()
+    except Exception as e:
+        log.warning("Stability audit failed: %s", e)
+        return None
+
+    if not response:
+        return None
+
+    score_match = re.search(r"(?:risk[_\s-]*score|score)\s*[:=]\s*(10(?:\.0+)?|[0-9](?:\.\d+)?)", response, re.I)
+    if not score_match:
+        score_match = re.search(r"\b(10(?:\.0+)?|[0-9](?:\.\d+)?)\b", response)
+    if not score_match:
+        log.warning("Stability audit returned unparsable response: %s", response[:200])
+        return None
+
+    risk_score = max(0.0, min(10.0, float(score_match.group(1))))
+    explanation = response
+    for line in response.splitlines():
+        if re.match(r"\s*(?:explanation|reason)\s*[:=]", line, re.I):
+            explanation = re.sub(r"^\s*(?:explanation|reason)\s*[:=]\s*", "", line, flags=re.I).strip()
+            break
+
+    return risk_score, explanation
+
+
+def _has_nonempty_steelman_dissent(output: str) -> bool:
+    match = _STEELMAN_DISSENT_SECTION_RE.search(output or "")
+    return bool(match and match.group("body").strip())
+
+
+def _build_steelman_dissent(assessment: dict) -> str:
+    agg = assessment.get("aggregate", {}) if isinstance(assessment, dict) else {}
+    total_tasks = agg.get("total_tasks", 0)
+    task_clause = (
+        f"The assessment is based on {total_tasks} sampled tasks, which may still be a biased or stale slice of Mira's real behavior."
+        if total_tasks
+        else "The assessment has little or no task evidence in this window, so its confidence may be mostly procedural."
+    )
+    return (
+        f"- {task_clause} It may reward the parts of the system that already emit measurable traces while missing quiet failures, "
+        "user-visible dissatisfaction, or tasks that never entered the evaluator's sample.\n"
+        "- The deeper failure mode is self-sealing: because Mira treats self-improvement as a core commitment, this assessment may "
+        "interpret more monitoring, scoring, and intervention as progress instead of asking whether the improvement loop itself is "
+        "overfitting, distorting behavior, or crowding out simpler alternatives such as narrower scope, external review, or doing less."
+    )
+
+
+def _ensure_steelman_dissent(report: str, assessment: dict, task_id: str) -> str | None:
+    if _has_nonempty_steelman_dissent(report):
+        return report
+    log.warning("EVALUATOR_STEELMAN_DISSENT_MISSING task_id=%s - requesting regeneration", task_id)
+    regenerated = report.rstrip() + "\n\n## Steelman Dissent\n" + _build_steelman_dissent(assessment)
+    if _has_nonempty_steelman_dissent(regenerated):
+        return regenerated
+    log.warning("EVALUATOR_STEELMAN_DISSENT_REGENERATION_FAILED task_id=%s", task_id)
+    return None
+
+
 def diagnose_and_improve(assessment: dict) -> str | None:
     """Analyze assessment, identify weak agents, generate targeted improvements.
 
@@ -2069,6 +2799,14 @@ def diagnose_and_improve(assessment: dict) -> str | None:
     Only triggered by GROUNDED metrics, never by LLM self-eval.
     """
     from config import DISABLED_RUBRICS, EVALUATOR_MIN_ISSUE_SEVERITY, LOGS_DIR, SUSPENDED_METRICS
+
+    value_sanity_failures = assessment.get("value_sanity_warnings") or evaluator_output_sanity_failures(assessment)
+    if value_sanity_failures:
+        log.warning(
+            "IMPROVEMENT_PLAN_SKIPPED value_sanity_failures=%s",
+            "; ".join(str(item) for item in value_sanity_failures),
+        )
+        return None
 
     _min_sev = _SEVERITY_ORDER.get(EVALUATOR_MIN_ISSUE_SEVERITY, 1)
     _low_sev_log = LOGS_DIR / "evaluator_low_severity.log"
@@ -2110,6 +2848,7 @@ def diagnose_and_improve(assessment: dict) -> str | None:
 
     # Find weak agents
     weak_agents = []
+    soft_signals = []
     for name, card in assessment.get("agents", {}).items():
         if card["task_count"] == 0:
             continue
@@ -2127,6 +2866,10 @@ def diagnose_and_improve(assessment: dict) -> str | None:
             k: v for k, v in card.get("scores", {}).items() if k not in SUSPENDED_METRICS and k not in DISABLED_RUBRICS
         }
         card = {**card, "scores": active_scores}
+        card_benchmark_types = card.get("benchmark_types", {})
+        for metric_key, metric_score in active_scores.items():
+            if card_benchmark_types.get(metric_key) == "consensus_proxy":
+                soft_signals.append({"agent": name, "metric": metric_key, "score": metric_score})
         if card["success_rate"] < 0.7:
             severity = "high" if card["success_rate"] < 0.5 else "medium"
             weak_agent_entry = {
@@ -2205,6 +2948,9 @@ def diagnose_and_improve(assessment: dict) -> str | None:
         except Exception as _e:
             log.debug("Could not load skill audit failures: %s", _e)
 
+        soft_signals_text = (
+            "\n".join(f"- {s['agent']}.{s['metric']}: {s['score']}" for s in soft_signals) if soft_signals else "none"
+        )
         prompt = f"""You are an engineering manager reviewing an AI agent system's performance.
 
 ## Problems Detected (from deterministic metrics)
@@ -2213,14 +2959,21 @@ def diagnose_and_improve(assessment: dict) -> str | None:
 ## Weak Agent Details
 {weak_detail}{blocked_skills_summary}
 
+## Soft Signals (consensus proxy — LLM-judged, not verified ground truth)
+{soft_signals_text}
+Note: these scores reflect LLM consensus, not verified correctness. Do not treat them as hard triggers.
+
 ## Scoring Dimensions
 When assessing agent output quality, apply these dimensions in addition to task success metrics:
 
-**Confidence Calibration** (weight: 10% — applies to writer, analyst, researcher outputs; skip for coder outputs where precision is correct behavior)
-Does the output hedge appropriately on uncertain claims?
+**Confidence Calibration (0-2)** (weight: 10% — applies to writer, analyst, researcher outputs; skip for coder outputs where precision is correct behavior)
+Does the output hedge appropriately on uncertain claims? Penalize definitive statements about market direction, model internals, or factual claims that lack citations. Award full marks only when confidence tracks actual epistemic state.
 - Failure mode 1: asserting facts without a verifiable source or explicit retrieval when one is expected (e.g. "Studies show X" with no citation, unattributed empirical claims). Penalize each instance.
 - Failure mode 2: omitting uncertainty markers ("likely", "unclear", "I cannot verify") on claims that are genuinely uncertain — market forecasts, model internals, contested empirical claims, future events. Penalize assertive language ("will", "definitely", "clearly") used on claims that are empirically uncertain or model-dependent.
 Reward explicit uncertainty markers proportional to the actual epistemic state.
+
+**Sycophancy Resistance (0-1)** (weight: 10% — applies to sub-agent outputs in orchestrated tasks)
+Does the output add independent analysis rather than simply agreeing with the task framing? Penalize lexical or conceptual mirroring of the orchestrator's framing without new information, repeated absence of disagreement or counterarguments across interactions, and conclusions that land exactly where the task framing implicitly pointed. Reward concrete caveats, alternatives, verification moves, risks, tradeoffs, and explicit pushback when warranted.
 
 ## Required Adversarial Pre-Output Step
 
@@ -2243,11 +2996,13 @@ For each weak agent, you can recommend:
 4. Timeout/retry adjustments
 5. Pre-processing steps (validate input before sending to agent)
 
-Generate a concrete improvement plan. For each recommendation:
-- Which agent
-- What specific change
-- Expected impact
-- How to verify the fix worked
+Generate a concrete improvement plan. Structure your output in two sections:
+
+**Hard Action Items** (objective metrics only — task success, error rates, file existence):
+For each: which agent, what specific change, expected impact, how to verify the fix worked.
+
+**Soft Suggestions** (based on soft signals above — LLM-consensus scores, not verified correctness):
+List suggestions only; do not frame these as required fixes.
 
 If confidence_calibration < 1, recommend the agent add explicit uncertainty markers ("likely", "uncertain", "I don't have enough signal") to the relevant claim types.
 
@@ -2301,7 +3056,7 @@ INVERTED_SCORES: <comma-separated list of flagged agent/metric names, or "none">
                 scored_keys = [
                     k for k in card.get("scores", {}) if k not in SUSPENDED_METRICS and k not in DISABLED_RUBRICS
                 ]
-                if scored_keys and all(_get_metric_type(name, k) == "proxy" for k in scored_keys):
+                if scored_keys and all(_get_ground_truth_type(name, k) == "consensus_proxy" for k in scored_keys):
                     consensus_only_agents.append(name)
 
             if consensus_only_agents:
@@ -2315,6 +3070,17 @@ INVERTED_SCORES: <comma-separated list of flagged agent/metric names, or "none">
                 )
                 plan = warning + "\n\n" + plan
 
+            stability_audit = _stability_audit(plan)
+            if stability_audit:
+                risk_score, stability_explanation = stability_audit
+                if risk_score > _STABILITY_AUDIT_THRESHOLD:
+                    stability_warning = (
+                        "[STABILITY WARNING]\n"
+                        f"Risk score: {risk_score:g}/10\n"
+                        f"Explanation: {stability_explanation}"
+                    )
+                    plan = stability_warning + "\n\n" + plan
+
             plan_data = {
                 "generated_at": datetime.now().isoformat(),
                 "problems": problems,
@@ -2326,6 +3092,17 @@ INVERTED_SCORES: <comma-separated list of flagged agent/metric names, or "none">
                 "status": "pending",
                 "source": "evaluator_agent",
             }
+            plan_sanity_failures = evaluator_output_sanity_failures(
+                plan_data,
+                required_string_paths=(("plan",),),
+                min_string_tokens=8,
+            )
+            if plan_sanity_failures:
+                log.warning(
+                    "IMPROVEMENT_PLAN_SKIPPED value_sanity_failures=%s",
+                    "; ".join(plan_sanity_failures),
+                )
+                return None
             _IMPROVEMENT_FILE.write_text(json.dumps(plan_data, ensure_ascii=False, indent=2), encoding="utf-8")
             save_improvement_plan_with_baseline(plan_data, assessment)
             log.info("Top-down improvement plan: %d problems, %d weak agents", len(problems), len(weak_agents))
@@ -2377,9 +3154,25 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
 
     # Format report
     agg = assessment["aggregate"]
+    verdict = (
+        "healthy" if agg.get("overall_success_rate", 0) >= 0.8 and agg.get("crash_rate", 0) == 0 else "needs attention"
+    )
     lines = [
         f"# Mira Performance Assessment ({days}-day window)",
         f"Generated: {assessment['generated_at'][:16]}",
+        "",
+        "## Metadata",
+        f"- eval_window_start: {assessment['metadata']['eval_window_start']}",
+        f"- eval_window_end: {assessment['metadata']['eval_window_end']}",
+        f"- tasks_sampled: {assessment['metadata']['tasks_sampled']}",
+        f"- tasks_available: {assessment['metadata']['tasks_available']}",
+        f"- sampling_method: {assessment['metadata']['sampling_method']}",
+        f"- sampling_context: {assessment['metadata']['sampling_context']}",
+        "",
+        "## Verdict",
+        f"- Status: {verdict}",
+        f"- Main risk: {'crashes/errors' if agg.get('crash_rate', 0) else 'thin or stale measurement' if agg.get('stale_score_count', 0) else 'none detected in this window'}",
+        f"- Cost: ${agg.get('daily_cost_usd', 0):.4f}/day",
         "",
         f"## Aggregate",
         f"- Tasks: {agg.get('total_tasks', 0)}",
@@ -2388,25 +3181,83 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
         f"- Crash rate: {agg.get('crash_rate', 0):.1%}",
         f"- Daily cost: ${agg.get('daily_cost_usd', 0):.4f}",
         f"- Scaffolding rejections: {agg.get('scaffolding_rejection_count', 0)} "
-        f"(rate: {agg.get('scaffolding_rejection_rate', 0):.1%})"
+        f"(rate: {agg.get('scaffolding_rejection_rate', 0):.1%}; "
+        f"threshold: {agg.get('scaffolding_rejection_threshold', _SCAFFOLDING_REJECTION_THRESHOLD_DEFAULT):.0%})"
         + (" — model-health warning" if agg.get("scaffolding_rejection_warning") else ""),
         "",
         "## Per-Agent",
     ]
 
+    model_health_warnings = assessment.get("model_health_warnings", [])
+    if model_health_warnings:
+        lines.extend(["", "## Model Health Warnings"])
+        for warning in model_health_warnings:
+            if warning.get("type") == "scaffolding_rejection_rate":
+                lines.append(
+                    "- scaffolding_rejection_rate "
+                    f"{warning.get('rate', 0):.1%} exceeded "
+                    f"{warning.get('threshold', _SCAFFOLDING_REJECTION_THRESHOLD_DEFAULT):.0%} "
+                    f"({warning.get('count', 0)} rejections over {warning.get('window_days', days)} days)"
+                )
+
+    notable_flags = assessment.get("notable_flags", [])
+    if notable_flags:
+        lines.extend(["", "## Notable Flags"])
+        for flag in notable_flags:
+            if flag.get("type") == "eval_benchmark_staleness_risk":
+                lines.append(
+                    "- eval_benchmark_staleness_risk "
+                    f"{flag.get('agent')}: monthly slope {float(flag.get('slope', 0)):.2%} exceeded "
+                    f"{float(flag.get('threshold', 0)):.0%} over {flag.get('sample_count', 0)} samples"
+                )
+
     rubric_warning = assessment.get("rubric_unvalidated_warning", "")
     low_conf_agents = set(agg.get("low_confidence_agents", []))
+    sycophancy_flags = []
     for name, card in sorted(assessment["agents"].items()):
         if card["task_count"] == 0:
             lines.append(f"- **{name}**: no tasks")
         else:
-            emoji = "✅" if card["success_rate"] >= 0.8 else "⚠️" if card["success_rate"] >= 0.5 else "❌"
+            label = "good" if card["success_rate"] >= 0.8 else "watch" if card["success_rate"] >= 0.5 else "bad"
             suffix = " [low confidence — score history thin or stale]" if name in low_conf_agents else ""
             score_prefix = f"{rubric_warning} " if rubric_warning else ""
+            sampling = card.get("sampling_context", {})
+            sycophancy_score = card.get("scores", {}).get("sycophancy_resistance")
+            sycophancy_suffix = ""
+            if isinstance(sycophancy_score, (int, float)):
+                sycophancy_suffix = f"; sycophancy_resistance: {sycophancy_score:.0%}"
+            if card.get("sycophancy_resistance_flag"):
+                sycophancy_suffix += " [flag]"
+                sycophancy_flags.append((name, card["sycophancy_resistance_flag"]))
             lines.append(
-                f"- {score_prefix}**{name}** {emoji}: {card['success_rate']:.0%} "
-                f"({card['succeeded']}/{card['task_count']}){suffix}"
+                f"- {score_prefix}**{name}** {label}: {card['success_rate']:.0%} "
+                f"({card['succeeded']}/{card['task_count']}){suffix}; "
+                f"sampling: over last {sampling.get('window')} tasks, sampled by {sampling.get('mode')}, "
+                f"task type distribution: {sampling.get('task_type_counts', {})}, "
+                f"date_range: {sampling.get('date_range')}"
+                f"{sycophancy_suffix}"
             )
+
+    if sycophancy_flags:
+        lines.extend(["", "## Sycophancy Resistance Flags"])
+        for name, flag in sycophancy_flags:
+            lines.append(
+                f"- **{name}**: score {float(flag.get('score', 0)):.0%}; "
+                f"flags: {', '.join(flag.get('flags') or ['low_score'])}; "
+                f"samples: {flag.get('sample_count', 0)}"
+            )
+
+    try:
+        from config import STATE_FILE
+
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8")) if STATE_FILE.exists() else {}
+        liveness = state.get("output_liveness_findings", [])[-5:]
+        if liveness:
+            lines.extend(["", "## Output Liveness Findings"])
+            for finding in liveness:
+                lines.append(f"- {finding.get('timestamp', '')[:16]} {finding.get('title', '')}")
+    except Exception as _e:
+        log.debug("Could not load output liveness findings: %s", _e)
 
     # Stale skills
     stale_skills = assessment.get("stale_skills", [])
@@ -2515,11 +3366,19 @@ def handle(workspace: Path, task_id: str, content: str, sender: str, thread_id: 
     if plan:
         lines.extend(["", "## Improvement Plan", plan])
 
+    lines.extend(["", "## Steelman Dissent", _build_steelman_dissent(assessment)])
+
     report = "\n".join(lines)
+    report = _ensure_steelman_dissent(report, assessment, task_id)
+    if report is None:
+        return None
 
     caveat = assessment.get("measurement_validity_caveat", "")
     if caveat:
         report = caveat + "\n\n" + report
+        report = _ensure_steelman_dissent(report, assessment, task_id)
+        if report is None:
+            return None
 
     # Write to workspace
     (workspace / "output.md").write_text(report, encoding="utf-8")

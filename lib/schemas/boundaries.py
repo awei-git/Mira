@@ -88,7 +88,7 @@ class TaskRequest(BaseModel):
     task_id: str
     workflow_id: str = ""
     thread_id: str = ""
-    user_id: str = "ang"
+    user_id: str = "default"
     user_role: str = "admin"
     sender: str = "user"
     content: str
@@ -150,7 +150,7 @@ class TaskResult(BaseModel):
 class AgentState(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    user_id: str = "ang"
+    user_id: str = "default"
     session_started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_tick_at: datetime | None = None
     active_workflow_id: str = ""
