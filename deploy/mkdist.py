@@ -82,12 +82,22 @@ def build_from_clone(repo, sha, subdir):
     clone = os.path.join(REPOS_DIR, name)
     try:
         sh(["git", "-C", clone, "cat-file", "-t", sha])
+        commit = sha
     except RuntimeError:
-        return None
+        # release commit was created via API; find a local commit with the same tree
+        tree = api(f"/repos/{repo}/git/commits/{sha}")["tree"]["sha"]
+        out = sh(["git", "-C", clone, "log", "--all", "--format=%H %T"])
+        commit = None
+        for line in out.split("\n"):
+            if line.endswith(" " + tree):
+                commit = line.split()[0]
+                break
+        if not commit:
+            return None
     subdir = "" if subdir == "." else subdir
     out = subprocess.run(
-        ["git", "-C", clone, "archive", sha, subdir] if subdir
-        else ["git", "-C", clone, "archive", sha],
+        ["git", "-C", clone, "archive", commit, subdir] if subdir
+        else ["git", "-C", clone, "archive", commit],
         capture_output=True)
     if out.returncode != 0:
         return None

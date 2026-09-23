@@ -30,8 +30,9 @@ projects:
         instance: i-0a82876fc7746d21c
         path: /opt/mira-bridge
     service: mira-bridge
-    data_dirs: [tasks]
-    health_cmd: "curl -sf -o /dev/null http://127.0.0.1:8000/v1/tasks/__health__ -H 'X-Bridge-Token: wrong'"
+    # .token is the box-local auth secret (never in git, never deleted by --delete)
+    data_dirs: [tasks, .token]
+    health_cmd: "curl -sf -o /dev/null http://127.0.0.1:8000/health"
 
   ershilou:
     repo: awei-git/ershilou
