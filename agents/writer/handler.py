@@ -2458,19 +2458,25 @@ def handle(
     if source_type == "human_raw":
         return _handle_human_raw_notes(workspace, content, title)
     raw_writing_mode = RAW_WRITING_MODE_ALLOWED and isinstance(metadata, dict) and bool(metadata.get("raw"))
-    bundle = build_runtime_context(
-        content,
-        user_id=kwargs.get("user_id", "default") or "default",
-        thread_id=thread_id,
-        persona_domains=["taste", "style", "writing"],
-        recall_top_k=5,
-    )
-    if kwargs.get("thread_history"):
+    content_only = kwargs.get("content_only") is True
+    if content_only:
+        from content_worker.context import writer_context
+
+        bundle = writer_context()
+    else:
+        bundle = build_runtime_context(
+            content,
+            user_id=kwargs.get("user_id", "default") or "default",
+            thread_id=thread_id,
+            persona_domains=["taste", "style", "writing"],
+            recall_top_k=5,
+        )
+    if not content_only and kwargs.get("thread_history"):
         bundle.thread_history = kwargs["thread_history"]
-    if kwargs.get("thread_memory"):
+    if not content_only and kwargs.get("thread_memory"):
         bundle.thread_memory = kwargs["thread_memory"]
 
-    if _is_quick_write(content):
+    if not content_only and _is_quick_write(content):
         return _handle_quick_write(
             workspace,
             task_id,
@@ -2494,6 +2500,7 @@ def handle(
         audit_mode=audit_mode,
         raw_writing_mode=raw_writing_mode,
         voice_preserving=voice_preserving,
+        content_only=content_only,
     )
 
 
@@ -2654,6 +2661,7 @@ def _handle_full_write(
     audit_mode: bool = False,
     raw_writing_mode: bool = False,
     voice_preserving: bool = False,
+    content_only: bool = False,
 ) -> str | None:
     context_parts = []
     if bundle.thread_history:
@@ -2664,11 +2672,13 @@ def _handle_full_write(
     if recall_block:
         context_parts.append(recall_block)
 
+    pipeline_options = {"content_only": True, "workspace": workspace / "pipeline"} if content_only else {}
     project_dir, final_text = run_full_pipeline(
         title,
         content,
         persona_prompt=bundle.persona.as_prompt(max_length=2600),
         context_note="\n\n".join(context_parts).strip(),
+        **pipeline_options,
     )
     final_file = project_dir / "final.md"
     if final_file.exists():

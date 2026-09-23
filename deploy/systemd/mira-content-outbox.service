@@ -1,0 +1,11 @@
+[Unit]
+Description=Mira daily receipt summary
+
+[Service]
+Type=oneshot
+User=mira
+WorkingDirectory=/opt/mira/Mira
+ExecStart=/opt/mira/Mira/.venv/bin/python /opt/mira/Mira/scripts/content_batch.py outbox
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
