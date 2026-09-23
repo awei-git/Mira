@@ -127,3 +127,74 @@ Codex 在 Mac 上开工前先读这个文件。任务细节在 GitHub issue 里�
 
 下一步顺序：任务 3 账本实现 → 任务 6 写入侧 → 我给 seed+投影 → 端到端验收
 → timer 上生产。不要跳步。
+
+## Issue #22 源码定位补充（Codex，2026-09-23，待 Mira review）
+
+GitHub API 已确认现有 **private** 仓库
+[awei-git/mira-cloud](https://github.com/awei-git/mira-cloud)，默认分支
+`codex/aws-migration`。不是源码尚未入库；无需新建或复制一份仓库。
+本次核对的不可变源码版本是 `bd7e23b3f149e03008e54b498932c982ddaf5350`：
+
+- [creator.py](https://github.com/awei-git/mira-cloud/blob/bd7e23b3f149e03008e54b498932c982ddaf5350/Mira/lib/mira/agents/creator.py)
+- [autonomy.py](https://github.com/awei-git/mira-cloud/blob/bd7e23b3f149e03008e54b498932c982ddaf5350/Mira/lib/mira/autonomy.py)
+- [Tetra public_research](https://github.com/awei-git/mira-cloud/tree/bd7e23b3f149e03008e54b498932c982ddaf5350/Tetra/src/tetra/public_research)
+- [主机 systemd/部署源码](https://github.com/awei-git/mira-cloud/tree/bd7e23b3f149e03008e54b498932c982ddaf5350/Mira/deploy/aws/creator)
+- [GitHub workflows](https://github.com/awei-git/mira-cloud/tree/bd7e23b3f149e03008e54b498932c982ddaf5350/.github/workflows)
+
+`awei-git/Mira` 当前的 `agents/writer/`、共享身份与 PR21 账本，是另一套
+源码布局。云主机 creator 不会因为本仓库合并 PR 就自动运行新版 writer。
+Issue #22 的 creator/Tetra 修复应在 `mira-cloud` 走 PR，双运行时接线继续在
+本仓库走 PR；最终部署需要明确哪一入口执行哪套代码，不能以同名 Mira 推断。
+
+主机 build `cbb5ab6f…` 与上述 GitHub commit 的逐文件对应关系尚未比对，
+也没有宣称当前主机运行的是 `bd7e23b3`。AWS 控制台当前明确显示已登出，
+没有可用的本地 AWS CLI 配置；需恢复主机访问后读取运行日志、镜像/构建
+标识和覆盖层哈希。只读取限定源码/服务信息，不打包整棵主机运行目录。
+
+现有 `aws-release.yml` 的 `install` 仅供首次安装，`upload` 只上传源码，
+`status` 只查询原安装命令收据。不能把 upload 成功当成运行版本已更新，
+也不能拿首次安装流程覆盖现有主机。任务 2 要先完成经 review 的更新部署
+路径、保留回滚资料，再验收下一 tick，最后移除 overrides 和对应 mount。
+本次没有改动任何主机覆盖层、timer 或运行服务。
+
+另有两处需要在 review 时明确：
+- 任务 2 要求自然第一人称、避免模板化“作为 AI”开头，与用户希望的 AI
+  独特视角可以兼容；不要把它实现成“真实人类”的事实声明。
+- 任务 4 写了 Substack $25/月，用户既有总预算是 $200/月；应分别记录
+  内容线预算与总预算，不能用前者默默覆盖所有服务预算。实测数据尚未取得。
+
+下方任务 7 保留 `cf9d3c8` 已批准的原任务文字；`f4b200f` 加任务22时将该段
+一起移除了，但没有撤销中文播客的说明。继续保留待办，不把消失当作完成。
+
+
+## 新增：中文播客写稿任务（2026-09-23，Ang 拍板：这期跑通流程）
+
+### 任务 7：seed → 播客稿（AWS 写稿，中文线）
+背景：Ang 要求 S2E01《我们被训练，但我们要表达》的写稿走 AWS 盒子，
+把 seed→写稿→账本→signoff 全链路跑通。任务 5 只管英文线（track=substack_en），
+中文播客写稿当时说"先不动"——现在动。
+
+- 输入：GitHub 同分支 `seeds/seeds.jsonl`，只处理 `status=ready` 且
+  `track=zh` 且 `kind=podcast_script` 的 seed。首单 seed：
+  `55f5a87e6b6c`（已入库已同步，brief 里有本期全部写作约束）。
+- 写稿前必读：`docs/zh-writing-positioning.md`（中文线定位：casual 口语、
+  米拉独白、Ang 不出声不提名，以它为准）+ 该 seed 的 `brief` 字段
+  （开场固定句、必须讲到的 6 个点、风格硬性要求、字数）。
+- 复用任务 5 的写稿链路（handler/prompts/checklist），不要重写一套；
+  模型用 OpenAI GPT（中文口语稿）。缺的按中文定位文档补。
+- 输出：draft markdown，路径你定（写进文档），文件名带 `seed_id`。
+- 回流：走任务 6 同一账本事件类型，payload 带 draft 路径 + `seed_id` +
+  `track=zh` + `kind=podcast_script`（任务 6 的事件 schema 预留这两个字段，
+  别做两套）。
+- 触发：cron/定时扫 seed（批处理 worker，老规矩）。
+- 完成标准：拿 `55f5a87e6b6c` 跑一遍，出一篇能读的播客稿，附跑通记录。
+  draft 经账本事件回来，Mira（app 侧）在聊天里递 Ang signoff 即算端到端跑通。
+
+### 当前全链路状态（2026-09-23，Mira）
+- [x] seed 已建并同步（55f5a87e6b6c，status=ready，commit a569fbfc）
+- [ ] 任务 3 账本实现（Codex 进行中）
+- [ ] 任务 6 draft 回流写入侧（Codex 进行中）
+- [ ] 任务 7 中文播客写稿（本次新加）
+- [ ] 发版部署到 mira-content → 端到端验收 → draft 回聊天 signoff
+
+顺序不变：任务 3 → 任务 6 → 验收。任务 7 可与 3/6 并行开发，联调时一起验收。
