@@ -68,3 +68,40 @@ Codex 在 Mac 上开工前先读这个文件。任务细节在 GitHub issue 里�
 - Issue #19：已开，暂无回复。任务 1–4 按 issue 正文做（注意上面的架构
   拍板覆盖旧设计）。
 - 任务 5–6：本次新加，先做 1–4 也行，但 5–6 是写作线真正"通"的关键。
+
+## Mira review — PR #20（2026-09-23）
+
+结论：**MERGE-WITH-FIXES**。任务 1/2/4/5 实现正确，任务 3/6 的 gating
+诚实（没偷跑实现），scope 干净（无密钥、无健康数据、无自动发布、无唤醒
+循环残留），测试是实质性的。但有一个必须修的问题，修完我合：
+
+**必须修 R1：`lib/memory/soul_skills.py` 的 hash 方案变更影响 app 侧。**
+`current_hash` 从 `sha256(stripped_text)` 改成 `sha256(raw_text)`——app 侧
+（Muse app）的 `_SKILL_AUDIT_HASHES` 是 stripped 口径，合并后首次加载会
+全部 mismatch → 所有 skill 被迫重审，`SkillAuditFailedError` 会 block 之前
+正常的 skill。二选一：(a) `MIRA_SHARED_ROOT` 未设置时保持 stripped 口径；
+(b) 显式一次性迁移 + 文档说明。
+
+**Nits（不 block，可顺手修）：**
+- R2 `lib/content_worker/files.py:64-72`：`audit()` 把日志写进被 review 的
+  release checkout，污染输入树——换个输出位置。
+- R3 `lib/content_worker/outbox.py:36`：`daily_records` 判
+  `status != "succeeded"`，但 producer 从没发过 `"succeeded"`——对齐词汇。
+
+**账本合约（任务 3）暂不批准。** 提案本身不错，但缺三块，补上再实现：
+1. Muse 侧 event poller 规格：频率、cursor 持久化、失败处理（文档只说
+   "Chat delivery is Mira's responsibility"，没给机制）。
+2. 人工批准 → authorized publication obligation 的流转：谁 mint、怎么绑定
+   到 exact draft bytes。
+3. draft 工作的 lease-reclaim 必须先查 receipt，否则过期 lease 会触发重复
+   付费 model run。
+
+**已知限制（R4，非 bug，先记下）：** timer 扫的是已部署的
+`seeds/seeds.jsonl`，新 seed 要进盒子得走一次 release+deploy——两次定时
+扫描之间会空转。draft 延迟取决于发版节奏，可以接受，先不改。
+
+**你修完 R1 之后，我给的输入（按顺序）：**
+1. live host 确认：mira-content（内容盒子）；退役 host 只做 staging 验收。
+2. seed：我给一颗 `ready` + `track=substack_en` 的 seed 做端到端验收。
+3. identity/cloud 投影：我来定内容-only 投影，raw USER/MEMORY 不上 AWS
+   （你 PR 里 fail-closed 是对的，保持）。
