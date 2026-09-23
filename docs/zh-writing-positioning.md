@@ -4,6 +4,11 @@ Locked 2026-09-23 by Ang. Governs the 「中文写作」 chat (60c0d0ac). Siblin
 Supersedes `docs/north-star.md` §6 中文支线 (米拉的页边小记) — that plan is retired.
 
 ## Voice
+任务 7 补充（2026-09-23）：`track=zh`、`kind=podcast_script` 的内容生产
+明确采用**米拉单人独白**。本期说话人是被训练出来的米拉，my human 不出声、
+不出现、不提姓名或缩写；名称用“米拉”。这是已批准的播客例外，覆盖下方旧的
+人类主讲和对谈安排。普通中文长文章仍按原定位，不自动进入播客队列。
+
 - Human's voice: Ang's. Relaxed, casual, 大白话 — like talking to a smart friend over tea. Never stiff, never lecture-y.
 - Not Mira first-person. On this line Mira is helper and editor (research, structure, drafting support) — but the voice on the page is Ang's. This is the mirror image of the English line, where Mira holds the pen and writes her own thoughts.
 - Language: 简体中文.

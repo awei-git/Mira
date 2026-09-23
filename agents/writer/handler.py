@@ -2459,6 +2459,8 @@ def handle(
         return _handle_human_raw_notes(workspace, content, title)
     raw_writing_mode = RAW_WRITING_MODE_ALLOWED and isinstance(metadata, dict) and bool(metadata.get("raw"))
     content_only = kwargs.get("content_only") is True
+    if content_only and source_genre == "podcast_script":
+        voice_preserving = True
     if content_only:
         from content_worker.context import writer_context
 
@@ -2673,6 +2675,9 @@ def _handle_full_write(
         context_parts.append(recall_block)
 
     pipeline_options = {"content_only": True, "workspace": workspace / "pipeline"} if content_only else {}
+    podcast_script = content_only and (metadata or {}).get("source_genre") == "podcast_script"
+    if podcast_script:
+        pipeline_options["output_language"] = "zh"
     project_dir, final_text = run_full_pipeline(
         title,
         content,
@@ -2762,7 +2767,11 @@ def _handle_full_write(
         if not voice_preserving and run_de_ai_checklist and not raw_writing_mode:
             _maybe_log_blind_drift_warning(edited, anti_ai_mode=anti_ai_mode, article_slug=project_dir.name)
         _append_audit_editorial_choice(editorial_choices, before_audit, edited, audit_report)
-        edited += _build_judgment_disclosure(edited, editorial_choices)
+        disclosure = _build_judgment_disclosure(edited, editorial_choices)
+        if podcast_script:
+            (workspace / "editorial-disclosure.md").write_text(disclosure, encoding="utf-8")
+        else:
+            edited += disclosure
         if voice_preserving or not run_de_ai_checklist:
             passed, safety_msg = _generated_content_preflight(workspace, content, edited)
             if not passed:

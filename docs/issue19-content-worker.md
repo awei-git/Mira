@@ -14,10 +14,11 @@ This runbook describes code for review, not an assertion that EC2 was updated.
 | 4. Daily outbox | Receipt-derived New York daily summary, three sections | Install timer after review; Muse reads and merges |
 | 5. Seed writing | Strict English eligibility; existing handler/pipeline; versioned artifacts | Real eligible seed, content identity, provider/budget readiness; real draft |
 | 6. Draft return | Atomic artifact registration and signoff event, receipt-first recovery | Real eligible input, Muse acknowledgement |
+| 7. Chinese podcast script | Existing handler with explicit Chinese language, solo voice, configurable GPT route, mechanical brief checks | Approved projection, real AWS script, independent Muse presentation |
 
 No real model run, publication, production ledger event, timer activation or EC2
-deployment is claimed. Tests use local fixture events. At the source commit the only seed `49a5c4d10716` is
-`candidate` and has no `track`; the read-only scan correctly selects zero.
+deployment is claimed. Tests use local fixture events. Source update `a569fbf`
+adds ready Chinese podcast seed `55f5a87e6b6c`; the other two seeds remain candidates.
 
 ## 1. Shared assets, separately from code
 
@@ -111,7 +112,8 @@ python3 scripts/content_batch.py seeds --scan-only
 MIRA_SHARED_ROOT=/var/lib/mira-shared python3 scripts/content_batch.py seeds
 ```
 
-Only `ready` + `substack_en` is accepted. A batch attempts at most one **new**
+The English route accepts only `ready` + `substack_en`. The same batch also accepts
+`ready` + `zh` + `podcast_script` under task7, described below. It attempts at most one **new**
 seed/policy version and exits. Already attempted versions, including interrupted
 paid work, do not repeat automatically and do not starve subsequent seeds.
 The manifest and policy inputs must come from the reviewed release of the same
@@ -150,6 +152,41 @@ review is required for retries; keep the old receipt. Per-seed file locking
 prevents duplicate writes. No automatic external side effects are retried.
 
 ## 4. Outbox and scheduling
+
+### Chinese podcast extension (task 7)
+
+The same seed/queue CLI invokes the same writer handler and pipeline. Chinese
+policy is `docs/zh-writing-positioning.md`; its explicit task7 exception makes the
+speaker 米拉, alone, without the human's name. The complete seed brief and a
+reviewable constraint sidecar, `docs/zh-podcast-gates.json`, enter the policy hash.
+The sidecar translates the supplied episode's opening, closing, 1300–1500 Han
+characters and topic anchors into mechanical checks. Future episodes need an
+explicit reviewed constraint entry; an unknown episode fails before reservation.
+These checks cannot establish literary quality or prove a claim; human signoff
+and the existing writer's review remain necessary.
+
+An explicit `output_language=zh` bypasses incidental Substack keyword detection
+only for this content pipeline. Normal English/Substack callers keep their
+existing default. The handler uses its voice-preserving editorial pass and saves
+`editorial-disclosure.md` separately from the spoken script. Technical terms such
+as temperature remain permitted; dialogue labels, owner identifiers, contact
+addresses and non-spoken Markdown structures are blocked by the final check.
+
+`MIRA_PODCAST_MODEL_ROUTE` defaults to the existing logical `gpt` API route; model
+IDs and providers remain in the existing configuration. The paid-step guard
+applies that route across the pipeline's writer/reviewer threads, including
+legacy-named thinking calls. All roles use that configured provider, not an
+assertion that independent model vendors reviewed the text. A failure remains
+blocked without automatic provider fallback or a second paid attempt. Existing
+multi-pass work can still be expensive; the $200 budget gate still applies.
+
+Files live under `data/drafts/zh/<seed_id>/<seed-policy-hash>/`, with the same
+receipt/packet/artifact structure and a saved `podcast-constraints.json`. The
+same `draft.ready_for_signoff` event includes `track=zh`, `kind=podcast_script`.
+Missing track/kind on legacy English obligations/packets keeps its original
+English interpretation, key and path; existing English receipts do not rerun.
+The daily outbox reads both content directories. Draft completion does not
+generate audio, send email, publish an episode or imply a Muse message.
 
 ```sh
 python3 scripts/content_batch.py outbox --day 2026-09-23
@@ -194,8 +231,8 @@ Mira owns the app poller, trusted human-approval endpoint and independent
 
 ## Scope and validation
 
-Scope: issue19 identity/skills wiring, outbox, English draft batching and design
-of the shared event contract. Required supporting changes: private-data exclusion
+Scope: issue19 identity/skills wiring, outbox, English/Chinese draft batching and
+the shared event contract. Required supporting changes: private-data exclusion
 at packaging time, deployment preservation, writer context isolation and removal
 of obsolete cloud-startup README instructions. No health/Tetra changes, external
 publication, identity invention or skill security bypass.

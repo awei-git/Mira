@@ -2,9 +2,9 @@
 
 Authority: HANDOFF at `9149868`, after PR20 merge and explicit rev2 approval.
 The subsequent HANDOFF at `cf9d3c8` adds task 7 (Chinese podcast scripts).
-That writer extension is the next task; this patch reserves `track`/`kind` on
-the same signoff event, currently `substack_en`/`essay`. It does not yet execute
-the new Chinese seed or claim the supplied podcast script exists.
+That extension now uses the same writer, paid-step guard and signoff event,
+with `track=zh` and `kind=podcast_script`. Local fixture checks do not mean the
+real episode has been generated or delivered.
 This is code for review, not a deployment receipt. The live target is
 `mira-content`; the retired host has staging-only acceptance. Timers stay off
 until the real seed → writer → event → Muse presentation acceptance passes.
@@ -58,16 +58,17 @@ poller and presentation acknowledgement. The server provides the read surface;
 no app poller is bundled or silently scheduled here.
 
 Seed obligation payload is exactly the versioned input reference: seed_id,
-seed_sha256, policy_sha256, draft_dir. The canonical idempotency key is
+seed_sha256, policy_sha256, draft_dir; Chinese scripts also carry track/kind.
+Missing track/kind retains legacy English semantics. The canonical idempotency key is
 `seed.draft:<seed_id>:<seed_sha256>:<policy_sha256>`. The directory is computed from
 those hashes and the seed ID. Queue execution requires the same deployed ready
-English seed and policy bytes; remote payloads cannot substitute ad-hoc prompts
+eligible English/Chinese seed and policy bytes; remote payloads cannot substitute ad-hoc prompts
 or newer source into an older task. Other legacy agent work remains visible but
 is not executed by this content-only writer.
 
 ## Dispatch, recovery and exact artifacts
 
-`scripts/content_batch.py seeds` registers and attempts one current ready English
+`scripts/content_batch.py seeds` registers and attempts one current ready eligible
 seed. `scripts/content_batch.py queue` polls **existing** matching obligations once
 and exits; it never creates another external queue or an always-awake loop.
 The latter can eventually run on the approved short timer, after end-to-end
@@ -158,6 +159,12 @@ python -m pytest tests/test_obligation_ledger.py tests/test_content_worker.py \
 ```
 
 Result: **96 passed, 1 deselected**, with five existing UTC deprecation warnings.
+Task7 follow-up adds `tests/test_podcast_seed_worker.py` to that command:
+**106 passed, 1 deselected**, same five warnings. The real seed scan selects the
+one ready Chinese script from three source records; it invokes no model. Checks
+include same-ledger Chinese artifacts/events, English-language-rule isolation,
+actual dispatcher API routing with mocked calls, thread routing, failure gates,
+outbox inclusion and keeping editorial disclosure out of spoken text.
 The deselected em-dash case is the independently reproduced pre-existing failure
 recorded in `issue19-validation.md`; this change does not modify that style rule.
 Distribution tests exercise the real archive builder with mocked GitHub/AWS,
@@ -165,8 +172,8 @@ check canonical source is fetched at the exact release SHA, reject excluded or
 escaping extra paths, and import the unpacked API in a fresh interpreter outside
 the repository. Both operator and queue CLI help commands also exit successfully.
 
-Still required: Mira review of this implementation, her ready English seed and
-content-only identity projection, release/staging, host/provider/budget readiness,
+Still required: Mira review of this implementation, her content-only identity
+projection, release/staging, host/provider/budget readiness,
 one real draft and ledger event, and **Mira's independent app presentation receipt**.
 Only after those succeed may production timers be considered. No real model
 draft, cloud event, Muse acknowledgement or deployment is asserted here.

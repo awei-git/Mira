@@ -25,12 +25,14 @@ def guard_active():
 
 
 class ModelGuard:
-    def __init__(self, ledger, obligation, repo):
+    def __init__(self, ledger, obligation, repo, route=None):
         self.ledger, self.job, self.repo = ledger, obligation, repo
+        self.route = route
         self.lock = threading.Lock()
         self.failed = False
 
     def call(self, function, model_name, prompt, system, timeout):
+        model_name = self.route or model_name
         with self.lock:
             if self.failed:
                 raise PaidCallBlocked("prior_model_step_uncertain")
@@ -81,11 +83,13 @@ class ModelGuard:
 
 
 @contextmanager
-def model_guard(ledger, obligation, repo):
+def model_guard(ledger, obligation, repo, *, route=None):
     global _active
+    if route is not None and (not isinstance(route, str) or not route.strip()):
+        raise PaidCallBlocked("configured_model_route_required")
     if not _scope_lock.acquire(blocking=False):
         raise PaidCallBlocked("another_content_batch_in_process")
-    guard = ModelGuard(ledger, obligation, repo)
+    guard = ModelGuard(ledger, obligation, repo, route=route)
     try:
         _active = guard
         yield guard

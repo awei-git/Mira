@@ -8,6 +8,7 @@ import re
 from os import getenv
 
 from content_worker.files import atomic_write, audit, checksum, safe_file, write_json
+from content_worker import podcast
 
 POLICY_FILES = (
     "docs/substack-constitution.md",
@@ -37,11 +38,12 @@ def read_seeds(path):
 
 
 def eligible(seed):
-    return seed.get("status") == "ready" and seed.get("track") == "substack_en"
+    return seed.get("status") == "ready" and (seed.get("track") == "substack_en" or podcast.is_podcast(seed))
 
 
-def policies(repo):
-    return {path: safe_file(repo, path).read_text(encoding="utf-8") for path in POLICY_FILES}
+def policies(repo, seed=None):
+    paths = podcast.POLICY_FILES if seed and podcast.is_podcast(seed) else POLICY_FILES
+    return {path: safe_file(repo, path).read_text(encoding="utf-8") for path in paths}
 
 
 def generate(workspace, seed, policy_text, evidence):
@@ -64,6 +66,10 @@ def generate(workspace, seed, policy_text, evidence):
         + "\n\n## Supplied evidence\n"
         + json.dumps(evidence, ensure_ascii=False)
     )
+    metadata = {"source_genre": "substack_essay", "seed_id": seed["seed_id"]}
+    if podcast.is_podcast(seed):
+        request = podcast.request(seed, policy_text, evidence)
+        metadata.update(source_genre="podcast_script", output_language="zh")
     return handle(
         workspace,
         "seed-" + seed["seed_id"],
@@ -71,7 +77,7 @@ def generate(workspace, seed, policy_text, evidence):
         "mira-app",
         "",
         content_only=True,
-        metadata={"source_genre": "substack_essay", "seed_id": seed["seed_id"]},
+        metadata=metadata,
     )
 
 
@@ -80,6 +86,9 @@ def inspect_draft(workspace, seed, evidence):
 
     output = safe_file(workspace, "output.md")
     text = output.read_text(encoding="utf-8")
+    if podcast.is_podcast(seed):
+        spec = json.loads(safe_file(workspace, "podcast-constraints.json").read_text())
+        return text, podcast.inspect(text, spec)
     title = next((line[2:].strip() for line in text.splitlines() if line.startswith("# ")), "")
     subtitle = next((line[2:].strip() for line in text.splitlines() if line.startswith("> ")), "")
     report = evaluate_article_quality(
@@ -112,12 +121,15 @@ def evidence_for(repo, seed):
 def attempt_inputs(repo, seed):
     if not isinstance(seed.get("seed_id"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", seed["seed_id"]):
         raise ValueError("invalid_seed_id")
-    policy = policies(repo)
+    policy = policies(repo, seed)
+    if podcast.is_podcast(seed):
+        podcast.constraints(seed, policy)
     evidence = evidence_for(repo, seed)
     seed_hash = checksum(json.dumps(seed, sort_keys=True, ensure_ascii=False).encode())
     policy_hash = checksum(json.dumps(policy, sort_keys=True, ensure_ascii=False).encode())
     version = checksum((seed_hash + policy_hash).encode())
-    relative = "data/drafts/substack_en/" + seed["seed_id"] + "/" + version
+    directory = "zh" if podcast.is_podcast(seed) else "substack_en"
+    relative = "data/drafts/" + directory + "/" + seed["seed_id"] + "/" + version
     return policy, evidence, seed_hash, policy_hash, relative
 
 
@@ -136,6 +148,8 @@ def seed_job(repo, seed, ledger):
         "policy_sha256": policy_hash,
         "draft_dir": relative,
     }
+    if podcast.is_podcast(seed):
+        payload.update(track="zh", kind="podcast_script")
     existing = ledger.by_key(key)
     if existing:
         if existing["kind"] != "seed.draft" or existing["owner"] != "mira-aws" or existing["payload"] != payload:
@@ -253,7 +267,10 @@ def run_seed(repo, seed, *, writer=generate, reviewer=inspect_draft, ledger=None
         try:
             from content_worker.model_guard import model_guard
 
-            with model_guard(ledger, job, repo):
+            route = getenv("MIRA_PODCAST_MODEL_ROUTE", "gpt") if podcast.is_podcast(seed) else None
+            if podcast.is_podcast(seed):
+                write_json(safe_file(workspace, "podcast-constraints.json"), podcast.constraints(seed, policy))
+            with model_guard(ledger, job, repo, route=route):
                 result = writer(workspace, seed, policy, evidence)
             if not result:
                 raise RuntimeError("existing_writer_did_not_complete")
@@ -269,6 +286,9 @@ def run_seed(repo, seed, *, writer=generate, reviewer=inspect_draft, ledger=None
                 "editorial_review": review,
                 "publication_gate": "human_approval_required",
             }
+            if podcast.is_podcast(seed):
+                packet.update(track="zh", kind="podcast_script")
+                receipt.update(track="zh", kind="podcast_script")
             write_json(safe_file(workspace, "packet.json"), packet)
             receipt.update(
                 draft_path=draft_path,

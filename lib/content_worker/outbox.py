@@ -13,8 +13,12 @@ def daily_records(root, day):
     date.fromisoformat(day)
     root = Path(root)
     records = {"journal": [], "verified_learnings": [], "sync": []}
-    drafts = safe_file(root, "data/drafts/substack_en")
-    for path in sorted(drafts.glob("*/*/receipt.json")):
+    paths = [
+        path
+        for track in ("substack_en", "zh")
+        for path in safe_file(root, "data/drafts/" + track).glob("*/*/receipt.json")
+    ]
+    for path in sorted(paths):
         relative = str(path.relative_to(root))
         row = json.loads(safe_file(root, relative).read_text())
         timestamp = datetime.fromisoformat(row.get("finished_at") or row["started_at"])

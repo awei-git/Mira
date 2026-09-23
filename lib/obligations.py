@@ -179,7 +179,10 @@ class Ledger:
                 if not re.fullmatch(r"[a-f0-9]{64}", str(payload.get(name, ""))):
                     raise ValueError("seed_input_hash_required")
             version = digest((payload["seed_sha256"] + payload["policy_sha256"]).encode())
-            expected = "data/drafts/substack_en/" + payload["seed_id"] + "/" + version
+            track, content_kind = payload.get("track", "substack_en"), payload.get("kind", "essay")
+            if (track, content_kind) not in {("substack_en", "essay"), ("zh", "podcast_script")}:
+                raise ValueError("unsupported_draft_track_or_kind")
+            expected = "data/drafts/" + track + "/" + payload["seed_id"] + "/" + version
             if payload.get("draft_dir") != expected:
                 raise ValueError("seed_draft_directory_mismatch")
         if identifier is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", identifier):
@@ -301,12 +304,16 @@ class Ledger:
 
     def _draft_packet(self, row):
         relative = row["payload"].get("draft_dir", "")
-        if not relative.startswith("data/drafts/substack_en/"):
+        track = row["payload"].get("track", "substack_en")
+        if not relative.startswith("data/drafts/" + track + "/"):
             raise ValueError("draft_root_required")
         packet = json.loads(safe_path(self.root, relative + "/packet.json").read_text())
         required = {"seed_id", "seed_sha256", "policy_sha256"}
         if any(packet.get(key) != row["payload"].get(key) for key in required):
             raise Conflict("draft_packet_input_mismatch")
+        for key, default in (("track", "substack_en"), ("kind", "essay")):
+            if packet.get(key, default) != row["payload"].get(key, default):
+                raise Conflict("draft_packet_track_or_kind_mismatch")
         if packet.get("editorial_review", {}).get("pass_gate") is not True:
             raise Conflict("draft_editorial_gate_not_passed")
         expected_path = relative + "/" + packet["seed_id"] + "-draft.md"
@@ -334,7 +341,7 @@ class Ledger:
         payload.update(
             artifact_id=artifact_id, packet_path=row["payload"]["draft_dir"] + "/packet.json", recipient="mira-app"
         )
-        payload.update(track="substack_en", kind="essay")
+        payload.update(track=packet.get("track", "substack_en"), kind=packet.get("kind", "essay"))
         event_id = self._event(db, row["id"], "draft.ready_for_signoff", actor, payload, "draft-signoff:" + row["id"])
         payload["event_id"] = event_id
         db.execute(
