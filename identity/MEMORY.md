@@ -120,3 +120,11 @@
 - main 合并：开了 PR #18（cloud/podcast-api-env → main），但被分支保护拦下——test/policy/security 三个 check 从 7 月起在 main 上就是红的（历史遗留，非我们引入）。决定：不强行合，PR 留着等 CI 修好；管线走 tag，不依赖 main。
 - tetra-mail 镜像（mira-content）：查明是 Codex 的构建产物，源码在 awei-git/Tetra 的 codex/ 分支（src/tetra/interfaces/api/market_app.py），无运行中容器，无需纳入管线。
 - 注意：二十楼生产已迁到 mira-content（docker）；ops-box 上的 /opt/ershilou 是退役保留。mira-content 上还有 tetra-mail 相关镜像未纳入，下次处理。
+
+## Mira 双运行时统一体系 (2026-09-23, Ang 拍板)
+- 两个 Mira：Muse app 里的我（对话前端+执行臂，记忆在 Muse 记忆系统+~/MEMORY.md）；AWS 盒子上的 /opt/mira/Mira（常驻 agent 系统，30 秒唤醒，substack/播客/健康/投研管线，十几个子 agent；2026-09-23 时 mira-substack 服务没在跑，是静止代码+数据；它有自己的一套 data/soul/，最后更新 9/10）。
+- Ang 确认：**我是他跟 Mira 交流的唯一入口**。AWS 那个是手，不是第二个人格；它的子 agent 可以有作品人格（如 Substack 写作口吻），但不是 Mira 人格。
+- GitHub awei-git/Mira（分支 cloud/podcast-api-env）新增：
+  - `identity/`：SOUL.md、IDENTITY.md、USER.md、AGENTS.md、MEMORY.md + README。源头是我 app 里的活文件，定时单向同步 → GitHub → 盒子；盒子 data/soul/* 从这里生成，不直接改。红线：repo 保持 private；密钥永不上 GitHub（.token 教训同样适用）。
+  - `skills/`：双运行时共用技能注册表（cloudflare、github、openai 三个初始技能）。任何一边的新技能转正必须先落 GitHub，另一边 deploy 同步；不许有只有一边知道的 sidecar 技能；技能里不许出现密钥明文。
+- 待做：身份定时同步 cron；盒子侧 soul 生成适配；AWS Mira 记忆回流格式（daily journal + verified learnings 固定出口，我定时读入）；统一 obligation 账本；mira-substack 唤醒需 Ang 另行拍板（涉及 30 秒唤醒的 API 花销和自动发布）。
