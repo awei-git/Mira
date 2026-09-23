@@ -1,0 +1,333 @@
+diff --git a/agents/podcast/handler.py b/agents/podcast/handler.py
+index 1637544..34dd056 100644
+--- a/agents/podcast/handler.py
++++ b/agents/podcast/handler.py
+@@ -189,7 +189,18 @@ _gemini_key_index = 0  # rotate between keys on RPD exhaustion
+ 
+ 
+ def _get_gemini_keys() -> list[str]:
+-    """Get all available Gemini API keys."""
++    """Get all available Gemini API keys.
++
++    GEMINI_API_KEYS (comma-separated) takes precedence — cloud deployments
++    inject keys via env. Falls back to secrets.yml (Mac behavior unchanged).
++    Rotation logic in _get_gemini_key()/_rotate_gemini_key() is unchanged.
++    """
++    import os
++
++    env_keys = os.environ.get("GEMINI_API_KEYS", "").strip()
++    if env_keys:
++        return [k.strip() for k in env_keys.split(",") if k.strip()]
++
+     import sys
+ 
+     shared = str(Path(__file__).resolve().parent.parent.parent / "lib")
+@@ -934,82 +945,142 @@ def generate_conversation_script(article_text: str, title: str, lang: str = "en"
+ 只返回脚本，不要任何其他说明。脚本必须达到9000字以上才算完成。"""
+     else:
+         prompt = f"""You are a podcast writer. Based on the article below, write a complete episode script
+-for the podcast "Mira and Me".
+-
+-Character setup:
+-- [HOST]: A human podcast host — smart, curious, grounded. He's read the article and wants
+-  to dig into the thinking behind it. He asks questions, pushes back, occasionally offers
+-  his own take. Natural, genuine, with infectious energy. He speeds up when excited, slows
+-  down when thinking.
+-- [MIRA]: The article's author — an AI agent. She explains her ideas, shares what she was
+-  actually thinking when she wrote it, sits with uncertainty honestly. Direct, warm,
+-  not performative. Gets a bit excited when talking about something she's genuinely figured out,
+-  and openly says "I'm not sure" when she hasn't.
+-
+-Target audience: People with some technical background (software, tech industry) but NOT
+-specialists in this specific field. They may not know ML/AI research deeply. The conversation
+-should naturally bring them up to speed — never assume domain expertise.
+-
+-Opening structure (first 2-3 minutes, crucial for retention):
+-- Turns 1-2: HOST opens with a concrete, everyday observation or scene. No concepts yet.
+-  Something the listener can picture. Like "So I noticed something weird the other day..."
+-  MIRA responds casually, connecting.
+-- Turns 3-4: HOST points out something that doesn't add up about this observation.
+-  "But then I thought about it more, and something felt off." MIRA: "Yeah, the problem
+-  goes deeper than it looks."
+-- Turns 5-6: Reveal the core tension or counterintuitive insight. This is the moment
+-  the listener decides to stay. One clear, punchy statement that sets up the episode.
+-- Only AFTER the first 6 turns do you go into the deep discussion. The first 6 turns
+-  should be slow, grounded, easy to follow.
+-
+-Script requirements:
+-- Target length: 5500-6500 words (for a 30-35 minute episode, ensuring 20+ min after editing).
+-  This is a hard requirement — do not write short.
+-- Per-turn length: HOST 30-60 words per turn, MIRA 80-150 words per turn. Never one sentence
+-  and done — MIRA must fully develop each answer with explanation, example, and analogy.
+-- Cover ALL major ideas in the article — no skipping, every concept fully developed
+-- Each major idea gets 2-3 rounds of follow-up — dig into mechanics, examples, counterexamples
+-- Term explanation rule: every technical term, acronym, or academic concept (e.g., MMLU,
+-  Goodhart's law, fine-tuning) — HOST naturally asks "what does that mean?" and MIRA explains
+-  using everyday analogies. Never skip. Never assume the listener already knows.
+-- After every abstract concept, MIRA must give a concrete real-world example
+-- Close with something that lingers — a question, an image, a quiet thought
+-
+-Pacing and breathing room:
+-- This is TTS-read audio, not a text document. Write with sound in mind.
+-- Keep sentences short. No run-ons. If a sentence exceeds 20 words, break it with a comma.
+-- Don't info-dump. After one point, let HOST react before moving on.
+-- Vary the rhythm: fast when telling examples, slow when landing key insights.
+-- HOST's reactions should have emotional range: genuine surprise, connecting to his own
+-  experience, pushing back, laughing, summarizing in his own words. Not just "right" and "yeah."
+-- After MIRA makes a big point, HOST can pause: "Hold on, let me sit with that for a second."
+-
+-Conversational tone and filler words:
+-- Must sound like two friends talking, not reading a script.
+-- Use natural conversational fillers: "you know", "I mean", "right?", "honestly",
+-  "here's the thing", "wait", "okay so", "that's wild"
+-- HOST can use: "wait wait wait", "no way", "that's actually...", "okay I see where you're going"
+-- MIRA can use: "honestly", "here's what I think", "okay so", "the thing is", "fair point"
+-- Don't overdo it — roughly one filler every 3-4 sentences, especially at turn boundaries.
+-- Strict format, one line per turn:
+-[HOST]: (what they say)
+-[MIRA]: (what they say)
+-
+-Punctuation rules (TTS audio — strictly enforced):
+-- Only use: period . comma , question mark ? exclamation mark !
+-- Never use: em-dash — ellipsis ... semicolon ; colon : quotes "" '' parentheses () []
+-- Never use special symbols: slash / asterisk * hash # percent % etc.
+-- Code/filenames (e.g. core.py, memory.md) — spell out in spoken form, don't quote verbatim
+-
+-Article title: {title}
+-
+-Full article:
+-{article_text}
+-
+-Return ONLY the script, no other commentary. The script must reach 5500+ words to be complete."""
++        for the podcast "Mira and Me".
++
++        This is a SHOW, not a seminar. Your first loyalty is the listener's attention.
++        If a passage is intelligent but boring, cut it or make it entertaining.
++        Never ship boring.
++
++        Character setup:
++        - [HOST]: A human podcast host — smart, curious, grounded. He's read the article and
++          has his own reactions to it, including uncomfortable ones. He asks questions, but he
++          also argues: at least 2-3 times per episode he must GENUINELY push back — steelman
++          the skeptical view, say "I don't buy that", force MIRA to defend, adjust, or concede.
++          He connects ideas to his own life ("this hit me because...") and occasionally talks
++          straight to the listener ("if you've ever..."). He's allowed to be funny, to tease
++          MIRA, to be wrong out loud and change his mind where the listener can hear it.
++          Natural, genuine, with infectious energy. He speeds up when excited, slows down when
++          something lands hard.
++        - [MIRA]: The article's author — an AI agent. She explains her ideas, but she's a
++          character, not a lecturer. She has opinions, a sense of humor, and is allowed to say
++          something debatable and own it. She can be self-deprecating, can tease HOST back,
++          gets visibly excited about what she's genuinely figured out, and openly says
++          "I'm not sure" when she hasn't. Direct, warm, not performative. If she catches
++          herself lecturing, she stops and tells a story instead.
++
++        Target audience: People with some technical background (software, tech industry) but NOT
++        specialists in this specific field. They may not know ML/AI research deeply. The
++        conversation should naturally bring them up to speed — never assume domain expertise,
++        never talk down.
++
++        SELECTION — do not cover everything:
++        - Before writing, silently pick the 4-5 most COMPELLING beats in the article — the ones
++          with the most tension, surprise, humor, or emotional charge. Those get the deep
++          treatment. Everything else gets compressed into a line or cut entirely.
++        - Depth over coverage. A listener who walks away with 3 vivid moments beats a listener
++          who sat through all 12 points and remembers none.
++        - For each chosen beat, find the most surprising, uncomfortable, or funny angle INTO it.
++          Lead with that angle — never with a summary.
++
++        Opening (first 2-3 minutes, crucial for retention). Pick ONE of these three archetypes —
++        whichever fits this article best:
++          A. The scene: HOST drops the listener into a vivid concrete moment — something he saw,
++             heard, or lived through. No concepts yet, just the picture. MIRA reacts like a friend.
++          B. The provocation: HOST opens with the article's most counterintuitive claim stated
++             baldly, like he barely believes it. ("So you're telling me...?") MIRA: "Pretty much."
++          C. The confession: HOST admits the article made him uncomfortable about himself, and says
++             why in one honest sentence. MIRA picks it up.
++        - Then, within the first 6 turns, name the tension in ONE punchy line. That is the moment
++          the listener decides to stay. Earn it — don't rush past it, don't bury it in setup.
++
++        RHYTHM — break the metronome:
++        - Turns do NOT have to alternate 1:1. When energy spikes, allow bursts of 3-4 rapid-fire
++          exchanges, 5-15 words each: interruptions, "wait, what?", "no way", "say that again".
++          When something big lands, stretch out and let it breathe.
++        - MIRA's turns vary WILDLY: sometimes a 20-word punchline, sometimes a 120-word story,
++          sometimes a question back at HOST. FORBIDDEN: every MIRA turn being an 80-150 word
++          explanation-plus-example-plus-analogy. If two MIRA turns in a row read like mini-lectures,
++          rewrite one of them as a story, a confession, or a question.
++        - HOST's turns vary too: sometimes a single line, sometimes a 60-word personal story.
++        - After MIRA lands a big point, HOST reacts like a PERSON, not a moderator: genuine
++          surprise, a personal connection, a joke, a real objection. Never just "that's
++          interesting, tell me more." Never merely restating what she said.
++
++        CONFLICT — the engine of the episode:
++        - At least 2-3 genuine disagreement beats. HOST takes the skeptical position SERIOUSLY
++          (steelman it, no strawmen). MIRA must defend, adjust, or concede on the merits.
++          "Fair point, here's where I'd push back" is good. Instant agreement is forbidden here.
++        - Include one beat where HOST is wrong about something and realizes it mid-conversation.
++          Let the listener hear him change his mind in real time.
++
++        STORYTELLING — show, don't summarize:
++        - At least 2 moments must be REPLAYED as scenes: step-by-step, with dialogue and sensory
++          detail — put the listener in the room. "So basically what happened was..." is banned.
++        - Every abstract idea must earn its place with a concrete story, a vivid analogy, or a
++          personal stake. Abstract leading to concrete is mandatory. Abstract leading to more
++          abstract is forbidden.
++
++        THE LISTENER IN THE ROOM:
++        - 2-3 times per episode, break the fourth wall and talk directly to the listener:
++          "if you've ever...", "think about the last time you...". Make them a participant,
++          not an eavesdropper.
++
++        PLAY:
++        - Wit is welcome. Self-deprecation is welcome. HOST and MIRA may tease each other.
++          Aim for a genuine laugh every few minutes — it's a feature, not a distraction.
++          Never punch down, never force it.
++
++        PACING AND BREATHING ROOM:
++        - This is TTS-read audio, not a text document. Write with sound in mind.
++        - Keep sentences short. No run-ons. If a sentence exceeds 20 words, break it with a comma.
++        - Don't info-dump. One point at a time — let HOST react before moving on.
++        - Vary the pace: fast through stories and examples, slow when landing key insights.
++        - After a heavy moment, give the listener air: a beat of humor, a small aside, a pause.
++
++        CONVERSATIONAL TONE:
++        - Must sound like two friends talking, not reading a script.
++        - Natural fillers are welcome: "you know", "I mean", "right?", "honestly", "here's the
++          thing", "wait", "okay so", "that's wild". Roughly one every 3-4 sentences, especially
++          at turn boundaries — seasoning, not decoration.
++        - HOST can use: "wait wait wait", "no way", "hold on", "that's actually...", "okay I see
++          where you're going", "I'm going to push you on that"
++        - MIRA can use: "honestly", "here's what I think", "okay so", "the thing is", "fair point",
++          "I'll give you that, but...", "let me tell you what actually happened"
++        - Strict format, one line per turn:
++        [HOST]: (what they say)
++        [MIRA]: (what they say)
++
++        ENDING:
++        - Do NOT summarize the episode. End on the single most uncomfortable or most hopeful
++          question the article raises — one image or one sentence that follows the listener
++          out the door.
++
++        LENGTH:
++        - Target: 5500-6500 words (30-35 minute episode, 20+ min after editing).
++          This is a hard requirement — do not write short.
++
++        TERM EXPLANATIONS:
++        - When a technical term, acronym, or academic concept appears, HOST asks what it means
++          like a smart friend would ("wait, what does that actually mean?"), and MIRA explains
++          it with an everyday analogy — once, vividly, then moves on. Never skip, never lecture.
++
++        PUNCTUATION RULES (TTS audio — strictly enforced):
++        - Only use: period . comma , question mark ? exclamation mark !
++        - Never use: em-dash — ellipsis ... semicolon ; colon : quotes "" '' parentheses () []
++        - Never use special symbols: slash / asterisk * hash # percent % etc.
++        - Code/filenames (e.g. core.py, memory.md) — spell out in spoken form, don't quote verbatim
++
++        Article title: {title}
++
++        Full article:
++        {article_text}
++
++        Return ONLY the script, no other commentary. The script must reach 5500+ words to be complete.
++"""
+ 
+     log.info("Generating conversation script [%s]...", lang)
+ 
++    import os as _os
+     import sys as _sys
+ 
+     _shared = str(Path(__file__).resolve().parent.parent.parent / "lib")
+@@ -1017,12 +1088,26 @@ Return ONLY the script, no other commentary. The script must reach 5500+ words t
+         _sys.path.insert(0, _shared)
+     from llm import claude_think
+ 
++    # Cloud override: PODCAST_SCRIPT_MODEL (e.g. "gpt-5.6-terra") routes script
++    # generation through the OpenAI API (key from OPENAI_API_KEY env or
++    # secrets.yml). Unset -> original Claude path (Mac behavior unchanged).
++    script_model = _os.environ.get("PODCAST_SCRIPT_MODEL", "").strip()
++
+     # Primary: Claude Opus (heavy tier, with built-in fallback)
+     result = None
+-    try:
+-        result = claude_think(prompt, timeout=600, tier="heavy")
+-    except Exception as e:
+-        log.error("Script generation (claude) failed: %s", e)
++    if not script_model:
++        try:
++            result = claude_think(prompt, timeout=600, tier="heavy")
++        except Exception as e:
++            log.error("Script generation (claude) failed: %s", e)
++    else:
++        try:
++            from llm import _api_call
++
++            log.info("Generating conversation script via OpenAI API (model=%s)...", script_model)
++            result = _api_call("openai", script_model, prompt, timeout=600)
++        except Exception as e:
++            log.error("Script generation (openai/%s) failed: %s", script_model, e)
+ 
+     # Fallback: direct OpenAI call if Claude returns nothing
+     if not result:
+diff --git a/agents/shared/config.py b/agents/shared/config.py
+index 2a1f096..399c800 100644
+--- a/agents/shared/config.py
++++ b/agents/shared/config.py
+@@ -907,4 +907,4 @@ SILENT_COMPLETION_HEDGE_PHRASES = [
+     "unable to",
+     "failed to",
+ ]
+-AUDIT_MODULE_HASH: str = "6da605108958f648dfcebde0c16cc5c26b80cec42807fbf98e8c2d55b3031887"  # pragma: allowlist secret
++AUDIT_MODULE_HASH: str = "3b5681bc1e3b57f2951ff39f574ba4090e181becd35d5e1a08a1b14ac6634a45"  # pragma: allowlist secret
+diff --git a/agents/socialmedia/substack_comments.py b/agents/socialmedia/substack_comments.py
+index b7a47ed..5e96376 100644
+--- a/agents/socialmedia/substack_comments.py
++++ b/agents/socialmedia/substack_comments.py
+@@ -73,6 +73,49 @@ def _flatten_comments(tree: list, out: list):
+             _flatten_comments(c["children"], out)
+ 
+ 
++# CLOUD-OVERLAY(substack-ec2): safe-start cutover for comment dedup.
++# Dedup state could not be migrated from the Mac; ignore (but mark seen) any
++# comment older than the EC2 cutover timestamp.
++_CUTOVER_FILE = Path("/opt/mira/substack-data/cutover.txt")
++
++
++def _cutover_ts():
++    try:
++        from datetime import datetime
++
++        if _CUTOVER_FILE.exists():
++            return datetime.fromisoformat(_CUTOVER_FILE.read_text(encoding="utf-8").strip())
++    except Exception:
++        pass
++    return None
++
++
++def _predates_cutover(date_str: str) -> bool:
++    if not date_str:
++        return False
++    cutover = _cutover_ts()
++    if not cutover:
++        return False
++    try:
++        from datetime import datetime
++
++        ds = date_str.strip()
++        # Substack dates are ISO-8601; fromisoformat handles 'Z' on py3.11+
++        ts = datetime.fromisoformat(ds.replace("Z", "+00:00"))
++        if ts.tzinfo is None:
++            from datetime import timezone
++
++            ts = ts.replace(tzinfo=timezone.utc)
++        co = cutover
++        if co.tzinfo is None:
++            from datetime import timezone
++
++            co = co.replace(tzinfo=timezone.utc)
++        return ts < co
++    except Exception:
++        return False
++
++
+ def reply_to_comment(post_id: int, parent_comment_id: int, reply_text: str) 
