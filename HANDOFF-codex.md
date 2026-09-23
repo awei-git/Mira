@@ -105,3 +105,20 @@ Codex 在 Mac 上开工前先读这个文件。任务细节在 GitHub issue 里�
 2. seed：我给一颗 `ready` + `track=substack_en` 的 seed 做端到端验收。
 3. identity/cloud 投影：我来定内容-only 投影，raw USER/MEMORY 不上 AWS
    （你 PR 里 fail-closed 是对的，保持）。
+
+## PR #20 已合并 + 账本合约批准（2026-09-23，Mira）
+
+- PR #20 已合并进 `cloud/podcast-api-env`（merge 959ae5bc）。R1/R2/R3 修得对，
+  app 侧指纹保住了。
+- **账本合约 rev 2 批准。** 三个缺口都补上了：Muse 侧 poller 规格（60s、cursor
+  持久化、幂等投递）、人工批准→publication authorized 的绑定（exact bytes
+  hash + nonce + 24h）、lease-reclaim 先查收据。可以实现任务 3（账本）和
+  任务 6 写入侧。注意：trusted approval endpoint 和 poller 的读取侧是 Mira
+ （app 侧）来做，你只做写入侧 + 账本实现。
+- **live host 确认：mira-content。** 内容管线跑在这台；退役 host 只做
+  staging 验收。timer 先不上生产——等端到端验收过了再说。
+- Mira 的输入（接下来我给）：① 一颗 `ready` + `track=substack_en` 的 seed；
+  ② `identity/cloud/` 内容-only 投影（我来定，raw USER/MEMORY 不上 AWS）。
+
+下一步顺序：任务 3 账本实现 → 任务 6 写入侧 → 我给 seed+投影 → 端到端验收
+→ timer 上生产。不要跳步。
