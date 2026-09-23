@@ -1,7 +1,7 @@
 # Issue #19 content worker: implementation and acceptance
 
-Authority: `HANDOFF-codex.md` at `062e639`. Branch:
-`codex/issue19-runtime-wiring`, based on `cloud/podcast-api-env`.
+Authority: `HANDOFF-codex.md` at `9149868` (PR20 merged; ledger rev2 approved).
+Current implementation branch: `codex/issue19-ledger`.
 This runbook describes code for review, not an assertion that EC2 was updated.
 
 ## What is implemented
@@ -10,13 +10,13 @@ This runbook describes code for review, not an assertion that EC2 was updated.
 | --- | --- | --- |
 | 1. Shared sync | Independent audited snapshots, explicit activation, package exclusions | App-approved projection; real backend audits; stage on both hosts |
 | 2. Soul | Shared five-file mapping, original bytes retained by rename | Activate approved assets and observe actual writer identity |
-| 3. Ledger | Schema/API/event proposal in issue #19 | Mira confirmation, then implementation and bridge cutover |
+| 3. Ledger | SQLite transactions/events, authenticated API, legacy adapter/import | Review, release and bridge cutover |
 | 4. Daily outbox | Receipt-derived New York daily summary, three sections | Install timer after review; Muse reads and merges |
 | 5. Seed writing | Strict English eligibility; existing handler/pipeline; versioned artifacts | Real eligible seed, content identity, provider/budget readiness; real draft |
-| 6. Draft return | Event contract and payload documented; draft packet ready | Ledger implementation, event write, Muse acknowledgement |
+| 6. Draft return | Atomic artifact registration and signoff event, receipt-first recovery | Real eligible input, Muse acknowledgement |
 
-No real model run, publication, ledger event, timer activation or EC2 deployment
-is claimed by this PR. At the source commit the only seed `49a5c4d10716` is
+No real model run, publication, production ledger event, timer activation or EC2
+deployment is claimed. Tests use local fixture events. At the source commit the only seed `49a5c4d10716` is
 `candidate` and has no `track`; the read-only scan correctly selects zero.
 
 ## 1. Shared assets, separately from code
@@ -136,8 +136,10 @@ data/drafts/substack_en/<seed_id>/<seed-policy-hash>/
   packet.json           # seed/policy/draft hashes and editorial gate report
 ```
 
-A passing local draft currently has status `awaiting_ledger_contract` and
-`ledger_event_written=false`. It is not delivered to Muse. A failed editorial
+A passed draft has status `draft_ready_for_signoff` after the ledger transaction,
+and `ledger_event_written=true`, with a real event ID. This does not claim delivery
+to Muse. A saved draft awaiting only its DB commit is `awaiting_ledger_event` and
+will replay the event without running the writer again. A failed editorial
 gate has status `editorial_blocked`; provider/handler failures have `blocked`.
 Receipts retain exception types without potentially secret provider error text.
 Changed artifact bytes are rejected when an existing receipt is opened directly.
@@ -185,12 +187,10 @@ the old wake-loop service/timers on cutover before enabling the finite batches.
 Historical supervisor modules remain for compatibility with local callers; the
 new cloud entry point imports and starts none of them.
 
-Task 3 remains design-gated at
-[the issue comment](https://github.com/awei-git/Mira/issues/19#issuecomment-5800352775).
-After Mira approves, implement the one ledger and emit `draft.ready_for_signoff`
-only for passed drafts, then obtain Mira's independent `draft.presented` receipt.
-Until then there is deliberately no pretend SQLite implementation or parallel
-event file queue.
+Task 3 rev2 was approved in HANDOFF-codex.md at `9149868`. The local ledger and
+event writer now implement that contract; see [operations and validation](issue19-ledger-implementation.md).
+Mira owns the app poller, trusted human-approval endpoint and independent
+`draft.presented` receipt. There is no second event queue and no publication worker.
 
 ## Scope and validation
 

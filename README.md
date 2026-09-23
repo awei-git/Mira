@@ -11,7 +11,7 @@ historical architecture and do not override this handoff.
 ```text
 Muse discussion → approved English seed → scheduled existing writer pipeline
                                         → versioned draft + editorial receipt
-                                        → shared ledger event (pending contract)
+                                        → shared ledger signoff event
                                         → Muse presents draft → human signoff
 ```
 
@@ -31,8 +31,9 @@ selection stays in the existing provider configuration.
 - Standalone content identity/skills synchronizer and soul mapping are implemented
   for review; raw personal identity is excluded from cloud distributions.
 - English batch drafting and three-section daily outbox have local contract tests.
-- Ledger design is awaiting Mira confirmation; event writes and app acknowledgement
-  are not implemented yet. No task 6 end-to-end success is claimed.
+- Ledger rev 2 is approved. SQLite, authenticated API and signoff-event writing
+  are implemented for review; Muse's poller/approval endpoint remain app-side work.
+  No real end-to-end chat acknowledgement or production deployment is claimed.
 - Templates are provided for finite systemd batches. They are not installed or
   enabled by this change. There is no automatic live service restart.
 - The current seed is still `candidate` without a track; no real draft has been
@@ -41,6 +42,8 @@ selection stays in the existing provider configuration.
 See [worker runbook](docs/issue19-content-worker.md) for commands, data paths,
 identity mapping, assumptions and remaining acceptance gates. See
 [ledger proposal](docs/issue19-obligation-ledger.md) for the app/worker contract.
+The [ledger operations guide](docs/issue19-ledger-implementation.md) describes
+the API, recovery, migration and remaining deployment gates.
 
 ## Shared identity and skills
 
@@ -67,7 +70,7 @@ python3 scripts/content_batch.py seeds --scan-only
 Focused checks (no cloud or paid model calls):
 
 ```sh
-python3 -m pytest tests/test_content_worker.py -q
+python3 -m pytest tests/test_content_worker.py tests/test_obligation_ledger.py -q
 ```
 
 ## License

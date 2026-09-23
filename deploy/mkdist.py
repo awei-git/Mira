@@ -137,6 +137,13 @@ def main():
     src = "clone" if files is not None else "api"
     if files is None:
         files = build_from_api(repo, sha, subdir, cfg)
+    for source_path, destination_path in (cfg.get("extra_files") or {}).items():
+        if not include_file(source_path, {}) or not include_file(destination_path, cfg):
+            raise ValueError("invalid_extra_distribution_file")
+        entry = api(f"/repos/{repo}/contents/{source_path}?ref={sha}")
+        if entry.get("type") != "file" or entry.get("encoding") != "base64" or entry.get("target"):
+            raise ValueError("extra_distribution_file_not_regular")
+        files[destination_path] = base64.b64decode(entry["content"])
     if not files:
         raise RuntimeError("empty file set")
 

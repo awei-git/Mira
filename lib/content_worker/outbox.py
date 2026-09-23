@@ -28,6 +28,8 @@ def daily_records(root, day):
             "blocked": "Writer attempt failed; operator review is required before retrying.",
             "editorial_blocked": "Editorial gate failed; revision is required.",
             "awaiting_ledger_contract": "Draft passed local checks; ledger contract and chat return are pending.",
+            "awaiting_ledger_event": "Draft is saved; retry only its ledger event, not the writer.",
+            "draft_ready_for_signoff": "Signoff event is in the ledger; Muse presentation and human approval are pending.",
         }.get(row["status"], "Unknown receipt status; operator reconciliation is required.")
         records["sync"].append(
             {"text": f"Seed {row['seed_id']}: {next_step} No publication or chat delivery is implied."}

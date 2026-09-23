@@ -570,6 +570,10 @@ def _fallback_chain(model_name: str, prompt: str) -> list[str]:
     return _apply_runtime_route_policy(chain)
 
 
+from content_worker.model_guard import guard_active, guard_model_call
+
+
+@guard_model_call
 def _call_think_model(model_name: str, prompt: str, system: str, timeout: int) -> str:
     cfg = MODELS.get(model_name)
     if not cfg:
@@ -593,9 +597,13 @@ def _think_with_fallbacks(
         try:
             result = _call_think_model(candidate, prompt, system, timeout)
         except ClaudeTimeoutError as exc:
+            if guard_active():
+                raise
             log.warning("Model %s timed out before fallback: %s", candidate, exc)
             result = ""
         except Exception as exc:
+            if guard_active():
+                raise
             log.warning("Model %s failed before fallback: %s", candidate, exc)
             result = ""
         if result:

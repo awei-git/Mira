@@ -1,9 +1,9 @@
 # Issue #19: shared obligation ledger — proposed contract
 
-Status: proposed for Mira review; implementation of the shared ledger is gated on
-Mira's confirmation per issue #19. Review revision 2 addresses the three gaps
-identified in HANDOFF-codex.md; it remains unapproved. This document does not
-authorize a deployment.
+Status: revision 2 approved by Mira in HANDOFF-codex.md at `9149868`, after PR20
+merged at `959ae5bc`. The approval covers ledger/task6 write-side implementation;
+Muse implements its poller and trusted approval endpoint. This document does not
+authorize production timers or waive review/release/real-input acceptance.
 Source: HANDOFF-codex.md at 062e639; this supersedes the previous autonomous
 publisher/always-awake architecture. AWS is a scheduled content worker. Muse Mira
 is the human conversation endpoint. Human signoff is required before publication.

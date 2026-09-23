@@ -173,8 +173,11 @@ def test_skill_audit_failure_precedes_asset_writes(source, tmp_path, monkeypatch
 
 
 @pytest.fixture
-def content_repo(tmp_path):
+def content_repo(tmp_path, monkeypatch):
     repo = tmp_path / "content"
+    monkeypatch.setenv("MIRA_LEDGER_PATH", str(tmp_path / "ledger/store.sqlite3"))
+    (repo / "seeds").mkdir(parents=True)
+    (repo / "seeds/seeds.jsonl").write_text("")
     for name in POLICY_FILES:
         p = repo / name
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -217,8 +220,8 @@ def test_draft_receipt_is_idempotent_and_never_claims_event(content_repo):
     first = run_seed(content_repo, ready(), writer=writer, reviewer=successful_review)
     again = run_seed(content_repo, ready(), writer=writer, reviewer=successful_review)
     assert first == again and len(calls) == 1
-    assert first["status"] == "awaiting_ledger_contract"
-    assert first["ledger_event_written"] is False and first["published"] is False
+    assert first["status"] == "draft_ready_for_signoff"
+    assert first["ledger_event_written"] is True and first["published"] is False
     artifact = content_repo / first["draft_path"]
     assert artifact.name == "seed-a-draft.md"
     artifact.write_text("changed after receipt")
