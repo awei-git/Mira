@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Call the Cloudflare API v4 with the stored custom.cloudflare credential.
+
+Usage:
+    cf-api <path> [--method METHOD] [--data '{...}']
+    cf-api /zones?name=angwei.studio
+    cf-api /zones/ZONE_ID/dns_records --method POST --data '{"type":"A",...}'
+
+Prints the response body to stdout. Exits non-zero on HTTP errors.
+"""
+import json
+import sys
+import urllib.request
+import urllib.error
+
+sys.path.insert(0, "/opt/hatch/skills/skill-creator/bin")
+from dynamic_credentials import (  # noqa: E402
+    add_surrogate_to_request,
+    read_response_body,
+)
+
+BASE = "https://api.cloudflare.com/client/v4"
+ALLOWED = ["api.cloudflare.com"]
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    path = args[0]
+    method = "GET"
+    data = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--method" and i + 1 < len(args):
+            method = args[i + 1].upper()
+            i += 2
+        elif args[i] == "--data" and i + 1 < len(args):
+            data = args[i + 1].encode()
+            i += 2
+        else:
+            i += 1
+
+    url = BASE + (path if path.startswith("/") else "/" + path)
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    req.add_header("User-Agent", "mira-cloudflare-skill")
+    add_surrogate_to_request(
+        req, "custom.cloudflare", entry_name="access_token", allowed_hosts=ALLOWED
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = read_response_body(resp)
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", "replace")[:2000]
+        print(f"HTTP {e.code}: {err_body}", file=sys.stderr)
+        return 1
+    sys.stdout.write(body.decode("utf-8", "replace"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
