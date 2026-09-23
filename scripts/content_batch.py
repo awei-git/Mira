@@ -18,6 +18,8 @@ def main():
     scan = commands.add_parser("seeds")
     scan.add_argument("--scan-only", action="store_true")
     scan.add_argument("--repo", type=Path, default=ROOT)
+    queue = commands.add_parser("queue")
+    queue.add_argument("--repo", type=Path, default=ROOT)
     daily = commands.add_parser("outbox")
     daily.add_argument("--day", default=datetime.now(ZoneInfo("America/New_York")).date().isoformat())
     daily.add_argument("--records", type=Path)
@@ -42,8 +44,15 @@ def main():
             # One expensive run per timer invocation; no unbounded draining loop.
             results = run_batch(args.repo, selected)
             print(json.dumps(results))
-            if any(row["status"] in {"blocked", "editorial_blocked"} for row in results):
+            if any(row["status"] in {"blocked", "editorial_blocked", "awaiting_ledger_event"} for row in results):
                 raise SystemExit(1)
+    elif args.command == "queue":
+        from content_worker.seeds import run_queue
+
+        results = run_queue(args.repo)
+        print(json.dumps(results))
+        if any(row["status"] in {"blocked", "editorial_blocked", "awaiting_ledger_event"} for row in results):
+            raise SystemExit(1)
     else:
         from content_worker.outbox import daily_records, write_outbox
 

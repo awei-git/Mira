@@ -941,6 +941,7 @@ def run_full_pipeline(
     context_note: str = "",
     content_only: bool = False,
     workspace: Path | None = None,
+    output_language: str | None = None,
 ) -> tuple[Path, str]:
     """Run the full writing pipeline end-to-end. Returns (workspace, final_text).
 
@@ -951,6 +952,8 @@ def run_full_pipeline(
 
     if content_only and (not persona_prompt or workspace is None or context_note):
         raise ValueError("content_pipeline_requires_explicit_persona_workspace_and_no_private_context")
+    if output_language is not None and (not content_only or output_language != "zh"):
+        raise ValueError("explicit_language_requires_content_podcast")
 
     # Create workspace under writings/projects/
     slug = _re.sub(r"[^\w\s\u4e00-\u9fff-]", "", title[:30]).strip()
@@ -960,13 +963,18 @@ def run_full_pipeline(
 
     log.info("Full writing pipeline: '%s' → %s", title, ws)
 
-    body = _force_substack_english_idea(body)
+    if output_language != "zh":
+        body = _force_substack_english_idea(body)
+    else:
+        body = "输出要求：简体中文单人播客稿。素材中提及英文平台不改变本稿语言。\n\n" + body
     plan_body = body
     if context_note:
         plan_body = f"{body}\n\n## Context\n{context_note}"
 
     # --- Analyze ---
     analysis = _analyze(plan_body)
+    if output_language:
+        analysis["language"] = output_language
     (ws / "analysis.json").write_text(
         json.dumps(analysis, indent=2, ensure_ascii=False),
         encoding="utf-8",

@@ -27,13 +27,15 @@ projects:
   bridge:
     repo: awei-git/Mira
     subdir: bridge
+    extra_files:
+      lib/obligations.py: obligations.py
     boxes:
       - host: mira-ops-box
         instance: i-0a82876fc7746d21c
         path: /opt/mira-bridge
     service: mira-bridge
     # .token is the box-local auth secret (never in git, never deleted by --delete)
-    data_dirs: [tasks, .token]
+    data_dirs: [tasks, .token, .app-token, .worker-token]
     health_cmd: "curl -sf -o /dev/null http://127.0.0.1:8000/health"
 
   ershilou:

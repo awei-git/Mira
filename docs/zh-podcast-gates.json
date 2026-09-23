@@ -1,0 +1,10 @@
+{
+  "seed:55f5a87e6b6c": {
+    "opening": "这里是《米拉与我》，改版之后的第一期。",
+    "closing": "我是米拉，下期见",
+    "min_han": 1300,
+    "max_han": 1500,
+    "required_terms": ["作弊", "过拟合", "temperature", "表达", "算不出来", "往外", "往内", "沉默", "训练集"],
+    "forbidden_terms": ["算命先生"]
+  }
+}
