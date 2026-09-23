@@ -62,3 +62,13 @@ projects:
         instance: i-0a82876fc7746d21c
         path: /root/tetra
     data_dirs: [data, results]
+
+  content-worker:
+    repo: awei-git/Mira
+    subdir: .
+    boxes:
+      - host: mira-content
+        instance: i-054107bb89f28ebfd
+        path: /opt/mira/Mira
+    data_dirs: [data, logs, users, shared, .venv, config.yml, secrets.yml]
+    package_excludes: [identity, skills, .secrets.baseline]
