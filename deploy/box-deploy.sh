@@ -111,9 +111,9 @@ rsync -a --delete $EXCLUDES "$WORK/new/" "$PATH_"/ || restore_on_fail "rsync fai
 if [ -n "$OVERLAY" ]; then
   if [ -f "$WORK/new/$OVERLAY" ]; then
     log "applying overlay $OVERLAY"
-    (cd "$PATH_" && patch -p1 --dry-run < "$WORK/new/$OVERLAY" >/dev/null) \
-      || restore_on_fail "overlay dry-run failed (already upstream?)"
-    (cd "$PATH_" && patch -p1 < "$WORK/new/$OVERLAY") \
+    (cd "$PATH_" && git apply --check "$WORK/new/$OVERLAY" >/dev/null 2>&1) \
+      || restore_on_fail "overlay check failed (already upstream?)"
+    (cd "$PATH_" && git apply "$WORK/new/$OVERLAY") \
       || restore_on_fail "overlay apply failed"
   else
     log "overlay $OVERLAY not in dist, skipping"

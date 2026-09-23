@@ -330,4 +330,217 @@ index b7a47ed..5e96376 100644
 +        return False
 +
 +
- def reply_to_comment(post_id: int, parent_comment_id: int, reply_text: str) 
+ def reply_to_comment(post_id: int, parent_comment_id: int, reply_text: str) -> dict | None:
+     """Reply to a comment on a Substack post.
+ 
+@@ -224,6 +267,11 @@ def check_and_reply_comments() -> list[dict]:
+             if c.get("name", "").lower() in ("mira", "infinite mira", "uncountable mira"):
+                 seen_ids.add(cid)
+                 continue
++            # CLOUD-OVERLAY(substack-ec2): safe-start — never reply to
++            # pre-cutover comments on first run (Mac may have handled them).
++            if _predates_cutover(c.get("date", "")):
++                seen_ids.add(cid)
++                continue
+             new_comments.append(c)
+ 
+         if not new_comments:
+diff --git a/agents/super/runtime/jobs.py b/agents/super/runtime/jobs.py
+index 515a8c0..2f49ca2 100644
+--- a/agents/super/runtime/jobs.py
++++ b/agents/super/runtime/jobs.py
+@@ -520,6 +520,15 @@ BACKGROUND_JOBS: list[JobSpec] = [
+     ),
+ ]
+ 
++# CLOUD-OVERLAY(substack-ec2): Substack-only job filter. Activated ONLY when
++# MIRA_SUBSTACK_ONLY=1; inert everywhere else (Mac unaffected).
++import os as _os
++_SUBSTACK_ONLY_ALLOW = {"writing-pipeline", "substack-comments", "substack-growth", "substack-notes"}
++if _os.getenv("MIRA_SUBSTACK_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}:
++    for _job in BACKGROUND_JOBS:
++        if _job.name not in _SUBSTACK_ONLY_ALLOW:
++            _job.enabled = False
++
+ 
+ # ---------------------------------------------------------------------------
+ # Pipeline chains — when job A completes successfully, auto-dispatch job B.
+diff --git a/agents/super/workflows/writing.py b/agents/super/workflows/writing.py
+index 51bd07b..5b1574f 100644
+--- a/agents/super/workflows/writing.py
++++ b/agents/super/workflows/writing.py
+@@ -298,6 +298,29 @@ def run_autowrite_pipeline(task_id: str, title: str, writing_type: str, idea_con
+                 error="Human publication approval required before Substack publish.",
+             )
+             log.info("Queued '%s' for human publication approval in publish_manifest", publish_title)
++            # CLOUD-OVERLAY(substack-ec2): mirror the pending approval into a
++            # poller-visible queue (iCloud bridge is unreachable from EC2).
++            try:
++                _pending_path = Path("/opt/mira/substack-data/pending.json")
++                _rec = {
++                    "slug": meta["slug"],
++                    "title": publish_title,
++                    "created_at": datetime.now().astimezone().isoformat(),
++                    "status": "approval_required",
++                }
++                _pending = []
++                if _pending_path.exists():
++                    try:
++                        _pending = json.loads(_pending_path.read_text(encoding="utf-8")) or []
++                    except Exception:
++                        _pending = []
++                if not any(r.get("slug") == _rec["slug"] for r in _pending):
++                    _pending.append(_rec)
++                    _pending_path.write_text(
++                        json.dumps(_pending, ensure_ascii=False, indent=1), encoding="utf-8"
++                    )
++            except Exception as _e:
++                log.warning("pending.json mirror failed: %s", _e)
+         except Exception as e:
+             log.error("Failed to queue '%s' for approval in manifest: %s", title, e)
+ 
+diff --git a/agents/super/writing.py b/agents/super/writing.py
+index 0cbf6bf..ce8870e 100644
+--- a/agents/super/writing.py
++++ b/agents/super/writing.py
+@@ -472,6 +472,20 @@ def _manifest_has_approval_required(manifest: dict) -> bool:
+     return any(str(entry.get("status") or "") == "approval_required" for entry in _manifest_articles(manifest))
+ 
+ 
++# CLOUD-OVERLAY(substack-ec2): per-entry approval cap instead of a global
++# block. Previously ONE approval_required draft blocked ALL new drafts
++# (deadlock). Now up to _APPROVAL_QUEUE_CAP drafts may await approval.
++_APPROVAL_QUEUE_CAP = 3
++
++
++def _manifest_approval_required_count(manifest: dict) -> int:
++    return sum(
++        1
++        for entry in _manifest_articles(manifest)
++        if str(entry.get("status") or "") == "approval_required"
++    )
++
++
+ def _manifest_entry_for_task(manifest: dict, task_id: str) -> dict | None:
+     for entry in _manifest_articles(manifest):
+         if str(entry.get("item_id") or "") == task_id:
+@@ -558,8 +572,12 @@ def _get_daily_collab_autowrite_runner():
+ def _maybe_promote_daily_collab_seed_to_draft() -> dict | None:
+     """Promote the selected V5 discussion seed into a human-gated Substack draft."""
+     manifest = _load_publish_manifest_for_writing()
+-    if _manifest_has_approval_required(manifest):
+-        log.info("V5 writing promotion skipped: a draft is already waiting for human approval")
++    if _manifest_approval_required_count(manifest) >= _APPROVAL_QUEUE_CAP:
++        log.info(
++            "V5 writing promotion skipped: %d drafts already waiting for human approval (cap %d)",
++            _manifest_approval_required_count(manifest),
++            _APPROVAL_QUEUE_CAP,
++        )
+         return None
+ 
+     seed = _select_daily_collab_seed_for_autowrite()
+diff --git a/lib/llm.py b/lib/llm.py
+index bf6fd2b..cbdd8d4 100644
+--- a/lib/llm.py
++++ b/lib/llm.py
+@@ -74,6 +74,11 @@ def _init_redact_cache():
+                 for sv in v.values():
+                     if isinstance(sv, str) and len(sv) > 8:
+                         _redact_cache.append(sv)
++        # Also redact keys injected via environment variables.
++        for env_name in _API_KEY_ENV.values():
++            v = getenv(env_name, "").strip()
++            if v and len(v) > 8 and v not in _redact_cache:
++                _redact_cache.append(v)
+     except Exception as e:
+         logging.getLogger("mira.llm").debug("Failed to init redact cache: %s", e)
+ 
+@@ -146,6 +151,19 @@ def _codex_cli_disabled() -> bool:
+     return False
+ 
+ 
++# CLOUD-OVERLAY(substack-ec2): API-key providers as LLM fallback on machines
++# without Codex/Claude subscription logins. Activated ONLY when
++# MIRA_CLOUD_LLM_FALLBACK=1; inert everywhere else (Mac unaffected).
++def _cloud_api_fallbacks() -> list[str]:
++    if getenv("MIRA_CLOUD_LLM_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
++        return []
++    out: list[str] = []
++    if getenv("GEMINI_API_KEY", "").strip():
++        out.append("gemini")
++    if getenv("DEEPSEEK_API_KEY", "").strip():
++        out.append("deepseek")
++    return out
++
+ def _apply_runtime_route_policy(chain: list[str]) -> list[str]:
+     if _codex_cli_disabled():
+         chain = [candidate for candidate in chain if candidate != "codex"]
+@@ -205,6 +223,9 @@ _COST_PER_1M = {
+     "anthropic/claude-sonnet": (3.00, 15.00),
+     "anthropic/claude-opus": (15.00, 75.00),
+     "anthropic/claude-haiku": (0.80, 4.00),
++    "openai/gpt-5.6-sol": (4.00, 20.00),
++    "openai/gpt-5.6-terra": (2.00, 12.00),
++    "openai/gpt-5.6-luna": (0.20, 1.20),
+     "openai/gpt-5": (2.00, 8.00),
+     "openai/gpt-4": (2.50, 10.00),
+     "deepseek/deepseek-v4-pro": (0.44, 0.87),
+@@ -506,8 +527,34 @@ def _parse_secrets_simple(path: Path) -> dict:
+     return result
+ 
+ 
++# Environment variable overrides for API keys (cloud/secret-manager friendly).
++# When set and non-empty, these take precedence over secrets.yml.
++_API_KEY_ENV = {
++    "openai": "OPENAI_API_KEY",
++    "deepseek": "DEEPSEEK_API_KEY",
++    "gemini": "GEMINI_API_KEY",
++    "minimax": "MINIMAX_API_KEY",
++}
++
++
+ def _get_api_key(provider: str) -> str:
+-    """Get API key for a provider from secrets.yml."""
++    """Get API key for a provider.
++
++    Environment variables take precedence over secrets.yml, so cloud
++    deployments can inject keys without touching the secrets file:
++
++        openai   -> OPENAI_API_KEY
++        deepseek -> DEEPSEEK_API_KEY
++        gemini   -> GEMINI_API_KEY
++        minimax  -> MINIMAX_API_KEY
++
++    When the env var is unset/empty, behavior is unchanged (secrets.yml).
++    """
++    env_name = _API_KEY_ENV.get(provider)
++    if env_name:
++        val = getenv(env_name, "").strip()
++        if val:
++            return val
+     secrets = _load_secrets()
+     keys = secrets.get("api_keys", {})
+     if provider == "openai":
+@@ -556,18 +603,18 @@ def _fallback_chain(model_name: str, prompt: str) -> list[str]:
+         return _fallback_chain("codex", prompt)
+     if requested in {"deepseek", "deepseek-r1"}:
+         chain = ["codex", "gpt", "claude", "omlx"]
+-        return _apply_runtime_route_policy(chain)
++        return _apply_runtime_route_policy(chain + _cloud_api_fallbacks())
+     if requested == "claude":
+         chain = ["claude", "codex", "gpt", "omlx"]
+-        return _apply_runtime_route_policy(chain)
++        return _apply_runtime_route_policy(chain + _cloud_api_fallbacks())
+     if requested in {"codex", "gpt5", "gpt-5", "gpt-5.5", "default"} or requested not in MODELS:
+         if _looks_like_chinese_writing(prompt):
+             chain = ["codex", "gpt", "claude", "omlx"]
+         else:
+             chain = ["codex", "claude", "gpt", "omlx"]
+-        return _apply_runtime_route_policy(chain)
++        return _apply_runtime_route_policy(chain + _cloud_api_fallbacks())
+     chain = [requested, "codex", "claude", "gpt", "omlx"]
+-    return _apply_runtime_route_policy(chain)
++    return _apply_runtime_route_policy(chain + _cloud_api_fallbacks())
+ 
+ 
+ def _call_think_model(model_name: str, prompt: str, system: str, timeout: int) -> str:
