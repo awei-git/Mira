@@ -18,6 +18,8 @@ import sys
 import tarfile
 import tempfile
 
+from dist_filter import include_file
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPOS_DIR = os.path.expanduser("~/workspace/repos")
 CACHE = os.path.expanduser("~/.cache/mkdist/blobs")
@@ -45,6 +47,7 @@ def api(path, method="GET", data=None):
 
 def load_projects():
     import yaml
+
     with open(os.path.join(HERE, "projects.yaml")) as f:
         return yaml.safe_load(f)["projects"]
 
@@ -60,8 +63,11 @@ def get_blob(repo, sha):
     return raw
 
 
-def build_from_api(repo, sha, subdir):
-    tree = api(f"/repos/{repo}/git/trees/{sha}?recursive=1")["tree"]
+def build_from_api(repo, sha, subdir, cfg=None):
+    response = api(f"/repos/{repo}/git/trees/{sha}?recursive=1")
+    if response.get("truncated"):
+        raise RuntimeError("incomplete_github_tree")
+    tree = response["tree"]
     prefix = "" if subdir == "." else subdir.rstrip("/") + "/"
     files = {}
     for e in tree:
@@ -70,14 +76,16 @@ def build_from_api(repo, sha, subdir):
         p = e["path"]
         if not p.startswith(prefix):
             continue
-        rel = p[len(prefix):]
-        if rel == "":
+        rel = p[len(prefix) :]
+        if rel == "" or not include_file(rel, cfg or {}):
             continue
+        if e.get("mode") == "120000":
+            continue  # Never materialize source symlinks as executable/config text.
         files[rel] = get_blob(repo, e["sha"])
     return files
 
 
-def build_from_clone(repo, sha, subdir):
+def build_from_clone(repo, sha, subdir, cfg=None):
     name = repo.split("/")[1]
     clone = os.path.join(REPOS_DIR, name)
     if not os.path.isdir(os.path.join(clone, ".git")):
@@ -98,9 +106,9 @@ def build_from_clone(repo, sha, subdir):
             return None
     subdir = "" if subdir == "." else subdir
     out = subprocess.run(
-        ["git", "-C", clone, "archive", commit, subdir] if subdir
-        else ["git", "-C", clone, "archive", commit],
-        capture_output=True)
+        ["git", "-C", clone, "archive", commit, subdir] if subdir else ["git", "-C", clone, "archive", commit],
+        capture_output=True,
+    )
     if out.returncode != 0:
         return None
     files = {}
@@ -109,8 +117,9 @@ def build_from_clone(repo, sha, subdir):
             if m.isfile():
                 p = m.name
                 if subdir and p.startswith(subdir + "/"):
-                    p = p[len(subdir) + 1:]
-                files[p] = tf.extractfile(m).read()
+                    p = p[len(subdir) + 1 :]
+                if include_file(p, cfg or {}):
+                    files[p] = tf.extractfile(m).read()
     return files
 
 
@@ -124,10 +133,10 @@ def main():
     if ref["object"]["type"] == "tag":
         sha = api(f"/repos/{repo}/git/tags/{sha}")["object"]["sha"]
 
-    files = build_from_clone(repo, sha, subdir)
+    files = build_from_clone(repo, sha, subdir, cfg)
     src = "clone" if files is not None else "api"
     if files is None:
-        files = build_from_api(repo, sha, subdir)
+        files = build_from_api(repo, sha, subdir, cfg)
     if not files:
         raise RuntimeError("empty file set")
 
@@ -141,13 +150,27 @@ def main():
             tf.addfile(ti, io.BytesIO(raw))
     digest = hashlib.sha256(open(tgz, "rb").read()).hexdigest()
     key = f"{S3_PREFIX}/{project}/{tag}.tar.gz"
-    sh(["aws", "s3", "cp", tgz, f"s3://{S3_BUCKET}/{key}"],
-       env={**os.environ, "PATH": os.path.expanduser("~/.local/bin") + os.pathsep + os.environ["PATH"]})
-    url = sh(["aws", "s3", "presign", f"s3://{S3_BUCKET}/{key}", "--expires-in", "3600"],
-             env={**os.environ, "PATH": os.path.expanduser("~/.local/bin") + os.pathsep + os.environ["PATH"]}).strip()
-    print(json.dumps({"project": project, "tag": tag, "sha": sha,
-                      "source": src, "files": len(files),
-                      "sha256": digest, "url": url}))
+    sh(
+        ["aws", "s3", "cp", tgz, f"s3://{S3_BUCKET}/{key}"],
+        env={**os.environ, "PATH": os.path.expanduser("~/.local/bin") + os.pathsep + os.environ["PATH"]},
+    )
+    url = sh(
+        ["aws", "s3", "presign", f"s3://{S3_BUCKET}/{key}", "--expires-in", "3600"],
+        env={**os.environ, "PATH": os.path.expanduser("~/.local/bin") + os.pathsep + os.environ["PATH"]},
+    ).strip()
+    print(
+        json.dumps(
+            {
+                "project": project,
+                "tag": tag,
+                "sha": sha,
+                "source": src,
+                "files": len(files),
+                "sha256": digest,
+                "url": url,
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

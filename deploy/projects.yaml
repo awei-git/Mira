@@ -19,8 +19,10 @@ projects:
         instance: i-0a82876fc7746d21c
         path: /opt/mira/Mira
     overlay: deploy/overlays/ops-box.patch
-    service: mira-substack
-    data_dirs: []
+    # The scheduled content worker has no persistent wake-loop service to restart.
+    # Shared identity/skills are synchronized independently, after their audits.
+    data_dirs: [data, logs, users, shared, .venv, config.yml, secrets.yml]
+    package_excludes: [identity, skills, .secrets.baseline]
 
   bridge:
     repo: awei-git/Mira

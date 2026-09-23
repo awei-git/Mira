@@ -1,0 +1,10 @@
+[Unit]
+Description=Write daily Mira outbox
+
+[Timer]
+OnCalendar=*-*-* 23:55:00 America/New_York
+Persistent=false
+Unit=mira-content-outbox.service
+
+[Install]
+WantedBy=timers.target

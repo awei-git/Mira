@@ -208,6 +208,10 @@ CATALOG_FILE = SOUL_DIR / "catalog.jsonl"
 
 # Dynamically learned skills
 SKILLS_DIR = SOUL_DIR / "learned"
+if os.getenv("MIRA_SHARED_ROOT"):
+    from content_worker.files import active_snapshot
+
+    SKILLS_DIR = active_snapshot(os.getenv("MIRA_SHARED_ROOT")) / "skills"
 SKILLS_INDEX = SKILLS_DIR / "index.json"
 
 # Self-evaluation scores

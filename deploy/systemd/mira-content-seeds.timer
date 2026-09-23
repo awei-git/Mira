@@ -1,0 +1,10 @@
+[Unit]
+Description=Scan English seeds twice daily
+
+[Timer]
+OnCalendar=*-*-* 09,15:00:00 America/New_York
+Persistent=false
+Unit=mira-content-seeds.service
+
+[Install]
+WantedBy=timers.target

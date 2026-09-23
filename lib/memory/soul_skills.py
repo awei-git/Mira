@@ -98,6 +98,8 @@ def _save_skill_audit_hash(slug: str, content_hash: str):
 
 
 def _update_provenance_loaded(skill_name: str):
+    from os import getenv
+
     def _modify(text):
         try:
             records = json.loads(text) if text else []
@@ -111,11 +113,15 @@ def _update_provenance_loaded(skill_name: str):
                 break
         return json.dumps(records, indent=2, ensure_ascii=False)
 
-    _locked_read_modify_write(_SKILL_PROVENANCE_FILE, _modify)
+    target = SOUL_DIR / "shared_skill_provenance.json" if getenv("MIRA_SHARED_ROOT") else _SKILL_PROVENANCE_FILE
+    _locked_read_modify_write(target, _modify)
 
 
 def _update_skill_invocation(skill_name: str) -> None:
     """Write last_invoked timestamp and increment use_count in the skill index."""
+    from os import getenv
+
+    shared = bool(getenv("MIRA_SHARED_ROOT"))
 
     def _modify(text):
         try:
@@ -123,6 +129,8 @@ def _update_skill_invocation(skill_name: str) -> None:
         except (json.JSONDecodeError, ValueError):
             index = []
         now = datetime.utcnow().isoformat() + "Z"
+        if shared and not any(entry.get("name") == skill_name for entry in index):
+            index.append({"name": skill_name})
         for entry in index:
             if entry.get("name") == skill_name:
                 entry["last_invoked"] = now
@@ -130,7 +138,9 @@ def _update_skill_invocation(skill_name: str) -> None:
                 break
         return json.dumps(index, indent=2, ensure_ascii=False)
 
-    _locked_read_modify_write(SKILLS_INDEX, _modify)
+    # Release manifests are immutable; usage counters are local runtime state.
+    target = SOUL_DIR / "shared_skill_usage.json" if shared else SKILLS_INDEX
+    _locked_read_modify_write(target, _modify)
 
 
 # ---------------------------------------------------------------------------
@@ -434,9 +444,10 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
         path = SKILLS_DIR / f"{slug}.md"
         if path.exists():
             try:
-                text = path.read_text(encoding="utf-8").strip()
+                raw_text = path.read_text(encoding="utf-8")
+                text = raw_text.strip()
                 original_text = text
-                current_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                current_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
                 if _audit_stale:
                     text = f"[PENDING RE-AUDIT]\n\n{text}"
                 stored_hash = stored_hashes.get(slug)

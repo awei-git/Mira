@@ -1,0 +1,14 @@
+[Unit]
+Description=Mira English seed draft batch (no publication)
+
+[Service]
+Type=oneshot
+User=mira
+WorkingDirectory=/opt/mira/Mira
+Environment=MIRA_SHARED_ROOT=/var/lib/mira-shared
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/mira/Mira/.venv/bin/python /opt/mira/Mira/scripts/content_batch.py seeds
+TimeoutStartSec=3h
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true

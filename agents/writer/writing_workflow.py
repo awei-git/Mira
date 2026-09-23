@@ -939,6 +939,8 @@ def run_full_pipeline(
     *,
     persona_prompt: str = "",
     context_note: str = "",
+    content_only: bool = False,
+    workspace: Path | None = None,
 ) -> tuple[Path, str]:
     """Run the full writing pipeline end-to-end. Returns (workspace, final_text).
 
@@ -947,10 +949,13 @@ def run_full_pipeline(
     """
     import re as _re
 
+    if content_only and (not persona_prompt or workspace is None or context_note):
+        raise ValueError("content_pipeline_requires_explicit_persona_workspace_and_no_private_context")
+
     # Create workspace under writings/projects/
     slug = _re.sub(r"[^\w\s\u4e00-\u9fff-]", "", title[:30]).strip()
     slug = _re.sub(r"[\s_]+", "-", slug).strip("-") or "untitled"
-    ws = _WRITINGS_ROOT / slug
+    ws = Path(workspace) if workspace is not None else _WRITINGS_ROOT / slug
     ws.mkdir(parents=True, exist_ok=True)
 
     log.info("Full writing pipeline: '%s' → %s", title, ws)
@@ -976,7 +981,7 @@ def run_full_pipeline(
 
     # RAG: retrieve related past writings, briefings, research
     try:
-        related = recall_context(body[:500], max_chars=2000)
+        related = "" if content_only else recall_context(body[:500], max_chars=2000)
         if related:
             soul_ctx = soul_ctx + "\n\n" + related
             log.info("Writing RAG: injected %d chars of related context", len(related))

@@ -169,6 +169,14 @@ def _log_memory_injection(entry_name: str, trigger: object, token_estimate: int)
 
 def load_soul() -> dict:
     """Load the full soul context. Verifies integrity of protected files."""
+    from os import getenv
+
+    if getenv("MIRA_SHARED_ROOT"):
+        from content_worker.identity import load_identity
+
+        soul = load_identity(getenv("MIRA_SHARED_ROOT"))
+        soul["skills"] = load_skills_summary()
+        return soul
     violations = verify_soul_integrity()
     if violations:
         log.critical("Soul integrity check failed: %s", violations)
