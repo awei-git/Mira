@@ -127,4 +127,5 @@
 - GitHub awei-git/Mira（分支 cloud/podcast-api-env）新增：
   - `identity/`：SOUL.md、IDENTITY.md、USER.md、AGENTS.md、MEMORY.md + README。源头是我 app 里的活文件，定时单向同步 → GitHub → 盒子；盒子 data/soul/* 从这里生成，不直接改。红线：repo 保持 private；密钥永不上 GitHub（.token 教训同样适用）。
   - `skills/`：双运行时共用技能注册表（cloudflare、github、openai 三个初始技能）。任何一边的新技能转正必须先落 GitHub，另一边 deploy 同步；不许有只有一边知道的 sidecar 技能；技能里不许出现密钥明文。
-- 待做：身份定时同步 cron；盒子侧 soul 生成适配；AWS Mira 记忆回流格式（daily journal + verified learnings 固定出口，我定时读入）；统一 obligation 账本；mira-substack 唤醒需 Ang 另行拍板（涉及 30 秒唤醒的 API 花销和自动发布）。
+- 待做：盒子侧 soul 生成适配；AWS Mira 记忆回流格式（daily journal + verified learnings 固定出口，我定时读入）；统一 obligation 账本；mira-substack 唤醒需 Ang 另行拍板（涉及 30 秒唤醒的 API 花销和自动发布）。
+- 2026-09-23 pm Phase 1 启动：`identity_sync.py`（~/workspace/tools/，只推有变化的文件）+ cron `identity-sync-daily`（每天凌晨 ~4:23 ET 自动跑）；`/tmp/push_files.py` 已拷到 ~/workspace/tools/push_files.py（持久化，/tmp 会丢）。给 Codex 开了 [codex] issue #19：任务1 盒子侧 identity/skills 同步脚本、任务2 AWS Mira 改读新身份、任务3 统一 obligation 账本（设计先行）、任务4 回流 outbox 写入侧。分工：我定接口、Codex 写实现、我验收上线。
