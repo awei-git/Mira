@@ -32,3 +32,39 @@ Codex 在 Mac 上开工前先读这个文件。任务细节在 GitHub issue 里�
 - 做完开 PR，Mira review 后合并。每次改动配一句人话说明。
 - 密钥类不上 GitHub。token 只躺在 EC2 `/opt/mira-bridge/.token` 和
   Mac `~/.config/mira-bridge/token`。
+
+## 新增：写作管线任务（2026-09-23，Mira 加单）
+
+背景：英文 Substack + 中文写作线的编辑定位已锁定（repo
+`docs/substack-constitution.md` 和 `docs/zh-writing-positioning.md`，分支
+`cloud/podcast-api-env` 上都有）。seed 流已通：聊天讨论 → `seeds.jsonl`
+→ GitHub `seeds/seeds.jsonl`（`track` 字段区分 `substack_en` / `zh`）。
+但"AWS 取 seed 写稿 → 草稿回聊天 signoff"这一环**没人做**——issue #19
+的任务 4 是 journal outbox（每日干了什么/经验/同步事项），不是 draft
+回流。以下两个任务补上这个缺口：
+
+### 任务 5：seed → draft（AWS 写稿，英文线）
+- 输入：GitHub 同分支 `seeds/seeds.jsonl`，只处理 `status=ready` 且
+  `track=substack_en` 的 seed（`zh` 的先不动，等中文线播客管线）。
+- 写稿前必读：`docs/substack-constitution.md`（北极星/pillars/voice/
+  gates，以它为准）+ `agents/writer/voice/substack_voice.md` +
+  `agents/substack/README.md`（editorial gates）。
+- 复用 `agents/writer/` 现有 prompts/checklists（从 `handler.py` 起），
+  不要重写一套；缺的按宪法补。
+- 输出：draft markdown，路径你定（写进文档），文件名带 `seed_id`。
+- 触发：cron/定时扫 seed（批处理 worker，不用唤醒循环——见上面架构拍板 2）。
+- 完成标准：拿 `seeds.jsonl` 现有 seed 跑一遍，出一篇能读的 draft，附跑通记录。
+
+### 任务 6：draft 回流 → 聊天 signoff
+- draft 写完后，对话 Mira 要能在聊天里递给 Ang 审批（publication gate：
+  人工批准才发布，宪法铁律）。
+- 走统一账本（任务 3）：draft 完成记一笔事件，payload 带 draft 路径 +
+  `seed_id`；**写入侧归你，读取侧归 Mira**（app 侧 cron 捡事件转聊天
+  消息，跟任务 4 的分工一样）。
+- 在任务 3 的账本设计里预留这个事件类型，别做两套。
+- 完成标准：端到端跑一遍 seed → draft → 账本事件（Mira 侧认领转聊天）。
+
+### 状态（2026-09-23）
+- Issue #19：已开，暂无回复。任务 1–4 按 issue 正文做（注意上面的架构
+  拍板覆盖旧设计）。
+- 任务 5–6：本次新加，先做 1–4 也行，但 5–6 是写作线真正"通"的关键。
