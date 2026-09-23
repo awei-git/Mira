@@ -99,7 +99,7 @@ def sync(source, destination, *, activate=False, legacy_soul=None, audit_skill=b
         raise ValueError("legacy_soul_path_required_for_activation")
     # All reads and security audits precede any destination write.
     files = gather(source, audit_skill)
-    return stage_files(files, source, destination, activate=activate, legacy_soul=legacy_soul)
+    return stage_files(files, destination, destination, activate=activate, legacy_soul=legacy_soul)
 
 
 def install_snapshot(
@@ -139,7 +139,7 @@ def install_snapshot(
     )
 
 
-def stage_files(files, source, destination, *, activate=False, legacy_soul=None):
+def stage_files(files, audit_root, destination, *, activate=False, legacy_soul=None):
     if activate and legacy_soul is None:
         raise ValueError("legacy_soul_path_required_for_activation")
     manifest = {"format": 1, "scope": "content_only", "sha256": {k: checksum(v) for k, v in files.items()}}
@@ -148,7 +148,7 @@ def stage_files(files, source, destination, *, activate=False, legacy_soul=None)
     with safe_file(destination, "sync.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         generation = safe_file(destination, "releases/" + snapshot)
-        audit(source, "Stage audited shared assets; no live code changes", str(generation))
+        audit(audit_root, "Stage audited shared assets; no live code changes", str(generation))
         for name, body in files.items():
             atomic_write(safe_file(generation, name), body, mode=0o644)
         write_json(safe_file(generation, "manifest.json"), manifest, mode=0o644)
@@ -165,7 +165,7 @@ def stage_files(files, source, destination, *, activate=False, legacy_soul=None)
                     if backup.exists():
                         raise ValueError("legacy_backup_already_exists")
                     backups.append((old, backup))
-            audit(source, "Activate shared identity; preserve original soul files by rename", str(legacy))
+            audit(audit_root, "Activate shared identity; preserve original soul files by rename", str(legacy))
             renamed = []
             pointer = safe_file(destination, "current.json")
             previous = pointer.read_bytes() if pointer.exists() else None

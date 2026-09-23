@@ -100,13 +100,17 @@ def test_activation_failure_restores_pointer_and_legacy(source, tmp_path, monkey
 
 def test_sanitized_bundle_can_stage_on_both_targets(source, tmp_path):
     exported = syncer.sync(source, tmp_path / "export")
+    assert not (source / "logs").exists()
+    assert (tmp_path / "export/logs/permacomputing_audit.md").is_file()
     for host in ("old", "new"):
         destination = tmp_path / host
-        result = syncer.install_snapshot(exported["path"], destination, audit_root=source)
+        result = syncer.install_snapshot(exported["path"], destination, audit_root=tmp_path / "audit")
         assert result["snapshot"] == exported["snapshot"]
         assert result["activated"] is False
         assert not (destination / "current.json").exists()
         assert (Path(result["path"]) / "identity/USER.md").read_text().startswith("Public content")
+    assert not (source / "logs").exists()
+    assert (tmp_path / "audit/logs/permacomputing_audit.md").is_file()
 
 
 def test_transport_corruption_rejected_before_target_write(source, tmp_path):
@@ -288,6 +292,25 @@ def test_outbox_uses_new_york_date_and_does_not_self_verify(content_repo):
     assert daily_records(content_repo, "2026-09-24")["journal"] == []
 
 
+@pytest.mark.parametrize(
+    "status, expected",
+    [
+        ("running", "reconcile its receipt"),
+        ("blocked", "operator review"),
+        ("editorial_blocked", "revision is required"),
+        ("awaiting_ledger_contract", "chat return are pending"),
+        ("unexpected", "Unknown receipt status"),
+    ],
+)
+def test_outbox_explains_actual_producer_statuses(content_repo, status, expected):
+    receipt = content_repo / "data/drafts/substack_en/a/version/receipt.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(json.dumps({"seed_id": "a", "status": status, "started_at": "2026-09-23T12:00:00+00:00"}))
+    records = daily_records(content_repo, "2026-09-23")
+    assert expected in records["sync"][0]["text"]
+    assert records["verified_learnings"] == []
+
+
 def test_existing_handler_content_route_excludes_thread_recall(monkeypatch, tmp_path):
     import pathsetup  # noqa: F401
     from agents.writer import handler
@@ -373,3 +396,50 @@ def test_api_packaging_skips_private_blob_download(monkeypatch):
     tree["truncated"] = True
     with pytest.raises(RuntimeError, match="incomplete_github_tree"):
         mkdist.build_from_api("example/repo", "sha", ".")
+
+
+@pytest.mark.parametrize("shared", [False, True])
+@pytest.mark.parametrize("changed", [False, True])
+def test_skill_hash_preserves_app_contract_and_cloud_integrity(tmp_path, monkeypatch, shared, changed):
+    """Exercise the real loader with virtual files; never save/enable a test skill."""
+    from datetime import datetime, timezone
+    from memory import soul_skills
+
+    if shared:
+        monkeypatch.setenv("MIRA_SHARED_ROOT", str(tmp_path / "shared"))
+    else:
+        monkeypatch.delenv("MIRA_SHARED_ROOT", raising=False)
+    index = tmp_path / "index.json"
+    skill = tmp_path / "writing-example.md"
+    raw = "\n  Evidence before assertions.  \n"
+    entry = {
+        "name": "writing-example",
+        "tags": ["writing"],
+        "audited_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    files = {index: json.dumps([entry]), skill: raw + ("Changed instructions." if changed else "")}
+    read_text, exists = Path.read_text, Path.exists
+    monkeypatch.setattr(Path, "read_text", lambda p, *a, **kw: files[p] if p in files else read_text(p, *a, **kw))
+    monkeypatch.setattr(Path, "exists", lambda p: p in files or exists(p))
+    monkeypatch.setattr(soul_skills, "SKILLS_DIR", tmp_path)
+    monkeypatch.setattr(soul_skills, "SKILLS_INDEX", index)
+    expected = checksum((raw if shared else raw.strip()).encode())
+    monkeypatch.setattr(soul_skills, "_load_skill_audit_hashes", lambda: {"writing-example": expected})
+    monkeypatch.setattr(soul_skills, "filter_superseded_skill_candidates", lambda rows, *a: rows)
+    for name in (
+        "warn_if_deprecated_skill_loaded",
+        "_update_provenance_loaded",
+        "_update_skill_invocation",
+        "_warn_unverified_skill_efficacy",
+    ):
+        monkeypatch.setattr(soul_skills, name, lambda *a, **kw: None)
+    audits = []
+
+    def reject(name, text):
+        audits.append(name)
+        raise soul_skills.SkillAuditFailedError("test audit refuses modified bytes")
+
+    monkeypatch.setattr(soul_skills, "audit_skill", reject)
+    result = soul_skills.load_skills_for_task("writing", agent_type="writing")
+    assert audits == (["writing-example"] if changed else [])
+    assert result == ("" if changed else raw.strip())

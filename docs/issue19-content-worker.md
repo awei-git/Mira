@@ -50,11 +50,13 @@ On either box, using the synchronizer from the reviewed release:
 
 ```sh
 python3 deploy/sync_shared.py --snapshot /private/staging/<snapshot-hash> \
-  --destination /var/lib/mira-shared --audit-root /path/to/Mira
+  --destination /var/lib/mira-shared --audit-root /var/lib/mira-worker-state
 ```
 
 That command checks exact content hashes/file set and repeats the backend skill
 audit before destination saves. It changes no live code or active pointer.
+Export audit entries are written under the destination's `logs/`; installation
+uses the explicit writable audit root. The reviewed input checkout stays untouched.
 Activate separately with `--activate --legacy-soul /path/to/Mira/data/soul`.
 Run as the deployment operator; make assets readable to the service account and
 keep the synchronization destination writable only by that operator.
@@ -92,6 +94,9 @@ that index/layout while retaining complete packages at `skills/<name>/`.
 Skill usage counters go to runtime state so reads do not mutate the audited
 index. A snapshot change takes effect on the next finite process; do not switch
 identity underneath a running batch.
+The task skill loader preserves app-side stripped-text audit hashes when
+`MIRA_SHARED_ROOT` is unset; only cloud snapshots use raw-byte hashes. No app
+fingerprint migration or blanket re-audit is required by this change.
 
 The content writer bypasses personal thread history, private persona retrieval
 and writing RAG. Its persona comes only from the content projection. The normal

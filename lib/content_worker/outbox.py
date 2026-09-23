@@ -23,10 +23,15 @@ def daily_records(root, day):
         if timestamp.astimezone(ZoneInfo("America/New_York")).date().isoformat() != day:
             continue
         records["journal"].append({"text": f"Seed {row['seed_id']}: {row['status']}. Receipt: {relative}."})
-        if row["status"] != "succeeded":
-            records["sync"].append(
-                {"text": f"Seed {row['seed_id']}: {row['status']}; no publication or chat delivery is implied."}
-            )
+        next_step = {
+            "running": "Attempt is running or interrupted; reconcile its receipt before retrying.",
+            "blocked": "Writer attempt failed; operator review is required before retrying.",
+            "editorial_blocked": "Editorial gate failed; revision is required.",
+            "awaiting_ledger_contract": "Draft passed local checks; ledger contract and chat return are pending.",
+        }.get(row["status"], "Unknown receipt status; operator reconciliation is required.")
+        records["sync"].append(
+            {"text": f"Seed {row['seed_id']}: {next_step} No publication or chat delivery is implied."}
+        )
     return records
 
 

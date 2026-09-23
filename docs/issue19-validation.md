@@ -1,5 +1,30 @@
 # Issue #19 implementation checks — 2026-09-23
 
+## Review follow-up (R1–R3)
+
+R1 uses option (a): without `MIRA_SHARED_ROOT`, the task skill loader retains
+the app's stripped-text fingerprint; cloud snapshots alone use raw-byte hashes.
+No existing app audit hashes are migrated. Four real-loader regression cases
+cover app/cloud and unchanged/changed content, using virtual files and no saved
+test skills. Before the fix, the unchanged-app case failed with a forced audit;
+after the fix, all four pass. A content change still invokes the audit and is
+blocked when it fails.
+
+R2 moves standalone export audit entries to the destination state tree; input
+checkout contents remain untouched. R3 reports the actual producer states rather
+than checking a nonexistent `succeeded` status. Tests cover both changes.
+
+- Current focused suite: **32 passed** (`tests/test_content_worker.py`).
+- Current broader command below with
+  `-k 'not test_scan_blocks_any_em_dash'`: **53 passed, 1 deselected**. The omitted
+  test is the pre-existing failure documented below; it has not been repaired or
+  silently marked passing. Existing UTC deprecation warnings remain.
+- Ledger revision 2 adds concrete Muse polling/cursor/recovery, trusted human
+  approval minting tied to exact bytes, and receipt-first lease reconciliation.
+  It remains a proposal; task 3/6 implementation still waits for Mira approval.
+
+The results below preserve the original PR submission record.
+
 Base: `cloud/podcast-api-env` at `062e63921c00cbbbdb476bad334f9b321050405f`.
 Implementation branch: `codex/issue19-runtime-wiring`.
 

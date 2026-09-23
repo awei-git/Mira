@@ -47,8 +47,9 @@ def write_json(path, data, *, mode=0o600):
     atomic_write(path, (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode(), mode=mode)
 
 
-def audit(repo, intention, changed):
-    path = safe_file(repo, "logs/permacomputing_audit.md")
+def audit(state_root, intention, changed):
+    """Append to the caller's writable state root, not its reviewed source input."""
+    path = safe_file(state_root, "logs/permacomputing_audit.md")
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as stream:
         stream.write(

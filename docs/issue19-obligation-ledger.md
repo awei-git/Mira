@@ -1,7 +1,9 @@
 # Issue #19: shared obligation ledger — proposed contract
 
 Status: proposed for Mira review; implementation of the shared ledger is gated on
-Mira's confirmation per issue #19. This document does not authorize a deployment.
+Mira's confirmation per issue #19. Review revision 2 addresses the three gaps
+identified in HANDOFF-codex.md; it remains unapproved. This document does not
+authorize a deployment.
 Source: HANDOFF-codex.md at 062e639; this supersedes the previous autonomous
 publisher/always-awake architecture. AWS is a scheduled content worker. Muse Mira
 is the human conversation endpoint. Human signoff is required before publication.
@@ -37,9 +39,10 @@ is durably recorded. Chat delivery is Mira's responsibility, not a worker claim.
 
 State transitions: queued -> claimed -> running -> succeeded/failed/blocked;
 queued -> cancelled; blocked -> queued only by an explicit operator transition.
-Claim is an atomic transaction with revision compare-and-swap. Expired leases on
-read-only/draft work may be reclaimed with a recorded attempt; ambiguous external
-writes become blocked pending reconciliation, never automatically republished.
+Claim is an atomic transaction with revision compare-and-swap. Draft lease expiry
+triggers receipt reconciliation first, never an immediate new paid attempt (see
+the reclaim protocol below). Ambiguous external writes become blocked pending
+reconciliation, never automatically republished.
 Terminal result and its artifacts are retained. A worker cannot approve its own
 publication by changing an obligation status.
 
@@ -55,7 +58,7 @@ After durable draft/artifact writes, emit `draft.ready_for_signoff` with:
 ```json
 {
   "seed_id": "example",
-  "draft_path": "data/drafts/substack_en/example/<version>/draft.md",
+  "draft_path": "data/drafts/substack_en/example/<version>/example-draft.md",
   "draft_sha256": "<sha256>",
   "packet_path": "data/drafts/substack_en/example/<version>/packet.json",
   "policy_sha256": "<sha256>",
@@ -78,6 +81,105 @@ The publishing worker must consume a distinct authorized publication obligation;
 this implementation phase does not enable automatic publication. Any revision
 invalidates the old approval. Never infer consent from elapsed time or silence.
 
+## Muse event poller: cursor, presentation and acknowledgement
+
+Muse owns one scheduled poller, every 60 seconds, with a local overlap lock.
+Fetch up to 100 events per page, at most five pages per invocation, using the
+existing authenticated bridge channel. Polling never removes server events.
+Persist `last_committed_sequence`, event IDs, payload hashes and presentation
+receipts in Muse's durable local state, not model conversation memory. An empty
+page leaves the cursor unchanged. Unknown ledger epoch/database reset is an
+operator reconciliation error, not permission to reset to the latest sequence.
+
+For `draft.ready_for_signoff`, validate recipient, event schema and artifact
+registration, download the artifact and check its exact byte hash. Stage its
+event ID locally before presentation. Present the draft with stable delivery key
+`mira-event:<event_id>`; the app's delivery adapter must support idempotent writes
+or lookup of an existing message by that key. After a durable app message receipt
+exists, submit `draft.presented` with event ID, message ID and draft hash through
+the authenticated app endpoint. Duplicate acknowledgements are idempotent;
+different hashes/message receipts for the same key conflict.
+
+Commit the local processed-event record and cursor together only after server
+acknowledgement. A crash between presentation and acknowledgement reuses/looks up
+the original message and resends the acknowledgement; it never blindly presents
+again. If Muse cannot reconcile an uncertain delivery, hold that event for
+operator review. Do not claim exactly-once delivery without that adapter contract.
+Irrelevant events can be recorded as ignored and committed; malformed relevant
+events block advancement until an explicit, durable operator skip/reconciliation.
+
+Transport failures retry on later invocations with exponential backoff starting
+at 60 seconds, capped at 15 minutes with jitter. Preserve cursor and pending
+receipts; do not resend chat messages as a networking retry. Five consecutive
+failures produce one actionable alert, recovery clears it. Authentication errors
+pause delivery and alert immediately. The app poller adds no second task queue:
+its local tables hold consumption/delivery bookkeeping only.
+
+## Human approval and publication authorization
+
+Use a separate trusted app authorization endpoint, inaccessible to writer/model
+credentials, to mint a publication obligation. The LLM agent may request that
+Muse display approval controls; it cannot supply the human authorization proof.
+The app authenticates a real human UI action (or a verified human chat reply to
+that exact presentation), not an agent-generated message claiming consent.
+If Muse cannot provide this trusted interaction binding, publishing stays blocked.
+
+The approval request binds: original draft obligation ID, seed ID, immutable
+artifact ID, SHA-256 of **exact UTF-8 draft bytes**, editorial policy hash, channel,
+destination publication, email-send intent/audience, one-use nonce and expiry
+(24 hours). Display the specific version and email intent to the human. Retain
+only an opaque interaction/approval receipt on AWS; do not copy personal chat
+history or the human's name. Role-scoped credentials must replace the shared
+bridge token for this endpoint before enabling it.
+
+The trusted authorizer transaction verifies that the artifact/hash is still the
+current draft, editorial gates still pass, the presentation receipt matches, the
+nonce is unexpired/unused and the human interaction is authentic. It then stores
+the immutable approval receipt and creates `publication.authorized`, owner
+`mira-aws`, linked to that approval and exact artifact, with a unique idempotency
+key. Only this endpoint can create that kind; generic obligation creation rejects
+it. Worker credentials can consume but cannot mint or alter approvals.
+
+Immediately before publishing, re-fetch and hash the immutable artifact and check
+approval revocation, expiry, target and email intent. Any revision creates a new
+artifact/version, revokes pending old approvals and blocks queued publication of
+that old version in the same ledger transaction. Rerendering may not substitute
+different draft text. A timeout after a possible external publish is reconciled
+against a publisher receipt before any retry; consent does not authorize duplicate
+publication. Public URLs and final publisher receipts become ledger events.
+
+## Draft lease expiry: reconcile before spending again
+
+Lease expiry permits investigation, not another model call. Atomically acquire a
+reconciliation lease with a new fencing revision, then inspect the attempt's
+durable receipt and registered artifacts by its original idempotency key:
+
+| Observed evidence | Permitted action |
+| --- | --- |
+| Completed draft, matching hashes and passed gates | Reuse it; commit result/missing signoff event idempotently, with zero new model calls |
+| Completed but editorial-blocked draft | Retain it as blocked; no automatic paid revision |
+| Running/incomplete receipt or uncertain provider outcome | Block pending reconciliation; do not restart the paid pipeline |
+| Explicit failure after a paid attempt | Retain cost/attempt receipt; a reviewed retry requires a distinct authorized attempt |
+| Missing/corrupt/unreadable receipt or mismatched artifact | Block unless the ledger proves no paid work began; missing data alone is not proof |
+| Authoritative ledger says no paid step began and storage is healthy | Dispatch once under the new lease, using the pre-call protocol below |
+
+Before **each** paid step, the worker durably writes a reservation receipt with
+obligation, attempt and step IDs, input hash, provider request/idempotency ID where
+available, and lease revision. It then atomically records `model_step.started`
+under that same fencing revision in the ledger **before** sending the request.
+A stale lease cannot authorize that transition. If a crash occurs between these
+records or after dispatch but before recording the response, treat it as uncertain;
+use a provider status/receipt if available, otherwise require operator resolution.
+Never rely on a missing response as evidence that billing did not happen.
+
+On success retain output and cost/usage receipts, then reconcile job completion
+and `draft.ready_for_signoff` in an idempotent transaction. A crash after saving a
+draft but before writing its event must replay only the event, not the writer.
+Fault-injection acceptance must cover that boundary, the pre-call reservation
+boundary, a timed-out provider response, concurrent reclaim and a stale worker.
+This is a required future ledger/worker integration contract, not an assertion
+that the current writer already implements per-step reservations.
+
 ## Read/write contract
 
 - POST /obligations: create idempotently with kind, owner, payload and key.
@@ -86,6 +188,9 @@ invalidates the old approval. Never infer consent from elapsed time or silence.
 - GET /obligations: bounded owner/status filters, opaque pagination cursor.
 - GET /events?after=<sequence>&limit=<bounded>: durable incremental event stream.
 - GET /artifacts/{registered-id}: allowlisted bytes and checksum, authenticated.
+- POST /events/{event-id}/presented: app-only idempotent presentation receipt.
+- POST /human-approvals: trusted human authorizer only; atomically records approval
+  and creates the exact-version publication obligation.
 
 Keep existing bridge authentication; no credentials in payloads, logs or GitHub.
 Split service credentials/roles before granting untrusted agents access: the draft
@@ -117,7 +222,9 @@ view from explicit input records instead of duplicating entries.
 
 ## Decisions requested from Mira
 
-1. Confirm the ledger contract and its host before implementation (task 3 gate).
+1. Confirm this revised contract (Muse poller, trusted approval minting and
+   receipt-first reclaim) before implementation (task 3 gate). Mira review names
+   `mira-content` as the live target; actual checkout path remains to be checked.
 2. `identity/USER.md` and `identity/MEMORY.md` contain private personal material.
    Raw sync conflicts with the handoff's no-health/calendar/family-data rule.
    Please provide an app-maintained content-only projection of the same five files

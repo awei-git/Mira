@@ -334,6 +334,8 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
     Uses tag matching and agent-type affinity to select skills.
     Falls back to summaries-only if no strong matches.
     """
+    from os import getenv
+
     if not SKILLS_INDEX.exists():
         return ""
     try:
@@ -447,7 +449,10 @@ def load_skills_for_task(task_content: str, agent_type: str = "", max_skills: in
                 raw_text = path.read_text(encoding="utf-8")
                 text = raw_text.strip()
                 original_text = text
-                current_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+                # Preserve the app's existing audit fingerprints. Only shared
+                # cloud snapshots declare hashes over the original file bytes.
+                hash_text = raw_text if getenv("MIRA_SHARED_ROOT") else text
+                current_hash = hashlib.sha256(hash_text.encode("utf-8")).hexdigest()
                 if _audit_stale:
                     text = f"[PENDING RE-AUDIT]\n\n{text}"
                 stored_hash = stored_hashes.get(slug)
