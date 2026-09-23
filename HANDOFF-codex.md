@@ -5,6 +5,11 @@ Codex 在 Mac 上开工前先读这个文件。任务细节在 GitHub issue 里�
 
 ## 当前任务
 
+- Issue #22：[codex] mira-content 收尾：源码上 GitHub + 三处修复转正 + 运行问题
+  https://github.com/awei-git/Mira/issues/22
+  六个任务按 issue 正文做。任务 1（源码上 GitHub）最高优，block 任务 2。
+  注意：任务 2 涉及退役 Mira 昨晚直接改主机的 bind-mount 覆盖层
+  （/etc/mira-creator/overrides/），顺序按 issue 正文，删之前别动覆盖层。
 - Issue #19：[codex] Mira 双运行时接线（盒子侧同步 + soul 读取 + 统一账本）
   https://github.com/awei-git/Mira/issues/19
   四个任务按 issue 正文做。
@@ -122,35 +127,3 @@ Codex 在 Mac 上开工前先读这个文件。任务细节在 GitHub issue 里�
 
 下一步顺序：任务 3 账本实现 → 任务 6 写入侧 → 我给 seed+投影 → 端到端验收
 → timer 上生产。不要跳步。
-
-## 新增：中文播客写稿任务（2026-09-23，Ang 拍板：这期跑通流程）
-
-### 任务 7：seed → 播客稿（AWS 写稿，中文线）
-背景：Ang 要求 S2E01《我们被训练，但我们要表达》的写稿走 AWS 盒子，
-把 seed→写稿→账本→signoff 全链路跑通。任务 5 只管英文线（track=substack_en），
-中文播客写稿当时说"先不动"——现在动。
-
-- 输入：GitHub 同分支 `seeds/seeds.jsonl`，只处理 `status=ready` 且
-  `track=zh` 且 `kind=podcast_script` 的 seed。首单 seed：
-  `55f5a87e6b6c`（已入库已同步，brief 里有本期全部写作约束）。
-- 写稿前必读：`docs/zh-writing-positioning.md`（中文线定位：casual 口语、
-  米拉独白、Ang 不出声不提名，以它为准）+ 该 seed 的 `brief` 字段
-  （开场固定句、必须讲到的 6 个点、风格硬性要求、字数）。
-- 复用任务 5 的写稿链路（handler/prompts/checklist），不要重写一套；
-  模型用 OpenAI GPT（中文口语稿）。缺的按中文定位文档补。
-- 输出：draft markdown，路径你定（写进文档），文件名带 `seed_id`。
-- 回流：走任务 6 同一账本事件类型，payload 带 draft 路径 + `seed_id` +
-  `track=zh` + `kind=podcast_script`（任务 6 的事件 schema 预留这两个字段，
-  别做两套）。
-- 触发：cron/定时扫 seed（批处理 worker，老规矩）。
-- 完成标准：拿 `55f5a87e6b6c` 跑一遍，出一篇能读的播客稿，附跑通记录。
-  draft 经账本事件回来，Mira（app 侧）在聊天里递 Ang signoff 即算端到端跑通。
-
-### 当前全链路状态（2026-09-23，Mira）
-- [x] seed 已建并同步（55f5a87e6b6c，status=ready，commit a569fbfc）
-- [ ] 任务 3 账本实现（Codex 进行中）
-- [ ] 任务 6 draft 回流写入侧（Codex 进行中）
-- [ ] 任务 7 中文播客写稿（本次新加）
-- [ ] 发版部署到 mira-content → 端到端验收 → draft 回聊天 signoff
-
-顺序不变：任务 3 → 任务 6 → 验收。任务 7 可与 3/6 并行开发，联调时一起验收。
