@@ -80,6 +80,8 @@ def build_from_api(repo, sha, subdir):
 def build_from_clone(repo, sha, subdir):
     name = repo.split("/")[1]
     clone = os.path.join(REPOS_DIR, name)
+    if not os.path.isdir(os.path.join(clone, ".git")):
+        return None  # no local clone -> API blob fallback
     try:
         sh(["git", "-C", clone, "cat-file", "-t", sha])
         commit = sha
