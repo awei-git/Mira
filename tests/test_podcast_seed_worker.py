@@ -184,8 +184,8 @@ def test_explicit_podcast_language_survives_substack_in_source_notes(tmp_path, m
         return "fixture plan"
 
     monkeypatch.setattr(workflow, "_plan", plan)
-    monkeypatch.setattr(workflow, "_write_drafts", lambda *a: {"fixture": "中文稿" * 1000})
-    monkeypatch.setattr(workflow, "_review_cycle", lambda *a: "# 中文标题\n\n中文独白。")
+    monkeypatch.setattr(workflow, "_write_drafts", lambda *a, **kw: {"fixture": "中文稿" * 1000})
+    monkeypatch.setattr(workflow, "_review_cycle", lambda *a, **kw: "# 中文标题\n\n中文独白。")
     monkeypatch.setattr(soul, "catalog_add", lambda *a: None)
     workflow.run_full_pipeline(
         "测试",
@@ -260,3 +260,45 @@ def test_writer_failure_receipt_keeps_candidate_without_signoff_or_rerun(example
     assert not any(e["kind"] == "draft.ready_for_signoff" for e in ledger.events()["items"])
     assert run_batch(repo, [seed], ledger=ledger, writer=writer) == []
     assert calls == [1]
+
+
+def test_spoken_brief_reaches_actual_draft_review_and_revision(tmp_path, monkeypatch):
+    import writing_workflow as workflow
+    from memory import soul
+
+    brief = "固定开场：你好。1300-1500 汉字。结尾：下期见。禁止附录。"
+    captured = []
+    plans = []
+    monkeypatch.setattr(
+        workflow, "_analyze", lambda _: {"type": "essay", "language": "en", "suggested_word_count": 3000}
+    )
+    monkeypatch.setattr(
+        workflow, "_plan", lambda context, analysis, idea, directory: plans.append(analysis) or "Generated plan"
+    )
+    monkeypatch.setattr(workflow, "WRITING_MODELS", ["fixture"])
+    monkeypatch.setattr(workflow, "REVIEW_MODELS", ["fixture"])
+    monkeypatch.setattr(workflow, "WRITING_MIN_DRAFT_CHARS", 1)
+    monkeypatch.setattr(workflow, "MIN_REVIEW_ROUNDS", 2)
+    monkeypatch.setattr(soul, "catalog_add", lambda *a: None)
+
+    def think(prompt, **kwargs):
+        captured.append(prompt)
+        if "Review round:" in prompt:
+            return "1. One specific weak sentence.\n2. Another weak passage.\nOVERALL: 7\nVERDICT: HOLD\nUNRESOLVED_P0_P1: 1"
+        if "Revise this complete spoken podcast" in prompt:
+            return "# 中文标题\n\n你好。修改后的正文。下期见。"
+        return "# 中文标题\n\n你好。初稿正文。下期见。"
+
+    monkeypatch.setattr(workflow, "model_think", think)
+    _, text = workflow.run_full_pipeline(
+        "测试", brief, content_only=True, persona_prompt="public persona", workspace=tmp_path, output_language="zh"
+    )
+    assert len(captured) == 4  # draft, review, revision, second review
+    assert all(brief in prompt for prompt in captured)
+    assert all("original brief" in prompt.lower() for prompt in captured)
+    assert all("Every article MUST have a sharp subtitle" not in prompt for prompt in captured)
+    assert all("Also assess these Substack quality gates" not in prompt for prompt in captured)
+    assert all("privacy" in prompt.lower() or "private" in prompt.lower() for prompt in captured)
+    assert plans[0]["type"] == "podcast_script"
+    assert plans[0]["suggested_word_count"] != 3000
+    assert "修改后的正文" in text
