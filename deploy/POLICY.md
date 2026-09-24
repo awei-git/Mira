@@ -43,3 +43,24 @@ python3 deploy/deploy.py <project> <tag>
 每次部署前盒子自动把旧版打成 tarball 留在 `/opt/deploy/backups/`。
 线上出问题：`box-deploy.sh rollback <project> <backup-file>`，
 或直接重跑上一个 tag。
+
+## Mac / CI 离线打包
+
+`local_bundle.py` 不依赖 `~/workspace`、自定义 GitHub CLI 或 AWS 凭据：
+
+```sh
+python3 deploy/local_bundle.py --repo /path/to/checkout --project content-worker \
+  --commit FULL_40_CHARACTER_COMMIT --tag RELEASE_TAG --output /new/output/directory
+```
+
+先 fetch 已发布 tag；命令校验本地 tag 指向指定 commit，并从该 commit 同时
+读取 registry 和源码，不读取工作区改动。输出 `bundle.tar.gz` 与 `receipt.json`，
+包含归档和逐文件 SHA-256。相同输入生成相同包；已有输出目录拒绝覆盖。
+包按该版本 registry 排除运行数据、原始身份和独立同步的 skills；桥接的
+`extra_files` 从同一 commit 读取。仅打包普通文件，不跟随 symlink。
+
+边界：本地 tag 匹配不等于远程 Release 已审核，上传工作流仍须核验远程发布。
+本工具不上传、不申请 AWS 权限、不部署、不重启，也不批准包内 agent skills。
+package exclusions 仍以版本化 registry 为准，不是任意内容的隐私扫描器。
+后续必须保留源 commit/包 hash/S3 version 收据并完成技能审核和主机 staging；
+当前默认部署命令未被本工具替换，端到端流水线尚需接线。
