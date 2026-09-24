@@ -239,3 +239,24 @@ def test_podcast_disclosure_is_retained_outside_spoken_script(tmp_path, monkeypa
     assert result
     assert (tmp_path / "output.md").read_text() == final
     assert "Judgment Disclosure" in (tmp_path / "editorial-disclosure.md").read_text()
+
+
+def test_writer_failure_receipt_keeps_candidate_without_signoff_or_rerun(example):
+    from content_worker.failure import retain_candidate
+
+    repo, seed, ledger, _ = example
+    calls = []
+
+    def writer(workspace, *_):
+        calls.append(1)
+        retain_candidate(workspace, "Blocked candidate", {"violations": [{"trigger": "em_dash_overuse"}]})
+        return None
+
+    result = run_seed(repo, seed, ledger=ledger, writer=writer)
+    assert result["status"] == "blocked"
+    assert result["writer_failure"]["code"] == "writer_obsession_constraints"
+    assert result["writer_failure"]["approved"] is False
+    assert "draft_path" not in result
+    assert not any(e["kind"] == "draft.ready_for_signoff" for e in ledger.events()["items"])
+    assert run_batch(repo, [seed], ledger=ledger, writer=writer) == []
+    assert calls == [1]

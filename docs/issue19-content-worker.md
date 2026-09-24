@@ -146,6 +146,17 @@ gate has status `editorial_blocked`; provider/handler failures have `blocked`.
 Receipts retain exception types without potentially secret provider error text.
 Changed artifact bytes are rejected when an existing receipt is opened directly.
 
+A content-only writer blocked by its final style gate now retains the candidate at
+`blocked-candidates/<sha256>.md` before replacing `output.md` with the failure
+explanation. `writer_failure.json` and the attempt receipt record a fixed error
+code, rule names and the candidate hash/path. This is **unapproved evidence**, not
+`draft_path`, a signoff event, or retry permission. Later versions retain earlier
+candidate files. Candidate changes, traversal and symlinks fail closed; retention
+I/O failures cannot fall through the legacy writer's best-effort I/O fallback.
+Existing cloud attempts are not rewritten by this change. Operators must inspect
+those attempts' original `pipeline/final.md` and unresolved model-step receipts;
+this patch neither reruns the writer nor resolves an uncertain provider outcome.
+
 Idempotency currently binds seed and editorial policy hashes. A model, identity
 or code update alone does not cause another paid attempt. Explicit operator
 review is required for retries; keep the old receipt. Per-seed file locking

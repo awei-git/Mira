@@ -273,6 +273,12 @@ def run_seed(repo, seed, *, writer=generate, reviewer=inspect_draft, ledger=None
             with model_guard(ledger, job, repo, route=route):
                 result = writer(workspace, seed, policy, evidence)
             if not result:
+                from content_worker.failure import read_failure
+
+                failure = read_failure(workspace)
+                if failure is not None:
+                    # Diagnostic candidate only: never populate draft_path or emit signoff.
+                    receipt["writer_failure"] = failure
                 raise RuntimeError("existing_writer_did_not_complete")
             text, review = reviewer(workspace, seed, evidence)
             draft_path = relative + "/" + seed["seed_id"] + "-draft.md"
