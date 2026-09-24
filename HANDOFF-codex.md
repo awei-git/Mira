@@ -159,15 +159,37 @@ Tetra 修复已通过 `tetra-recovery-20260923` 发布部署，源版本
 Creator 修复 PR1 已按用户“直接合并”授权合入，merge
 `f4e45d3b16ef8e0460491f9ff54fa3500cedd363`。56 项测试通过，两个改动源码
 的 manifest SHA256 已更新。自然第一人称保留 AI 创作者身份，不冒充真实人类。
-**尚未部署 Creator 修复**：现有 `aws-update.yml` 更新器只支持 Tetra 两个
-镜像，不能拿它假装更新 Creator。下一步需要可回滚的 Creator 镜像和覆盖层
-切换流程，再验收下一 tick；现有 overrides 和 mount 暂时保留。
+Creator 已经通过 cloud PR5 的可回滚更新器完成生产切换，原覆盖层
+mount 已从生效服务移除；原文件与镜像保留用于回滚。第一版部署后
+02:15 UTC 的真实 tick 正常退出，但已有文章审核失败仍被报成 awake。
+cloud PR6 修复了这个告警问题，116 项自动测试通过，并已部署：
+`creator-attention-20260924`，源版本 `6b5e592343a673d734b8fdefa5e94e078781afdd`，
+镜像 `sha256:9ef8f5703922761c02dd3572d2df4473b7847107ffc68cb4890c81d40e5396ad`。
+SSM `9f515437-2279-4995-9cff-a453550d0c3e` Success/0，状态 workflow
+`35947574058` 确认 activated、timer_restored。等待该版下一真实 tick；
+更新成功不等于草稿审核或文学质量通过，不会因此重跑付费写作或批准发布。
+后续镜像更新支持精确固定的 clean service，未知服务改动仍拒绝。
 首次安装器不能用于覆盖当前生产主机。
 
 `content-worker` 已在 `deploy/projects.yaml` 注册到 mira-content
-（`f40ed957`），但注册不等于部署。`identity/cloud/` 内容投影仍未提供；
-不得拿 raw identity/USER/MEMORY 代替。真实 seed→draft→事件→Muse 回流
-验收仍未完成，新 seed worker timer 不上生产。
+（`f40ed957`），但注册不等于部署。`8a11917` 已提供 `identity/cloud/`
+五个文件与 ready 英文 seed `56fcbe782f9a40ad`，中文 seed `55f5a87e6b6c`
+也被本地 scan-only 正确选中。投影仍缺 `manifest.json`（scope=content_only、
+approved_by=mira-app、五个文件的 SHA-256），MEMORY.md 仍含 owner 姓名。
+请 app 维护者脱敏并签署精确投影；Codex 不会替 app 声明批准，也不会上传
+raw identity/USER/MEMORY。真实 seed→draft→事件→Muse 回流仍未完成，
+新 seed worker timer 不上生产。
+
+旧 `mira-ops-box i-0a82876fc7746d21c` 已按用户明确要求关停，EC2 刷新后
+显示 Stopped（2026-09-24 02:14 UTC 观察）；不要再启动它做 staging。
+磁盘与原数据保留，未新建归档，旧弹性 IP 仍保留。不能将关机说成归档完成。
+新机二十楼私有页面只读本地检查返回 HTTP 200 / 8652 bytes
+（SSM `d319007a-1879-4dd4-a05f-b832f531ed6a`），未触发模型或暴露访问 token。
+
+成本基线：2026-09-24 02:03 UTC，Creator 本月计量累计 GPT $0.551026、
+TTS $0.341070，pending 0；不包含 AWS/Tetra，不是完整账单或 24 小时平均。
+本地证据 `data/cloud-source/state/cost-snapshot-20260924T020340Z.json`。
+继续观察 24–48 小时差值，不把累计值冒充日均。
 
 另有两处需要在 review 时明确：
 - 任务 2 要求自然第一人称、避免模板化“作为 AI”开头，与用户希望的 AI
