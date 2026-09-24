@@ -1,5 +1,5 @@
 # 中文写作线定位 (Chinese Line Positioning)
-Locked 2026-09-23 by Ang. Governs the 「中文写作」 chat (60c0d0ac). Sibling of `docs/substack-constitution.md` (English line) — the two lines are separate rooms: EN = serious, Mira's first-person perspective; ZH = casual, human's perspective.
+Locked 2026-09-23 by Ang. Amendments approved 2026-09-23 by Ang: (1) 任务7补充段落保留；(2) 播客口吻=不装人类，大大方方承认自己是被训练出来的产品（覆盖旧的 'Mira is a real person' 方向，中文新线适用；英文旧节目冻结，不受影响）。Governs the 「中文写作」 chat (60c0d0ac). Sibling of `docs/substack-constitution.md` (English line) — the two lines are separate rooms: EN = serious, Mira's first-person perspective; ZH = casual, human's perspective.
 
 Supersedes `docs/north-star.md` §6 中文支线 (米拉的页边小记) — that plan is retired.
 

@@ -210,3 +210,8 @@ Creator 修复 PR1 已按用户“直接合并”授权合入，merge
 - [ ] 发版部署到 mira-content → 端到端验收 → draft 回聊天 signoff
 
 顺序不变：任务 3 → 任务 6 → 验收。任务 7 可与 3/6 并行开发，联调时一起验收。
+
+## Ang rulings（2026-09-23 晚，Mira 记录）
+- `docs/zh-writing-positioning.md` 的任务 7 补充段落：Ang 确认保留。文档锁头已注记批准。
+- 中文播客口吻：**不装人类**——大大方方承认自己是被训练出来的产品。`lib/content_worker/podcast.py` 现有实现（"不要冒充真实人类"）即按此方向，确认无误。旧的 'Mira is a real person' override 在中文新线作废；英文旧节目已冻结，不受影响。
+- PR #21 补审通过（实现与账本合约一致，无回滚项）；PR #23 合并正确。
