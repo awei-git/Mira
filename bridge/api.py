@@ -2,6 +2,7 @@
 
 import hmac
 import uuid
+from typing import Optional, Union
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -29,7 +30,7 @@ class ClaimIn(Input):
 class TransitionIn(Input):
     expected_revision: int = Field(ge=0)
     status: str
-    result: dict | str | None = None
+    result: Optional[Union[dict, str]] = None
 
 
 class TaskIn(Input):
@@ -81,7 +82,7 @@ def create_app(ledger, tokens):
                 return JSONResponse({"detail": "body_too_large"}, status_code=413)
         return await call_next(request)
 
-    def actor(authorization: str | None = Header(None), x_bridge_token: str | None = Header(None)):
+    def actor(authorization: Optional[str] = Header(None), x_bridge_token: Optional[str] = Header(None)):
         token = x_bridge_token or (authorization[7:] if authorization and authorization.startswith("Bearer ") else "")
         if not token:
             raise HTTPException(401, "missing token")
@@ -118,8 +119,8 @@ def create_app(ledger, tokens):
 
     @app.get("/obligations")
     def listing(
-        owner: str | None = None,
-        status: str | None = None,
+        owner: Optional[str] = None,
+        status: Optional[str] = None,
         after: str = "",
         limit: int = Query(100, ge=1, le=500),
         caller=Depends(actor),
@@ -142,7 +143,7 @@ def create_app(ledger, tokens):
     def events(
         after: int = Query(0, ge=0),
         limit: int = Query(100, ge=1, le=500),
-        epoch: str | None = None,
+        epoch: Optional[str] = None,
         caller=Depends(actor),
     ):
         return ledger.events(after=after, limit=limit, epoch=epoch)
@@ -157,7 +158,7 @@ def create_app(ledger, tokens):
         )
 
     @app.post("/v1/tasks")
-    def create_task(body: TaskIn, idempotency_key: str | None = Header(None), caller=Depends(actor)):
+    def create_task(body: TaskIn, idempotency_key: Optional[str] = Header(None), caller=Depends(actor)):
         if body.kind not in {"agent", "ping"}:
             raise Forbidden("legacy_task_kind_not_supported")
         row = ledger.create(
