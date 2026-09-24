@@ -128,7 +128,7 @@ Codex 在 Mac 上开工前先读这个文件。任务细节在 GitHub issue 里�
 下一步顺序：任务 3 账本实现 → 任务 6 写入侧 → 我给 seed+投影 → 端到端验收
 → timer 上生产。不要跳步。
 
-## Issue #22 源码定位补充（Codex，2026-09-23，待 Mira review）
+## Issue #22 源码定位与执行状态（Codex，2026-09-23）
 
 GitHub API 已确认现有 **private** 仓库
 [awei-git/mira-cloud](https://github.com/awei-git/mira-cloud)，默认分支
@@ -146,16 +146,28 @@ GitHub API 已确认现有 **private** 仓库
 Issue #22 的 creator/Tetra 修复应在 `mira-cloud` 走 PR，双运行时接线继续在
 本仓库走 PR；最终部署需要明确哪一入口执行哪套代码，不能以同名 Mira 推断。
 
-主机 build `cbb5ab6f…` 与上述 GitHub commit 的逐文件对应关系尚未比对，
-也没有宣称当前主机运行的是 `bd7e23b3`。AWS 控制台当前明确显示已登出，
-没有可用的本地 AWS CLI 配置；需恢复主机访问后读取运行日志、镜像/构建
-标识和覆盖层哈希。只读取限定源码/服务信息，不打包整棵主机运行目录。
+AWS 访问已恢复，并已建立 GitHub OIDC 临时凭证通道；不需要反复登录，
+不保存长期访问密钥。`MiraContentOperator` 仅绑定内容主机。
+诊断 workflow `35930167461` 与 SSM 回执均成功。
 
-现有 `aws-release.yml` 的 `install` 仅供首次安装，`upload` 只上传源码，
-`status` 只查询原安装命令收据。不能把 upload 成功当成运行版本已更新，
-也不能拿首次安装流程覆盖现有主机。任务 2 要先完成经 review 的更新部署
-路径、保留回滚资料，再验收下一 tick，最后移除 overrides 和对应 mount。
-本次没有改动任何主机覆盖层、timer 或运行服务。
+Tetra 修复已通过 `tetra-recovery-20260923` 发布部署，源版本
+`c6b1768b5f218938d71d54db73d6d1c47e4fafeb`；激活状态 workflow
+`35934004575` 成功，部署后只读检查 `35934233726` 成功。
+原有四个早晚研究/邮件 timer 已恢复。195 项相关自动测试通过。
+这不等于正式报告验收；仍待连续两天真实版次结果。
+
+Creator 修复 PR1 已按用户“直接合并”授权合入，merge
+`f4e45d3b16ef8e0460491f9ff54fa3500cedd363`。56 项测试通过，两个改动源码
+的 manifest SHA256 已更新。自然第一人称保留 AI 创作者身份，不冒充真实人类。
+**尚未部署 Creator 修复**：现有 `aws-update.yml` 更新器只支持 Tetra 两个
+镜像，不能拿它假装更新 Creator。下一步需要可回滚的 Creator 镜像和覆盖层
+切换流程，再验收下一 tick；现有 overrides 和 mount 暂时保留。
+首次安装器不能用于覆盖当前生产主机。
+
+`content-worker` 已在 `deploy/projects.yaml` 注册到 mira-content
+（`f40ed957`），但注册不等于部署。`identity/cloud/` 内容投影仍未提供；
+不得拿 raw identity/USER/MEMORY 代替。真实 seed→draft→事件→Muse 回流
+验收仍未完成，新 seed worker timer 不上生产。
 
 另有两处需要在 review 时明确：
 - 任务 2 要求自然第一人称、避免模板化“作为 AI”开头，与用户希望的 AI
@@ -192,9 +204,9 @@ Issue #22 的 creator/Tetra 修复应在 `mira-cloud` 走 PR，双运行时接�
 
 ### 当前全链路状态（2026-09-23，Mira）
 - [x] seed 已建并同步（55f5a87e6b6c，status=ready，commit a569fbfc）
-- [ ] 任务 3 账本实现（Codex 进行中）
-- [ ] 任务 6 draft 回流写入侧（Codex 进行中）
-- [ ] 任务 7 中文播客写稿（本次新加）
+- [x] 任务 3 账本实现（PR21 已合并；不代表生产接线完成）
+- [x] 任务 6 draft 回流写入侧（PR21 已合并；Muse 读取侧另行验收）
+- [ ] 任务 7 中文播客写稿（实现已在 PR21，真实稿件验收未完成）
 - [ ] 发版部署到 mira-content → 端到端验收 → draft 回聊天 signoff
 
 顺序不变：任务 3 → 任务 6 → 验收。任务 7 可与 3/6 并行开发，联调时一起验收。
