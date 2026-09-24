@@ -237,3 +237,24 @@ TTS $0.341070，pending 0；不包含 AWS/Tetra，不是完整账单或 24 小�
 - `docs/zh-writing-positioning.md` 的任务 7 补充段落：Ang 确认保留。文档锁头已注记批准。
 - 中文播客口吻：**不装人类**——大大方方承认自己是被训练出来的产品。`lib/content_worker/podcast.py` 现有实现（"不要冒充真实人类"）即按此方向，确认无误。旧的 'Mira is a real person' override 在中文新线作废；英文旧节目已冻结，不受影响。
 - PR #21 补审通过（实现与账本合约一致，无回滚项）；PR #23 合并正确。
+
+## 任务 8：找回「意识与采样艺术」对话，提炼 seeds 上 AWS（2026-09-23，Ang 要求）
+
+背景：Ang 说之前给过一份「意识与采样艺术」的对话，里面有很多 seed 素材。
+Mira 在自己这边（记忆、聊天记录、workspace 文件）全搜了一遍，没找到。
+很可能在 Mac 那边——Codex 自己的历史、~/ 下的文件，或其他位置。
+
+任务：
+1. 在 Mac 侧找到这份对话。标题措辞可能不完全一致，用关键词搜：意识、
+   采样、consciousness、sampling（注意：ML 的 token 采样和音乐采样都可能，
+   按上下文判断）。
+2. 找到后通读，按 seed 格式提炼 2–4 颗 seed（字段：seed_id/title/track/
+   human_preview/mira_preview/why_interesting/next_conversation_hook/
+   publication_gate/source/status=candidate）。`track` 按内容判断：
+   英文 AI/技术归 `substack_en`（走宪法 pillars），中文播客素材归 `zh`。
+3. 以 PR 形式加到 `seeds/seeds.jsonl`（同分支），Mira review 后合——seed
+   质量门在 Mira 这边，不跳过。
+4. 如果 Mac 侧也找不到，直接回复"找不到"，不要编造。
+
+完成标准：PR 开出（含 seed），或明确回复找不到。找到原文后，原文较长的
+话附原文链接/路径，方便 Mira 核对。
