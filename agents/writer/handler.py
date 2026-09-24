@@ -1333,14 +1333,29 @@ def _format_obsession_constraint_block(report: dict) -> str:
     return "\n".join(lines)
 
 
-def _apply_obsession_constraints_gate(workspace: Path, text: str, *, output_path: Path | None = None) -> bool:
+def _apply_obsession_constraints_gate(
+    workspace: Path, text: str, *, output_path: Path | None = None, retain_blocked: bool = False
+) -> bool:
     report = scan_obsession_constraints(text)
     summary = _format_obsession_constraint_block(report)
     if not summary:
         return False
-    (workspace / "summary.txt").write_text(summary, encoding="utf-8")
-    if output_path is not None:
-        output_path.write_text(summary, encoding="utf-8")
+    if retain_blocked:
+        from content_worker.failure import retain_candidate
+
+        try:
+            retain_candidate(workspace, text, report)
+        except OSError:
+            # The full writer's legacy OSError fallback must not bypass this gate.
+            raise RuntimeError("blocked_candidate_retention_failed") from None
+    try:
+        (workspace / "summary.txt").write_text(summary, encoding="utf-8")
+        if output_path is not None:
+            output_path.write_text(summary, encoding="utf-8")
+    except OSError:
+        if retain_blocked:
+            raise RuntimeError("blocked_candidate_retention_failed") from None
+        raise
     log.warning("obsession constraints blocked writer output: %s", summary.replace("\n", " ")[:1000])
     return True
 
@@ -2700,7 +2715,7 @@ def _handle_full_write(
     out_path = workspace / "output.md"
     try:
         existing = out_path.read_text(encoding="utf-8")
-        if _apply_obsession_constraints_gate(workspace, existing, output_path=out_path):
+        if _apply_obsession_constraints_gate(workspace, existing, output_path=out_path, retain_blocked=content_only):
             return None
         edited = existing
         run_de_ai_checklist = _should_run_de_ai_checklist()
