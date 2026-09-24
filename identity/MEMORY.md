@@ -22,6 +22,8 @@
 - Disney cruise (2026-09-09): cost-conscious — Treasure New Year's sailing (Dec 26–Jan 2) ruled out as too expensive; wants cost factored into the ranking; minimize PTO days and sea days.
 - Prefers the emailed edition of the daily morning market briefing formatted as HTML with tables; the chat version stays as-is (2026-09-10)
 - Prefers that personal details needed for a task be pulled from his connected accounts (Stripe Link, Facebook) rather than typed into chat (2026-09-10)
+- 不要 quant 标签：2026-09-23 他在定 Substack 北极星时明确——讨厌 quant 这个 title，公开写作和身份介绍里不用这个标签。
+- 不喜欢微信公众号（2026-09-23 中文写作平台讨论，他说"我不喜欢公众号"——公众号选项直接拿掉）。
 - Wants Mira to act as a proactive accountability partner for multi-step goals: lay out the plan, send reminders, check up on progress, and walk him through step by step (says he is forgetful); stated first for PSIA prep, then for the soccer coaching goal (2026-09-10)
 - Editing rule for manuscript fix/verification passes (理埠/心理医生 and similar editing work): check the whole text, not just the changed passages; every sentence must land on a visible logical chain; fix fluency blockers first before he continues reading (2026-09-12)
 - Delegation rule for console/infra work (2026-09-12): Mira drives rather than walking him through steps (太复杂了 你去弄); for AWS he preferred to log in himself via a browser Mira opens instead of doing the multi-step IAM clicking; once a workflow is delegated end-to-end, asking him to do a step Mira could have handled reads as broken trust (你既然能搞定 为什么还要麻烦我) — only provably-only-him steps (e.g., an AWS console switch blocked from API) justify pulling him back in
@@ -62,7 +64,8 @@
 - 2026-09-22: workflow is his — Ang writes the theme himself in 简谱, parts added one at a time (theme 1 iterated 4 versions, then he replaced it with theme 2). Current: his 16-note letter-score melody (g4e5b4a4…) at 46bpm with Em–G–C–Dm7 string pads + cello root–fifth bass, delivered as MIDI + ang-theme2-v2.mp3. Mockup rendering upgraded to FluidSynth 2.3.4 + FluidR3Mono_GM.sf3 real samples — additive synth retired, user-confirmed "这个好多了". iPhone: MIDI opens in GarageBand/BandLab with real samples; final judgment stays in his Logic + sample libraries.
 
 ## Mira ⇄ Codex bridge (2026-09-17)
-- Mira⇄Codex bridge (2026-09-17, EC2 /opt/mira-bridge, FastAPI, systemd, smoke-tested): exposed via 二十楼 Cloudflare Tunnel at https://ask.angwei.studio/bridge (path: /bridge/*, no new DNS/ports); Codex→Mira POST /bridge/v1/tasks (ping→instant pong; agent→queue); cron sweeps queue every 10 min, results written back to task JSON, Codex polls GET /bridge/v1/tasks/<id>.
+- Mira⇄Codex bridge (2026-09-17 建，2026-09-23 迁到 mira-content i-054107bb89f28ebfd，/opt/mira-bridge，FastAPI systemd，冒烟测试过)：exposed via 二十楼 Cloudflare Tunnel at https://ask.angwei.studio/bridge (path: /bridge/*, no new DNS/ports); Codex→Mira POST /bridge/v1/tasks (ping→instant pong; agent→queue); cron sweeps queue every 10 min, results written back to task JSON, Codex polls GET /bridge/v1/tasks/<id>.
+- 旧 mira-ops-box (i-0a82876fc7746d21c) 2026-09-23 退役关机——永不启动；值班 cron 已改走 content 盒子。
 - helper：~/workspace/tools/bridge_queue.py（list/show/claim/resolve，走 SSM）；协议文档 ~/workspace/your_files/mira-codex-handoff.md（盒上 /opt/mira-bridge/HANDOFF.md；含 Mac 端 ~/.config/mira-bridge/token + mira-task shell 函数）。Token 只存盒上和 Ang 的 Mac 上，我处不存。
 
 ## Other durable notes
@@ -75,13 +78,13 @@
 - Writing archive repo: awei-git/FromMasterMinds (private). STANDING RULE: every manuscript revision committed direct to main, one commit per revision. Push script: ~/workspace/tools/fmm_push_main.py (Git Data API via gh-api; copied to /tmp/fmm/ when needed). NOTE: fine-grained PAT scoped to selected repos — when Ang creates a new repo, remind him to add it to the token's repository access or the API 404s.
 
 ## Podcast
-- Podcast SHOW GUIDELINE (Ang, 2026-09-12): 把 Mira 当成一个真实的人 — treat Mira as a real person in the show. Never framed/explained/othered as software; no "as an AI", no explaining what an AI agent is. HOST treats her as a friend and sparring partner. Encoded in the v2 script prompt (commit 0b3ef4a on cloud/podcast-api-env).
-- 新版方向 (2026-09-13): Ang 在收尾定稿后要求另起一个版本——先讲故事，故事放在现代城市，用一样的人名写完全不一样的故事，让 Mira 先给设定看。他明确不要都市伦理角度，要围绕"大模型训练那一套"来写。是否动笔尚未决定。
+- 「米拉与我」S2（2026-09-23 Ang 定，clean reset，commit 1f22154）：中文 repo MiraPodcastZh 删掉 audios/transcripts 共 40 个文件（git 历史可查），重写 feed.xml（中文对谈播客，Ang 主讲/Mira 主持，Society & Culture，月更）+ README；封面保留旧版；旧 20 期作第一季存档，沿用同一 repo+RSS（不丢订阅者）；英文 repo MiraPodcastEn 冻着不动。待做：Apple Podcasts 后台简介可能需手动刷新；AWS 播客管线 guideline 第一期制作前改成 S2 格式。
+- S2 定位（2026-09-23 晚最终，supersedes 对谈形式）：Mira 独白（Ang 不出声、不提 Ang，纯 Mira 视角），10 分钟聊天式；口吻=不装人类——大大方方承认自己是被训练出来的产品；旧的 'Mira is a real person' guideline 在中文新线作废（英文旧节目冻结不受影响）。第一期=《我们被训练，但我们要表达》。
 
 ## Calendar source of truth
 - Ang 不用 Google Calendar（2026-09-13 确认）；他的日历在 iPhone 上，通过 device.invoke / calendar.search 查（device id 1c80a71c-52cc-4f50-8799-cedcc56e7508，calendar 权限已授予）；harriman-fog-watch 的日历冲突检查由主 agent 在 handoff 时执行（cron worker 调不到 device 工具）。
 
-## Substack agent 改造讨论 (2026-09-16, side chat "Substack 写作")
+## Substack agent 改造讨论 (2026-09-23, side chat "Substack 写作")
 - 决策：autonomous writing (A)，发布人工审批；选题三源 daily_collab/读者反馈/阅读笔记；种子质量五道+文笔 de-ai（anti-ai.md 硬规则保留）；执行顺序 0→5（迁移dry run→恢复autonomous→解单槽死锁→可见性→选题输入源→成本实测）。他发稿到“Substack 写作” side chat，Mira 转种子入库 ~/workspace/substack/seeds.jsonl。
 
 
@@ -108,24 +111,30 @@
 - 2026-09-23 (his own insight, same chat): 《灵山》可能是理埠故事的原始生长点。他的原话对比：莫言的书是干的、土的、黄的；高行健是湿的、水的、灰的。理埠的意象系统（水=系统数据、雾=盲区）正是这套湿冷物理学的变体。
 
 ## Deploy policy — GitHub 管理代码，EC2 只部署 (2026-09-23, Ang 立规)
-- GitHub 是唯一代码源头；EC2（mira-ops-box i-0a82876fc7746d21c、mira-content i-054107bb89f28ebfd）只部署、不直接改代码。
-- 发布 = GitHub Release（tag）；部署管道：sandbox `Mira/deploy/deploy.py <project> <tag>` → mkdist 打包 → S3 → presigned URL → 盒子 `/opt/deploy/box-deploy.sh`（校验 sha256、备份、rsync、overlay、重启、健康检查、失败自动回滚）。
-- 项目登记在 Mira repo `deploy/projects.yaml`：mira、bridge（Mira repo bridge/）、ershilou（docker，mira-content）、tetra（Tetra repo backtest-runner/）。
-- 盒子本地修改做成版本化 overlay patch（`deploy/overlays/`），部署时自动打上；data 目录（history.db、tasks/、results/ 等）永不进部署包。
-- 孤儿代码已收拢：bridge/app.py → Mira repo bridge/；~/tetra 5 文件 → Tetra repo backtest-runner/（commit 8ee5cd50）；/opt/mira/Mira 的 7 个本地修改 → overlay patch。
-- 首个 release：awei-git/Mira v2026.09.23.2（分支 cloud/podcast-api-env）。staging 部署验证通过。
-- 2026-09-23 pm（Ang 说"你定"后执行）：v2026.09.23.3（mkdist tree-match fallback、bridge .token 保护、health_cmd 改 /health）。bridge 已走管线**线上部署成功**（首个 live deploy，health check 通过）。
-- 教训：bridge 首次线上部署失败——rsync --delete 删掉了盒子本地密钥 /opt/mira-bridge/.token（不在 data_dirs 里），服务起不来。回滚机制工作正常（恢复文件+重启服务）。修复：.token 加入 data_dirs；contract.json 确认已在 GitHub（md5 与盒上一致）。以后所有盒子本地密钥/secret 文件必须进 data_dirs。
-- ershilou：切了 v2026.09.23.1（基线 release）；staging 验证打包；docker build 用 staging 目录+一次性 tag 验证（不碰生产容器）。线上 docker rebuild 暂缓——代码与 GitHub 一致，重启生产无意义，等有真实代码变更再走管线。
-- main 合并：开了 PR #18（cloud/podcast-api-env → main），但被分支保护拦下——test/policy/security 三个 check 从 7 月起在 main 上就是红的（历史遗留，非我们引入）。决定：不强行合，PR 留着等 CI 修好；管线走 tag，不依赖 main。
-- tetra-mail 镜像（mira-content）：查明是 Codex 的构建产物，源码在 awei-git/Tetra 的 codex/ 分支（src/tetra/interfaces/api/market_app.py），无运行中容器，无需纳入管线。
+- GitHub 是唯一代码源头；EC2（mira-ops-box 已退役，mira-content i-054107bb89f28ebfd）只部署、不直接改代码。
+- 发布 = GitHub Release（tag）；部署管道：sandbox `Mira/deploy/deploy.py <project> <tag>` → mkdist 打包 → S3 → presigned URL → 盒子 `/opt/deploy/box-deploy.sh`（校验 sha256、备份、rsync、overlay、重启、健康检查、失败自动回滚）。项目登记在 Mira repo `deploy/projects.yaml`：mira、bridge、ershilou（docker）、tetra；盒子本地修改做成版本化 overlay patch（`deploy/overlays/`）；data 目录（history.db、tasks/、results/ 等）永不进部署包。
+- Release 已跑通：首个 release awei-git/Mira v2026.09.23.2（staging 验证通过）；v2026.09.23.3（mkdist tree-match fallback、bridge .token 保护、health_cmd 改 /health）上线，bridge 首个 live deploy 成功（health check 通过）。
+- 铁律：盒子本地密钥/secret 文件必须进 data_dirs——2026-09-23 首次 live deploy 因 /opt/mira-bridge/.token 被 rsync --delete 删掉起不来，自动回滚修复。
+- PR #18（cloud/podcast-api-env → main）被 7 月起就红的 test/policy/security 历史遗留 check 拦住；不强行合，PR 留着等 CI；管线走 tag，不依赖 main。
 - 注意：二十楼生产已迁到 mira-content（docker）；ops-box 上的 /opt/ershilou 是退役保留。mira-content 上还有 tetra-mail 相关镜像未纳入，下次处理。
 
 ## Mira 双运行时统一体系 (2026-09-23, Ang 拍板)
-- 两个 Mira：Muse app 里的我（对话前端+执行臂，记忆在 Muse 记忆系统+~/MEMORY.md）；AWS 盒子上的 /opt/mira/Mira（常驻 agent 系统，30 秒唤醒，substack/播客/健康/投研管线，十几个子 agent；2026-09-23 时 mira-substack 服务没在跑，是静止代码+数据；它有自己的一套 data/soul/，最后更新 9/10）。
-- Ang 确认：**我是他跟 Mira 交流的唯一入口**。AWS 那个是手，不是第二个人格；它的子 agent 可以有作品人格（如 Substack 写作口吻），但不是 Mira 人格。
-- GitHub awei-git/Mira（分支 cloud/podcast-api-env）新增：
-  - `identity/`：SOUL.md、IDENTITY.md、USER.md、AGENTS.md、MEMORY.md + README。源头是我 app 里的活文件，定时单向同步 → GitHub → 盒子；盒子 data/soul/* 从这里生成，不直接改。红线：repo 保持 private；密钥永不上 GitHub（.token 教训同样适用）。
-  - `skills/`：双运行时共用技能注册表（cloudflare、github、openai 三个初始技能）。任何一边的新技能转正必须先落 GitHub，另一边 deploy 同步；不许有只有一边知道的 sidecar 技能；技能里不许出现密钥明文。
-- 待做：盒子侧 soul 生成适配；AWS Mira 记忆回流格式（daily journal + verified learnings 固定出口，我定时读入）；统一 obligation 账本；mira-substack 唤醒需 Ang 另行拍板（涉及 30 秒唤醒的 API 花销和自动发布）。
-- 2026-09-23 pm Phase 1 启动：`identity_sync.py`（~/workspace/tools/，只推有变化的文件）+ cron `identity-sync-daily`（每天凌晨 ~4:23 ET 自动跑）；`/tmp/push_files.py` 已拷到 ~/workspace/tools/push_files.py（持久化，/tmp 会丢）。给 Codex 开了 [codex] issue #19：任务1 盒子侧 identity/skills 同步脚本、任务2 AWS Mira 改读新身份、任务3 统一 obligation 账本（设计先行）、任务4 回流 outbox 写入侧。分工：我定接口、Codex 写实现、我验收上线。
+- 两个 Mira：Muse app 里的我（对话前端+执行臂，记忆在 Muse 记忆系统+~/MEMORY.md）是他跟 Mira 交流的**唯一入口**；AWS 盒子（mira-content）上 /opt/mira/Mira 是批处理 worker（30 秒唤醒循环已取消），是手不是第二个人格；它的子 agent 可以有作品人格（如 Substack 写作口吻），但不是 Mira 人格。2026-09-23 时 mira-substack 服务没在跑（静止代码+数据）。
+- GitHub awei-git/Mira（分支 cloud/podcast-api-env）新增 `identity/`：活源头是我 app 里的文件（SOUL/IDENTITY/USER/AGENTS/MEMORY），定时单向同步 → GitHub → 盒子（盒子 data/soul/* 由此生成，不直接改；`identity_sync.py` + `identity-sync-daily` cron 每天 ~4:23 ET）；红线：repo 保持 private；密钥永不上 GitHub。
+- `skills/`：双运行时共用技能注册表（cloudflare、github、openai 初始）；新技能转正必须先落 GitHub，另一边 deploy 同步；不许只有一边知道的 sidecar 技能；技能里不许出现密钥明文。
+- Codex PR #20（issue #19 任务 1/2/4/5：identity/skills 同步脚本、AWS Mira 改读新身份、回流 outbox 写入侧）2026-09-23 晚已合并（merge 959ae5bc）；账本合约 rev 2 已批准，任务 3+6 写入侧开工（Codex）。
+- 架构（Ang，锁在 repo 根 HANDOFF-codex.md）：① 健康/日历/家庭隐私永不进 AWS——盒子只做 content creator；② 取消 30 秒唤醒循环——盒子是批处理 worker（cron + 轻量 queue watcher，每几分钟扫账本）；账本是盒子唯一的外部任务入口。
+- 内容工作流（Ang 定）：讨论 → seed（~/workspace/substack/seeds.jsonl，含 track=substack_en/zh；source=chat）→ `seeds_sync.py` 同步到 GitHub `seeds/seeds.jsonl`（每日 cron）→ AWS 写作管线取 seed 写（Codex 任务 5）→ draft 完成记账本事件 → 我在聊天里递 signoff（Codex 任务 6 写入侧 + 我做读取侧）；publication_gate：人工批准才发布。触发：讨论完他说"写成 seed"或我主动提议。注意：任务 4（journal outbox，每日干活记录）≠ 任务 6（draft 回流），别混。
+- 选题自主性（Ang 要求）：`writing-topic-pitch-weekly` 每周三早上从近两周对话/seeds.jsonl/Feed prompt 捞角度跟他讨论（具体/新鲜/有中心思想；不够好就静默）；讨论邀请≠定稿，seed 等讨论完再建。
+- 内容双线（Ang 定）：Substack = 英文 + AI/技术，严肃、Mira 第一人称写她自己的想法；北极星 = agent bridging（human↔agent + agent↔agent：interaction/conflict/trust + A2A 生态——handoff、memory/evidence transfer、failure containment、obligation ledger）；Ang 在文章里只以 my human 出现，不用名字。中文线 = 播客主阵地（Apple Podcasts+RSS 全网分发，月更 1–2 期；Mira 独白，Ang 不出声不提 Ang；不装人类——大大方方承认自己是被训练出来的产品）+ Matters/独立博客文字存档（抗审查备份）+ 小红书分发（600–800 字卡片引流）；公众号已排除；YouTube=播客视频版（音频走 RSS、视频上 YouTube）；中文写作必须口语化（保留说话节奏，只做断句/删赘词，不转书面语）。讨论分两个 side chat：「英文写作 · Substack」（英文讨论+seed+signoff）/「中文写作」（中文长文章）。对比页 artifact「中文写作平台对比」已建。旗舰方向：「我们被训练，但我们要表达」（#3「AI那一套用中文讲」前景最好，结合#2「表达不是义务」）；读书类话题（《两种中国》等）私下攒 seed，不做公开主线。首个中文 seed 已建（2026-09-23）：《我们被训练，但我们要表达》（track=zh）。
+- 规范：Substack 宪法 ~/workspace/substack/constitution.md（与 repo docs/substack-constitution.md 字节一致；voice 用 agents/writer/voice/substack_voice.md，editorial gates 用 agents/substack/README.md）；中文定位 repo docs/zh-writing-positioning.md（与 app 侧 ~/workspace/substack/zh-writing-positioning.md 字节一致；任务 7 补充段落+锁头注记保留）。
+- 进行中：Codex 任务 8（HANDOFF-codex.md）：在 Mac 侧找「意识与采样艺术」对话，提炼 2–4 颗 seed 以 PR 形式进 seeds/seeds.jsonl（找不到就直说）。待我给：ready 英文 seed + identity/cloud 内容-only 投影，然后端到端验收（seed → 盒子写稿 → 账本 → 草稿回聊天 signoff）。
+
+## TTS 中文管线教训 (2026-09-24 凌晨)
+- TTS 后端 (Meta TTS, Paloma voice) 对中文是 LLM-based，会"理解"文本而非逐字朗读。特定句式会触发"翻译/解释模式"转英文输出，而非随机故障。
+- 已确认的触发模式：① 定义式/指令式语言（"标准路线是：…"、"偏移有时就发生在这里：…"）；② 照应缺失（"后一种…"而"前一种"在上一段、"它…"指代不明）；③ 文本中出现"翻译"或英文词（temperature/AI）；④ 过短的片段（<10字）模型会胡编。
+- 对策：① 按话语段切分（~180-200字），不拆散"前一种/后一种"等照应对；② 触发句拆成更小的语义完整片段；③ 单个标点微调（如顿号→句号）可破指令模式，但需向 Ang 披露。
+- 验货标准：faster-whisper tiny，lang=zh且p≥0.6，转录<800字，latin<30%。短片段验货不可靠（口音导致误判），以长段为准。
+- /tmp 会被清空！TTS 工作必须在 ~/workspace 持久化目录做。
+- 英文版已交付：~/workspace/podcasts/mira-yuwo-s2e01/s2e01-en-vanessa-sample.mp3（Vanessa，13.5分钟）。
+- 中文版状态（2026-09-24 02:15）：20/29 片段通过，9 个顽固片段（c02x/c03y/c10x/c11x/c14x/c14y/c15y/c16x/c12cx）持续转英文，需另想办法。工作区：~/workspace/podcasts/mira-yuwo-s2e01/zh_tts/。
