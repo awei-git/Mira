@@ -484,7 +484,9 @@ def _finalize(ws: Path, p: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _write_drafts(soul_ctx: str, plan: str, idea: str, vd: Path, writers: list[str]) -> dict[str, str]:
+def _write_drafts(
+    soul_ctx: str, plan: str, idea: str, vd: Path, writers: list[str], *, spoken_brief: str = ""
+) -> dict[str, str]:
     """Have 3+ agents write drafts following the plan (parallel)."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -495,7 +497,7 @@ def _write_drafts(soul_ctx: str, plan: str, idea: str, vd: Path, writers: list[s
         style = MODELS.get(model_name, {}).get("style", "")
         log.info("Writing draft: %s (%s)", model_name, style)
         draft = model_think(
-            write_draft_prompt(soul_ctx, plan, idea, style),
+            write_draft_prompt(soul_ctx, plan, idea, style, spoken_brief=spoken_brief),
             model_name=model_name,
             timeout=600,
         )
@@ -548,7 +550,9 @@ def _review_verdict_summary(review: str) -> dict[str, object]:
     }
 
 
-def _review_cycle(vd: Path, drafts: dict[str, str], criteria: dict, reviewers: list[str]) -> str:
+def _review_cycle(
+    vd: Path, drafts: dict[str, str], criteria: dict, reviewers: list[str], *, spoken_brief: str = ""
+) -> str:
     """Run MIN_REVIEW_ROUNDS of review/revise. Returns final draft."""
     reviews_dir = vd / "reviews"
     reviews_dir.mkdir(parents=True, exist_ok=True)
@@ -571,7 +575,9 @@ def _review_cycle(vd: Path, drafts: dict[str, str], criteria: dict, reviewers: l
                     injected_note = "\n\nYour previous review identified fewer than 2 specific weaknesses. Dig deeper."
                 review = (
                     model_think(
-                        review_draft_prompt(draft_text, criteria, rnd, prev + injected_note, style),
+                        review_draft_prompt(
+                            draft_text, criteria, rnd, prev + injected_note, style, spoken_brief=spoken_brief
+                        ),
                         model_name=rv,
                         timeout=300,
                     )
@@ -647,7 +653,7 @@ def _review_cycle(vd: Path, drafts: dict[str, str], criteria: dict, reviewers: l
         # Revise (skip on last round)
         if rnd < MIN_REVIEW_ROUNDS:
             revised = model_think(
-                revise_draft_prompt(current_draft, combined, criteria, rnd),
+                revise_draft_prompt(current_draft, combined, criteria, rnd, spoken_brief=spoken_brief),
                 model_name="claude",
                 timeout=300,
             )
@@ -939,6 +945,9 @@ def run_full_pipeline(
     *,
     persona_prompt: str = "",
     context_note: str = "",
+    content_only: bool = False,
+    workspace: Path | None = None,
+    output_language: str | None = None,
 ) -> tuple[Path, str]:
     """Run the full writing pipeline end-to-end. Returns (workspace, final_text).
 
@@ -947,28 +956,53 @@ def run_full_pipeline(
     """
     import re as _re
 
+    if content_only and (not persona_prompt or workspace is None or context_note):
+        raise ValueError("content_pipeline_requires_explicit_persona_workspace_and_no_private_context")
+    if output_language is not None and (not content_only or output_language != "zh"):
+        raise ValueError("explicit_language_requires_content_podcast")
+
     # Create workspace under writings/projects/
     slug = _re.sub(r"[^\w\s\u4e00-\u9fff-]", "", title[:30]).strip()
     slug = _re.sub(r"[\s_]+", "-", slug).strip("-") or "untitled"
-    ws = _WRITINGS_ROOT / slug
+    ws = Path(workspace) if workspace is not None else _WRITINGS_ROOT / slug
     ws.mkdir(parents=True, exist_ok=True)
 
     log.info("Full writing pipeline: '%s' → %s", title, ws)
 
-    body = _force_substack_english_idea(body)
+    if output_language != "zh":
+        body = _force_substack_english_idea(body)
+    else:
+        body = "输出要求：简体中文单人播客稿。素材中提及英文平台不改变本稿语言。\n\n" + body
     plan_body = body
     if context_note:
         plan_body = f"{body}\n\n## Context\n{context_note}"
 
     # --- Analyze ---
     analysis = _analyze(plan_body)
+    spoken_options = {"spoken_brief": plan_body} if output_language == "zh" else {}
+    if spoken_options:
+        analysis.update(
+            language="zh",
+            type="podcast_script",
+            type_name="中文单人独白",
+            suggested_word_count="Use the exact Han-character range in the original brief",
+            criteria={
+                "spoken_voice": "Lively, specific solo voice that sounds natural aloud",
+                "brief_fidelity": "Exact opening, closing, length, themes and identity in the original brief",
+                "factual_privacy": "No unsupported factual claims, invented experience or private identity",
+            },
+        )
     (ws / "analysis.json").write_text(
         json.dumps(analysis, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
     type_key = analysis.get("type", "essay")
-    type_info = WRITING_CRITERIA.get(type_key, WRITING_CRITERIA["essay"])
+    type_info = (
+        {"name": analysis["type_name"], "criteria": analysis["criteria"]}
+        if spoken_options
+        else WRITING_CRITERIA.get(type_key, WRITING_CRITERIA["essay"])
+    )
     criteria = type_info["criteria"]
 
     # --- Plan (multi-agent) ---
@@ -976,7 +1010,7 @@ def run_full_pipeline(
 
     # RAG: retrieve related past writings, briefings, research
     try:
-        related = recall_context(body[:500], max_chars=2000)
+        related = "" if content_only else recall_context(body[:500], max_chars=2000)
         if related:
             soul_ctx = soul_ctx + "\n\n" + related
             log.info("Writing RAG: injected %d chars of related context", len(related))
@@ -1010,7 +1044,7 @@ def run_full_pipeline(
 
     # --- Write (3+ agents) ---
     writers = WRITING_MODELS[: max(3, len(WRITING_MODELS))]
-    drafts = _write_drafts(soul_ctx, plan, plan_body, vd, writers)
+    drafts = _write_drafts(soul_ctx, plan, plan_body, vd, writers, **spoken_options)
 
     # Filter out stub drafts
     drafts = {k: v for k, v in drafts.items() if len(v.strip()) >= WRITING_MIN_DRAFT_CHARS}
@@ -1028,7 +1062,7 @@ def run_full_pipeline(
     _save_project(ws, project)
 
     reviewers = REVIEW_MODELS[: max(3, len(REVIEW_MODELS))]
-    final_draft = _review_cycle(vd, drafts, criteria, reviewers)
+    final_draft = _review_cycle(vd, drafts, criteria, reviewers, **spoken_options)
     (vd / "converged.md").write_text(final_draft, encoding="utf-8")
 
     # --- Finalize ---

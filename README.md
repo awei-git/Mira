@@ -1,142 +1,78 @@
 # Mira
 
-Canonical docs live under [`docs/`](./docs/README.md).
-If you are changing runtime behavior, workflow design, goals, or readiness gates, start there before relying on this README.
+Mira has two runtimes with one conversation endpoint: **Muse app** handles human
+conversation and personal matters; **AWS** runs scheduled content batches.
+The current authority is [HANDOFF-codex.md](HANDOFF-codex.md), then
+[issue #19](https://github.com/awei-git/Mira/issues/19). Older V5 documents describe
+historical architecture and do not override this handoff.
 
-A local, multi-user AI collaborator that runs on your Mac, works with you through an iPhone app, keeps long-term continuity, and turns lived work into research, writing, and governed self-improvement. The canonical direction is the [V5.1 north star](./docs/north-star.md) and [master plan](./docs/v5-master-plan.md).
+## AWS content workflow
 
-## What it does
-
-Mira is a super-agent that wakes every 30 seconds and:
-
-1. **Collaborates** -- maintains one continuous Mira thread for conversation, corrections, decisions, and shared attention
-2. **Fulfills requests** -- treats phone/app requests as visible obligations with honest terminal states
-3. **Writes** -- runs a multi-model writing pipeline (plan -> draft -> critique -> revise), with topic overlap detection against published articles, publishes to Substack with auto-generated cover images
-4. **Explores** -- fetches 30+ feed sources (arXiv, Reddit, HuggingFace, Substack, Hacker News, RSS), writes daily briefings, extracts reading notes
-5. **Podcasts** -- generates dual-voice conversation podcasts from published articles (EN: Gemini TTS, ZH: MiniMax TTS), publishes to RSS feeds
-6. **Analyzes** -- pre-market and post-market financial analysis (Tetra integration)
-7. **Health** -- ingests Apple Health + Oura Ring data, runs anomaly detection, generates daily GPT health insights, provides on-demand advice for symptoms and checkup reports
-8. **Reflects** -- reviews outcomes, runs bounded improvement experiments, and consolidates verified lessons
-9. **Journals** -- daily summary and philosophical reflection
-10. **Grows** -- Substack Notes, reader engagement, publication discovery
-11. **Learns** -- security-audits candidate skills, tests them on later work, and promotes only outcome-backed changes
-12. **Sparks** -- proactively messages when it has an insight worth discussing
-13. **Mirrors** -- optionally exposes a local Web GUI / HTTP mirror for browser access and lower-latency local reads
-
-## V5.1 operating structure
-
-V5.1 has one operating spine:
-
-`conversation or request → obligation → action → visible outcome → review → verified learning → future behavior`
-
-| System | Responsibility | Success receipt |
-| --- | --- | --- |
-| Collaboration | Daily Mira thread, requests, corrections, and shared attention | A visible result or honest blocker in the same surface |
-| Learning | Bounded self-improvement experiments and skill candidates | A later outcome that verifies, rejects, or rolls back the change |
-| Continuity | Identity, personality, memories, beliefs, and human preferences | Provenance, confidence, evidence, and later use—not raw storage |
-| Creation | Research, experiments, versioned drafts, and artifacts | A first-hand claim, evidence ledger, and review receipt |
-| Governance | Permissions, security audits, review verdicts, and rollback | No irreversible or public action without the required gate |
-
-The goal hierarchy is L0 Survival, L1 Trusted Collaboration, L2 Learning & Continuity, L3 Research & Expression, and L4 Influence & Optionality. Pipeline activity, generated plans, and passing process checks are diagnostic signals—not proof of progress.
-
-## Architecture
-
-```
-Mira/
-├── agents/
-│   ├── super/          # Orchestrator -- core.py, task_manager, task_worker
-│   ├── shared/         # Config, LLM interface, prompts, memory_index
-│   │   └── soul/       # Identity, worldview, interests, journal, learned skills
-│   ├── writer/         # Writing pipeline (ideas, frameworks, templates, skills)
-│   ├── explorer/       # Feed fetcher, briefing writer
-│   ├── general/        # General task handler
-│   ├── socialmedia/    # Substack publishing, Notes, commenting, growth
-│   ├── health/         # Health monitoring, anomaly detection, GPT insights
-│   ├── podcast/        # Article-to-podcast pipeline, RSS publishing
-│   ├── video/          # Video editing skills
-│   ├── photo/          # Photography editing skills
-│   ├── analyst/        # Market analysis
-│   ├── researcher/     # Math research
-│   └── coder/          # Programming skills
-├── lib/
-│   ├── evolution/      # Experience, trajectories, learning proposals and trials
-│   ├── evaluation/     # Outcome scoring and improvement lifecycle
-│   └── memory/         # Governed memory schema, retrieval, soul and skills
-├── data/soul/          # Canonical identity, worldview, interests and durable memory
-├── docs/               # North star, current plan, architecture and operating contracts
-├── tests/              # Unit, workflow, runtime and acceptance tests
-├── web/                # Optional local Web GUI / HTTP mirror
-├── feeds/              # Feed sources + raw data
-├── logs/               # Agent logs
-├── config.yml          # Local settings (gitignored)
-└── secrets.yml         # API keys (gitignored)
+```text
+Muse discussion → ready content seed → scheduled existing writer pipeline
+                                        → versioned draft + editorial receipt
+                                        → shared ledger signoff event
+                                        → Muse presents draft → human signoff
 ```
 
-All artifacts (writings, briefings, audio) are written to iCloud `MtJoy/Mira-Artifacts/` for iOS app access. Agent-to-app communication goes through iCloud `MtJoy/Mira-Bridge/` using the MiraBridge protocol.
+AWS does not run a wake loop, proactive spark loop, phone listener, health jobs,
+calendar jobs or private personal assistant. External assignments will enter only
+through the shared obligation ledger; no separate draft queue is introduced.
+Publication requires human approval bound to the exact draft. A successful writer
+run is not a publication or delivery receipt.
 
-Runtime state is user-scoped under `users/{user_id}/...`. The orchestrator iterates `Bridge.for_all_users()`, and task routing, thread history, emptiness state, journal/reflect/spark state, soul-question history, and most memory writes stay inside that user namespace. Legacy flat state keys only fall back for `ang` during migration.
+The current implementation adds `scripts/content_batch.py`, reuses
+`agents/writer/handler.py` and its existing prompts/revision/checklists, and accepts
+`status=ready` with either `track=substack_en` or `track=zh` + `kind=podcast_script`.
+Other Chinese seeds remain untouched. Chinese solo scripts use the configured
+GPT API route through the same provider abstraction; no TTS runs at draft time.
 
-The super agent dispatches all heavy work (writing, exploring, analysis, health checks, podcast generation) as background processes so the main loop stays under 5 seconds.
+## Current implementation status
 
-## Key subsystems
+- Standalone content identity/skills synchronizer and soul mapping are implemented
+  for review; raw personal identity is excluded from cloud distributions.
+- English drafting, Chinese solo-script drafting and the daily outbox have local contract tests.
+- Ledger rev 2 is approved. SQLite, authenticated API and signoff-event writing
+  are implemented for review; Muse's poller/approval endpoint remain app-side work.
+  No real end-to-end chat acknowledgement or production deployment is claimed.
+- Templates are provided for finite systemd batches. They are not installed or
+  enabled by this change. There is no automatic live service restart.
+- The approved Chinese podcast seed is ready. No real draft has been generated
+  by this new batch worker; review, identity projection and host acceptance remain.
 
-**Memory and continuity** -- Structured facts, beliefs, episodes, task state, human preferences, and verified lessons retain provenance and confidence. Durable lessons need evidence; retrieval counts as compounding only when it changes later behavior.
+See [worker runbook](docs/issue19-content-worker.md) for commands, data paths,
+identity mapping, assumptions and remaining acceptance gates. See
+[ledger proposal](docs/issue19-obligation-ledger.md) for the app/worker contract.
+The [ledger operations guide](docs/issue19-ledger-implementation.md) describes
+the API, recovery, migration and remaining deployment gates.
 
-**Writing pipeline** -- Syncs ideas from Apple Notes, checks for topic overlap against published catalog, advances projects through plan/draft/critique/revision cycles. Publishes to Substack with personal photo covers (DALL-E fallback). Queues promotional Notes for gradual posting.
+## Shared identity and skills
 
-**Explore** -- 11 source groups rotate through the day via LRU scheduling. Each group fetches feeds, writes a briefing, extracts reading notes, and optionally deep-dives into interesting items.
+Muse owns the canonical identity. Cloud uses an explicitly app-reviewed
+**content-only** projection of `SOUL.md`, `IDENTITY.md`, `USER.md`, `AGENTS.md` and
+`MEMORY.md`; the raw app files can contain private information and must stay off
+AWS. Missing projection, hash mismatch or a failed backend skill security audit
+blocks synchronization. Original legacy soul files are retained by rename.
 
-**Health** -- Ingests Apple Health exports and Oura Ring data into PostgreSQL. Runs per-user anomaly detection with configurable thresholds. Generates daily GPT health insights combining wearable data, checkup reports, and symptoms. On-demand advice when users submit symptoms or concerning metrics.
+## Development and deployment
 
-**Podcast** -- Converts published articles into dual-voice conversation podcasts. Generates dialogue scripts (host + Mira), synthesizes with language-specific TTS providers, adds music bumpers, publishes to per-language GitHub Pages RSS feeds, and optionally embeds audio in the Substack post.
+Work from `cloud/podcast-api-env` on a `codex/` branch, open a PR for Mira review,
+then merge and create a GitHub release. EC2 is a deploy target; do not edit code
+there. [Deployment policy](deploy/POLICY.md) describes the release pipeline.
+Stage before activation, preserve host runtime data, and designate one active
+content host. Support for old and new hosts is not permission to run both workers.
 
-**Soul and learning** -- Mira has a persistent but corrigible identity, worldview, interests, and skill corpus. Proposals remain unverified experiments; generated skills are audited into a candidate queue and require a cross-task outcome before promotion.
+Local read-only seed check:
 
-## Web GUI and Security
+```sh
+python3 scripts/content_batch.py seeds --scan-only
+```
 
-- `web/server.py` exposes a lightweight browser UI and HTTP mirror for heartbeat, manifests, items, todos, and artifacts.
-- The API only serves known users from `config.yml`.
-- Default host is `127.0.0.1` on port `8384`. If you intentionally open it beyond loopback, set `services.webgui_token` and treat it as a trusted-LAN surface, not a public endpoint.
-- The mobile app can always run in pure iCloud mode. The Web GUI is optional.
+Focused checks (no cloud or paid model calls):
 
-## Multi-model
-
-Mira orchestrates multiple LLM providers:
-
-- **Claude** -- primary reasoning, task planning, writing review
-- **GPT** -- creative prose, embeddings, health insights
-- **DeepSeek** -- Chinese writing, cost-efficient reasoning
-- **Gemini** -- fast analysis, long context, English TTS
-- **MiniMax** -- Chinese TTS
-- **oMLX** -- local OpenAI-compatible runtime for privacy-sensitive tasks via the `secret` agent; `ollama_*` names remain as backward-compatible aliases in some modules
-
-## Setup
-
-1. Clone this repo
-2. Create `config.yml` and `secrets.yml` at the repo root
-   ```bash
-   $EDITOR config.yml
-   $EDITOR secrets.yml
-   ```
-3. Edit `config.yml` with your root paths, known users, schedules, and optional `services.webgui_*` settings
-4. Edit `secrets.yml` with your API keys (Anthropic, OpenAI, DeepSeek, Google, Substack, and any other providers you use)
-5. Install the Python dependencies needed for the agents you plan to run
-   ```bash
-   pip install requests openai psycopg2-binary fastapi uvicorn
-   ```
-6. Set up the LaunchAgent or run manually:
-   ```bash
-   cd agents/super && python3 core.py run
-   ```
-7. Optional: run the local Web GUI / HTTP mirror
-   ```bash
-   cd web && python3 server.py
-   ```
-
-### Companion repos
-
-- **[MiraApp](../MiraApp)** -- SwiftUI iPhone app (chat, health dashboard, todos, artifacts)
-- **[MiraBridge](../MiraBridge)** -- Communication protocol library (Python + Swift)
+```sh
+python3 -m pytest tests/test_content_worker.py tests/test_obligation_ledger.py -q
+```
 
 ## License
 

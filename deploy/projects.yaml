@@ -1,0 +1,74 @@
+# Deploy projects registry.
+# GitHub is the source of truth; EC2 boxes are deploy targets only.
+# Fields:
+#   repo:      GitHub repo (org/name)
+#   subdir:    subdirectory inside the repo that ships ('.' = whole repo)
+#   boxes:     list of {host, instance, path}
+#   overlay:   repo-relative patch applied after extract (optional)
+#   service:   systemd unit restarted after deploy (optional)
+#   docker:    {container, port} -> rebuild image from subdir, recreate (optional)
+#   data_dirs: never touched by deploy (rsync excludes)
+#   env_file:  never overwritten (optional)
+
+projects:
+  mira:
+    repo: awei-git/Mira
+    subdir: .
+    boxes:
+      - host: mira-ops-box
+        instance: i-0a82876fc7746d21c
+        path: /opt/mira/Mira
+    overlay: deploy/overlays/ops-box.patch
+    # The scheduled content worker has no persistent wake-loop service to restart.
+    # Shared identity/skills are synchronized independently, after their audits.
+    data_dirs: [data, logs, users, shared, .venv, config.yml, secrets.yml]
+    package_excludes: [identity, skills, .secrets.baseline]
+
+  bridge:
+    repo: awei-git/Mira
+    subdir: bridge
+    extra_files:
+      lib/obligations.py: obligations.py
+    boxes:
+      - host: mira-content
+        instance: i-054107bb89f28ebfd
+        path: /opt/mira-bridge
+    service: mira-bridge
+    # .token is the box-local auth secret (never in git, never deleted by --delete)
+    data_dirs: [tasks, .token, .app-token, .worker-token]
+    health_cmd: "curl -sf -o /dev/null http://127.0.0.1:8000/health"
+
+  ershilou:
+    repo: awei-git/ershilou
+    subdir: .
+    boxes:
+      - host: mira-content
+        instance: i-054107bb89f28ebfd
+        path: /opt/ershilou
+    docker:
+      container: ershilou
+      publish: "127.0.0.1:80:8080"
+      restart: unless-stopped
+      volume: "/opt/ershilou/data:/app/data"
+      env_file: /opt/ershilou/site.env
+    data_dirs: [data]
+    env_file: site.env
+
+  tetra:
+    repo: awei-git/Tetra
+    subdir: backtest-runner
+    boxes:
+      - host: mira-ops-box
+        instance: i-0a82876fc7746d21c
+        path: /root/tetra
+    data_dirs: [data, results]
+
+  content-worker:
+    repo: awei-git/Mira
+    subdir: .
+    boxes:
+      - host: mira-content
+        instance: i-054107bb89f28ebfd
+        path: /opt/mira/Mira
+    data_dirs: [data, logs, users, shared, .venv, config.yml, secrets.yml]
+    package_excludes: [identity, skills, .secrets.baseline]

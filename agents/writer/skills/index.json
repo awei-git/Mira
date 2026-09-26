@@ -100,5 +100,11 @@
     "description": "Select one or two hyper-specific details to stand in for an entire scene, character, or setting.",
     "file": "telling-detail.md",
     "tags": ["writing", "craft", "fiction", "description"]
+  },
+  {
+    "name": "Language Flow (Gao Xingjian)",
+    "description": "Write prose that carries the reader on language's own associative current — walking-rhythm long sentences, deictic pointing language, zero plot debt, body-first transitions, water/fog as physical devices. From 高行健《灵山》.",
+    "file": "gao-xingjian-language-flow.md",
+    "tags": ["writing", "craft", "fiction", "prose", "voice", "chinese-literature"]
   }
 ]

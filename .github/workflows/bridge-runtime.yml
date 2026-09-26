@@ -1,0 +1,20 @@
+name: Bridge runtime compatibility
+on:
+  pull_request:
+    branches: [cloud/podcast-api-env]
+    paths: [bridge/**, lib/obligations.py, tests/bridge_runtime_smoke.py, .github/workflows/bridge-runtime.yml]
+permissions:
+  contents: read
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.9', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install fastapi==0.128.8 pydantic==2.13.5 starlette==0.49.3 httpx==0.28.1
+      - run: python tests/bridge_runtime_smoke.py

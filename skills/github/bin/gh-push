@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Push local files to a new branch of awei-git/angwei-studio via the GitHub API and open a PR.
+
+Usage: push_branch.py <branch> <commit-message> <pr-title> <file>...
+Each <file> is a repo-relative path; content is read from ./<file> (cwd = repo mirror).
+"""
+import base64, json, subprocess, sys
+
+API = '/home/hatch/workspace/skills/github/bin/gh-api'
+REPO = 'awei-git/studio'
+
+def api(path, method='GET', data=None):
+    cmd = [API, path]
+    if method != 'GET':
+        cmd += ['--method', method]
+    if data is not None:
+        cmd += ['--data', json.dumps(data)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f'API {method} {path} failed: {r.stderr[:300]}')
+    return json.loads(r.stdout) if r.stdout.strip() else {}
+
+def main():
+    branch, message, pr_title = sys.argv[1], sys.argv[2], sys.argv[3]
+    files = sys.argv[4:]
+    ref = api(f'/repos/{REPO}/git/ref/heads/main')
+    main_sha = ref['object']['sha']
+    base_tree = api(f'/repos/{REPO}/git/commits/{main_sha}')['tree']['sha']
+    tree_entries = []
+    for f in files:
+        raw = open(f, 'rb').read()
+        blob = api(f'/repos/{REPO}/git/blobs', 'POST',
+                   {'content': base64.b64encode(raw).decode(), 'encoding': 'base64'})
+        tree_entries.append({'path': f, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+        print('blob', f, blob['sha'][:8])
+    tree = api(f'/repos/{REPO}/git/trees', 'POST', {'base_tree': base_tree, 'tree': tree_entries})
+    commit = api(f'/repos/{REPO}/git/commits', 'POST',
+                 {'message': message, 'tree': tree['sha'], 'parents': [main_sha]})
+    api(f'/repos/{REPO}/git/refs', 'POST', {'ref': f'refs/heads/{branch}', 'sha': commit['sha']})
+    pr = api(f'/repos/{REPO}/pulls', 'POST',
+             {'title': pr_title, 'head': branch, 'base': 'main',
+              'body': 'Automated by Mira. Review the preview deployment, then merge to publish.'})
+    print('branch:', branch)
+    print('PR:', pr['html_url'])
+
+if __name__ == '__main__':
+    main()

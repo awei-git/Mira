@@ -1333,14 +1333,29 @@ def _format_obsession_constraint_block(report: dict) -> str:
     return "\n".join(lines)
 
 
-def _apply_obsession_constraints_gate(workspace: Path, text: str, *, output_path: Path | None = None) -> bool:
+def _apply_obsession_constraints_gate(
+    workspace: Path, text: str, *, output_path: Path | None = None, retain_blocked: bool = False
+) -> bool:
     report = scan_obsession_constraints(text)
     summary = _format_obsession_constraint_block(report)
     if not summary:
         return False
-    (workspace / "summary.txt").write_text(summary, encoding="utf-8")
-    if output_path is not None:
-        output_path.write_text(summary, encoding="utf-8")
+    if retain_blocked:
+        from content_worker.failure import retain_candidate
+
+        try:
+            retain_candidate(workspace, text, report)
+        except OSError:
+            # The full writer's legacy OSError fallback must not bypass this gate.
+            raise RuntimeError("blocked_candidate_retention_failed") from None
+    try:
+        (workspace / "summary.txt").write_text(summary, encoding="utf-8")
+        if output_path is not None:
+            output_path.write_text(summary, encoding="utf-8")
+    except OSError:
+        if retain_blocked:
+            raise RuntimeError("blocked_candidate_retention_failed") from None
+        raise
     log.warning("obsession constraints blocked writer output: %s", summary.replace("\n", " ")[:1000])
     return True
 
@@ -2458,19 +2473,27 @@ def handle(
     if source_type == "human_raw":
         return _handle_human_raw_notes(workspace, content, title)
     raw_writing_mode = RAW_WRITING_MODE_ALLOWED and isinstance(metadata, dict) and bool(metadata.get("raw"))
-    bundle = build_runtime_context(
-        content,
-        user_id=kwargs.get("user_id", "default") or "default",
-        thread_id=thread_id,
-        persona_domains=["taste", "style", "writing"],
-        recall_top_k=5,
-    )
-    if kwargs.get("thread_history"):
+    content_only = kwargs.get("content_only") is True
+    if content_only and source_genre == "podcast_script":
+        voice_preserving = True
+    if content_only:
+        from content_worker.context import writer_context
+
+        bundle = writer_context()
+    else:
+        bundle = build_runtime_context(
+            content,
+            user_id=kwargs.get("user_id", "default") or "default",
+            thread_id=thread_id,
+            persona_domains=["taste", "style", "writing"],
+            recall_top_k=5,
+        )
+    if not content_only and kwargs.get("thread_history"):
         bundle.thread_history = kwargs["thread_history"]
-    if kwargs.get("thread_memory"):
+    if not content_only and kwargs.get("thread_memory"):
         bundle.thread_memory = kwargs["thread_memory"]
 
-    if _is_quick_write(content):
+    if not content_only and _is_quick_write(content):
         return _handle_quick_write(
             workspace,
             task_id,
@@ -2494,6 +2517,7 @@ def handle(
         audit_mode=audit_mode,
         raw_writing_mode=raw_writing_mode,
         voice_preserving=voice_preserving,
+        content_only=content_only,
     )
 
 
@@ -2654,6 +2678,7 @@ def _handle_full_write(
     audit_mode: bool = False,
     raw_writing_mode: bool = False,
     voice_preserving: bool = False,
+    content_only: bool = False,
 ) -> str | None:
     context_parts = []
     if bundle.thread_history:
@@ -2664,11 +2689,16 @@ def _handle_full_write(
     if recall_block:
         context_parts.append(recall_block)
 
+    pipeline_options = {"content_only": True, "workspace": workspace / "pipeline"} if content_only else {}
+    podcast_script = content_only and (metadata or {}).get("source_genre") == "podcast_script"
+    if podcast_script:
+        pipeline_options["output_language"] = "zh"
     project_dir, final_text = run_full_pipeline(
         title,
         content,
         persona_prompt=bundle.persona.as_prompt(max_length=2600),
         context_note="\n\n".join(context_parts).strip(),
+        **pipeline_options,
     )
     final_file = project_dir / "final.md"
     if final_file.exists():
@@ -2685,7 +2715,7 @@ def _handle_full_write(
     out_path = workspace / "output.md"
     try:
         existing = out_path.read_text(encoding="utf-8")
-        if _apply_obsession_constraints_gate(workspace, existing, output_path=out_path):
+        if _apply_obsession_constraints_gate(workspace, existing, output_path=out_path, retain_blocked=content_only):
             return None
         edited = existing
         run_de_ai_checklist = _should_run_de_ai_checklist()
@@ -2752,7 +2782,11 @@ def _handle_full_write(
         if not voice_preserving and run_de_ai_checklist and not raw_writing_mode:
             _maybe_log_blind_drift_warning(edited, anti_ai_mode=anti_ai_mode, article_slug=project_dir.name)
         _append_audit_editorial_choice(editorial_choices, before_audit, edited, audit_report)
-        edited += _build_judgment_disclosure(edited, editorial_choices)
+        disclosure = _build_judgment_disclosure(edited, editorial_choices)
+        if podcast_script:
+            (workspace / "editorial-disclosure.md").write_text(disclosure, encoding="utf-8")
+        else:
+            edited += disclosure
         if voice_preserving or not run_de_ai_checklist:
             passed, safety_msg = _generated_content_preflight(workspace, content, edited)
             if not passed:
